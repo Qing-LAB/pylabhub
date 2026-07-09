@@ -68,7 +68,8 @@ void write_zmq_producer_config(const fs::path &cfg_path,
                                 const fs::path &hub_dir,
                                 const std::string &uid,
                                 const std::string &channel,
-                                int prod_port)
+                                int prod_port,
+                                const std::string &channel_topology = "")
 {
     nlohmann::json j;
     j["producer"]["uid"]       = uid;
@@ -78,6 +79,13 @@ void write_zmq_producer_config(const fs::path &cfg_path,
 
     j["out_hub_dir"]      = hub_dir.string();
     j["out_channel"]      = channel;
+    // 2026-07-08 topology migration — declare fan-in / fan-out explicitly
+    // for tests that need those cardinalities.  Empty = don't set the
+    // field; broker defaults to one-to-one per HEP-CORE-0018 §5.3.
+    if (!channel_topology.empty())
+    {
+        j["out_channel_topology"] = channel_topology;
+    }
     j["loop_timing"]      = "fixed_rate";
     j["target_period_ms"] = 50;
 
@@ -157,7 +165,8 @@ void write_zmq_producer_script(const fs::path &script_dir, int n_slots)
 void write_zmq_consumer_config(const fs::path &cfg_path,
                                 const fs::path &hub_dir,
                                 const std::string &uid,
-                                const std::string &channel)
+                                const std::string &channel,
+                                const std::string &channel_topology = "")
 {
     nlohmann::json j;
     j["consumer"]["uid"]       = uid;
@@ -167,6 +176,11 @@ void write_zmq_consumer_config(const fs::path &cfg_path,
 
     j["in_hub_dir"]       = hub_dir.string();
     j["in_channel"]       = channel;
+    // 2026-07-08 topology migration — same convention as producer helper.
+    if (!channel_topology.empty())
+    {
+        j["in_channel_topology"] = channel_topology;
+    }
     j["loop_timing"]      = "fixed_rate";
     j["target_period_ms"] = 50;
 
@@ -799,16 +813,25 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     // Both producers share the SAME channel — that's the fan-in shape.
     // Distinct value offsets in their scripts is what lets the consumer
     // distinguish them.
+    // 2026-07-08 topology migration — this scenario is the load-bearing
+    // proof that fan-in ZMQ admits N producers into a single consumer's
+    // PULL socket.  Both producers AND the consumer declare
+    // channel_topology="fan-in" so the broker's admission path
+    // recognizes the shape and admits producer B (would otherwise fire
+    // ONE_TO_ONE_CARDINALITY_VIOLATED under the default).
     write_zmq_producer_config(prod_a_dir / "producer.json", hub_dir,
-                               prod_a_uid, channel, prod_a_port);
+                               prod_a_uid, channel, prod_a_port,
+                               /*channel_topology=*/"fan-in");
     write_zmq_producer_script_with_offset(prod_a_dir / "script" / "python",
                                            kSlotsPerProducer, kOffsetA);
     write_zmq_producer_config(prod_b_dir / "producer.json", hub_dir,
-                               prod_b_uid, channel, prod_b_port);
+                               prod_b_uid, channel, prod_b_port,
+                               /*channel_topology=*/"fan-in");
     write_zmq_producer_script_with_offset(prod_b_dir / "script" / "python",
                                            kSlotsPerProducer, kOffsetB);
     write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir,
-                               cons_uid, channel);
+                               cons_uid, channel,
+                               /*channel_topology=*/"fan-in");
     // Multi-producer consumer script: requires slots from BOTH offset
     // windows (0 = producer A, 100 = producer B) before emitting
     // `cons_test: complete`.  This is the load-bearing proof that

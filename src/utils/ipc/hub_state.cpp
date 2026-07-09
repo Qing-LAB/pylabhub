@@ -1104,6 +1104,12 @@ HubState::_on_producer_added(const std::string&         channel_name,
             entry.schema_blds       = schema.schema_blds;
             entry.schema_owner      = schema.schema_owner;
             entry.data_transport    = transport.data_transport;
+            // 2026-07-08 topology migration — persist the declared or
+            // defaulted topology on channel creation.  The broker
+            // resolved this value in its admission-path pre-check per
+            // tech draft §5.1 rule 4; here we just record it.  Immutable
+            // once written.
+            entry.topology          = transport.topology;
             // Append the producer via the controlled API (Created by
             // construction since producers is empty + we just checked
             // shm cardinality is fine for the first entry).  Capture

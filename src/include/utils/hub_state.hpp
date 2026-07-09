@@ -384,6 +384,17 @@ struct ChannelSchemaInvariants
 struct ChannelTransportInvariants
 {
     std::string    data_transport{"shm"};
+
+    /// 2026-07-08 topology migration.  The channel's declared topology
+    /// resolved from `REG_REQ.channel_topology` (declared value) or
+    /// defaulted to `OneToOne` at the broker's admission-path pre-check.
+    /// Set once on channel creation inside `_on_producer_added`;
+    /// immutable thereafter — the broker's pre-`_on_producer_added`
+    /// topology helper (`check_topology_against_stored`) enforces the
+    /// mismatch case with its own error code (`TOPOLOGY_MISMATCH`), so
+    /// `_on_producer_added` neither reads nor compares this value on
+    /// the existing-channel path.  See tech draft §5.1 rule 4.
+    ChannelTopology topology{ChannelTopology::OneToOne};
 };
 
 /// HEP-CORE-0036 §4.1 — per-channel access scaffolding.
