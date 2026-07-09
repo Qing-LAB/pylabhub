@@ -770,17 +770,26 @@ public:
         const nlohmann::json& req,
         zmq::socket_t&        socket);
 
-    /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to every producer
-    /// of the named channel (HEP-CORE-0036 §6.5).  Same fan-out shape
-    /// as `CHANNEL_CLOSING_NOTIFY` / `CONSUMER_DIED_NOTIFY`.  No ACK
-    /// awaited; the producer's response is to fire its own
-    /// `GET_CHANNEL_AUTH_REQ` pull.  Producers without a captured ZMQ
-    /// identity are skipped (no transport to reach them).  Caller has
-    /// already mutated the channel's allowlist via the matching
-    /// `_on_consumer_authorized` / `_on_consumer_revoked` HubState op.
+    /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to the BINDING
+    /// side of the named channel (HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_
+    /// NOTIFY, lines 1803-1864; HEP-CORE-0036 §6.5).  Fan-out target
+    /// dispatches by topology: fan-in → consumers; fan-out /
+    /// one-to-one → producers.  Payload emits
+    /// `{channel_name, channel_version, role_uid, role_type, phase}`
+    /// per HEP-0007 lines 1840-1849.  No ACK awaited; the binding
+    /// side's response depends on phase:
+    ///   - `admitted`/`left` — pull `get_channel_auth` (allowlist changed).
+    ///   - `live` — local map update only; no pull.
+    /// Peers without a captured ZMQ identity are skipped (no
+    /// transport to reach them).  Caller has already mutated the
+    /// channel's allowlist via the matching
+    /// `_on_consumer_authorized` / `_on_consumer_revoked` HubState op
+    /// (for admitted/left; live fires from first-heartbeat detection).
     void fire_channel_auth_changed_notify(zmq::socket_t&     socket,
                                            const std::string& channel_name,
-                                           const std::string& reason);
+                                           const std::string& phase,
+                                           const std::string& role_uid,
+                                           const std::string& role_type);
 
     /// HEP-CORE-0023 §2.5 — heartbeat negotiation block carried in
     /// REG_ACK / CONSUMER_REG_ACK.  Communicates the hub's tolerated
@@ -3367,7 +3376,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // above.  Add it to the channel-scope allowlist and fire the
     // change notify to all producers.
     hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
-    fire_channel_auth_changed_notify(socket, channel_name, "consumer_joined");
+    fire_channel_auth_changed_notify(socket, channel_name,
+                                       /*phase=*/"admitted",
+                                       /*role_uid=*/role_uid,
+                                       /*role_type=*/"consumer");
 
     // HEP-CORE-0036 §6.4 — one-shot per accepted CONSUMER_REG_REQ; format
     // parallels REG_REQ accepted (line ~1148) so test harnesses can grep
@@ -3541,7 +3553,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     {
         hub_state_->_on_consumer_revoked(channel_name,
                                           closing_entry.zmq_pubkey);
-        fire_channel_auth_changed_notify(socket, channel_name, "consumer_left");
+        fire_channel_auth_changed_notify(socket, channel_name,
+                                           /*phase=*/"left",
+                                           /*role_uid=*/closing_entry.role_uid,
+                                           /*role_type=*/"consumer");
     }
 
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
@@ -4014,15 +4029,24 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // in producer-side logs + tests.
     if (!producer_zmq_identity.empty())
     {
+        // Targeted phase=admitted doorbell to producer P — HEP-CORE-0042
+        // §5.4 step 5b.  Payload shape matches the fan-out helper per
+        // HEP-CORE-0007 lines 1840-1849.  role_uid/role_type describe
+        // the dialing-side role whose admission drove the allowlist
+        // bump (the consumer that just registered).
         nlohmann::json notify;
-        notify["channel_name"] = channel_name;
-        notify["reason"]       = "attach_wait_path";
+        notify["channel_name"]    = channel_name;
+        notify["channel_version"] = access->channel_version;
+        notify["role_uid"]        = consumer_role_uid;
+        notify["role_type"]       = "consumer";
+        notify["phase"]           = "admitted";
         send_to_identity(socket, producer_zmq_identity,
                           "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
         LOGGER_DEBUG(
             "[broker] event=AttachWaitPathNotifyTargeted channel='{}' "
-            "producer_uid='{}' (HEP-CORE-0042 §5.4 step 5b singular-P)",
-            channel_name, producer_role_uid);
+            "producer_uid='{}' consumer_uid='{}' (HEP-CORE-0042 §5.4 "
+            "step 5b singular-P)",
+            channel_name, producer_role_uid, consumer_role_uid);
     }
     else
     {
@@ -4351,63 +4375,95 @@ std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
 void BrokerServiceImpl::fire_channel_auth_changed_notify(
     zmq::socket_t&     socket,
     const std::string& channel_name,
-    const std::string& reason)
+    const std::string& phase,
+    const std::string& role_uid,
+    const std::string& role_type)
 {
-    // HEP-CORE-0036 §6.5 amended 2026-06-04 — fan a fire-and-forget
-    // CHANNEL_AUTH_CHANGED_NOTIFY out to every producer of the named
-    // channel.  Same shape + threading as CHANNEL_CLOSING_NOTIFY /
-    // CONSUMER_DIED_NOTIFY (see line 3328 area).  Producers without a
-    // captured ZMQ identity (legacy or partial-state entries) are
-    // skipped: no transport reaches them; recovery is via REG_ACK
-    // on reconnect.
+    // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864;
+    // topology migration 2026-07-08) + HEP-CORE-0036 §6.5.  Fan a
+    // fire-and-forget doorbell to the BINDING side of the channel:
+    // fan-in → consumers, fan-out / one-to-one → producers (line
+    // 1806).  Same threading as CHANNEL_CLOSING_NOTIFY /
+    // CONSUMER_DIED_NOTIFY.  Peers without a captured ZMQ identity
+    // (legacy or partial-state entries) are skipped: no transport
+    // reaches them; recovery is via REG_ACK on reconnect.
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
     {
-        // Caller (REG / DEREG / heartbeat-timeout handler) just
-        // mutated the channel's allowlist; the channel SHOULD exist.
-        // A missing channel here means the lookup races with a
-        // concurrent teardown — observable but harmless (producers
-        // who were live during the mutation will pick up the change
-        // via REG_ACK.initial_allowlist on the next reconnect).
+        // Caller (REG / DEREG / heartbeat / heartbeat-timeout
+        // handler) just mutated the channel state; the channel
+        // SHOULD exist.  A missing channel here means the lookup
+        // races with a concurrent teardown — observable but harmless
+        // (binding-side peers who were live during the mutation will
+        // pick up the change via REG_ACK.initial_allowlist on the
+        // next reconnect).
         LOGGER_WARN(
             "Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out skipped — "
             "channel '{}' no longer exists in HubState (probable race "
-            "with concurrent channel teardown; reason='{}').",
-            channel_name, reason);
+            "with concurrent channel teardown; phase='{}' role_uid='{}' "
+            "role_type='{}').",
+            channel_name, phase, role_uid, role_type);
         return;
     }
+    // Payload per HEP-CORE-0007 lines 1840-1849.  channel_version:
+    // bumped on phase=admitted / phase=left; unchanged on phase=live.
+    // Broker reads the current post-mutation value from HubState.
     nlohmann::json notify;
-    notify["channel_name"] = channel_name;
-    notify["reason"]       = reason;
-    std::size_t fanned = 0;
+    notify["channel_name"]    = channel_name;
+    notify["channel_version"] = ch->channel_version;
+    notify["role_uid"]        = role_uid;
+    notify["role_type"]       = role_type;
+    notify["phase"]           = phase;
+
+    // Fan-out target dispatch (HEP-CORE-0007 line 1806).  Fan-in's
+    // binding side is the consumer; fan-out / one-to-one's binding
+    // side is the producer.  Under the singular-side ownership
+    // model, the binding-side collection has size 1 in steady state,
+    // but iteration handles the transient overlap window.
+    std::size_t fanned              = 0;
     std::size_t skipped_no_identity = 0;
-    for (const auto &prod : ch->producers)
+    auto fan_to = [&](const std::string& identity)
     {
-        if (prod.zmq_identity.empty())
+        if (identity.empty())
         {
             ++skipped_no_identity;
-            continue;
+            return;
         }
-        send_to_identity(socket, prod.zmq_identity,
+        send_to_identity(socket, identity,
                           "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
         ++fanned;
+    };
+    std::size_t binding_side_total = 0;
+    if (ch->topology == pylabhub::hub::ChannelTopology::FanIn)
+    {
+        binding_side_total = ch->consumers.size();
+        for (const auto &cons : ch->consumers)
+            fan_to(cons.zmq_identity);
+    }
+    else
+    {
+        binding_side_total = ch->producers.size();
+        for (const auto &prod : ch->producers)
+            fan_to(prod.zmq_identity);
     }
     if (skipped_no_identity > 0)
     {
-        // Identity-less producers are a transient state (pre-REG_ACK
+        // Identity-less peers are a transient state (pre-REG_ACK
         // capture, or post-teardown partial entries).  Reveal them so
-        // operators can investigate whether a producer is stuck not
+        // operators can investigate whether a peer is stuck not
         // receiving notifies — which would degrade to "stale allowlist
-        // until producer's next reconnect" per the §6.5 drift window.
+        // until peer's next reconnect" per the §6.5 drift window.
         LOGGER_WARN(
             "Broker: CHANNEL_AUTH_CHANGED_NOTIFY for channel '{}' "
-            "skipped {} producer(s) with empty zmq_identity (transient "
-            "or partial state); fanned to {} producer(s).",
+            "skipped {} binding-side peer(s) with empty zmq_identity "
+            "(transient or partial state); fanned to {} peer(s).",
             channel_name, skipped_no_identity, fanned);
     }
     LOGGER_DEBUG("Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out for "
-                 "channel '{}' reason='{}' to {} of {} producer(s)",
-                 channel_name, reason, fanned, ch->producers.size());
+                 "channel '{}' phase='{}' role_uid='{}' role_type='{}' "
+                 "to {} of {} binding-side peer(s)",
+                 channel_name, phase, role_uid, role_type,
+                 fanned, binding_side_total);
 }
 
 void BrokerServiceImpl::handle_heartbeat_req(const nlohmann::json& req)
@@ -5485,7 +5541,9 @@ void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
                 hub_state_->_on_consumer_revoked(channel_name,
                                                   dead_consumer.zmq_pubkey);
                 fire_channel_auth_changed_notify(socket, channel_name,
-                                                  "consumer_timeout");
+                                                   /*phase=*/"left",
+                                                   /*role_uid=*/dead_consumer.role_uid,
+                                                   /*role_type=*/"consumer");
             }
         }
     }
