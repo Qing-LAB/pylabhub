@@ -333,6 +333,14 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def("allowed_peer_count", &ProcessorAPI::allowed_peer_count,
              py::arg("channel"),
              "Engine-parity inquiry — authorized-peer count.")
+        .def("consumer_count", &ProcessorAPI::consumer_count,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — binding-side live consumer count "
+             "backed by phase=live NOTIFY.")
+        .def("producer_count", &ProcessorAPI::producer_count,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — binding-side live producer count "
+             "backed by phase=live NOTIFY.")
         .def("is_channel_ready",   &ProcessorAPI::is_channel_ready,
              py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "

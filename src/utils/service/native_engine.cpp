@@ -775,6 +775,28 @@ int ctx_is_channel_ready(const PlhNativeContext *ctx, const char *channel)
     catch (...) { return -1; }
 }
 
+int ctx_consumer_count(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try
+    {
+        return static_cast<int>(
+            static_cast<RoleAPIBase *>(ctx->_api)->consumer_count(channel));
+    }
+    catch (...) { return -1; }
+}
+
+int ctx_producer_count(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel) return -1;
+    try
+    {
+        return static_cast<int>(
+            static_cast<RoleAPIBase *>(ctx->_api)->producer_count(channel));
+    }
+    catch (...) { return -1; }
+}
+
 int ctx_queue_mechanism(const PlhNativeContext *ctx, int side)
 {
     // API v6: returns one of PLH_MECHANISM_* macros (UNINITIALIZED=0,
@@ -1027,6 +1049,8 @@ struct NativeEngine::NativeContextStorage
         ctx.allowed_peers         = hub_stub_allowed_peers;
         ctx.allowed_peer_contains = hub_stub_allowed_peer_contains;
         ctx.allowed_peer_count    = hub_stub_band_int_arg2;
+        ctx.consumer_count        = hub_stub_band_int_arg2;
+        ctx.producer_count        = hub_stub_band_int_arg2;
         ctx.is_channel_ready      = hub_stub_is_channel_ready;
         ctx.queue_mechanism       = hub_stub_queue_mechanism;
 
@@ -1131,6 +1155,8 @@ struct NativeEngine::NativeContextStorage
         ctx.allowed_peers          = ctx_allowed_peers;
         ctx.allowed_peer_contains  = ctx_allowed_peer_contains;
         ctx.allowed_peer_count     = ctx_allowed_peer_count;
+        ctx.consumer_count         = ctx_consumer_count;
+        ctx.producer_count         = ctx_producer_count;
         ctx.is_channel_ready       = ctx_is_channel_ready;
         ctx.queue_mechanism        = ctx_queue_mechanism;
 

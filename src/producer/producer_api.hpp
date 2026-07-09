@@ -99,6 +99,18 @@ class ProducerAPI
                                const std::string &role_uid) const;
     int  allowed_peer_count(const std::string &channel) const;
 
+    /// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY
+    /// (lines 1834-1838) — binding-side live-peer count backed by the
+    /// broker's `phase=live` NOTIFY.  Engine-parity with Native + Lua.
+    [[nodiscard]] std::size_t consumer_count(const std::string &channel) const
+    {
+        return base_->consumer_count(channel);
+    }
+    [[nodiscard]] std::size_t producer_count(const std::string &channel) const
+    {
+        return base_->producer_count(channel);
+    }
+
     py::object open_inbox(const std::string &target_uid);
     bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
     void clear_inbox_cache();

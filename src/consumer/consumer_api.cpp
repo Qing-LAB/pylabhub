@@ -354,6 +354,17 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("allowed_peer_count", &ConsumerAPI::allowed_peer_count,
              py::arg("channel"),
              "Engine-parity inquiry — always 0 on consumer side.")
+        .def("consumer_count", &ConsumerAPI::consumer_count,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — binding-side live consumer count "
+             "backed by phase=live NOTIFY.  Fan-in consumers see live "
+             "peer producers via producer_count; consumer_count is "
+             "typically 0 on this side (documented sentinel).")
+        .def("producer_count", &ConsumerAPI::producer_count,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — binding-side live producer count "
+             "backed by phase=live NOTIFY.  Fan-in consumer gates its "
+             "admission on this count reaching the expected N.")
         .def("is_channel_ready", &ConsumerAPI::is_channel_ready,
              py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "

@@ -383,6 +383,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("queue_mechanism", lua_api_queue_mechanism);
     push_closure("allowed_peers",   lua_api_allowed_peers);
     push_closure("producers",       lua_api_producers);
+    push_closure("consumer_count",  lua_api_consumer_count);
+    push_closure("producer_count",  lua_api_producer_count);
     push_closure("is_channel_ready", lua_api_is_channel_ready);
 
     // ── Role-specific closures based on short_tag ────────────────────────
@@ -2655,6 +2657,35 @@ int LuaEngine::lua_api_is_channel_ready(lua_State *L)
         return luaL_error(L,
             "api.is_channel_ready: channel argument must be a non-empty string");
     lua_pushboolean(L, self->api_->is_channel_ready(channel) ? 1 : 0);
+    return 1;
+}
+
+// api.consumer_count(channel) / api.producer_count(channel) → integer.
+// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY lines
+// 1834-1838.  Live-peer count on the binding side; 0 when unknown.
+int LuaEngine::lua_api_consumer_count(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *arg = luaL_checkstring(L, 1);
+    const std::string channel = arg ? arg : "";
+    if (channel.empty())
+        return luaL_error(L,
+            "api.consumer_count: channel argument must be a non-empty string");
+    lua_pushinteger(L,
+        static_cast<lua_Integer>(self->api_->consumer_count(channel)));
+    return 1;
+}
+
+int LuaEngine::lua_api_producer_count(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *arg = luaL_checkstring(L, 1);
+    const std::string channel = arg ? arg : "";
+    if (channel.empty())
+        return luaL_error(L,
+            "api.producer_count: channel argument must be a non-empty string");
+    lua_pushinteger(L,
+        static_cast<lua_Integer>(self->api_->producer_count(channel)));
     return 1;
 }
 

@@ -304,6 +304,19 @@ typedef struct
     int  (*allowed_peer_count)(const struct PlhNativeContext *ctx,
                                const char *channel);
 
+    /** consumer_count / producer_count: HEP-CORE-0028 §6a + HEP-CORE-
+     *  0007 §CHANNEL_AUTH_CHANGED_NOTIFY lines 1834-1838.  Count of
+     *  DIALING-side peers past first-heartbeat on `channel`
+     *  (broker's `phase=live` NOTIFY drives the map).  Returns >=0 or
+     *  -1 on error.  Callable from every role via every engine on
+     *  every channel per HEP-CORE-0011 §"Cross-Engine Surface Parity"
+     *  — on a role/channel with no populated map, returns 0 (the
+     *  documented "not applicable on this side" sentinel). */
+    int  (*consumer_count)(const struct PlhNativeContext *ctx,
+                           const char *channel);
+    int  (*producer_count)(const struct PlhNativeContext *ctx,
+                           const char *channel);
+
     /** is_channel_ready: returns 1 iff the queue serving `channel` is
      *  in the HEP-0036 §6.7 Active state (start() succeeded
      *  post-Configured gate), 0 otherwise, -1 on error (null arg). */

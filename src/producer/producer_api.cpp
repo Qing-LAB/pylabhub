@@ -389,6 +389,20 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              py::arg("channel"),
              "Engine-parity inquiry — authorized-peer count for the "
              "channel.  Served from local cache; no broker round-trip.")
+        .def("consumer_count", &producer::ProducerAPI::consumer_count,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — binding-side live consumer count "
+             "backed by the broker's phase=live NOTIFY stream "
+             "(HEP-CORE-0007 lines 1834-1838).  Fan-out producers gate "
+             "the first publish on this count>0 to close the libzmq "
+             "PUB/SUB slow-joiner window.  0 when the map is not "
+             "populated for this role (documented sentinel per "
+             "HEP-CORE-0011 Cross-Engine Surface Parity).")
+        .def("producer_count", &producer::ProducerAPI::producer_count,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — binding-side live producer count "
+             "(symmetric with consumer_count on the consumer side of "
+             "the channel).")
         .def("is_channel_ready",   &producer::ProducerAPI::is_channel_ready,
              py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
