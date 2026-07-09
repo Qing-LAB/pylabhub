@@ -42,18 +42,25 @@ for Q3a revision).
   connect CURVE wire) + unified peer-list wire shape
   (`b71dd9ec`).  Full ctest 2362/2362.
 
-**Active next:**
-- ⏳ **Phase D** — CHANNEL_AUTH_CHANGED_NOTIFY phase field wiring
-  + R6 gate symmetrization.  **Delta pinned to HEP-CORE-0007
-  §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864) in
-  `docs/todo/TOPOLOGY_TODO.md` §Phase D delta.**  Existing plumbing
-  (`fire_channel_auth_changed_notify`, `handle_channel_auth_notifies`,
-  `ConsumerEntry.zmq_identity`, `allowed_peers` binding pattern) is
-  extended, not duplicated.  Do NOT propose socket_monitor or new
-  parallel structures — the mechanism is broker→NOTIFY.
+**Phase D — split-completed:**
+- ✅ **D phase field** (`8655f2fe..ed0456d5`) —
+  `CHANNEL_AUTH_CHANGED_NOTIFY` payload extended per HEP-CORE-0007
+  §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864); binding-side
+  live_peers map + `consumer_count`/`producer_count` accessors +
+  bindings landed across native/lua/python.  Existing plumbing
+  extended, not duplicated (fire_channel_auth_changed_notify,
+  handle_channel_auth_notifies, RolePresence.first_heartbeat_seen,
+  ConsumerEntry.zmq_identity, allowed_peers binding pattern).  Full
+  ctest 2362/2362.
 
-**Ahead:** Phase D → E (retirements) → F (demos + L4 flip) → G
-(fan-out ZMQ role-host integration) → H (verification).
+**Active next:**
+- ⏳ **D R6 gate symmetrization** (tech draft §5.4) — dialing-side
+  REG_REQ pends on binding-side Live.  Mechanism now available
+  (phase=live NOTIFY + live_peers map from the phase-field work).
+
+**Ahead:** D R6 → E (retirements) → F (demos + L4 flip) → G
+(fan-out ZMQ role-host integration; L4 slow-joiner test using
+`api.consumer_count()` gate lands here) → H (verification).
 
 **Consequences of migration:** HEP-CORE-0017 §3.3 multi-endpoint
 PULL code (`2c604280`) retires in Phase E.  HEP-CORE-0042 §5 + §7.1

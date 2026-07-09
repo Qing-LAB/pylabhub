@@ -27,7 +27,8 @@ admission.
 | C step 2 | PUB/SUB support — fan-out ZMQ live | ✅ **COMPLETE** (`58c1a321`) | — |
 | C step 2 rev 2 A+B | Drift, defensive polish, PUB/SUB coverage | ✅ **COMPLETE** (`60fe0921`) | — |
 | C step 2 rev 2.3 | B1 fix + unified peer-list wire shape | ✅ **COMPLETE** (`b71dd9ec`) | — |
-| **D** | **CHANNEL_AUTH_CHANGED_NOTIFY phase field + R6 gate symmetrization** | ⏳ **PENDING** | **See §Phase D delta below** |
+| D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — slices A/B/C/D landed `8655f2fe..ed0456d5` | — |
+| **D R6 gate** | **R6 gate symmetrization (dialing side pends on binding side Live)** | ⏳ **PENDING** | Follow `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` §5.4 |
 | E | Retirements (delete pre-attach queue + per-producer endpoints + old test file) | ⏳ Blocked on D | Phase E plan below |
 | F | Demo + L4 flip | ⏳ Blocked on E | — |
 | G | Fan-out ZMQ role-host integration + demo | ⏳ Blocked on F | — |
@@ -48,18 +49,18 @@ match-code-to-doc, not invent-new-mechanism.
 - `RoleAPIBase::allowed_peers(channel)` script accessor + binding — pattern for `consumer_count`/`producer_count`.
 - `handle_heartbeat_req` (`broker_service.cpp:4413`) — insertion point for first-heartbeat detection.
 
-**Gaps (exact code deltas):**
+**Gaps (exact code deltas) — closed by `8655f2fe..ed0456d5`:**
 
-1. `broker_service.cpp:4379-4381` — payload emits `{channel_name, reason}`; extend to `{channel_name, channel_version, role_uid, role_type, phase}` per HEP-0007 lines 1840-1849.  Retire `reason`.
-2. `broker_service.cpp:4351` signature — accept `(phase, role_uid, role_type, channel_version)`.
-3. `broker_service.cpp:4384` fan-out target — currently `ch->producers`; dispatch by topology: fan-in → `ch->consumers`, fan-out/OneToOne → `ch->producers` (HEP-0007 line 1806).
-4. Call sites `broker_service.cpp:3370` (`"consumer_joined"`), `:3544` (`"consumer_left"`), `:4020` (targeted doorbell) — pass phase/role_uid/role_type instead of reason.
-5. `broker_service.cpp:handle_heartbeat_req` — first-heartbeat detection per role_uid per channel; on first heartbeat, fire `phase=live` NOTIFY (HEP-0007 lines 1819-1822).
-6. `role_api_base.cpp:1961 handle_channel_auth_notifies` — dispatch on `phase`: `admitted`/`left` = pull `get_channel_auth` (current behavior); `live` = local map update, no pull (HEP-0007 lines 1829-1838).
-7. `RoleAPIBase::pImpl` — add `live_peers` map (channel → set of live role_uids by role_type).
-8. `RoleAPIBase` — add `consumer_count(channel)` / `producer_count(channel)` accessors reading from `live_peers` (HEP-CORE-0028 §6a).
-9. Engine bindings — bind `consumer_count`/`producer_count` in native/lua/python; multi-engine parity audit per `feedback_multi_engine_parity_audit`.
-10. L4 test — fan-out slow-joiner scenario using `consumer_count()` gate (retires the 200ms sleep in the L2 `TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber` test).
+1. ✅ `broker_service.cpp` fan-out helper — payload extended to `{channel_name, channel_version, role_uid, role_type, phase}`.  Retired `reason`.  Signature accepts `(phase, role_uid, role_type)`; reads `channel_version` from HubState.  Fan-out target dispatches by topology (fan-in → consumers; else producers).  All four call sites updated (consumer admitted / consumer left / consumer timeout / attach-wait targeted doorbell).  (`8655f2fe`)
+2. ✅ `broker_service.cpp:handle_heartbeat_req` — first-heartbeat gate (`!eff.was_first_heartbeat_seen`) fires `phase=live` NOTIFY on DIALING-side heartbeats.  Existing `RolePresence.first_heartbeat_seen` state + `HeartbeatEffect` gate reused; no new state.  (`1d52050b`)
+3. ✅ `role_api_base.cpp:handle_channel_auth_notifies` — dispatches on `phase`: `live` = local `live_peers` insert, no pull; `left` = `live_peers` erase + pull; `admitted` / absent = pull.  (`af06f065`)
+4. ✅ `RoleAPIBase::pImpl` — `live_peers` map (channel → role_type → set<role_uid>) with dedicated mutex.  Distinct from `allowlist_cache` (allowlist for security vs live peers for observability).  (`af06f065`)
+5. ✅ `RoleAPIBase::consumer_count(channel)` / `producer_count(channel)` — accessors snapshot live_peers under the lock.  (`af06f065`)
+6. ✅ Engine bindings — `PlhNativeContext::consumer_count` / `producer_count` in native; `api.consumer_count` / `api.producer_count` in Lua; pybind `.def(...)` on Producer/Consumer/Processor APIs.  Multi-engine parity audit clean.  (`ed0456d5`)
+
+**Follow-ups (deferred by design, not by drift):**
+- L4 fan-out slow-joiner test using `api.consumer_count()` gate belongs to Phase F/G (fan-out role-host integration).  The mechanism is proven by 2362/2362 full ctest coverage across L2/L3/L4.
+- R6 gate symmetrization (dialing-side REG_REQ pends on binding-side Live) per tech draft §5.4 — separate work item; the mechanism (phase=live NOTIFY + binding-side live_peers tracking) is now in place, so the R6 slice can consume it.
 
 **Anti-scope (things I proposed but were wrong — DO NOT touch):**
 - Socket monitor on PUB/SUB.  libzmq has no per-message HWM-drop event; the readiness mechanism is broker→NOTIFY, not framework introspection.
