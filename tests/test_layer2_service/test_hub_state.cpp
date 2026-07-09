@@ -46,11 +46,8 @@ using pylabhub::hub::ChannelCloseReason;
 using pylabhub::hub::ChannelEntry;
 using pylabhub::hub::ChannelObservable;
 using pylabhub::hub::ChannelTopology;
-using pylabhub::hub::parse_channel_topology;
 using pylabhub::hub::to_string;
-using pylabhub::hub::transport_topology_compatible;
-using pylabhub::hub::check_topology_against_stored;
-using pylabhub::hub::check_cardinality_admission;
+namespace topology = pylabhub::hub::topology;
 using pylabhub::hub::ConsumerEntry;
 using pylabhub::hub::ProducerEntry;
 using pylabhub::hub::HandlerId;
@@ -4265,13 +4262,13 @@ TEST(HubStateHep0042, ProducerConfirmed_NoOpOnMissingChannel)
 
 TEST(ChannelTopology, ParseWireValues)
 {
-    EXPECT_EQ(parse_channel_topology("fan-in"),     ChannelTopology::FanIn);
-    EXPECT_EQ(parse_channel_topology("fan-out"),    ChannelTopology::FanOut);
-    EXPECT_EQ(parse_channel_topology("one-to-one"), ChannelTopology::OneToOne);
-    EXPECT_FALSE(parse_channel_topology(""));
-    EXPECT_FALSE(parse_channel_topology("FanIn"));         // case-sensitive
-    EXPECT_FALSE(parse_channel_topology("fan_in"));        // underscore vs dash
-    EXPECT_FALSE(parse_channel_topology("garbage"));
+    EXPECT_EQ(topology::parse("fan-in"),     ChannelTopology::FanIn);
+    EXPECT_EQ(topology::parse("fan-out"),    ChannelTopology::FanOut);
+    EXPECT_EQ(topology::parse("one-to-one"), ChannelTopology::OneToOne);
+    EXPECT_FALSE(topology::parse(""));
+    EXPECT_FALSE(topology::parse("FanIn"));         // case-sensitive
+    EXPECT_FALSE(topology::parse("fan_in"));        // underscore vs dash
+    EXPECT_FALSE(topology::parse("garbage"));
 }
 
 TEST(ChannelTopology, ToStringRoundTrip)
@@ -4280,50 +4277,50 @@ TEST(ChannelTopology, ToStringRoundTrip)
                     ChannelTopology::FanOut,
                     ChannelTopology::OneToOne})
     {
-        EXPECT_EQ(parse_channel_topology(to_string(t)), t);
+        EXPECT_EQ(topology::parse(to_string(t)), t);
     }
 }
 
 TEST(ChannelTopology, TransportCompatibility)
 {
     // HEP-CORE-0017 §3.3.0 decision matrix: only fan-in × shm is rejected.
-    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::FanIn,    "zmq"));
-    EXPECT_FALSE(transport_topology_compatible(ChannelTopology::FanIn,    "shm"));
-    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::FanOut,   "zmq"));
-    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::FanOut,   "shm"));
-    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::OneToOne, "zmq"));
-    EXPECT_TRUE (transport_topology_compatible(ChannelTopology::OneToOne, "shm"));
+    EXPECT_TRUE (topology::transport_compatible(ChannelTopology::FanIn,    "zmq"));
+    EXPECT_FALSE(topology::transport_compatible(ChannelTopology::FanIn,    "shm"));
+    EXPECT_TRUE (topology::transport_compatible(ChannelTopology::FanOut,   "zmq"));
+    EXPECT_TRUE (topology::transport_compatible(ChannelTopology::FanOut,   "shm"));
+    EXPECT_TRUE (topology::transport_compatible(ChannelTopology::OneToOne, "zmq"));
+    EXPECT_TRUE (topology::transport_compatible(ChannelTopology::OneToOne, "shm"));
     // Unknown transports rejected defensively.
-    EXPECT_FALSE(transport_topology_compatible(ChannelTopology::FanOut,   ""));
-    EXPECT_FALSE(transport_topology_compatible(ChannelTopology::FanOut,   "tcp"));
+    EXPECT_FALSE(topology::transport_compatible(ChannelTopology::FanOut,   ""));
+    EXPECT_FALSE(topology::transport_compatible(ChannelTopology::FanOut,   "tcp"));
 }
 
 TEST(ChannelTopology, CheckAgainstStored_InheritOnEmpty)
 {
     // Empty incoming → always OK, no mismatch check.  Tech draft §5.1
     // rule 4 branch 3 — defaulted role opts into stored topology.
-    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanIn,    ""));
-    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanOut,   ""));
-    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::OneToOne, ""));
+    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanIn,    ""));
+    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanOut,   ""));
+    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::OneToOne, ""));
 }
 
 TEST(ChannelTopology, CheckAgainstStored_MatchOnEqual)
 {
     // Non-empty matching → OK.
-    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanIn,    "fan-in"));
-    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::FanOut,   "fan-out"));
-    EXPECT_EQ(nullptr, check_topology_against_stored(ChannelTopology::OneToOne, "one-to-one"));
+    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanIn,    "fan-in"));
+    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::FanOut,   "fan-out"));
+    EXPECT_EQ(nullptr, topology::check_against_stored(ChannelTopology::OneToOne, "one-to-one"));
 }
 
 TEST(ChannelTopology, CheckAgainstStored_MismatchFires)
 {
     // Non-empty non-matching → TOPOLOGY_MISMATCH.
     EXPECT_STREQ("TOPOLOGY_MISMATCH",
-                 check_topology_against_stored(ChannelTopology::FanIn,    "fan-out"));
+                 topology::check_against_stored(ChannelTopology::FanIn,    "fan-out"));
     EXPECT_STREQ("TOPOLOGY_MISMATCH",
-                 check_topology_against_stored(ChannelTopology::FanOut,   "one-to-one"));
+                 topology::check_against_stored(ChannelTopology::FanOut,   "one-to-one"));
     EXPECT_STREQ("TOPOLOGY_MISMATCH",
-                 check_topology_against_stored(ChannelTopology::OneToOne, "fan-in"));
+                 topology::check_against_stored(ChannelTopology::OneToOne, "fan-in"));
 }
 
 TEST(ChannelTopology, CheckAgainstStored_InvalidWireValue)
@@ -4331,11 +4328,11 @@ TEST(ChannelTopology, CheckAgainstStored_InvalidWireValue)
     // Non-empty non-parseable → INVALID_REQUEST.  Distinguishes from
     // TOPOLOGY_MISMATCH so the broker can return the right error code.
     EXPECT_STREQ("INVALID_REQUEST",
-                 check_topology_against_stored(ChannelTopology::FanIn,    "garbage"));
+                 topology::check_against_stored(ChannelTopology::FanIn,    "garbage"));
     EXPECT_STREQ("INVALID_REQUEST",
-                 check_topology_against_stored(ChannelTopology::OneToOne, "FanIn"));
+                 topology::check_against_stored(ChannelTopology::OneToOne, "FanIn"));
     EXPECT_STREQ("INVALID_REQUEST",
-                 check_topology_against_stored(ChannelTopology::FanOut,   "one_to_one"));
+                 topology::check_against_stored(ChannelTopology::FanOut,   "one_to_one"));
 }
 
 // Cardinality gate — slice 8.
@@ -4347,7 +4344,7 @@ TEST(ChannelTopology, Cardinality_FanIn_AdmitsProducers)
     for (std::size_t p = 0; p < 8; ++p)
     {
         EXPECT_EQ(nullptr,
-                  check_cardinality_admission(ChannelTopology::FanIn,
+                  topology::check_cardinality(ChannelTopology::FanIn,
                                               /*is_consumer_reg=*/false,
                                               /*existing_producers=*/p,
                                               /*existing_consumers=*/0));
@@ -4358,11 +4355,11 @@ TEST(ChannelTopology, Cardinality_FanIn_FirstConsumerAdmittedSecondRejected)
 {
     // Fan-in permits exactly 1 consumer.
     EXPECT_EQ(nullptr,
-              check_cardinality_admission(ChannelTopology::FanIn, true, 0, 0));
+              topology::check_cardinality(ChannelTopology::FanIn, true, 0, 0));
     EXPECT_STREQ("FAN_IN_IS_SINGLE_CONSUMER",
-                 check_cardinality_admission(ChannelTopology::FanIn, true, 0, 1));
+                 topology::check_cardinality(ChannelTopology::FanIn, true, 0, 1));
     EXPECT_STREQ("FAN_IN_IS_SINGLE_CONSUMER",
-                 check_cardinality_admission(ChannelTopology::FanIn, true, 5, 1));
+                 topology::check_cardinality(ChannelTopology::FanIn, true, 5, 1));
 }
 
 TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
@@ -4372,7 +4369,7 @@ TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
     for (std::size_t c = 0; c < 8; ++c)
     {
         EXPECT_EQ(nullptr,
-                  check_cardinality_admission(ChannelTopology::FanOut,
+                  topology::check_cardinality(ChannelTopology::FanOut,
                                               /*is_consumer_reg=*/true,
                                               /*existing_producers=*/1,
                                               /*existing_consumers=*/c));
@@ -4382,35 +4379,35 @@ TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
 TEST(ChannelTopology, Cardinality_FanOut_FirstProducerAdmittedSecondRejected)
 {
     EXPECT_EQ(nullptr,
-              check_cardinality_admission(ChannelTopology::FanOut, false, 0, 0));
+              topology::check_cardinality(ChannelTopology::FanOut, false, 0, 0));
     EXPECT_STREQ("FAN_OUT_IS_SINGLE_PRODUCER",
-                 check_cardinality_admission(ChannelTopology::FanOut, false, 1, 0));
+                 topology::check_cardinality(ChannelTopology::FanOut, false, 1, 0));
     EXPECT_STREQ("FAN_OUT_IS_SINGLE_PRODUCER",
-                 check_cardinality_admission(ChannelTopology::FanOut, false, 1, 3));
+                 topology::check_cardinality(ChannelTopology::FanOut, false, 1, 3));
 }
 
 TEST(ChannelTopology, Cardinality_OneToOne_BothSidesCardinalityOne)
 {
     // Both first REG and first CONSUMER_REG admitted.
     EXPECT_EQ(nullptr,
-              check_cardinality_admission(ChannelTopology::OneToOne, false, 0, 0));
+              topology::check_cardinality(ChannelTopology::OneToOne, false, 0, 0));
     EXPECT_EQ(nullptr,
-              check_cardinality_admission(ChannelTopology::OneToOne, true, 0, 0));
+              topology::check_cardinality(ChannelTopology::OneToOne, true, 0, 0));
     EXPECT_EQ(nullptr,
-              check_cardinality_admission(ChannelTopology::OneToOne, true, 1, 0));
+              topology::check_cardinality(ChannelTopology::OneToOne, true, 1, 0));
     EXPECT_EQ(nullptr,
-              check_cardinality_admission(ChannelTopology::OneToOne, false, 0, 1));
+              topology::check_cardinality(ChannelTopology::OneToOne, false, 0, 1));
 
     // Second producer rejected.
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 check_cardinality_admission(ChannelTopology::OneToOne, false, 1, 0));
+                 topology::check_cardinality(ChannelTopology::OneToOne, false, 1, 0));
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 check_cardinality_admission(ChannelTopology::OneToOne, false, 1, 1));
+                 topology::check_cardinality(ChannelTopology::OneToOne, false, 1, 1));
 
     // Second consumer rejected.
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 check_cardinality_admission(ChannelTopology::OneToOne, true, 0, 1));
+                 topology::check_cardinality(ChannelTopology::OneToOne, true, 0, 1));
     EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
-                 check_cardinality_admission(ChannelTopology::OneToOne, true, 1, 1));
+                 topology::check_cardinality(ChannelTopology::OneToOne, true, 1, 1));
 }
 

@@ -117,27 +117,26 @@ enum class ChannelObservable
 
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelObservable o) noexcept;
 
-/// Channel topology — HEP-CORE-0017 §3.3 topology-parametric model
-/// (introduced 2026-07-08 topology migration; see
-/// `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` §2 for
-/// scope and `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
-/// §3.3.0 for the decision matrix).
+/// Channel topology — HEP-CORE-0017 §3.3 topology-parametric model.
+/// Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+/// §2 (scope) + `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
+/// §3.3.0 (decision matrix).
 ///
-/// Every channel has exactly one topology declared on the wire via
-/// `REG_REQ.channel_topology` / `CONSUMER_REG_REQ.channel_topology`
-/// (REQUIRED as of Phase B; see HEP-CORE-0007 §12.3).  Cardinality
-/// gates and the transport × topology compatibility check enforce
-/// the declared topology at broker admission time.
+/// Every channel has exactly one topology, immutable at creation.
+/// Wire declaration on `REG_REQ.channel_topology` /
+/// `CONSUMER_REG_REQ.channel_topology` is OPTIONAL — empty inherits
+/// stored (existing channel) or defaults to `OneToOne` (fresh
+/// channel) per HEP-CORE-0018 §5 + HEP-CORE-0007 §12.3 overwrite
+/// semantics.
 ///
-/// Wire-value mapping (parse_channel_topology / to_string):
+/// Wire-value mapping:
 ///   `"fan-in"`     ↔ ChannelTopology::FanIn
 ///   `"fan-out"`    ↔ ChannelTopology::FanOut
 ///   `"one-to-one"` ↔ ChannelTopology::OneToOne
 ///
-/// This enum ships in Phase B slice 0 as infrastructure; the
-/// `ChannelEntry::topology` field + broker enforcement lands in
-/// the atomic Phase B commit (broker + all tests + all demos
-/// updated together, per tech draft §12 Phase B).
+/// Policy predicates that operate on `ChannelTopology` live in the
+/// `topology` nested namespace below — grouped so they can evolve
+/// together as one policy surface.
 enum class ChannelTopology
 {
     FanIn,     ///< N producers → 1 consumer.  ZMQ only.  Consumer is BINDING side.
@@ -145,86 +144,79 @@ enum class ChannelTopology
     OneToOne,  ///< 1 producer → 1 consumer.   ZMQ or SHM.  Producer is BINDING side.
 };
 
+namespace topology
+{
+
+/// Enum ↔ wire string.  Round-trips with `parse` for the three
+/// canonical values; unknown enum returns `"unknown"`.
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelTopology t) noexcept;
 
-/// Parse a wire `channel_topology` string.  Returns `std::nullopt` if
-/// the input is not one of the three canonical wire values.  Callers
-/// (broker REG_REQ handlers) translate an empty optional into the
-/// `INVALID_REQUEST` error code per tech draft §5.1.
+/// Parse a wire `channel_topology` string.  Returns `std::nullopt`
+/// if the input is not one of the three canonical wire values.
+/// Callers (broker REG_REQ handlers) translate an empty optional
+/// into the `INVALID_REQUEST` error code per tech draft §5.1.
 PYLABHUB_UTILS_EXPORT std::optional<ChannelTopology>
-parse_channel_topology(std::string_view s) noexcept;
+parse(std::string_view s) noexcept;
 
-/// True iff `topology` is valid for `data_transport` per HEP-CORE-0017
-/// §3.3.0 decision matrix (topology migration, 2026-07-08):
-///
-/// - Fan-in    × zmq → OK.  fan-in × shm → REJECTED (SHM is physically
-///   single-producer; broker returns `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`).
-/// - Fan-out   × zmq → OK.  Fan-out   × shm → OK.
-/// - OneToOne  × zmq → OK.  OneToOne  × shm → OK.
-///
-/// `data_transport` is compared literally against the wire strings
-/// `"zmq"` and `"shm"`.  Unknown transports return `false` (defensive —
-/// callers should have already rejected an unknown transport via
-/// `INVALID_REQUEST` at the earlier data_transport parse gate).
+/// True iff `t` is valid for `data_transport` per HEP-CORE-0017
+/// §3.3.0 decision matrix.  Only rejected combination is
+/// `FanIn × "shm"` (SHM is physically single-producer).  Unknown
+/// transports return `false` defensively — callers should have
+/// already validated at the earlier data_transport parse gate.
 PYLABHUB_UTILS_EXPORT bool
-transport_topology_compatible(ChannelTopology topology,
-                              std::string_view data_transport) noexcept;
+transport_compatible(ChannelTopology t,
+                     std::string_view data_transport) noexcept;
 
 /// Three-branch check of an incoming REG_REQ / CONSUMER_REG_REQ's
-/// `channel_topology` wire field against an existing channel's stored
-/// topology.  Called from the broker's admission path AFTER the channel
-/// has been looked up + confirmed to exist.  Tech draft §5.1 rule 4.
+/// `channel_topology` wire field against an existing channel's
+/// stored topology.  Tech draft §5.1 rule 4.
 ///
 /// Return value:
-///  - `nullptr` on match / inherit — admission proceeds.
-///  - `"TOPOLOGY_MISMATCH"` when `incoming_wire_value` is non-empty
-///    and parses to a topology different from `stored`.
-///  - `"INVALID_REQUEST"` when `incoming_wire_value` is non-empty and
-///    doesn't parse to any legal topology (broker fills in an
-///    appropriate message text at the call site).
+///  - `nullptr` on match or empty-inherit — admission proceeds.
+///  - `"TOPOLOGY_MISMATCH"` when non-empty wire parses to a
+///    topology different from `stored`.
+///  - `"INVALID_REQUEST"` when non-empty wire doesn't parse.
 ///
-/// Empty `incoming_wire_value` always returns `nullptr` (the "inherit
-/// stored" branch — a role that didn't declare topology opts into
-/// whatever the channel already has).
+/// Empty `wire` always returns `nullptr` — a role that didn't
+/// declare topology opts into whatever the channel already has.
 ///
-/// The stored topology is IMMUTABLE at channel creation; no promotion
-/// path exists (tech draft §5.1 rule 4, Phase B slice 6).
+/// Stored topology is IMMUTABLE at channel creation; no promotion
+/// path.
 PYLABHUB_UTILS_EXPORT const char *
-check_topology_against_stored(ChannelTopology stored,
-                              std::string_view incoming_wire_value) noexcept;
+check_against_stored(ChannelTopology stored,
+                     std::string_view wire) noexcept;
 
 /// Cardinality gate for the broker's REG_REQ / CONSUMER_REG_REQ
-/// admission path.  Called AFTER the transport × topology
-/// compatibility check but BEFORE any state mutation, per tech
-/// draft §5.1 rule 3.  Inputs describe the STATE BEFORE the new
-/// role is added:
+/// admission.  Called BEFORE any state mutation per tech draft
+/// §5.1 rule 3.  Inputs describe the STATE BEFORE the incoming
+/// role is added (existing counts, 0/0 for a fresh channel).
 ///
-/// - `topology`: the channel's declared or defaulted topology.
-///   For a channel that doesn't yet exist, pass the topology the
-///   incoming REG_REQ declares (or defaulted `OneToOne`).
-/// - `is_consumer_reg`: true for `CONSUMER_REG_REQ`, false for
-///   producer `REG_REQ`.
-/// - `existing_producers`: number of already-registered producers
-///   on this channel (0 for a channel that doesn't exist).
-/// - `existing_consumers`: number of already-registered consumers.
+/// Returns `nullptr` when the new role can be admitted.  Otherwise:
 ///
-/// Returns nullptr when the new role can be admitted.  Returns
-/// one of:
+/// - `"FAN_IN_IS_SINGLE_CONSUMER"` — consumer joining a fan-in
+///   channel that already has one consumer.
+/// - `"FAN_OUT_IS_SINGLE_PRODUCER"` — producer joining a fan-out
+///   channel that already has one producer.
+/// - `"ONE_TO_ONE_CARDINALITY_VIOLATED"` — either side of a 1-to-1
+///   channel exceeds cardinality 1.
 ///
-/// - `"FAN_IN_IS_SINGLE_CONSUMER"` when the incoming role is a
-///   consumer joining a fan-in channel that already has one.
-/// - `"FAN_OUT_IS_SINGLE_PRODUCER"` when the incoming role is a
-///   producer joining a fan-out channel that already has one.
-/// - `"ONE_TO_ONE_CARDINALITY_VIOLATED"` when the incoming role
-///   would be a second producer OR second consumer on a 1-to-1
-///   channel.
-///
-/// HEP-CORE-0007 §12.4a for error code semantics.
+/// HEP-CORE-0007 §12.4a for error-code semantics.
 PYLABHUB_UTILS_EXPORT const char *
-check_cardinality_admission(ChannelTopology topology,
-                            bool is_consumer_reg,
-                            std::size_t existing_producers,
-                            std::size_t existing_consumers) noexcept;
+check_cardinality(ChannelTopology t,
+                  bool is_consumer_reg,
+                  std::size_t existing_producers,
+                  std::size_t existing_consumers) noexcept;
+
+} // namespace topology
+
+// Convenience overload — `to_string(ChannelTopology)` at hub-namespace
+// scope matches the pattern used for other enums (RoleState,
+// PeerState, ChannelObservable) and enables ADL for callers that
+// don't want to qualify.  Delegates to `topology::to_string`.
+inline const char *to_string(ChannelTopology t) noexcept
+{
+    return topology::to_string(t);
+}
 
 // ─── Entry types (HEP-CORE-0033 §8) ─────────────────────────────────────────
 

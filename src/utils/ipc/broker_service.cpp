@@ -2455,7 +2455,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     if (existing_channel.has_value())
     {
         // Channel exists — three-branch check (inherit / match / mismatch).
-        if (const char *err = pylabhub::hub::check_topology_against_stored(
+        if (const char *err = pylabhub::hub::topology::check_against_stored(
                 existing_channel->topology, topology_wire))
         {
             LOGGER_WARN(
@@ -2484,7 +2484,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
         else
         {
-            const auto parsed = pylabhub::hub::parse_channel_topology(topology_wire);
+            const auto parsed = pylabhub::hub::topology::parse(topology_wire);
             if (!parsed)
             {
                 LOGGER_WARN(
@@ -2501,7 +2501,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
         // Transport × topology compatibility check — currently the
         // only rejected combination is fan-in × shm.
-        if (!pylabhub::hub::transport_topology_compatible(
+        if (!pylabhub::hub::topology::transport_compatible(
                 effective_topology, data_transport_req))
         {
             LOGGER_WARN(
@@ -2527,7 +2527,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             existing_channel.has_value() ? existing_channel->producers.size() : 0;
         const std::size_t existing_consumers =
             existing_channel.has_value() ? existing_channel->consumers.size() : 0;
-        if (const char *err = pylabhub::hub::check_cardinality_admission(
+        if (const char *err = pylabhub::hub::topology::check_cardinality(
                 effective_topology, /*is_consumer_reg=*/false,
                 existing_producers, existing_consumers))
         {
@@ -3059,7 +3059,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // above), so we only exercise the "channel exists" branch.
     {
         const std::string cons_topology_wire = req.value("channel_topology", "");
-        if (const char *err = pylabhub::hub::check_topology_against_stored(
+        if (const char *err = pylabhub::hub::topology::check_against_stored(
                 channel_entry.topology, cons_topology_wire))
         {
             LOGGER_WARN(
@@ -3076,7 +3076,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                     std::string(pylabhub::hub::to_string(channel_entry.topology)) + "'");
         }
         // Cardinality gate — reject second consumer under fan-in / 1-to-1.
-        if (const char *err = pylabhub::hub::check_cardinality_admission(
+        if (const char *err = pylabhub::hub::topology::check_cardinality(
                 channel_entry.topology, /*is_consumer_reg=*/true,
                 channel_entry.producers.size(), channel_entry.consumers.size()))
         {

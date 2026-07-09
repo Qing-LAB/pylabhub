@@ -84,10 +84,13 @@ const char *to_string(ChannelObservable o) noexcept
     return "unknown";
 }
 
-// ChannelTopology serialization — Phase B slice 0 (topology migration).
-// The canonical wire strings ship on REG_REQ / CONSUMER_REG_REQ per
-// HEP-CORE-0007 §12.3.  parse_channel_topology + to_string form the
-// wire<->enum boundary at the broker's REG handlers.
+// ChannelTopology policy surface — grouped under `topology` namespace
+// per finding #23.  Canonical wire strings per HEP-CORE-0007 §12.3;
+// decision matrix per HEP-CORE-0017 §3.3.0; overwrite + cardinality
+// semantics per tech draft §5.1.
+namespace topology
+{
+
 const char *to_string(ChannelTopology t) noexcept
 {
     switch (t)
@@ -99,7 +102,7 @@ const char *to_string(ChannelTopology t) noexcept
     return "unknown";
 }
 
-std::optional<ChannelTopology> parse_channel_topology(std::string_view s) noexcept
+std::optional<ChannelTopology> parse(std::string_view s) noexcept
 {
     if (s == "fan-in")     return ChannelTopology::FanIn;
     if (s == "fan-out")    return ChannelTopology::FanOut;
@@ -107,75 +110,51 @@ std::optional<ChannelTopology> parse_channel_topology(std::string_view s) noexce
     return std::nullopt;
 }
 
-bool transport_topology_compatible(ChannelTopology topology,
-                                    std::string_view data_transport) noexcept
+bool transport_compatible(ChannelTopology t,
+                          std::string_view data_transport) noexcept
 {
-    // HEP-CORE-0017 §3.3.0 decision matrix: the only rejected combination
-    // is fan-in × shm — SHM is physically single-producer.  All other
-    // (topology × transport) pairs are supported.
-    if (topology == ChannelTopology::FanIn && data_transport == "shm")
+    if (t == ChannelTopology::FanIn && data_transport == "shm")
         return false;
-    // Defensively reject unknown transports; the earlier data_transport
-    // parse gate should have caught these.
     if (data_transport != "zmq" && data_transport != "shm")
         return false;
     return true;
 }
 
-const char *check_topology_against_stored(ChannelTopology stored,
-                                           std::string_view incoming_wire_value) noexcept
+const char *check_against_stored(ChannelTopology stored,
+                                 std::string_view wire) noexcept
 {
-    // Empty incoming → inherit branch.  Silent OK per tech draft §5.1
-    // rule 4 — a role that didn't declare topology opts into whatever
-    // the channel already has, no matter what.
-    if (incoming_wire_value.empty()) return nullptr;
-
-    const auto parsed = parse_channel_topology(incoming_wire_value);
+    if (wire.empty()) return nullptr;
+    const auto parsed = parse(wire);
     if (!parsed) return "INVALID_REQUEST";
-
     return (*parsed == stored) ? nullptr : "TOPOLOGY_MISMATCH";
 }
 
-const char *check_cardinality_admission(ChannelTopology topology,
-                                         bool is_consumer_reg,
-                                         std::size_t existing_producers,
-                                         std::size_t existing_consumers) noexcept
+const char *check_cardinality(ChannelTopology t,
+                              bool is_consumer_reg,
+                              std::size_t existing_producers,
+                              std::size_t existing_consumers) noexcept
 {
-    // Tech draft §5.1 rule 3 + HEP-CORE-0007 §12.4a.  Each branch
-    // rejects when the incoming role would push the channel's producer
-    // or consumer count past the topology's cardinality limit.  Only
-    // the incoming-role side matters — a fan-in channel can have any
-    // number of producers, so a producer REG_REQ never fires
-    // FAN_IN_IS_SINGLE_CONSUMER.
-
-    switch (topology)
+    switch (t)
     {
     case ChannelTopology::FanIn:
-        // N producers → 1 consumer.  Only the second-or-later consumer
-        // is rejected; producers are always admitted (schema check is
-        // separate).
         if (is_consumer_reg && existing_consumers >= 1)
             return "FAN_IN_IS_SINGLE_CONSUMER";
         return nullptr;
-
     case ChannelTopology::FanOut:
-        // 1 producer → N consumers.  Only the second-or-later producer
-        // is rejected; consumers are always admitted.
         if (!is_consumer_reg && existing_producers >= 1)
             return "FAN_OUT_IS_SINGLE_PRODUCER";
         return nullptr;
-
     case ChannelTopology::OneToOne:
-        // 1 producer, 1 consumer.  Reject both sides on second-or-later.
         if (is_consumer_reg && existing_consumers >= 1)
             return "ONE_TO_ONE_CARDINALITY_VIOLATED";
         if (!is_consumer_reg && existing_producers >= 1)
             return "ONE_TO_ONE_CARDINALITY_VIOLATED";
         return nullptr;
     }
-    // Unreachable under a well-formed ChannelTopology enum.
     return "INVALID_REQUEST";
 }
+
+} // namespace topology
 
 // ─── Impl ───────────────────────────────────────────────────────────────────
 
