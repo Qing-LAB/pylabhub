@@ -1,14 +1,19 @@
 #pragma once
 /**
  * @file hub_zmq_queue.hpp
- * @brief ZmqQueue — ZMQ PULL/PUSH-backed QueueReader/QueueWriter implementation.
+ * @brief ZmqQueue — ZMQ-backed QueueReader/QueueWriter (PULL/PUSH and PUB/SUB).
  *
- * Wraps a raw ZMQ PULL socket (read mode) or PUSH socket (write mode).
+ * Wraps a raw ZMQ socket.  Socket type is selected from (mode × pattern)
+ * per HEP-CORE-0017 §3.3.0:
+ *   Read  + PushPull → PULL   Write + PushPull → PUSH
+ *   Read  + PubSub   → SUB    Write + PubSub   → PUB
+ * `PushPull` is the pre-2026-07-08 default; `PubSub` supports fan-out
+ * topology (producer binds PUB, consumers connect SUB).
  * No Messenger, no broker registration, no protocol — direct point-to-point ZMQ.
  *
- * @par Wire format (MessagePack array, 4 elements)
- * Each ZMQ message is encoded as a msgpack fixarray of 4 elements:
- *   [magic:uint32, schema_tag:bin8, seq:uint64, payload]
+ * @par Wire format (MessagePack array, 5 elements)
+ * Each ZMQ message is encoded as a msgpack fixarray of 5 elements:
+ *   [magic:uint32, schema_tag:bin8, seq:uint64, payload, checksum:bin32]
  *   - magic      : 0x51484C50 ('PLHQ') — frame identity guard
  *   - schema_tag : first 8 bytes of BLAKE2b-256 over the HEP-CORE-0034 §6.3
  *                  canonical wire form (`compute_schema_hash(slot_spec, fz_spec)`);
@@ -18,6 +23,7 @@
  *       scalar field  → native msgpack type (int32, float64, bool, …)
  *       array field   → bin(count * elem_size) — raw element bytes, size-validated
  *       string/bytes  → bin(length)
+ *   - checksum   : BLAKE2b-256 of the raw (pre-pack) slot data
  *
  * @par Schema mode — type safety
  * Each field is encoded with its declared type.  The receiver validates:
@@ -184,17 +190,22 @@ struct ProducerPeer
 
 /**
  * @class ZmqQueue
- * @brief ZMQ PULL (read) or PUSH (write) QueueReader/QueueWriter implementation.
+ * @brief ZMQ QueueReader/QueueWriter — PULL/PUSH (default) or PUB/SUB
+ *        per HEP-CORE-0017 §3.3.0 fan-out topology.
  *
- * Inherits `PeerAdmission` so the PUSH side can be the broker-glue
- * target for `set_peer_allowlist` calls.  On the PULL side the
- * inherited methods are inert (no allowlist concept — the consumer
- * trusts the server via `curve_serverkey`).
+ * Inherits `PeerAdmission` so the binding side (PUSH bind, PUB bind,
+ * PULL bind) can be the broker-glue target for `set_peer_allowlist`
+ * calls.  On the dialing side (PULL connect, SUB connect, PUSH
+ * connect) the inherited methods are inert (no allowlist concept —
+ * the dialing side authenticates the peer via `curve_serverkey`).
  *
  * Factories (HEP-CORE-0035 §2 — CURVE unconditional):
- *   pull_from() / push_to() → unique_ptr<ZmqQueue>
+ *   pull_from() / push_to()               → PUSH/PULL, legacy shape
+ *   create_reader() / create_writer()     → topology-parametric
+ *                                           (dispatches PUSH/PULL or PUB/SUB
+ *                                            per HEP-CORE-0017 §3.3.0)
  *
- * Both factories return the concrete type so callers can access the
+ * All factories return the concrete type so callers can access the
  * `PeerAdmission` interface to push allowlist updates.  Phase D's
  * broker glue uses this to drive `set_peer_allowlist` on the
  * producer-side queue from the broker thread.
@@ -372,13 +383,18 @@ private:
     // API because exposing a plaintext path would re-introduce the
     // bypass risk HEP-CORE-0035 §2 + HEP-CORE-0040 §8.4 (#160 C4)
     // close.  Only callable from this class's own implementations.
+    /// `is_pubsub` selects PubSub socket pattern (SUB in Read mode /
+    /// PUB in Write mode).  Default `false` = PushPull (PULL / PUSH).
+    /// Pattern is FIXED at construction — no two-step init after
+    /// `build_plaintext_*_` returns.
     [[nodiscard]] static std::unique_ptr<QueueReader>
     build_plaintext_reader_(const std::string& endpoint,
                             std::vector<ZmqSchemaField> schema,
                             std::string packing,
                             bool bind, size_t max_buffer_depth,
                             std::optional<std::array<uint8_t, 8>> schema_tag,
-                            std::string instance_id);
+                            std::string instance_id,
+                            bool is_pubsub = false);
 
     [[nodiscard]] static std::unique_ptr<QueueWriter>
     build_plaintext_writer_(const std::string& endpoint,
@@ -390,7 +406,8 @@ private:
                             size_t send_buffer_depth,
                             OverflowPolicy overflow_policy,
                             int send_retry_interval_ms,
-                            std::string instance_id);
+                            std::string instance_id,
+                            bool is_pubsub = false);
 
 public:
 

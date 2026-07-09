@@ -1,7 +1,10 @@
 // src/utils/hub/hub_zmq_queue.cpp
 /**
  * @file hub_zmq_queue.cpp
- * @brief ZmqQueue implementation — ZMQ PULL/PUSH-backed Queue with MessagePack schema framing.
+ * @brief ZmqQueue implementation — ZMQ-backed Queue with MessagePack schema framing.
+ *        Supports PULL/PUSH (default) and PUB/SUB (fan-out topology,
+ *        HEP-CORE-0017 §3.3.0); socket type is selected from (mode ×
+ *        socket_pattern) at start().
  *
  * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
  *   payload element i: scalar → native msgpack type; array/string/bytes → bin(byte_size)
@@ -70,7 +73,14 @@ struct ZmqQueueImpl
     size_t      item_sz{0};
     size_t      max_depth{64};
     std::string queue_name;
-    int         sndhwm{0}; ///< ZMQ_SNDHWM for PUSH socket (0 = ZMQ default 1000)
+    /// ZMQ_SNDHWM for the write-side socket (0 = ZMQ default 1000).
+    /// Semantic differs by socket type:
+    /// - PUSH: peer-side pushback — send() blocks (or returns EAGAIN)
+    ///   when the queue toward any peer is full.
+    /// - PUB : per-subscriber drop — libzmq silently discards frames
+    ///   for a subscriber whose queue is full.  Drops are NOT visible
+    ///   via `send_drop_count_` (rev 2.4 wires ZMQ_EVENT_HWM_DROP).
+    int         sndhwm{0};
 
     /// Caller-supplied stable identifier — used as ThreadManager owner_id so the
     /// lifecycle module name is unique across overlapping queue instances (e.g.
@@ -461,6 +471,18 @@ struct ZmqQueueImpl
     }
 };
 
+/// Return the libzmq socket-type label ("PULL"/"PUSH"/"SUB"/"PUB")
+/// derived from the impl's (mode × pattern) — used in state-transition
+/// and start-refusal log lines so log consumers can tell fan-out
+/// (PUB/SUB) from fan-in / one-to-one (PUSH/PULL) at a glance.
+static constexpr const char *socket_type_label(ZmqQueueImpl::Mode mode,
+                                               ZmqQueueImpl::SocketPattern pattern) noexcept
+{
+    if (pattern == ZmqQueueImpl::SocketPattern::PubSub)
+        return mode == ZmqQueueImpl::Mode::Read ? "SUB" : "PUB";
+    return mode == ZmqQueueImpl::Mode::Read ? "PULL" : "PUSH";
+}
+
 // ============================================================================
 // Schema layout computation (file-scope helpers)
 // ============================================================================
@@ -486,7 +508,8 @@ ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSc
                     std::string packing,
                     bool bind, size_t max_buffer_depth,
                     std::optional<std::array<uint8_t, 8>> schema_tag,
-                    std::string instance_id)
+                    std::string instance_id,
+                    bool is_pubsub)
 {
     if (schema.empty())
     {
@@ -528,6 +551,8 @@ ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSc
 
     auto impl               = std::make_unique<ZmqQueueImpl>();
     impl->mode              = ZmqQueueImpl::Mode::Read;
+    impl->socket_pattern    = is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub
+                                        : ZmqQueueImpl::SocketPattern::PushPull;
     impl->endpoint          = endpoint;
     impl->bind_socket       = bind;
     impl->item_sz           = item_sz;
@@ -555,7 +580,8 @@ ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSc
                   size_t send_buffer_depth,
                   OverflowPolicy overflow_policy,
                   int send_retry_interval_ms,
-                  std::string instance_id)
+                  std::string instance_id,
+                  bool is_pubsub)
 {
     if (schema.empty())
     {
@@ -597,6 +623,8 @@ ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSc
 
     auto impl                       = std::make_unique<ZmqQueueImpl>();
     impl->mode                      = ZmqQueueImpl::Mode::Write;
+    impl->socket_pattern            = is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub
+                                                : ZmqQueueImpl::SocketPattern::PushPull;
     impl->endpoint                  = endpoint;
     impl->bind_socket               = bind;
     impl->item_sz                   = item_sz;
@@ -829,8 +857,10 @@ ZmqQueue::push_to(const std::string& endpoint,
 //   FanIn     | PULL bind (BINDING)           | PUSH connect (DIALING)
 //   OneToOne  | PULL connect (DIALING)        | PUSH bind (BINDING)
 //   FanOut    | SUB connect (DIALING)         | PUB bind (BINDING)
-//              [PUB/SUB path lands in a subsequent Phase C commit —
-//              for now returns nullptr + WARN log.]
+//
+// PUSH/PULL uses the legacy `pull_from`/`push_to` factories.  PUB/SUB
+// uses `build_plaintext_*_(is_pubsub=true)` directly, with the same
+// CURVE + ZAP wiring as PUSH/PULL binding sides.
 
 std::unique_ptr<ZmqQueue>
 ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
@@ -840,9 +870,18 @@ ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
     switch (topology)
     {
     case ChannelTopology::FanIn:
-        // Consumer BINDING side.  server_pubkey is ignored on
-        // the binding side (curve_serverkey doesn't apply — the
-        // binding side is the CURVE server, gates via ZAP allowlist).
+        // Consumer BINDING side.  server_pubkey is ignored on the
+        // binding side (curve_serverkey doesn't apply — the binding
+        // side is the CURVE server, gates via ZAP allowlist).  Warn
+        // when caller passes a non-empty pubkey — likely a
+        // topology/side mixup that a silent drop would mask.
+        if (!opts.server_pubkey.empty())
+        {
+            LOGGER_WARN("[hub::ZmqQueue::create_reader] fan-in consumer "
+                        "(BINDING) ignores opts.server_pubkey for '{}'; "
+                        "the binding side is the CURVE server. Drop or "
+                        "check topology.", opts.endpoint);
+        }
         return pull_from(std::move(opts.endpoint),
                           /*server_pubkey=*/{},
                           std::move(opts.schema),
@@ -868,11 +907,20 @@ ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
     {
         // Consumer DIALING side, SUB connect.  Fan-out consumers must
         // provide the producer's identity pubkey as curve_serverkey
-        // — same shape as OneToOne consumer.
-        const std::string server_pubkey_str =
-            opts.server_pubkey.empty()
-                ? std::string{}
-                : std::string{opts.server_pubkey.str()};
+        // — same shape as OneToOne consumer.  SUB has no §6.7 Standby-
+        // buffer story (the SUB is created only after the ACK carries
+        // the peer's data_pubkey), so refuse an empty serverkey at
+        // the factory rather than deferring to `start()`'s DEBUG
+        // refusal.
+        if (opts.server_pubkey.empty())
+        {
+            LOGGER_ERROR(
+                "[hub::ZmqQueue::create_reader] fan-out SUB requires "
+                "opts.server_pubkey (producer's identity pubkey); "
+                "empty rejected for '{}'.", opts.endpoint);
+            return nullptr;
+        }
+        const std::string server_pubkey_str{opts.server_pubkey.str()};
         if (auto err = validate_curve_factory_params(
                 opts.identity_key_name, server_pubkey_str,
                 /*bind_side=*/false);
@@ -886,10 +934,14 @@ ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
         auto reader = build_plaintext_reader_(
             opts.endpoint, std::move(opts.schema), std::move(opts.packing),
             /*bind=*/false, opts.max_buffer_depth,
-            std::move(opts.schema_tag), std::move(opts.instance_id));
+            std::move(opts.schema_tag), std::move(opts.instance_id),
+            /*is_pubsub=*/true);
         if (!reader) return nullptr;
         std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
-        z->pImpl->socket_pattern       = ZmqQueueImpl::SocketPattern::PubSub;
+        assert(!z->is_running() &&
+               "create_reader(FanOut): plaintext factory must not "
+               "start() the queue before auth fields are populated; "
+               "ordering invariant broken — silent plaintext-fallback risk");
         z->pImpl->identity_key_name_   = std::string{opts.identity_key_name};
         z->pImpl->server_pubkey_z85_   = server_pubkey_str;
         return z;
@@ -920,7 +972,17 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
                         opts.send_retry_interval_ms,
                         std::move(opts.instance_id));
     case ChannelTopology::FanIn:
-        // Producer DIALING side.  PUSH connect to consumer's bind endpoint.
+        // Producer DIALING side.  PUSH connect to consumer's bind
+        // endpoint.  zap_domain is ignored on the dialing side (ZAP is
+        // the binding side's admission gate).  Warn when caller passes
+        // a non-empty domain — likely a topology/side mixup.
+        if (!opts.zap_domain.empty())
+        {
+            LOGGER_WARN("[hub::ZmqQueue::create_writer] fan-in producer "
+                        "(DIALING) ignores opts.zap_domain for '{}'; "
+                        "the dialing side has no ZAP gate. Drop or "
+                        "check topology.", opts.endpoint);
+        }
         return push_to(std::move(opts.endpoint),
                         std::move(opts.schema),
                         std::move(opts.packing),
@@ -951,10 +1013,14 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
             opts.endpoint, std::move(opts.schema), std::move(opts.packing),
             /*bind=*/true, std::move(opts.schema_tag),
             opts.sndhwm, opts.send_buffer_depth, opts.overflow_policy,
-            opts.send_retry_interval_ms, std::move(opts.instance_id));
+            opts.send_retry_interval_ms, std::move(opts.instance_id),
+            /*is_pubsub=*/true);
         if (!writer) return nullptr;
         std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
-        z->pImpl->socket_pattern     = ZmqQueueImpl::SocketPattern::PubSub;
+        assert(!z->is_running() &&
+               "create_writer(FanOut): plaintext factory must not "
+               "start() the queue before auth fields are populated; "
+               "ordering invariant broken — silent plaintext-fallback risk");
         z->pImpl->identity_key_name_ = std::string{opts.identity_key_name};
         z->pImpl->zap_domain_        = std::move(opts.zap_domain);
         // Initial allowlist intentionally NOT seeded — caller invokes
@@ -1019,6 +1085,20 @@ bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
         LOGGER_INFO("[hub::ZmqQueue::set_producer_peers] inert on "
                     "PUSH side (queue='{}'); call set_peer_allowlist "
                     "instead", pImpl->endpoint);
+        return false;
+    }
+
+    // HEP-CORE-0017 §3.3.0 fan-out consumer is DIALING with singular
+    // peer (one PUB binding side per channel); N>1 is a topology
+    // contract violation.  Refuse instead of silently accepting a
+    // multi-peer list that Phase E retirement will strip anyway.
+    if (pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub
+        && list.size() > 1)
+    {
+        LOGGER_WARN("[hub::ZmqQueue::set_producer_peers] SUB side "
+                    "(fan-out consumer) accepts at most one peer per "
+                    "HEP-CORE-0017 §3.3.0; got {} peers for '{}' — "
+                    "refusing", list.size(), pImpl->endpoint);
         return false;
     }
 
@@ -1180,8 +1260,9 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
             // Option B; production code does not call start() directly.
             if (already_running)
                 return true;
-            LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side=PULL "
+            LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
                         "from=Standby to=Configured queue='{}' endpoint='{}'",
+                        socket_type_label(pImpl->mode, pImpl->socket_pattern),
                         pImpl->queue_name, pImpl->endpoint);
             return start();
         }
@@ -1237,8 +1318,9 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
         // factory time from the role's config).
         if (already_running)
             return true;
-        LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side=PUSH "
+        LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
                     "from=Standby to=Configured queue='{}' endpoint='{}'",
+                    socket_type_label(pImpl->mode, pImpl->socket_pattern),
                     pImpl->queue_name, pImpl->endpoint);
         return start();
     }
@@ -1347,7 +1429,7 @@ bool ZmqQueue::start()
             "CORE-0036 §6.7 requires Configured state.  Call "
             "set_producer_peers() to populate transport artifacts "
             "before start().",
-            pImpl->mode == ZmqQueueImpl::Mode::Read ? "PULL" : "PUSH",
+            socket_type_label(pImpl->mode, pImpl->socket_pattern),
             pImpl->endpoint,
             !pImpl->server_pubkey_z85_.empty());
         return false;
@@ -1387,7 +1469,11 @@ bool ZmqQueue::start()
             pImpl->socket.set(zmq::sockopt::subscribe, "");
         }
 
-        // [ZQ8] Apply SNDHWM on PUSH / PUB sockets when caller requested a specific value.
+        // [ZQ8] Apply SNDHWM on the write-side socket when caller
+        // requested a specific value.  Semantic differs by socket type
+        // (see ZmqQueueImpl::sndhwm comment): PUSH triggers upstream
+        // block/EAGAIN; PUB triggers per-subscriber silent drop.  The
+        // knob is the same; the observed behavior is not.
         if (pImpl->mode == ZmqQueueImpl::Mode::Write && pImpl->sndhwm > 0)
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
 
@@ -1503,7 +1589,9 @@ bool ZmqQueue::start()
         }
         else
         {
-            // ── PULL side connect (HEP-CORE-0017 §3.3) ──────────────
+            // ── Dialing-side connect: PULL (Read/PushPull),
+            //    SUB (Read/PubSub), PUSH (Write/PushPull + FanIn)
+            //    (HEP-CORE-0017 §3.3) ──────────────────────────────
             //
             // Per-peer connect with per-peer `curve_serverkey`.  The
             // libzmq option `ZMQ_CURVE_SERVERKEY` is set on the socket
@@ -1701,7 +1789,7 @@ bool ZmqQueue::start()
     // emitted by apply_master_approval just above the start() call.
     LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
                 "from=Configured to=Active queue='{}' endpoint='{}'",
-                pImpl->mode == ZmqQueueImpl::Mode::Read ? "PULL" : "PUSH",
+                socket_type_label(pImpl->mode, pImpl->socket_pattern),
                 pImpl->queue_name,
                 pImpl->bind_socket ? pImpl->actual_endpoint
                                    : pImpl->endpoint);
@@ -2012,11 +2100,18 @@ std::string ZmqQueue::policy_info() const
 {
     if (!pImpl)
         return "zmq_unconnected";
+    const bool is_pubsub =
+        pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub;
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
-        return "zmq_pull_ring_" + std::to_string(pImpl->max_depth);
+    {
+        const char *stype = is_pubsub ? "sub" : "pull";
+        return std::string{"zmq_"} + stype + "_ring_"
+             + std::to_string(pImpl->max_depth);
+    }
+    const char *stype = is_pubsub ? "pub" : "push";
     return (pImpl->overflow_policy_ == OverflowPolicy::Drop)
-               ? "zmq_push_drop"
-               : "zmq_push_block";
+               ? (std::string{"zmq_"} + stype + "_drop")
+               : (std::string{"zmq_"} + stype + "_block");
 }
 
 std::string ZmqQueue::actual_endpoint() const

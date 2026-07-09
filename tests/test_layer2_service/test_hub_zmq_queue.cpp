@@ -2401,13 +2401,14 @@ TEST_F(ZmqQueueTest, ChecksumNone_Roundtrip)
     pull->stop();
 }
 
-// ─── Phase C — topology-parametric factory dispatch tests ─────────────
+// ─── Topology-parametric factory dispatch tests ───────────────────────
 //
 // Pin HEP-CORE-0017 §3.3.0 decision matrix.  Fan-in ZMQ (consumer
 // binds PULL, producer connects PUSH) and 1-to-1 ZMQ (producer binds
 // PUSH, consumer connects PULL) delegate to the legacy `pull_from` /
-// `push_to`; fan-out ZMQ (PUB/SUB) returns nullptr with a WARN until
-// the Phase C step 2 commit lands the PUB/SUB paths.
+// `push_to`.  Fan-out ZMQ (PUB/SUB) uses `build_plaintext_*_` with
+// `is_pubsub=true` — producer binds PUB, consumer connects SUB with
+// empty-topic subscription set before connect.
 
 TEST_F(ZmqQueueTest, TopologyFactory_FanIn_ConsumerBinds)
 {
@@ -2570,4 +2571,368 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber)
 
     pub->stop();
     sub->stop();
+}
+
+// ─── Regression pin: legacy factories unchanged by mode × pattern refactor ───
+
+TEST_F(ZmqQueueTest, LegacyPullFromPushTo_PolicyInfo_ReportsPushPullLabels)
+{
+    // Pins that `pull_from`/`push_to` still produce PUSH/PULL queues
+    // after the (mode × pattern) refactor.  If the default
+    // `SocketPattern::PushPull` at ZmqQueueImpl construction ever
+    // drifts, `policy_info()` labels would flip to "sub"/"pub" and
+    // this test catches it.
+    auto pull = make_pull_test("tcp://127.0.0.1:0",
+                               blob_schema(kItemSize), "aligned",
+                               /*bind=*/true);
+    ASSERT_NE(pull, nullptr);
+    EXPECT_NE(static_cast<ZmqQueue *>(pull.get())->policy_info().find("pull"),
+              std::string::npos)
+        << "pull_from must produce a PULL socket (label 'pull')";
+    EXPECT_EQ(static_cast<ZmqQueue *>(pull.get())->policy_info().find("sub"),
+              std::string::npos)
+        << "pull_from must NOT drift into SUB socket";
+
+    auto push = make_push_test("tcp://127.0.0.1:0",
+                               blob_schema(kItemSize), "aligned",
+                               /*bind=*/true);
+    ASSERT_NE(push, nullptr);
+    EXPECT_NE(static_cast<ZmqQueue *>(push.get())->policy_info().find("push"),
+              std::string::npos)
+        << "push_to must produce a PUSH socket (label 'push')";
+    EXPECT_EQ(static_cast<ZmqQueue *>(push.get())->policy_info().find("pub"),
+              std::string::npos)
+        << "push_to must NOT drift into PUB socket";
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_PolicyInfo_ReportsPubSubLabels)
+{
+    // Symmetric pin: fan-out factories must report "pub"/"sub" labels.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
+    ASSERT_NE(pub, nullptr);
+    EXPECT_NE(pub->policy_info().find("pub"), std::string::npos)
+        << "create_writer(FanOut) must produce a PUB socket (label 'pub')";
+    EXPECT_EQ(pub->policy_info().find("push"), std::string::npos);
+
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint      = "tcp://127.0.0.1:12345";
+    rx.server_pubkey = test_server_key();
+    rx.schema        = blob_schema(kItemSize);
+    rx.packing       = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
+    ASSERT_NE(sub, nullptr);
+    EXPECT_NE(sub->policy_info().find("sub"), std::string::npos)
+        << "create_reader(FanOut) must produce a SUB socket (label 'sub')";
+    EXPECT_EQ(sub->policy_info().find("pull"), std::string::npos);
+}
+
+// ─── Fan-out slow-joiner + late-attach behavior ───────────────────────
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscribe)
+{
+    // Pins libzmq PUB/SUB contract: frames sent BEFORE the SUB
+    // completes its subscription round-trip are dropped, but any
+    // frame sent AFTER the slow-joiner window is delivered.  Stronger
+    // than the single-subscriber round-trip test — this one publishes
+    // BEFORE the SUB attaches to prove the drop-before-subscribe
+    // path, then continues publishing to prove post-subscribe
+    // delivery.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
+    ASSERT_NE(pub, nullptr);
+    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(seed_self_allowlist(*pub));
+    const std::string ep = pub->actual_endpoint();
+
+    // Publish two frames BEFORE any SUB attaches — libzmq PUB drops
+    // these silently (no subscribers exist yet).
+    for (uint8_t v : {uint8_t{0x11}, uint8_t{0x22}})
+    {
+        void *w = pub->write_acquire(1000ms);
+        ASSERT_NE(w, nullptr);
+        std::memset(w, v, kItemSize);
+        pub->write_commit();
+    }
+
+    // Attach the SUB AFTER PUB has been publishing.
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint      = ep;
+    rx.server_pubkey = test_server_key();
+    rx.schema        = blob_schema(kItemSize);
+    rx.packing       = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
+    ASSERT_NE(sub, nullptr);
+    ASSERT_TRUE(sub->start());
+    std::this_thread::sleep_for(200ms);   // slow-joiner settle
+
+    // Now publish a post-subscribe frame; SUB must receive THIS one.
+    void *w = pub->write_acquire(1000ms);
+    ASSERT_NE(w, nullptr);
+    std::memset(w, 0x99, kItemSize);
+    pub->write_commit();
+
+    const void *rbuf = sub->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr)
+        << "post-subscribe frame must be delivered";
+    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0x99);
+    sub->read_release();
+
+    pub->stop();
+    sub->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_TwoSubscribers_BothReceive)
+{
+    // Fan-out N-consumer scenario: one PUB, two SUBs, both receive
+    // the same frame.  Pins libzmq PUB per-subscriber fanout.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
+    ASSERT_NE(pub, nullptr);
+    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(seed_self_allowlist(*pub));
+    const std::string ep = pub->actual_endpoint();
+
+    auto make_sub = [&]()
+    {
+        ZmqQueue::RxCreateOptions rx;
+        rx.endpoint      = ep;
+        rx.server_pubkey = test_server_key();
+        rx.schema        = blob_schema(kItemSize);
+        rx.packing       = "aligned";
+        auto s = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
+        EXPECT_NE(s, nullptr);
+        EXPECT_TRUE(s->start());
+        return s;
+    };
+
+    auto sub_a = make_sub();
+    auto sub_b = make_sub();
+    std::this_thread::sleep_for(200ms);   // slow-joiner settle
+
+    void *w = pub->write_acquire(1000ms);
+    ASSERT_NE(w, nullptr);
+    std::memset(w, 0x7E, kItemSize);
+    pub->write_commit();
+
+    for (auto *s : {sub_a.get(), sub_b.get()})
+    {
+        const void *r = s->read_acquire(2000ms);
+        ASSERT_NE(r, nullptr) << "both subscribers must receive fan-out frame";
+        EXPECT_EQ(static_cast<const uint8_t *>(r)[0], 0x7E);
+        s->read_release();
+    }
+
+    pub->stop();
+    sub_a->stop();
+    sub_b->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_WrongServerPubkey_HandshakeFails)
+{
+    // Fan-out SUB with mismatched server_pubkey → CURVE handshake
+    // fails → SUB never receives any frame despite valid endpoint.
+    // Parity with the existing PULL-side denial pins.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
+    ASSERT_NE(pub, nullptr);
+    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(seed_self_allowlist(*pub));
+    const std::string ep = pub->actual_endpoint();
+
+    // Mismatched pubkey — freshly generated so it's a well-formed
+    // Z85 key that passes factory validation but is NOT the seeded
+    // test identity's pubkey, so CURVE handshake fails on the wire.
+    namespace sec = pylabhub::utils::security;
+    const auto other_kp = pylabhub::tests::gen_curve_keypair();
+    const auto wrong    = sec::Z85PublicKey::validate(other_kp.public_z85);
+
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint      = ep;
+    rx.server_pubkey = wrong;
+    rx.schema        = blob_schema(kItemSize);
+    rx.packing       = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
+    ASSERT_NE(sub, nullptr);
+    ASSERT_TRUE(sub->start());
+    std::this_thread::sleep_for(200ms);
+
+    void *w = pub->write_acquire(1000ms);
+    ASSERT_NE(w, nullptr);
+    std::memset(w, 0x55, kItemSize);
+    pub->write_commit();
+
+    const void *r = sub->read_acquire(500ms);
+    EXPECT_EQ(r, nullptr)
+        << "SUB with mismatched serverkey must not receive frames";
+
+    pub->stop();
+    sub->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_PubStop_SubReadReturnsWithinTimeout)
+{
+    // Producer stops mid-stream; SUB's `read_acquire()` on the
+    // consumer side must return `nullptr` within its configured
+    // timeout — not indefinitely block.  Documents libzmq contract
+    // (SUB polls with RCVTIMEO; no "producer gone" signal).
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = "tcp://127.0.0.1:0";
+    tx.schema   = blob_schema(kItemSize);
+    tx.packing  = "aligned";
+    auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
+    ASSERT_NE(pub, nullptr);
+    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(seed_self_allowlist(*pub));
+    const std::string ep = pub->actual_endpoint();
+
+    ZmqQueue::RxCreateOptions rx;
+    rx.endpoint      = ep;
+    rx.server_pubkey = test_server_key();
+    rx.schema        = blob_schema(kItemSize);
+    rx.packing       = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
+    ASSERT_NE(sub, nullptr);
+    ASSERT_TRUE(sub->start());
+    std::this_thread::sleep_for(200ms);
+
+    pub->stop();  // producer gone
+    // read_acquire with 500ms timeout must return nullptr within a
+    // small margin — not block forever.
+    const auto t0 = std::chrono::steady_clock::now();
+    const void *r = sub->read_acquire(500ms);
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    EXPECT_EQ(r, nullptr) << "SUB read after pub->stop() must not deliver stale frames";
+    EXPECT_LT(elapsed, 1500ms)
+        << "SUB read must honor the timeout budget";
+
+    sub->stop();
+}
+
+// ─── Defensive dispatch: ignored-field WARN + fail-fast + N>1 guard ───
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanIn_ConsumerIgnoresServerPubkey_WarnsAndSucceeds)
+{
+    // Fan-in consumer is BINDING — server_pubkey is not applicable.
+    // Passing a non-empty pubkey is a topology/side mixup; the
+    // factory must WARN AND continue to produce a working queue
+    // (dropping the field silently would mask the misconfiguration).
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ExpectLogWarnMustFire("ignores opts.server_pubkey");
+
+    ZmqQueue::RxCreateOptions opts;
+    opts.endpoint     = "tcp://127.0.0.1:0";
+    opts.server_pubkey = test_server_key();  // non-empty → mixup
+    opts.schema        = blob_schema(kItemSize);
+    opts.packing       = "aligned";
+
+    auto q = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(opts));
+    ASSERT_NE(q, nullptr);
+    EXPECT_TRUE(q->start());
+    q->stop();
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanIn_ProducerIgnoresZapDomain_WarnsAndSucceeds)
+{
+    // Fan-in producer is DIALING — zap_domain has no meaning (ZAP is
+    // the binding-side's admission gate).  Passing a non-empty
+    // domain is a topology mixup; must WARN and continue.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ExpectLogWarnMustFire("ignores opts.zap_domain");
+
+    ZmqQueue::TxCreateOptions opts;
+    opts.endpoint   = "tcp://127.0.0.1:1234";  // never actually connected
+    opts.zap_domain = "somedomain";            // non-empty → mixup
+    opts.schema     = blob_schema(kItemSize);
+    opts.packing    = "aligned";
+
+    auto q = ZmqQueue::create_writer(ChannelTopology::FanIn, std::move(opts));
+    ASSERT_NE(q, nullptr);
+    // start() would need Configured state on the dialing side; not
+    // required here — factory success alone plus WARN capture pins
+    // the contract.
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_EmptyServerPubkey_FactoryReturnsNullptr)
+{
+    // SUB (fan-out DIALING) has no §6.7 Standby-buffer story — an
+    // empty serverkey means the queue can never authenticate the
+    // peer.  The factory must reject at construction, not defer to
+    // a DEBUG refusal in start().
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ExpectLogErrorMustFire("fan-out SUB requires opts.server_pubkey");
+
+    ZmqQueue::RxCreateOptions opts;
+    opts.endpoint = "tcp://127.0.0.1:1234";
+    // opts.server_pubkey left default (empty)
+    opts.schema   = blob_schema(kItemSize);
+    opts.packing  = "aligned";
+
+    auto q = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(opts));
+    EXPECT_EQ(q, nullptr)
+        << "empty serverkey must be rejected at the fan-out factory";
+}
+
+TEST_F(ZmqQueueTest, TopologyFactory_FanOut_SubSetProducerPeers_MultiPeerRefused)
+{
+    // Fan-out consumer is DIALING with singular peer per HEP-CORE-0017
+    // §3.3.0.  `set_producer_peers` must refuse a multi-peer list on
+    // a SUB queue — silent acceptance would connect N sockets and
+    // subscribe on each, violating the topology contract.
+    using pylabhub::hub::ChannelTopology;
+    using pylabhub::hub::ZmqQueue;
+
+    ExpectLogWarnMustFire("SUB side (fan-out consumer) accepts at most one peer");
+
+    ZmqQueue::RxCreateOptions opts;
+    opts.endpoint      = "tcp://127.0.0.1:1234";
+    opts.server_pubkey = test_server_key();
+    opts.schema        = blob_schema(kItemSize);
+    opts.packing       = "aligned";
+    auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(opts));
+    ASSERT_NE(sub, nullptr);
+
+    const std::string pk{test_server_key().str()};
+    std::vector<pylabhub::hub::ProducerPeer> peers;
+    peers.push_back({/*role_uid=*/"p0",
+                     /*endpoint=*/"tcp://127.0.0.1:1234",
+                     /*pubkey_z85=*/pk});
+    peers.push_back({/*role_uid=*/"p1",
+                     /*endpoint=*/"tcp://127.0.0.1:1235",
+                     /*pubkey_z85=*/pk});
+    EXPECT_FALSE(sub->set_producer_peers(std::move(peers)))
+        << "SUB fan-out must refuse multi-peer set_producer_peers";
 }
