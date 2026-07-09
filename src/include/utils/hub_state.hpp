@@ -375,18 +375,7 @@ struct ChannelSchemaInvariants
 /// `data_transport` and `channel_name` and have been retired.
 struct ChannelTransportInvariants
 {
-    std::string    data_transport{"shm"};
-
-    /// 2026-07-08 topology migration.  The channel's declared topology
-    /// resolved from `REG_REQ.channel_topology` (declared value) or
-    /// defaulted to `OneToOne` at the broker's admission-path pre-check.
-    /// Set once on channel creation inside `_on_producer_added`;
-    /// immutable thereafter — the broker's pre-`_on_producer_added`
-    /// topology helper (`check_topology_against_stored`) enforces the
-    /// mismatch case with its own error code (`TOPOLOGY_MISMATCH`), so
-    /// `_on_producer_added` neither reads nor compares this value on
-    /// the existing-channel path.  See tech draft §5.1 rule 4.
-    ChannelTopology topology{ChannelTopology::OneToOne};
+    std::string data_transport{"shm"};
 };
 
 /// HEP-CORE-0036 §4.1 — per-channel access scaffolding.
@@ -452,10 +441,6 @@ enum class AddProducerResult
     RejectedUidConflict,     ///< `find_producer(role_uid)` returned non-null.
                              ///< Channel state unchanged.  Broker surfaces
                              ///< `UID_CONFLICT` on the wire.
-    RejectedShmCardinality,  ///< `data_transport == "shm"` and
-                             ///< `producers.size() >= 1`.  Channel state
-                             ///< unchanged.  Broker surfaces
-                             ///< `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
 };
 
 enum class AddConsumerResult
@@ -488,27 +473,39 @@ enum class InvariantSetResult
                              ///< Cat-1 error (e.g., `SCHEMA_MISMATCH`).
 };
 
-/// Composite result from `HubState::_on_producer_added` — the
-/// controlled-access entry point for REG_REQ admission per Wave M2.5
-/// step 3 (see `docs/tech_draft/controlled_access_api_design.md` §7.5).
-/// The broker handler switches on these three pieces to dispatch the
-/// correct wire-error code or success response.
+/// Composite result from `HubState::_on_producer_added` — the atomic
+/// admission entry point for producer REG_REQ.  All checks (schema,
+/// transport, topology, cardinality, uid conflict) happen under the
+/// same writer lock that persists the mutation, so the outcome
+/// reflects a consistent view of channel state.  The broker handler
+/// switches on the fields below to dispatch the correct wire-error
+/// code or success response.
 struct ProducerAdmissionResult
 {
     /// `Created` iff the producer was appended;
-    /// `RejectedUidConflict` (UID_CONFLICT wire error) or
-    /// `RejectedShmCardinality` (MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM
-    /// wire error) otherwise.  When this is anything other than
-    /// `Created`, channel state is unchanged.
+    /// `RejectedUidConflict` (UID_CONFLICT wire error) otherwise.
+    /// Only meaningful when `invariant_result == Created ||
+    /// IdempotentEqual` AND `topology_error_code == nullptr`.
     AddProducerResult  producer_result{AddProducerResult::Created};
 
     /// `Created` for a fresh channel; `IdempotentEqual` when the
     /// incoming invariants match the existing channel's;
     /// `RejectedMismatch` (SCHEMA_MISMATCH / TRANSPORT_MISMATCH wire
-    /// errors) when they differ.  When `RejectedMismatch`, channel
-    /// state is unchanged AND `producer_result` is `Created` only by
-    /// convention — the broker MUST inspect `invariant_result` first.
+    /// errors) when they differ.
     InvariantSetResult invariant_result{InvariantSetResult::Created};
+
+    /// Non-null when the topology admission gate rejected the REG_REQ.
+    /// One of the wire error-code strings owned by the
+    /// `pylabhub::hub::topology` helpers:
+    /// `"TOPOLOGY_MISMATCH"` — declared topology != stored topology.
+    /// `"TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT"` — e.g. `fan-in × shm`
+    ///     on channel creation.
+    /// `"FAN_OUT_IS_SINGLE_PRODUCER"` or
+    /// `"ONE_TO_ONE_CARDINALITY_VIOLATED"` — cardinality gate fired
+    ///     against the effective topology.
+    /// Broker returns the code verbatim.  Channel state unchanged
+    /// when set.  Checked BEFORE `invariant_result` / `producer_result`.
+    const char *       topology_error_code{nullptr};
 
     /// True iff this admission opened a fresh channel record (first
     /// producer).  Caller uses this to decide whether to fire the
@@ -519,10 +516,28 @@ struct ProducerAdmissionResult
     /// Names which invariant didn't match, when `invariant_result ==
     /// RejectedMismatch`.  One of: `"schema_hash"`, `"schema_version"`,
     /// `"schema_id"`, `"schema_blds"`, `"schema_owner"`, `"data_transport"`.
-    /// Empty on success.  Allows the broker to surface a specific reason
-    /// (SCHEMA_MISMATCH vs TRANSPORT_MISMATCH) without re-reading
-    /// HubState.
+    /// Empty on success.
     std::string        mismatched_invariant;
+};
+
+/// Composite result from `HubState::_on_consumer_joined` — the atomic
+/// admission entry point for CONSUMER_REG_REQ.  Same
+/// atomicity-under-writer-lock discipline as `ProducerAdmissionResult`.
+/// Only the topology/cardinality gate can reject at this level; other
+/// consumer-side checks (schema, R6-gate producer readiness) live in
+/// the broker handler.
+struct ConsumerAdmissionResult
+{
+    /// True iff a consumer was added (or re-registered idempotently)
+    /// on an existing channel.  False when `topology_error_code` is
+    /// set (rejection) OR when the channel doesn't exist (matches the
+    /// pre-existing "silent skip" behavior of `_add_consumer`).
+    bool         admitted{false};
+
+    /// Non-null on topology/cardinality rejection.  Values:
+    /// `"TOPOLOGY_MISMATCH"`, `"FAN_IN_IS_SINGLE_CONSUMER"`,
+    /// `"ONE_TO_ONE_CARDINALITY_VIOLATED"`.
+    const char * topology_error_code{nullptr};
 };
 
 /// Channel registered with the broker.
@@ -716,17 +731,18 @@ struct ChannelEntry
         return nullptr;
     }
 
-    /// Strict additive producer admission (HEP-CORE-0023 §2.1.1 + M2.5).
-    /// See `AddProducerResult` doc above for the contract.  When the
-    /// reply is `Created`, the new entry is at `producers.back()` and
-    /// (if `out` is non-null) `*out` points to it.
+    /// Strict additive producer admission.  Only enforces uid
+    /// uniqueness; topology-based cardinality (fan-out single-producer,
+    /// 1-to-1 single-producer) is checked by the caller inside
+    /// `_on_producer_added` under the writer lock, so a second producer
+    /// on a fan-out or 1-to-1 channel is rejected BEFORE reaching this
+    /// method.  Transport × topology admissibility (e.g., fan-in × shm)
+    /// is likewise pre-gated at channel creation.
     AddProducerResult add_producer(ProducerEntry p,
                                     ProducerEntry **out = nullptr)
     {
         if (find_producer(p.role_uid) != nullptr)
             return AddProducerResult::RejectedUidConflict;
-        if (is_shm() && !producers.empty())
-            return AddProducerResult::RejectedShmCardinality;
         producers.push_back(std::move(p));
         if (out != nullptr) *out = &producers.back();
         return AddProducerResult::Created;
@@ -1676,7 +1692,10 @@ class PYLABHUB_UTILS_EXPORT HubState
     // both locks released.
     void _set_channel_opened(ChannelEntry entry);
     void _set_channel_closed(const std::string &name);
-    void _add_consumer(const std::string &channel, ConsumerEntry entry);
+    ConsumerAdmissionResult
+    _add_consumer(const std::string&              channel,
+                  ConsumerEntry                   entry,
+                  std::optional<ChannelTopology>  declared_topology);
     void _remove_consumer(const std::string &channel, const std::string &role_uid);
     void _set_role_registered(RoleEntry entry);
     void _set_role_disconnected(const std::string &uid);
@@ -1749,10 +1768,28 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// Per `docs/tech_draft/controlled_access_api_design.md` §7.5.2.
     /// `_on_channel_registered` is retained for L2 test scaffolding;
     /// production REG_REQ migrates to this op.
+    /// Atomic producer-side admission.  All checks (schema, transport,
+    /// topology, cardinality, uid conflict) run under the same writer
+    /// lock that persists the mutation.  Broker's `handle_reg_req`
+    /// calls this exactly once per REG_REQ and switches on the
+    /// returned `ProducerAdmissionResult` fields for wire response.
+    ///
+    /// - `declared_topology`: the wire's declared topology (nullopt
+    ///   when the wire field was absent).  Empty means "inherit stored
+    ///   topology" on existing channels, or "default to OneToOne" when
+    ///   creating a fresh channel.
+    /// - Return value fields: see `ProducerAdmissionResult` doc.
+    ///   Check `topology_error_code` FIRST — non-null means the
+    ///   admission was rejected by the topology gate and neither
+    ///   `invariant_result` nor `producer_result` is meaningful.
+    ///
+    /// Design authority: tech draft §5.1 rules 1-4 (topology admission)
+    /// + HEP-CORE-0007 §12.3/§12.4a (wire schema + error codes).
     ProducerAdmissionResult
     _on_producer_added(const std::string&                channel_name,
                        ChannelSchemaInvariants           schema,
                        ChannelTransportInvariants        transport,
+                       std::optional<ChannelTopology>    declared_topology,
                        ProducerEntry                     producer);
 
     /// Wave M2.5 step 4 controlled-access DEREG_REQ / producer-drop
@@ -1784,7 +1821,24 @@ class PYLABHUB_UTILS_EXPORT HubState
                           ChannelCloseReason    reason);
 
     void _on_channel_closed(const std::string &name, ChannelCloseReason why);
-    void _on_consumer_joined(const std::string &channel, ConsumerEntry consumer);
+
+    /// Atomic consumer-side admission.  All checks (topology,
+    /// cardinality) run under the same writer lock that persists the
+    /// mutation.  Silently skips (`admitted=false`, `topology_error_code=nullptr`)
+    /// when the channel doesn't exist — matches the pre-existing
+    /// erase-then-push semantics of the internal `_add_consumer`.
+    ///
+    /// - `declared_topology`: the wire's declared topology (nullopt
+    ///   when the wire field was absent).  Empty inherits stored
+    ///   topology.
+    /// - Return value: check `topology_error_code` FIRST.  If non-null,
+    ///   admission was rejected and channel state is unchanged.
+    ///
+    /// Design authority: tech draft §5.1 rules 1-4.
+    ConsumerAdmissionResult
+    _on_consumer_joined(const std::string&              channel,
+                        ConsumerEntry                   consumer,
+                        std::optional<ChannelTopology>  declared_topology);
     void _on_consumer_left(const std::string &channel, const std::string &role_uid);
     /// Refresh the presence row matching `(channel, role_uid, role_type)`.
     /// Per HEP-CORE-0019 §2.3 + HEP-CORE-0023 §2.5.2: each heartbeat refreshes

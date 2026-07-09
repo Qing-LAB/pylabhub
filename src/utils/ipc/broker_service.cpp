@@ -2445,122 +2445,57 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // value the §5.1 endpoint check accepted.
     transport_inv.data_transport    = data_transport_req;
 
-    // 2026-07-08 topology migration — resolve the effective topology
-    // from the wire (or default to one-to-one).  Tech draft §5.1
-    // rule 4 + HEP-CORE-0017 §3.3.0 decision matrix.
-    const std::string topology_wire = req.value("channel_topology", "");
-    auto existing_channel = hub_state_->channel(channel_name);
-    pylabhub::hub::ChannelTopology effective_topology =
-        pylabhub::hub::ChannelTopology::OneToOne;
-    if (existing_channel.has_value())
+    // Topology wire parse.  Empty means "no wire declaration" —
+    // HubState's atomic admission op treats this as "inherit stored"
+    // for an existing channel, or "default to OneToOne" for a fresh
+    // channel per HEP-CORE-0018 §5 + tech draft §5.1 rule 4.  A
+    // non-empty non-parseable value is INVALID_REQUEST — surface here.
+    std::optional<pylabhub::hub::ChannelTopology> declared_topology;
     {
-        // Channel exists — three-branch check (inherit / match / mismatch).
-        if (const char *err = pylabhub::hub::topology::check_against_stored(
-                existing_channel->topology, topology_wire))
+        const std::string wire = req.value("channel_topology", "");
+        if (!wire.empty())
         {
-            LOGGER_WARN(
-                "[broker] event=RegReqRejected reason='{}' role='{}' channel='{}' "
-                "wire_topology='{}' stored_topology='{}'",
-                err, role_uid, channel_name,
-                topology_wire.empty() ? "<absent>" : topology_wire,
-                pylabhub::hub::to_string(existing_channel->topology));
-            const std::string wire_disp = topology_wire.empty() ? "<absent>" : topology_wire;
-            return make_error(
-                corr_id, err,
-                "REG_REQ channel_topology='" + wire_disp +
-                    "' incompatible with existing channel topology '" +
-                    std::string(pylabhub::hub::to_string(existing_channel->topology)) +
-                    "'");
-        }
-        effective_topology = existing_channel->topology;
-    }
-    else
-    {
-        // Channel does not exist — parse or default.  Immutable once
-        // the fresh ChannelEntry is created below.
-        if (topology_wire.empty())
-        {
-            effective_topology = pylabhub::hub::ChannelTopology::OneToOne;
-        }
-        else
-        {
-            const auto parsed = pylabhub::hub::topology::parse(topology_wire);
-            if (!parsed)
+            declared_topology = pylabhub::hub::topology::parse(wire);
+            if (!declared_topology)
             {
                 LOGGER_WARN(
                     "[broker] event=RegReqRejected reason='INVALID_REQUEST' "
                     "role='{}' channel='{}' wire_topology='{}' "
                     "detail='not one of fan-in|fan-out|one-to-one'",
-                    role_uid, channel_name, topology_wire);
+                    role_uid, channel_name, wire);
                 return make_error(
                     corr_id, "INVALID_REQUEST",
-                    "REG_REQ channel_topology='" + topology_wire +
+                    "REG_REQ channel_topology='" + wire +
                         "' must be 'fan-in', 'fan-out', or 'one-to-one'");
             }
-            effective_topology = *parsed;
-        }
-        // Transport × topology compatibility check — currently the
-        // only rejected combination is fan-in × shm.
-        if (!pylabhub::hub::topology::transport_compatible(
-                effective_topology, data_transport_req))
-        {
-            LOGGER_WARN(
-                "[broker] event=RegReqRejected reason='TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT' "
-                "role='{}' channel='{}' topology='{}' transport='{}'",
-                role_uid, channel_name,
-                pylabhub::hub::to_string(effective_topology),
-                data_transport_req);
-            return make_error(
-                corr_id, "TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT",
-                "channel_topology='" +
-                    std::string(pylabhub::hub::to_string(effective_topology)) +
-                    "' incompatible with data_transport='" +
-                    data_transport_req + "'");
         }
     }
 
-    // Cardinality gate — reject a second producer under fan-out or
-    // one-to-one before touching state.  Existing counts from the
-    // snapshot (0/0 for a fresh channel).
-    {
-        const std::size_t existing_producers =
-            existing_channel.has_value() ? existing_channel->producers.size() : 0;
-        const std::size_t existing_consumers =
-            existing_channel.has_value() ? existing_channel->consumers.size() : 0;
-        if (const char *err = pylabhub::hub::topology::check_cardinality(
-                effective_topology, /*is_consumer_reg=*/false,
-                existing_producers, existing_consumers))
-        {
-            LOGGER_WARN(
-                "[broker] event=RegReqRejected reason='{}' role='{}' channel='{}' "
-                "topology='{}' producers={} consumers={}",
-                err, role_uid, channel_name,
-                pylabhub::hub::to_string(effective_topology),
-                existing_producers, existing_consumers);
-            return make_error(
-                corr_id, err,
-                "REG_REQ rejected — cardinality gate for channel_topology='" +
-                    std::string(pylabhub::hub::to_string(effective_topology)) + "'");
-        }
-    }
-
-    transport_inv.topology = effective_topology;
-
+    // Atomic producer-side admission.  All checks (schema, transport,
+    // topology, cardinality, uid conflict) happen under the same
+    // writer lock as the mutation.  No TOCTOU window.
     const auto admission = hub_state_->_on_producer_added(
         channel_name,
         std::move(schema_inv),
         std::move(transport_inv),
+        declared_topology,
         std::move(primary_producer));
 
-    // Typed result dispatch:
+    // Outcome dispatch (order matches HubState's evaluation order).
+    if (admission.topology_error_code != nullptr)
+    {
+        LOGGER_WARN(
+            "[broker] event=RegReqRejected reason='{}' role='{}' channel='{}'",
+            admission.topology_error_code, role_uid, channel_name);
+        return make_error(
+            corr_id, admission.topology_error_code,
+            std::string("REG_REQ rejected — topology gate '") +
+                admission.topology_error_code + "'");
+    }
     if (admission.invariant_result ==
         pylabhub::hub::InvariantSetResult::RejectedMismatch)
     {
         const auto &field = admission.mismatched_invariant;
-        // schema_* mismatches → SCHEMA_MISMATCH (the schema_hash case
-        // was already handled by the early gate above; this path
-        // catches schema_version / schema_id / schema_blds /
-        // schema_owner divergences).
         if (field == "schema_hash" || field == "schema_version" ||
             field == "schema_id"   || field == "schema_blds"    ||
             field == "schema_owner")
@@ -2573,8 +2508,6 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                               "REG_REQ rejected — schema invariant '" + field +
                                   "' differs from existing channel registration");
         }
-        // Transport-class mismatches → TRANSPORT_MISMATCH (HEP-CORE-0007
-        // §12.4a — same code as the consumer-side transport check).
         LOGGER_ERROR(
             "Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
             "(transport-class)", channel_name, field);
@@ -2585,11 +2518,6 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     if (admission.producer_result ==
         pylabhub::hub::AddProducerResult::RejectedUidConflict)
     {
-        // HEP-CORE-0007 §12.4a `UID_CONFLICT` — strict reject per
-        // controlled_access_api_design.md §6.2.  Logged at ERROR
-        // because either a uid collision (effectively impossible with
-        // proper construction → indicates hub-side residue or remote
-        // spoof) or a same-uid re-register attempt.
         LOGGER_ERROR(
             "Broker: REG_REQ for '{}' uid='{}' rejected — UID_CONFLICT "
             "(uid already exists in HubState; possible residue or spoof)",
@@ -2597,18 +2525,6 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         return make_error(corr_id, "UID_CONFLICT",
                           "uid conflict, not trusting this connection, "
                           "try again with clean state");
-    }
-    if (admission.producer_result ==
-        pylabhub::hub::AddProducerResult::RejectedShmCardinality)
-    {
-        // HEP-CORE-0007 §12.4a `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
-        LOGGER_WARN(
-            "Broker: REG_REQ for '{}' uid='{}' rejected — SHM channels are "
-            "physically single-producer (HEP-CORE-0023 §2.1.1)",
-            channel_name, role_uid);
-        return make_error(corr_id, "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM",
-                          "Channel uses SHM transport which admits exactly "
-                          "one producer; use ZMQ transport for Fan-In");
     }
 
     // HEP-CORE-0036 §6.5: a freshly-opened channel needs a
@@ -3052,44 +2968,28 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     }
     const auto &channel_entry = cit->second;
 
-    // 2026-07-08 topology migration — three-branch check + cardinality
-    // gate BEFORE any consumer-side state mutation.  Tech draft §5.1
-    // rule 3 + rule 4.  Under CONSUMER_REG_REQ the channel is
-    // guaranteed to exist (we would have returned CHANNEL_NOT_FOUND
-    // above), so we only exercise the "channel exists" branch.
+    // Topology wire parse (INVALID_REQUEST for garbage input).
+    // Topology mismatch + cardinality checks happen atomically inside
+    // `_on_consumer_joined` below, under the same writer lock as the
+    // mutation.  No TOCTOU window between snapshot and mutation.
+    std::optional<pylabhub::hub::ChannelTopology> declared_topology;
     {
-        const std::string cons_topology_wire = req.value("channel_topology", "");
-        if (const char *err = pylabhub::hub::topology::check_against_stored(
-                channel_entry.topology, cons_topology_wire))
+        const std::string wire = req.value("channel_topology", "");
+        if (!wire.empty())
         {
-            LOGGER_WARN(
-                "[broker] event=ConsumerRegReqRejected reason='{}' channel='{}' "
-                "wire_topology='{}' stored_topology='{}'",
-                err, channel_name,
-                cons_topology_wire.empty() ? "<absent>" : cons_topology_wire,
-                pylabhub::hub::to_string(channel_entry.topology));
-            const std::string wire_disp = cons_topology_wire.empty() ? "<absent>" : cons_topology_wire;
-            return make_error(
-                corr_id, err,
-                "CONSUMER_REG_REQ channel_topology='" + wire_disp +
-                    "' incompatible with existing channel topology '" +
-                    std::string(pylabhub::hub::to_string(channel_entry.topology)) + "'");
-        }
-        // Cardinality gate — reject second consumer under fan-in / 1-to-1.
-        if (const char *err = pylabhub::hub::topology::check_cardinality(
-                channel_entry.topology, /*is_consumer_reg=*/true,
-                channel_entry.producers.size(), channel_entry.consumers.size()))
-        {
-            LOGGER_WARN(
-                "[broker] event=ConsumerRegReqRejected reason='{}' channel='{}' "
-                "topology='{}' producers={} consumers={}",
-                err, channel_name,
-                pylabhub::hub::to_string(channel_entry.topology),
-                channel_entry.producers.size(), channel_entry.consumers.size());
-            return make_error(
-                corr_id, err,
-                "CONSUMER_REG_REQ rejected — cardinality gate for channel_topology='" +
-                    std::string(pylabhub::hub::to_string(channel_entry.topology)) + "'");
+            declared_topology = pylabhub::hub::topology::parse(wire);
+            if (!declared_topology)
+            {
+                LOGGER_WARN(
+                    "[broker] event=ConsumerRegReqRejected reason='INVALID_REQUEST' "
+                    "role='{}' channel='{}' wire_topology='{}' "
+                    "detail='not one of fan-in|fan-out|one-to-one'",
+                    role_uid, channel_name, wire);
+                return make_error(
+                    corr_id, "INVALID_REQUEST",
+                    "CONSUMER_REG_REQ channel_topology='" + wire +
+                        "' must be 'fan-in', 'fan-out', or 'one-to-one'");
+            }
         }
     }
 
@@ -3389,7 +3289,20 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
 
-    hub_state_->_on_consumer_joined(channel_name, std::move(entry));
+    // Atomic consumer-side admission — topology + cardinality checks
+    // run under HubState's writer lock alongside the mutation.
+    const auto cons_admission = hub_state_->_on_consumer_joined(
+        channel_name, std::move(entry), declared_topology);
+    if (cons_admission.topology_error_code != nullptr)
+    {
+        LOGGER_WARN(
+            "[broker] event=ConsumerRegReqRejected reason='{}' role='{}' channel='{}'",
+            cons_admission.topology_error_code, role_uid, channel_name);
+        return make_error(
+            corr_id, cons_admission.topology_error_code,
+            std::string("CONSUMER_REG_REQ rejected — topology gate '") +
+                cons_admission.topology_error_code + "'");
+    }
 
     // HEP-CORE-0036 §6.5: pubkey was validated non-empty + 40-char Z85
     // above.  Add it to the channel-scope allowlist and fire the

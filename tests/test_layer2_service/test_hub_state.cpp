@@ -75,12 +75,19 @@ namespace
 // component not in {prod,cons,proc,sys}). Helpers below take the bare
 // identifier — the caller is responsible for passing a valid form.
 
-ChannelEntry make_channel(const std::string &name)
+ChannelEntry make_channel(const std::string &name,
+                           ChannelTopology topology = ChannelTopology::FanIn)
 {
     ChannelEntry e;
     e.name           = name;
     e.schema_hash    = std::string(64, 'a');
     e.schema_version = 1;
+    // Test-helper channels default to FanIn (matches pre-migration
+    // multi-producer test patterns).  Multi-consumer tests should
+    // pass `ChannelTopology::FanOut`.  Tests that want the atomic
+    // admission path with default topology can go through
+    // `_on_producer_added` instead.
+    e.topology       = topology;
     ProducerEntry p;
     p.producer_pid = 4242;
     p.role_uid     = "prod.main.test";
@@ -218,7 +225,8 @@ TEST(HubStateSkeleton, ChannelClosed_RemovesAndFires)
 TEST(HubStateSkeleton, ConsumerAddRemove_UpdatesChannelAndFires)
 {
     HubState s;
-    HubStateTestAccess::set_channel_opened(s, make_channel("ch1"));
+    HubStateTestAccess::set_channel_opened(
+        s, make_channel("ch1", ChannelTopology::FanOut));
 
     std::vector<std::string> added;
     std::vector<std::string> removed;
@@ -1460,25 +1468,16 @@ TEST(ChannelEntryApi, AddProducer_TwoDistinctUidsOnZmqChannel_BothLive_Independe
     EXPECT_EQ(pb->metadata.at("serial").get<std::string>(), "SN-002");
 }
 
-TEST(ChannelEntryApi, AddProducer_ShmCardinality_SecondRejected)
-{
-    // §6.3 contract: SHM channels admit exactly one producer; the
-    // second add_producer must reject with RejectedShmCardinality,
-    // even when the uid is distinct (the SHM physical constraint is
-    // separate from the same-uid rule).
-    ChannelEntry ch;
-    ch.name = "ch.thermo.shm";
-    ch.data_transport = "shm";
-
-    ASSERT_EQ(ch.add_producer(make_producer("prod.thermoA.uid00000003", 3001)),
-              AddProducerResult::Created);
-
-    auto r = ch.add_producer(make_producer("prod.thermoB.uid00000004", 3002));
-    EXPECT_EQ(r, AddProducerResult::RejectedShmCardinality);
-    EXPECT_EQ(ch.producer_count(), 1u);
-    EXPECT_NE(ch.find_producer("prod.thermoA.uid00000003"), nullptr);
-    EXPECT_EQ(ch.find_producer("prod.thermoB.uid00000004"), nullptr);
-}
+// Note: SHM cardinality was formerly a `ChannelEntry.add_producer`
+// enforcement (`AddProducerResult::RejectedShmCardinality`) with the
+// wire code `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.  Under the
+// topology migration, ChannelEntry.add_producer only enforces uid
+// uniqueness; SHM-plus-cardinality now falls out of topology
+// cardinality gates in `_on_producer_added`:
+//   - SHM + fan-in → TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT at channel creation.
+//   - SHM + fan-out + 2nd producer → FAN_OUT_IS_SINGLE_PRODUCER.
+//   - SHM + 1-to-1 + 2nd producer → ONE_TO_ONE_CARDINALITY_VIOLATED.
+// See `HubStateTopologyAdmission` tests below for coverage.
 
 TEST(ChannelEntryApi, AddConsumer_SameUidRejected_NoStateMutation)
 {
@@ -1865,7 +1864,7 @@ TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
     s.subscribe_role_registered(
         [&](const RoleEntry &r) { role_reg.push_back(r.uid); });
 
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.append",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -1873,7 +1872,7 @@ TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
                   .producer_result,
               AddProducerResult::Created);
 
-    auto r = HubStateTestAccess::on_producer_added(
+    auto r = HubStateTestAccess::on_producer_added_fanin(
         s, "ch.fanin.append",
         make_schema_invariants(),        // same hash
         make_zmq_transport(),
@@ -1927,7 +1926,7 @@ TEST(HubStateProducerAdmission, SecondProducer_SchemaMismatch_Rejected_NoStateMu
 TEST(HubStateProducerAdmission, SameUidRedo_Rejected_UidConflict)
 {
     HubState s;
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.uid-redo",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -1935,7 +1934,7 @@ TEST(HubStateProducerAdmission, SameUidRedo_Rejected_UidConflict)
                   .producer_result,
               AddProducerResult::Created);
 
-    auto r = HubStateTestAccess::on_producer_added(
+    auto r = HubStateTestAccess::on_producer_added_fanin(
         s, "ch.fanin.uid-redo",
         make_schema_invariants(),
         make_zmq_transport(),
@@ -2002,14 +2001,14 @@ TEST(HubStateProducerDrop, NonLastProducer_DropLeavesChannelAlive_NoCloseFired)
     int closed_count = 0;
     s.subscribe_channel_closed([&](const std::string&) { ++closed_count; });
 
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.drop-keep",
                   make_schema_invariants(),
                   make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.drop-keep",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -2070,14 +2069,14 @@ TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
     s.subscribe_channel_closed(
         [&](const std::string &name) { closed.push_back(name); });
 
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.drop-sequence",
                   make_schema_invariants(),
                   make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.drop-sequence",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -2109,14 +2108,14 @@ TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
 TEST(HubStateProducerEndpointUpdate, KnownChannelKnownUid_UpdatesOnlyTarget)
 {
     HubState s;
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.ep-update",
                   make_schema_invariants(),
                   make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.ep-update",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -2184,15 +2183,15 @@ TEST(HubStateProducerPendingTimeout, NonLastProducer_DropsOnlyOne_ChannelSurvive
     int closed_count = 0;
     s.subscribe_channel_closed([&](const std::string&) { ++closed_count; });
 
-    // Register two producers via the controlled API.
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    // Register two producers via the controlled API — fan-in topology.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.pending-survive",
                   make_schema_invariants(),
                   make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.pending-survive",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -2266,13 +2265,13 @@ TEST(HubStateProducerDropped,
     // the role shows a ghost-Connected producer-presence on a channel
     // where it no longer holds a slot.
     HubState s;
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.h9.fanin",
                   make_schema_invariants(),
                   make_zmq_transport(),
                   make_producer("prod.fanA.uid00000001", 1001))
                   .producer_result, AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.h9.fanin",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -2688,8 +2687,12 @@ TEST(HubStateLifecycle, ChannelChurn_NoTombstoneAccumulation)
     EXPECT_EQ(s.schema_count(), 0u);
 }
 
-TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality)
+TEST(HubStateTopologyAdmission, SecondProducer_ShmDefaultTopology_RejectedOneToOne)
 {
+    // SHM channels without an explicit topology default to OneToOne
+    // per HEP-CORE-0018 §5.  The second producer's REG_REQ is rejected
+    // with ONE_TO_ONE_CARDINALITY_VIOLATED atomically inside
+    // `_on_producer_added` — no snapshot-then-mutate race.
     HubState s;
     ASSERT_EQ(HubStateTestAccess::on_producer_added(
                   s, "ch.thermo.shm-cardinality",
@@ -2705,8 +2708,7 @@ TEST(HubStateProducerAdmission, SecondProducer_ShmChannel_RejectedShmCardinality
         make_shm_transport("ch.thermo.shm-cardinality-shm"),
         make_producer("prod.thermoB.uid00000004", 3002));  // distinct uid
 
-    EXPECT_EQ(r.invariant_result, InvariantSetResult::IdempotentEqual);
-    EXPECT_EQ(r.producer_result,  AddProducerResult::RejectedShmCardinality);
+    EXPECT_STREQ(r.topology_error_code, "ONE_TO_ONE_CARDINALITY_VIOLATED");
 
     auto ch = s.channel("ch.thermo.shm-cardinality");
     ASSERT_TRUE(ch.has_value());
@@ -2810,13 +2812,15 @@ TEST(HubStateChannelMetricsSnapshot, SingleProducer_IncludesPidAndMetrics)
 TEST(HubStateChannelMetricsSnapshot, MultiProducer_PerUidNoOverwrite)
 {
     HubState s;
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    // Multi-producer requires explicit fan-in declaration under the
+    // topology migration (default topology is OneToOne).
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin",
                   make_schema_invariants(),
                   make_zmq_transport(),
                   make_producer("prod.A.uid00000001", 1001))
                   .producer_result, AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin",
                   make_schema_invariants(),
                   make_zmq_transport(),
@@ -4013,7 +4017,9 @@ TEST(HubStateHep0042, ProducerInstance_BumpsOnCrashRestartSameChannel)
     const std::string ch  = "ch.hep42.crash";
 
     HubState s;
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    // Fan-in channel — multi-producer requires explicit topology
+    // declaration under the topology-migration model.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer(uid, 3001))
                   .producer_result,
@@ -4024,7 +4030,7 @@ TEST(HubStateHep0042, ProducerInstance_BumpsOnCrashRestartSameChannel)
     // producer path (which would nuke the whole channel via atomic
     // teardown).  This mirrors the fan-in production case: one
     // producer crashes while another survives.
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.sibling.uid00000002", 3002))
                   .producer_result,
@@ -4036,7 +4042,7 @@ TEST(HubStateHep0042, ProducerInstance_BumpsOnCrashRestartSameChannel)
     ASSERT_FALSE(rm.channel_now_empty);
 
     // Re-add the same uid — the counter must bump.
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer(uid, 3001))
                   .producer_result,
@@ -4058,8 +4064,9 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, ch);
 
-    // Register + advance confirmed to 42.
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    // Register + advance confirmed to 42.  Fan-in for the multi-producer
+    // sibling scenario below.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer(uid, 4001))
                   .producer_result,
@@ -4067,7 +4074,7 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
     ASSERT_EQ(s._on_producer_confirmed(ch, uid, 42), 42u);
 
     // Sibling to keep the channel alive across the reap.
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.sibling.reset.uid00000002", 4002))
                   .producer_result,
@@ -4085,7 +4092,7 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
 
     // Re-register the crashed uid.  Instance bumps 1 → 2 AND
     // confirmed_version stays at 0 for this pair.
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer(uid, 4001))
                   .producer_result,
@@ -4161,12 +4168,13 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
 
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, ch);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    // Fan-in — two producers on one channel per the topology-migration model.
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer(uid_a, 5001))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
                   make_producer(uid_b, 5002))
                   .producer_result,

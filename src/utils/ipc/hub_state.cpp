@@ -573,15 +573,60 @@ void HubState::_set_channel_closed(const std::string &name)
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_closed)) h(name);
 }
 
-void HubState::_add_consumer(const std::string &channel, ConsumerEntry entry)
+// Internal: atomic consumer append with topology + cardinality
+// enforcement.  The re-registration case (same role_uid or same pid
+// already present) is idempotent — the existing row is replaced and
+// no cardinality check fires.  A NEW consumer is subject to
+// topology-mismatch + cardinality gates.
+//
+// Returns ConsumerAdmissionResult so `_on_consumer_joined` can decide
+// whether to fire downstream handlers (role registration, etc.).
+ConsumerAdmissionResult
+HubState::_add_consumer(const std::string&              channel,
+                        ConsumerEntry                   entry,
+                        std::optional<ChannelTopology>  declared_topology)
 {
-    ConsumerEntry fired;
-    bool          ok = false;
+    ConsumerAdmissionResult result;
+    ConsumerEntry           fired;
+
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel);
-        if (it == pImpl->channels.end()) return;
-        auto &cons = it->second.consumers;
+        if (it == pImpl->channels.end()) return result;  // silent skip
+        auto &channel_entry = it->second;
+
+        // Topology declaration check.  Empty inherits stored; explicit
+        // non-matching → TOPOLOGY_MISMATCH.
+        if (declared_topology && *declared_topology != channel_entry.topology)
+        {
+            result.topology_error_code = "TOPOLOGY_MISMATCH";
+            return result;
+        }
+
+        auto &cons = channel_entry.consumers;
+
+        // Detect re-registration (same role_uid or same pid already
+        // present) — idempotent, skip cardinality check.
+        const bool is_reregistration = std::any_of(
+            cons.begin(), cons.end(),
+            [&](const ConsumerEntry &c) {
+                return (!entry.role_uid.empty() &&
+                        c.role_uid == entry.role_uid) ||
+                       (entry.consumer_pid != 0 &&
+                        c.consumer_pid == entry.consumer_pid);
+            });
+
+        if (!is_reregistration)
+        {
+            if (const char *err = topology::check_cardinality(
+                    channel_entry.topology, /*is_consumer_reg=*/true,
+                    channel_entry.producers.size(), cons.size()))
+            {
+                result.topology_error_code = err;
+                return result;
+            }
+        }
+
         cons.erase(std::remove_if(cons.begin(), cons.end(),
                                   [&](const ConsumerEntry &c) {
                                       return (!entry.role_uid.empty() &&
@@ -591,11 +636,13 @@ void HubState::_add_consumer(const std::string &channel, ConsumerEntry entry)
                                   }),
                    cons.end());
         cons.push_back(std::move(entry));
-        fired = cons.back();
-        ok    = true;
+        fired            = cons.back();
+        result.admitted  = true;
     }
-    if (!ok) return;
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->cons_added)) h(channel, fired);
+    if (!result.admitted) return result;
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->cons_added))
+        h(channel, fired);
+    return result;
 }
 
 void HubState::_remove_consumer(const std::string &channel, const std::string &role_uid)
@@ -1016,13 +1063,15 @@ void HubState::_on_channel_registered(ChannelEntry entry)
 
 }
 
-// Wave M2.5 step 3 — additive producer admission op.  See
-// `docs/tech_draft/controlled_access_api_design.md` §7.5.2.
+// Atomic producer-side admission.  All checks (schema, transport,
+// topology, cardinality, uid conflict) happen under the writer lock
+// held for the mutation — no snapshot-then-mutate window.
 ProducerAdmissionResult
-HubState::_on_producer_added(const std::string&         channel_name,
-                              ChannelSchemaInvariants    schema,
-                              ChannelTransportInvariants transport,
-                              ProducerEntry              producer)
+HubState::_on_producer_added(const std::string&              channel_name,
+                              ChannelSchemaInvariants         schema,
+                              ChannelTransportInvariants      transport,
+                              std::optional<ChannelTopology>  declared_topology,
+                              ProducerEntry                   producer)
 {
     ProducerAdmissionResult result;
 
@@ -1055,8 +1104,7 @@ HubState::_on_producer_added(const std::string&         channel_name,
 
     // Capture pieces needed for role/shm side-effects before taking the
     // writer lock (so we don't hold the writer lock across handler
-    // dispatch).  Use the producer's own pubkey now (M2.5 step 3 — the
-    // pubkey lives per-producer per HEP-CORE-0021 §5.2).
+    // dispatch).
     const std::string producer_uid     = producer.role_uid;
     const std::string producer_pubkey  = producer.zmq_pubkey;
     // HEP-CORE-0036 §5b.4: data_transport == "shm" is the canonical
@@ -1072,9 +1120,20 @@ HubState::_on_producer_added(const std::string&         channel_name,
 
         if (it == pImpl->channels.end())
         {
-            // Fresh channel — first producer.  Compose the record from
-            // the supplied invariants + producer, insert, then fire
-            // ch_opened outside the lock.
+            // Fresh channel — resolve topology (declared or default
+            // OneToOne per tech draft §5.1 rule 4) and check
+            // transport × topology compatibility.  Cardinality is
+            // trivially OK on a fresh channel (0 producers, 0 consumers).
+            const ChannelTopology effective_topology =
+                declared_topology.value_or(ChannelTopology::OneToOne);
+            if (!topology::transport_compatible(effective_topology,
+                                                 transport.data_transport))
+            {
+                result.topology_error_code =
+                    "TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT";
+                return result;
+            }
+
             ChannelEntry entry;
             entry.name              = channel_name;
             entry.schema_hash       = schema.schema_hash;
@@ -1083,24 +1142,10 @@ HubState::_on_producer_added(const std::string&         channel_name,
             entry.schema_blds       = schema.schema_blds;
             entry.schema_owner      = schema.schema_owner;
             entry.data_transport    = transport.data_transport;
-            // 2026-07-08 topology migration — persist the declared or
-            // defaulted topology on channel creation.  The broker
-            // resolved this value in its admission-path pre-check per
-            // tech draft §5.1 rule 4; here we just record it.  Immutable
-            // once written.
-            entry.topology          = transport.topology;
-            // Append the producer via the controlled API (Created by
-            // construction since producers is empty + we just checked
-            // shm cardinality is fine for the first entry).  Capture
-            // the typed result for the caller's switch.
+            entry.topology          = effective_topology;
             result.producer_result  = entry.add_producer(std::move(producer));
             if (result.producer_result != AddProducerResult::Created)
-            {
-                // Shouldn't happen on a fresh entry (no uid conflict
-                // possible, SHM cardinality is 1<=1), but if it does
-                // we leave channel unopened and propagate the result.
                 return result;
-            }
             auto [new_it, _] = pImpl->channels.insert_or_assign(
                 channel_name, std::move(entry));
             fired_entry             = new_it->second;
@@ -1110,34 +1155,46 @@ HubState::_on_producer_added(const std::string&         channel_name,
         }
         else
         {
-            // Existing channel — validate invariants match.  Return on
-            // first mismatch so the caller can surface a specific code
-            // (SCHEMA_MISMATCH for schema_*; TRANSPORT_MISMATCH for
-            // data_transport).  HEP-CORE-0036 §5b.4 retired the legacy
-            // duplicates has_shared_memory / shm_name / pattern.
+            // Existing channel.  Validate invariants first, then
+            // topology declaration + cardinality.  Return on first
+            // failure — order matches broker's error-code priority
+            // (SCHEMA_MISMATCH / TRANSPORT_MISMATCH before topology
+            // gate; topology-mismatch before cardinality).
             const auto &cur = it->second;
-            auto reject = [&](const char *name) {
+            auto reject_invariant = [&](const char *name) {
                 result.invariant_result     = InvariantSetResult::RejectedMismatch;
                 result.mismatched_invariant = name;
             };
-            if (cur.schema_hash    != schema.schema_hash)    { reject("schema_hash");    return result; }
-            if (cur.schema_version != schema.schema_version) { reject("schema_version"); return result; }
-            if (cur.schema_id      != schema.schema_id)      { reject("schema_id");      return result; }
-            if (cur.schema_blds    != schema.schema_blds)    { reject("schema_blds");    return result; }
-            if (cur.schema_owner   != schema.schema_owner)   { reject("schema_owner");   return result; }
+            if (cur.schema_hash    != schema.schema_hash)    { reject_invariant("schema_hash");    return result; }
+            if (cur.schema_version != schema.schema_version) { reject_invariant("schema_version"); return result; }
+            if (cur.schema_id      != schema.schema_id)      { reject_invariant("schema_id");      return result; }
+            if (cur.schema_blds    != schema.schema_blds)    { reject_invariant("schema_blds");    return result; }
+            if (cur.schema_owner   != schema.schema_owner)   { reject_invariant("schema_owner");   return result; }
             if (cur.data_transport != transport.data_transport)
-                                                              { reject("data_transport"); return result; }
+                                                              { reject_invariant("data_transport"); return result; }
 
-            // Invariants match — append the producer via the controlled
-            // API.  Typed result (Created / RejectedUidConflict /
-            // RejectedShmCardinality) propagates straight through.
+            // Topology declaration check.  Empty inherits stored;
+            // explicit non-matching → TOPOLOGY_MISMATCH.  Immutable
+            // at creation, no promotion path.
+            if (declared_topology && *declared_topology != cur.topology)
+            {
+                result.topology_error_code = "TOPOLOGY_MISMATCH";
+                return result;
+            }
+            // Cardinality gate under stored topology.  Reflects live
+            // counts because we hold the writer lock — no TOCTOU.
+            if (const char *err = topology::check_cardinality(
+                    cur.topology, /*is_consumer_reg=*/false,
+                    cur.producers.size(), cur.consumers.size()))
+            {
+                result.topology_error_code = err;
+                return result;
+            }
+
             result.invariant_result = InvariantSetResult::IdempotentEqual;
             result.producer_result  = it->second.add_producer(std::move(producer));
             if (result.producer_result != AddProducerResult::Created)
-            {
-                // No state change on either reject; return as-is.
                 return result;
-            }
             result.channel_opened = false;
         }
 
@@ -1362,23 +1419,27 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         _dispatch_role_disconnected_if_dead(consumer_uid);
 }
 
-void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer)
+ConsumerAdmissionResult
+HubState::_on_consumer_joined(const std::string&              channel,
+                              ConsumerEntry                   consumer,
+                              std::optional<ChannelTopology>  declared_topology)
 {
     if (!is_valid_identifier(channel, IdentifierKind::Channel))
     {
         bump_invalid_identifier(*pImpl);
-        return;
+        return {};
     }
     if (!consumer.role_uid.empty() &&
         !is_valid_identifier(consumer.role_uid, IdentifierKind::RoleUid))
     {
         bump_invalid_identifier(*pImpl);
-        return;
+        return {};
     }
 
     const std::string consumer_uid = consumer.role_uid;
 
-    _add_consumer(channel, std::move(consumer));
+    auto result = _add_consumer(channel, std::move(consumer), declared_topology);
+    if (!result.admitted) return result;
 
     if (!consumer_uid.empty())
     {
@@ -1390,6 +1451,7 @@ void HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry con
             h(fired);
     }
 
+    return result;
 }
 
 void HubState::_on_consumer_left(const std::string &channel, const std::string &role_uid)

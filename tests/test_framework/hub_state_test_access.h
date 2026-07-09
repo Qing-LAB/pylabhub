@@ -46,7 +46,7 @@ struct HubStateTestAccess
     }
     static void add_consumer(HubState &s, const std::string &ch, ConsumerEntry c)
     {
-        s._add_consumer(ch, std::move(c));
+        s._add_consumer(ch, std::move(c), /*declared_topology=*/std::nullopt);
     }
     static void remove_consumer(HubState &s, const std::string &ch,
                                 const std::string &uid)
@@ -106,15 +106,36 @@ struct HubStateTestAccess
     /// forwarder; the production REG_REQ handler routes the same
     /// way.
     static ProducerAdmissionResult
-    on_producer_added(HubState&                  s,
-                       const std::string&         channel_name,
-                       ChannelSchemaInvariants    schema,
-                       ChannelTransportInvariants transport,
-                       ProducerEntry              producer)
+    on_producer_added(HubState&                       s,
+                       const std::string&              channel_name,
+                       ChannelSchemaInvariants         schema,
+                       ChannelTransportInvariants      transport,
+                       ProducerEntry                   producer,
+                       std::optional<ChannelTopology>  declared_topology = std::nullopt)
     {
         return s._on_producer_added(channel_name,
                                      std::move(schema),
                                      std::move(transport),
+                                     declared_topology,
+                                     std::move(producer));
+    }
+
+    /// Convenience overload: declares fan-in topology explicitly.
+    /// Used by tests that admit multiple producers on the same channel
+    /// under the topology-migration model (implicit multi-producer via
+    /// the pre-topology model is no longer supported — default topology
+    /// is `OneToOne`).
+    static ProducerAdmissionResult
+    on_producer_added_fanin(HubState&                  s,
+                             const std::string&         channel_name,
+                             ChannelSchemaInvariants    schema,
+                             ChannelTransportInvariants transport,
+                             ProducerEntry              producer)
+    {
+        return s._on_producer_added(channel_name,
+                                     std::move(schema),
+                                     std::move(transport),
+                                     ChannelTopology::FanIn,
                                      std::move(producer));
     }
     /// Wave M2.5 step 4 — additive DEREG_REQ / producer-drop entry
@@ -144,10 +165,11 @@ struct HubStateTestAccess
     {
         s._on_channel_closed(n, why);
     }
-    static void on_consumer_joined(HubState &s, const std::string &ch,
-                                   ConsumerEntry c)
+    static ConsumerAdmissionResult
+    on_consumer_joined(HubState &s, const std::string &ch, ConsumerEntry c,
+                       std::optional<ChannelTopology> declared_topology = std::nullopt)
     {
-        s._on_consumer_joined(ch, std::move(c));
+        return s._on_consumer_joined(ch, std::move(c), declared_topology);
     }
     static void on_consumer_left(HubState &s, const std::string &ch,
                                  const std::string &uid)
