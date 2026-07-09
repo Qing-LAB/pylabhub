@@ -345,38 +345,30 @@ Broker rules (all evaluated under the channel-state mutex, atomically):
 1. `channel_topology` is **OPTIONAL** on every REG_REQ (revised 2026-07-08
    evening from initial "REQUIRED" per user direction; earlier rule text
    preserved below in strikethrough for archaeological reference).  Missing
-   field → default value `"one-to-one"`.  The broker tracks whether the
-   channel's stored topology was set EXPLICITLY (an incoming REG_REQ
-   carried the field with a non-empty value) or DEFAULTED (missing wire
-   field).
+   field → default value `"one-to-one"`.
    ~~"REQUIRED on every REG_REQ. Missing field → INVALID_REQUEST. No lenient default."~~
 2. Compatibility matrix check (§2.1) fires first — invalid transport ×
    topology combo → `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`.
 3. Cardinality pre-check (§4.2 table): if this REG_REQ would violate the
-   effective topology's cardinality, reject with the topology-specific
+   topology's cardinality, reject with the topology-specific
    error code (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /
    `ONE_TO_ONE_CARDINALITY_VIOLATED`).
-4. Channel-lookup + overwrite semantics:
+4. Channel-lookup + overwrite semantics.  The channel's topology is set
+   AT CREATION and IMMUTABLE thereafter — no promotion path.
    - Channel does not exist: broker creates `ChannelEntry` with the
-     declared (or defaulted `one-to-one`) topology + transport.  Sets an
-     internal `topology_explicit=true` flag when the incoming REG_REQ
-     carried the field; `false` when defaulted.  No "first REG_REQ"
-     ordering ambiguity because all state mutations are under the mutex.
-   - Channel exists:
-     - Incoming REG_REQ EXPLICIT (field present):
-       - Stored topology EXPLICIT and matches → OK.
-       - Stored topology EXPLICIT and mismatches → `TOPOLOGY_MISMATCH`.
-       - Stored topology DEFAULTED (`one-to-one`) → broker PROMOTES the
-         channel's topology to the new explicit value (only if the
-         promotion is consistent with existing cardinality — e.g.
-         promoting to `fan-in` requires 0 other producers already
-         registered; otherwise `TOPOLOGY_MISMATCH`).  Sets
-         `topology_explicit=true`.
-     - Incoming REG_REQ DEFAULTED (field absent):
-       - Silently inherits whatever's stored (whether explicit or
-         defaulted).  NO mismatch check fires even if stored is
-         `fan-in` or `fan-out`.  Rationale: a defaulted role opts
-         into whatever the channel already declares.
+     topology from the wire, or defaulted `one-to-one` when the wire
+     field is absent.  Fan-in and fan-out only work if the CREATING
+     REG_REQ declares them explicitly — a channel created with the
+     default `one-to-one` stays `one-to-one` for its lifetime.  No
+     "first REG_REQ" ordering ambiguity because all state mutations
+     are under the mutex.
+   - Channel exists (comparison against stored topology):
+     - Incoming REG_REQ has explicit `channel_topology` matching stored → OK.
+     - Incoming REG_REQ has explicit `channel_topology` differing from stored
+       → `TOPOLOGY_MISMATCH`.
+     - Incoming REG_REQ has no `channel_topology` field → silently inherit
+       stored (no check fires even if stored is fan-in or fan-out; the
+       defaulted role opts into whatever the channel already declares).
 5. All other REG_REQ validation (schema, known_roles, etc.) unchanged.
 
 **Channel creation is topology-driven, not side-driven.**  The broker

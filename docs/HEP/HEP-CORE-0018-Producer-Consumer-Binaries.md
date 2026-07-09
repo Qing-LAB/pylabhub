@@ -45,34 +45,32 @@
 > need fan-in or fan-out semantics need to declare the field
 > explicitly.
 >
-> **Overwrite semantics — only explicit declarations can set or
-> change a channel's stored topology.**
+> **Overwrite semantics — the channel's stored topology is set at
+> creation and immutable thereafter.**
 >
-> - **First REG_REQ / CONSUMER_REG_REQ on a channel with an
->   EXPLICIT `*_channel_topology`** — broker records that
->   topology on `ChannelEntry.topology` and applies it going
->   forward.
-> - **First REG_REQ on a channel with no `*_channel_topology`
->   (defaulted)** — broker records `ChannelEntry.topology =
->   OneToOne` provisionally.  This is the same as "explicit
->   `one-to-one`" for cardinality-check purposes, but flagged
->   internally as "defaulted" so a later EXPLICIT declaration on
->   the same channel can promote it.
-> - **Subsequent REG_REQ on an existing channel with EXPLICIT
->   `*_channel_topology`** — broker compares against the stored
->   topology:
->     - If stored is EXPLICIT and matches → OK.
->     - If stored is EXPLICIT and differs → `TOPOLOGY_MISMATCH`.
->     - If stored is DEFAULTED (`one-to-one`) → broker promotes
->       the channel to the new explicit topology (only if the
->       promotion is consistent with existing cardinality — e.g.
->       promoting to `fan-in` requires exactly 0 other producers
->       already registered; otherwise `TOPOLOGY_MISMATCH`).
-> - **Subsequent REG_REQ with NO `*_channel_topology` (defaulted)**
->   — broker treats as "inherit whatever's stored," no attempted
->   overwrite.  No mismatch check fires even if stored topology is
->   `fan-in` or `fan-out`.  The defaulted role simply participates
->   in the channel's declared topology.
+> - **First REG_REQ / CONSUMER_REG_REQ on a channel (channel does
+>   not yet exist)** — broker creates `ChannelEntry` and records
+>   its topology:
+>     - EXPLICIT `*_channel_topology` on the wire → recorded.
+>     - No wire field → recorded as `one-to-one` (default).
+>
+>   Once created, `ChannelEntry.topology` is immutable.  This means
+>   fan-in and fan-out channels only work if the CREATING REG_REQ
+>   declares the topology explicitly.
+>
+> - **Subsequent REG_REQ on an existing channel** — broker compares
+>   with stored topology:
+>     - EXPLICIT wire field matches stored → OK.
+>     - EXPLICIT wire field differs from stored → `TOPOLOGY_MISMATCH`.
+>     - No wire field → silently inherit stored topology.  No
+>       mismatch check fires even if the stored topology is
+>       `fan-in` or `fan-out`.  The defaulted role simply
+>       participates in the channel's declared topology.
+>
+> No "promotion" path — a channel that was created with a defaulted
+> `one-to-one` stays `one-to-one` for its lifetime; a later
+> explicit `fan-in` REG_REQ on it fires `TOPOLOGY_MISMATCH` rather
+> than upgrading the channel.
 >
 > Cardinality gates
 > (`FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /

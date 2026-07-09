@@ -515,8 +515,12 @@ struct ChannelEntry
     /// `TOPOLOGY_MISMATCH` (HEP-CORE-0007 §12.4a).
     ///
     /// Backwards-compat default `FanOut` during Phase B slices; the
-    /// atomic commit populates this from the wire and enforces the
-    /// declared value.
+    /// atomic commit populates this from the wire (declared value or
+    /// default `OneToOne` when the wire field is absent).  Once set
+    /// on channel creation, IMMUTABLE — subsequent REG_REQs that
+    /// carry an explicit topology different from this stored value
+    /// are rejected with `TOPOLOGY_MISMATCH`.  Subsequent REG_REQs
+    /// with no wire field silently inherit this stored value.
     ChannelTopology topology{ChannelTopology::FanOut};
 
     /// Single data-plane endpoint for the channel — owned by the
@@ -871,7 +875,9 @@ struct ChannelEntry
     }
 
     /// The channel's declared topology (default `FanOut` during Phase
-    /// B slices; populated from the wire in the atomic Phase B commit).
+    /// B slices; populated from the wire in the atomic Phase B commit —
+    /// declared value or defaulted `OneToOne` when the wire field was
+    /// absent on the creating REG_REQ).
     ChannelTopology channel_topology() const noexcept
     {
         return topology;
