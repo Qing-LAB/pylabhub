@@ -108,6 +108,17 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     const std::string                  &in_channel()    const;
     const std::string                  &out_channel()   const;
 
+    /// Channel topology declarations (2026-07-08 topology migration).
+    /// Wire-value strings per `pylabhub::hub::to_string(ChannelTopology)`:
+    /// `"fan-in"` | `"fan-out"` | `"one-to-one"`.  OPTIONAL — empty
+    /// string means "not declared in config"; the wire builder skips
+    /// emission and the broker applies the default `"one-to-one"` +
+    /// overwrite semantics per HEP-CORE-0007 §12.3.  Config authority:
+    /// HEP-CORE-0018 §5.3 (`out_channel_topology`) + §5.4
+    /// (`in_channel_topology`).
+    const std::string                  &in_channel_topology()  const;
+    const std::string                  &out_channel_topology() const;
+
     // ── Vault operations ────────────────────────────────────────────
 
     /// Decrypt the vault file and load keypair into auth config.

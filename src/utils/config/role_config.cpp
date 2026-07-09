@@ -56,6 +56,13 @@ struct RoleConfig::Impl
     std::string                  in_channel;
     std::string                  out_channel;
 
+    /// 2026-07-08 topology migration additions.  Empty string means
+    /// "not declared in config" — payload builders skip emission on
+    /// empty; broker treats missing wire field as default
+    /// `"one-to-one"` per HEP-CORE-0007 §12.3 overwrite semantics.
+    std::string                  in_channel_topology;
+    std::string                  out_channel_topology;
+
     // ── Role-specific extension (type-erased) ────────────────────────
     std::any role_data;
 
@@ -101,6 +108,9 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     "in_hub_dir", "out_hub_dir",
     // Per-direction: channel
     "in_channel", "out_channel",
+    // Per-direction: channel topology (2026-07-08 topology migration).
+    // OPTIONAL; default "one-to-one" when omitted.  See HEP-CORE-0018 §5.3/§5.4.
+    "in_channel_topology", "out_channel_topology",
     // Per-direction: transport
     "in_transport", "out_transport",
     "in_zmq_endpoint", "out_zmq_endpoint",
@@ -222,6 +232,11 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     out_shm       = parse_shm_config(j, "out", tag);
     in_channel    = j.value("in_channel", std::string{});
     out_channel   = j.value("out_channel", std::string{});
+    // 2026-07-08 topology migration — OPTIONAL; empty means "inherit
+    // channel's stored topology or default to one-to-one" per broker
+    // overwrite semantics (tech draft §5.1 rule 4).
+    in_channel_topology  = j.value("in_channel_topology",  std::string{});
+    out_channel_topology = j.value("out_channel_topology", std::string{});
 }
 
 // ============================================================================
@@ -324,6 +339,8 @@ const ShmConfig                   &RoleConfig::in_shm()        const { assert(im
 const ShmConfig                   &RoleConfig::out_shm()       const { assert(impl_); return impl_->out_shm; }
 const std::string                 &RoleConfig::in_channel()    const { assert(impl_); return impl_->in_channel; }
 const std::string                 &RoleConfig::out_channel()   const { assert(impl_); return impl_->out_channel; }
+const std::string                 &RoleConfig::in_channel_topology()  const { assert(impl_); return impl_->in_channel_topology; }
+const std::string                 &RoleConfig::out_channel_topology() const { assert(impl_); return impl_->out_channel_topology; }
 
 // ============================================================================
 // Vault operations

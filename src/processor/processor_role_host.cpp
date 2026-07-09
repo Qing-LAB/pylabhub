@@ -375,6 +375,10 @@ void ProcessorRoleHost::worker_main_()
             reg_in.has_shm           = shm.enabled;
             reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
             reg_in.zmq_node_endpoint = tr.zmq_endpoint;
+            // 2026-07-08 topology migration — processor's producer side
+            // declares its output-channel topology.  Config authority:
+            // HEP-CORE-0018 §5.3.
+            reg_in.channel_topology  = config_.out_channel_topology();
             // HEP-CORE-0036 §4.1 — producer-side identity pubkey is
             // REQUIRED on REG_REQ; processor uses its own role's
             // CURVE client pubkey (same vault-loaded value as the BRC).
@@ -402,10 +406,17 @@ void ProcessorRoleHost::worker_main_()
         // `zmq_pubkey` carries the role's own CURVE pubkey
         // (HEP-CORE-0036 §6.5) so the broker can populate the
         // channel-scope auth allowlist.
-        auto cons_reg = hub::build_consumer_reg_payload(
-            hub::ConsumerRegInputs{config_.in_channel(), id.uid, id.name,
-                                    std::string(pylabhub::utils::security::
-                                                secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName))});
+        hub::ConsumerRegInputs cons_reg_in;
+        cons_reg_in.channel   = config_.in_channel();
+        cons_reg_in.role_uid  = id.uid;
+        cons_reg_in.role_name = id.name;
+        cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::
+                                              secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
+        // 2026-07-08 topology migration — processor's consumer side
+        // declares its input-channel topology.  Config authority:
+        // HEP-CORE-0018 §5.4.
+        cons_reg_in.channel_topology = config_.in_channel_topology();
+        auto cons_reg = hub::build_consumer_reg_payload(cons_reg_in);
         const auto in_wire = hub::make_wire_schema_fields(
             pf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(cons_reg, in_wire);

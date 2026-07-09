@@ -309,10 +309,19 @@ void ConsumerRoleHost::worker_main_()
         // can populate the channel-scope auth allowlist via
         // `_on_consumer_authorized`.
         const auto &ch = config_.in_channel();
-        auto reg_opts = hub::build_consumer_reg_payload(
-            hub::ConsumerRegInputs{ch, id.uid, id.name,
-                                    std::string(pylabhub::utils::security::
-                                                secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName))});
+        hub::ConsumerRegInputs cons_reg_in;
+        cons_reg_in.channel   = ch;
+        cons_reg_in.role_uid  = id.uid;
+        cons_reg_in.role_name = id.name;
+        cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::
+                                              secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
+        // 2026-07-08 topology migration — consumer declares its input
+        // channel topology.  Empty when the config didn't set
+        // `in_channel_topology`; the builder skips wire emission and
+        // the broker applies default "one-to-one" + overwrite semantics
+        // per HEP-CORE-0007 §12.3.  Config authority: HEP-CORE-0018 §5.4.
+        cons_reg_in.channel_topology = config_.in_channel_topology();
+        auto reg_opts = hub::build_consumer_reg_payload(cons_reg_in);
 
         // Citation fields (HEP-CORE-0034 §10.3) — named-mode vs anonymous
         // vs absent decided by the schema JSON shape; broker enforces the

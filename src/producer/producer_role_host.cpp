@@ -347,6 +347,12 @@ void ProducerRoleHost::worker_main_()
         reg_in.has_shm           = shm.enabled;
         reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
         reg_in.zmq_node_endpoint = tr.zmq_endpoint;
+        // 2026-07-08 topology migration — producer declares its output
+        // channel topology.  Empty when the config didn't set
+        // `out_channel_topology`; the builder skips wire emission and
+        // the broker applies default "one-to-one" + overwrite semantics
+        // per HEP-CORE-0007 §12.3.  Config authority: HEP-CORE-0018 §5.3.
+        reg_in.channel_topology  = config_.out_channel_topology();
         // HEP-CORE-0036 §4.1 + §5.1 + §6.4 — producer's CURVE identity
         // pubkey is REQUIRED on REG_REQ.  Broker stores it on
         // ChannelEntry::producers[i].zmq_pubkey and emits it back to
