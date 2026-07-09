@@ -50,6 +50,7 @@ using pylabhub::hub::parse_channel_topology;
 using pylabhub::hub::to_string;
 using pylabhub::hub::transport_topology_compatible;
 using pylabhub::hub::check_topology_against_stored;
+using pylabhub::hub::check_cardinality_admission;
 using pylabhub::hub::ConsumerEntry;
 using pylabhub::hub::ProducerEntry;
 using pylabhub::hub::HandlerId;
@@ -4335,5 +4336,81 @@ TEST(ChannelTopology, CheckAgainstStored_InvalidWireValue)
                  check_topology_against_stored(ChannelTopology::OneToOne, "FanIn"));
     EXPECT_STREQ("INVALID_REQUEST",
                  check_topology_against_stored(ChannelTopology::FanOut,   "one_to_one"));
+}
+
+// Cardinality gate — slice 8.
+
+TEST(ChannelTopology, Cardinality_FanIn_AdmitsProducers)
+{
+    // Fan-in permits N producers.  Producer REG_REQ always admitted
+    // regardless of existing producer count.
+    for (std::size_t p = 0; p < 8; ++p)
+    {
+        EXPECT_EQ(nullptr,
+                  check_cardinality_admission(ChannelTopology::FanIn,
+                                              /*is_consumer_reg=*/false,
+                                              /*existing_producers=*/p,
+                                              /*existing_consumers=*/0));
+    }
+}
+
+TEST(ChannelTopology, Cardinality_FanIn_FirstConsumerAdmittedSecondRejected)
+{
+    // Fan-in permits exactly 1 consumer.
+    EXPECT_EQ(nullptr,
+              check_cardinality_admission(ChannelTopology::FanIn, true, 0, 0));
+    EXPECT_STREQ("FAN_IN_IS_SINGLE_CONSUMER",
+                 check_cardinality_admission(ChannelTopology::FanIn, true, 0, 1));
+    EXPECT_STREQ("FAN_IN_IS_SINGLE_CONSUMER",
+                 check_cardinality_admission(ChannelTopology::FanIn, true, 5, 1));
+}
+
+TEST(ChannelTopology, Cardinality_FanOut_AdmitsConsumers)
+{
+    // Fan-out permits N consumers.  Consumer CONSUMER_REG_REQ always
+    // admitted regardless of existing consumer count.
+    for (std::size_t c = 0; c < 8; ++c)
+    {
+        EXPECT_EQ(nullptr,
+                  check_cardinality_admission(ChannelTopology::FanOut,
+                                              /*is_consumer_reg=*/true,
+                                              /*existing_producers=*/1,
+                                              /*existing_consumers=*/c));
+    }
+}
+
+TEST(ChannelTopology, Cardinality_FanOut_FirstProducerAdmittedSecondRejected)
+{
+    EXPECT_EQ(nullptr,
+              check_cardinality_admission(ChannelTopology::FanOut, false, 0, 0));
+    EXPECT_STREQ("FAN_OUT_IS_SINGLE_PRODUCER",
+                 check_cardinality_admission(ChannelTopology::FanOut, false, 1, 0));
+    EXPECT_STREQ("FAN_OUT_IS_SINGLE_PRODUCER",
+                 check_cardinality_admission(ChannelTopology::FanOut, false, 1, 3));
+}
+
+TEST(ChannelTopology, Cardinality_OneToOne_BothSidesCardinalityOne)
+{
+    // Both first REG and first CONSUMER_REG admitted.
+    EXPECT_EQ(nullptr,
+              check_cardinality_admission(ChannelTopology::OneToOne, false, 0, 0));
+    EXPECT_EQ(nullptr,
+              check_cardinality_admission(ChannelTopology::OneToOne, true, 0, 0));
+    EXPECT_EQ(nullptr,
+              check_cardinality_admission(ChannelTopology::OneToOne, true, 1, 0));
+    EXPECT_EQ(nullptr,
+              check_cardinality_admission(ChannelTopology::OneToOne, false, 0, 1));
+
+    // Second producer rejected.
+    EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
+                 check_cardinality_admission(ChannelTopology::OneToOne, false, 1, 0));
+    EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
+                 check_cardinality_admission(ChannelTopology::OneToOne, false, 1, 1));
+
+    // Second consumer rejected.
+    EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
+                 check_cardinality_admission(ChannelTopology::OneToOne, true, 0, 1));
+    EXPECT_STREQ("ONE_TO_ONE_CARDINALITY_VIOLATED",
+                 check_cardinality_admission(ChannelTopology::OneToOne, true, 1, 1));
 }
 

@@ -136,6 +136,47 @@ const char *check_topology_against_stored(ChannelTopology stored,
     return (*parsed == stored) ? nullptr : "TOPOLOGY_MISMATCH";
 }
 
+const char *check_cardinality_admission(ChannelTopology topology,
+                                         bool is_consumer_reg,
+                                         std::size_t existing_producers,
+                                         std::size_t existing_consumers) noexcept
+{
+    // Tech draft §5.1 rule 3 + HEP-CORE-0007 §12.4a.  Each branch
+    // rejects when the incoming role would push the channel's producer
+    // or consumer count past the topology's cardinality limit.  Only
+    // the incoming-role side matters — a fan-in channel can have any
+    // number of producers, so a producer REG_REQ never fires
+    // FAN_IN_IS_SINGLE_CONSUMER.
+
+    switch (topology)
+    {
+    case ChannelTopology::FanIn:
+        // N producers → 1 consumer.  Only the second-or-later consumer
+        // is rejected; producers are always admitted (schema check is
+        // separate).
+        if (is_consumer_reg && existing_consumers >= 1)
+            return "FAN_IN_IS_SINGLE_CONSUMER";
+        return nullptr;
+
+    case ChannelTopology::FanOut:
+        // 1 producer → N consumers.  Only the second-or-later producer
+        // is rejected; consumers are always admitted.
+        if (!is_consumer_reg && existing_producers >= 1)
+            return "FAN_OUT_IS_SINGLE_PRODUCER";
+        return nullptr;
+
+    case ChannelTopology::OneToOne:
+        // 1 producer, 1 consumer.  Reject both sides on second-or-later.
+        if (is_consumer_reg && existing_consumers >= 1)
+            return "ONE_TO_ONE_CARDINALITY_VIOLATED";
+        if (!is_consumer_reg && existing_producers >= 1)
+            return "ONE_TO_ONE_CARDINALITY_VIOLATED";
+        return nullptr;
+    }
+    // Unreachable under a well-formed ChannelTopology enum.
+    return "INVALID_REQUEST";
+}
+
 // ─── Impl ───────────────────────────────────────────────────────────────────
 
 struct HubState::Impl

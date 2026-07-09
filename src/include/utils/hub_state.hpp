@@ -193,6 +193,39 @@ PYLABHUB_UTILS_EXPORT const char *
 check_topology_against_stored(ChannelTopology stored,
                               std::string_view incoming_wire_value) noexcept;
 
+/// Cardinality gate for the broker's REG_REQ / CONSUMER_REG_REQ
+/// admission path.  Called AFTER the transport × topology
+/// compatibility check but BEFORE any state mutation, per tech
+/// draft §5.1 rule 3.  Inputs describe the STATE BEFORE the new
+/// role is added:
+///
+/// - `topology`: the channel's declared or defaulted topology.
+///   For a channel that doesn't yet exist, pass the topology the
+///   incoming REG_REQ declares (or defaulted `OneToOne`).
+/// - `is_consumer_reg`: true for `CONSUMER_REG_REQ`, false for
+///   producer `REG_REQ`.
+/// - `existing_producers`: number of already-registered producers
+///   on this channel (0 for a channel that doesn't exist).
+/// - `existing_consumers`: number of already-registered consumers.
+///
+/// Returns nullptr when the new role can be admitted.  Returns
+/// one of:
+///
+/// - `"FAN_IN_IS_SINGLE_CONSUMER"` when the incoming role is a
+///   consumer joining a fan-in channel that already has one.
+/// - `"FAN_OUT_IS_SINGLE_PRODUCER"` when the incoming role is a
+///   producer joining a fan-out channel that already has one.
+/// - `"ONE_TO_ONE_CARDINALITY_VIOLATED"` when the incoming role
+///   would be a second producer OR second consumer on a 1-to-1
+///   channel.
+///
+/// HEP-CORE-0007 §12.4a for error code semantics.
+PYLABHUB_UTILS_EXPORT const char *
+check_cardinality_admission(ChannelTopology topology,
+                            bool is_consumer_reg,
+                            std::size_t existing_producers,
+                            std::size_t existing_consumers) noexcept;
+
 // ─── Entry types (HEP-CORE-0033 §8) ─────────────────────────────────────────
 
 /// Consumer attached to a channel.
