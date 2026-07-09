@@ -2482,6 +2482,20 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         std::move(primary_producer));
 
     // Outcome dispatch (order matches HubState's evaluation order).
+    if (admission.invalid_identifier)
+    {
+        // Defensive branch — production callers were already gated by
+        // `validate_identity_fields`.  Fires only when a bypass path
+        // (test-access) violates the precondition.
+        LOGGER_WARN(
+            "[broker] event=RegReqRejected reason='INVALID_REQUEST' "
+            "role='{}' channel='{}' detail='identifier grammar failure'",
+            role_uid, channel_name);
+        return make_error(
+            corr_id, "INVALID_REQUEST",
+            "REG_REQ rejected — identifier grammar failure "
+            "(HEP-CORE-0033 §G2.2.0b)");
+    }
     if (admission.topology_error_code != nullptr)
     {
         LOGGER_WARN(
@@ -3293,6 +3307,17 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // run under HubState's writer lock alongside the mutation.
     const auto cons_admission = hub_state_->_on_consumer_joined(
         channel_name, std::move(entry), declared_topology);
+    if (cons_admission.invalid_identifier)
+    {
+        LOGGER_WARN(
+            "[broker] event=ConsumerRegReqRejected reason='INVALID_REQUEST' "
+            "role='{}' channel='{}' detail='identifier grammar failure'",
+            role_uid, channel_name);
+        return make_error(
+            corr_id, "INVALID_REQUEST",
+            "CONSUMER_REG_REQ rejected — identifier grammar failure "
+            "(HEP-CORE-0033 §G2.2.0b)");
+    }
     if (cons_admission.topology_error_code != nullptr)
     {
         LOGGER_WARN(
@@ -3302,6 +3327,24 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             corr_id, cons_admission.topology_error_code,
             std::string("CONSUMER_REG_REQ rejected — topology gate '") +
                 cons_admission.topology_error_code + "'");
+    }
+    // `admitted=false` with no `topology_error_code` = the atomic op's
+    // silent-skip contract (channel vanished between the pre-check
+    // above and the writer-lock acquisition inside `_add_consumer`,
+    // OR the defensive identifier-validation branch fired).  Both are
+    // production-latent: the broker already gates on CHANNEL_NOT_FOUND
+    // + identifier grammar at handler entry, so this only fires under
+    // race with concurrent `_on_channel_closed`.  Surface as
+    // CHANNEL_NOT_FOUND so the client doesn't believe it registered.
+    if (!cons_admission.admitted)
+    {
+        LOGGER_WARN(
+            "[broker] event=ConsumerRegReqRejected reason='CHANNEL_NOT_FOUND' "
+            "role='{}' channel='{}' detail='race with channel teardown'",
+            role_uid, channel_name);
+        return make_error(
+            corr_id, "CHANNEL_NOT_FOUND",
+            "Channel '" + channel_name + "' vanished during admission");
     }
 
     // HEP-CORE-0036 §6.5: pubkey was validated non-empty + 40-char Z85

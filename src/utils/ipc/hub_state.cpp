@@ -605,16 +605,20 @@ HubState::_add_consumer(const std::string&              channel,
 
         auto &cons = channel_entry.consumers;
 
-        // Detect re-registration (same role_uid or same pid already
-        // present) — idempotent, skip cardinality check.
-        const bool is_reregistration = std::any_of(
-            cons.begin(), cons.end(),
-            [&](const ConsumerEntry &c) {
-                return (!entry.role_uid.empty() &&
-                        c.role_uid == entry.role_uid) ||
-                       (entry.consumer_pid != 0 &&
-                        c.consumer_pid == entry.consumer_pid);
-            });
+        // Detect re-registration (same role_uid already present) —
+        // idempotent, skip cardinality check.  Role identity is
+        // uid-only per HEP-CORE-0033 §G2.2.0b + HEP-CORE-0023 §2.1;
+        // pid is metadata, not identity, so a pid collision does NOT
+        // qualify as re-registration.  (Pre-2026-07-09 the predicate
+        // also accepted a same-pid match — that allowed a distinct-uid
+        // consumer to silently displace an existing one under fan-in
+        // via pid collision, and OS pid reuse could swap role identity
+        // silently.  Retired 2026-07-09 per review Bug #2.)
+        auto is_dupe = [&](const ConsumerEntry &c) noexcept {
+            return !entry.role_uid.empty() && c.role_uid == entry.role_uid;
+        };
+        const bool is_reregistration =
+            std::any_of(cons.begin(), cons.end(), is_dupe);
 
         if (!is_reregistration)
         {
@@ -627,13 +631,7 @@ HubState::_add_consumer(const std::string&              channel,
             }
         }
 
-        cons.erase(std::remove_if(cons.begin(), cons.end(),
-                                  [&](const ConsumerEntry &c) {
-                                      return (!entry.role_uid.empty() &&
-                                              c.role_uid == entry.role_uid) ||
-                                             (entry.consumer_pid != 0 &&
-                                              c.consumer_pid == entry.consumer_pid);
-                                  }),
+        cons.erase(std::remove_if(cons.begin(), cons.end(), is_dupe),
                    cons.end());
         cons.push_back(std::move(entry));
         fired            = cons.back();
@@ -1079,26 +1077,21 @@ HubState::_on_producer_added(const std::string&              channel_name,
     // `_on_channel_registered`).  Invalid identifiers bump
     // sys.invalid_identifier_rejected and silent-drop; the wire layer
     // returns a typed error.
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    // Grammar failures — defensive branch.  Production callers are
+    // guarded by `BrokerServiceImpl::validate_identity_fields`, which
+    // rejects with `INVALID_REQUEST` before reaching here.  Test-access
+    // callers may bypass; report the failure explicitly so the broker
+    // adapter maps to `INVALID_REQUEST` instead of misclassifying as
+    // SCHEMA_MISMATCH / TRANSPORT_MISMATCH (retired 2026-07-09 per
+    // review Bug #3).
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        (!producer.role_uid.empty() &&
+         !is_valid_identifier(producer.role_uid, IdentifierKind::RoleUid)) ||
+        (!schema.schema_id.empty() &&
+         !is_valid_identifier(schema.schema_id, IdentifierKind::Schema)))
     {
         bump_invalid_identifier(*pImpl);
-        result.invariant_result = InvariantSetResult::RejectedMismatch;
-        result.mismatched_invariant = "channel_name";
-        return result;
-    }
-    if (!producer.role_uid.empty() &&
-        !is_valid_identifier(producer.role_uid, IdentifierKind::RoleUid))
-    {
-        bump_invalid_identifier(*pImpl);
-        result.producer_result = AddProducerResult::RejectedUidConflict;
-        return result;
-    }
-    if (!schema.schema_id.empty() &&
-        !is_valid_identifier(schema.schema_id, IdentifierKind::Schema))
-    {
-        bump_invalid_identifier(*pImpl);
-        result.invariant_result = InvariantSetResult::RejectedMismatch;
-        result.mismatched_invariant = "schema_id";
+        result.invalid_identifier = true;
         return result;
     }
 
@@ -1438,16 +1431,18 @@ HubState::_on_consumer_joined(const std::string&              channel,
                               ConsumerEntry                   consumer,
                               std::optional<ChannelTopology>  declared_topology)
 {
-    if (!is_valid_identifier(channel, IdentifierKind::Channel))
+    // Grammar failures — see the parallel branch in
+    // `_on_producer_added`.  Return a distinct outcome so the broker
+    // adapter can map to `INVALID_REQUEST` rather than treating
+    // `admitted=false` as the silent-skip (channel-vanished) contract.
+    if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
+        (!consumer.role_uid.empty() &&
+         !is_valid_identifier(consumer.role_uid, IdentifierKind::RoleUid)))
     {
         bump_invalid_identifier(*pImpl);
-        return {};
-    }
-    if (!consumer.role_uid.empty() &&
-        !is_valid_identifier(consumer.role_uid, IdentifierKind::RoleUid))
-    {
-        bump_invalid_identifier(*pImpl);
-        return {};
+        ConsumerAdmissionResult grammar_fail;
+        grammar_fail.invalid_identifier = true;
+        return grammar_fail;
     }
 
     const std::string consumer_uid = consumer.role_uid;

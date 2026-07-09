@@ -2716,6 +2716,99 @@ TEST(HubStateTopologyAdmission, SecondProducer_ShmDefaultTopology_RejectedOneToO
     EXPECT_EQ(ch->find_producer("prod.thermoB.uid00000004"), nullptr);
 }
 
+// ─── Phase B rev 2 Group A — correctness regression pins ──────────────
+//
+// Bug #1 (broker CHANNEL_NOT_FOUND on race):
+//   Pins the `admitted=false, topology_error_code=nullptr` silent-skip
+//   contract that `_add_consumer` uses when the channel vanished
+//   between the broker's pre-check and the writer lock.  The broker
+//   translates this into `CHANNEL_NOT_FOUND`; here we pin the L2
+//   contract that `_on_consumer_joined` reflects the missing channel
+//   via `admitted=false` and NOT via a topology error.
+
+TEST(HubStateConsumerAdmissionContract,
+     ChannelDoesNotExist_ReturnsAdmittedFalse_NoTopologyErrorCode)
+{
+    HubState s;
+    auto r = HubStateTestAccess::on_consumer_joined(
+        s, "ch.does-not-exist", make_consumer("cons.a.uid00000001"),
+        /*declared_topology=*/std::nullopt);
+    EXPECT_FALSE(r.admitted);
+    EXPECT_FALSE(r.invalid_identifier);
+    EXPECT_EQ(r.topology_error_code, nullptr)
+        << "Silent-skip contract: channel-missing must NOT surface a "
+           "topology error code (see review Bug #1)";
+}
+
+// Bug #2 (pid-based re-registration heuristic retired):
+//   Under fan-in a channel admits exactly one consumer.  A second
+//   distinct-uid CONSUMER_REG_REQ that happens to share a pid with the
+//   incumbent MUST trip the cardinality gate — the pid MUST NOT
+//   qualify the second consumer as a "re-registration" that displaces
+//   the incumbent silently.
+
+TEST(HubStateConsumerAdmissionContract,
+     FanIn_SecondConsumerSamePid_DistinctUid_RejectedCardinality)
+{
+    HubState s;
+    HubStateTestAccess::set_channel_opened(
+        s, make_channel("ch.fanin.pid-collision", ChannelTopology::FanIn));
+
+    // First consumer takes the sole slot.
+    {
+        auto c = make_consumer("cons.first.uid00000001", /*pid=*/42);
+        auto r = HubStateTestAccess::on_consumer_joined(
+            s, "ch.fanin.pid-collision", c, std::nullopt);
+        ASSERT_TRUE(r.admitted);
+    }
+    // Second consumer with distinct uid but same pid — pre-fix this
+    // would silently displace via the OR-with-pid dedup predicate.
+    // Post-fix, cardinality gate must fire.
+    {
+        auto c = make_consumer("cons.intruder.uid00000002", /*pid=*/42);
+        auto r = HubStateTestAccess::on_consumer_joined(
+            s, "ch.fanin.pid-collision", c, std::nullopt);
+        EXPECT_FALSE(r.admitted);
+        EXPECT_STREQ(r.topology_error_code, "FAN_IN_IS_SINGLE_CONSUMER");
+    }
+    // Verify the incumbent survives — no state mutation on rejection.
+    auto ch = s.channel("ch.fanin.pid-collision");
+    ASSERT_TRUE(ch.has_value());
+    ASSERT_EQ(ch->consumers.size(), 1u);
+    EXPECT_EQ(ch->consumers[0].role_uid, "cons.first.uid00000001");
+}
+
+// Bug #3 (grammar-error misclassification):
+//   Invalid identifiers must return `invalid_identifier=true` so the
+//   broker adapter emits `INVALID_REQUEST` — NOT
+//   SCHEMA_MISMATCH / TRANSPORT_MISMATCH (producer path) or the silent
+//   `admitted=false, topology_error_code=nullptr` shape that collides
+//   with the channel-vanished contract (consumer path).
+
+TEST(HubStateProducerAdmissionContract, InvalidChannelName_ReturnsInvalidIdentifier)
+{
+    HubState s;
+    auto r = HubStateTestAccess::on_producer_added(
+        s, /*channel_name=*/"",  // empty → grammar failure
+        make_schema_invariants(), make_zmq_transport(),
+        make_producer("prod.a.uid00000001", 1001));
+    EXPECT_TRUE(r.invalid_identifier);
+    EXPECT_EQ(r.topology_error_code, nullptr);
+    EXPECT_NE(r.invariant_result, InvariantSetResult::RejectedMismatch)
+        << "Grammar failure must NOT be classified as SCHEMA/TRANSPORT_MISMATCH";
+}
+
+TEST(HubStateConsumerAdmissionContract, InvalidChannelName_ReturnsInvalidIdentifier)
+{
+    HubState s;
+    auto r = HubStateTestAccess::on_consumer_joined(
+        s, /*channel=*/"", make_consumer("cons.a.uid00000001"),
+        /*declared_topology=*/std::nullopt);
+    EXPECT_TRUE(r.invalid_identifier);
+    EXPECT_FALSE(r.admitted);
+    EXPECT_EQ(r.topology_error_code, nullptr);
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // Wave M1.4 (2026-05-11) — channel_metrics_snapshot tests.  Replace the
 // retired `MetricsReported_StoresOnPresenceWithoutLivenessSideEffect`

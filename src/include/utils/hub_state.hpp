@@ -507,6 +507,15 @@ struct ProducerAdmissionResult
     /// when set.  Checked BEFORE `invariant_result` / `producer_result`.
     const char *       topology_error_code{nullptr};
 
+    /// True when the op-entry identifier-grammar check rejected the
+    /// call (invalid `channel_name`, `role_uid`, or `schema_id`).
+    /// In production these are pre-gated by
+    /// `BrokerServiceImpl::validate_identity_fields`, so this branch
+    /// is defensive; test-access callers may bypass the pre-gate.
+    /// Broker maps to `INVALID_REQUEST` on the wire.  Checked BEFORE
+    /// `topology_error_code`.
+    bool               invalid_identifier{false};
+
     /// True iff this admission opened a fresh channel record (first
     /// producer).  Caller uses this to decide whether to fire the
     /// `ch_opened` handler chain + emit HEP-CORE-0034 schema-record
@@ -538,6 +547,13 @@ struct ConsumerAdmissionResult
     /// `"TOPOLOGY_MISMATCH"`, `"FAN_IN_IS_SINGLE_CONSUMER"`,
     /// `"ONE_TO_ONE_CARDINALITY_VIOLATED"`.
     const char * topology_error_code{nullptr};
+
+    /// True when the op-entry identifier-grammar check rejected the
+    /// call.  Defensive branch — pre-gated in production by
+    /// `BrokerServiceImpl::validate_identity_fields`.  Broker maps to
+    /// `INVALID_REQUEST` on the wire.  Checked BEFORE
+    /// `topology_error_code`; when `true`, `admitted=false`.
+    bool         invalid_identifier{false};
 };
 
 /// Channel registered with the broker.
