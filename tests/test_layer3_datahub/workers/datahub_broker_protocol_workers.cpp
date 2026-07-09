@@ -470,16 +470,24 @@ int duplicate_reg_shm_cardinality()
                    "not transport failure";
             EXPECT_EQ(h2->value("status", std::string{}), "error")
                 << "Second SHM producer must reject; got: " << h2->dump();
+            // 2026-07-08 topology migration — SHM cardinality is now
+            // enforced via the topology cardinality gate.  A default
+            // (undeclared) SHM channel stores topology `one-to-one`;
+            // the second producer trips
+            // `ONE_TO_ONE_CARDINALITY_VIOLATED`.  Pre-migration this
+            // was `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
             EXPECT_EQ(h2->value("error_code", std::string{}),
-                      "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM")
+                      "ONE_TO_ONE_CARDINALITY_VIOLATED")
                 << "SHM cardinality reject must surface as "
-                   "MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM; got: "
+                   "ONE_TO_ONE_CARDINALITY_VIOLATED; got: "
                 << h2->dump();
 
             bh2.stop();
             bh1.stop();
         },
-        {"SHM channels are physically single-producer"});
+        // Topology cardinality gate — the WARN line the broker emits
+        // for a second producer on a default (`one-to-one`) SHM channel.
+        {"event=RegReqRejected reason='ONE_TO_ONE_CARDINALITY_VIOLATED'"});
 }
 
 int duplicate_reg_different_schema_hash()
@@ -1108,8 +1116,13 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
             BrcHandle prod_bh;
             prod_bh.brc.on_notification(only_bcast(prod_evts));
             prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
+            // Fan-out — 1 producer, 2 consumers.  Explicit topology
+            // required under the 2026-07-08 topology migration
+            // (default is one-to-one; second consumer would trip
+            // ONE_TO_ONE_CARDINALITY_VIOLATED).
             auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
+                make_reg_opts(channel, prod_uid, std::nullopt,
+                              /*channel_topology=*/"fan-out"), 3000);
             ASSERT_TRUE(reg.has_value());
             // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
             prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
@@ -1118,7 +1131,8 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
             cons1_bh.brc.on_notification(only_bcast(cons1_evts));
             cons1_bh.start(broker->endpoint, broker->pubkey, cons1_uid, pylabhub::tests::role_keystore_name(cons1_uid));
             {
-                auto opts = make_cons_opts(channel, cons1_uid);
+                auto opts = make_cons_opts(channel, cons1_uid, std::nullopt,
+                                            /*channel_topology=*/"fan-out");
                 opts["consumer_pid"] =
                     static_cast<uint64_t>(::getpid()) * 100u + 1u;
                 ASSERT_TRUE(cons1_bh.brc.register_consumer(opts, 3000)
@@ -1129,7 +1143,8 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
             cons2_bh.brc.on_notification(only_bcast(cons2_evts));
             cons2_bh.start(broker->endpoint, broker->pubkey, cons2_uid, pylabhub::tests::role_keystore_name(cons2_uid));
             {
-                auto opts = make_cons_opts(channel, cons2_uid);
+                auto opts = make_cons_opts(channel, cons2_uid, std::nullopt,
+                                            /*channel_topology=*/"fan-out");
                 opts["consumer_pid"] =
                     static_cast<uint64_t>(::getpid()) * 100u + 2u;
                 ASSERT_TRUE(cons2_bh.brc.register_consumer(opts, 3000)

@@ -772,15 +772,19 @@ int fan_in_two_producers_metrics_do_not_overwrite()
             bh_a.start(ep, pk, uid_a, pylabhub::tests::role_keystore_name(uid_a));
             bh_b.start(ep, pk, uid_b, pylabhub::tests::role_keystore_name(uid_b));
 
-            // ZMQ transport — SHM forbids multi-producer
-            // (HEP-CORE-0023 §2.1.1).
-            auto opts_a = pylabhub::tests::make_reg_opts(channel, uid_a);
+            // ZMQ + fan-in — SHM forbids multi-producer per
+            // HEP-CORE-0017 §3.3.0.  Explicit `fan-in` topology
+            // required for multi-producer under the 2026-07-08 topology
+            // migration (default topology is one-to-one).
+            auto opts_a = pylabhub::tests::make_reg_opts(
+                channel, uid_a, std::nullopt, /*channel_topology=*/"fan-in");
             opts_a["data_transport"] = "zmq";
             auto reg_a = bh_a.brc.register_channel(opts_a, 3000);
             ASSERT_TRUE(reg_a.has_value()) << reg_a.value_or(json{}).dump();
             ASSERT_EQ(reg_a->value("status", ""), "success") << reg_a->dump();
 
-            auto opts_b = pylabhub::tests::make_reg_opts(channel, uid_b);
+            auto opts_b = pylabhub::tests::make_reg_opts(
+                channel, uid_b, std::nullopt, /*channel_topology=*/"fan-in");
             opts_b["data_transport"] = "zmq";
             auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
             ASSERT_TRUE(reg_b.has_value()) << reg_b.value_or(json{}).dump();

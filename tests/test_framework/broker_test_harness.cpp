@@ -264,7 +264,8 @@ void BrcHandle::stop()
 
 nlohmann::json make_reg_opts(const std::string &channel,
                               const std::string &role_uid,
-                              std::optional<uint64_t> producer_pid)
+                              std::optional<uint64_t> producer_pid,
+                              const std::string &channel_topology)
 {
     namespace sec = pylabhub::utils::security;
     auto opts = pylabhub::hub::build_producer_reg_payload(
@@ -284,6 +285,7 @@ nlohmann::json make_reg_opts(const std::string &channel,
                 pylabhub::tests::role_keystore_name(role_uid))},
             .shm_capability_endpoint =
                 sec::default_shm_capability_endpoint(channel),
+            .channel_topology = channel_topology,
         });
     opts["producer_pid"] =
         producer_pid.has_value() ? *producer_pid
@@ -293,7 +295,8 @@ nlohmann::json make_reg_opts(const std::string &channel,
 
 nlohmann::json make_cons_opts(const std::string &channel,
                                const std::string &consumer_uid,
-                               std::optional<uint64_t> consumer_pid)
+                               std::optional<uint64_t> consumer_pid,
+                               const std::string &channel_topology)
 {
     namespace sec = pylabhub::utils::security;
     auto opts = pylabhub::hub::build_consumer_reg_payload(
@@ -304,6 +307,7 @@ nlohmann::json make_cons_opts(const std::string &channel,
             // Same §I10 derivation as `make_reg_opts`.
             .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(consumer_uid))},
+            .channel_topology = channel_topology,
         });
     opts["consumer_pid"] =
         consumer_pid.has_value() ? *consumer_pid

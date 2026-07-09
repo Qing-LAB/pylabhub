@@ -1181,14 +1181,28 @@ HubState::_on_producer_added(const std::string&              channel_name,
                 result.topology_error_code = "TOPOLOGY_MISMATCH";
                 return result;
             }
-            // Cardinality gate under stored topology.  Reflects live
-            // counts because we hold the writer lock — no TOCTOU.
-            if (const char *err = topology::check_cardinality(
-                    cur.topology, /*is_consumer_reg=*/false,
-                    cur.producers.size(), cur.consumers.size()))
+            // Same-uid re-register detection.  When the incoming
+            // producer's role_uid matches an existing one on this
+            // channel, `add_producer` will return `RejectedUidConflict`
+            // (broker surfaces as `UID_CONFLICT`) — the semantically
+            // distinct "you already registered" error.  The cardinality
+            // gate is skipped in this branch so we don't mask
+            // UID_CONFLICT behind a topology-cardinality error code.
+            const bool same_uid_reregister =
+                !producer.role_uid.empty() &&
+                cur.find_producer(producer.role_uid) != nullptr;
+
+            if (!same_uid_reregister)
             {
-                result.topology_error_code = err;
-                return result;
+                // Cardinality gate under stored topology.  Reflects live
+                // counts because we hold the writer lock — no TOCTOU.
+                if (const char *err = topology::check_cardinality(
+                        cur.topology, /*is_consumer_reg=*/false,
+                        cur.producers.size(), cur.consumers.size()))
+                {
+                    result.topology_error_code = err;
+                    return result;
+                }
             }
 
             result.invariant_result = InvariantSetResult::IdempotentEqual;

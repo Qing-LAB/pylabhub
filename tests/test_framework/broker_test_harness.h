@@ -236,12 +236,14 @@ struct BrcHandle
 [[nodiscard]] nlohmann::json make_reg_opts(
     const std::string &channel,
     const std::string &role_uid,
-    std::optional<uint64_t> producer_pid = std::nullopt);
+    std::optional<uint64_t> producer_pid = std::nullopt,
+    const std::string &channel_topology  = {});
 
 [[nodiscard]] nlohmann::json make_cons_opts(
     const std::string &channel,
     const std::string &consumer_uid,
-    std::optional<uint64_t> consumer_pid = std::nullopt);
+    std::optional<uint64_t> consumer_pid = std::nullopt,
+    const std::string &channel_topology  = {});
 
 // Negative-path overload — caller supplies the wire `zmq_pubkey`
 // explicitly so the test can inject a value that DOES NOT match the

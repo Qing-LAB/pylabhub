@@ -109,7 +109,8 @@ protected:
         const std::string  &uid,
         const std::string  &pubkey,
         int                 data_port,
-        std::uint64_t      *out_instance_id = nullptr)
+        std::uint64_t      *out_instance_id = nullptr,
+        const std::string  &channel_topology = {})
     {
         using pylabhub::kLongTimeoutMs;
 
@@ -121,6 +122,7 @@ protected:
         in.is_zmq_transport  = true;
         in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(data_port);
         in.zmq_pubkey        = pubkey;
+        in.channel_topology  = channel_topology;
         auto payload = pylabhub::hub::build_producer_reg_payload(in);
         auto reply = client.request(
             "REG_REQ", payload, "REG_ACK",
@@ -666,12 +668,17 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
     auto p2_client   = make_wire_client(ctx, setup, p2_kp);
     auto cons_client = make_wire_client(ctx, setup, cons_kp);
 
+    // Fan-in — two producers on one channel per the topology-migration
+    // model.  Default topology (one-to-one) would trip
+    // ONE_TO_ONE_CARDINALITY_VIOLATED on producer2.
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         p1_client, channel_name, producer1_uid,
-        p1_kp.public_z85, producer1_data_port));
+        p1_kp.public_z85, producer1_data_port,
+        /*out_instance_id=*/nullptr, /*channel_topology=*/"fan-in"));
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         p2_client, channel_name, producer2_uid,
-        p2_kp.public_z85, producer2_data_port));
+        p2_kp.public_z85, producer2_data_port,
+        /*out_instance_id=*/nullptr, /*channel_topology=*/"fan-in"));
     ASSERT_NO_FATAL_FAILURE(consumer_reg(
         cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
