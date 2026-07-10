@@ -4785,15 +4785,18 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    // Wave M2.5 step 5: resolve which producer the ENDPOINT_UPDATE_REQ
-    // targets by matching the sender's ZMQ identity to a registered
-    // producer's `zmq_identity`.  Identity-based resolution is more
-    // secure than trusting a wire `role_uid` (the identity is bound
-    // to the actual connection by ZMTP).  Per HEP-CORE-0021 §16.3
-    // each Fan-In producer has its own zmq_node_endpoint — the
-    // sender can only update its own, not a sibling's.
+    // Resolve the sender's identity against the channel's roster.
+    // Per HEP-CORE-0017 §3.3.0 the "binding side" that owns the
+    // channel's data-plane endpoint depends on topology:
+    //   fan-out / one-to-one → producer binds
+    //   fan-in                → consumer binds
+    // Identity-based resolution (matching sender's ZMTP identity to
+    // stored `zmq_identity`) is more secure than trusting a wire
+    // `role_uid`.  Both producer + consumer paths use the same
+    // identity mechanism.
     const std::string sender_id(static_cast<const char *>(identity.data()), identity.size());
     std::string sender_role_uid;
+    bool        sender_is_consumer_binding = false;
     for (const auto &prod : entry->producers)
     {
         if (sender_id == prod.zmq_identity)
@@ -4802,12 +4805,26 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
             break;
         }
     }
+    if (sender_role_uid.empty() &&
+        entry->topology == pylabhub::hub::ChannelTopology::FanIn)
+    {
+        for (const auto &cons : entry->consumers)
+        {
+            if (sender_id == cons.zmq_identity)
+            {
+                sender_role_uid = cons.role_uid;
+                sender_is_consumer_binding = true;
+                break;
+            }
+        }
+    }
     if (sender_role_uid.empty())
     {
-        LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — sender is not a producer",
-                    channel_name);
+        LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — "
+                    "sender is not a registered producer or fan-in "
+                    "consumer of the channel", channel_name);
         return make_error(corr_id, "NOT_CHANNEL_OWNER",
-                          "Sender is not a registered producer of channel '" + channel_name + "'");
+                          "Sender is not the binding side of channel '" + channel_name + "'");
     }
 
     // Only `zmq_node` is mutable post-registration; reject everything else.
@@ -4843,13 +4860,16 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                               endpoint_type + "'");
     }
 
-    // Wave M2.5 step 5 idempotency check: look up the SENDER's
-    // current per-producer endpoint (HEP-CORE-0021 §16.3 — Fan-In
-    // producers each have their own).  Per-producer scope means
-    // siblings' endpoints are untouched regardless of outcome.
-    const auto current_opt =
-        entry->producer_zmq_node_endpoint(sender_role_uid);
-    const std::string current_value = current_opt.value_or(std::string{});
+    // Idempotency + apply.  Two backing stores depending on which side
+    // is publishing:
+    //   consumer binding side (fan-in) → ChannelEntry.data_endpoint
+    //   producer                        → ProducerEntry.zmq_node_endpoint
+    //     (legacy per-producer scope, HEP-CORE-0021 §16.3 — retires as
+    //      producers migrate to the topology-model data_endpoint).
+    const std::string current_value = sender_is_consumer_binding
+        ? entry->data_endpoint.value_or(std::string{})
+        : entry->producer_zmq_node_endpoint(sender_role_uid)
+              .value_or(std::string{});
     auto current = pylabhub::validate_tcp_endpoint(current_value);
     if (current.ok() && current.port != 0)
     {
@@ -4872,20 +4892,19 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     }
     else
     {
-        LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} "
+        LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' role='{}' {} "
                     "updated to '{}'",
-                    channel_name, sender_role_uid, endpoint_type, endpoint);
-        // Route to per-producer op: only the sender's endpoint is mutated;
-        // sibling producers on the same channel are untouched
-        // (HEP-CORE-0021 §16.3).
-        if (!hub_state_->_set_producer_zmq_node_endpoint(
-                channel_name, sender_role_uid, endpoint))
+                    channel_name, sender_role_uid,
+                    sender_is_consumer_binding ? "consumer(binding)" : "producer",
+                    endpoint_type, endpoint);
+        const bool applied = sender_is_consumer_binding
+            ? hub_state_->_set_channel_data_endpoint(channel_name, endpoint)
+            : hub_state_->_set_producer_zmq_node_endpoint(
+                  channel_name, sender_role_uid, endpoint);
+        if (!applied)
         {
-            // Race: sender was admitted at the start of this handler
-            // but the producer has been removed (DEREG / heartbeat
-            // timeout) before we got here.
             LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' lost the race "
-                        "(producer no longer admitted)",
+                        "(role no longer admitted)",
                         channel_name, sender_role_uid);
             return make_error(corr_id, "NOT_CHANNEL_OWNER",
                               "Sender no longer registered (race condition)");

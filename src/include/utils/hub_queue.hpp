@@ -419,6 +419,26 @@ public:
      */
     virtual bool set_shm_capability_fd(int /*fd*/) noexcept { return false; }
 
+    /// HEP-CORE-0017 §3.3.0 — true iff this queue is the binding
+    /// side for its (topology, transport) cell.  Role code consults
+    /// this to decide whether to publish an endpoint via
+    /// `BrokerRequestComm::send_endpoint_update` after
+    /// `apply_master_approval` succeeds.  Default false (dialing
+    /// side or transport where "binding" doesn't apply); concrete
+    /// queues override to reflect their configured direction.
+    [[nodiscard]] virtual bool is_binding_side() const noexcept { return false; }
+
+    /// HEP-CORE-0021 §16 — resolved bind endpoint on the BINDING
+    /// side, after `start()` has completed the bind.  Non-empty when
+    /// this queue is the binding side (fan-in reader, fan-out /
+    /// one-to-one writer per HEP-CORE-0017 §3.3.0) and the queue is
+    /// Active; empty otherwise (dialing side, not started, or
+    /// non-ZMQ transport).  Role code passes the return value to
+    /// `BrokerRequestComm::send_endpoint_update` so the broker can
+    /// advertise it to dialing peers via REG_ACK.  Default empty;
+    /// `ZmqQueue` overrides with `ZMQ_LAST_ENDPOINT`.
+    [[nodiscard]] virtual std::string actual_endpoint() const { return {}; }
+
     /// HEP-CORE-0041 §6.1 + task #279 — negotiated transport-level
     /// authentication mechanism observed at `start()` time.  See the
     /// `hub::Mechanism` enum docstring above for the per-subclass

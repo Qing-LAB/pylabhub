@@ -1779,6 +1779,17 @@ class PYLABHUB_UTILS_EXPORT HubState
                                           const std::string &role_uid,
                                           std::string        endpoint);
 
+    /// Set channel-scope `data_endpoint` per HEP-CORE-0017 §3.3.0
+    /// binding-side ownership model.  Called by the broker's
+    /// `ENDPOINT_UPDATE_REQ` handler when the sender is the topology-
+    /// declared binding side (fan-in consumer, or fan-out /
+    /// one-to-one producer under the migrated wire).  Idempotent for
+    /// repeated calls with the same value.  Returns true iff the
+    /// channel exists.  Endpoint validation is the caller's
+    /// responsibility.
+    bool _set_channel_data_endpoint(const std::string &channel_name,
+                                     std::string        endpoint);
+
     void _set_shm_block(ShmBlockRef ref);
     void _bump_counter(const std::string &key, uint64_t n = 1);
     /// Bump `msg_type_errors[<msg_type>]` (HEP-CORE-0033 §9.4). Called

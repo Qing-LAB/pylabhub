@@ -877,6 +877,20 @@ bool HubState::_set_producer_zmq_node_endpoint(const std::string &channel_name,
     return it->second.set_producer_zmq_node_endpoint(role_uid, std::move(endpoint));
 }
 
+bool HubState::_set_channel_data_endpoint(const std::string &channel_name,
+                                           std::string        endpoint)
+{
+    // Channel-scope endpoint update (HEP-CORE-0017 §3.3.0 binding-side
+    // ownership).  Identifier validation is the caller's responsibility.
+    if (channel_name.empty() || endpoint.empty())
+        return false;
+    std::unique_lock lk(pImpl->mu);
+    auto             it = pImpl->channels.find(channel_name);
+    if (it == pImpl->channels.end()) return false;
+    it->second.set_data_endpoint(std::move(endpoint));
+    return true;
+}
+
 void HubState::_set_shm_block(ShmBlockRef ref)
 {
     std::unique_lock lk(pImpl->mu);

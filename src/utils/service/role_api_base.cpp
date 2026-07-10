@@ -1293,14 +1293,20 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 admitted_producers.size(), producers_arr.size());
 
             // §7.1 partial-success policy — zero admitted → return
-            // false.  The filtered ACK below would carry
-            // `producers=[]` which `apply_master_approval` treats as
-            // "no peer-set change" (queue-side no-op for empty peers
-            // — see HEP-CORE-0036 §I11 + hub_zmq_queue.cpp:945).
-            // Returning false HERE surfaces the failure to the role
-            // host at startup instead of leaving the queue in Standby
-            // with no diagnostic.
-            if (admitted_producers.empty())
+            // false.  Historically this fired when the broker's
+            // CONSUMER_REG_ACK.producers[] returned empty because
+            // the dialing consumer couldn't find any producer to
+            // attach to — a hard failure.
+            //
+            // Exception: on the BINDING side (HEP-CORE-0017 §3.3.0 —
+            // fan-in consumer opens the channel and waits for
+            // producers to dial in), zero producers at REG_ACK time
+            // is EXPECTED, not a failure.  Producers arrive later
+            // and their pubkeys flow in via CHANNEL_AUTH_CHANGED_NOTIFY.
+            // The queue transitions to Active with an empty allowlist
+            // (deny-all default); each admitted producer adds a peer.
+            if (admitted_producers.empty() &&
+                !(pImpl->rx_queue && pImpl->rx_queue->is_binding_side()))
             {
                 LOGGER_WARN(
                     "[{}] apply_consumer_reg_ack: ZERO producers admitted"
@@ -1404,6 +1410,47 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         {
             pImpl->producer_peer_cache.put(
                 channel_name, std::move(script_view));
+        }
+
+        // HEP-CORE-0021 §16 endpoint publish on the BINDING side.
+        // Under HEP-CORE-0017 §3.3.0 the fan-in consumer is the
+        // binding side — after apply_master_approval drives the queue
+        // to Active (PULL bind complete, ephemeral port resolved),
+        // publish the actual endpoint to the broker so producers'
+        // subsequent REG_ACK.initial_allowlist carries a real
+        // dial-target.  Non-binding consumers (fan-out / one-to-one
+        // dial side) skip: is_binding_side() returns false, or
+        // actual_endpoint() returns empty.
+        if (pImpl->rx_queue && pImpl->rx_queue->is_binding_side())
+        {
+            const std::string ep = pImpl->rx_queue->actual_endpoint();
+            if (!ep.empty())
+            {
+                if (auto *bc = pImpl->resolve_bc_for_channel(channel_name);
+                    bc && bc->is_connected())
+                {
+                    auto res = bc->send_endpoint_update(
+                        channel_name, "zmq_node", ep);
+                    if (!res.has_value() ||
+                        res->value("status", std::string{}) != "success")
+                    {
+                        LOGGER_WARN(
+                            "[{}] apply_consumer_reg_ack: "
+                            "send_endpoint_update failed for channel='{}' "
+                            "endpoint='{}' — producers dialing this "
+                            "channel won't get a valid REG_ACK until the "
+                            "publish succeeds",
+                            pImpl->short_tag, channel_name, ep);
+                    }
+                    else
+                    {
+                        LOGGER_INFO(
+                            "[{}] event=BindingEndpointPublished "
+                            "channel='{}' endpoint='{}'",
+                            pImpl->short_tag, channel_name, ep);
+                    }
+                }
+            }
         }
 
         // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END

@@ -590,7 +590,13 @@ public:
      * Before start(), returns the configured endpoint string.
      * Useful for tests and callers that bind to port 0 and need the peer address.
      */
-    [[nodiscard]] std::string actual_endpoint() const;
+    [[nodiscard]] std::string actual_endpoint() const override;
+
+    /// HEP-CORE-0017 §3.3.0 — true iff this queue was constructed
+    /// for a binding-side (topology, transport) cell (PULL bind for
+    /// fan-in reader; PUSH bind for one-to-one writer; PUB bind for
+    /// fan-out writer).  Non-binding on the dialing side.
+    [[nodiscard]] bool is_binding_side() const noexcept override;
 
     // ── Diagnostics counters ──────────────────────────────────────────────────
     // Individual accessors retained for backward compatibility.

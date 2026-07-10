@@ -2169,6 +2169,11 @@ std::string ZmqQueue::actual_endpoint() const
     return pImpl->actual_endpoint.empty() ? pImpl->endpoint : pImpl->actual_endpoint;
 }
 
+bool ZmqQueue::is_binding_side() const noexcept
+{
+    return pImpl && pImpl->bind_socket;
+}
+
 // ============================================================================
 // Diagnostics counters
 // ============================================================================
