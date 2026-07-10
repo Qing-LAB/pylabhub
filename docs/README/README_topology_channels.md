@@ -129,7 +129,6 @@ Two producers emit into one consumer over `tcp://127.0.0.1:*`.
   "channel_name": "sensors.raw",
   "out_channel_topology": "fan-in",
   "out_transport": "zmq",
-  "out_zmq_endpoint": "tcp://127.0.0.1:0",
   "out_slot_schema": "sensor_reading_v1"
 }
 ```
@@ -138,16 +137,24 @@ Notes:
 - Consumer sets `in_zmq_endpoint: "tcp://127.0.0.1:0"` — port 0 means
   "pick any free port"; the framework publishes the resolved port to
   the broker after bind.
-- Producer currently MUST also set `out_zmq_endpoint` because the
-  live config parser at `transport_config.hpp:96-99` enforces
-  "`zmq_endpoint` required when transport is `zmq`" regardless of
-  side.  The value is IGNORED for dialing side — the endpoint that
-  matters arrives on REG_ACK from the broker.  Phase C step 6 of
-  the topology migration will drop the required-on-dialing-side
-  requirement (per `docs/todo/TOPOLOGY_TODO.md`); until then the
-  simplest safe value is `"tcp://127.0.0.1:0"` (parses as valid,
-  never used).
+- Producer does NOT set `out_zmq_endpoint` — it's the dialing side;
+  the endpoint arrives on REG_ACK from the broker (HEP-CORE-0017
+  §3.3.0 gate 4 rejects non-empty `endpoint_hint` on the dialing
+  side).
 - Producer B's config is identical to sensor_a except for `role_uid`.
+
+> **Current-code caveat (pre-Phase-C-step-6):** the config parser at
+> `src/include/utils/config/transport_config.hpp:96-99` currently
+> REQUIRES `zmq_endpoint` regardless of side, and the pre-migration
+> `push_to`/`pull_from` factory path accepts (and ignores) the value
+> on the dialing side.  The parser's over-strict validation is a
+> **code gap** tracked as part of Phase C step 6 in
+> `docs/todo/TOPOLOGY_TODO.md`, not a design intent — the design
+> above (dialing side empty) is authoritative.  Configs written to
+> the design will fail the current parser until step 6 ships; as a
+> transitional workaround, set `out_zmq_endpoint: "tcp://127.0.0.1:0"`
+> — the value satisfies the parser and is discarded downstream on
+> the dialing side.  Remove the workaround field after step 6.
 
 ### 3.2 Fan-out SHM — broadcast to local processors
 
@@ -201,25 +208,22 @@ Notes:
 Simple point-to-point.
 
 ```json
-// producer side
+// producer side (binding — sets endpoint)
 { "role_uid": "sensor",
   "channel_name": "stream",
   "out_channel_topology": "one-to-one",
   "out_transport": "zmq",
   "out_zmq_endpoint": "tcp://*:0" }
 
-// consumer side (may be a different machine)
+// consumer side (dialing — endpoint arrives on REG_ACK)
 { "role_uid": "collector",
   "channel_name": "stream",
   "in_channel_topology": "one-to-one",
-  "in_transport": "zmq",
-  "in_zmq_endpoint": "tcp://127.0.0.1:0" }
+  "in_transport": "zmq" }
 ```
 
-The consumer's `in_zmq_endpoint` is a placeholder (dialing side; the
-endpoint arrives on REG_ACK).  See the fan-in ZMQ notes above — the
-config parser currently requires the field regardless of side;
-Phase C step 6 will relax it.
+Consumer does NOT set `in_zmq_endpoint` — dialing side per §3.3.0
+gate 4.  Same pre-step-6 parser workaround as §3.1 applies.
 
 Broker rejects a second producer or a second consumer with
 `ONE_TO_ONE_CARDINALITY_VIOLATED`.
@@ -330,7 +334,8 @@ def on_produce(tx, msgs, api):
 The framework's job is to deliver accurate signals; the script
 decides when the channel is "ready enough" to push data.  There is
 **no framework-level auto-hold, auto-retry, or auto-fallback** — this
-is deliberate per session memory `feedback_framework_mechanism_not_policy.md`.
+is deliberate: the framework exposes state accurately; policy lives
+in the script.
 
 The same pattern applies to fan-in consumers gating upstream-triggered
 work on `producer_count()`, and to one-to-one both sides.
@@ -355,10 +360,13 @@ def on_produce(tx, msgs, api):
 
 1. **Setting `zmq_endpoint` on the dialing side.**
    Rejected as `CONFIG_INVALID_ENDPOINT_HINT_ON_DIALING_SIDE` at
-   queue construction.  Dialing side receives the endpoint on
-   REG_ACK; setting it in config is a caller error.
-   - Fan-in: producer is dialing → don't set `out_transport.zmq_endpoint`.
-   - Fan-out / 1-to-1: consumer is dialing → don't set `in_transport.zmq_endpoint`.
+   queue construction (HEP-CORE-0017 §3.3.0 gate 4).  Dialing side
+   receives the endpoint on REG_ACK; setting it in config is a
+   caller error.
+   - Fan-in: producer is dialing → don't set `out_zmq_endpoint`.
+   - Fan-out / 1-to-1: consumer is dialing → don't set `in_zmq_endpoint`.
+   - (Pre-Phase-C-step-6 workaround for the current parser: see §3.1
+     note.)
 
 2. **`fan-in` + `shm`.**
    Broker rejects at REG_REQ with `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`;

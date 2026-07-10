@@ -1542,7 +1542,7 @@ sequenceDiagram
 
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=one-to-one, transport=zmq, pubkey=C1)
-    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1<br/>+ cardinality check (no other consumer yet)
+    Note over B: Cardinality check FIRST (no other consumer) →<br/>hard reject with ONE_TO_ONE_CARDINALITY_VIOLATED if already 1.<br/>Then R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1
     B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
     PS->>B: GET_CHANNEL_AUTH_REQ → APPLIED_REQ
     B-->>CS: CONSUMER_REG_ACK (data_endpoint, data_pubkey)
