@@ -39,7 +39,10 @@
 > Coordinated with the nine-HEP topology migration amendment
 > package.  Design authority:
 > `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` (status:
-> DESIGN LOCKED, rev 9).  See tech draft §11.4 for the coordination
+> DESIGN LOCKED, rev 10; earlier bump to rev-9 preserved a
+> field-collapse from `bool data_endpoint_resolved` into
+> `std::optional<std::string>::has_value()` — see tech draft rev
+> history for the migration note).  See tech draft §11.4 for the coordination
 > table.
 
 ---

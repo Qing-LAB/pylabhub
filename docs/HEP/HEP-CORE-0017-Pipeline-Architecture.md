@@ -129,7 +129,7 @@ facilities (spinlocks, flexzone) are now exposed directly through
 | Data transport | SHM **or** ZMQ (selected via `in_transport` in `consumer.json`) |
 | Channel ownership | Attaches to existing SHM or connects to ZMQ endpoint; registers as consumer via `CONSUMER_REG_REQ` |
 | SHM-specific facilities (when `in_transport=shm`) | Spinlocks, zero-copy slot view, flexzone R/W, acquire-timing metrics |
-| ZMQ-specific note | Endpoint discovery: `CONSUMER_REG_ACK.producers[]` array (HEP-CORE-0036 §6.4) for the channel's current producer set; `DISC_ACK` is for separate channel-observability queries (kLive vs kStalled).  Consumer never binds. |
+| ZMQ-specific note | Endpoint discovery depends on topology (§3.3.0): fan-out / one-to-one consumer (DIALING) receives scalar `data_endpoint` + `data_pubkey` on `CONSUMER_REG_ACK` (HEP-CORE-0036 §I7 + §5.2 amendment); fan-in consumer (BINDING) publishes its own endpoint via `ENDPOINT_UPDATE_REQ` post-bind (HEP-CORE-0021 §16).  `DISC_ACK` is for separate channel-observability queries.  Pre-migration `CONSUMER_REG_ACK.producers[]` array retires per §3.3-retired. |
 | Broker protocol | `CONSUMER_REG_REQ` → `CONSUMER_REG_ACK`; sends HELLO to producer; `CONSUMER_DEREG_REQ` on exit |
 | Lives on | SHM: same host as the SHM segment. ZMQ: any host with TCP connectivity. |
 
@@ -439,8 +439,9 @@ to symmetrize the R6 gate).  What changes:
 
 ### 3.3.2 Script-facing accessors (2026-07-08 amendment, HEP-CORE-0028 sync)
 
-The binding side's role host exposes the live-peer set via four
-accessors on every role's api object:
+Four LIVE-peer accessors bound on every role's api object across every
+engine (Native / Lua / Python), per HEP-CORE-0011 §"Cross-Engine
+Surface Parity" Read-only observation surface principle:
 
 ```
 api.consumer_count(channel_name: str) -> int
@@ -448,6 +449,14 @@ api.producer_count(channel_name: str) -> int
 api.consumers(channel_name: str)      -> list[str]  # role_uids
 api.producers(channel_name: str)      -> list[str]  # role_uids
 ```
+
+The binding side of the channel populates the underlying `live_peers`
+map (the binding-side role host receives the `phase=live` NOTIFYs);
+dialing-side callers on the same channel see empty lists / zero
+counts — the documented "not applicable on this side" sentinel per
+HEP-CORE-0011.  Callers do NOT need to switch APIs based on role
+kind — a fan-in producer script calling `api.consumer_count(K)` on a
+channel where it is the dialing side just gets 0.
 
 Objective counts (self-inclusive when applicable).  Feed from the
 binding-side `live_peers` map maintained by `phase=live` NOTIFY

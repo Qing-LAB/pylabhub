@@ -1623,19 +1623,33 @@ typedef struct PlhNativeContext {
     // -1 with plh_get_last_error() set if channel not registered.
     int  (*consumer_count)(struct PlhNativeContext* ctx, const char* channel_name);
     int  (*producer_count)(struct PlhNativeContext* ctx, const char* channel_name);
-    // consumers / producers: caller-supplied buffer + length; returns
-    // number of entries written (or negative on error).  role_uids are
-    // UTF-8 C strings written into out_buf as null-terminated
-    // consecutive entries; out_buf_size is total bytes available.
+    // consumers / producers: visitor pattern, matching the
+    // `allowed_peers` visitor convention above (§4.8 no-alloc,
+    // no-copy iteration).  Visitor MUST be noexcept.  Returns the
+    // number of visited entries (>= 0) or -1 on error.  role_uid is
+    // valid for the duration of the visitor call only; caller must
+    // copy if state must persist (HEP-CORE-0028 §4.8 Lifetime +
+    // Security Contract).
+    typedef void (*plh_role_uid_visitor)(const char *role_uid,
+                                         void       *userdata);
     int  (*consumers)(struct PlhNativeContext* ctx, const char* channel_name,
-                      char* out_buf, size_t out_buf_size);
+                      plh_role_uid_visitor visitor, void* userdata);
     int  (*producers)(struct PlhNativeContext* ctx, const char* channel_name,
-                      char* out_buf, size_t out_buf_size);
+                      plh_role_uid_visitor visitor, void* userdata);
 } PlhNativeContext;
 ```
 
-C++ wrapper provides `std::vector<std::string_view>` view over the
-out_buf entries for ergonomic use (see §4.7 Framework API pattern).
+C++ wrapper provides handle-based iteration matching the
+`AllowedPeersHandle` pattern (see §4.7 Framework API pattern) — same
+`.visit / .count` shape for ergonomic use from C++ callers.
+
+**Amendment history:** an earlier draft of this section (superseded
+2026-07-09) declared `consumers`/`producers` as buffer-based
+(`char* out_buf, size_t out_buf_size`).  That form violated §4.8
+(no per-call allocation on the hot path — caller has to size + own
+the buffer) and diverged from the shipped code, which uses the
+visitor pattern above (`ec564447` in `native_engine_api.h`).  The
+buffer-based signature is retired.
 
 ### 6a.6 Retirement of HEP-CORE-0042 §8 accessors
 

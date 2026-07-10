@@ -529,7 +529,8 @@ audience.
 | `is_channel_ready(channel)` | `bool` | `boolean` | `int` (1=ready, 0=not, -1=error) | `bool` |
 | `is_in_band(channel)` | `bool` | `boolean` | `int` (1=member, 0=not, -1=error) | `bool` |
 | `allowed_peers(channel)` | `list[dict]` (one alloc) | `table[table]` (one alloc) | visitor (no alloc) + `*_contains` + `*_count` inquiries | `AllowedPeersHandle` (zero-cost) + `.visit / .contains / .count / .to_uid_set` |
-| `producers(channel)` | `list[dict]` (one alloc) | `table[table]` (one alloc) | **not yet exposed** — full cluster (visitor + `*_contains` + `*_count`) pending under #233 | not yet wrapped — pending the Tier-1 surface under #233 |
+| `producers(channel)` | `list[str]` role_uids | `table[str]` role_uids | `plh_role_uid_visitor` + `producer_count` inquiry | pending Tier-1 wrapper |
+| `consumers(channel)` | `list[str]` role_uids | `table[str]` role_uids | `plh_role_uid_visitor` + `consumer_count` inquiry | pending Tier-1 wrapper |
 | `band_members(channel)` | `list[dict]` | `table[table]` | visitor + `*_contains` + `*_count` | `BandHandle` (zero-cost) + same API as above |
 | `metrics()` | `dict` (full tree alloc) | `table` (full tree alloc) | opaque `metrics_snapshot()` + `metrics_get(key)` | `plh::MetricsSnapshot` value class + `operator[]` |
 
@@ -595,16 +596,25 @@ auto auth = wrap.allowed_peers("out").to_uid_set();   // hot-path: snapshot once
 if (auth.contains("consumer_A")) { ... }
 ```
 
-#### Read-only observation surface principle (2026-06-15)
+#### Read-only observation surface principle (2026-06-15; rev 2026-07-09 for topology migration)
 
-Some observation surfaces above (`allowed_peers`, `producers`,
-`band_members`) describe peer-set state that is populated by an
-asymmetric framework path: the producer side's allowlist arrives via
-`CHANNEL_AUTH_CHANGED_NOTIFY`, the consumer side's producer set
-arrives via `CONSUMER_REG_ACK.producers[]` (HEP-CORE-0036 §I11 + §6.4).
-Internally the C++ frame keeps the producer cache (`allowlist_cache`)
-distinct from the consumer cache (`producer_peer_cache`); only the
+Some observation surfaces above (`allowed_peers`, `band_members`)
+describe peer-set state populated by an asymmetric framework path:
+the producer side's allowlist arrives via
+`CHANNEL_AUTH_CHANGED_NOTIFY` (HEP-CORE-0036 §I11).  Internally the
+C++ frame keeps the `allowlist_cache` on the producer side; only the
 "correct side" populates its own cache on its own data path.
+
+The LIVE-peer surfaces (`producers`, `consumers`, `producer_count`,
+`consumer_count`) added by the 2026-07-08 topology migration use
+a DIFFERENT backing store: the BINDING side's `live_peers[channel]`
+map, populated by `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` events
+(HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY lines 1834-1838 +
+HEP-CORE-0028 §6a).  The pre-migration `producer_peer_cache` (fed
+by `CONSUMER_REG_ACK.producers[]`) retires from the script surface
+per HEP-CORE-0017 §3.3-retired; it remains only as an internal
+convenience cache used by the legacy `apply_consumer_reg_ack`
+during the migration window.
 
 **The engine surface is symmetric anyway.** Every read-only observation
 function is exposed on every role kind — producer, consumer,
@@ -1600,7 +1610,7 @@ yet wired when the callback fires.
 | `api.band_members(band)` / `api.is_in_band(band)` | ✗ same | ✓ | ✓ | ✓ |
 | `api.discover_channel(channel)` | ✗ requires handler | ✓ | ✓ | ✓ |
 | `api.open_inbox(uid)` / `api.wait_for_role(uid, ...)` | ✗ requires handler | ✓ | ✓ | ✓ |
-| `api.notify_channel`, `api.broadcast_channel`, `api.broadcast`, `api.send`, `api.consumers()` | RETIRED (R3.6 / M4f deleted backing infra; see README_Deployment §8.3 banner) |
+| `api.notify_channel`, `api.broadcast_channel`, `api.broadcast`, `api.send`, `api.consumers()` [zero-arg P2P broadcast form] | RETIRED (R3.6 / M4f deleted backing infra; see README_Deployment §8.3 banner).  Not to be confused with the one-arg `api.consumers(channel)` LIVE-peer accessor added 2026-07-08 (HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a) — different signature, different backing store (binding-side `live_peers` map). |
 
 **Why `on_init` can't use handler-dependent APIs:** the role-host's
 `worker_main_` calls `invoke_on_init` at Step 5, but

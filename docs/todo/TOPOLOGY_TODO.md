@@ -125,7 +125,7 @@ Every slice L2-verified before commit; final atomic slice L4-verified.
 | Slice | Commit | Content |
 |---|---|---|
 | 0 | `bba5e401` | `ChannelTopology` enum + `parse_channel_topology` + `to_string` in hub_state.{hpp,cpp} |
-| 1 | `d115d71b` | `ChannelEntry` gains 5 fields (topology, data_endpoint, data_endpoint_resolved, channel_version, confirmed_version) |
+| 1 | `d115d71b` (+ rev-2 collapse `5b80d388`) | `ChannelEntry` gains 4 fields (topology, `std::optional<std::string> data_endpoint`, channel_version, confirmed_version); the initial slice-1 landed with a separate `data_endpoint_resolved` bool that rev-2 group A collapsed into the optional's engaged bit per HEP-0033 §8 amendment |
 | 2 | `ed987afc` | HubState accessors on ChannelEntry (8 methods) |
 | 3 | `b0e2b1d3` | JSON serialization for the 5 new fields |
 | 4a | `60918571` | `ProducerRegInputs` + `ConsumerRegInputs` gain `channel_topology`; builder plumbing |
@@ -143,11 +143,17 @@ for `attach_channel.hpp` include (`<nlohmann/json_fwd.hpp>` →
 
 ---
 
-## 3. Phase B rev 1 — Review findings ⏳ PENDING
+## 3. Phase B rev 1 + rev 2 — Review findings ✅ COMPLETE
 
 Multi-agent code + doc review 2026-07-08 evening surfaced **23
-findings**.  15 to address in rev 1; 7 truly deferred to Phase
-C/D/E (see §5); 1 false positive.
+findings**.  15 addressed in rev 1 + rev 2; 7 truly deferred to Phase
+C/D/E (see §5); 1 false positive.  Shipped 2026-07-08 across commits
+`7dea37ec` (rev 1 step 5), `5b80d388` (rev 2 group A — correctness
+bugs #1/#2/#3), `550ef2ca` (rev 2 group B — dead code + doc scrub),
+`58b29ba8` (rev 2 group C — AdmissionSide enum replaces
+is_consumer_reg bool).  Sections 3.1-3.7 below preserved as
+archaeological record of the fix ordering + rationale; live status
+lives in §Status snapshot at the top of this file.
 
 ### 3.1 Layered fix ordering
 
@@ -393,8 +399,8 @@ scope.  Each requires infrastructure from the phase noted.
 | **#11 `CHANNEL_CLOSED` unreachable** — HEP-0007 §12.4a catalogs but no emission site. | D | Depends on #12 pending REG_REQ mechanism. |
 | **#12 No REG_REQ pending / `role_registration_version` capture** — tech draft §5.4 R6 gate not built. | D | Substantial new infrastructure (correlation IDs, wake events, timeout).  Phase D's whole scope. |
 | **#13 Consumer-first-create for fan-in** — `handle_consumer_reg_req` returns `CHANNEL_NOT_FOUND` if channel doesn't exist, but under fan-in consumer is BINDING side and should be able to create. | D | Part of the R6 symmetrization work.  Current producer-first ordering works for L4 fan-in test. |
-| **#14 `CONSUMER_REG_ACK` still emits legacy `producers[]` array** — HEP-0007 §12.3 marks it retired, wire not migrated. | C or D | Queue factory rewire depends on this (dialing side reads `data_endpoint` scalar).  Land with Phase C or D. |
-| **#15 `CHANNEL_AUTH_CHANGED_NOTIFY` missing `phase` field** — HEP-0007 §12.5 requires phase (admitted/live/left), not yet emitted. | D | Needs first-heartbeat wire event + live_peers tracking. |
+| ✅ **#14 `CONSUMER_REG_ACK` still emits legacy `producers[]` array** | C step 2 rev 2.3 | Shipped `b71dd9ec` — unified peer-list wire shape (array of `{role_uid, endpoint, pubkey_z85}` objects); dialing-side ACK carries scalar `data_endpoint`/`data_pubkey` per HEP-CORE-0007 §12.3. |
+| ✅ **#15 `CHANNEL_AUTH_CHANGED_NOTIFY` missing `phase` field** | D phase field | Shipped `8655f2fe..ed0456d5` — phase-field emission + first-heartbeat detection + live_peers cache + `consumer_count`/`producer_count`/`consumers`/`producers` accessors + engine bindings. |
 | **#16 Duplicate `channel_version` / `confirmed_version` state** — new scalar coexists with old `[K][P]` map (`ChannelAccessEntry.channel_version` + `confirmed_version_per_producer` map). | E | Retirement phase — needs all callers migrated first. |
 | **#17 `ProducerEntry.zmq_node_endpoint` retirement** — HEP-0033 §8 says retires; code keeps field + accessor. | E | Retirement phase — all callers migrate first. |
 | **#18 Dead accessors** — `set_channel_data_endpoint`, `bump_channel_version`, `set_confirmed_version` have no callers. | C/D | Become live when Phase D wires ENDPOINT_UPDATE_REQ + CHANNEL_AUTH_APPLIED_REQ handlers. |
