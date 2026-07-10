@@ -1154,6 +1154,509 @@ retires alongside those wires.
 
 ---
 
+### 4.7 End-to-end topology walkthroughs (2026-07-09 consolidation)
+
+> **Purpose.**  §3.3 through §4.6 describe the *what*: factory shape,
+> decision matrix, per-topology descriptions.  This section shows the
+> *how* — for each of the five (topology × transport) legal cells, a
+> full sequence diagram from role startup through data flow, plus the
+> role-side pseudocode against the `hub::Queue` abstraction.
+>
+> Content consolidated from `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
+> §7 (sequences) + §10 (code walkthroughs).  The tech draft was the
+> design authority during the 2026-07 topology migration; §4.7 makes
+> HEP-CORE-0017 the permanent single source of truth for how role code
+> uses the queue abstraction to realize each topology.  See §4.6.1 for
+> the framework's live-peer bookkeeping mechanism (`live_peers` map,
+> `CHANNEL_AUTH_CHANGED_NOTIFY(phase)` chain) that these walkthroughs
+> exercise.
+
+#### 4.7.0 Tier-boundary discipline
+
+Every walkthrough in this section respects a **three-tier separation**.
+The lines are load-bearing: crossing them is a design error that this
+section's code MUST NOT show, and role code in the tree MUST NOT
+introduce.  This is the same three-tier table from §4.6.1 restated as
+a diagram, for reference throughout §4.7.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Tier 1 — Script                                              │
+│   sees: api.read_acquire() / write_acquire() /               │
+│         consumer_count() / producer_count() /                │
+│         consumers() / producers()                            │
+│   does NOT see: sockets, wire, topology enum values          │
+├──────────────────────────────────────────────────────────────┤
+│ Tier 2 — Role host (role_api_base.cpp, role_host_frame.cpp)  │
+│   sees: hub::RxOptions / TxOptions, BRC client, queue        │
+│         accessors, ChannelTopology + Transport enums         │
+│   does NOT see: libzmq calls, ZAP handler internals,         │
+│                 CURVE keypair bytes                          │
+├──────────────────────────────────────────────────────────────┤
+│ Tier 3 — Queue + BRC                                         │
+│   sees: sockets, ZAP allowlists, CURVE keys, wire frames,    │
+│         AttachProtocol handshake, DataBlock layout           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Tier 2 (role host) NEVER calls `zmq_socket`, `zmq_bind`, `zmq_connect`
+or any libzmq function directly — the queue owns that.  Tier 2's only
+"transport decision" is picking `(topology, transport)` from role
+config and passing them to `hub::Queue::create_reader/writer` per
+§3.3.0.  The queue reads the §3.3.0 matrix row for that pair to pick
+socket type, bind/connect, CURVE role, and endpoint owner.
+
+#### 4.7.1 Fan-in ZMQ (N producers → 1 consumer)
+
+**Binding side:** consumer.  **Cardinality:** 1..N producers, exactly
+1 consumer.  **When to use:** aggregator/sink pattern — multiple
+sensors emit into one storage sink; sensors may come and go; the sink
+stays put.
+
+**Sequence — consumer binds PULL, producers connect PUSH:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CS as Consumer script/host
+    participant CQ as Consumer PULL queue
+    participant B  as Broker
+    participant PQ as Producer PUSH queue
+    participant PS as Producer script/host
+
+    Note over CS,PS: Fan-in ZMQ — consumer binds, producers connect
+    CS->>B: CONSUMER_REG_REQ (topology=fan-in, transport=zmq)
+    B-->>CS: CONSUMER_REG_ACK (status=ok; no producers[] array)
+    CS->>CQ: apply_master_approval(ACK) + start()
+    CQ->>CQ: PULL bind tcp://host:0<br/>ZAP domain registered<br/>curve_server=1
+    CQ-->>CS: actual_endpoint = tcp://host:51234
+    CS->>B: ENDPOINT_UPDATE_REQ (endpoint=tcp://host:51234)
+    B-->>CS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint.has_value() == true
+    CS->>B: HEARTBEAT (first) → consumer=Live
+
+    Note over PS,B: Producer arrives (any time after or before consumer Live)
+    PS->>B: REG_REQ (topology=fan-in, transport=zmq, pubkey=P1)
+    Note over B: R6 blocks: needs consumer Live<br/>+ endpoint_resolved<br/>+ allowlist confirms P1
+    B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=producer, role_uid=P1
+    CS->>B: GET_CHANNEL_AUTH_REQ
+    B-->>CS: GET_CHANNEL_AUTH_ACK (allowlist=[P1, ...])
+    CS->>CQ: set_peer_allowlist(allowlist)<br/>(ZAP admits P1 on next handshake)
+    CS->>B: CHANNEL_AUTH_APPLIED_REQ (channel_version=N)
+    B-->>CS: CHANNEL_AUTH_APPLIED_ACK (ok)<br/>confirmed_version=N
+    Note over B: R6 wakes for producer REG_REQ
+    B-->>PS: REG_ACK (status=ok, data_endpoint, data_pubkey)
+    PS->>PQ: apply_master_approval(ACK) + start()
+    PQ->>PQ: PUSH connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>curve_client
+    PQ-->>CQ: (CURVE handshake — consumer's ZAP admits via allowlist)
+    PS->>B: HEARTBEAT (first) → broker marks producer=Live
+    B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=producer, role_uid=P1
+    Note over CS: Consumer role host updates live_peers[K]<br/>api.producer_count() now returns count+1
+    Note over PS,CS: Data flows
+    PS->>PQ: write_acquire → write_commit
+    PQ->>CQ: (slot bytes over PUSH→PULL)
+    CQ->>CS: read_acquire → read_release
+```
+
+**Consumer role — Tier 2 pseudocode:**
+
+```cpp
+// role_api_base.cpp — consumer setup for fan-in ZMQ.
+
+// S1: build rx queue in Standby.  Endpoint hint permitted on binding
+// side (may be "tcp://host:0" for ephemeral bind); consumer is
+// binding under fan-in per §3.3.0 matrix.
+hub::RxOptions opts;
+opts.slot_schema   = cfg.slot_schema();
+opts.endpoint_hint = cfg.in_zmq_endpoint();     // may be "tcp://host:0"
+opts.instance_id   = short_tag + ":" + uid + ":rx";
+
+auto reader = hub::Queue::create_reader(
+    hub::ChannelTopology::FanIn,   // from cfg.in_channel_topology()
+    hub::Transport::Zmq,           // from cfg.in_transport()
+    std::move(opts));
+// Queue picks: PULL socket + bind + CURVE server + ZAP domain.
+// State: Standby until apply_master_approval fires.
+
+// S2: register with broker.
+auto ack = brc.register_consumer(consumer_reg_payload);
+if (!ack.ok()) exit(1);
+
+// S3: activate.  Queue transitions Standby → Configured → Active:
+//   - PULL binds tcp://host:0
+//   - ZAP handler registers
+//   - Empty allowlist initially (deny-all — safe by default)
+reader->apply_master_approval(ack);
+
+// Publish the resolved bind endpoint so the broker's data_endpoint
+// state becomes "resolved" and dialing producers can be admitted.
+const std::string endpoint = reader->actual_endpoint();
+if (auto res = brc.send_endpoint_update(channel, "zmq_node", endpoint);
+    !res.ok()) exit(1);
+
+// Start heartbeat.  Broker's R6 unblocks pending producer REG_REQs
+// as their pubkeys enter the allowlist via CHANNEL_AUTH_CHANGED_NOTIFY.
+start_heartbeat_task();
+
+// Data loop — script sees the transport-agnostic reader API.
+while (running) {
+    if (auto slot = reader->read_acquire(period_ms)) {
+        script.on_consume(rx, msgs, api);
+        reader->read_release();
+    }
+}
+```
+
+**Producer role — Tier 2 pseudocode:**
+
+```cpp
+// role_api_base.cpp — producer setup for fan-in ZMQ.
+
+// S1: build tx queue in Standby.  Dialing side; endpoint_hint MUST
+// be empty per §3.3.0 legality gate #4 — the consumer's endpoint
+// arrives on REG_ACK.
+hub::TxOptions opts;
+opts.slot_schema = cfg.slot_schema();
+opts.instance_id = short_tag + ":" + uid + ":tx";
+// opts.endpoint_hint left empty — dialing side.
+
+auto writer = hub::Queue::create_writer(
+    hub::ChannelTopology::FanIn,   // from cfg.out_channel_topology()
+    hub::Transport::Zmq,
+    std::move(opts));
+// Queue picks: PUSH socket + connect (deferred) + CURVE client.
+// State: Standby until apply_master_approval delivers data_endpoint
+// + data_pubkey.
+
+// S2: REG_REQ.  Broker's R6 may block until consumer's allowlist is
+// synced with this producer's pubkey — brc blocks until REG_ACK
+// arrives (or the broker's REG_REQ budget expires).
+auto ack = brc.register_channel(producer_reg_payload);
+if (!ack.ok()) exit(1);
+
+// S3: activate.  Queue transitions Standby → Configured → Active:
+//   - PUSH sets curve_serverkey = ack.data_pubkey
+//   - PUSH connects ack.data_endpoint
+//   - Consumer's ZAP admits (pubkey already in consumer's allowlist)
+writer->apply_master_approval(ack);
+
+// Start heartbeat + data loop.  No further coordination — CURVE
+// handshake already succeeded because R6 waited for allowlist sync.
+start_heartbeat_task();
+while (running) {
+    if (auto slot = writer->write_acquire(period_ms)) {
+        script.on_produce(tx, msgs, api);
+        writer->write_commit();
+    }
+}
+```
+
+#### 4.7.2 Fan-out ZMQ (1 producer → N consumers)
+
+**Binding side:** producer.  **Cardinality:** exactly 1 producer,
+1..N consumers.  **When to use:** broadcast pattern — one source
+stream distributed to multiple parallel processors (archive,
+monitor, cross-machine bridge).
+
+Structurally symmetric with fan-in ZMQ (§4.7.1) with producer /
+consumer roles swapped: producer binds PUB, consumers connect SUB
+and subscribe with an empty topic filter.
+
+**Sequence — producer binds PUB, consumers connect SUB:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PS as Producer script/host
+    participant PQ as Producer PUB queue
+    participant B  as Broker
+    participant CQ as Consumer SUB queue
+    participant CS as Consumer script/host
+
+    Note over PS,CS: Fan-out ZMQ — producer binds, consumers connect
+    PS->>B: REG_REQ (topology=fan-out, transport=zmq)
+    B-->>PS: REG_ACK (status=ok, initial_allowlist=[...])
+    PS->>PQ: apply_master_approval(ACK) + start()
+    PQ->>PQ: PUB bind tcp://host:0<br/>ZAP domain registered<br/>curve_server=1
+    PQ-->>PS: actual_endpoint = tcp://host:52345
+    PS->>B: ENDPOINT_UPDATE_REQ (endpoint=tcp://host:52345)
+    B-->>PS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint.has_value() == true
+    PS->>B: HEARTBEAT (first) → producer=Live
+
+    Note over CS,B: Consumer arrives
+    CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=zmq, pubkey=C1)
+    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
+    PS->>B: GET_CHANNEL_AUTH_REQ
+    B-->>PS: GET_CHANNEL_AUTH_ACK (allowlist=[C1, ...])
+    PS->>PQ: set_peer_allowlist(allowlist)<br/>(ZAP admits C1 on next handshake)
+    PS->>B: CHANNEL_AUTH_APPLIED_REQ (channel_version=N)
+    B-->>PS: CHANNEL_AUTH_APPLIED_ACK (ok)<br/>confirmed_version=N
+    B-->>CS: CONSUMER_REG_ACK (status=ok, data_endpoint, data_pubkey)
+    CS->>CQ: apply_master_approval(ACK) + start()
+    CQ->>CQ: SUB connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>SUB subscribe (empty filter)
+    CQ-->>PQ: (CURVE handshake — producer's ZAP admits via allowlist)
+    CS->>B: HEARTBEAT (first) → broker marks consumer=Live
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=consumer, role_uid=C1
+    Note over PS: Producer role host updates live_peers[K]<br/>api.consumer_count() now returns count+1
+    Note over PS,CS: Data flows (broadcast)
+    PS->>PQ: write_acquire → write_commit
+    PQ->>CQ: (message via PUB→SUB — each consumer sees every message)
+    CQ->>CS: read_acquire → read_release
+```
+
+**Producer role — Tier 2 pseudocode** (mirror of §4.7.1 consumer;
+binding side, endpoint_hint permitted):
+
+```cpp
+hub::TxOptions opts;
+opts.slot_schema   = cfg.slot_schema();
+opts.endpoint_hint = cfg.out_zmq_endpoint();    // may be "tcp://host:0"
+opts.instance_id   = short_tag + ":" + uid + ":tx";
+
+auto writer = hub::Queue::create_writer(
+    hub::ChannelTopology::FanOut,  // from cfg.out_channel_topology()
+    hub::Transport::Zmq,
+    std::move(opts));
+// Queue picks: PUB socket + bind + CURVE server + ZAP domain.
+
+auto ack = brc.register_channel(producer_reg_payload);
+writer->apply_master_approval(ack);
+brc.send_endpoint_update(channel, "zmq_node", writer->actual_endpoint());
+start_heartbeat_task();
+
+// PUB drops messages sent before SUB subscribes.  Script consults
+// consumer_count() to skip iterations when no consumer is subscribed
+// yet — see §4.7.6 for the framework-mechanism-not-policy contract.
+```
+
+**Consumer role — Tier 2 pseudocode** (dialing side, endpoint_hint
+empty):
+
+```cpp
+hub::RxOptions opts;
+opts.slot_schema = cfg.slot_schema();
+opts.instance_id = short_tag + ":" + uid + ":rx";
+// opts.endpoint_hint left empty — dialing side.
+
+auto reader = hub::Queue::create_reader(
+    hub::ChannelTopology::FanOut, hub::Transport::Zmq, std::move(opts));
+// Queue picks: SUB socket + connect (deferred) + curve_client +
+// subscribes empty topic filter on start().
+
+auto ack = brc.register_consumer(consumer_reg_payload);
+reader->apply_master_approval(ack);   // dials ack.data_endpoint
+start_heartbeat_task();
+```
+
+#### 4.7.3 Fan-out SHM (1 producer → N consumers, host-local)
+
+**Binding side:** producer.  **Cardinality:** exactly 1 producer,
+1..N consumers.  **When to use:** high-throughput broadcast to
+multiple consumers on the same host — zero-copy shared-memory ring
+with per-consumer capability-transport fan-out.
+
+The AttachProtocol / capability transport (Unix socket dial →
+crypto_box handshake → SCM_RIGHTS fd) is HEP-CORE-0044 unchanged at
+the transport layer.  What DOES change post-migration: the wire —
+configs declare `channel_topology: "fan-out"` explicitly, and
+`CONSUMER_REG_ACK` carries the scalar `data_endpoint` (capability
+socket path) + `data_pubkey` instead of the retired per-producer
+array.
+
+**Sequence:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PS as Producer script/host
+    participant PQ as Producer ShmQueue<br/>+ AttachProtocolAcceptor
+    participant B  as Broker
+    participant CQ as Consumer ShmQueue<br/>+ AttachProtocol client
+    participant CS as Consumer script/host
+
+    Note over PS,CS: Fan-out SHM — producer creates DataBlock, consumers attach
+    PS->>B: REG_REQ (topology=fan-out, transport=shm)
+    B-->>PS: REG_ACK (initial_allowlist=[...])
+    PS->>PQ: apply_master_approval(ACK) → create DataBlock<br/>bind capability socket ipc:///run/plh/<uid>.sock
+    PQ-->>PS: actual_endpoint = ipc:///run/plh/<uid>.sock
+    PS->>B: ENDPOINT_UPDATE_REQ (endpoint=<sock path>)
+    B-->>PS: ENDPOINT_UPDATE_ACK (ok)
+    PS->>B: HEARTBEAT → producer=Live
+
+    Note over CS,B: Consumer arrives
+    CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=shm)
+    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms consumer
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer
+    PS->>B: GET_CHANNEL_AUTH_REQ → CHANNEL_AUTH_APPLIED_REQ
+    B-->>CS: CONSUMER_REG_ACK (data_endpoint=<sock path>, data_pubkey)
+    CS->>CQ: apply_master_approval(ACK)<br/>connect capability socket
+    CQ->>PQ: AttachProtocol Frame 1/2/3 (per HEP-CORE-0044)
+    PQ->>CQ: SCM_RIGHTS fd → attach DataBlock
+    CS->>B: HEARTBEAT → broker marks consumer=Live
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=consumer
+    Note over PS: api.consumer_count() now returns count+1
+    Note over PS,CS: Data flows via shared memory
+    PS->>PQ: write_acquire → write_commit (into DataBlock slot)
+    CQ->>CS: read_acquire → read_release (from DataBlock slot)
+```
+
+**Tier 2 pseudocode** — same shape as §4.7.2 producer/consumer with
+`Transport::Shm` in place of `Transport::Zmq`.  The SHM-specific
+fields on `TxOptions` (see §3.3.0 struct spec) — `DataBlockConfig
+shm_config` on the producer side, `int shm_capability_fd` on the
+consumer side — are populated by the role host's SHM capability
+prepare-hook before the factory call; role code never touches the
+memfd directly.
+
+#### 4.7.4 One-to-one ZMQ (1 producer → 1 consumer)
+
+**Binding side:** producer.  **Cardinality:** exactly 1 producer,
+exactly 1 consumer.  **When to use:** point-to-point stream — one
+sensor feeding one processor with cardinality guaranteed by broker
+(second CONSUMER_REG_REQ rejected with `ONE_TO_ONE_CARDINALITY_VIOLATED`).
+
+Under ZMQ uses PUSH bind / PULL connect — no PUB/SUB overhead needed
+for a single subscriber, no dropped-messages-before-subscribe
+concern.
+
+**Sequence:**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PS as Producer script/host
+    participant PQ as Producer PUSH queue
+    participant B  as Broker
+    participant CQ as Consumer PULL queue
+    participant CS as Consumer script/host
+
+    Note over PS,CS: 1-to-1 ZMQ — producer binds PUSH, consumer connects PULL
+    PS->>B: REG_REQ (topology=one-to-one, transport=zmq)
+    B-->>PS: REG_ACK (initial_allowlist=[...])
+    PS->>PQ: apply_master_approval(ACK) + start()
+    PQ->>PQ: PUSH bind tcp://host:0<br/>ZAP domain registered<br/>curve_server=1
+    PQ-->>PS: actual_endpoint = tcp://host:52345
+    PS->>B: ENDPOINT_UPDATE_REQ (endpoint=tcp://host:52345)
+    B-->>PS: ENDPOINT_UPDATE_ACK (ok)
+    PS->>B: HEARTBEAT → producer=Live
+
+    Note over CS,B: Consumer arrives
+    CS->>B: CONSUMER_REG_REQ (topology=one-to-one, transport=zmq, pubkey=C1)
+    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1<br/>+ cardinality check (no other consumer yet)
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
+    PS->>B: GET_CHANNEL_AUTH_REQ → APPLIED_REQ
+    B-->>CS: CONSUMER_REG_ACK (data_endpoint, data_pubkey)
+    CS->>CQ: apply_master_approval(ACK) + start()
+    CQ->>CQ: PULL connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>curve_client
+    CQ-->>PQ: (CURVE handshake — producer's ZAP admits via allowlist)
+    CS->>B: HEARTBEAT → broker marks consumer=Live
+    B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=consumer, role_uid=C1
+    Note over PS: api.consumer_count() now returns 1
+    Note over PS,CS: Data flows point-to-point
+    PS->>PQ: write_acquire → write_commit
+    PQ->>CQ: (slot bytes over PUSH→PULL, no round-robin — single peer)
+    CQ->>CS: read_acquire → read_release
+
+    Note over B,B: If second CONSUMER_REG_REQ arrives → ONE_TO_ONE_CARDINALITY_VIOLATED
+    Note over B,B: If second REG_REQ (producer) arrives → ONE_TO_ONE_CARDINALITY_VIOLATED
+```
+
+**Tier 2 pseudocode** — identical shape to §4.7.2 (fan-out ZMQ)
+producer/consumer, with `ChannelTopology::OneToOne` substituted for
+`FanOut`.  The socket type switches PUB/SUB → PUSH/PULL inside the
+factory per §3.3.0 matrix; role code sees no difference.
+
+#### 4.7.5 One-to-one SHM (1 producer → 1 consumer, host-local)
+
+Wire and transport layer are identical to fan-out SHM (§4.7.3) with
+two broker-side additions:
+
+- REG_REQ / CONSUMER_REG_REQ MUST declare `channel_topology: "one-to-one"`.
+- Broker rejects a second CONSUMER_REG_REQ with
+  `ONE_TO_ONE_CARDINALITY_VIOLATED` (fan-out SHM would accept it).
+
+Only the cardinality-guard differs.  Sequence + Tier 2 pseudocode
+follow §4.7.3 exactly with `ChannelTopology::OneToOne` substituted
+for `FanOut`.
+
+#### 4.7.6 Script-facing readiness accessors
+
+The framework exposes the broker's Live-peer view to scripts via
+four symmetric accessors on every role's `api` object (HEP-CORE-0028
+§6a for the native ABI, HEP-CORE-0011 § "Cross-Engine Surface Parity"
+for the Lua/Python/native parity declaration):
+
+```
+api.consumer_count(channel_name: str) -> int
+api.producer_count(channel_name: str) -> int
+api.consumers(channel_name: str)      -> list[str]  # role_uids
+api.producers(channel_name: str)      -> list[str]  # role_uids
+```
+
+**Semantics.**  Count and list of Live consumers/producers of that
+channel per the broker's authoritative view.  "Live" means the
+broker has received the peer's first heartbeat; per HEP-CORE-0036
+§3.5.5 S3 that heartbeat is emitted AFTER the peer's data-plane
+socket is set up (bind or connect+subscribe issued).  So Live ≈
+"wire is ready to deliver."
+
+**Objective, not role-relative.**  The count includes self if self
+is a consumer/producer of the channel.  Fan-in `consumer_count()`
+returns 1 (the singular consumer) regardless of who's asking;
+fan-out `producer_count()` returns 1 similarly; 1-to-1 both return
+0 or 1.  The script knows its own role, so trivial self-count cases
+don't create confusion.
+
+**How the framework knows.**  The binding side's role host receives
+`CHANNEL_AUTH_CHANGED_NOTIFY` with `phase=live` (HEP-CORE-0007 §12.5)
+each time a dialing-side peer transitions to Live at the broker; it
+updates `live_peers[channel]` locally.  On `phase=left` it removes.
+Under fan-out/1-to-1 the producer role is binding; under fan-in the
+consumer role is binding.  Dialing-side roles get the same signal
+via their own role host if useful, but for fan-in producer /
+fan-out consumer / 1-to-1 dialing side, the "peer count" is
+trivially 0 or 1 anyway.
+
+**Framework mechanism, not policy.**  Under fan-out ZMQ
+specifically (PUB drops messages sent before SUB subscribes), the
+producer's script is expected to consult `api.consumer_count()` in
+`on_produce` and return early if no consumers are subscribed yet:
+
+```python
+def on_produce(tx, msgs, api):
+    if api.consumer_count("data.stream") == 0:
+        return   # nobody to send to; skip iteration
+    # produce
+```
+
+The framework's job is to deliver accurate signals; the script's job
+is to decide when the channel is "ready enough" to push data.  This
+applies symmetrically to fan-in consumers (`api.producer_count()`
+before upstream-triggered work) and 1-to-1 both sides.  There is
+NO framework-level auto-hold, auto-retry, or auto-fallback.
+
+#### 4.7.7 Why plain PUB (not XPUB) under fan-out ZMQ
+
+The broker is the sole admission authority (HEP-CORE-0036 §3.5.1
+auth-door principle).  A dialing-side role cannot reach the data
+plane without receiving `data_endpoint` + `data_pubkey` from its
+REG_ACK — which the broker only sends after admission.  So the
+broker's Live-peer view IS the wire-truth for readiness: nobody can
+be "ready to receive" without the broker having admitted them, and
+Live means the peer's data-plane setup completed before the
+heartbeat fired.
+
+Under XPUB the framework would observe subscription frames at the
+socket layer, but that observation is redundant — it's just a
+downstream consequence of the broker's decision, which the framework
+already learns via the `phase=live` NOTIFY.  Two observations of the
+same event would create potential for divergence during transient
+windows; one observation from the authority is simpler and canonical.
+
+Plain PUB, broker-derived counts, one source of truth.
+
+---
+
 ## 5. Schema Integration
 
 ### 5.1 Schema at Pipeline Construction Time

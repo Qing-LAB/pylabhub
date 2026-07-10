@@ -1,6 +1,11 @@
 # TOPOLOGY_TODO.md — Singular-side ownership migration
 
-**Design authority:** [`docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`](../tech_draft/DRAFT_topology_singular_side_2026-07.md) (status: **DESIGN LOCKED**, rev 10 shipped `ac820af9`).
+**Permanent design authority:**
+- **[HEP-CORE-0017 §3.3.0 + §3.3.0.1](../HEP/HEP-CORE-0017-Pipeline-Architecture.md)** — abstraction layer + decision matrix + factory dispatch.
+- **[HEP-CORE-0017 §4.7](../HEP/HEP-CORE-0017-Pipeline-Architecture.md)** — per-topology sequence diagrams + Tier 2 pseudocode.
+- **[docs/README/README_topology_channels.md](../README/README_topology_channels.md)** — user-facing tutorial (role JSON, script accessors, pitfalls).
+
+**Migration-in-flight state authority:** [`docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`](../tech_draft/DRAFT_topology_singular_side_2026-07.md) (status: **DESIGN LOCKED**, rev 10 shipped `ac820af9`; §7 + §10 promoted to HEP-CORE-0017 §4.7 on 2026-07-09).
 
 **Scope in one sentence:** Every channel has exactly one data-plane
 endpoint, owned by the singular side of its topology.  Three

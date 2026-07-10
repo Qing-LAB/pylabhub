@@ -16,6 +16,15 @@ target-tasks: task #94 (ephemeral binding — subsumed); topology migration Phas
 
 ## 0. Status
 
+> **Content promoted to permanent doc (2026-07-09):**  §7 (sequence
+> diagrams) + §10 (Tier 2 pseudocode) + tier-boundary discipline
+> preamble now live in HEP-CORE-0017 §4.7.  User-facing tutorial with
+> role JSON examples lives at `docs/README/README_topology_channels.md`.
+> This draft remains the historical design authority + tracks
+> migration-in-flight state; when Phase C step 7 + Phase D R6 land,
+> the remaining migration-detail sections retire into
+> `docs/archive/transient-YYYY-MM-DD/` per DOC_STRUCTURE.md §2.2.
+
 **DESIGN LOCKED — current rev 10 (2026-07-09; `data_endpoint_resolved`
 bool → `std::optional<std::string>::has_value()` collapse; earlier
 Q3a revision landed in Phase A rev 3.1).**  All three original open items from
