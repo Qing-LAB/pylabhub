@@ -3,6 +3,7 @@
  * @brief RoleConfig implementation — factory, accessors, JsonConfig backend.
  */
 #include "utils/config/role_config.hpp"
+#include "utils/hub_state.hpp"                // topology::parse allow-list
 #include "utils/json_config.hpp"
 #include "utils/role_directory.hpp"
 #include "utils/role_vault.hpp"
@@ -235,8 +236,30 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     // 2026-07-08 topology migration — OPTIONAL; empty means "inherit
     // channel's stored topology or default to one-to-one" per broker
     // overwrite semantics (tech draft §5.1 rule 4).
+    //
+    // Allow-list validation at parse time per HEP-CORE-0018 §5.3:
+    // non-empty values MUST be one of {"fan-in", "fan-out",
+    // "one-to-one"}.  Uses the shared `pylabhub::hub::topology::parse`
+    // (`hub_state.hpp:167`) — same validator the broker's REG_REQ
+    // handlers use — so a typo like "fanin" fails config-load rather
+    // than silently reaching the broker as a CONFIG_INVALID.
     in_channel_topology  = j.value("in_channel_topology",  std::string{});
     out_channel_topology = j.value("out_channel_topology", std::string{});
+    for (const auto &[key, val] : std::initializer_list<std::pair<
+             std::string_view, std::string_view>>{
+             {"in_channel_topology",  in_channel_topology},
+             {"out_channel_topology", out_channel_topology}})
+    {
+        if (val.empty()) continue;  // "inherit" sentinel
+        if (!pylabhub::hub::topology::parse(val).has_value())
+        {
+            throw std::runtime_error(
+                std::string(tag) + ": config key '" + std::string(key) +
+                "' has invalid value '" + std::string(val) +
+                "' (must be one of \"fan-in\", \"fan-out\", "
+                "\"one-to-one\", or omitted; HEP-CORE-0018 §5.3)");
+        }
+    }
 }
 
 // ============================================================================
