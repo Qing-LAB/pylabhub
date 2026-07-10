@@ -2702,6 +2702,41 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     {
         resp["correlation_id"] = corr_id;
     }
+
+    // HEP-CORE-0017 §3.3.0 + HEP-CORE-0036 §6.5: under fan-in the
+    // producer is the DIALING side; the consumer owns the ZAP
+    // allowlist and needs to admit this producer's CURVE pubkey
+    // before the producer's PUSH-connect + CURVE handshake can
+    // succeed.  Fire the change notify to the (binding-side)
+    // consumer so its role host pulls GET_CHANNEL_AUTH_REQ and
+    // applies the updated allowlist via set_peer_allowlist.  The
+    // helper dispatches by topology (fan-in → consumers) per its
+    // own doc-comment at line 774+.
+    //
+    // Under fan-out / one-to-one this NOTIFY is not fired from
+    // the producer-REG path — the producer is the binding side
+    // there and receives its allowlist seed via REG_ACK
+    // initial_allowlist.  The consumer-side NOTIFY (line 3485)
+    // handles admission on those topologies.
+    if (auto ch = hub_state_->channel(channel_name);
+        ch.has_value() &&
+        ch->topology == pylabhub::hub::ChannelTopology::FanIn)
+    {
+        // Add producer's pubkey to the channel-scope allowlist.
+        // The `_on_consumer_authorized` name is a pre-topology
+        // misnomer — the underlying set (`ChannelAccessEntry
+        // ::authorized_consumer_pubkeys`) is topology-agnostic:
+        // it holds "pubkeys admitted to the binding side's ZAP
+        // allowlist."  Under fan-out / one-to-one those are
+        // consumers; under fan-in they are producers.  Bumps
+        // channel_version so the consumer's follow-up
+        // GET_CHANNEL_AUTH_REQ pulls the new pubkey.
+        hub_state_->_on_consumer_authorized(channel_name, producer_pubkey);
+        fire_channel_auth_changed_notify(socket, channel_name,
+                                           /*phase=*/"admitted",
+                                           /*role_uid=*/role_uid,
+                                           /*role_type=*/"producer");
+    }
     return resp;
 }
 

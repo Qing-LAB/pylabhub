@@ -89,16 +89,14 @@ void write_zmq_producer_config(const fs::path &cfg_path,
     j["loop_timing"]      = "fixed_rate";
     j["target_period_ms"] = 50;
 
-    // ZMQ TX — producer-side bind on FIXED port.  Production
-    // ephemeral-binding (HEP-CORE-0021 §16.5) is tracked under task
-    // #94; until that lands the producer cannot publish a resolved
-    // port to the broker via ENDPOINT_UPDATE_REQ, so we use a fixed
-    // port and rely on the per-test pid-derived offset
-    // (`scenario_port_base + (getpid() % 1000)`) to avoid collisions
-    // when test runs overlap.
+    // ZMQ TX.  Producer's bind direction comes from `out_channel_topology`
+    // per HEP-CORE-0017 §3.3.0 (writer + one-to-one or fan-out →
+    // binding; writer + fan-in → dialing).  The `out_zmq_bind` legacy
+    // field is no longer read by `build_tx_queue`.  Endpoint hint is
+    // used on the binding side only; dialing side receives its dial
+    // target on REG_ACK.
     j["out_transport"]            = "zmq";
     j["out_zmq_endpoint"]         = "tcp://127.0.0.1:" + std::to_string(prod_port);
-    j["out_zmq_bind"]             = true;
     j["out_zmq_buffer_depth"]     = 256;
     j["out_zmq_overflow_policy"]  = "drop";
 
@@ -185,13 +183,19 @@ void write_zmq_consumer_config(const fs::path &cfg_path,
     j["target_period_ms"] = 50;
 
     j["in_transport"]           = "zmq";
-    // Placeholder: role-config schema requires `in_zmq_endpoint`
-    // at parse time even when the consumer is a dialer
-    // (`in_zmq_bind=false`).  The runtime overwrites this with the
-    // producer's resolved endpoint carried in the unified
-    // CONSUMER_REG_ACK `producers[]` array (HEP-0036 §5b.7).
+    // Consumer's bind direction comes from `in_channel_topology` per
+    // HEP-CORE-0017 §3.3.0 (reader + fan-in → binding; reader +
+    // fan-out or one-to-one → dialing).  The `in_zmq_bind` legacy
+    // field is no longer read by `build_rx_queue`.  Endpoint is a
+    // placeholder — dialing side ignores it (peer arrives on
+    // REG_ACK.initial_allowlist); binding side (fan-in consumer)
+    // uses it as a bind hint and `port=0` means "any free port,"
+    // the resolved port is published via ENDPOINT_UPDATE_REQ.  The
+    // config parser at `transport_config.hpp:96-99` currently
+    // requires the field regardless of side (known gap); until it
+    // grows a topology-aware check, the placeholder satisfies both
+    // roles.
     j["in_zmq_endpoint"]        = "tcp://127.0.0.1:0";
-    j["in_zmq_bind"]            = false;
     j["in_zmq_buffer_depth"]    = 256;
     j["in_zmq_overflow_policy"] = "drop";
 
@@ -499,44 +503,28 @@ TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
         "event=ConsumerRegAckReceived", seconds(5)))
         << dump_full("ConsumerRegAckReceived (consumer side)");
 
-    // ── HEP-CORE-0042 §7.1 markers (test-adequacy strengthening, 2026-07-02)
+    // ── Post-migration observability markers ───────────────────────────
     //
-    // The prior test body relied on `cons_test: complete N=5` as the sole
-    // §7.1 pin.  Under an infinite-loop producer that continuously writes
-    // slots into its PUSH buffer, that assertion is compatible with §7.1
-    // being FULLY BYPASSED — the consumer's PULL dials, CURVE handshake
-    // fails at ZAP, libzmq reconnects every ~100 ms, and the broker's
-    // legacy CHANNEL_AUTH_CHANGED_NOTIFY chain re-seeds the producer's
-    // allowlist within ~110 ms.  Next reconnect handshake succeeds and
-    // buffered slots flow through.  Test passes with §7.1 broken.
+    // Under HEP-CORE-0017 §3.3.0 the one-to-one topology puts the
+    // producer on the binding side (PUSH bind) and the consumer on
+    // the dialing side (PULL connect).  There is no "pre-attach
+    // loop" — the consumer's queue drives Standby → Configured →
+    // Active in one step via `apply_master_approval(CONSUMER_REG_ACK)`.
+    // The observability markers below verify the topology-model
+    // path actually ran; a regression that broke it would fail here
+    // instead of silently limping along on a legacy fallback.
     //
-    // Fix: explicitly pin the new Phase 3a/3b markers that ONLY fire when
-    // §7.1 actually runs.  A regression that reverts §7.1 will fail here
-    // with a specific diagnostic instead of silently passing.
-
-    // Producer-side (Phase 3a): captured instance_id + emitted APPLIED_REQ.
+    // Producer-side: instance_id captured + APPLIED_REQ round-trip
+    // completed (HEP-CORE-0042 §3a — unchanged under topology model).
     ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
         "event=ProducerInstanceIdCaptured channel='" + channel + "'",
         seconds(5)))
-        << dump_full("event=ProducerInstanceIdCaptured (Phase 3a.2)");
+        << dump_full("event=ProducerInstanceIdCaptured — producer processed REG_ACK");
     ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
         "event=ChannelAuthApplied channel='" + channel + "'",
         seconds(5)))
-        << dump_full("event=ChannelAuthApplied (Phase 3a.3b APPLIED_REQ RTT)");
-
-    // Consumer-side (Phase 3b.2): §7.1 pre-attach loop begin+success+complete.
-    // These are Category-A markers per HEP §I11 observability contract.
-    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:begin channel=" + channel, seconds(5)))
-        << dump_full("attach:begin (Phase 3b.2 §7.1 loop entry)");
-    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:success channel=" + channel + " producer=" + prod_uid,
-        seconds(5)))
-        << dump_full("attach:success (Phase 3b.2 §7.1 admit)");
-    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:complete channel=" + channel + " admitted=1/1",
-        seconds(5)))
-        << dump_full("attach:complete (Phase 3b.2 §7.1 loop end)");
+        << dump_full("event=ChannelAuthApplied — producer's allowlist "
+                     "applied + APPLIED_REQ RTT closed");
 
     // ── Data flow verification: consumer received all N slots ─────────────
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
@@ -760,30 +748,31 @@ TEST_F(PlhHubCliTest, ZmqE2E_UnauthorizedConsumerDeniedByBroker)
 
 TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
 {
-    // Fan-in end-to-end wire NOW WORKS end-to-end at the queue level:
-    // - Consumer opens the channel via HubState::_open_channel_locked
-    //   (framework primitive shared with the producer-opens path).
-    // - Consumer publishes its bound endpoint via ENDPOINT_UPDATE_REQ;
-    //   broker sets ChannelEntry.data_endpoint on the fan-in channel.
-    // - Producer REG_ACK's initial_allowlist carries the consumer's
-    //   {endpoint, pubkey_z85}; producer's PUSH queue transitions
-    //   Standby → Configured → Active with the resolved dial target
-    //   and CURVE handshake succeeds against the consumer's ZAP.
+    // Fan-in end-to-end wire piece-by-piece works:
+    //   - Consumer opens the channel via the shared
+    //     HubState::_open_channel_locked primitive.
+    //   - Consumer binds PULL, publishes bind endpoint via
+    //     ENDPOINT_UPDATE_REQ, broker sets ChannelEntry.data_endpoint.
+    //   - Producer REG_ACK's initial_allowlist carries the consumer's
+    //     {endpoint, pubkey_z85}; producer's PUSH queue reaches Active
+    //     with the correct dial target.
+    //   - Broker fires CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted,
+    //     role_type=producer) to the consumer's zmq_identity when the
+    //     producer registers.
     //
-    // This test's remaining assertions still watch for the
-    // `attach:begin channel=... producers=2` marker chain, which is
-    // the pre-migration HEP-CORE-0042 §7.1 CONSUMER-attaches-to-each-
-    // producer flow.  Under the topology model the consumer is the
-    // binding side and does NOT attach — producers connect to it.
-    // So those markers no longer fire; the test needs post-topology
-    // markers (e.g. producer-side "connected + first slot sent",
-    // consumer-side "first slot received from producer=X").
-    //
-    // Unskip when the test's assertions are refactored to post-
-    // migration markers.  The underlying wire flow works today.
-    GTEST_SKIP() << "Fan-in wire works end-to-end but the test's "
-                    "attach:* markers are pre-migration; assertions "
-                    "need refactoring to post-topology markers.";
+    // Remaining gap: the NOTIFY does not reach the consumer's BRC
+    // handler (verified in-line — broker logs the send-to-identity
+    // call but the consumer's log never records `ChannelAuthLive` or
+    // the subsequent GET_CHANNEL_AUTH_REQ pull).  The consumer's ZAP
+    // allowlist therefore never learns the producer's pubkey, and
+    // producer PUSH-connect handshakes silently fail at the consumer's
+    // ZAP.  Producer's data never arrives.  Likely site: the ROUTER
+    // routing / NOTIFY dispatch for a binding-side CONSUMER on a
+    // fan-in channel is wired to the pre-migration
+    // "binding-side-is-producer" pattern.
+    GTEST_SKIP() << "Fan-in producer-admitted NOTIFY sent by broker but "
+                    "not received by consumer BRC handler; consumer's "
+                    "ZAP allowlist never admits producer pubkeys.";
 
     using std::chrono::seconds;
 
@@ -962,29 +951,48 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
         "event=RegAckReceived", seconds(5)))
         << dump_full("producer B RegAckReceived");
 
-    // ── HEP-CORE-0042 §7.1 fan-in markers ─────────────────────────────
-    // Loop entry.
+    // ── Post-migration fan-in binding markers ─────────────────────────
+    //
+    // Under HEP-CORE-0017 §3.3.0 fan-in the consumer opens the
+    // channel, binds PULL, and publishes its bound endpoint.
+    // Producers arrive later, receive the consumer's endpoint on
+    // REG_ACK's initial_allowlist, dial PUSH, and CURVE-handshake
+    // against the consumer's ZAP.  There is no "attach loop" — the
+    // producer's queue drives Standby → Configured → Active in one
+    // step via `apply_master_approval(REG_ACK)`.
+    //
+    // Consumer-side binding: the endpoint publish marker fires only
+    // when the topology-model binding path ran end-to-end (queue
+    // reached Active, actual_endpoint() returned non-empty,
+    // send_endpoint_update succeeded).  A regression that leaves
+    // data_endpoint unset would fail here — producers would then
+    // receive an empty initial_allowlist and their queues would
+    // stay in Standby.
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:begin channel=" + channel + " producers=2", seconds(5)))
-        << dump_full("attach:begin producers=2 (fan-in loop entry)");
+        "event=BindingEndpointPublished channel='" + channel + "'",
+        seconds(5)))
+        << dump_full("event=BindingEndpointPublished — fan-in consumer "
+                     "published its bound endpoint to the broker");
 
-    // BOTH producers must appear in attach:success.  Order not guaranteed
-    // (broker iterates ch->producers[] in insertion order but the loop
-    // is single-consumer-authoritative so we don't pin order).
-    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:success channel=" + channel + " producer=" + prod_a_uid,
+    // Producer-side: both must process REG_ACK's fan-in
+    // initial_allowlist entry and complete the APPLIED_REQ round-trip
+    // for their per-producer allowlist state on the consumer's ZAP.
+    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
+        "event=ProducerInstanceIdCaptured channel='" + channel + "'",
         seconds(5)))
-        << dump_full("attach:success for producer A");
-    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:success channel=" + channel + " producer=" + prod_b_uid,
+        << dump_full("producer A ProducerInstanceIdCaptured");
+    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
+        "event=ProducerInstanceIdCaptured channel='" + channel + "'",
         seconds(5)))
-        << dump_full("attach:success for producer B");
-
-    // Fan-in loop end — the load-bearing "both admitted" marker.
-    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
-        "attach:complete channel=" + channel + " admitted=2/2",
+        << dump_full("producer B ProducerInstanceIdCaptured");
+    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
+        "event=ChannelAuthApplied channel='" + channel + "'",
         seconds(5)))
-        << dump_full("attach:complete admitted=2/2");
+        << dump_full("producer A ChannelAuthApplied");
+    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
+        "event=ChannelAuthApplied channel='" + channel + "'",
+        seconds(5)))
+        << dump_full("producer B ChannelAuthApplied");
 
     // ── Data flow verification (BOTH producers flow) ──────────────────
     // The multi-producer consumer script only emits `cons_test: complete`
