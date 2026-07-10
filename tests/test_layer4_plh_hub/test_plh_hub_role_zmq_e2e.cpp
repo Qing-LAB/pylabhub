@@ -760,24 +760,25 @@ TEST_F(PlhHubCliTest, ZmqE2E_UnauthorizedConsumerDeniedByBroker)
 
 TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
 {
-    // Fan-in end-to-end can't complete yet.  The role code correctly
-    // treats the fan-in consumer as the binding side (it must come
-    // up first, bind PULL, publish endpoint) and the producer as
-    // dialing (waits for REG_ACK's initial_allowlist to carry the
-    // consumer's endpoint + pubkey — which the broker DOES now
-    // populate).  What's still missing: the broker's consumer
-    // REG_REQ handler rejects a CONSUMER_REG_REQ for a not-yet-
-    // registered channel with CHANNEL_NOT_FOUND
-    // (broker_service.cpp handle_consumer_reg_req around the
-    // "channel not found" branch, plus HubState::_on_consumer_joined
-    // silently skips when the channel doesn't exist).  Under fan-in
-    // the consumer IS the channel opener — the broker needs a path
-    // where a fan-in consumer's REG_REQ creates the channel entry
-    // with the consumer as the binding side.
+    // Fan-in end-to-end progressed but doesn't yet close.  The
+    // consumer now opens the channel (broker + HubState route the
+    // fan-in consumer through the shared `_open_channel_locked`
+    // primitive), and the broker fills the producer's REG_ACK
+    // initial_allowlist with the consumer's {endpoint, pubkey_z85}
+    // entry when both are known.  Still missing: the binding-side
+    // role (fan-in consumer) doesn't publish its bound endpoint to
+    // the broker via ENDPOINT_UPDATE_REQ, so ChannelEntry.data_endpoint
+    // stays unset and the producer's REG_ACK initial_allowlist emits
+    // empty.  The producer's queue therefore refuses
+    // apply_master_approval and stays in Standby.
     //
-    // Unskip when the broker allows fan-in consumer to open a channel.
-    GTEST_SKIP() << "Broker CONSUMER_REG_REQ handler doesn't yet let a "
-                    "fan-in consumer create the channel entry it should own.";
+    // The `send_endpoint_update` client already exists in
+    // BrokerRequestComm; the gap is that no role code path calls it
+    // after the queue's bind resolves an actual port.  Unskip once
+    // that role-side publish path is wired.
+    GTEST_SKIP() << "Binding-side role code does not publish its bound "
+                    "endpoint via ENDPOINT_UPDATE_REQ; producer REG_ACK "
+                    "arrives with empty initial_allowlist.";
 
     using std::chrono::seconds;
 

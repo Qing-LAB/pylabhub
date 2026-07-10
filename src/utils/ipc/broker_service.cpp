@@ -3027,24 +3027,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                            "ABI major-axis mismatch on: " + abi.mismatched_axes);
     }
 
-    // Single HubState snapshot covers channel-existence, endpoint
-    // freshness, R6 producer-readiness gate, and downstream schema
-    // checks — matches DISC_REQ's pattern at line ~1909 and avoids
-    // any drift between separate snapshot calls.
-    const auto snap = hub_state_->snapshot();
-    const auto cit  = snap.channels.find(channel_name);
-    if (cit == snap.channels.end())
-    {
-        LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
-        return make_error(corr_id, "CHANNEL_NOT_FOUND",
-                          "Channel '" + channel_name + "' is not registered");
-    }
-    const auto &channel_entry = cit->second;
-
     // Topology wire parse (INVALID_REQUEST for garbage input).
-    // Topology mismatch + cardinality checks happen atomically inside
-    // `_on_consumer_joined` below, under the same writer lock as the
-    // mutation.  No TOCTOU window between snapshot and mutation.
+    // Parsed FIRST because it drives the channel-existence + producer-
+    // Live gates below: under fan-in the consumer is the binding side
+    // per HEP-CORE-0017 §3.3.0, so an as-yet-unregistered channel
+    // becomes the "consumer opens the channel" path rather than a
+    // hard CHANNEL_NOT_FOUND.  Topology mismatch + cardinality checks
+    // still happen atomically inside `_on_consumer_joined` below under
+    // the writer lock — no TOCTOU window between snapshot and mutation.
     std::optional<pylabhub::hub::ChannelTopology> declared_topology;
     {
         const std::string wire = req.value("channel_topology", "");
@@ -3065,6 +3055,41 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             }
         }
     }
+
+    // Single HubState snapshot covers channel-existence, endpoint
+    // freshness, R6 producer-readiness gate, and downstream schema
+    // checks — matches DISC_REQ's pattern at line ~1909 and avoids
+    // any drift between separate snapshot calls.
+    const auto snap = hub_state_->snapshot();
+    const auto cit  = snap.channels.find(channel_name);
+
+    // Under fan-in the consumer opens the channel; a missing entry
+    // routes to the open-path in `_on_consumer_joined` (which
+    // atomically creates the ChannelEntry with the consumer as the
+    // binding side + first admitted role).  Under fan-out / one-to-one
+    // the producer is the binding side and must have opened the
+    // channel first — a missing entry there is a genuine
+    // CHANNEL_NOT_FOUND.
+    const bool consumer_will_open_channel =
+        cit == snap.channels.end() &&
+        declared_topology.has_value() &&
+        *declared_topology == pylabhub::hub::ChannelTopology::FanIn;
+
+    if (cit == snap.channels.end() && !consumer_will_open_channel)
+    {
+        LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' is not registered");
+    }
+
+    // channel_entry references the existing entry when present; on the
+    // consumer-opens-channel path (fan-in, first arrival) the entry
+    // gets created inside `_on_consumer_joined`, so downstream checks
+    // that need a `channel_entry` are skipped in that branch.
+    static const pylabhub::hub::ChannelEntry k_empty_channel_entry;
+    const auto &channel_entry = consumer_will_open_channel
+                                    ? k_empty_channel_entry
+                                    : cit->second;
 
     // HEP-0021 §16: reject if first producer's ZMQ endpoint has unresolved
     // port 0 (single-producer shape — the "any ready producer" scan per
@@ -3093,6 +3118,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // producer's first-heartbeat fire, producing handshake failures
     // during the gap.  Mirrors DISC_REQ's presence scan.
     //
+    // Fan-in EXEMPT: under fan-in the consumer is the binding side
+    // per HEP-CORE-0017 §3.3.0.  It arrives first and opens the
+    // channel; producers arrive later and dial in.  The R6-gate
+    // symmetric R6' path (producers pend until consumer is Live) is
+    // enforced from the producer-REG_REQ side, not here.
+    //
     // Four outcomes, matching the §6.6 reason catalog:
     //   - at least one kLive producer    → admit
     //   - some kRegistering (Connected,  → CHANNEL_NOT_READY /
@@ -3105,6 +3136,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //     no presences)                    (terminal — matches
     //                                      DISC_REQ; client must not
     //                                      retry indefinitely)
+    if (!consumer_will_open_channel &&
+        !(declared_topology.has_value() &&
+          *declared_topology == pylabhub::hub::ChannelTopology::FanIn))
     {
         bool any_live          = false;
         bool any_kRegistering  = false;  // Connected, !first_heartbeat
@@ -3162,8 +3196,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     }
 
     // ── Transport arbitration (Phase 6) ─────────────────────────────────────
+    // Transport-vs-channel check only meaningful when the channel
+    // exists.  On the consumer-opens-channel path (fan-in first
+    // arrival) `consumer_queue_type` becomes the channel's transport
+    // invariant (set inside `_on_consumer_joined`).
     const std::string consumer_queue_type = req.value("consumer_queue_type", "");
-    if (!consumer_queue_type.empty() && consumer_queue_type != channel_entry.data_transport)
+    if (!consumer_will_open_channel &&
+        !consumer_queue_type.empty() &&
+        consumer_queue_type != channel_entry.data_transport)
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ transport mismatch on '{}': "
                     "consumer wants '{}' but channel uses '{}'",
@@ -3209,7 +3249,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     const std::string expected_fz_blds      = req.value("expected_flexzone_blds", "");
     const std::string expected_fz_packing   = req.value("expected_flexzone_packing", "");
 
-    if (!expected_schema_id.empty())
+    // Schema validation compares consumer's expected_* against the
+    // channel's stored invariants.  When the consumer is opening the
+    // channel (fan-in first arrival) there are no stored invariants
+    // yet — the consumer's expected_* fields BECOME the invariants
+    // (installed inside `_on_consumer_joined`'s channel-open branch).
+    // Skip the compare-against-stored block on that path.
+    if (!consumer_will_open_channel && !expected_schema_id.empty())
     {
         // Named-citation mode.
         if (expected_hash_hex.empty())
@@ -3259,8 +3305,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                                   "defense-in-depth (HEP-0034 §10.3)");
         }
     }
-    else if (!expected_hash_hex.empty() || !expected_blds.empty() || !expected_packing.empty()
-             || !expected_fz_blds.empty() || !expected_fz_packing.empty())
+    else if (!consumer_will_open_channel &&
+             (!expected_hash_hex.empty() || !expected_blds.empty() || !expected_packing.empty()
+              || !expected_fz_blds.empty() || !expected_fz_packing.empty()))
     {
         // Anonymous-citation mode.  HEP-0034 §10.3 — full structure required.
         if (expected_blds.empty())
@@ -3364,8 +3411,33 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
 
     // Atomic consumer-side admission — topology + cardinality checks
     // run under HubState's writer lock alongside the mutation.
+    //
+    // Fan-in consumer-opens-channel path: supply schema + transport
+    // invariants gleaned from the wire so the atomic op can create
+    // the ChannelEntry with the consumer as first + only admitted role
+    // (HEP-CORE-0017 §3.3.0 binding-side rule).  The consumer's
+    // expected_* fields become the channel's stored invariants;
+    // subsequent producer REG_REQs must match them.
+    std::optional<pylabhub::hub::ChannelSchemaInvariants>    open_schema;
+    std::optional<pylabhub::hub::ChannelTransportInvariants> open_transport;
+    if (consumer_will_open_channel)
+    {
+        pylabhub::hub::ChannelSchemaInvariants s;
+        s.schema_hash    = expected_hash_hex;
+        s.schema_version = req.value("expected_schema_version", uint32_t{0});
+        s.schema_id      = expected_schema_id;
+        s.schema_blds    = expected_blds;
+        s.schema_owner   = req.value("expected_schema_owner", std::string{});
+        open_schema = std::move(s);
+
+        pylabhub::hub::ChannelTransportInvariants t;
+        t.data_transport = consumer_queue_type.empty() ? std::string{"zmq"}
+                                                        : consumer_queue_type;
+        open_transport = std::move(t);
+    }
     const auto cons_admission = hub_state_->_on_consumer_joined(
-        channel_name, std::move(entry), declared_topology);
+        channel_name, std::move(entry), declared_topology,
+        std::move(open_schema), std::move(open_transport));
     if (cons_admission.invalid_identifier)
     {
         LOGGER_WARN(

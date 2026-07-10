@@ -574,62 +574,108 @@ void HubState::_set_channel_closed(const std::string &name)
 // Returns ConsumerAdmissionResult so `_on_consumer_joined` can decide
 // whether to fire downstream handlers (role registration, etc.).
 ConsumerAdmissionResult
-HubState::_add_consumer(const std::string&              channel,
-                        ConsumerEntry                   entry,
-                        std::optional<ChannelTopology>  declared_topology)
+HubState::_add_consumer(const std::string&                        channel,
+                        ConsumerEntry                             entry,
+                        std::optional<ChannelTopology>            declared_topology,
+                        std::optional<ChannelSchemaInvariants>    open_schema,
+                        std::optional<ChannelTransportInvariants> open_transport)
 {
     ConsumerAdmissionResult result;
     ConsumerEntry           fired;
+    ChannelEntry            fired_channel;
+    bool                    did_open_channel = false;
 
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->channels.find(channel);
-        if (it == pImpl->channels.end()) return result;  // silent skip
-        auto &channel_entry = it->second;
 
-        // Topology declaration check.  Empty inherits stored; explicit
-        // non-matching → TOPOLOGY_MISMATCH.
-        if (declared_topology && *declared_topology != channel_entry.topology)
+        if (it == pImpl->channels.end())
         {
-            result.topology_error_code = "TOPOLOGY_MISMATCH";
-            return result;
-        }
+            // Channel doesn't exist.  Under HEP-CORE-0017 §3.3.0 the
+            // consumer opens the channel iff (a) the declared topology
+            // makes the consumer the binding side (only fan-in
+            // qualifies) AND (b) the caller supplied open invariants.
+            // Otherwise silent-skip (matches pre-topology behavior:
+            // "the wire hasn't reached a state where this consumer can
+            // be admitted").
+            const bool consumer_is_opener =
+                declared_topology.has_value() &&
+                *declared_topology == ChannelTopology::FanIn &&
+                open_schema.has_value() &&
+                open_transport.has_value();
+            if (!consumer_is_opener) return result;
 
-        auto &cons = channel_entry.consumers;
-
-        // Detect re-registration (same role_uid already present) —
-        // idempotent, skip cardinality check.  Role identity is
-        // uid-only per HEP-CORE-0033 §G2.2.0b + HEP-CORE-0023 §2.1;
-        // pid is metadata, not identity, so a pid collision does NOT
-        // qualify as re-registration.  (Pre-2026-07-09 the predicate
-        // also accepted a same-pid match — that allowed a distinct-uid
-        // consumer to silently displace an existing one under fan-in
-        // via pid collision, and OS pid reuse could swap role identity
-        // silently.  Retired 2026-07-09 per review Bug #2.)
-        auto is_dupe = [&](const ConsumerEntry &c) noexcept {
-            return !entry.role_uid.empty() && c.role_uid == entry.role_uid;
-        };
-        const bool is_reregistration =
-            std::any_of(cons.begin(), cons.end(), is_dupe);
-
-        if (!is_reregistration)
-        {
-            if (const char *err = topology::check_cardinality(
-                    channel_entry.topology, topology::AdmissionSide::Consumer,
-                    channel_entry.producers.size(), cons.size()))
+            const char* open_err = nullptr;
+            ChannelEntry* new_entry = _open_channel_locked(
+                channel, *open_schema, *open_transport,
+                ChannelTopology::FanIn, open_err);
+            if (!new_entry)
             {
-                result.topology_error_code = err;
+                result.topology_error_code = open_err;
                 return result;
             }
+            new_entry->consumers.push_back(std::move(entry));
+            fired            = new_entry->consumers.back();
+            fired_channel    = *new_entry;
+            did_open_channel = true;
+            result.admitted        = true;
+            result.channel_opened  = true;
+            result.invariant_result = InvariantSetResult::Created;
         }
+        else
+        {
+            auto &channel_entry = it->second;
 
-        cons.erase(std::remove_if(cons.begin(), cons.end(), is_dupe),
-                   cons.end());
-        cons.push_back(std::move(entry));
-        fired            = cons.back();
-        result.admitted  = true;
+            // Topology declaration check.  Empty inherits stored;
+            // explicit non-matching → TOPOLOGY_MISMATCH.
+            if (declared_topology && *declared_topology != channel_entry.topology)
+            {
+                result.topology_error_code = "TOPOLOGY_MISMATCH";
+                return result;
+            }
+
+            auto &cons = channel_entry.consumers;
+
+            // Detect re-registration (same role_uid already present)
+            // — idempotent, skip cardinality check.  Role identity is
+            // uid-only per HEP-CORE-0033 §G2.2.0b + HEP-CORE-0023 §2.1;
+            // pid is metadata, not identity, so a pid collision does
+            // NOT qualify as re-registration.
+            auto is_dupe = [&](const ConsumerEntry &c) noexcept {
+                return !entry.role_uid.empty() && c.role_uid == entry.role_uid;
+            };
+            const bool is_reregistration =
+                std::any_of(cons.begin(), cons.end(), is_dupe);
+
+            if (!is_reregistration)
+            {
+                if (const char *err = topology::check_cardinality(
+                        channel_entry.topology, topology::AdmissionSide::Consumer,
+                        channel_entry.producers.size(), cons.size()))
+                {
+                    result.topology_error_code = err;
+                    return result;
+                }
+            }
+
+            cons.erase(std::remove_if(cons.begin(), cons.end(), is_dupe),
+                       cons.end());
+            cons.push_back(std::move(entry));
+            fired                   = cons.back();
+            result.admitted         = true;
+            result.invariant_result = InvariantSetResult::IdempotentEqual;
+        }
     }
     if (!result.admitted) return result;
+
+    // Fire handlers post-lock.  ch_opened first (mirrors
+    // _on_producer_added's ordering) so subscribers see the channel
+    // before they see its first consumer.
+    if (did_open_channel)
+    {
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_opened))
+            h(fired_channel);
+    }
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->cons_added))
         h(channel, fired);
     return result;
@@ -1053,6 +1099,50 @@ void HubState::_on_channel_registered(ChannelEntry entry)
 
 }
 
+// Shared channel-open primitive per HEP-CORE-0017 §3.3.0.  Called
+// from both `_on_producer_added` (fan-out / one-to-one — producer
+// binds and opens) and `_on_consumer_joined` (fan-in — consumer
+// binds and opens).  The framework-level invariant: neither role
+// type "owns" channel creation; the topology decides which side is
+// the binding-side opener.
+//
+// Caller MUST hold pImpl->mu writer lock.  Caller MUST fire the
+// ch_opened handler chain AFTER releasing the lock.  Handler firing
+// is left to callers because their handler ordering also involves
+// role-registration + shm-block cascades that differ between the
+// producer-side and consumer-side admission paths.
+ChannelEntry*
+HubState::_open_channel_locked(
+    const std::string&                 channel_name,
+    const ChannelSchemaInvariants&     schema,
+    const ChannelTransportInvariants&  transport,
+    ChannelTopology                    topology,
+    const char*&                       topology_error_code)
+{
+    topology_error_code = nullptr;
+
+    if (!topology::transport_compatible(topology, transport.data_transport))
+    {
+        topology_error_code = "TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT";
+        return nullptr;
+    }
+
+    ChannelEntry entry;
+    entry.name           = channel_name;
+    entry.schema_hash    = schema.schema_hash;
+    entry.schema_version = schema.schema_version;
+    entry.schema_id      = schema.schema_id;
+    entry.schema_blds    = schema.schema_blds;
+    entry.schema_owner   = schema.schema_owner;
+    entry.data_transport = transport.data_transport;
+    entry.topology       = topology;
+
+    auto [it, inserted] = pImpl->channels.insert_or_assign(
+        channel_name, std::move(entry));
+    (void)inserted;
+    return &it->second;
+}
+
 // Atomic producer-side admission.  All checks (schema, transport,
 // topology, cardinality, uid conflict) happen under the writer lock
 // held for the mutation — no snapshot-then-mutate window.
@@ -1106,34 +1196,33 @@ HubState::_on_producer_added(const std::string&              channel_name,
         if (it == pImpl->channels.end())
         {
             // Fresh channel — resolve topology (declared or default
-            // OneToOne per tech draft §5.1 rule 4) and check
-            // transport × topology compatibility.  Cardinality is
-            // trivially OK on a fresh channel (0 producers, 0 consumers).
+            // OneToOne per HEP-CORE-0017 §3.3.0) and open via the
+            // shared primitive.  Cardinality is trivially OK on a
+            // fresh channel (0 producers, 0 consumers).
             const ChannelTopology effective_topology =
                 declared_topology.value_or(ChannelTopology::OneToOne);
-            if (!topology::transport_compatible(effective_topology,
-                                                 transport.data_transport))
+            const char* open_err = nullptr;
+            ChannelEntry* new_entry = _open_channel_locked(
+                channel_name, schema, transport, effective_topology,
+                open_err);
+            if (!new_entry)
             {
-                result.topology_error_code =
-                    "TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT";
+                result.topology_error_code = open_err;
                 return result;
             }
-
-            ChannelEntry entry;
-            entry.name              = channel_name;
-            entry.schema_hash       = schema.schema_hash;
-            entry.schema_version    = schema.schema_version;
-            entry.schema_id         = schema.schema_id;
-            entry.schema_blds       = schema.schema_blds;
-            entry.schema_owner      = schema.schema_owner;
-            entry.data_transport    = transport.data_transport;
-            entry.topology          = effective_topology;
-            result.producer_result  = entry.add_producer(std::move(producer));
+            result.producer_result = new_entry->add_producer(std::move(producer));
             if (result.producer_result != AddProducerResult::Created)
+            {
+                // Roll back the channel-open: the entry was inserted
+                // but adding the producer failed (uid conflict on a
+                // fresh entry can't actually happen — the entry has
+                // an empty producers[] — but preserve the invariant
+                // "no ChannelEntry survives without at least one
+                // producer or consumer" defensively).
+                pImpl->channels.erase(channel_name);
                 return result;
-            auto [new_it, _] = pImpl->channels.insert_or_assign(
-                channel_name, std::move(entry));
-            fired_entry             = new_it->second;
+            }
+            fired_entry             = *new_entry;
             did_fire_open           = true;
             result.invariant_result = InvariantSetResult::Created;
             result.channel_opened   = true;
@@ -1419,9 +1508,11 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
 }
 
 ConsumerAdmissionResult
-HubState::_on_consumer_joined(const std::string&              channel,
-                              ConsumerEntry                   consumer,
-                              std::optional<ChannelTopology>  declared_topology)
+HubState::_on_consumer_joined(const std::string&                        channel,
+                              ConsumerEntry                             consumer,
+                              std::optional<ChannelTopology>            declared_topology,
+                              std::optional<ChannelSchemaInvariants>    open_schema,
+                              std::optional<ChannelTransportInvariants> open_transport)
 {
     // Grammar failures — see the parallel branch in
     // `_on_producer_added`.  Return a distinct outcome so the broker
@@ -1429,7 +1520,9 @@ HubState::_on_consumer_joined(const std::string&              channel,
     // `admitted=false` as the silent-skip (channel-vanished) contract.
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         (!consumer.role_uid.empty() &&
-         !is_valid_identifier(consumer.role_uid, IdentifierKind::RoleUid)))
+         !is_valid_identifier(consumer.role_uid, IdentifierKind::RoleUid)) ||
+        (open_schema.has_value() && !open_schema->schema_id.empty() &&
+         !is_valid_identifier(open_schema->schema_id, IdentifierKind::Schema)))
     {
         bump_invalid_identifier(*pImpl);
         ConsumerAdmissionResult grammar_fail;
@@ -1439,7 +1532,9 @@ HubState::_on_consumer_joined(const std::string&              channel,
 
     const std::string consumer_uid = consumer.role_uid;
 
-    auto result = _add_consumer(channel, std::move(consumer), declared_topology);
+    auto result = _add_consumer(channel, std::move(consumer),
+                                 declared_topology,
+                                 open_schema, open_transport);
     if (!result.admitted) return result;
 
     if (!consumer_uid.empty())

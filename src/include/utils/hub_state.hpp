@@ -544,6 +544,28 @@ struct ConsumerAdmissionResult
     /// `INVALID_REQUEST` on the wire.  Checked BEFORE
     /// `topology_error_code`; when `true`, `admitted=false`.
     bool         invalid_identifier{false};
+
+    /// True iff this admission opened a fresh channel record.  Only
+    /// set on the fan-in consumer path per HEP-CORE-0017 §3.3.0 —
+    /// consumer is the binding side under fan-in and creates the
+    /// channel entry the producers will subsequently join.  Under
+    /// fan-out and one-to-one the producer opens; a consumer arriving
+    /// at a missing channel under those topologies rejects with
+    /// silent-skip (`admitted=false`, no error code) since the
+    /// producer hasn't opened it yet.  Mirrors
+    /// `ProducerAdmissionResult::channel_opened` semantics — caller
+    /// uses this to decide whether to fire the `ch_opened` handler
+    /// chain and any schema-registration side effects.
+    bool         channel_opened{false};
+
+    /// `Created` when the channel-open branch fired successfully;
+    /// `IdempotentEqual` on join-existing-channel path; unset
+    /// (default `Created`) is meaningless when `admitted=false`.
+    /// Non-`Created`/`IdempotentEqual` states surface via
+    /// `topology_error_code` (`TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`);
+    /// SCHEMA/TRANSPORT_MISMATCH cannot arise on the consumer-opens-
+    /// channel path (fresh channel, no invariants to compare).
+    InvariantSetResult invariant_result{InvariantSetResult::Created};
 };
 
 /// Channel registered with the broker.
@@ -1699,10 +1721,41 @@ class PYLABHUB_UTILS_EXPORT HubState
     // both locks released.
     void _set_channel_opened(ChannelEntry entry);
     void _set_channel_closed(const std::string &name);
+
+    /// Shared channel-open primitive per HEP-CORE-0017 §3.3.0.
+    /// Creates a fresh `ChannelEntry` with the supplied invariants
+    /// and topology, inserts it into `pImpl->channels`, and returns a
+    /// pointer to the inserted entry so the caller can mutate it
+    /// (add producer / consumer).  Returns `nullptr` on
+    /// transport×topology incompatibility (sets `topology_error_code`
+    /// out-param to `"TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT"`).
+    ///
+    /// Caller MUST hold `pImpl->mu` writer lock.  Caller MUST fire
+    /// the `ch_opened` handler chain AFTER releasing the lock.
+    ///
+    /// Called from both admission entry points:
+    /// - `_on_producer_added` when the producer is the binding side
+    ///   for the effective topology (fan-out / one-to-one).
+    /// - `_on_consumer_joined` when the consumer is the binding side
+    ///   (fan-in) and open invariants were supplied.
+    ///
+    /// Framework-level design: neither role type "owns" channel
+    /// creation — the topology decides who opens.  This primitive
+    /// factors that decision out of the role-specific admission
+    /// paths so one place defines what "opening a channel" means.
+    ChannelEntry*
+    _open_channel_locked(const std::string&                 channel_name,
+                         const ChannelSchemaInvariants&     schema,
+                         const ChannelTransportInvariants&  transport,
+                         ChannelTopology                    topology,
+                         const char*&                       topology_error_code);
+
     ConsumerAdmissionResult
-    _add_consumer(const std::string&              channel,
-                  ConsumerEntry                   entry,
-                  std::optional<ChannelTopology>  declared_topology);
+    _add_consumer(const std::string&                        channel,
+                  ConsumerEntry                             entry,
+                  std::optional<ChannelTopology>            declared_topology,
+                  std::optional<ChannelSchemaInvariants>    open_schema    = std::nullopt,
+                  std::optional<ChannelTransportInvariants> open_transport = std::nullopt);
     void _remove_consumer(const std::string &channel, const std::string &role_uid);
     void _set_role_registered(RoleEntry entry);
     void _set_role_disconnected(const std::string &uid);
@@ -1831,21 +1884,30 @@ class PYLABHUB_UTILS_EXPORT HubState
 
     /// Atomic consumer-side admission.  All checks (topology,
     /// cardinality) run under the same writer lock that persists the
-    /// mutation.  Silently skips (`admitted=false`, `topology_error_code=nullptr`)
-    /// when the channel doesn't exist — matches the pre-existing
-    /// erase-then-push semantics of the internal `_add_consumer`.
+    /// mutation.
     ///
     /// - `declared_topology`: the wire's declared topology (nullopt
     ///   when the wire field was absent).  Empty inherits stored
     ///   topology.
+    /// - `open_schema` / `open_transport`: invariants used only on the
+    ///   channel-open path.  When both are supplied AND the channel
+    ///   doesn't exist AND `declared_topology == FanIn` (the only
+    ///   topology where the consumer is the binding side per
+    ///   HEP-CORE-0017 §3.3.0), the consumer opens the channel with
+    ///   these invariants.  Otherwise the channel-open path is not
+    ///   entered and a missing channel results in the pre-existing
+    ///   silent-skip (`admitted=false`, no error code).
     /// - Return value: check `topology_error_code` FIRST.  If non-null,
     ///   admission was rejected and channel state is unchanged.
-    ///
-    /// Design authority: tech draft §5.1 rules 1-4.
+    ///   `channel_opened=true` distinguishes the fan-in consumer-opens
+    ///   path from the join-existing path so the caller can decide
+    ///   whether to fire the ch_opened handler chain.
     ConsumerAdmissionResult
-    _on_consumer_joined(const std::string&              channel,
-                        ConsumerEntry                   consumer,
-                        std::optional<ChannelTopology>  declared_topology);
+    _on_consumer_joined(const std::string&                        channel,
+                        ConsumerEntry                             consumer,
+                        std::optional<ChannelTopology>            declared_topology,
+                        std::optional<ChannelSchemaInvariants>    open_schema    = std::nullopt,
+                        std::optional<ChannelTransportInvariants> open_transport = std::nullopt);
     void _on_consumer_left(const std::string &channel, const std::string &role_uid);
     /// Refresh the presence row matching `(channel, role_uid, role_type)`.
     /// Per HEP-CORE-0019 §2.3 + HEP-CORE-0023 §2.5.2: each heartbeat refreshes
