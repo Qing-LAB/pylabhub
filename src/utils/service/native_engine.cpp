@@ -335,6 +335,7 @@ void     hub_stub_band_broadcast(const PlhNativeContext *, const char *, const c
 int      hub_stub_band_members(const PlhNativeContext *, const char *, plh_band_member_visitor, void *) noexcept { return -1; }
 int      hub_stub_band_member_contains(const PlhNativeContext *, const char *, const char *) noexcept { return -1; }
 int      hub_stub_allowed_peers(const PlhNativeContext *, const char *, plh_allowed_peer_visitor, void *) noexcept { return -1; }
+int      hub_stub_role_uid_visit(const PlhNativeContext *, const char *, plh_role_uid_visitor, void *) noexcept { return -1; }
 int      hub_stub_allowed_peer_contains(const PlhNativeContext *, const char *, const char *) noexcept { return -1; }
 int      hub_stub_is_channel_ready(const PlhNativeContext *, const char *) noexcept { return -1; }
 int      hub_stub_queue_mechanism(const PlhNativeContext *, int) noexcept { return PLH_MECHANISM_UNINITIALIZED; }
@@ -797,6 +798,55 @@ int ctx_producer_count(const PlhNativeContext *ctx, const char *channel)
     catch (...) { return -1; }
 }
 
+/// HEP-CORE-0028 §6a.5 — visit every LIVE producer role_uid on
+/// `channel`.  Symmetric with ctx_consumers below; both snapshot the
+/// binding-side live_peers map under RoleAPIBase's internal lock.
+int ctx_producers(const PlhNativeContext *ctx,
+                  const char *channel,
+                  plh_role_uid_visitor visitor,
+                  void *userdata)
+{
+    if (!ctx || !ctx->_api || !channel || !visitor) return -1;
+    try
+    {
+        const auto uids =
+            static_cast<RoleAPIBase *>(ctx->_api)->producers(channel);
+        for (const auto &u : uids)
+            visitor(u.c_str(), userdata);
+        return static_cast<int>(uids.size());
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("native_engine: ctx_producers('{}') threw: {}",
+                     channel, e.what());
+        return -1;
+    }
+    catch (...) { return -1; }
+}
+
+int ctx_consumers(const PlhNativeContext *ctx,
+                  const char *channel,
+                  plh_role_uid_visitor visitor,
+                  void *userdata)
+{
+    if (!ctx || !ctx->_api || !channel || !visitor) return -1;
+    try
+    {
+        const auto uids =
+            static_cast<RoleAPIBase *>(ctx->_api)->consumers(channel);
+        for (const auto &u : uids)
+            visitor(u.c_str(), userdata);
+        return static_cast<int>(uids.size());
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("native_engine: ctx_consumers('{}') threw: {}",
+                     channel, e.what());
+        return -1;
+    }
+    catch (...) { return -1; }
+}
+
 int ctx_queue_mechanism(const PlhNativeContext *ctx, int side)
 {
     // API v6: returns one of PLH_MECHANISM_* macros (UNINITIALIZED=0,
@@ -1051,6 +1101,8 @@ struct NativeEngine::NativeContextStorage
         ctx.allowed_peer_count    = hub_stub_band_int_arg2;
         ctx.consumer_count        = hub_stub_band_int_arg2;
         ctx.producer_count        = hub_stub_band_int_arg2;
+        ctx.consumers             = hub_stub_role_uid_visit;
+        ctx.producers             = hub_stub_role_uid_visit;
         ctx.is_channel_ready      = hub_stub_is_channel_ready;
         ctx.queue_mechanism       = hub_stub_queue_mechanism;
 
@@ -1157,6 +1209,8 @@ struct NativeEngine::NativeContextStorage
         ctx.allowed_peer_count     = ctx_allowed_peer_count;
         ctx.consumer_count         = ctx_consumer_count;
         ctx.producer_count         = ctx_producer_count;
+        ctx.consumers              = ctx_consumers;
+        ctx.producers              = ctx_producers;
         ctx.is_channel_ready       = ctx_is_channel_ready;
         ctx.queue_mechanism        = ctx_queue_mechanism;
 

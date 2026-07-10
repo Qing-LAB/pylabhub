@@ -317,6 +317,21 @@ typedef struct
     int  (*producer_count)(const struct PlhNativeContext *ctx,
                            const char *channel);
 
+    /** consumers / producers: HEP-CORE-0028 §6a.5.  Visit every LIVE
+     *  peer role_uid on `channel` (same source as *_count above).
+     *  Returns count (>=0) or -1 on error.  Visitor MUST be
+     *  noexcept (HEP-CORE-0028 §4.8).  Empty visit (returns 0) on a
+     *  role/channel where the map is not populated for this side
+     *  — the same "not applicable" sentinel as *_count. */
+    int  (*consumers)(const struct PlhNativeContext *ctx,
+                      const char *channel,
+                      plh_role_uid_visitor visitor,
+                      void *userdata);
+    int  (*producers)(const struct PlhNativeContext *ctx,
+                      const char *channel,
+                      plh_role_uid_visitor visitor,
+                      void *userdata);
+
     /** is_channel_ready: returns 1 iff the queue serving `channel` is
      *  in the HEP-0036 §6.7 Active state (start() succeeded
      *  post-Configured gate), 0 otherwise, -1 on error (null arg). */

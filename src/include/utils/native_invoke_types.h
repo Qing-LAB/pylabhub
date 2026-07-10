@@ -199,6 +199,17 @@ typedef struct
                                      empty if broker did not supply one. */
 } plh_band_member_t;
 
+/** Visitor signature for `ctx->producers()` / `ctx->consumers()`
+ *  iteration (HEP-CORE-0028 §6a.5).  Called once per LIVE peer
+ *  (past first-heartbeat) on the channel; role_uid string is valid
+ *  for the duration of this call only (copy if state must persist).
+ *  Visitor MUST be `noexcept` — same rules as
+ *  `plh_allowed_peer_visitor` above.  Symmetric shape lets plugin
+ *  authors learn one pattern for LIVE-peer inspection across both
+ *  producer and consumer sides. */
+typedef void (*plh_role_uid_visitor)(const char *role_uid,
+                                     void       *userdata);
+
 /** Visitor signature for `ctx->band_members()` iteration (API v6 #194
  *  Phase C).  Same noexcept + lifetime rules as
  *  plh_allowed_peer_visitor. */
