@@ -15,24 +15,41 @@ admission.
 
 ---
 
-## Status snapshot (2026-07-09)
+## Status snapshot (2026-07-09) — REORDERED
 
-| Phase | Description | Status | Next action |
+**Priority principle (2026-07-09 correction):** the abstraction layer is
+built FIRST (Phase C completion), then role code migrates to it (was
+scattered across G), then tests flip to the new spawn order, then wire
+work sits on the correct role behavior.  The previous ordering
+(C wire → D wire → G role migration) landed wire work on top of
+legacy role code, which is why R6 gate slice E1 broke tests (2026-07-09
+attempt reverted): the wire enforced the topology model against roles
+that hadn't been migrated yet.  All phases below aim at the SAME final
+goal: one `hub::Queue::create_reader / create_writer(topology,
+transport, opts)` call per role side, with all wire migrations sitting
+on top of that abstraction.
+
+| Phase | Description | Status | Notes |
 |---|---|---|---|
-| A | HEP amendments (docs only) | ✅ **COMPLETE** — 9 steps + rev 2/3/3.1 landed | — |
-| B | Broker state + wire schema + admission gates | ✅ **COMPLETE** — 10 slices landed | — |
-| B rev 1 | Review findings — correctness + architecture + cleanup | ✅ **COMPLETE** — bugs #1/#2/#3 fixed | — |
-| B rev 2 | Group C: AdmissionSide enum replaces is_consumer_reg bool | ✅ **COMPLETE** (`58b29ba8`) | — |
-| C step 1 | Topology-parametric queue factory API + PUSH/PULL dispatch | ✅ **COMPLETE** (`50ceb5b6`) | — |
-| C step 2 | PUB/SUB support — fan-out ZMQ live | ✅ **COMPLETE** (`58c1a321`) | — |
-| C step 2 rev 2 A+B | Drift, defensive polish, PUB/SUB coverage | ✅ **COMPLETE** (`60fe0921`) | — |
-| C step 2 rev 2.3 | B1 fix + unified peer-list wire shape | ✅ **COMPLETE** (`b71dd9ec`) | — |
-| D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — slices A/B/C/D landed `8655f2fe..ed0456d5` | — |
-| **D R6 gate** | **R6 gate symmetrization (dialing side pends on binding side Live)** | ⏳ **PENDING** | Follow `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` §5.4 |
-| E | Retirements (delete pre-attach queue + per-producer endpoints + old test file) | ⏳ Blocked on D | Phase E plan below |
-| F | Demo + L4 flip | ⏳ Blocked on E | — |
-| G | Fan-out ZMQ role-host integration + demo | ⏳ Blocked on F | — |
-| H | Full verification sweep | ⏳ Blocked on G | — |
+| A | HEP amendments (docs only) | ✅ **COMPLETE** — 10 steps + rev 2/3/3.1 landed | — |
+| B | Broker state + wire schema + admission gates | ✅ **COMPLETE** — 10 slices + rev 1/2 | — |
+| C step 1 | Topology-parametric `ZmqQueue::create_reader/writer(topology, opts)` — PUSH/PULL dispatch on concrete ZmqQueue | ✅ **COMPLETE** (`50ceb5b6`) | Half the abstraction (ZMQ-only). |
+| C step 2 | PUB/SUB support on `ZmqQueue::create_*` — fan-out ZMQ live | ✅ **COMPLETE** (`58c1a321..b71dd9ec`) | Full topology matrix on ZmqQueue side. |
+| **C step 3** | **`ShmQueue::create_reader/writer(topology, opts)` — SHM half of the concrete transport factories** | ⏳ **NEXT** | Wraps existing `create_writer_standby` + `create_reader_standby` behind the topology-parametric shape.  Fan-in illegal on SHM (returns nullptr per HEP-0017 §3.3.0 gate 1). |
+| **C step 4** | **`hub::Queue::create_reader/writer(topology, transport, opts)` unified factory** (`hub_queue_factory.hpp`) | ⏳ **BLOCKED on C step 3** | Static-methods-only class per HEP-0017 §3.3.0.  Enforces §3.3.0 legality gates (fan-in requires ZMQ, endpoint-hint validity per side).  Dispatches to `ZmqQueue::create_*` / `ShmQueue::create_*`. |
+| **C step 5** | **Transport-agnostic `RxOptions` / `TxOptions` structs** per HEP-0017 §3.3.0 | ⏳ **BLOCKED on C step 4** | New in `hub_queue_factory.hpp`.  Legacy `TxQueueOptions` / `RxQueueOptions` stay live until Phase C step 6. |
+| **C step 6** | **Role code migration** — `role_api_base.cpp::build_tx_queue / build_rx_queue` migrate to `hub::Queue::create_*` | ⏳ **BLOCKED on C step 5** | Deletes the manual `if (transport == "shm") ... else ...` dispatch.  Deletes `zmq_bind` propagation from `role_config_translation.cpp`.  Reads `channel_topology` from role config into the new options struct. |
+| **C step 7** | **Test spawn-order migration** — L3 + L4 fan-in tests flip to consumer-first (BINDING side goes first) | ⏳ **BLOCKED on C step 6** | Fixes the 3 tests that broke in the reverted R6 slice E1 attempt (`ZmqE2E_MultiProducer_TwoAuthorized`, `FanIn_TwoProducers_MetricsDoNotOverwrite`, `WaitPathDrainOnProducerDisconnect`). |
+| D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — `8655f2fe..ed0456d5` | Landed early (before role migration); wire is correct but sits on legacy role until C step 6.  No rework needed post-C step 6 — the wire payload matches the spec independent of role code shape. |
+| **D R6 gate** | **R6 gate symmetrization** — dialing-side REG_REQ pends until binding side is Live + endpoint resolved + confirmed_version catches up | ⏳ **BLOCKED on C step 7** | Reverted 2026-07-09 (broke 3 tests due to premature enforcement); reinstates cleanly after Phase C completion, since C step 7 flips test spawn order to match R6 semantics. |
+| E | Retirements — delete `push_to`/`pull_from`, `zmq_bind`, `producer_peers` vector, multi-endpoint PULL loop, `CONSUMER_ATTACH_REQ_ZMQ` handler | ⏳ Blocked on D R6 | Phase E plan below. |
+| F | L4 demos + full-topology verification sweep | ⏳ Blocked on E | Fan-in, fan-out, one-to-one demos; validates each against the reference sequence flows (tech draft §7). |
+| H | Full verification sweep | ⏳ Blocked on F | — |
+
+**Retired phase labels (for traceability):**
+- Phase C step 2 rev 2 A+B, rev 2.3 — folded into "C step 2" above (shipped complete).
+- Phase D slices A/B/C/D — folded into "D phase field" above (shipped complete).
+- Phase G (was: "fan-out ZMQ role-host integration + demo") — its role-host migration content moved UP into C step 6; its demo content moved into Phase F.  Phase G label retired.
 
 ### Phase D — verified delta vs. HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864)
 

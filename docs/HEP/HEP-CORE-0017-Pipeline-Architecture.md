@@ -185,58 +185,220 @@ REG_ACK and dials.
 
 **Queue factory signature (post-migration):**
 
+`hub::Queue` is a static-methods-only class in `hub_queue_factory.hpp`
+(companion header to `hub_queue.hpp`).  It is not instantiable — all
+methods are static.  The class shape (rather than free functions in a
+`hub::Queue` sub-namespace) matches the style used by concrete queue
+classes' factories (`ZmqQueue::create_reader`, `ShmQueue::create_*`)
+and lets the two-level factory dispatch (`hub::Queue::create_*` →
+`ZmqQueue::create_*` / `ShmQueue::create_*`) share the same `Class::`
+prefix idiom at both layers.
+
 ```cpp
 namespace pylabhub::hub {
-    enum class ChannelTopology { FanIn, FanOut, OneToOne };
+
+enum class ChannelTopology { FanIn, FanOut, OneToOne };
+enum class Transport       { Zmq, Shm };
+
+class Queue
+{
+public:
+    // No instances — factory-only.
+    Queue() = delete;
 
     // Consumer side (reader).
-    std::unique_ptr<QueueReader>
-    Queue::create_reader(ChannelTopology topology,
-                         Transport       transport,      // "zmq" | "shm"
-                         RxOptions       opts);
+    static std::unique_ptr<QueueReader>
+    create_reader(ChannelTopology topology,
+                  Transport       transport,
+                  RxOptions       opts);
 
     // Producer side (writer).
-    std::unique_ptr<QueueWriter>
-    Queue::create_writer(ChannelTopology topology,
-                         Transport       transport,
-                         TxOptions       opts);
-}
+    static std::unique_ptr<QueueWriter>
+    create_writer(ChannelTopology topology,
+                  Transport       transport,
+                  TxOptions       opts);
+};
+
+} // namespace pylabhub::hub
 ```
 
 Three facts — side + topology + transport — uniquely determine the
 socket configuration.  The role provides `topology` from config and
 inherits `side` from the role kind; the queue picks socket type,
-bind direction, CURVE role, and endpoint owner from the decision
-matrix above.  Role code NEVER touches libzmq; role-host code
-NEVER makes bind/connect decisions.  See tech draft §6 for the
-full matrix.
+bind direction, CURVE role, and endpoint owner from the §3.3.0
+decision matrix below.  Role code NEVER touches libzmq; role-host
+code NEVER makes bind/connect decisions.
+
+**Full decision matrix (all six side × topology cells):**
+
+| Side | Topology | Transport | Socket type | Bind or connect | Post-connect step | CURVE role | Endpoint owner |
+|---|---|---|---|---|---|---|---|
+| Reader (consumer) | Fan-in     | ZMQ | PULL | **bind**    | — | server | self |
+| Reader (consumer) | Fan-out    | ZMQ | SUB  | connect     | `setsockopt(ZMQ_SUBSCRIBE, "")` | client | peer |
+| Reader (consumer) | Fan-out    | SHM | capability socket | connect | AttachProtocol handshake (HEP-CORE-0044) | crypto_box | peer |
+| Reader (consumer) | 1-to-1     | ZMQ | PULL | connect     | — | client | peer |
+| Reader (consumer) | 1-to-1     | SHM | capability socket | connect | AttachProtocol handshake | crypto_box | peer |
+| Writer (producer) | Fan-in     | ZMQ | PUSH | connect     | — | client | peer |
+| Writer (producer) | Fan-out    | ZMQ | PUB  | **bind**    | — | server | self |
+| Writer (producer) | Fan-out    | SHM | DataBlock create | (creates DataBlock + owns capability socket) | — | owner | self |
+| Writer (producer) | 1-to-1     | ZMQ | PUSH | **bind**    | — | server | self |
+| Writer (producer) | 1-to-1     | SHM | DataBlock create | (creates DataBlock + owns capability socket) | — | owner | self |
+
+**Legality gates enforced at `hub::Queue::create_*` (INVARIANT):**
+
+The factory is the SINGLE enforcement site for topology × transport
+legality.  Neither role code nor the broker duplicates these checks;
+downstream layers assume the factory has already refused an illegal
+combination and never reach construction.
+
+1. **Fan-in requires ZMQ.**
+   `topology == FanIn && transport == Shm` → return `nullptr` +
+   `LOGGER_ERROR` with reason `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`
+   (HEP-CORE-0007 §12.4a).  Rationale: SHM is host-local + single-
+   producer by physical constraint of a shared DataBlock — no fan-in
+   semantics.
+
+2. **Fan-out permits ZMQ or SHM.**
+   ZMQ maps to PUB/SUB; SHM maps to DataBlock + per-consumer
+   capability transport (HEP-CORE-0041 §5.5).  Both are legal.
+
+3. **One-to-one permits ZMQ or SHM.**
+   ZMQ maps to PUSH/PULL; SHM maps to single-consumer DataBlock.
+
+4. **Endpoint-hint validity per side + topology.**
+   - Binding side (see §3.3.0 matrix "Endpoint owner = self"):
+     `endpoint_hint` MAY be non-empty (e.g., `tcp://host:0` for
+     ephemeral bind, or explicit port).  Empty is legal — queue will
+     bind to a framework-chosen default.
+   - Dialing side (matrix "Endpoint owner = peer"):
+     `endpoint_hint` MUST be empty.  The endpoint arrives on the
+     REG_ACK's `data_endpoint` field (HEP-CORE-0036 §5.2).  A
+     non-empty `endpoint_hint` on the dialing side is a caller error
+     — return `nullptr` + `LOGGER_ERROR` with reason
+     `CONFIG_INVALID_ENDPOINT_HINT_ON_DIALING_SIDE`.
+
+5. **Unknown topology / transport enum value.**
+   Any value outside the legal set → return `nullptr` +
+   `LOGGER_ERROR`.  Callers passing a string from JSON parse first
+   through `topology::parse` / `transport::parse` (which reject
+   unknown strings at the config layer with `CONFIG_INVALID`);
+   the enum-level check is defense-in-depth.
+
+Gates 1–5 fire BEFORE any concrete queue construction.  The factory
+returns `nullptr` on any gate failure; role code checks for null and
+propagates as a config-load failure.
 
 **Options structs (post-migration):**
 
 ```cpp
 struct RxOptions
 {
-    ChannelTopology topology;                   // NEW — from config
-    Transport       transport;                  // NEW — from config
-    SchemaSpec      slot_spec;
-    // For BINDING side (fan-in consumer): endpoint_hint may be
-    // "tcp://host:0" (ephemeral).  For DIALING side (fan-out /
-    // 1-to-1 consumer): endpoint_hint is REJECTED at config-load
-    // (endpoint arrives on CONSUMER_REG_ACK.data_endpoint).
-    std::string     endpoint_hint;
-    // ProducerPeer vector RETIRES 2026-07-08 — see §3.3-retired below.
+    SchemaSpec      slot_spec;      // required
+    SchemaSpec      fz_spec;        // optional (empty → no flexzone)
+    std::string     endpoint_hint;  // see legality gate #4 above
+    size_t          buffer_depth = kDefaultBufferDepth;
+    ChecksumPolicy  checksum_policy = ChecksumPolicy::Enforced;
+    bool            flexzone_checksum = true;
+    std::string     instance_id;    // optional — auto-derived from role uid if empty
+
+    // Transport-specific extras.  The factory reads only the fields
+    // matching the requested transport; the others are ignored.
+    // Rationale: keeping one options struct instead of a variant
+    // avoids caller boilerplate; the factory's transport dispatch
+    // picks the relevant subset.
+
+    // ZMQ-specific extras
+    // (none required beyond the common fields above at present)
+
+    // SHM-specific extras (HEP-CORE-0041 §5.5)
+    int             shm_capability_fd = -1;   // producer-created memfd for the SHM
+                                              // channel; set on writer side, read on
+                                              // reader side after §5.5 handshake.
 };
 
 struct TxOptions
 {
-    ChannelTopology topology;                   // NEW
-    Transport       transport;                  // NEW
     SchemaSpec      slot_spec;
-    // BINDING side (fan-out / 1-to-1 producer): endpoint_hint may be ephemeral.
-    // DIALING side (fan-in producer): endpoint_hint REJECTED.
-    std::string     endpoint_hint;
+    SchemaSpec      fz_spec;
+    std::string     endpoint_hint;  // see legality gate #4 above
+    size_t          buffer_depth = kDefaultBufferDepth;
+    OverflowPolicy  overflow_policy = OverflowPolicy::Drop;
+    ChecksumPolicy  checksum_policy = ChecksumPolicy::Enforced;
+    bool            flexzone_checksum = true;
+    bool            always_clear_slot = true;
+    std::string     instance_id;
+
+    // Transport-specific extras
+    int             sndhwm = 0;                    // ZMQ only; 0 → libzmq default
+    int             send_retry_interval_ms = 10;   // ZMQ only
+    int             shm_capability_fd = -1;        // SHM only; set on binding side
+    DataBlockConfig shm_config{};                  // SHM only
 };
 ```
+
+Both structs are transport-agnostic at the type level — the same
+struct is used for ZMQ and SHM.  The factory reads the relevant
+subset based on `Transport`; unused fields are ignored (documented
+as such).  This keeps role-config translation simple: one options
+struct per direction (Rx / Tx), populated by the config parser
+regardless of transport, with the factory picking the fields it
+needs.  Transport-specific validation (e.g. "SHM writer requires
+`shm_capability_fd >= 0`") is applied inside the factory's
+transport-specific branch, after the top-level legality gates.
+
+### 3.3.0.1 Internal dispatch — `hub::Queue` → `ZmqQueue` / `ShmQueue`
+
+`hub::Queue::create_reader` / `create_writer` is a thin dispatcher.
+It applies the §3.3.0 legality gates, then delegates to the
+concrete transport class's topology-parametric factory.  Pseudocode:
+
+```cpp
+std::unique_ptr<QueueWriter>
+Queue::create_writer(ChannelTopology topology,
+                     Transport       transport,
+                     TxOptions       opts)
+{
+    // Gate 1: legality by (topology, transport)
+    if (topology == ChannelTopology::FanIn && transport == Transport::Shm) {
+        LOGGER_ERROR("fan-in requires ZMQ (SHM is host-local single-producer)");
+        return nullptr;
+    }
+    // Gate 4: endpoint_hint validity per side + topology
+    if (writer_is_binding_side(topology) == false && !opts.endpoint_hint.empty()) {
+        LOGGER_ERROR("dialing-side writer must not pre-declare endpoint_hint");
+        return nullptr;
+    }
+
+    // Dispatch to concrete
+    switch (transport) {
+    case Transport::Zmq:
+        return ZmqQueue::create_writer(topology, translate_tx_opts_to_zmq(opts));
+    case Transport::Shm:
+        return ShmQueue::create_writer(topology, translate_tx_opts_to_shm(opts));
+    }
+    return nullptr;
+}
+```
+
+`writer_is_binding_side(topology)` is derived from the §3.3.0 matrix:
+Writer + Fan-in → dialing; Writer + Fan-out → binding; Writer +
+One-to-one → binding.  Symmetric reader form:
+`reader_is_binding_side(topology)`: Fan-in → binding; Fan-out →
+dialing; One-to-one → dialing.
+
+Concrete transport factories (`ZmqQueue::create_writer`,
+`ShmQueue::create_writer`) each read the topology enum and apply the
+matrix row for their transport.  ZMQ's version already exists
+(shipped in Phase C step 1-2 of the migration code); SHM's version
+is added as part of the Phase C completion.
+
+The dispatcher owns no per-transport knowledge beyond the two
+translation helpers `translate_tx_opts_to_zmq` /
+`translate_tx_opts_to_shm`, which extract the transport-relevant
+subset of `TxOptions`.  Adding a new transport in the future means
+one new switch case + one new translation helper — no changes to
+role code, no changes to broker, no changes to the abstract
+`QueueReader` / `QueueWriter` interfaces.
 
 ### 3.3.1 Framework integration (post-migration)
 
@@ -338,6 +500,23 @@ uses only a QueueReader.
 | Does NOT carry | Control plane, message plane, timing plane |
 
 #### ZmqQueue — API contract and schema requirements
+
+> **⚠️ LEGACY factory API — retiring in Phase C completion.**  The
+> `ZmqQueue::push_to` / `pull_from` factories shown below are the
+> pre-topology-migration entry points.  They accept an explicit
+> `bind: bool` parameter and require the caller (role code today)
+> to decide bind vs connect direction — a decision that HEP-CORE-0017
+> §3.3.0 line 210 explicitly forbids at role level.  The post-
+> migration entry point is `hub::Queue::create_reader` /
+> `create_writer(topology, transport, opts)` per §3.3.0; the internal
+> concrete-transport factory is `ZmqQueue::create_reader(topology,
+> RxCreateOptions)` / `ZmqQueue::create_writer(topology,
+> TxCreateOptions)` per §3.3.0.1 dispatch.  The legacy `push_to` /
+> `pull_from` factories are retained during migration for tests that
+> exercise ZMQ-specific parameters (`sndhwm`, `send_retry_interval_ms`,
+> `zap_domain`) directly and are retiring in Phase C completion
+> alongside `zmq_bind` in role config.  New code MUST use the
+> §3.3.0 unified factory.
 
 `hub::ZmqQueue` always operates in **schema mode**. A non-empty
 `std::vector<ZmqSchemaField>` and a packing rule are **required** at construction.
