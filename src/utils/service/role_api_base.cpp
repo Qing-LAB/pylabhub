@@ -13,6 +13,7 @@
 
 #include "utils/hub_inbox_queue.hpp"
 
+#include "utils/hub_queue_factory.hpp"    // hub::Queue::create_reader/writer, RxOptions/TxOptions, Transport
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/logger.hpp"
@@ -544,148 +545,138 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
     const std::string &tx_channel =
         pImpl->out_channel.empty() ? pImpl->channel : pImpl->out_channel;
 
-    // Prefer SHM when configured and a slot schema is available; fall back to
-    // ZMQ when data_transport == "zmq". The factories return concrete types,
-    // which upcast into the abstract unique_ptr<QueueWriter> at the storage
-    // boundary. After this function, nothing below RoleAPIBase sees concrete
-    // ShmQueue / ZmqQueue.
+    // Route all queue construction through hub::Queue per HEP-CORE-0017
+    // §3.3.0.  The role host translates config → hub::TxOptions and
+    // hands off; hub::Queue picks socket type + bind/connect direction
+    // from the §3.3.0 decision matrix using (opts.topology, transport)
+    // and returns the abstract writer.  Role code never touches libzmq
+    // or DataBlock directly.
     std::unique_ptr<hub::QueueWriter> writer;
     if (opts.has_shm && opts.slot_spec.has_schema)
     {
-        // Audit (2026-05-20, demo-harness discovery): the flexzone spec
-        // is OPTIONAL — when no `out_flexzone_schema` is configured
-        // (null in JSON, or omitted entirely), `opts.fz_spec.fields`
-        // is empty.  Pre-fix this passed an empty spec into
-        // `schema_spec_to_zmq_fields`, which throws "fields must not
-        // be empty" and kills the worker thread on startup.  Gate the
-        // conversion: empty fields → empty descriptor vector (the
-        // ShmQueue layer accepts it as "no flexzone allocated").
+        // SHM writer: capability-transport path (HEP-CORE-0041 §5.5).
+        // The role host's SHM capability layer pre-allocated the memfd
+        // at exactly datablock_layout_total_size(config) and populates
+        // opts.shm_capability_fd.  hub::Queue::create_writer builds the
+        // queue in Standby; we then attach the borrowed fd and start()
+        // to drive Configured → Active via the fd-source DataBlock.
+        if (opts.shm_capability_fd < 0)
+        {
+            LOGGER_ERROR("[{}] build_tx_queue: SHM channel '{}' missing "
+                         "shm_capability_fd (role host must populate the "
+                         "borrowed fd before build_tx_queue)",
+                         pImpl->short_tag, tx_channel);
+            return false;
+        }
+
+        // Flexzone spec is optional — when the JSON omits
+        // `out_flexzone_schema`, `opts.fz_spec.fields` is empty and
+        // ShmQueue treats that as "no flexzone allocated."  Passing an
+        // empty spec through schema_spec_to_zmq_fields would throw
+        // "fields must not be empty," so gate the conversion.
         auto fz_fields = opts.fz_spec.fields.empty()
             ? std::vector<hub::SchemaFieldDesc>{}
             : hub::schema_spec_to_zmq_fields(opts.fz_spec);
 
-        // HEP-CORE-0041 1i-mig-2: capability-transport path is the only
-        // path.  The role host's IShmCapabilityProducer (substep 1b
-        // backend) pre-allocated the memfd at exactly
-        // datablock_layout_total_size(config) and populates
-        // opts.shm_capability_fd.  Build the queue in Standby, attach
-        // the borrowed fd, then start() drives Configured → Active via
-        // the substep 1f fd-source factory
-        // (create_datablock_producer_from_fd_impl).  The legacy
-        // secret-based path (`ShmQueue::create_writer(..., shared_secret, ...)`)
-        // retired in #275-S3.
-        if (opts.shm_capability_fd < 0)
+        hub::TxOptions tx_opts;
+        tx_opts.slot_schema           = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        tx_opts.slot_packing          = opts.slot_spec.packing;
+        tx_opts.fz_schema             = std::move(fz_fields);
+        tx_opts.fz_packing            = opts.fz_spec.packing;
+        tx_opts.channel_name          = tx_channel;
+        tx_opts.ring_buffer_capacity  = opts.shm_config.ring_buffer_capacity;
+        tx_opts.page_size             = opts.shm_config.physical_page_size;
+        tx_opts.policy                = opts.shm_config.policy;
+        tx_opts.sync_policy           = opts.shm_config.consumer_sync_policy;
+        tx_opts.checksum_policy       = opts.shm_config.checksum_policy;
+        tx_opts.always_clear_slot     = opts.always_clear_slot;
+        tx_opts.hub_uid               = opts.shm_config.hub_uid;
+        tx_opts.hub_name              = opts.shm_config.hub_name;
+        tx_opts.producer_uid          = opts.shm_config.producer_uid;
+        tx_opts.producer_name         = opts.shm_config.producer_name;
+
+        writer = hub::Queue::create_writer(opts.topology,
+                                            hub::Transport::Shm,
+                                            std::move(tx_opts));
+        if (!writer)
         {
-            LOGGER_ERROR("[{}] build_tx_queue: SHM channel '{}' missing "
-                         "shm_capability_fd (HEP-CORE-0041 1i-mig-2 — role "
-                         "host must populate the borrowed fd before "
-                         "build_tx_queue)",
+            LOGGER_ERROR("[{}] hub::Queue::create_writer failed for SHM "
+                         "channel '{}'",
                          pImpl->short_tag, tx_channel);
             return false;
         }
-        std::unique_ptr<hub::ShmQueue> shm;
+        if (!writer->set_shm_capability_fd(opts.shm_capability_fd))
         {
-            shm = hub::ShmQueue::create_writer_standby(
-                tx_channel,
-                hub::schema_spec_to_zmq_fields(opts.slot_spec), opts.slot_spec.packing,
-                std::move(fz_fields),                            opts.fz_spec.packing,
-                opts.shm_config.ring_buffer_capacity,
-                opts.shm_config.physical_page_size,
-                opts.shm_config.policy,
-                opts.shm_config.consumer_sync_policy,
-                opts.shm_config.checksum_policy,
-                /*checksum_slot=*/false, /*checksum_fz=*/false,
-                opts.always_clear_slot,
-                opts.shm_config.hub_uid,
-                opts.shm_config.hub_name,
-                nullptr, nullptr,
-                opts.shm_config.producer_uid,
-                opts.shm_config.producer_name);
-            if (!shm)
-            {
-                LOGGER_ERROR("[{}] ShmQueue create_writer_standby failed for '{}' "
-                             "(HEP-CORE-0041 1i-mig-2 capability path)",
-                             pImpl->short_tag, tx_channel);
-                return false;
-            }
-            if (!shm->set_shm_capability_fd(opts.shm_capability_fd))
-            {
-                LOGGER_ERROR("[{}] ShmQueue::set_shm_capability_fd refused "
-                             "for '{}' fd={} (HEP-CORE-0041 1i-mig-2 — see "
-                             "queue WARN for reason)",
-                             pImpl->short_tag, tx_channel,
-                             opts.shm_capability_fd);
-                return false;
-            }
-            if (!shm->start())
-            {
-                LOGGER_ERROR("[{}] ShmQueue::start failed for '{}' on "
-                             "capability path (fd={}; see queue ERROR for "
-                             "reason)",
-                             pImpl->short_tag, tx_channel,
-                             opts.shm_capability_fd);
-                return false;
-            }
+            LOGGER_ERROR("[{}] set_shm_capability_fd refused for '{}' fd={}",
+                         pImpl->short_tag, tx_channel,
+                         opts.shm_capability_fd);
+            return false;
         }
-        writer.reset(shm.release()); // upcast: ShmQueue* → QueueWriter*
+        if (!writer->start())
+        {
+            LOGGER_ERROR("[{}] SHM writer start failed for '{}' fd={}",
+                         pImpl->short_tag, tx_channel,
+                         opts.shm_capability_fd);
+            return false;
+        }
     }
     else if (opts.data_transport == "zmq")
     {
-        if (opts.zmq_node_endpoint.empty())
+        // ZMQ writer: hub::Queue picks PUSH (fan-in / one-to-one) or
+        // PUB (fan-out) and picks bind vs connect from topology per
+        // HEP-CORE-0017 §3.3.0 matrix.  Binding side owns the
+        // endpoint_hint; dialing side leaves it empty and receives the
+        // peer endpoint on REG_ACK via apply_master_approval.
+        //
+        // CURVE is unconditional on every role↔hub data path
+        // (HEP-CORE-0035 §2).  Producer presents its identity keypair
+        // via `identity_key_name` (KeyStore lookup, secret bytes never
+        // materialize here) and — on the binding side — installs a ZAP
+        // handler under `zap_domain`.  The initial allowlist is empty
+        // until apply_master_approval(REG_ACK) seeds it from
+        // REG_ACK.initial_allowlist (HEP-CORE-0036 §3.5.5 + §6.7).
+        const bool is_binding = hub::Queue::writer_is_binding_side(opts.topology);
+        if (is_binding && opts.zmq_node_endpoint.empty())
         {
-            LOGGER_ERROR("[{}] data_transport='zmq' but zmq_node_endpoint is empty",
+            LOGGER_ERROR("[{}] data_transport='zmq' binding side but "
+                         "zmq_node_endpoint is empty",
                          pImpl->short_tag);
             return false;
         }
-        // Compose a stable ThreadManager owner_id from role identity +
-        // direction. Uniqueness across the process is guaranteed by the
-        // role uid (which is a per-instance UID by construction).
+
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->short_tag + ":" + pImpl->uid + ":tx")
                                   : opts.instance_id;
-        // Schema tag (frame-validation 8-byte identity) is derived
-        // from slot_spec + fz_spec.  Auto-computed here so callers
-        // aren't carrying a redundant schema_hash field in opts.
         const auto schema_hash = hub::compute_schema_hash(opts.slot_spec,
                                                            opts.fz_spec);
-        // HEP-CORE-0035 §2 + §4.6.5: CURVE is unconditional on every
-        // role↔hub data path.  Producer (PUSH/bind side) presents its
-        // identity keypair to libzmq + installs a PeerAdmission
-        // handler on the same ZMQ context's ZAP REP (HEP-CORE-0036
-        // §7).  The initial allowlist is empty until
-        // `apply_master_approval(REG_ACK)` seeds it from
-        // `REG_ACK.initial_allowlist` at S3 per HEP-CORE-0036 §3.5.5
-        // + §6.7 Option B.  Runtime refreshes arrive when the
-        // role-host's BRC handler pulls `GET_CHANNEL_AUTH_REQ` in
-        // response to `CHANNEL_AUTH_CHANGED_NOTIFY` per §6.5
-        // (amendment 2026-06-04 — snapshot-push `CHANNEL_AUTH_UPDATE`
-        // retired).  Tracked under task #103 (AUTH-1).  zap_domain is
-        // per-(role,channel,side).
-        // HEP-CORE-0040 §172: identity keypair lives in the process
-        // KeyStore under `kRoleIdentityName` (seeded by
-        // `RoleConfig::load_keypair`).  `push_to` resolves the
-        // name inside its CURVE-setup block — secret bytes never
-        // materialize on this side of the call.
-        writer = hub::ZmqQueue::push_to(
-            opts.zmq_node_endpoint,
-            hub::schema_spec_to_zmq_fields(opts.slot_spec),
-            opts.slot_spec.packing,
-            /*identity_key_name=*/pylabhub::utils::security::kRoleIdentityName,
-            /*zap_domain=*/pImpl->uid + ":" + tx_channel + ":tx",
-            /*bind=*/opts.zmq_bind,
-            /*schema_tag=*/make_schema_tag(schema_hash),
-            /*sndhwm=*/0,
-            /*send_buffer_depth=*/opts.zmq_buffer_depth,
-            /*overflow_policy=*/opts.zmq_overflow_policy,
-            /*send_retry_interval_ms=*/10,
-            /*instance_id=*/std::move(inst_id));
+
+        hub::TxOptions tx_opts;
+        tx_opts.slot_schema            = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        tx_opts.slot_packing           = opts.slot_spec.packing;
+        // On the dialing side, endpoint_hint MUST be empty per §3.3.0
+        // gate 4 — the peer endpoint arrives on REG_ACK.  The config
+        // parser currently populates zmq_node_endpoint on both sides;
+        // drop it on dialing side here until the parser catches up.
+        tx_opts.endpoint_hint          = is_binding ? opts.zmq_node_endpoint
+                                                    : std::string{};
+        tx_opts.identity_key_name      = pylabhub::utils::security::kRoleIdentityName;
+        tx_opts.zap_domain             = pImpl->uid + ":" + tx_channel + ":tx";
+        tx_opts.schema_tag             = make_schema_tag(schema_hash);
+        tx_opts.sndhwm                 = 0;
+        tx_opts.send_buffer_depth      = opts.zmq_buffer_depth;
+        tx_opts.overflow_policy        = opts.zmq_overflow_policy;
+        tx_opts.send_retry_interval_ms = 10;
+        tx_opts.instance_id            = std::move(inst_id);
+
+        writer = hub::Queue::create_writer(opts.topology,
+                                            hub::Transport::Zmq,
+                                            std::move(tx_opts));
         if (!writer)
             return false;
-        // HEP-CORE-0036 §3.5.1 + §3.5.5 S1: tx queue is built in
-        // Standby here; no PUSH bind, no ZAP arm.  The role host
-        // drives Standby → Active later at S3 via
-        // `apply_producer_reg_ack(REG_ACK)` once the broker has
-        // accepted the producer's registration.
+        // Tx queue is built in Standby here; no PUSH bind, no ZAP arm.
+        // The role host drives Standby → Active later via
+        // apply_producer_reg_ack(REG_ACK) once the broker admits us
+        // (HEP-CORE-0036 §3.5.1 + §3.5.5 S1).
     }
     else
     {
@@ -707,83 +698,82 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     // set_channel(in_channel)).
     const std::string &rx_channel = pImpl->channel;
 
+    // Route all queue construction through hub::Queue per HEP-CORE-0017
+    // §3.3.0.  Consumer side legality per the §3.3.0 matrix:
+    //   FanIn   → BINDING (owns endpoint_hint from config)
+    //   FanOut  → DIALING (endpoint arrives on CONSUMER_REG_ACK)
+    //   OneToOne → DIALING (endpoint arrives on CONSUMER_REG_ACK)
     std::unique_ptr<hub::QueueReader> reader;
     if (opts.data_transport == "shm" && opts.slot_spec.has_schema)
     {
-        // HEP-CORE-0041 1i-mig-4 (#272) — capability-transport rx path.
-        // Build the ShmQueue in Standby; the fd arrives later via
-        // `apply_consumer_reg_ack`'s SHM dispatch (dial → §5.5
-        // handshake → SCM_RIGHTS recv → `set_shm_capability_fd` +
-        // `start`).  Symmetric with `build_tx_queue`'s capability
-        // path above.
+        // SHM reader: capability-transport path (HEP-CORE-0041 §5.5).
+        // Build the queue in Standby; the fd arrives later via
+        // apply_consumer_reg_ack's SHM dispatch (dial capability
+        // socket → handshake → SCM_RIGHTS recv → set_shm_capability_fd
+        // + start).  Symmetric with build_tx_queue's capability path.
         //
-        // Test-only fast path: `opts.shm_capability_fd >= 0`
-        // pre-populated drives Standby → Active immediately, analogous
-        // to the ZMQ pre-populated-`producer_peers` case below.
-        // Production never sets this field at build time — the
-        // consumer doesn't have the fd until after REG_ACK arrives.
-        auto shm = hub::ShmQueue::create_reader_standby(
-            opts.shm_name,
-            hub::schema_spec_to_zmq_fields(opts.slot_spec),
-            opts.slot_spec.packing,
-            rx_channel,
-            /*verify_slot=*/false, /*verify_fz=*/false,
-            pImpl->uid, pImpl->name);
-        if (!shm)
+        // Test fast path: opts.shm_capability_fd >= 0 pre-populated
+        // drives Standby → Active immediately.  Production never sets
+        // this field at build time.
+        hub::RxOptions rx_opts;
+        rx_opts.slot_schema   = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        rx_opts.slot_packing  = opts.slot_spec.packing;
+        rx_opts.channel_name  = opts.shm_name;
+        rx_opts.consumer_uid  = pImpl->uid;
+        rx_opts.consumer_name = pImpl->name;
+
+        reader = hub::Queue::create_reader(opts.topology,
+                                            hub::Transport::Shm,
+                                            std::move(rx_opts));
+        if (!reader)
         {
-            LOGGER_ERROR("[{}] ShmQueue create_reader_standby failed for "
-                         "channel='{}' shm_name='{}' (HEP-CORE-0041 "
-                         "1i-mig-4 capability path)",
+            LOGGER_ERROR("[{}] hub::Queue::create_reader failed for SHM "
+                         "channel='{}' shm_name='{}'",
                          pImpl->short_tag, rx_channel, opts.shm_name);
             return false;
         }
         if (opts.shm_capability_fd >= 0)
         {
-            if (!shm->set_shm_capability_fd(opts.shm_capability_fd))
+            if (!reader->set_shm_capability_fd(opts.shm_capability_fd))
             {
-                LOGGER_ERROR("[{}] ShmQueue::set_shm_capability_fd refused "
-                             "for channel='{}' fd={} (test-pre-populated "
-                             "path; see queue WARN for reason)",
+                LOGGER_ERROR("[{}] set_shm_capability_fd refused for "
+                             "channel='{}' fd={}",
                              pImpl->short_tag, rx_channel,
                              opts.shm_capability_fd);
                 return false;
             }
-            if (!shm->start())
+            if (!reader->start())
             {
-                LOGGER_ERROR("[{}] ShmQueue::start failed for channel='{}' "
-                             "on capability path (fd={}; see queue ERROR "
-                             "for reason)",
+                LOGGER_ERROR("[{}] SHM reader start failed for channel='{}' "
+                             "fd={}",
                              pImpl->short_tag, rx_channel,
                              opts.shm_capability_fd);
                 return false;
             }
         }
-        reader.reset(shm.release());
     }
     else if (opts.data_transport == "zmq")
     {
-        // HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §6.7: `producer_peers`
-        // is the canonical source for the consumer's connect target +
-        // CURVE serverkey, populated from `CONSUMER_REG_ACK.producers[]`.
+        // ZMQ reader.  hub::Queue picks socket (PULL under fan-in and
+        // one-to-one; SUB under fan-out) + bind/connect per topology.
         //
-        // Per HEP-0036 §6.7 (the queue state machine), build_rx_queue
-        // returns a ZmqQueue in Standby (empty producer_peers) OR
-        // Configured (peers populated at construction time — test paths
-        // and the legacy pre-AUTH-1 single-step shape).  The
-        // Standby → Configured transition happens later via
-        // `apply_consumer_reg_ack(ack)` on the RoleAPIBase, which
-        // dispatches through the polymorphic
-        // `QueueReader::apply_master_approval`.  Configured → Active is
-        // driven by the same call, via `start()`.
+        // Post-2026-07-08 topology model: the broker delivers the
+        // dialing-side endpoint on CONSUMER_REG_ACK.data_endpoint +
+        // .data_pubkey (HEP-CORE-0036 §6.4 amendment).  The pre-topology
+        // multi-producer connect model (opts.producer_peers vector,
+        // per-peer connect + curve_serverkey) is being retired; while
+        // the vector still exists for test scaffolding, the first entry
+        // is treated as "the peer" if pre-populated.  Production leaves
+        // it empty and the queue enters Standby until
+        // apply_consumer_reg_ack(ack) drives Standby → Active.
         //
-        // No early validation rejection here: an empty producer_peers
-        // is the EXPECTED state for the AUTH-1 uniform role-host
-        // pattern, where the broker delivers peers in CONSUMER_REG_ACK
-        // AFTER queue construction.  The CURVE-unconditional invariant
-        // (HEP-CORE-0035 §2) is enforced inside ZmqQueue::start() via
-        // `is_configured()` — start refuses if no artifacts have
-        // arrived, so a missing master delivery surfaces there, not
-        // at queue construction.
+        // CURVE is unconditional per HEP-CORE-0035 §2.  Consumer
+        // presents its identity keypair via identity_key_name (KeyStore
+        // lookup); on the binding side (fan-in) it installs a ZAP
+        // handler under zap_domain, empty allowlist until
+        // apply_master_approval(CONSUMER_REG_ACK) seeds it.  On the
+        // dialing side (fan-out / one-to-one) it uses the peer's
+        // pubkey as curve_serverkey.
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->short_tag + ":" + pImpl->uid + ":rx")
                                   : opts.instance_id;
@@ -791,50 +781,57 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
                                                              opts.fz_spec);
         namespace sec = pylabhub::utils::security;
 
-        // Standby vs Configured at construction: when producer_peers
-        // is empty, pull_from accepts an empty endpoint + empty
-        // server_pubkey and the queue enters Standby.  When peers are
-        // pre-populated (test-only / legacy paths), the queue enters
-        // Configured immediately and is eligible for start() now.
+        const bool is_binding = hub::Queue::reader_is_binding_side(opts.topology);
+
+        // Test-legacy path: pre-populated producer_peers on the dialing
+        // side lets the queue enter Configured at construction (no
+        // broker round-trip).  Only applies to fan-out and one-to-one
+        // (dialing).  On fan-in (binding) the consumer never has a peer
+        // pre-known.
         const bool have_peer =
-            !opts.producer_peers.empty()
+            !is_binding
+            && !opts.producer_peers.empty()
             && !opts.producer_peers.front().endpoint.empty()
             && !opts.producer_peers.front().pubkey_z85.empty();
-        const std::string rx_endpoint =
-            have_peer ? opts.producer_peers.front().endpoint : std::string{};
-        // HEP-CORE-0040 §8.4.1 Z85PublicKey construction contract.
-        // Standby path: explicit `Z85PublicKey{}` sentinel — the
-        // HEP-CORE-0036 §6.7 unset state until apply_consumer_reg_ack
-        // delivers real peers.  Have-peer path: validate the wire
-        // string via the throwing factory — a malformed pubkey in the
-        // ACK is a fatal startup error (caught by main()'s phase
-        // try/catch; clean exit-1 with diagnostic).
-        const sec::Z85PublicKey server_pubkey =
-            have_peer ? sec::Z85PublicKey::validate(
-                            opts.producer_peers.front().pubkey_z85)
-                      : sec::Z85PublicKey{};
-        reader = hub::ZmqQueue::pull_from(
-            rx_endpoint,
-            server_pubkey,
-            hub::schema_spec_to_zmq_fields(opts.slot_spec),
-            opts.slot_spec.packing,
-            /*identity_key_name=*/sec::kRoleIdentityName,
-            /*bind=*/false,
-            /*max_buffer_depth=*/opts.zmq_buffer_depth,
-            /*schema_tag=*/make_schema_tag(expected_hash),
-            /*instance_id=*/std::move(inst_id));
+
+        hub::RxOptions rx_opts;
+        rx_opts.slot_schema      = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        rx_opts.slot_packing     = opts.slot_spec.packing;
+        // Binding side (fan-in consumer): endpoint_hint from config
+        // (opts.zmq_node_endpoint).  May be tcp://host:0 for
+        // ephemeral bind.
+        // Dialing side (fan-out / one-to-one consumer): endpoint_hint
+        // must be empty; peer endpoint arrives on CONSUMER_REG_ACK.
+        // Test-legacy exception: if producer_peers is pre-populated on
+        // dialing side, take the first peer's endpoint (drives queue
+        // to Configured at construction).
+        rx_opts.endpoint_hint    = is_binding
+                                    ? opts.zmq_node_endpoint
+                                    : (have_peer
+                                        ? opts.producer_peers.front().endpoint
+                                        : std::string{});
+        rx_opts.server_pubkey    = have_peer
+                                    ? sec::Z85PublicKey::validate(
+                                          opts.producer_peers.front().pubkey_z85)
+                                    : sec::Z85PublicKey{};
+        rx_opts.identity_key_name = sec::kRoleIdentityName;
+        rx_opts.max_buffer_depth  = opts.zmq_buffer_depth;
+        rx_opts.schema_tag        = make_schema_tag(expected_hash);
+        rx_opts.instance_id       = std::move(inst_id);
+
+        reader = hub::Queue::create_reader(opts.topology,
+                                            hub::Transport::Zmq,
+                                            std::move(rx_opts));
         if (!reader)
             return false;
-        // Pre-populated peers: start immediately (legacy path
-        // preservation).  Empty peers: queue stays Standby; the
-        // role-host MUST call `apply_consumer_reg_ack(ack)` later —
-        // any set_* args meanwhile are BUFFERED in Standby; merged
-        // into Standby → Configured → Active by `apply_master_approval`
-        // per HEP-CORE-0036 §6.7 Option B.
+        // Pre-populated test path: start immediately.  Empty peers:
+        // queue stays Standby; apply_consumer_reg_ack drives it Active
+        // per HEP-CORE-0036 §6.7.
         if (have_peer && !reader->start())
         {
-            LOGGER_ERROR("[{}] ZMQ PULL start() failed for '{}'",
-                         pImpl->short_tag, rx_endpoint);
+            LOGGER_ERROR("[{}] ZMQ reader start() failed on test-pre-populated "
+                         "path for channel='{}'",
+                         pImpl->short_tag, rx_channel);
             return false;
         }
     }

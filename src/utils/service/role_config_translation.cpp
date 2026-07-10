@@ -6,6 +6,7 @@
  */
 
 #include "utils/role_config_translation.hpp"
+#include "utils/hub_state.hpp"    // hub::topology::parse
 
 namespace pylabhub::scripting
 {
@@ -23,6 +24,16 @@ make_tx_opts(const config::RoleConfig &config,
     opts.has_shm   = shm.enabled;
     opts.slot_spec = out_slot_spec;
     opts.fz_spec   = out_fz_spec;
+
+    // Topology from RoleConfig.out_channel_topology (per HEP-CORE-0017
+    // §3.3.0).  Empty string → default OneToOne.  Invalid strings are
+    // already rejected at config load by role_config's allowlist gate,
+    // so a parse failure here is a defense-in-depth path.
+    if (const auto &t = config.out_channel_topology(); !t.empty())
+    {
+        if (auto parsed = hub::topology::parse(t))
+            opts.topology = *parsed;
+    }
 
     opts.checksum_policy   = config.checksum().policy;
     opts.flexzone_checksum = config.checksum().flexzone && has_tx_fz;
@@ -77,6 +88,14 @@ make_rx_opts(const config::RoleConfig &config,
     opts.slot_spec         = in_slot_spec;
     opts.fz_spec           = in_fz_spec;
 
+    // Topology from RoleConfig.in_channel_topology per HEP-CORE-0017
+    // §3.3.0.  Empty string → default OneToOne.
+    if (const auto &t = config.in_channel_topology(); !t.empty())
+    {
+        if (auto parsed = hub::topology::parse(t))
+            opts.topology = *parsed;
+    }
+
     opts.checksum_policy   = config.checksum().policy;
     opts.flexzone_checksum = config.checksum().flexzone && has_rx_fz;
 
@@ -89,13 +108,13 @@ make_rx_opts(const config::RoleConfig &config,
     if (tr.transport == config::Transport::Zmq)
     {
         opts.data_transport    = "zmq";
-        // `producer_peers` left empty per HEP-CORE-0036 §6.7 — the
-        // broker's CONSUMER_REG_ACK.producers[] is the only canonical
-        // source for the consumer's connect target + CURVE serverkey
-        // (HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4).  Pre-AUTH-1's
-        // single-producer `zmq_node_endpoint` carrier was retired in
-        // Stage 1D close-out (task #193, 2026-06-15).
         opts.zmq_buffer_depth  = tr.zmq_buffer_depth;
+        // Under fan-in the consumer is the binding side and needs its
+        // bind endpoint from config.  Under fan-out / one-to-one the
+        // consumer is dialing and this field is unused (peer endpoint
+        // arrives on CONSUMER_REG_ACK).  Passed through unconditionally
+        // and read only on the binding side in build_rx_queue.
+        opts.zmq_node_endpoint = tr.zmq_endpoint;
         opts.shm_name.clear();
     }
 

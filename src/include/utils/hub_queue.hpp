@@ -593,6 +593,19 @@ public:
      * Default: false. Override in ShmQueue. See QueueReader::is_shm_backed.
      */
     virtual bool is_shm_backed() const noexcept { return false; }
+
+    /**
+     * @brief HEP-CORE-0041 §5.5 — apply the SHM capability fd
+     * (writer-side symmetric mirror of QueueReader::set_shm_capability_fd).
+     *
+     * The producer-side role host (build_tx_queue) calls this after
+     * hub::Queue::create_writer returns a SHM writer in Standby, to
+     * attach the memfd its capability layer pre-allocated and drive
+     * Standby → Configured.  ZMQ writers reject the call.  Default
+     * returns false so a caller that reaches this on the wrong
+     * transport surfaces a hard error rather than a silent no-op.
+     */
+    virtual bool set_shm_capability_fd(int /*fd*/) noexcept { return false; }
 };
 
 } // namespace pylabhub::hub

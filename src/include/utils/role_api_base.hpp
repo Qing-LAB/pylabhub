@@ -22,6 +22,7 @@
 #include "utils/config/inbox_config.hpp"   // config::InboxConfig (append_inbox_to_reg)
 #include "utils/data_block.hpp"            // DataBlockConfig (for TxQueueOptions::shm_config)
 #include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
+#include "utils/hub_state.hpp"             // hub::ChannelTopology
 #include "utils/hub_zmq_queue.hpp"         // hub::OverflowPolicy, kZmqDefaultBufferDepth
 #include "utils/json_fwd.hpp"
 #include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
@@ -71,6 +72,17 @@ class SharedSpinLock;
 /// (producer / processor-out).
 struct TxQueueOptions
 {
+    /// Channel topology per HEP-CORE-0017 §3.3.0.  Combined with
+    /// `data_transport` this picks the row of the §3.3.0 decision
+    /// matrix that the queue will use.  Default `OneToOne`
+    /// matches the pre-topology-model behavior (producer binds).
+    /// Under `FanIn` the producer is the dialing side and does
+    /// NOT bind; under `FanOut` and `OneToOne` the producer is the
+    /// binding side.  The queue factory reads this field to pick
+    /// socket type + bind/connect direction; `zmq_bind` below is
+    /// redundant with it and retires alongside role code migration.
+    ChannelTopology topology{ChannelTopology::OneToOne};
+
     bool            has_shm{false};
     DataBlockConfig shm_config{};
 
@@ -123,6 +135,14 @@ struct TxQueueOptions
 /// (consumer / processor-in).
 struct RxQueueOptions
 {
+    /// Channel topology per HEP-CORE-0017 §3.3.0.  Under `FanIn`
+    /// the consumer is the binding side (owns the endpoint);
+    /// under `FanOut` and `OneToOne` the consumer is the dialing
+    /// side.  Default `OneToOne` matches the pre-topology-model
+    /// behavior (consumer dials).  The queue factory reads this
+    /// field to pick socket type + bind/connect direction.
+    ChannelTopology topology{ChannelTopology::OneToOne};
+
     /// HEP-CORE-0041 1i-mig-4 (#272) — SHM capability transport fd
     /// (anonymous memfd received via `SCM_RIGHTS` from the producer).
     /// Symmetric with `TxQueueOptions::shm_capability_fd`.
@@ -154,6 +174,15 @@ struct RxQueueOptions
     std::string data_transport{"shm"};
     std::string shm_name{};
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
+
+    /// Consumer's ZMQ bind endpoint on the binding side (fan-in
+    /// consumer per HEP-CORE-0017 §3.3.0).  On dialing-side topologies
+    /// (fan-out consumer, one-to-one consumer) this field is unused —
+    /// the peer endpoint arrives on CONSUMER_REG_ACK.data_endpoint.
+    /// May be `tcp://host:0` for ephemeral bind; the queue resolves
+    /// the actual port and publishes it via ENDPOINT_UPDATE_REQ after
+    /// bind.
+    std::string zmq_node_endpoint{};
 
     /// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 + §6.4 dynamic-membership
     /// producer set populated from `CONSUMER_REG_ACK.producers[]`.  At
