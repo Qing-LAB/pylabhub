@@ -10,6 +10,137 @@
 
 ---
 
+## 0. Core Document Authoring Rules (MANDATORY)
+
+These rules apply whenever a **core document** (HEP, README topic
+summary, IMPLEMENTATION_GUIDANCE, DOC_STRUCTURE itself) is
+authored, revised, or reviewed.  They are non-negotiable — a
+change that violates them is not accepted, and any pre-existing
+violation surfaced during a revision must be fixed as part of that
+revision.
+
+**Core documents** = the durable, permanent reference material:
+`docs/HEP/HEP-CORE-*.md`, `docs/README/README_*.md`,
+`docs/IMPLEMENTATION_GUIDANCE.md`, `docs/DOC_STRUCTURE.md`, and
+this list.  They contrast with **transient documents**
+(`docs/tech_draft/`, `docs/todo/`, `docs/code_review/`) which are
+allowed to carry migration state, task IDs, and phase labels
+because their purpose is to track work in flight.
+
+### Rule 0.1 — Design is authoritative; code that disagrees is a bug
+
+Core documents describe what the system **is** and what it **is
+designed to be**.  When the description and the code disagree,
+**the code is what changes**, not the doc.
+
+- Do NOT weaken a design statement to match a partial
+  implementation.
+- Do NOT invent a rationale in the doc for a code shortcut.
+- When a revision discovers a code gap, describe the design as
+  it should be, then name the gap plainly in-line: name the
+  code file and line, describe what the code does wrong, and (if
+  a workaround exists) describe it as a workaround — never as
+  the rule.
+- The reader must be able to trust that the doc reflects the
+  design intent, not the current state of a half-finished sweep.
+
+Consequence: **findings during doc review can require code
+follow-ups.**  That is intended.  Track those follow-ups as new
+work items in the transient TODO system; don't hide them by
+bending the design.
+
+### Rule 0.2 — No transient labels in core documents
+
+Core documents must not reference **task-management artifacts**.
+These are transient — they mean nothing to a reader six months
+later, and are actively confusing to a reader today who doesn't
+know what "Phase C step 6" refers to.
+
+**Forbidden in core documents:**
+- Phase / step / stage / slice labels (`"Phase C step 6"`,
+  `"Stage 1D"`, `"slice E1"`).
+- Revision / rev-N labels (`"Rev-10 Q3a resolution"`, `"rev 2.3"`).
+- Task IDs and issue numbers (`"task #77"`, `"#255"`, `"#158"`).
+- Commit hashes (`"per `830f8383`"`, `"landed 2026-06-04"`) in
+  running prose.  A dated amendment marker at the top of a
+  changed HEP section is fine (`"Amendment 2026-07-08"`); a
+  citation in body prose is not.
+- Migration-state descriptors (`"post-migration this becomes..."`,
+  `"pre-Phase-C-step-6"`).
+- Session / conversation references (`"session 2026-07-08"`,
+  `"per session memory feedback_X.md"`).
+
+**Say what the thing IS, not where it sits on somebody's kanban:**
+
+| Instead of                                     | Write                                              |
+|------------------------------------------------|----------------------------------------------------|
+| "Phase C step 6 will relax this"               | Name the code file + line, say what the code does wrong |
+| "Rev-10 Q3a resolution: optional with default X" | "The field is optional; unset means X"           |
+| "post-migration the broker requires..."        | "The broker requires..." (state the durable rule)  |
+| "session memory says..."                       | State the rule inline; don't cite the memory       |
+
+**Permitted in core documents** (durable references):
+- HEP section numbers (`HEP-CORE-0017 §3.3.0`).
+- Source file paths + line numbers, when the doc names a
+  specific implementation site (`src/utils/service/role_api_base.cpp:536`).
+- Wire message names and error codes
+  (`CONSUMER_REG_ACK`, `TOPOLOGY_MISMATCH`).
+- Public API names (`hub::Queue::create_reader`).
+- A single dated amendment marker at the top of a revised
+  section (`"Amendment 2026-07-08"`), when the revision is
+  material enough that readers benefit from the date.
+
+Consequence: **transient information belongs in transient
+documents.**  Migration-in-flight state → `docs/todo/*.md` or
+`docs/tech_draft/*.md`; a HEP amendment absorbs the design
+change into permanent form without carrying the task-tracking
+scaffolding.
+
+### Rule 0.3 — Plain language, with jargon lifted into its context
+
+Core documents are for humans reading in the future.  Their
+target reader is a colleague or future-self who needs to
+understand the system, not a specialist who already knows the
+protocol.
+
+- Every subsection that describes a mechanism should include a
+  plain-English narrative alongside any technical specification
+  (sequence diagram, decision matrix, pseudocode, wire schema).
+  The narrative comes first; the specification is called out as
+  "wire-level," "technical," or "reference."
+- Prefer words over acronyms in prose.  Where an acronym is
+  needed for precision (CURVE, ZAP, SCM_RIGHTS), expand it on
+  first use in the section, or link to the HEP that defines it.
+- If a paragraph has three or more jargon terms per sentence,
+  it is not explaining — rewrite it.
+- Sequence diagrams and pseudocode are exempt from the
+  plain-language rule; they are the technical reference.  But
+  every diagram gets a prose "what happens in plain terms"
+  intro that the reader can consult without decoding the
+  diagram.
+
+**Test:** if a reader who has never touched the codebase can
+follow the narrative of a section without cross-referencing five
+other HEPs, the section passes.  If they cannot, the section
+needs more prose scaffolding.
+
+### Rule 0.4 — Discovery of a violation triggers a fix, not a note
+
+If a doc review, code review, or edit encounters an existing
+violation of §0.1, §0.2, or §0.3 in a core document, the
+violation is fixed as part of that review — not left as a
+"tracked follow-up."  Rule 0.4 protects the invariant: core docs
+converge toward the rules, they never accumulate violations that
+"someone will get to later."
+
+Exception: a rewrite whose scope is broader than a single
+session (e.g., a full HEP restructure) may split the work
+across commits, but each intermediate commit either fixes the
+violations in the sections it touches or explicitly documents
+which sections remain non-conforming and why.
+
+---
+
 ## 1. Documentation Taxonomy: Where Information Lives
 
 ### 1.1 Execution plan (TODO system)
