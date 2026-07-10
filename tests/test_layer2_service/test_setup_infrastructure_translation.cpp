@@ -286,10 +286,15 @@ TEST_F(SetupInfrastructureTranslationTest, Producer_ZmqTransport_AllFieldsCopied
         "producer", "producer.json", "TestProdZmq",
         [](nlohmann::json &j) {
             j["out_channel"]              = "test.prod.zmq.channel";
+            // Declare topology explicitly per HEP-CORE-0017 §3.3.0.
+            // Fan-out puts the producer on the binding side and
+            // exercises the topology→enum translator path.  The role
+            // host reads `opts.topology` to pick the queue-factory
+            // matrix row; the legacy `zmq_bind` field is no longer
+            // consulted by `build_tx_queue`.
+            j["out_channel_topology"]     = "fan-out";
             j["out_transport"]            = "zmq";
-            // ZMQ fields are NOT in the producer template — set all of them.
             j["out_zmq_endpoint"]         = "tcp://127.0.0.1:5599";
-            j["out_zmq_bind"]             = true;
             j["out_zmq_buffer_depth"]     = 512;
             j["out_zmq_overflow_policy"]  = "block";
             j["out_shm_enabled"]          = false;
@@ -302,13 +307,20 @@ TEST_F(SetupInfrastructureTranslationTest, Producer_ZmqTransport_AllFieldsCopied
     const auto opts = pylabhub::producer::ProducerRoleHost::make_tx_opts(
         cfg, slot_spec, fz_spec, /*has_tx_fz=*/true);
 
-    // Transport dispatch — these are the fields B11's mirror would miss.
+    // Topology (HEP-CORE-0017 §3.3.0) — the current design's
+    // load-bearing dispatcher field.  This is what `build_tx_queue`
+    // routes on; if the translator ever forgets to parse
+    // `out_channel_topology`, the queue silently picks the wrong
+    // socket + bind direction.
+    EXPECT_EQ(opts.topology, pylabhub::hub::ChannelTopology::FanOut);
+
+    // Transport dispatch — data_transport still selects the SHM vs
+    // ZMQ branch inside build_tx_queue (B11 regression cover).
     EXPECT_FALSE(opts.has_shm)
         << "ZMQ transport must override has_shm to false";
     EXPECT_EQ(opts.data_transport, "zmq")
         << "data_transport='zmq' must be set (mirror of B11 on producer side)";
     EXPECT_EQ(opts.zmq_node_endpoint, "tcp://127.0.0.1:5599");
-    EXPECT_TRUE(opts.zmq_bind);
     EXPECT_EQ(opts.zmq_buffer_depth, 512);
     EXPECT_EQ(opts.zmq_overflow_policy,
               pylabhub::hub::OverflowPolicy::Block);
@@ -368,6 +380,12 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ZmqTransport_AllFieldsCopied
         "consumer", "consumer.json", "TestConsZmq",
         [](nlohmann::json &j) {
             j["in_channel"]            = "test.cons.zmq.channel";
+            // Declare topology explicitly.  Fan-in puts the consumer
+            // on the binding side per HEP-CORE-0017 §3.3.0 — the
+            // scenario where `RxQueueOptions::zmq_node_endpoint`
+            // carries load-bearing data (the consumer's bind hint
+            // that `build_rx_queue` forwards to `hub::Queue::create_reader`).
+            j["in_channel_topology"]   = "fan-in";
             j["in_transport"]          = "zmq";
             j["in_zmq_endpoint"]       = "tcp://127.0.0.1:5601";
             j["in_zmq_buffer_depth"]   = 1024;
@@ -381,24 +399,33 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ZmqTransport_AllFieldsCopied
     const auto opts = pylabhub::consumer::ConsumerRoleHost::make_rx_opts(
         cfg, slot_spec, fz_spec, /*has_rx_fz=*/true);
 
-    // B11 regression — every ZMQ field MUST propagate.
+    // Topology (HEP-CORE-0017 §3.3.0) — under fan-in the consumer is
+    // the binding side; `build_rx_queue` reads this to pick the
+    // PULL-bind side of the §3.3.0 matrix.  Silent-drift protection:
+    // if the translator forgets to parse `in_channel_topology`, the
+    // consumer defaults to one-to-one dialing and the wire flips
+    // direction without any test failing.
+    EXPECT_EQ(opts.topology, pylabhub::hub::ChannelTopology::FanIn);
+
+    // Transport dispatch — data_transport still selects the SHM vs
+    // ZMQ branch inside build_rx_queue (B11 regression cover).
     EXPECT_EQ(opts.data_transport, "zmq")
         << "B11 regression: data_transport must be 'zmq' for ZMQ pipeline";
-    // Stage 1D (task #193, 2026-06-15): config no longer carries the
-    // consumer's connect target on `RxQueueOptions`.  The broker's
-    // `CONSUMER_REG_ACK.producers[]` is the only canonical source
-    // (HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §6.7).
-    EXPECT_TRUE(opts.producer_peers.empty())
-        << "Stage 1D: producer_peers must be empty at translation time — "
-           "broker fills via apply_consumer_reg_ack later";
     EXPECT_EQ(opts.zmq_buffer_depth, 1024);
+
+    // `zmq_node_endpoint` on RxQueueOptions carries the fan-in
+    // consumer's bind hint per HEP-CORE-0017 §3.3.0.  Load-bearing
+    // for the binding-side path; ignored on the dialing side.  If
+    // the translator forgets to copy `in_zmq_endpoint` here, the
+    // fan-in consumer binds nowhere and producers can't dial in.
+    EXPECT_EQ(opts.zmq_node_endpoint, "tcp://127.0.0.1:5601")
+        << "Fan-in binding-side hint must propagate from "
+           "in_transport().zmq_endpoint";
 
     // B5 corollary — when transport is ZMQ, shm_name MUST be cleared.
     EXPECT_TRUE(opts.shm_name.empty())
         << "ZMQ path must clear shm_name (build_rx_queue uses shm_name "
            "to dispatch SHM; a non-empty value misroutes to SHM)";
-    // #275-S3: `opts.shm_shared_secret` field retired with the legacy
-    // secret-based ShmQueue path; no field to assert against.
 
     EXPECT_EQ(opts.checksum_policy, cfg.checksum().policy);
     EXPECT_FALSE(opts.flexzone_checksum);
@@ -469,13 +496,20 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ZmqTransport_AllFieldsCopie
         [](nlohmann::json &j) {
             j["in_channel"]               = "test.proc.zmq.in";
             j["out_channel"]              = "test.proc.zmq.out";
+            // Two topology cells in the same processor config exercise
+            // the translator on both directions.  In = fan-in
+            // (processor's input side is the binding side for that
+            // channel); out = fan-out (processor's output side is
+            // binding).  HEP-CORE-0017 §3.3.0 matrix rows exercised:
+            // reader/fan-in ZMQ + writer/fan-out ZMQ.
+            j["in_channel_topology"]      = "fan-in";
+            j["out_channel_topology"]     = "fan-out";
             j["in_transport"]             = "zmq";
             j["in_zmq_endpoint"]          = "tcp://127.0.0.1:5701";
             j["in_zmq_buffer_depth"]      = 256;
             j["in_shm_enabled"]           = false;
             j["out_transport"]            = "zmq";
             j["out_zmq_endpoint"]         = "tcp://127.0.0.1:5702";
-            j["out_zmq_bind"]             = true;
             j["out_zmq_buffer_depth"]     = 512;
             j["out_zmq_overflow_policy"]  = "drop";
             j["out_shm_enabled"]          = false;
@@ -485,28 +519,28 @@ TEST_F(SetupInfrastructureTranslationTest, Processor_ZmqTransport_AllFieldsCopie
 
     const pylabhub::hub::SchemaSpec slot_spec, fz_spec;
 
-    // ── Rx side (B11 regression) ──
+    // ── Rx side ──
     const auto rx = pylabhub::processor::ProcessorRoleHost::make_rx_opts(
         cfg, slot_spec, fz_spec, /*has_rx_fz=*/true);
+    EXPECT_EQ(rx.topology, pylabhub::hub::ChannelTopology::FanIn)
+        << "in_channel_topology must translate into the topology enum";
     EXPECT_EQ(rx.data_transport, "zmq");
-    // Stage 1D (task #193, 2026-06-15): config no longer carries the
-    // consumer's connect target — broker's CONSUMER_REG_ACK.producers[]
-    // is the only canonical source per HEP-CORE-0036 §6.4 + §6.7.
-    EXPECT_TRUE(rx.producer_peers.empty())
-        << "Stage 1D: producer_peers must be empty at translation time";
     EXPECT_EQ(rx.zmq_buffer_depth, 256);
+    // Fan-in binding-side hint (Rx-side symmetric with Consumer_Zmq test).
+    EXPECT_EQ(rx.zmq_node_endpoint, "tcp://127.0.0.1:5701")
+        << "Fan-in binding-side hint must propagate from "
+           "in_transport().zmq_endpoint";
     EXPECT_TRUE(rx.shm_name.empty())
         << "Processor.rx — B11 regression: shm_name MUST be cleared on ZMQ path";
-    // #275-S3: `rx.shm_shared_secret` field retired with the legacy
-    // secret-based ShmQueue path.
 
     // ── Tx side ──
     const auto tx = pylabhub::processor::ProcessorRoleHost::make_tx_opts(
         cfg, slot_spec, fz_spec, /*has_tx_fz=*/true);
+    EXPECT_EQ(tx.topology, pylabhub::hub::ChannelTopology::FanOut)
+        << "out_channel_topology must translate into the topology enum";
     EXPECT_FALSE(tx.has_shm);
     EXPECT_EQ(tx.data_transport, "zmq");
     EXPECT_EQ(tx.zmq_node_endpoint, "tcp://127.0.0.1:5702");
-    EXPECT_TRUE(tx.zmq_bind);
     EXPECT_EQ(tx.zmq_buffer_depth, 512);
     EXPECT_EQ(tx.zmq_overflow_policy,
               pylabhub::hub::OverflowPolicy::Drop);
