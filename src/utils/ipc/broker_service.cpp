@@ -2634,10 +2634,40 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     //     endpoint + CURVE identity pubkey.  (Emission path lands
     //     with the fan-in producer wire glue in Phase G; the
     //     BINDING-side path is what this call site owns today.)
+    // Under fan-in the PRODUCER is the DIALING side and the
+    // "initial_allowlist" carries a single entry — the consumer's
+    // {endpoint, pubkey_z85} — that the producer will use as its
+    // dial target and curve_serverkey.  Under fan-out / one-to-one
+    // the producer is BINDING and the field carries the list of
+    // authorized consumer pubkeys (endpoint empty on each entry).
     nlohmann::json allowlist = nlohmann::json::array();
     std::uint64_t snapshot_version = 0;
-    if (auto access = hub_state_->channel_access(channel_name);
-        access.has_value())
+    auto ch_snapshot = hub_state_->channel(channel_name);
+    const bool producer_is_dialing =
+        ch_snapshot.has_value() &&
+        ch_snapshot->topology == pylabhub::hub::ChannelTopology::FanIn;
+    if (producer_is_dialing)
+    {
+        if (!ch_snapshot->consumers.empty() &&
+            !ch_snapshot->consumers.front().zmq_pubkey.empty() &&
+            ch_snapshot->data_endpoint.has_value() &&
+            !ch_snapshot->data_endpoint->empty())
+        {
+            nlohmann::json entry;
+            entry["role_uid"]   = ch_snapshot->consumers.front().role_uid;
+            entry["endpoint"]   = *ch_snapshot->data_endpoint;
+            entry["pubkey_z85"] = ch_snapshot->consumers.front().zmq_pubkey;
+            allowlist.push_back(std::move(entry));
+            snapshot_version = ch_snapshot->channel_version;
+        }
+        // else: consumer hasn't fully published yet.  Emit empty
+        // allowlist; producer's queue stays in Standby until a
+        // CHANNEL_AUTH_CHANGED_NOTIFY delivers the update.  The R6
+        // pending path (which would delay this REG_ACK entirely
+        // until conditions clear) is a separate work item.
+    }
+    else if (auto access = hub_state_->channel_access(channel_name);
+             access.has_value())
     {
         for (const auto &pk : access->authorized_consumer_pubkeys)
         {

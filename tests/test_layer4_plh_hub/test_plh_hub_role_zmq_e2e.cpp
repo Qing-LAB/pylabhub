@@ -760,23 +760,24 @@ TEST_F(PlhHubCliTest, ZmqE2E_UnauthorizedConsumerDeniedByBroker)
 
 TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
 {
-    // Fan-in end-to-end regressed after role code migrated to
-    // hub::Queue::create_writer/reader.  The role code now respects
-    // topology: fan-in producer dials, fan-in consumer binds.  For
-    // that to complete, the broker must fill REG_ACK.data_endpoint
-    // with the consumer's bound address so producers can dial in —
-    // the broker code currently leaves that field empty under fan-in
-    // (see broker_service.cpp REG_ACK builder around the "with the
-    // fan-in producer wire glue" comment).  Producer therefore stays
-    // in Standby, never heartbeats, and the consumer's REG_REQ trips
-    // CHANNEL_NOT_READY.
+    // Fan-in end-to-end can't complete yet.  The role code correctly
+    // treats the fan-in consumer as the binding side (it must come
+    // up first, bind PULL, publish endpoint) and the producer as
+    // dialing (waits for REG_ACK's initial_allowlist to carry the
+    // consumer's endpoint + pubkey — which the broker DOES now
+    // populate).  What's still missing: the broker's consumer
+    // REG_REQ handler rejects a CONSUMER_REG_REQ for a not-yet-
+    // registered channel with CHANNEL_NOT_FOUND
+    // (broker_service.cpp handle_consumer_reg_req around the
+    // "channel not found" branch, plus HubState::_on_consumer_joined
+    // silently skips when the channel doesn't exist).  Under fan-in
+    // the consumer IS the channel opener — the broker needs a path
+    // where a fan-in consumer's REG_REQ creates the channel entry
+    // with the consumer as the binding side.
     //
-    // This test needs to be unskipped once the broker REG_ACK builder
-    // fills data_endpoint under fan-in AND the spawn order flips so
-    // the (binding-side) consumer comes up before the producers.
-    GTEST_SKIP() << "Fan-in end-to-end blocked by broker REG_ACK.data_endpoint "
-                    "not being populated under fan-in topology.  Producers "
-                    "stay in Standby because they have no endpoint to dial.";
+    // Unskip when the broker allows fan-in consumer to open a channel.
+    GTEST_SKIP() << "Broker CONSUMER_REG_REQ handler doesn't yet let a "
+                    "fan-in consumer create the channel entry it should own.";
 
     using std::chrono::seconds;
 
@@ -896,59 +897,64 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
         f << j.dump(2);
     }
 
-    // ── Spawn both producers ──────────────────────────────────────────
-    WorkerProcess prod_a(plh_role_binary(), "--role",
-        {"producer", prod_a_dir.string()});
-    WorkerProcess prod_b(plh_role_binary(), "--role",
-        {"producer", prod_b_dir.string()});
+    // Under the fan-in topology model the consumer is the BINDING
+    // side: it must come up first, bind its PULL socket, and publish
+    // its endpoint before producers can dial.  Broker fills the
+    // producer's REG_ACK initial_allowlist with a single
+    // {endpoint, pubkey_z85} entry taken from ChannelEntry.consumers
+    // + data_endpoint (HEP-CORE-0017 §3.3.0).
 
-    auto dump_all = [&](const std::string &where) -> std::string {
-        std::string s;
-        s += "[fail at: " + where + "]\n";
-        s += "── producer A log ──\n" + read_role_log(prod_a_dir) + "\n";
-        s += "── producer A stderr ──\n" + prod_a.get_stderr() + "\n";
-        s += "── producer B log ──\n" + read_role_log(prod_b_dir) + "\n";
-        s += "── producer B stderr ──\n" + prod_b.get_stderr() + "\n";
-        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
-        return s;
-    };
-
-    // Hub sees both producers' REG_REQ.  Both must reach kLive (first
-    // heartbeat) before the consumer's CONSUMER_REG_REQ can be
-    // accepted (HEP-CORE-0036 §5.2 R6 producer-kLive gate).
-    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
-        "event=RegReqAccepted role='" + prod_a_uid + "' channel='" +
-        channel + "'", seconds(7)))
-        << dump_all("producer A RegReqAccepted");
-    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
-        "event=RegReqAccepted role='" + prod_b_uid + "' channel='" +
-        channel + "'", seconds(7)))
-        << dump_all("producer B RegReqAccepted");
-    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
-        "event=RegAckReceived", seconds(5)))
-        << dump_all("producer A RegAckReceived");
-    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
-        "event=RegAckReceived", seconds(5)))
-        << dump_all("producer B RegAckReceived");
-
-    // ── Spawn consumer ────────────────────────────────────────────────
+    // ── Spawn consumer first (fan-in binding side) ────────────────────
     WorkerProcess cons(plh_role_binary(), "--role",
         {"consumer", cons_dir.string()});
 
-    auto dump_full = [&](const std::string &where) -> std::string {
-        std::string s = dump_all(where);
+    auto dump_cons = [&](const std::string &where) -> std::string {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
         s += "── consumer log ──\n" + read_role_log(cons_dir) + "\n";
         s += "── consumer stderr ──\n" + cons.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
         return s;
     };
 
     ASSERT_TRUE(wait_for_hub_marker(hub_dir,
         "event=ConsumerRegReqAccepted role='" + cons_uid +
         "' channel='" + channel + "'", seconds(10)))
-        << dump_full("ConsumerRegReqAccepted");
+        << dump_cons("ConsumerRegReqAccepted");
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
         "event=ConsumerRegAckReceived", seconds(5)))
-        << dump_full("ConsumerRegAckReceived");
+        << dump_cons("ConsumerRegAckReceived");
+
+    // ── Spawn both producers (fan-in dialing side) ────────────────────
+    WorkerProcess prod_a(plh_role_binary(), "--role",
+        {"producer", prod_a_dir.string()});
+    WorkerProcess prod_b(plh_role_binary(), "--role",
+        {"producer", prod_b_dir.string()});
+
+    auto dump_full = [&](const std::string &where) -> std::string {
+        std::string s = dump_cons(where);
+        s += "── producer A log ──\n" + read_role_log(prod_a_dir) + "\n";
+        s += "── producer A stderr ──\n" + prod_a.get_stderr() + "\n";
+        s += "── producer B log ──\n" + read_role_log(prod_b_dir) + "\n";
+        s += "── producer B stderr ──\n" + prod_b.get_stderr() + "\n";
+        return s;
+    };
+    auto dump_all = dump_full;  // kept as alias for markers below
+
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=RegReqAccepted role='" + prod_a_uid + "' channel='" +
+        channel + "'", seconds(7)))
+        << dump_full("producer A RegReqAccepted");
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=RegReqAccepted role='" + prod_b_uid + "' channel='" +
+        channel + "'", seconds(7)))
+        << dump_full("producer B RegReqAccepted");
+    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
+        "event=RegAckReceived", seconds(5)))
+        << dump_full("producer A RegAckReceived");
+    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
+        "event=RegAckReceived", seconds(5)))
+        << dump_full("producer B RegAckReceived");
 
     // ── HEP-CORE-0042 §7.1 fan-in markers ─────────────────────────────
     // Loop entry.
