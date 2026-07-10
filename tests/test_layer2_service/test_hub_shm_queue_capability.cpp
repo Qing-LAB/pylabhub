@@ -355,3 +355,113 @@ TEST_F(ShmQueueCapabilityTest, Mechanism_AfterStart_IsShmCapability)
                  "ShmCapability");
 }
 
+// ── Topology-parametric factories (Phase C step 3) ────────────────────
+//
+// HEP-CORE-0017 §3.3.0 gate 1: fan-in requires ZMQ; SHM refuses.
+// Fan-out and one-to-one dispatch to the existing standby factories.
+
+TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanIn_ReaderRefused)
+{
+    ShmQueue::RxCreateOptions opts;
+    opts.channel_name = "shm-fanin-refuse-r";
+    opts.slot_schema  = make_slot_schema();
+    opts.slot_packing = "aligned";
+
+    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::FanIn,
+                                      std::move(opts));
+    EXPECT_EQ(q, nullptr)
+        << "SHM fan-in reader must be refused per HEP-CORE-0017 §3.3.0 gate 1";
+}
+
+TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanIn_WriterRefused)
+{
+    ShmQueue::TxCreateOptions opts;
+    opts.channel_name         = "shm-fanin-refuse-w";
+    opts.slot_schema          = make_slot_schema();
+    opts.slot_packing         = "aligned";
+    opts.ring_buffer_capacity = kRingCapacity;
+    opts.page_size            = DataBlockPageSize::Size4K;
+    opts.policy               = DataBlockPolicy::RingBuffer;
+    opts.sync_policy          = ConsumerSyncPolicy::Latest_only;
+    opts.checksum_policy      = ChecksumPolicy::None;
+
+    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::FanIn,
+                                      std::move(opts));
+    EXPECT_EQ(q, nullptr)
+        << "SHM fan-in writer must be refused per HEP-CORE-0017 §3.3.0 gate 1";
+}
+
+TEST_F(ShmQueueCapabilityTest, TopologyFactory_OneToOne_WriterDispatchesToStandby)
+{
+    ShmQueue::TxCreateOptions opts;
+    opts.channel_name         = "shm-o2o-writer";
+    opts.slot_schema          = make_slot_schema();
+    opts.slot_packing         = "aligned";
+    opts.ring_buffer_capacity = kRingCapacity;
+    opts.page_size            = DataBlockPageSize::Size4K;
+    opts.policy               = DataBlockPolicy::RingBuffer;
+    opts.sync_policy          = ConsumerSyncPolicy::Latest_only;
+    opts.checksum_policy      = ChecksumPolicy::None;
+
+    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::OneToOne,
+                                      std::move(opts));
+    ASSERT_NE(q, nullptr);
+    ASSERT_FALSE(q->is_running())
+        << "Standby: no capability_fd applied yet";
+}
+
+TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanOut_WriterDispatchesToStandby)
+{
+    ShmQueue::TxCreateOptions opts;
+    opts.channel_name         = "shm-fanout-writer";
+    opts.slot_schema          = make_slot_schema();
+    opts.slot_packing         = "aligned";
+    opts.ring_buffer_capacity = kRingCapacity;
+    opts.page_size            = DataBlockPageSize::Size4K;
+    opts.policy               = DataBlockPolicy::RingBuffer;
+    opts.sync_policy          = ConsumerSyncPolicy::Latest_only;
+    opts.checksum_policy      = ChecksumPolicy::None;
+
+    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::FanOut,
+                                      std::move(opts));
+    ASSERT_NE(q, nullptr);
+    // FanOut and OneToOne produce identical SHM-side construction —
+    // N-consumer multiplication happens at L2 accept loop, not here.
+    ASSERT_FALSE(q->is_running());
+}
+
+TEST_F(ShmQueueCapabilityTest, TopologyFactory_OneToOne_ReaderDispatchesToStandby)
+{
+    ShmQueue::RxCreateOptions opts;
+    opts.channel_name = "shm-o2o-reader";
+    opts.slot_schema  = make_slot_schema();
+    opts.slot_packing = "aligned";
+
+    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::OneToOne,
+                                      std::move(opts));
+    ASSERT_NE(q, nullptr);
+    ASSERT_FALSE(q->is_running());
+}
+
+TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanOut_ReaderDispatchesToStandby)
+{
+    ShmQueue::RxCreateOptions opts;
+    opts.channel_name = "shm-fanout-reader";
+    opts.slot_schema  = make_slot_schema();
+    opts.slot_packing = "aligned";
+
+    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::FanOut,
+                                      std::move(opts));
+    ASSERT_NE(q, nullptr);
+    ASSERT_FALSE(q->is_running());
+}
+
+// Legacy factories still work — Phase C step 3 does not retire them.
+TEST_F(ShmQueueCapabilityTest, LegacyFactories_StillWork)
+{
+    auto w = standby_writer("shm-legacy-writer");
+    ASSERT_NE(w, nullptr);
+    auto r = standby_reader("shm-legacy-reader");
+    ASSERT_NE(r, nullptr);
+}
+

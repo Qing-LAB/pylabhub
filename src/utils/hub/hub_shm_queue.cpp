@@ -218,6 +218,101 @@ ShmQueue::create_reader_standby(const std::string &shm_name,
 }
 
 // ============================================================================
+// Topology-parametric factories — HEP-CORE-0017 §3.3.0 (Phase C step 3)
+// ============================================================================
+//
+// Dispatch table (SHM half; ZMQ half in hub_zmq_queue.cpp):
+//
+//   Topology  | Consumer (create_reader)  | Producer (create_writer)
+//   ----------+---------------------------+---------------------------
+//   FanIn     | nullptr (illegal per      | nullptr (illegal per
+//             |  §3.3.0 gate 1 — SHM      |  §3.3.0 gate 1)
+//             |  host-local single-       |
+//             |  producer)                |
+//   OneToOne  | create_reader_standby     | create_writer_standby
+//   FanOut    | create_reader_standby     | create_writer_standby
+//
+// Both legal topologies produce identical SHM-side construction — the
+// producer creates a DataBlock, the consumer attaches to it via
+// AttachProtocol (HEP-CORE-0041 §5.5) at S3.  N consumers under
+// fan-out arrive through the `RoleHostFrame::spawn_shm_auth_listener_`
+// accept loop, each receiving an independent SCM_RIGHTS handle to the
+// same anon memfd — no change to queue construction.  The topology
+// parameter here is currently gate-only + symmetry-with-ZmqQueue;
+// kept as a parameter (not derived) so a future divergence (e.g.
+// fan-out SHM with distinct handshake semantics) has a natural
+// insertion point.
+
+std::unique_ptr<ShmQueue>
+ShmQueue::create_reader(pylabhub::hub::ChannelTopology topology,
+                        RxCreateOptions                opts)
+{
+    using pylabhub::hub::ChannelTopology;
+    if (topology == ChannelTopology::FanIn)
+    {
+        LOGGER_ERROR(
+            "[hub::ShmQueue::create_reader] fan-in requires ZMQ "
+            "transport (SHM is host-local + single-producer by "
+            "physical constraint of the shared DataBlock; "
+            "HEP-CORE-0017 §3.3.0 gate 1).  Channel '{}' refused.",
+            opts.channel_name);
+        return nullptr;
+    }
+    // FanOut + OneToOne: both dispatch through the same standby
+    // factory.  The topology parameter is gate-only at this layer;
+    // the fan-out N-consumer multiplication happens at L2 accept
+    // loop, not here.
+    return create_reader_standby(
+        opts.channel_name,           // diagnostic shm_name label
+        opts.slot_schema,
+        opts.slot_packing,
+        opts.channel_name,
+        opts.verify_slot,
+        opts.verify_fz,
+        opts.consumer_uid,
+        opts.consumer_name);
+}
+
+std::unique_ptr<ShmQueue>
+ShmQueue::create_writer(pylabhub::hub::ChannelTopology topology,
+                        TxCreateOptions                opts)
+{
+    using pylabhub::hub::ChannelTopology;
+    if (topology == ChannelTopology::FanIn)
+    {
+        LOGGER_ERROR(
+            "[hub::ShmQueue::create_writer] fan-in requires ZMQ "
+            "transport (SHM is host-local + single-producer by "
+            "physical constraint of the shared DataBlock; "
+            "HEP-CORE-0017 §3.3.0 gate 1).  Channel '{}' refused.",
+            opts.channel_name);
+        return nullptr;
+    }
+    // FanOut + OneToOne: same producer-side construction (one
+    // DataBlock, one memfd, one AttachProtocol acceptor).  N-consumer
+    // fanout under FanOut emerges from the accept loop, not from a
+    // different queue shape.
+    return create_writer_standby(
+        opts.channel_name,
+        opts.slot_schema, opts.slot_packing,
+        opts.fz_schema,   opts.fz_packing,
+        opts.ring_buffer_capacity,
+        opts.page_size,
+        opts.policy,
+        opts.sync_policy,
+        opts.checksum_policy,
+        opts.checksum_slot,
+        opts.checksum_fz,
+        opts.always_clear_slot,
+        opts.hub_uid,
+        opts.hub_name,
+        opts.slot_schema_info,
+        opts.fz_schema_info,
+        opts.producer_uid,
+        opts.producer_name);
+}
+
+// ============================================================================
 // set_shm_capability_fd — HEP-CORE-0041 Standby → Configured (capability)
 // ============================================================================
 

@@ -37,6 +37,7 @@
  * `create_reader(name, shared_secret, ...)`) + `set_shm_secret` API.
  */
 #include "utils/hub_queue.hpp"
+#include "utils/hub_state.hpp"    // ChannelTopology (for topology-parametric factories)
 #include "utils/data_block.hpp"
 #include "utils/schema_field_layout.hpp"
 
@@ -137,6 +138,85 @@ public:
                           bool verify_fz = false,
                           const std::string &consumer_uid = {},
                           const std::string &consumer_name = {});
+
+    // ─── Topology-parametric factories (HEP-CORE-0017 §3.3.0, Phase C step 3) ──
+    //
+    // Symmetric with `ZmqQueue::create_reader` / `create_writer` (Phase C
+    // step 1-2).  SHM supports fan-out and one-to-one topologies; fan-in
+    // is illegal per HEP-CORE-0017 §3.3.0 gate 1 (SHM is host-local +
+    // single-producer by physical constraint of a shared DataBlock).
+    //
+    // These factories are the SHM half of the unified `hub::Queue::create_*`
+    // factory (added in Phase C step 4 per HEP-CORE-0017 §3.3.0.1);
+    // internally each dispatches to the existing `create_*_standby`
+    // machinery — no new SHM state, no new memfd/AttachProtocol code.
+    //
+    // Legacy `create_*_standby` factories remain live during transition;
+    // role code migrates to these topology-parametric factories in Phase C
+    // step 6.
+
+    /// Options passed to `create_reader` — the consumer-side SHM queue.
+    struct RxCreateOptions
+    {
+        std::string channel_name;           ///< Also used as diagnostic shm_name label.
+        std::vector<SchemaFieldDesc> slot_schema;
+        std::string                  slot_packing;
+        std::string                  consumer_uid;
+        std::string                  consumer_name;
+        bool                         verify_slot = false;
+        bool                         verify_fz   = false;
+    };
+
+    /// Options passed to `create_writer` — the producer-side SHM queue.
+    struct TxCreateOptions
+    {
+        std::string                  channel_name;
+        std::vector<SchemaFieldDesc> slot_schema;
+        std::string                  slot_packing;
+        std::vector<SchemaFieldDesc> fz_schema;    ///< Empty → no flexzone.
+        std::string                  fz_packing;
+        uint32_t                     ring_buffer_capacity{0};
+        DataBlockPageSize            page_size{DataBlockPageSize::Unset};
+        DataBlockPolicy              policy{DataBlockPolicy::RingBuffer};
+        ConsumerSyncPolicy           sync_policy{ConsumerSyncPolicy::Sequential};
+        ChecksumPolicy               checksum_policy{ChecksumPolicy::Enforced};
+        bool                         checksum_slot = false;
+        bool                         checksum_fz   = false;
+        bool                         always_clear_slot = true;
+        std::string                  hub_uid;
+        std::string                  hub_name;
+        const schema::SchemaInfo    *slot_schema_info = nullptr;
+        const schema::SchemaInfo    *fz_schema_info   = nullptr;
+        std::string                  producer_uid;
+        std::string                  producer_name;
+    };
+
+    /// Construct the consumer-side SHM queue for `topology`.
+    /// Dispatch per HEP-CORE-0017 §3.3.0:
+    /// - `FanIn`: returns `nullptr` + `LOGGER_ERROR` — fan-in requires
+    ///   ZMQ (SHM is host-local + single-producer by physical
+    ///   constraint of the shared DataBlock).  Belt-and-braces: the
+    ///   outer `hub::Queue::create_reader` gate 1 also refuses.
+    /// - `OneToOne` / `FanOut`: wraps `create_reader_standby`.  Both
+    ///   topologies produce the same SHM-side construction (consumer
+    ///   attaches to the DataBlock via AttachProtocol at S3); the
+    ///   topology parameter is currently gate-only, kept for symmetry
+    ///   with `ZmqQueue::create_reader` and for future divergence if
+    ///   fan-out SHM needs distinct handshake semantics.
+    [[nodiscard]] static std::unique_ptr<ShmQueue>
+    create_reader(pylabhub::hub::ChannelTopology topology,
+                  RxCreateOptions                opts);
+
+    /// Construct the producer-side SHM queue for `topology`.
+    /// - `FanIn`: returns `nullptr` + `LOGGER_ERROR` per §3.3.0 gate 1.
+    /// - `OneToOne` / `FanOut`: wraps `create_writer_standby`.  Both
+    ///   produce a single DataBlock owned by the producer; the accept
+    ///   loop at L2 (`RoleHostFrame::spawn_shm_auth_listener_`) admits
+    ///   N consumers under fan-out via successive SCM_RIGHTS handoffs
+    ///   of the same anon memfd — the queue construction is unchanged.
+    [[nodiscard]] static std::unique_ptr<ShmQueue>
+    create_writer(pylabhub::hub::ChannelTopology topology,
+                  TxCreateOptions                opts);
 
     // ── Raw DataBlock accessor (for template RAII path only) ─────────────────
 
