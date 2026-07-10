@@ -688,6 +688,18 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 > The new protocol replaces asymmetric producer-owned channels with symmetric
 > broker-hosted pub/sub groups (bands). See HEP-CORE-0030 for the replacement protocol.
 
+> **Design authority note.**  The full REG_REQ / REG_ACK /
+> CONSUMER_REG_REQ / CONSUMER_REG_ACK redesign — including the
+> unified `initial_allowlist` field that consolidates the
+> dialing-side `data_endpoint` + `data_pubkey` scalars and the
+> retired `producers[]` array into a single topology-driven
+> peer-list — sits DESIGN LOCKED in
+> `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md`.  Also retires
+> `CONSUMER_ATTACH_REQ_ZMQ` / `CONSUMER_ATTACH_ACK_ZMQ` from this
+> catalog.  Wire schema body updates below adopt the redesigned
+> shape when the code retirement lands; until that commit, the
+> draft is the current design source of truth.
+
 > **Amendment (2026-07-08) — topology migration.**  Every
 > `REG_REQ` / `CONSUMER_REG_REQ` gains an OPTIONAL `channel_topology`
 > field (`"fan-in"` \| `"fan-out"` \| `"one-to-one"`; default when
