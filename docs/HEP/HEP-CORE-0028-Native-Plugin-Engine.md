@@ -1615,6 +1615,13 @@ def on_process(rx, tx, msgs, api):
 Function pointers on `PlhNativeContext`:
 
 ```c
+/* Visitor typedef for consumers/producers accessors — matches the
+ * plh_allowed_peer_visitor / plh_band_member_visitor shape.  Declared
+ * at file scope (in `native_invoke_types.h`), NOT inside the struct
+ * body — C does not permit typedefs as struct members. */
+typedef void (*plh_role_uid_visitor)(const char *role_uid,
+                                     void       *userdata);
+
 typedef struct PlhNativeContext {
     // ... existing fields (v6 baseline) ...
 
@@ -1629,9 +1636,8 @@ typedef struct PlhNativeContext {
     // number of visited entries (>= 0) or -1 on error.  role_uid is
     // valid for the duration of the visitor call only; caller must
     // copy if state must persist (HEP-CORE-0028 §4.8 Lifetime +
-    // Security Contract).
-    typedef void (*plh_role_uid_visitor)(const char *role_uid,
-                                         void       *userdata);
+    // Security Contract).  `plh_role_uid_visitor` is the typedef
+    // above (file-scope, `native_invoke_types.h:207`).
     int  (*consumers)(struct PlhNativeContext* ctx, const char* channel_name,
                       plh_role_uid_visitor visitor, void* userdata);
     int  (*producers)(struct PlhNativeContext* ctx, const char* channel_name,

@@ -1293,7 +1293,7 @@ Payload (GET_CHANNEL_PRODUCERS_REQ):
 
 Payload (GET_CHANNEL_PRODUCERS_ACK):
   status                string   "success" or "error"
-  producers             array of {role_uid, pubkey, endpoint}  Current producer set for the channel.  Same shape as CONSUMER_REG_ACK.producers[] per HEP-CORE-0036 §6.4.
+  producers             array of {role_uid, pubkey, endpoint}  Current producer set for the channel.  Same shape as the (also-retired) `CONSUMER_REG_ACK.producers[]` array per HEP-CORE-0036 §6.4 — both retired 2026-07-08 in favor of `CONSUMER_REG_ACK.data_endpoint` + `.data_pubkey` scalars per HEP-CORE-0036 §I7 amendment (dialing side) and the unified `initial_allowlist` object-array shape per rev 2.3 (`b71dd9ec`).
   correlation_id        string   Echoed from REQ.
 
 Error codes: CHANNEL_NOT_FOUND;

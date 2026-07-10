@@ -1,6 +1,6 @@
 # TOPOLOGY_TODO.md — Singular-side ownership migration
 
-**Design authority:** [`docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`](../tech_draft/DRAFT_topology_singular_side_2026-07.md) (status: **DESIGN LOCKED**, rev 9 + rev 10 pending).
+**Design authority:** [`docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`](../tech_draft/DRAFT_topology_singular_side_2026-07.md) (status: **DESIGN LOCKED**, rev 10 shipped `ac820af9`).
 
 **Scope in one sentence:** Every channel has exactly one data-plane
 endpoint, owned by the singular side of its topology.  Three

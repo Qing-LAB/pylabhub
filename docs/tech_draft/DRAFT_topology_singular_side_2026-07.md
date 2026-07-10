@@ -1,6 +1,6 @@
 ---
 title: "Singular-side ownership: topology-parameterized data-plane design"
-status: DESIGN LOCKED (2026-07-08, current rev 9 + rev 10 pending for Q3a revision).  Phase A HEP amendments ✅ COMPLETE.  Phase B state model + broker admission ✅ COMPLETE.  Phase B rev 1 (review findings) ⏳ PENDING.  Phases C-H ahead.
+status: DESIGN LOCKED (2026-07-09, current rev 10 — Q3a revision + `data_endpoint_resolved` collapse).  Phase A HEP amendments ✅ COMPLETE.  Phase B state model + broker admission ✅ COMPLETE.  Phase B rev 1 + rev 2 (review findings 1-15) ✅ COMPLETE.  Phase C step 1 + 2 ✅ COMPLETE.  Phase D phase-field ✅ COMPLETE.  Phase C step 3-7 + D R6 gate ahead.
 authors: qing + claude (session 2026-07-08)
 supersedes-if-adopted:
   - HEP-CORE-0017 §3.3 (per-peer connect model) — retires in Phase E

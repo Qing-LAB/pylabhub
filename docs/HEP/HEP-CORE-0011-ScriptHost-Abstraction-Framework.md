@@ -1284,11 +1284,20 @@ Step 6   — Connect to broker, register, activate the data plane.
                 spawns the PUSH worker.  start() preserves the
                 pre-set allowlist (the queue lands Active with the
                 broker-supplied admit set already in force).
-              * PULL (consumer): extracts CONSUMER_REG_ACK.producers[]
-                (per §6.4), populates server_pubkey_z85_ + endpoint
-                from peer[0], then start() — per-producer connect
-                with curve_serverkey = producer.pubkey, spawn the
-                PULL worker.
+              * PULL (consumer): pre-topology-migration this branch
+                extracted CONSUMER_REG_ACK.producers[] (per §6.4),
+                populated server_pubkey_z85_ + endpoint from peer[0],
+                then start() — per-producer connect with
+                curve_serverkey = producer.pubkey, spawn the PULL
+                worker.  **RETIRED per HEP-CORE-0017 §3.3-retired
+                (2026-07-08 topology migration)**: post-migration the
+                dialing-side PULL consumer uses the scalar
+                `data_endpoint` + `data_pubkey` fields carried on
+                CONSUMER_REG_ACK per HEP-CORE-0036 §I7 amendment,
+                not a producers[] array; fan-in consumer is the
+                BINDING side and binds instead of connecting.  The
+                archaeological description above stays for reference
+                until Phase E code retirement.
               * SHM: when REG_ACK carries shm_secret, calls
                 set_shm_secret() (Standby → Configured); otherwise
                 no-op when the secret was config-supplied at
