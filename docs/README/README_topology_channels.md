@@ -1,33 +1,40 @@
-# README — Topology-parameterized data channels
+# Topology channels — a plain-language guide
 
-**Status:** Living document, updated with the 2026-07 topology migration.
-**Audience:** Operators writing role JSON configs; script authors; framework
-contributors touching queue/broker code.
-**Authoritative design:** HEP-CORE-0017 §3.3.0 (abstraction layer),
-§3.3.0.1 (dispatch), §4.5–§4.6 (per-topology descriptions), §4.7
-(end-to-end walkthroughs).
+**Who this is for.**  You're writing a role config, or a script, or
+touching queue/broker code, and you want to know how the three
+channel shapes work — what they mean, when to use which, what shows
+up in your JSON, and what your script can ask about the running
+channel.
+
+**Where the design lives.**  The permanent design and full sequence
+diagrams live in `HEP-CORE-0017 §3.3.0` (the factory) and `§4.7`
+(the walkthroughs).  This guide summarizes them in plain language
+for day-to-day use.
 
 ---
 
-## 1. What is a channel topology?
+## 1. What is a "topology"?
 
-A **channel topology** declares how many producers and how many
-consumers a channel admits, and — as a consequence — which side
-"owns" the wire (binds a socket that the other side connects to).
-The framework supports three topologies:
+A channel connects producers to consumers.  How many of each, and
+which side "owns" the connection point, is what the topology
+decides.  There are three:
 
-| Topology     | Cardinality       | Binding side | Typical use |
-|--------------|-------------------|--------------|-------------|
-| `fan-in`     | N producers → 1 consumer | Consumer  | Aggregator / sink — many sensors, one storage |
-| `fan-out`    | 1 producer → N consumers | Producer  | Broadcast — one source, many parallel consumers |
-| `one-to-one` | 1 producer → 1 consumer   | Producer  | Point-to-point — cardinality enforced by broker |
+| Name         | Shape                     | Who owns the address |
+|--------------|---------------------------|----------------------|
+| `fan-in`     | Many producers → 1 consumer | The consumer         |
+| `fan-out`    | 1 producer → many consumers | The producer         |
+| `one-to-one` | 1 producer → 1 consumer     | The producer         |
 
-The broker enforces cardinality at REG_REQ time; violations return
-error codes (`FAN_IN_IS_SINGLE_CONSUMER`,
-`FAN_OUT_IS_SINGLE_PRODUCER`, `ONE_TO_ONE_CARDINALITY_VIOLATED`) per
-HEP-CORE-0007 §12.4a.
+"Owns the address" means:  that side picks a network endpoint (or
+opens a shared-memory segment), publishes it, and stays put.  The
+other side asks the broker for it and connects.
 
-**Diagram — the three topologies:**
+Why does it matter?  Because that decides everything downstream:
+which side binds a socket, which side dials in, which side keeps a
+list of who's currently connected, and which side dies first when
+things go wrong.
+
+**Picture the three shapes:**
 
 ```mermaid
 graph LR
@@ -46,16 +53,19 @@ graph LR
     end
 ```
 
-The double circles above mark the **binding side** — the side that
-owns the wire endpoint.  Under `fan-in` that's the consumer; under
-`fan-out` and `one-to-one` that's the producer.  Dialing-side roles
-receive the endpoint on their REG_ACK and connect.
+The double circles are the side that owns the address.  The broker
+keeps count and refuses extra parties that would break the shape:
+a second consumer arriving at a fan-in channel gets rejected, a
+second producer arriving at a fan-out channel gets rejected, and
+either kind of second party arriving at a one-to-one channel gets
+rejected.  The rejection error names are `FAN_IN_IS_SINGLE_CONSUMER`,
+`FAN_OUT_IS_SINGLE_PRODUCER`, and `ONE_TO_ONE_CARDINALITY_VIOLATED`.
 
 ---
 
-## 2. Choosing a topology
+## 2. Which one do I want?
 
-Decision flow — answer three questions:
+Ask yourself:
 
 ```mermaid
 graph TD
@@ -65,46 +75,39 @@ graph TD
     Q2 -->|No| A3["one-to-one"]
 ```
 
-**Trade-offs:**
+**Some things to keep in mind:**
 
-- **fan-in** is ZMQ-only. Shared-memory is physically single-producer
-  (one writer owns the ring), so SHM + fan-in is refused at both
-  broker admission and the `hub::Queue` legality gate (HEP-CORE-0017
-  §3.3.0 gate 1).  If you need fan-in over host-local transport,
-  configure ZMQ over `tcp://127.0.0.1:*`.
-- **fan-out** works on both transports. Under ZMQ it's PUB/SUB (drops
-  messages sent before subscribe — see §5 pitfalls); under SHM it's
-  one DataBlock with per-consumer capability-transport attach.
-- **one-to-one** works on both transports.  Under ZMQ it's PUSH/PULL
-  (lower overhead than PUB/SUB for a single subscriber); under SHM
-  it's the same DataBlock model as fan-out but with a cardinality-1
-  broker guard.
-
-If in doubt, `one-to-one` is the safest default — the broker's
-cardinality guard prevents accidental fan-out later if someone adds
-a second consumer to the config.
+- **`fan-in` only works over ZMQ (network).**  Shared memory has one
+  writer by construction — the ring buffer belongs to whoever
+  created the segment — so "many producers into one consumer over
+  SHM" doesn't make physical sense.  If you need fan-in on a single
+  host, use ZMQ over `tcp://127.0.0.1:*`.
+- **`fan-out` over ZMQ has a quirk:**  ZMQ's PUB socket throws away
+  messages sent before any subscriber has connected.  So your
+  producer script has to check "is anyone listening yet?" before it
+  emits data.  See §5.1 below.
+- **`one-to-one` is the safest default.**  If a second consumer
+  shows up someday when it shouldn't, the broker catches it.  With
+  `fan-out` a stray second consumer would silently attach and start
+  reading.
 
 ---
 
-## 3. Configuring a channel — role JSON examples
+## 3. Setting it up in role JSON
 
-Every role config declares topology + transport per direction
-(`in_channel_topology` for input side, `out_channel_topology` for
-output side).  Wire strings: `"fan-in"`, `"fan-out"`, `"one-to-one"`.
-An empty string means "default" and currently maps to `"one-to-one"`
-(matches the pre-migration hardcoded shape).
+You declare the topology per direction — the input side has
+`in_channel_topology`, the output side has `out_channel_topology`.
+Valid values: `"fan-in"`, `"fan-out"`, `"one-to-one"`.  If you leave
+it out entirely, it defaults to `"one-to-one"`.
 
-Common transport strings: `"zmq"`, `"shm"`.
+You also declare the transport per direction: `"zmq"` for network,
+`"shm"` for shared memory.  All JSON fields sit flat at the root of
+the config — no nested objects.  The parser lives in
+`src/include/utils/config/transport_config.hpp`.
 
-JSON fields are FLAT (no nested `in_transport` object) — the parser
-lives in `src/include/utils/config/transport_config.hpp` and reads
-`in_transport`, `in_zmq_endpoint`, `in_shm_enabled`, etc. as
-sibling top-level keys.  Legal `in_transport` / `out_transport`
-values: `"zmq"`, `"shm"` (Linux only for Phase 1 — HEP-CORE-0041).
+### 3.1 Fan-in over ZMQ — one aggregator, many sensors
 
-### 3.1 Fan-in ZMQ — aggregator
-
-Two producers emit into one consumer over `tcp://127.0.0.1:*`.
+Two producers, one consumer.
 
 **Consumer config** (`aggregator.json`):
 
@@ -120,6 +123,10 @@ Two producers emit into one consumer over `tcp://127.0.0.1:*`.
 }
 ```
 
+`"tcp://127.0.0.1:0"` means "any free port on loopback."  The
+framework binds, gets the actual port from the OS, and tells the
+broker.  Producers get the resolved address from the broker.
+
 **Producer config** (`sensor_a.json`):
 
 ```json
@@ -133,32 +140,25 @@ Two producers emit into one consumer over `tcp://127.0.0.1:*`.
 }
 ```
 
-Notes:
-- Consumer sets `in_zmq_endpoint: "tcp://127.0.0.1:0"` — port 0 means
-  "pick any free port"; the framework publishes the resolved port to
-  the broker after bind.
-- Producer does NOT set `out_zmq_endpoint` — it's the dialing side;
-  the endpoint arrives on REG_ACK from the broker (HEP-CORE-0017
-  §3.3.0 gate 4 rejects non-empty `endpoint_hint` on the dialing
-  side).
-- Producer B's config is identical to sensor_a except for `role_uid`.
+Notice the producer does NOT set `out_zmq_endpoint` — it doesn't
+own an address under fan-in.  The consumer owns the address; the
+producer asks the broker for it and dials in.  Producer B looks
+identical except for `role_uid: "sensor_b"`.
 
-> **Current-code caveat (pre-Phase-C-step-6):** the config parser at
-> `src/include/utils/config/transport_config.hpp:96-99` currently
-> REQUIRES `zmq_endpoint` regardless of side, and the pre-migration
-> `push_to`/`pull_from` factory path accepts (and ignores) the value
-> on the dialing side.  The parser's over-strict validation is a
-> **code gap** tracked as part of Phase C step 6 in
-> `docs/todo/TOPOLOGY_TODO.md`, not a design intent — the design
-> above (dialing side empty) is authoritative.  Configs written to
-> the design will fail the current parser until step 6 ships; as a
-> transitional workaround, set `out_zmq_endpoint: "tcp://127.0.0.1:0"`
-> — the value satisfies the parser and is discarded downstream on
-> the dialing side.  Remove the workaround field after step 6.
+> **Current parser limitation.**  As of today, the config parser at
+> `src/include/utils/config/transport_config.hpp:96-99` insists you
+> set `<direction>_zmq_endpoint` whenever the matching transport is
+> `"zmq"`, without distinguishing which side is dialing.  The
+> design says the dialing side must leave it empty; the parser
+> doesn't know that yet.  Until the parser is fixed, put a throwaway
+> value in the dialing side's config (`"out_zmq_endpoint":
+> "tcp://127.0.0.1:0"` for a fan-in producer, similarly for a
+> fan-out or one-to-one consumer's `in_zmq_endpoint`).  Downstream
+> code ignores the value on the dialing side.
 
-### 3.2 Fan-out SHM — broadcast to local processors
+### 3.2 Fan-out over shared memory — one source, several local readers
 
-One producer, two local processors read the same stream.
+Producer streams into shared memory; two processors read from it.
 
 **Producer config** (`sensor.json`):
 
@@ -174,6 +174,9 @@ One producer, two local processors read the same stream.
   "out_slot_schema": "sample_v1"
 }
 ```
+
+`out_shm_slot_count` is the ring size.  Consumers don't allocate
+anything; they attach to the producer's ring.
 
 **Processor config** (`analyzer.json`):
 
@@ -193,235 +196,217 @@ One producer, two local processors read the same stream.
 }
 ```
 
-Notes:
-- Producer's `out_shm_slot_count` sizes the shared ring; consumers
-  attach non-owning.
-- `shm` transport is Linux-only in Phase 1 (memfd_create +
-  SCM_RIGHTS); the config parser rejects `shm` at load-time on
-  other platforms.  FreeBSD/macOS/Windows backends tracked as
-  #259/#260/#261.
-- Second processor's config is identical to `analyzer` except for
-  `role_uid`, its `out_*` fields, and script.
+A processor reads on the input side and produces on the output
+side.  This one takes the `fan-out` stream and emits its own
+`one-to-one` output.
 
-### 3.3 One-to-one ZMQ across a network
+Note: `"shm"` transport is Linux-only right now (it uses
+`memfd_create` + `SCM_RIGHTS` fd-passing).  Configs with `"shm"`
+fail to load on macOS/Windows/FreeBSD; cross-platform backends
+are on the roadmap.
 
-Simple point-to-point.
+### 3.3 One-to-one over ZMQ — point-to-point across a network
 
 ```json
-// producer side (binding — sets endpoint)
+// producer side (this side owns the address)
 { "role_uid": "sensor",
   "channel_name": "stream",
   "out_channel_topology": "one-to-one",
   "out_transport": "zmq",
   "out_zmq_endpoint": "tcp://*:0" }
 
-// consumer side (dialing — endpoint arrives on REG_ACK)
+// consumer side (asks broker for address, dials in)
 { "role_uid": "collector",
   "channel_name": "stream",
   "in_channel_topology": "one-to-one",
   "in_transport": "zmq" }
 ```
 
-Consumer does NOT set `in_zmq_endpoint` — dialing side per §3.3.0
-gate 4.  Same pre-step-6 parser workaround as §3.1 applies.
+Same parser workaround applies to the consumer as in §3.1: today
+you need `"in_zmq_endpoint": "tcp://127.0.0.1:0"` as a placeholder
+even though it's ignored on the dialing side.
 
-Broker rejects a second producer or a second consumer with
+If a second producer or a second consumer with the same
+`channel_name` starts up, the broker rejects it with
 `ONE_TO_ONE_CARDINALITY_VIOLATED`.
 
 ---
 
-## 4. How the framework realizes each topology
+## 4. How the framework makes each topology happen
 
-Role code does NOT open sockets or make bind/connect decisions —
-those live behind the queue abstraction.  Every queue is constructed
-through the unified factory in `hub_queue_factory.hpp`:
+You don't call sockets, and you don't decide bind vs connect.  The
+role code makes one function call — "build the reader for this
+channel" or "build the writer" — and passes three pieces of
+information: which side you are (from your role kind), the topology,
+and the transport.  The framework figures out everything else.
+
+That one function lives in `hub_queue_factory.hpp`:
 
 ```cpp
-namespace pylabhub::hub {
-
-std::unique_ptr<QueueReader>
-Queue::create_reader(ChannelTopology topology,
-                     Transport       transport,
-                     RxOptions       opts);
-
-std::unique_ptr<QueueWriter>
-Queue::create_writer(ChannelTopology topology,
-                     Transport       transport,
-                     TxOptions       opts);
-
-} // namespace pylabhub::hub
+// From role code — you never call libzmq or open a socket directly.
+auto reader = hub::Queue::create_reader(topology, transport, opts);
+auto writer = hub::Queue::create_writer(topology, transport, opts);
 ```
 
-Three facts — side (from role kind) + topology + transport — uniquely
-determine the socket configuration.  The queue picks the matching
-row from the §3.3.0 decision matrix:
+Inside, the framework consults a decision table.  Every combination
+of (side × topology × transport) has exactly one right answer for
+"what socket do I open, do I bind or connect, who is the CURVE
+server?"  Here's the table:
 
-| Side               | Topology   | Transport | Socket / mechanism            | Direction    |
-|--------------------|------------|-----------|-------------------------------|--------------|
-| Reader (consumer)  | fan-in     | ZMQ       | PULL                          | **bind**     |
-| Reader (consumer)  | fan-out    | ZMQ       | SUB (empty topic filter)      | connect      |
-| Reader (consumer)  | fan-out    | SHM       | capability socket             | connect      |
-| Reader (consumer)  | one-to-one | ZMQ       | PULL                          | connect      |
-| Reader (consumer)  | one-to-one | SHM       | capability socket             | connect      |
-| Writer (producer)  | fan-in     | ZMQ       | PUSH                          | connect      |
-| Writer (producer)  | fan-out    | ZMQ       | PUB                           | **bind**     |
-| Writer (producer)  | fan-out    | SHM       | DataBlock create + cap socket | **bind**     |
-| Writer (producer)  | one-to-one | ZMQ       | PUSH                          | **bind**     |
-| Writer (producer)  | one-to-one | SHM       | DataBlock create + cap socket | **bind**     |
+| I'm the...        | Topology   | Transport | Socket used                   | Bind or connect? |
+|-------------------|------------|-----------|-------------------------------|------------------|
+| Reader (consumer) | fan-in     | ZMQ       | PULL                          | **bind**         |
+| Reader (consumer) | fan-out    | ZMQ       | SUB (subscribes to everything)| connect          |
+| Reader (consumer) | fan-out    | SHM       | capability socket             | connect          |
+| Reader (consumer) | one-to-one | ZMQ       | PULL                          | connect          |
+| Reader (consumer) | one-to-one | SHM       | capability socket             | connect          |
+| Writer (producer) | fan-in     | ZMQ       | PUSH                          | connect          |
+| Writer (producer) | fan-out    | ZMQ       | PUB                           | **bind**         |
+| Writer (producer) | fan-out    | SHM       | Creates shared segment        | **bind**         |
+| Writer (producer) | one-to-one | ZMQ       | PUSH                          | **bind**         |
+| Writer (producer) | one-to-one | SHM       | Creates shared segment        | **bind**         |
 
-"bind" rows are the binding side; "connect" rows are the dialing
-side.  Full decision matrix with CURVE role + endpoint owner
-columns: HEP-CORE-0017 §3.3.0.  Sequence diagrams for each of the
-five legal transport-topology cells: HEP-CORE-0017 §4.7.
+"bind" means "I own this address."  "connect" means "I dial into
+somebody else's address."  The full table with CURVE role and
+endpoint-owner columns lives at HEP-CORE-0017 §3.3.0.  The
+end-to-end sequence diagrams (what messages fly between broker,
+producer, and consumer during startup) live at HEP-CORE-0017 §4.7.
 
-**Two-level dispatch** inside the factory:
+**What the factory does before it hands you the queue:**
 
-```
-hub::Queue::create_writer(topology, transport, opts)
-  │
-  ├─ Gate 1: reject (fan-in, SHM) — nullptr + LOGGER_ERROR
-  ├─ Gate 4: reject non-empty endpoint_hint on dialing side
-  │
-  └─ Dispatch by transport:
-      Transport::Zmq → ZmqQueue::create_writer(topology, zmq_opts)
-      Transport::Shm → ShmQueue::create_writer(topology, shm_opts)
-```
+1. Refuses fan-in over SHM (that combination doesn't physically
+   work — see §2).  Returns null with a clear error in the log.
+2. Refuses if you tried to hand-declare an endpoint on the dialing
+   side.  Only the binding side owns the address.
+3. Picks the socket + bind/connect + CURVE role from the table.
+4. Under the hood, calls the transport-specific factory
+   (`ZmqQueue::create_writer` or `ShmQueue::create_writer`) with a
+   translated options bundle.
 
-The concrete transport class reads the matrix row for its transport
-and picks socket type + bind/connect + CURVE role + endpoint owner
-accordingly.  Adding a new transport in the future adds one enum
-value, one switch case, and one translation helper — no changes to
-role code, no changes to the broker.
+Role code never sees libzmq, never opens a socket, never decides
+who binds.  Add a new transport in the future?  Add one enum value,
+one case in the switch, one translation helper.  Nothing in role
+code or broker code changes.
 
 ---
 
-## 5. Using topology from scripts
+## 5. Asking about the channel from your script
 
-Scripts see topology indirectly through four symmetric accessors
-that report the broker's Live-peer view:
+Your script has four ways to ask "who else is on this channel
+right now?"  They live on every role's `api` object:
 
 ```
-api.consumer_count(channel_name)  ->  int         # Live consumers of the channel
-api.producer_count(channel_name)  ->  int         # Live producers of the channel
-api.consumers(channel_name)       ->  list[str]   # role_uids of Live consumers
-api.producers(channel_name)       ->  list[str]   # role_uids of Live producers
+api.consumer_count(channel_name)  ->  int         # how many consumers are live
+api.producer_count(channel_name)  ->  int         # how many producers are live
+api.consumers(channel_name)       ->  list[str]   # role_uids of live consumers
+api.producers(channel_name)       ->  list[str]   # role_uids of live producers
 ```
 
-Available in Lua (`api.consumer_count("ch")`), Python (same), and the
-native C++ engine (via `PlhNativeContext::consumer_count(ctx, "ch")`).
+All four work in Lua, Python, and the native C++ engine.
 
-**Semantics.**  "Live" means the broker has received the peer's first
-heartbeat; per HEP-CORE-0036 §3.5.5 the heartbeat fires AFTER the
-peer's data-plane socket is set up.  So Live ≈ "wire is ready to
-deliver."
+**What "live" means.**  A peer is "live" once the broker has
+received its first heartbeat.  The framework only sends that
+heartbeat AFTER the peer has finished setting up its data-plane
+socket (bind or connect + subscribe).  So "live" ≈ "data is ready
+to flow."
 
-### 5.1 The fan-out ZMQ slow-joiner pattern (mandatory)
+**Count includes yourself.**  If you ARE the consumer of the
+channel, `consumer_count()` counts you too.  Under fan-in that
+means it's always 1 (there's only one consumer, and if you're
+asking, that's you).  Under fan-out the producer isn't a consumer
+of its own channel, so `consumer_count()` on the producer counts
+only the *other* processes.
 
-ZMQ's PUB socket drops messages sent before SUB subscribes.  Under
-fan-out ZMQ, the producer's script MUST gate `on_produce` on
-`consumer_count()`:
+### 5.1 The fan-out ZMQ slow-joiner rule
+
+ZMQ's PUB socket doesn't buffer for absent subscribers — anything
+you write before a consumer has connected + subscribed is silently
+thrown on the floor.  So under fan-out ZMQ, your producer script
+must check that at least one consumer is ready before it emits:
 
 ```python
 def on_produce(tx, msgs, api):
     if api.consumer_count("data.stream") == 0:
-        return   # nobody to send to; skip iteration
-    # produce as normal
+        return   # nobody listening yet — skip this iteration
     slot = tx.acquire()
     slot.value = read_sensor()
     tx.commit()
 ```
 
-The framework's job is to deliver accurate signals; the script
-decides when the channel is "ready enough" to push data.  There is
-**no framework-level auto-hold, auto-retry, or auto-fallback** — this
-is deliberate: the framework exposes state accurately; policy lives
-in the script.
+The framework will not do this for you.  It exposes the count
+truthfully; you decide when the channel is ready enough to push
+data.  No auto-hold, no auto-retry — those would be policy, and
+policy belongs in your script.
 
-The same pattern applies to fan-in consumers gating upstream-triggered
-work on `producer_count()`, and to one-to-one both sides.
+The same idea applies to fan-in consumers waiting on
+`producer_count()`, and to both sides of one-to-one.
 
-### 5.2 Listing peers by role_uid
+### 5.2 Doing something specific per peer
 
-To take role-uid-specific action:
+If you want to react to which specific peers are up:
 
 ```python
 def on_produce(tx, msgs, api):
     live = api.consumers("data.stream")
     if "archive" not in live:
-        api.log_warn("archive consumer offline — skipping heavy snapshot")
+        api.log_warn("archive consumer offline — skipping snapshot")
         return
-    # archive is Live; safe to emit the snapshot record
     ...
 ```
 
 ---
 
-## 6. Common pitfalls
+## 6. Common mistakes
 
-1. **Setting `zmq_endpoint` on the dialing side.**
-   Rejected as `CONFIG_INVALID_ENDPOINT_HINT_ON_DIALING_SIDE` at
-   queue construction (HEP-CORE-0017 §3.3.0 gate 4).  Dialing side
-   receives the endpoint on REG_ACK; setting it in config is a
-   caller error.
-   - Fan-in: producer is dialing → don't set `out_zmq_endpoint`.
-   - Fan-out / 1-to-1: consumer is dialing → don't set `in_zmq_endpoint`.
-   - (Pre-Phase-C-step-6 workaround for the current parser: see §3.1
-     note.)
+1. **Setting `out_zmq_endpoint` on a fan-in producer, or
+   `in_zmq_endpoint` on a fan-out / one-to-one consumer.**  Those
+   roles are the dialing side — they don't own an address; they
+   ask the broker for one.  The finished framework rejects the
+   config with `CONFIG_INVALID_ENDPOINT_HINT_ON_DIALING_SIDE`.
+   Today the parser is too permissive and forces you to set it
+   anyway — see §3.1 workaround.
 
-2. **`fan-in` + `shm`.**
-   Broker rejects at REG_REQ with `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`;
-   `hub::Queue::create_*` gate 1 also refuses.  SHM is physically
-   single-producer.  Use ZMQ over `tcp://127.0.0.1:*` if you need
-   fan-in on the same host.
+2. **Trying to use `"fan-in"` with `"shm"`.**  Doesn't work — shared
+   memory has exactly one writer by construction.  The broker
+   refuses the REG_REQ with `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`,
+   and the factory refuses to build the queue.  Use ZMQ over
+   `tcp://127.0.0.1:*` if you need fan-in on one host.
 
-3. **Forgetting the fan-out slow-joiner gate.**
-   PUB drops pre-subscribe messages.  Data sent before
-   `consumer_count() > 0` returns 0 is silently lost.  §5.1 above is
-   the required pattern.
+3. **Forgetting the fan-out slow-joiner check.**  Under fan-out
+   ZMQ, `PUB` drops messages sent before any consumer has
+   subscribed.  Data goes to `/dev/null`.  Always gate `on_produce`
+   on `api.consumer_count() > 0` (see §5.1).
 
-4. **Mismatched topology across producer and consumer configs.**
-   Broker rejects the second party's REG_REQ with `TOPOLOGY_MISMATCH`
-   (HEP-CORE-0007 §12.4a).  Every role that touches the same
-   `channel_name` MUST declare the same topology.
+4. **Producer and consumer configs disagree about topology.**  Both
+   sides must declare the same topology for the same
+   `channel_name`.  If they don't, the second party's REG_REQ gets
+   rejected with `TOPOLOGY_MISMATCH`.
 
-5. **Trying to migrate a running one-to-one to fan-out.**
-   Broker takes topology at channel creation from the binding-side
-   REG_REQ; a later dialing-side REG_REQ with a different value is
-   rejected.  To reshape, the binding-side role must DEREG (channel
-   dies, `CHANNEL_CLOSING_NOTIFY` fans out to peers) and re-REG with
-   the new topology.
+5. **Trying to change a running channel's topology.**  The broker
+   locks in the topology when the binding-side role first
+   registers.  You can't upgrade a one-to-one to a fan-out on the
+   fly.  To reshape, the binding-side role has to deregister
+   entirely (which tears the channel down — other parties get
+   `CHANNEL_CLOSING_NOTIFY`) and register again with the new
+   topology.
 
-6. **Relying on the `one-to-one` default silently.**
-   `channel_topology` is optional in role config and on the wire; an
-   unset value defaults to `one-to-one` (tech draft §5.1 Rev-10 Q3a
-   resolution — matches the pre-migration "one producer binds, one
-   consumer connects" shape).  This is safe when both sides really
-   intend point-to-point, but a fan-in aggregator or a fan-out
-   broadcast that forgets the topology field silently gets 1-to-1
-   semantics and then the second peer's REG_REQ is rejected with
-   `ONE_TO_ONE_CARDINALITY_VIOLATED`.  Declare the topology
-   explicitly whenever you intend anything other than 1-to-1.
+6. **Not declaring topology and getting silently one-to-one.**  If
+   `in_channel_topology` / `out_channel_topology` is missing, the
+   framework treats it as `"one-to-one"`.  That's safe for genuine
+   1-to-1 use but silently wrong for aggregators (fan-in) and
+   broadcasters (fan-out) — the second party will get
+   `ONE_TO_ONE_CARDINALITY_VIOLATED` and you'll wonder why.
+   Always spell out the topology unless you really mean 1-to-1.
 
 ---
 
 ## 7. Where to look next
 
-| Question | Doc |
+| I want to understand... | Read this |
 |---|---|
-| **Factory API contract** (`hub::Queue::create_*`, decision matrix, legality gates, options structs) | HEP-CORE-0017 §3.3.0 + §3.3.0.1 |
-| **Sequence diagrams + Tier 2 pseudocode per topology** | HEP-CORE-0017 §4.7 (all five (topology × transport) cells) |
-| **Wire schema** — REG_REQ topology field, REG_ACK data_endpoint/data_pubkey, CHANNEL_AUTH_CHANGED_NOTIFY phase field | HEP-CORE-0007 §12.3 (REG_ACK), §12.5 (NOTIFY) |
-| **Broker state model + admission rules** | HEP-CORE-0036 §3.5, §6.4, §6.5, §6.7 |
-| **SHM capability handshake** (used by fan-out SHM + 1-to-1 SHM) | HEP-CORE-0041 §5.5, HEP-CORE-0044 AttachProtocol |
-| **Script API — accessor bindings** | HEP-CORE-0028 §6a (native ABI); HEP-CORE-0011 § "Cross-Engine Surface Parity" (Lua/Python/native parity) |
-| **Migration history / open items** | `docs/todo/TOPOLOGY_TODO.md`, `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` (design authority during migration; retires into permanent HEPs post-C step 7) |
-
----
-
-## Document status
-
-- **2026-07-09** — Initial version, consolidated from
-  `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` §7 + §10
-  and HEP-CORE-0017 §3.3.0 factory spec.  Written mid-migration
-  (Phase C step 5 shipped, step 6 upcoming); role JSON examples
-  reflect target configs post-migration.
+| The factory function and full decision table | HEP-CORE-0017 §3.3.0 + §3.3.0.1 |
+| The exact wire messages for each topology, step by step | HEP-CORE-0017 §4.7 |
+| The wire schema (what REG_REQ, REG_ACK, and the NOTIFY messages carry) | HEP-CORE-0007 §12.3 + §12.5 |
+| How the broker keeps track of channels, peers, and lifetime | HEP-CORE-0036 §3.5, §6.4, §6.5, §6.7 |
+| How the SHM handshake actually works (fd-passing) | HEP-CORE-0041 §5.5, HEP-CORE-0044 |
+| Bindings for the script-side accessors | HEP-CORE-0028 §6a (native ABI); HEP-CORE-0011 § "Cross-Engine Surface Parity" |

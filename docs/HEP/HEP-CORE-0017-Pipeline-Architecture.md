@@ -1154,30 +1154,23 @@ retires alongside those wires.
 
 ---
 
-### 4.7 End-to-end topology walkthroughs (2026-07-09 consolidation)
+### 4.7 End-to-end topology walkthroughs
 
-> **Purpose.**  §3.3 through §4.6 describe the *what*: factory shape,
-> decision matrix, per-topology descriptions.  This section shows the
-> *how* — for each of the five (topology × transport) legal cells, a
-> full sequence diagram from role startup through data flow, plus the
-> role-side pseudocode against the `hub::Queue` abstraction.
->
-> Content consolidated from `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-> §7 (sequences) + §10 (code walkthroughs).  The tech draft was the
-> design authority during the 2026-07 topology migration; §4.7 makes
-> HEP-CORE-0017 the permanent single source of truth for how role code
-> uses the queue abstraction to realize each topology.  See §4.6.1 for
-> the framework's live-peer bookkeeping mechanism (`live_peers` map,
-> `CHANNEL_AUTH_CHANGED_NOTIFY(phase)` chain) that these walkthroughs
-> exercise.
+§3.3 through §4.6 describe *what* the queue abstraction is: the
+factory shape, the decision matrix, the per-topology descriptions.
+This section shows *how* it plays out — for each of the five legal
+(topology × transport) cells: a plain-language narrative of what
+happens, the wire-level sequence diagram, and the role-side
+pseudocode that drives it.  §4.6.1 covers the live-peer bookkeeping
+(`live_peers` map + the `CHANNEL_AUTH_CHANGED_NOTIFY` chain) that
+these walkthroughs exercise.
 
 #### 4.7.0 Tier-boundary discipline
 
 Every walkthrough in this section respects a **three-tier separation**.
 The lines are load-bearing: crossing them is a design error that this
 section's code MUST NOT show, and role code in the tree MUST NOT
-introduce.  This is the same three-tier table from §4.6.1 restated as
-a diagram, for reference throughout §4.7.
+introduce.  Same three tiers as §4.6.1 in diagram form:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -1208,12 +1201,25 @@ socket type, bind/connect, CURVE role, and endpoint owner.
 
 #### 4.7.1 Fan-in ZMQ (N producers → 1 consumer)
 
-**Binding side:** consumer.  **Cardinality:** 1..N producers, exactly
-1 consumer.  **When to use:** aggregator/sink pattern — multiple
-sensors emit into one storage sink; sensors may come and go; the sink
-stays put.
+**Shape:** several producers, one consumer.  **Who owns the
+address:** the consumer.  **Typical use:** an aggregator or sink —
+sensors come and go, the sink stays put.
 
-**Sequence — consumer binds PULL, producers connect PUSH:**
+**What happens in plain terms.**  The consumer starts first,
+registers with the broker, opens a socket, tells the broker "here's
+where I'm listening," starts sending heartbeats.  Now the channel
+exists and the broker knows the consumer is up.  Later a producer
+starts up.  Its registration asks the broker for the consumer's
+address.  The broker doesn't answer yet — it first has to tell the
+consumer "a new producer wants in, add this pubkey to your
+accept-list," wait for the consumer to say "done," and only then
+reply to the producer with the consumer's address.  The producer
+dials in.  Because the accept-list was updated first, the CURVE
+handshake succeeds on the first try.  Data flows.  The consumer's
+`producer_count()` tick up.  If the producer dies or leaves, the
+consumer sees `producer_count()` go back down.
+
+**Wire-level sequence (technical):**
 
 ```mermaid
 sequenceDiagram
@@ -1352,16 +1358,26 @@ while (running) {
 
 #### 4.7.2 Fan-out ZMQ (1 producer → N consumers)
 
-**Binding side:** producer.  **Cardinality:** exactly 1 producer,
-1..N consumers.  **When to use:** broadcast pattern — one source
-stream distributed to multiple parallel processors (archive,
-monitor, cross-machine bridge).
+**Shape:** one producer, several consumers.  **Who owns the
+address:** the producer.  **Typical use:** broadcast — one source
+stream feeds an archive, a live monitor, and maybe a cross-machine
+bridge, all at once.
 
-Structurally symmetric with fan-in ZMQ (§4.7.1) with producer /
-consumer roles swapped: producer binds PUB, consumers connect SUB
-and subscribe with an empty topic filter.
+**What happens in plain terms.**  The producer starts first,
+registers, binds a PUB socket, tells the broker where it lives,
+starts heartbeating.  The channel exists.  A consumer starts up
+later.  Its registration wants the producer's address, but before
+handing it out, the broker first tells the producer "a new
+consumer wants in — please add its pubkey to your accept-list,"
+waits for the producer to say "done," and then replies to the
+consumer with the address.  The consumer connects, subscribes to
+everything (empty topic filter), and the CURVE handshake succeeds
+because the producer's accept-list was updated first.  The
+producer's `consumer_count()` ticks up.  Structurally symmetric
+with fan-in ZMQ (§4.7.1) with the producer and consumer roles
+swapped.
 
-**Sequence — producer binds PUB, consumers connect SUB:**
+**Wire-level sequence (technical):**
 
 ```mermaid
 sequenceDiagram
@@ -1450,20 +1466,29 @@ start_heartbeat_task();
 
 #### 4.7.3 Fan-out SHM (1 producer → N consumers, host-local)
 
-**Binding side:** producer.  **Cardinality:** exactly 1 producer,
-1..N consumers.  **When to use:** high-throughput broadcast to
-multiple consumers on the same host — zero-copy shared-memory ring
-with per-consumer capability-transport fan-out.
+**Shape:** one producer, several consumers.  **Who owns the
+address:** the producer.  **Typical use:** high-throughput
+broadcast to several consumers on the same host — zero-copy
+shared-memory ring, one segment created by the producer that each
+consumer attaches to.
 
-The AttachProtocol / capability transport (Unix socket dial →
-crypto_box handshake → SCM_RIGHTS fd) is HEP-CORE-0044 unchanged at
-the transport layer.  What DOES change post-migration: the wire —
-configs declare `channel_topology: "fan-out"` explicitly, and
-`CONSUMER_REG_ACK` carries the scalar `data_endpoint` (capability
-socket path) + `data_pubkey` instead of the retired per-producer
-array.
+**What happens in plain terms.**  The producer creates a shared
+memory segment and opens a Unix socket that consumers will dial to
+"pick up" access to it.  It tells the broker where that socket
+lives.  When a consumer arrives, the broker does the usual
+accept-list dance (tell the producer, wait for confirmation, then
+reply to the consumer with the socket path).  The consumer dials
+the Unix socket, does a short handshake, and receives a file
+descriptor for the shared memory segment through Unix ancillary
+data (`SCM_RIGHTS`).  It maps the segment and starts reading.  From
+that point on, producer writes and consumer reads are direct
+memory operations — no message copies, no kernel round-trips per
+slot.  Each additional consumer repeats the same dial-handshake-fd
+dance against the same producer; the kernel refcounts the shared
+memory.  The transport-layer handshake itself is defined in
+HEP-CORE-0044 (AttachProtocol) and doesn't change here.
 
-**Sequence:**
+**Wire-level sequence (technical):**
 
 ```mermaid
 sequenceDiagram
@@ -1510,16 +1535,21 @@ memfd directly.
 
 #### 4.7.4 One-to-one ZMQ (1 producer → 1 consumer)
 
-**Binding side:** producer.  **Cardinality:** exactly 1 producer,
-exactly 1 consumer.  **When to use:** point-to-point stream — one
-sensor feeding one processor with cardinality guaranteed by broker
-(second CONSUMER_REG_REQ rejected with `ONE_TO_ONE_CARDINALITY_VIOLATED`).
+**Shape:** one producer, one consumer.  **Who owns the address:**
+the producer.  **Typical use:** point-to-point stream where you
+want the broker to make sure nobody else joins by accident.
 
-Under ZMQ uses PUSH bind / PULL connect — no PUB/SUB overhead needed
-for a single subscriber, no dropped-messages-before-subscribe
-concern.
+**What happens in plain terms.**  Structurally the same as fan-out
+ZMQ (§4.7.2), except the socket pair is PUSH/PULL instead of
+PUB/SUB (no need for the pub/sub overhead when there's only ever
+one subscriber, and no need to worry about pre-subscribe message
+drops — PUSH holds messages in a queue until the peer connects).
+The broker rejects a second producer or a second consumer with
+`ONE_TO_ONE_CARDINALITY_VIOLATED` — the guarantee that only two
+peers ever share the channel is enforced there, not on the
+data-plane.
 
-**Sequence:**
+**Wire-level sequence (technical):**
 
 ```mermaid
 sequenceDiagram
@@ -1568,16 +1598,12 @@ factory per §3.3.0 matrix; role code sees no difference.
 
 #### 4.7.5 One-to-one SHM (1 producer → 1 consumer, host-local)
 
-Wire and transport layer are identical to fan-out SHM (§4.7.3) with
-two broker-side additions:
-
-- REG_REQ / CONSUMER_REG_REQ MUST declare `channel_topology: "one-to-one"`.
-- Broker rejects a second CONSUMER_REG_REQ with
-  `ONE_TO_ONE_CARDINALITY_VIOLATED` (fan-out SHM would accept it).
-
-Only the cardinality-guard differs.  Sequence + Tier 2 pseudocode
-follow §4.7.3 exactly with `ChannelTopology::OneToOne` substituted
-for `FanOut`.
+Same shape as fan-out SHM (§4.7.3) — producer creates the shared
+memory segment, consumer dials in and picks up a file descriptor.
+The one difference is the broker: it rejects any second consumer
+with `ONE_TO_ONE_CARDINALITY_VIOLATED`, which fan-out SHM would
+accept.  Everything else — sequence, pseudocode, wire — matches
+§4.7.3 with the topology enum switched from `FanOut` to `OneToOne`.
 
 #### 4.7.6 Script-facing readiness accessors
 
