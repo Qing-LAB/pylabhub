@@ -604,6 +604,41 @@ add_executable(test_layer2_hub_shm_queue_capability
     test_hub_shm_queue_capability.cpp
 )
 
+# ============================================================================
+# test_layer2_hub_queue_factory — HEP-CORE-0017 §3.3.0 unified factory
+# ----------------------------------------------------------------------------
+# Phase C step 4: pins hub::Queue::create_reader / create_writer dispatch
+# for all (topology, transport) cells, the (FanIn, Shm) legality gate, the
+# transport_from_string parser, and the reader_is_binding_side /
+# writer_is_binding_side matrix helpers.
+# ============================================================================
+
+add_executable(test_layer2_hub_queue_factory
+    test_hub_queue_factory.cpp
+)
+
+target_link_libraries(test_layer2_hub_queue_factory
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_queue_factory)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_queue_factory
+    SUITE_NAME "Layer2_HubQueueFactory"
+)
+layer2_require_staged_utils(test_layer2_hub_queue_factory)
+
+gtest_discover_tests(test_layer2_hub_queue_factory
+    PROPERTIES
+        LABELS "layer2;service;hep0017"
+        TIMEOUT 30
+)
+
 target_link_libraries(test_layer2_hub_shm_queue_capability
     PRIVATE
         pylabhub::utils

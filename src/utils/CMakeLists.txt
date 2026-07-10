@@ -115,6 +115,7 @@ set(UTILS_SOURCES
   #     (L3.γ A6.3). The old hub_producer.cpp / hub_consumer.cpp are gone.
   hub/hub_shm_queue.cpp
   hub/hub_zmq_queue.cpp
+  hub/hub_queue_factory.cpp
   hub/hub_inbox_queue.cpp
 
   # --- schema: HEP-CORE-0034 owner-authoritative schema registry ---
