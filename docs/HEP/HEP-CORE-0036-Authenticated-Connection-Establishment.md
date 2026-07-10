@@ -55,6 +55,33 @@
 >   + `data_pubkey` pointing at the binding side.  The per-producer
 >   array retires per HEP-CORE-0007 §12.3.
 >
+> - **Body prose sweep deferred to Phase E.**  The section-by-section
+>   body of this HEP still narrates the pre-migration
+>   `CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason="producer_joined" |
+>   "producer_left"}` chain in ~25 sites (mechanism prose at §3.5.x,
+>   §5.6, §6.5.1, §6.8, §I11.1 + sequence diagrams and code-site
+>   tables).  Readers encountering that terminology should treat it
+>   as archaeological — the retirement is authoritative per
+>   HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864,
+>   REQUIRED payload) + §CHANNEL_PRODUCERS_CHANGED_NOTIFY retirement
+>   banner (line 1866) + this amendment above.  Body sweep lands in
+>   Phase E (code retirement of the corresponding wire family) to
+>   avoid churn while both wires coexist during migration.
+>
+>   **Semantic mapping when reading the archaeological body:**
+>   - `CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason="producer_joined"}`
+>     → `CHANNEL_AUTH_CHANGED_NOTIFY {phase="admitted",
+>     role_type="producer"}` (allowlist changed) followed by
+>     `CHANNEL_AUTH_CHANGED_NOTIFY {phase="live", role_type="producer"}`
+>     on first heartbeat (readiness signal).
+>   - `CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason="producer_left"}`
+>     → `CHANNEL_AUTH_CHANGED_NOTIFY {phase="left",
+>     role_type="producer"}`.
+>   - Same shape for consumer transitions where role_type="consumer"
+>     replaces "producer".
+>   - Fan-out target follows §6.2 decision matrix (binding side):
+>     fan-in → consumers; fan-out / 1-to-1 → producers.
+>
 > Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
 > (status: DESIGN LOCKED).  Coordinated with HEP-CORE-0007
 > (wire catalog), HEP-CORE-0017 (pipeline architecture), HEP-CORE-0033

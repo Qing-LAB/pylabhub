@@ -16,8 +16,9 @@ target-tasks: task #94 (ephemeral binding — subsumed); topology migration Phas
 
 ## 0. Status
 
-**DESIGN LOCKED — current rev 9 (rev 10 pending for the Q3a revision
-landed in Phase A rev 3.1).**  All three original open items from
+**DESIGN LOCKED — current rev 10 (2026-07-09; `data_endpoint_resolved`
+bool → `std::optional<std::string>::has_value()` collapse; earlier
+Q3a revision landed in Phase A rev 3.1).**  All three original open items from
 §13 resolved 2026-07-08 morning.  Phase A HEP amendments landed
 2026-07-08 across commits `007b749d..e6a80070`; Phase B code
 migration landed same day across `bba5e401..2c960cca`.
@@ -130,7 +131,7 @@ Revision history:
   answer: `peer_count` → "live-peer count / `live_peers[channel]` map"
   for vocabulary consistency with the rest of the doc.  No design
   changes; documentation cleanup only.  Design LOCKED status preserved.
-- **Rev 9** (this) — one-line title normalization: §5.11a
+- **Rev 9** — one-line title normalization: §5.11a
   "Singular-side restart under fan-in" → "Binding-side restart under
   fan-in."  Rev 4 normalized "singular / plural side" → "binding /
   dialing side" for role-specific references throughout the doc;
@@ -139,9 +140,20 @@ Revision history:
   Conceptual/principle uses of "singular side" in the document title
   (line 2, line 15) and §15 (line 1602) are retained deliberately —
   those describe the design at an abstract level, not a specific
-  role.  No design changes.  Design LOCKED status preserved.  This
-  is expected to be the terminal revision — the review-cycle
-  asymptote is here.
+  role.  No design changes.  Design LOCKED status preserved.
+- **Rev 10** (this) — `data_endpoint_resolved` field collapse.
+  Earlier revs modelled the binding-side's endpoint publication state
+  as a `{std::string data_endpoint; bool data_endpoint_resolved;}`
+  pair on `ChannelEntry`.  HEP-CORE-0033 §8 amendment + code
+  (`hub_state.hpp:630`) landed the collapsed form
+  `std::optional<std::string> data_endpoint;` where "resolved" ↔
+  `has_value()` and "unset" ↔ `!has_value()`.  Rev 10 sweeps the tech
+  draft body to the collapsed form: §4.1 struct field, §5.1 R6
+  condition, §7.x sequence-diagram ACK payloads (2 sites), §8.1
+  section header + state machine narrative, §11.1 file-impact table,
+  §11.2 HEP amendment table, §11.4 code walkthrough.  Semantics
+  unchanged — the optional's engaged bit carries what the separate
+  bool used to carry.  Design LOCKED status preserved.
 
 The draft supersedes two recent commits that need to be re-evaluated in
 light of this design:
@@ -294,8 +306,12 @@ struct ChannelEntry {
     //   Fan-Out    SHM: producer's capability endpoint (ipc://...)
     //   1-to-1     ZMQ: producer's PUSH bind endpoint  (tcp://...)
     //   1-to-1     SHM: producer's capability endpoint (ipc://...)
-    std::string     data_endpoint;
-    bool            data_endpoint_resolved{false};
+    // rev-10 (2026-07-09) — collapses the {std::string data_endpoint;
+    // bool data_endpoint_resolved;} pair from earlier revs into a
+    // single std::optional<std::string>.  "resolved" ↔ has_value();
+    // "unset" ↔ !has_value().  Matches HEP-CORE-0033 §8 amendment +
+    // code (`hub_state.hpp:630`).
+    std::optional<std::string> data_endpoint;
 
     // Per-role identity + pubkey rows (needed for ZAP allowlist).
     // ProducerEntry.zmq_node_endpoint field retires.
@@ -447,7 +463,7 @@ design, R6 becomes symmetric:
 
 - Channel doesn't exist yet (binding side hasn't registered).
 - Binding side's presence != Live.
-- Binding side's `data_endpoint_resolved == false`.
+- Binding side's `data_endpoint.has_value() == false` (endpoint not yet published via `ENDPOINT_UPDATE_REQ`).
 - Binding side's `confirmed_version < this_role_registration_version`
   (see §5.6 — allowlist propagation must complete before dial-safe).
 
@@ -814,7 +830,7 @@ sequenceDiagram
     CQ->>CQ: PULL bind tcp://host:0<br/>ZAP domain registered<br/>curve_server=1
     CQ-->>CS: actual_endpoint = tcp://host:51234
     CS->>B: ENDPOINT_UPDATE_REQ (endpoint=tcp://host:51234)
-    B-->>CS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint_resolved=true
+    B-->>CS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint.has_value() == true
     CS->>B: HEARTBEAT (first) → consumer=Live
 
     Note over PS,B: Producer arrives (any time after or before consumer Live)
@@ -858,7 +874,7 @@ sequenceDiagram
     PQ->>PQ: PUB bind tcp://host:0<br/>ZAP domain registered<br/>curve_server=1
     PQ-->>PS: actual_endpoint = tcp://host:52345
     PS->>B: ENDPOINT_UPDATE_REQ (endpoint=tcp://host:52345)
-    B-->>PS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint_resolved=true
+    B-->>PS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint.has_value() == true
     PS->>B: HEARTBEAT (first) → producer=Live
 
     Note over CS,B: Consumer arrives
@@ -1053,7 +1069,16 @@ Plain PUB, broker-derived counts, one source of truth.
 
 ## 8. State diagrams
 
-### 8.1 `data_endpoint_resolved` on `ChannelEntry`
+### 8.1 `data_endpoint` state machine on `ChannelEntry`
+
+> **rev-10 (2026-07-09) note.**  Earlier revs modelled this as a
+> separate `bool data_endpoint_resolved` alongside `std::string
+> data_endpoint`.  rev-10 collapses to `std::optional<std::string>
+> data_endpoint;` — "unset" ↔ `!has_value()`, "resolved" ↔
+> `has_value()`.  The state machine below is semantically unchanged;
+> the field just carries its resolvedness in the optional's engaged
+> bit rather than a separate bool.  Matches HEP-CORE-0033 §8
+> amendment + code (`hub_state.hpp:630`).
 
 ```mermaid
 stateDiagram-v2
@@ -1398,7 +1423,7 @@ revision.
 
 | File | Change | LOC est. |
 |---|---|---|
-| `src/include/utils/hub_state.hpp` | Add `ChannelTopology` enum (`FanIn`/`FanOut`/`OneToOne`) + `topology` + `data_endpoint` + `data_endpoint_resolved` on `ChannelEntry`; retire `ProducerEntry.zmq_node_endpoint`; collapse `confirmed_version` to scalar. | ~60 change / ~30 delete |
+| `src/include/utils/hub_state.hpp` | Add `ChannelTopology` enum (`FanIn`/`FanOut`/`OneToOne`) + `topology` + `std::optional<std::string> data_endpoint` on `ChannelEntry` (rev-10 collapses the earlier `bool data_endpoint_resolved` into the optional's engaged bit); retire `ProducerEntry.zmq_node_endpoint`; collapse `confirmed_version` to scalar. | ~60 change / ~30 delete |
 | `src/utils/hub/hub_state.cpp` | `add_producer` / `add_consumer` cardinality checks; `set_channel_data_endpoint` / `channel_data_endpoint` accessors replace per-producer variants. | ~80 change |
 | `src/utils/ipc/hub_state_json.cpp` | JSON (de)serialization of new + retired fields. | ~30 change / ~15 delete |
 | `src/include/utils/role_reg_payload.hpp` | Wire schema doc: retire `zmq_node_endpoint`; add `channel_topology`. | ~15 change |
@@ -1500,7 +1525,7 @@ revision.
 | **HEP-CORE-0021** | §16 | **Reparametrize** — "producer" → "binding side" throughout. |
 | **HEP-CORE-0023** | §2.1.1 | **Generalize** — channel-death rule "binding side dies → channel dies." |
 | **HEP-CORE-0028** | Script API surface | **Amend** — add four accessors on every role's api: `consumer_count(channel)`, `producer_count(channel)`, `consumers(channel)`, `producers(channel)`.  Objective Live counts; cross-engine parity (Lua + Python + Native). |
-| **HEP-CORE-0033** | §2994 wire catalog + §1247 code catalog + `ChannelEntry` description | **Update** — `topology` + `data_endpoint` + `data_endpoint_resolved` fields; ATTACH_REQ family retires; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain retires. |
+| **HEP-CORE-0033** | §2994 wire catalog + §1247 code catalog + `ChannelEntry` description | **Update** — `topology` + `std::optional<std::string> data_endpoint` fields (rev-10 collapsed the earlier `bool data_endpoint_resolved` into the optional's engaged bit); ATTACH_REQ family retires; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` chain retires. |
 | **HEP-CORE-0036** | §3.5.3, §6.4, §6.5, §6.5.1, §I7, §5.2 R6, §14 | **Symmetrize** — R6 gate direction generalizes; NOTIFY chain aims at binding side; §I7 endpoint disclosure section reflects topology-parametric shape.  Add `phase=live` semantics (§5.5): dialing-side first-heartbeat triggers a NOTIFY to the binding side without waking R6. |
 | **HEP-CORE-0042** | Entire HEP | **Major scope narrowing** — retire §5 dispatch + §7.1 pre-attach loop.  Preserve `confirmed_version` bookkeeping (now scalar per channel).  Preserve HEP-0044 AttachProtocol reference. |
 | **HEP-CORE-0044** | §5 wire consumers | **Small update** — SHM-attach helpers read `data_endpoint` / `data_pubkey` (renamed from `shm_capability_endpoint` / `producer_pubkey_z85` on the wire). |
@@ -1517,7 +1542,7 @@ should be one commit (or a small tight batch).
    amendments for the nine HEPs listed in §11.4.  Get user approval
    on the design before touching any code.
 2. **Phase B — Broker state field + wire schema + confirmed_version collapse.**
-   Add `ChannelEntry.topology` + `data_endpoint` + `data_endpoint_resolved`
+   Add `ChannelEntry.topology` + `std::optional<std::string> data_endpoint` (rev-10; earlier drafts split into `data_endpoint` + `data_endpoint_resolved` bool)
    + scalar `confirmed_version` (collapsed from `[K][P]` map per Q3b
    answer, 2026-07-08).  Retire `ProducerEntry.zmq_node_endpoint` in a
    coordinated sub-slice with all its readers, OR add a mirror-and-mark-
