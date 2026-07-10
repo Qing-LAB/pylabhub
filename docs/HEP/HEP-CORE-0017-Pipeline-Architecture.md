@@ -183,7 +183,7 @@ live-peer set (fed by `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)`).
 The DIALING side receives `data_endpoint` + `data_pubkey` on its
 REG_ACK and dials.
 
-**Queue factory signature (post-migration):**
+**Queue factory signature:**
 
 `hub::Queue` is a static-methods-only class in `hub_queue_factory.hpp`
 (companion header to `hub_queue.hpp`).  It is not instantiable — all
@@ -288,7 +288,7 @@ Gates 1–5 fire BEFORE any concrete queue construction.  The factory
 returns `nullptr` on any gate failure; role code checks for null and
 propagates as a config-load failure.
 
-**Options structs (post-migration):**
+**Options structs:**
 
 ```cpp
 struct RxOptions
@@ -388,9 +388,7 @@ dialing; One-to-one → dialing.
 
 Concrete transport factories (`ZmqQueue::create_writer`,
 `ShmQueue::create_writer`) each read the topology enum and apply the
-matrix row for their transport.  ZMQ's version already exists
-(shipped in Phase C step 1-2 of the migration code); SHM's version
-is added as part of the Phase C completion.
+matrix row for their transport.
 
 The dispatcher owns no per-transport knowledge beyond the two
 translation helpers `translate_tx_opts_to_zmq` /
@@ -400,12 +398,12 @@ one new switch case + one new translation helper — no changes to
 role code, no changes to broker, no changes to the abstract
 `QueueReader` / `QueueWriter` interfaces.
 
-### 3.3.1 Framework integration (post-migration)
+### 3.3.1 Framework integration
 
 Both directions follow the same "build in Standby, ask the broker,
-activate inside `apply_master_approval`" shape as before (per
-HEP-CORE-0036 §3.5 + §6.7 — those sections amend in Phase A step 4
-to symmetrize the R6 gate).  What changes:
+activate inside `apply_master_approval`" shape (per HEP-CORE-0036
+§3.5 + §6.7 — those sections carry the symmetric R6 gate).  What
+the topology model changes:
 
 **Binding side S3 flow** (fan-in consumer; fan-out or 1-to-1 producer):
 
@@ -469,12 +467,11 @@ bindings for Lua + Python + Native engines.
 
 ### 3.3-retired — Pre-2026-07-08 model (SUPERSEDED; archaeological reference)
 
-The material below described the pre-migration model where `ZmqQueue`
-PULL was multi-producer via per-peer `connect()` under a
-`ProducerPeer` vector.  That model retires 2026-07-08 as part of the
-topology migration.  It's preserved here for callers/tests that
-haven't yet been updated (retirement lands in Phase E of the code
-migration per tech draft §12).
+The material below described the pre-2026-07-08 model where
+`ZmqQueue` PULL was multi-producer via per-peer `connect()` under a
+`ProducerPeer` vector.  That model is superseded by the topology
+model described in §3.3.0.  Retained here for callers and tests
+that haven't yet been converted to the new factories.
 
 The data plane abstraction is split into two independent abstract classes:
 
@@ -510,22 +507,20 @@ uses only a QueueReader.
 
 #### ZmqQueue — API contract and schema requirements
 
-> **⚠️ LEGACY factory API — retiring in Phase C completion.**  The
-> `ZmqQueue::push_to` / `pull_from` factories shown below are the
-> pre-topology-migration entry points.  They accept an explicit
-> `bind: bool` parameter and require the caller (role code today)
-> to decide bind vs connect direction — a decision that HEP-CORE-0017
-> §3.3.0 line 210 explicitly forbids at role level.  The post-
-> migration entry point is `hub::Queue::create_reader` /
-> `create_writer(topology, transport, opts)` per §3.3.0; the internal
-> concrete-transport factory is `ZmqQueue::create_reader(topology,
-> RxCreateOptions)` / `ZmqQueue::create_writer(topology,
-> TxCreateOptions)` per §3.3.0.1 dispatch.  The legacy `push_to` /
-> `pull_from` factories are retained during migration for tests that
-> exercise ZMQ-specific parameters (`sndhwm`, `send_retry_interval_ms`,
-> `zap_domain`) directly and are retiring in Phase C completion
-> alongside `zmq_bind` in role config.  New code MUST use the
-> §3.3.0 unified factory.
+> **⚠️ LEGACY factory API — superseded by §3.3.0.**  The
+> `ZmqQueue::push_to` / `pull_from` factories shown below accept
+> an explicit `bind: bool` parameter and require the caller (role
+> code) to decide bind vs connect direction — a decision that
+> §3.3.0 explicitly forbids at role level.  The current entry point
+> is `hub::Queue::create_reader` / `create_writer(topology,
+> transport, opts)` per §3.3.0; the internal concrete-transport
+> factory is `ZmqQueue::create_reader(topology, RxCreateOptions)`
+> / `ZmqQueue::create_writer(topology, TxCreateOptions)` per
+> §3.3.0.1 dispatch.  The legacy `push_to` / `pull_from` factories
+> are retained for tests that exercise ZMQ-specific parameters
+> (`sndhwm`, `send_retry_interval_ms`, `zap_domain`) directly and
+> are on track for retirement alongside `zmq_bind` in role config.
+> New code MUST use the §3.3.0 unified factory.
 
 `hub::ZmqQueue` always operates in **schema mode**. A non-empty
 `std::vector<ZmqSchemaField>` and a packing rule are **required** at construction.
