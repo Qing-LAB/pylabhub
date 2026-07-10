@@ -135,13 +135,19 @@ py::list ConsumerAPI::allowed_peers(const std::string &channel) const
 
 py::list ConsumerAPI::producers(const std::string &channel) const
 {
-    // HEP-CORE-0036 §I11 + §6.4 polling surface.  Consumer-side mirror
-    // of producer-side `allowed_peers`.  Returns the broker's most
-    // recent CONSUMER_REG_ACK.producers[] snapshot for this channel.
-    // Empty list when the channel was never registered, the broker
-    // delivered an empty list, or the transport is SHM (no producers[]
-    // field per §5.6).  Read-only; scripts cannot mutate.
-    return scripting::detail::peer_list_to_py(base_->producers(channel));
+    // HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 LIVE-peer accessor.
+    // Returns role_uid strings from live_peers[channel]["producer"],
+    // populated by phase=live NOTIFY.  Fan-in consumer role is the
+    // BINDING side; this returns the currently-live producer set.
+    return scripting::detail::uid_list_to_py(base_->producers(channel));
+}
+
+py::list ConsumerAPI::consumers(const std::string &channel) const
+{
+    // Symmetric with producers().  Empty on consumer-side roles
+    // (documented sentinel per HEP-CORE-0011 Cross-Engine Surface
+    // Parity — consumer role's own uid does not populate the map).
+    return scripting::detail::uid_list_to_py(base_->consumers(channel));
 }
 
 uint64_t ConsumerAPI::slot_logical_size(std::optional<int> side) const
@@ -339,6 +345,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
              "Returns an empty list on consumer side — no allowlist "
              "exists on the consumer's PULL queue.  Present for API "
              "uniformity with ProducerAPI.allowed_peers.")
+        .def("consumers",      &ConsumerAPI::consumers,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — live consumer role_uid list "
+             "(symmetric with producers()).  Empty on consumer-role "
+             "side per HEP-CORE-0011 Cross-Engine Surface Parity "
+             "sentinel.")
         .def("producers",      &ConsumerAPI::producers,
              py::arg("channel"),
              "HEP-CORE-0036 §I11 + §6.4 polling surface.  Returns a "

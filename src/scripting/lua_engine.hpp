@@ -324,6 +324,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_queue_mechanism(lua_State *L);
     static int lua_api_allowed_peers(lua_State *L);
     static int lua_api_producers(lua_State *L);
+    static int lua_api_consumers(lua_State *L);
     static int lua_api_consumer_count(lua_State *L);
     static int lua_api_producer_count(lua_State *L);
     static int lua_api_is_channel_ready(lua_State *L);

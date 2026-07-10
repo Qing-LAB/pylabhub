@@ -362,17 +362,31 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::vector<AllowedPeer>
     allowed_peers(const std::string &channel) const;
 
-    /// HEP-CORE-0036 §I11 + §6.4 — consumer-side mirror of
-    /// `allowed_peers`.  Snapshot of the authorized PRODUCERS the broker
-    /// delivered via `CONSUMER_REG_ACK.producers[]` for this channel.
-    /// Each entry is `(role_uid, pubkey)` where `pubkey` is the
-    /// Z85-encoded CURVE identity the consumer uses as the data-plane
-    /// curve_serverkey.  Returns an empty vector if the role is not a
-    /// consumer of the channel, the broker delivered an empty list, or
-    /// the transport is SHM (no producers[] field per §5.6).
+    /// HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 + HEP-CORE-0007
+    /// §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
+    /// script-observable LIVE-peer role_uid lists for the named channel,
+    /// backed by the broker's `phase=live` NOTIFY stream.  Symmetric
+    /// with `consumer_count` / `producer_count`; same source
+    /// (`live_peers[channel]` map), same population trigger (broker's
+    /// first-heartbeat detection per HEP-CORE-0023 §2.5).
+    /// - `producers(channel)` returns the role_uids of DIALING-side
+    ///   producers currently past first-heartbeat.  Empty vector on
+    ///   the producer side (only BINDING side receives live-peer
+    ///   NOTIFYs) and on channels where no producer has fired
+    ///   first-heartbeat yet.
+    /// - `consumers(channel)` symmetric for consumers.
     /// Thread-safe; returns a copy under the internal lock.
-    [[nodiscard]] std::vector<AllowedPeer>
+    ///
+    /// Return shape is `role_uid` strings only per HEP-CORE-0028 §6a.5
+    /// — pubkeys are transport-level detail (they live on the queue
+    /// via `curve_serverkey`, not on the script surface).  For the
+    /// authorization-time allowlist snapshot (which DOES carry
+    /// pubkeys) use `allowed_peers()` instead.
+    [[nodiscard]] std::vector<std::string>
     producers(const std::string &channel) const;
+
+    [[nodiscard]] std::vector<std::string>
+    consumers(const std::string &channel) const;
 
     /// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY
     /// (lines 1834-1838) — script-observable live-peer count for the

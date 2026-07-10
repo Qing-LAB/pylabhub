@@ -145,6 +145,12 @@ class ProducerAPI
     /// binding-level errors.
     [[nodiscard]] py::list producers(const std::string &channel) const;
 
+    /// HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 — LIVE-consumer role_uid
+    /// list.  Symmetric with `producers()`.  Empty on non-binding
+    /// side (documented sentinel per HEP-CORE-0011 Cross-Engine
+    /// Surface Parity).
+    [[nodiscard]] py::list consumers(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — Python-facing channel-state query.
     /// Forwards to RoleAPIBase::is_channel_ready.
     [[nodiscard]] bool is_channel_ready(const std::string &channel) const

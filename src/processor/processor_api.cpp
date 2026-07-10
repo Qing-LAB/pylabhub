@@ -130,9 +130,18 @@ py::list ProcessorAPI::allowed_peers(const std::string &channel) const
 
 py::list ProcessorAPI::producers(const std::string &channel) const
 {
-    // HEP-CORE-0036 §I11 + §6.4 polling surface — processor's RX side
-    // has the same consumer-side producers semantics as ConsumerAPI.
-    return scripting::detail::peer_list_to_py(base_->producers(channel));
+    // HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 LIVE-peer accessor.
+    // Processor's RX side has the same consumer-side producers
+    // semantics as ConsumerAPI (fan-in binding-side observes live
+    // producers).
+    return scripting::detail::uid_list_to_py(base_->producers(channel));
+}
+
+py::list ProcessorAPI::consumers(const std::string &channel) const
+{
+    // Symmetric with producers().  Processor's TX side observes live
+    // consumers under fan-out / one-to-one.
+    return scripting::detail::uid_list_to_py(base_->consumers(channel));
 }
 
 uint64_t ProcessorAPI::slot_logical_size(std::optional<int> side) const
@@ -322,10 +331,15 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
              "ProducerAPI.allowed_peers.")
         .def("producers",          &ProcessorAPI::producers,
              py::arg("channel"),
-             "HEP-CORE-0036 §I11 + §6.4 polling surface — snapshot of "
-             "authorized producers for the channel.  Processor's RX "
-             "side has the same consumer-side producers semantics as "
-             "ConsumerAPI.producers.")
+             "HEP-CORE-0028 §6a — live producer role_uid list backed "
+             "by phase=live NOTIFY.  Processor's RX side (fan-in "
+             "consumer role) observes live producers here.")
+        .def("consumers",          &ProcessorAPI::consumers,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — live consumer role_uid list, "
+             "symmetric with producers().  Processor's TX side "
+             "(fan-out / one-to-one producer role) observes live "
+             "consumers here.")
         .def("allowed_peer_contains", &ProcessorAPI::allowed_peer_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the "

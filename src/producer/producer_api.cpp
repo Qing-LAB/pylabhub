@@ -149,16 +149,20 @@ py::list ProducerAPI::allowed_peers(const std::string &channel) const
 
 py::list ProducerAPI::producers(const std::string &channel) const
 {
-    // HEP-CORE-0036 §I11 polling surface (engine-parity stub) —
-    // HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only
-    // observation surface principle: every read-only observation
-    // surface is bound on every role through every engine; on a
-    // role whose cache is never populated for that surface, the
-    // documented sentinel (empty list, here) signals "not applicable
-    // on this side."  Producer-side `producer_peer_cache` is never
-    // populated (CONSUMER_REG_ACK is consumer-side per §6.4), so the
-    // cache lookup always misses and returns an empty vector.
-    return scripting::detail::peer_list_to_py(base_->producers(channel));
+    // HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 LIVE-peer accessor.
+    // Returns role_uid strings from live_peers[channel]["producer"],
+    // populated by phase=live NOTIFY.  Empty on producer-side roles
+    // (map only populates on binding side) — the documented sentinel
+    // per HEP-CORE-0011 Cross-Engine Surface Parity.
+    return scripting::detail::uid_list_to_py(base_->producers(channel));
+}
+
+py::list ProducerAPI::consumers(const std::string &channel) const
+{
+    // Symmetric with producers().  Fan-out / one-to-one producers
+    // are the BINDING side under HEP-CORE-0017 §3.3.0; live consumer
+    // set is what api.consumer_count()'s list companion returns.
+    return scripting::detail::uid_list_to_py(base_->consumers(channel));
 }
 
 uint64_t ProducerAPI::slot_logical_size(std::optional<int> side) const
@@ -372,14 +376,17 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "Lua's api.allowed_peers; read-only.")
         .def("producers",          &producer::ProducerAPI::producers,
              py::arg("channel"),
-             "HEP-CORE-0036 §I11 polling surface (engine-parity stub). "
-             "Returns an empty list on producer side — the producer-side "
-             "cache is never populated for `producers` (the consumer "
-             "side observes its peer-set via CONSUMER_REG_ACK.producers[] "
-             "per §6.4).  Present for API uniformity with "
-             "ConsumerAPI.producers and Lua's api.producers per "
-             "HEP-CORE-0011 §\"Cross-Engine Surface Parity\" Read-only "
-             "observation surface principle.")
+             "HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 — live producer "
+             "role_uid list, backed by live_peers[channel] populated by "
+             "phase=live NOTIFY.  Returns list[str].  Empty on non-"
+             "binding side (documented sentinel per HEP-CORE-0011 "
+             "Cross-Engine Surface Parity).")
+        .def("consumers",          &producer::ProducerAPI::consumers,
+             py::arg("channel"),
+             "HEP-CORE-0028 §6a — live consumer role_uid list, symmetric "
+             "with producers().  Fan-out / one-to-one producer role's "
+             "binding-side observation of live subscribers; use with "
+             "consumer_count() for the size + list pair.")
         .def("allowed_peer_contains", &producer::ProducerAPI::allowed_peer_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the "

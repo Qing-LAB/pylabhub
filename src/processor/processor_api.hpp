@@ -105,6 +105,11 @@ class ProcessorAPI
     /// most recent CONSUMER_REG_ACK.producers[] snapshot for `channel`.
     [[nodiscard]] py::list producers(const std::string &channel) const;
 
+    /// HEP-CORE-0028 §6a — LIVE consumer role_uid list.  Symmetric
+    /// with `producers()`.  Processor's TX side observes live
+    /// consumers under fan-out / one-to-one.
+    [[nodiscard]] py::list consumers(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — see ProducerAPI::is_channel_ready.
     [[nodiscard]] bool is_channel_ready(const std::string &channel) const
     {

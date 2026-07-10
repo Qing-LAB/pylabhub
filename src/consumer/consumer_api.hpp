@@ -113,6 +113,10 @@ class ConsumerAPI
     /// transport is SHM (no producers[] field per §5.6).  Read-only.
     [[nodiscard]] py::list producers(const std::string &channel) const;
 
+    /// HEP-CORE-0028 §6a — LIVE consumer role_uid list.  Symmetric
+    /// with `producers()`.  Empty on consumer-role side.
+    [[nodiscard]] py::list consumers(const std::string &channel) const;
+
     /// HEP-CORE-0036 §6.7 (#190) — see ProducerAPI::is_channel_ready.
     [[nodiscard]] bool is_channel_ready(const std::string &channel) const
     {

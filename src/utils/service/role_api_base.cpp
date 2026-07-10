@@ -1936,26 +1936,15 @@ RoleAPIBase::allowed_peers(const std::string &channel) const
     return pImpl->allowlist_cache.snapshot(channel);
 }
 
-std::vector<AllowedPeer>
-RoleAPIBase::producers(const std::string &channel) const
-{
-    // Consumer-side mirror of `allowed_peers`.  Returns the broker's
-    // most recent `CONSUMER_REG_ACK.producers[]` snapshot for this
-    // channel as a copy.  Empty if the channel was never registered,
-    // is SHM-transport (no producers[] field per §5.6), or the broker
-    // delivered an empty list.  Cache is updated by
-    // `apply_consumer_reg_ack` after the queue's `apply_master_approval`
-    // succeeds.  HEP-CORE-0036 §I11 — read-only script surface.
-    return pImpl->producer_peer_cache.snapshot(channel);
-}
-
 namespace
 {
-/// Shared body for `consumer_count` / `producer_count`.  Snapshots the
-/// binding-side live-peer set for `(channel, role_type)` under the
-/// lock and returns its size.  0 if the channel is unknown to this
-/// role or no live peers have been observed yet.
-std::size_t live_peer_count(
+/// Shared snapshot of the binding-side `live_peers[channel][role_type]`
+/// set.  Returns a fresh vector (safe for the caller to iterate
+/// outside the lock).  Used by `consumer_count` / `producer_count`
+/// (as `.size()`) and by `consumers` / `producers` (as the returned
+/// role_uid list).  Empty vector on channel-not-seen / role_type-not-
+/// populated / this-side-is-dialing-so-map-never-fills.
+std::vector<std::string> live_peer_uids(
     const std::mutex &mu_ref,
     const std::unordered_map<std::string,
         std::unordered_map<std::string,
@@ -1965,25 +1954,46 @@ std::size_t live_peer_count(
 {
     std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(mu_ref));
     auto ch_it = map_ref.find(channel);
-    if (ch_it == map_ref.end()) return 0;
+    if (ch_it == map_ref.end()) return {};
     auto rt_it = ch_it->second.find(role_type);
-    if (rt_it == ch_it->second.end()) return 0;
-    return rt_it->second.size();
+    if (rt_it == ch_it->second.end()) return {};
+    return std::vector<std::string>(rt_it->second.begin(),
+                                     rt_it->second.end());
 }
 } // namespace
 
 std::size_t
 RoleAPIBase::consumer_count(const std::string &channel) const
 {
-    return live_peer_count(pImpl->live_peers_mu, pImpl->live_peers,
-                            channel, "consumer");
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
+                           channel, "consumer").size();
 }
 
 std::size_t
 RoleAPIBase::producer_count(const std::string &channel) const
 {
-    return live_peer_count(pImpl->live_peers_mu, pImpl->live_peers,
-                            channel, "producer");
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
+                           channel, "producer").size();
+}
+
+std::vector<std::string>
+RoleAPIBase::producers(const std::string &channel) const
+{
+    // HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 — LIVE producer set
+    // (from `live_peers[channel]["producer"]` map, populated by
+    // `phase=live` NOTIFY dispatch).  Symmetric with `producer_count`
+    // (same source).  Empty on producer-side roles / SHM channels /
+    // channels where no producer has fired first-heartbeat yet.
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
+                           channel, "producer");
+}
+
+std::vector<std::string>
+RoleAPIBase::consumers(const std::string &channel) const
+{
+    // Symmetric with `producers()`.
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
+                           channel, "consumer");
 }
 
 bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept

@@ -171,6 +171,19 @@ inline py::list peer_list_to_py(const std::vector<AllowedPeer> &peers)
     return out;
 }
 
+/// HEP-CORE-0028 §6a.5 — role_uid-only projection for the LIVE-peer
+/// script accessors `producers(channel)` / `consumers(channel)` on
+/// ProducerAPI / ConsumerAPI / ProcessorAPI.  Symmetric with
+/// `peer_list_to_py` above, but drops the `pubkey` field per §6a.5
+/// (pubkeys are transport detail; live-peer accessors surface
+/// role_uids only).
+inline py::list uid_list_to_py(const std::vector<std::string> &uids)
+{
+    py::list out;
+    for (const auto &u : uids) out.append(u);
+    return out;
+}
+
 /// Mirror of Native engine's `fetch_band_members` (HEP-CORE-0030 broker
 /// RPC `BAND_MEMBERS_REQ`/`_ACK`).  Issues the broker round-trip under
 /// `py::gil_scoped_release`, then unwraps the `{"members": [...]}`
