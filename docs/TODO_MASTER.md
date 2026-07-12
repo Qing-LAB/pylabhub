@@ -84,6 +84,25 @@ authority: HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036
 - **Design authority:** `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
 - **Migration plan + finding detail:** `docs/todo/TOPOLOGY_TODO.md`
 
+**REG/REG_ACK Protocol Redesign — HEP-CORE-0046 promoted (2026-07-12).**
+Design tech draft (`DRAFT_reg_ack_protocol_redesign.md`, DESIGN
+LOCKED, 21 invariants, typed wire envelope §14, admission-gate
+pipeline §14.5, phase sequencing §12) promoted to normative
+HEP-CORE-0046.  Cross-references added to HEP-CORE-0007, -0017,
+-0021, -0023, -0033, -0035, -0036, -0042.  Wire discipline rule
+added to `docs/IMPLEMENTATION_GUIDANCE.md`.
+- Phase A (typed envelope + body classes) — SHIPPED (46 L1 tests).
+- Phase C islanded modules (`admission_gates`,
+  `reg_admission_pipeline`, `broker_reg_handler`,
+  `HubState::nonce_seen`) — SHIPPED as compile-verified
+  L1/L2-tested modules (23+5+14+6 tests).
+- Phase B (broker dispatch rewire + BRC envelope migration) —
+  PENDING; next active commit.
+- Phases D (retirements), E (integration tests), F (federation
+  follow-on) — PENDING per §12 sequencing.
+
+Design authority: `docs/HEP/HEP-CORE-0046-REG-Protocol-Redesign.md`.
+
 **Queue-owned topology + layer cleanup arc — CLOSED 2026-07-12.**
 Follow-on to the fan-in binding-side reader arc.  Reclaimed the layer:
 `hub::Queue` owns topology and transport; role host uses uniform,

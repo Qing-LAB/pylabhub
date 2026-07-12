@@ -6,6 +6,39 @@
 
 ## Archive batches
 
+### 2026-07-12 (REG/REG_ACK protocol redesign draft promoted to HEP-CORE-0046)
+
+Design draft `DRAFT_reg_ack_protocol_redesign.md` (2143 lines, DESIGN
+LOCKED with 21 named invariants + typed wire envelope contract in
+§14) promoted to `docs/HEP/HEP-CORE-0046-REG-Protocol-Redesign.md`
+alongside adding cross-references from 8 REG-adjacent HEPs
+(HEP-CORE-0007, -0017, -0021, -0023, -0033, -0035, -0036, -0042) and
+adding a normative "REG Protocol Wire Discipline (HEP-CORE-0046)"
+rule to `docs/IMPLEMENTATION_GUIDANCE.md`.
+
+Rationale for HEP promotion (rather than merging as amendments into
+existing HEPs):
+
+- Cross-cutting normative invariants (21 stated in §8.1) that any
+  future REG-family work MUST follow — HEP is the only doc tier
+  in this project that carries normative authority.
+- Wire spec (§14 typed envelope + §14.5 admission-gate pipeline)
+  and phase sequencing (§12) are subsystem-scoped, not
+  amendment-scoped.
+- Consistency with HEP-CORE-0036 (auth wire), HEP-CORE-0042
+  (attach coordination), HEP-CORE-0045 (SHM observer) — one HEP
+  per subsystem contract.
+- Promotion happens BEFORE Phase B (dispatch rewire) lands so
+  Phase B code is written against normative HEP text, not
+  against a discussion-tier tech draft.
+
+Phase A (typed envelope + body classes) and Phase C islanded
+modules (admission gates, REG pipeline, broker adapter,
+HubState::nonce_seen) are shipped as compile-verified
+L1/L2-tested modules but PENDING Phase B (broker dispatch rewire
++ BRC envelope migration) to be live in production.  Phase B is
+the next active commit.
+
 ### 2026-07-12 (queue-owned topology + layer cleanup plan closed)
 
 Design draft `DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`

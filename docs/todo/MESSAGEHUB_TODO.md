@@ -24,6 +24,64 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### REG/REG_ACK Protocol Redesign — HEP-CORE-0046 promoted (2026-07-12)
+
+**Design authority:** `docs/HEP/HEP-CORE-0046-REG-Protocol-Redesign.md`
+(promoted from `DRAFT_reg_ack_protocol_redesign.md`, DESIGN LOCKED
+with 21 invariants + typed wire envelope + admission-gate
+pipeline).
+
+Wire discipline binding rule:
+`docs/IMPLEMENTATION_GUIDANCE.md § "REG Protocol Wire Discipline
+(HEP-CORE-0046)"`.
+
+**Landed (islanded — pipeline not yet live):**
+- `WireEnvelope` + typed body classes in `wire_envelope.hpp` +
+  `wire_bodies.hpp`.  46 L1 tests in `test_wire_envelope.cpp`.
+- `AdmissionGateRunner` + 7-gate pipeline in `admission_gates.hpp`.
+  23 L1 tests.
+- `RegAdmissionPipeline` outcome orchestration in
+  `reg_admission_pipeline.hpp`.  5 L1 tests.
+- `BrokerRegHandler` adapter binding pipeline to HubState +
+  KnownRolesConfig in `broker_reg_handler.hpp`.  14 L2 tests.
+- `HubState::nonce_seen` replay-bound primitive.  6 L2 tests.
+
+**Phase B (LOAD-BEARING NEXT COMMIT):**
+- `broker_service.cpp` dispatch rewire: parse via
+  `WireEnvelope::parse_router_recv`; every REG-family handler
+  switches to typed-body signature; `BrokerRegHandler` becomes a
+  member of `BrokerServiceImpl` and handles REG_REQ +
+  CONSUMER_REG_REQ.
+- BRC (`broker_request_comm.cpp`) rewire: DEALER `ZMQ_ROUTING_ID`
+  set to `role_uid`; every REG-family send method builds a typed
+  body + stamps `envelope_hash` + sends via
+  `WireEnvelope::build_dealer_send`; poll thread parses via
+  `parse_dealer_recv`; `pending_requests` re-keyed from `msg_type`
+  to `correlation_id`.
+- Atomic: A + B ship together, no runtime tolerance for mixed
+  old/new deployments (HEP-CORE-0046 §14.6 `I-WIRE-VERSION-ATOMIC`).
+
+**Phase C completion (post-Phase-B):**
+- Add `HubState::binding_side_uid` / `is_binding_side_sender`
+  (replaces the roster-walk pattern in
+  `broker_service.cpp:3845-3869, 4504`).
+- Add `known_roles` reverse-uniqueness startup check.
+- Wire R6 pending queue for fan-in producer admission
+  (currently `broker_reg_handler.cpp:283-335` returns
+  `broker_internal_error` for the fan-in-producer branch).
+
+**Phase D retirements:** `zmq_identity` fields; per-producer
+`data_endpoint` / `data_pubkey` scalars; `CONSUMER_ATTACH_REQ_ZMQ`;
+`zmq_bind`; symmetric R6 gate.  Ship atomically with the
+`broker_proto` bump.
+
+**Phase E:** integration tests (broker ROUTER poll through the
+envelope; envelope-body binding across BRC→broker round-trip;
+consumer path through the pipeline; R6-gate pending-queue).
+
+**Phase F:** federation follow-on (`I-DEALER-IDENTITY` extended
+to hub-to-hub DEALERs).
+
 ### Queue-owned topology + layer cleanup — P1+P2+P3 SHIPPED (2026-07-11)
 
 **Plan + landing log:** `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`

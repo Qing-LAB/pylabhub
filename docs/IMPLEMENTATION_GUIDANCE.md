@@ -2285,6 +2285,82 @@ Per `docs/DOC_STRUCTURE.md §1.7` and `§2.2`:
 
 ---
 
+## REG Protocol Wire Discipline (HEP-CORE-0046)
+
+**Applies to any code touching a REG-family wire message**: `REG_REQ` /
+`REG_ACK`, `CONSUMER_REG_REQ` / `_ACK`, `DEREG_REQ` / `_ACK`,
+`ENDPOINT_UPDATE_REQ` / `_ACK`, `GET_CHANNEL_AUTH_REQ` / `_ACK`,
+`CHANNEL_AUTH_APPLIED_REQ` / `_ACK`, `CHANNEL_AUTH_CHANGED_NOTIFY`,
+`CHECK_PEER_READY_REQ` / `_ACK`, `HEARTBEAT_REQ`, `DISC_REQ`.
+Authority: **HEP-CORE-0046 REG Protocol Redesign**.
+
+**Mandatory rules.**
+
+1. **All REG-family wire I/O flows through the typed envelope
+   (HEP-CORE-0046 §14).**  No handler parses raw JSON with
+   `body.value("field", default)`.  Outbound: build a typed
+   `XxxReqBody` / `XxxAckBody`, stamp `envelope_hash`, send via
+   `WireEnvelope::build_dealer_send` / `build_router_send`.
+   Inbound: parse via `WireEnvelope::parse_dealer_recv` /
+   `parse_router_recv`, deserialize to the typed body class, use
+   named accessors only.
+2. **All REG-family REQ handlers on the broker side run the
+   admission-gate pipeline before mutation** (HEP-CORE-0046
+   §14.5).  Every handler that mutates channel-membership state
+   MUST use `BrokerRegHandler::handle` (for REG_REQ /
+   CONSUMER_REG_REQ) or the shared `AdmissionGateRunner` on the
+   same 7-gate pipeline (envelope hash → broker_proto →
+   identity_match → grammar → known_role binding → key-rotation
+   → nonce-dedup + wall-ts skew).  No handler re-implements a
+   gate.  No handler half-mutates state under a failing gate.
+3. **Correlation-id, not msg_type, keys pending requests**
+   (HEP-CORE-0046 §14, `I-CORRELATION-STABLE`).  BRC's send/reply
+   pairing MUST key on `correlation_id`.  Defensive "did the
+   reply's `channel_name` echo match?" checks scattered in
+   pre-HEP-0046 code retire on the Phase B commit.
+4. **DEALER `ZMQ_ROUTING_ID` is `role_uid`** (HEP-CORE-0046
+   `I-DEALER-IDENTITY`).  Every role-side BRC sets its DEALER's
+   `ZMQ_ROUTING_ID` to the role's `role_uid` before `connect()`.
+   Broker's ROUTER receives Frame 0 = `role_uid`, cross-checked
+   against the body's `role_uid` at the identity_match gate.
+5. **Wire format changes ship atomically as a `broker_proto`
+   bump** (HEP-CORE-0046 §14.6, `I-WIRE-VERSION-ATOMIC`).  Field
+   additions, renames, retirements, and new gate additions land
+   in one commit that bumps `broker_proto`.  No runtime tolerance
+   for mixed old/new deployments — the security invariants do
+   not hold for the mix duration.
+6. **New REG-family messages** MUST define a typed body class
+   under `src/include/utils/wire_bodies.hpp` (per HEP-CORE-0046
+   §14.3), be hooked into the dispatch table (§14.4), and be
+   routed through the admission pipeline (§14.5) if they mutate
+   membership state.
+7. **Retirements** MUST be listed in HEP-CORE-0046 §3
+   (retirements catalogue) before the retirement commit lands,
+   with cross-references to any dependent HEPs whose text also
+   needs the retirement note.
+
+**Why this rule exists.**  Pre-HEP-CORE-0046, REG-family wire
+handling was scattered across ~10 broker handlers + ~8 BRC
+methods, each with its own private `body.value(...)` parse and
+its own private field validations.  Adding a field, renaming
+one, or forgetting a validation drifted silently across the
+codebase.  Security-gate ordering was interleaved with state
+mutations, so a malformed-but-authenticated-looking request
+could mutate broker state before every gate passed.  HEP-CORE-0046
+centralizes both concerns: one wire contract, one gate order,
+one dispatch pattern.  This rule prevents the scatter from
+re-emerging as future REG-family features get added.
+
+**Enforcement.**  Reviewers apply this at code review.  A future
+CTest guardrail may scan `broker_service.cpp` for `body.value(`
+in REG-family handlers, and BRC for msg_type-keyed pending-request
+maps; those checks are follow-up work.
+
+**Cross-reference:** HEP-CORE-0046 §14 (typed envelope + body
+classes), §14.5 (admission gates), §12 (Phase A–F sequencing).
+
+---
+
 ## References
 
 - **Design Specification**: `docs/HEP/HEP-CORE-0002-DataHub-FINAL.md`

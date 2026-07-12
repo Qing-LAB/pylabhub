@@ -1,16 +1,24 @@
 ---
 title: "REG/REG_ACK protocol redesign — post-abstraction cleanup"
-status: DESIGN LOCKED (walkthrough complete, all 17 findings resolved into main body or documented as invariants)
+status: DESIGN LOCKED (walkthrough complete, F1..F17 resolved, addendum invariants A1..G3 merged, 21 invariants stated in §8.1, typed wire envelope contract in §14)
 target permanent docs on adoption:
   - HEP-CORE-0036 (Authenticated Connection Establishment) — §5b wire, §6.5 auth-refresh, §3 invariants
   - HEP-CORE-0007 (DataHub Protocol and Policy Reference) — §12.3 wire schema, §12 catalog (retirements)
   - HEP-CORE-0017 (Pipeline Architecture) — §3.3.0 factory, §4.7 walkthroughs (cross-refs only)
+  - HEP-CORE-0033 (Wire framing + role identity) — new I-DEALER-IDENTITY invariant + typed envelope reference
 adoption note:
-  Wire schema changes (REG_ACK unified initial_allowlist; retirement of
-  CONSUMER_ATTACH_REQ_ZMQ) ship atomically with role-code + broker-code
-  updates.  Permanent HEPs receive body updates when that commit lands
-  per DOC_STRUCTURE §1.8.  This draft is design authority in the
-  meantime.
+  Typed wire envelope + I-DEALER-IDENTITY + I-REPLAY-BOUND +
+  I-ENVELOPE-BODY-BINDING + retirement of cached zmq_identity +
+  retirement of CONSUMER_ATTACH_REQ_ZMQ + retirement of scalar
+  data_endpoint/data_pubkey ship as one atomic broker_proto bump
+  per I-WIRE-VERSION-ATOMIC.  Mixed old/new deployments break the
+  security invariants for the mix duration; no runtime tolerance.
+  Permanent HEPs receive body updates when that commit lands per
+  DOC_STRUCTURE §1.8.  This draft is design authority in the
+  meantime.  Addendum
+  (DRAFT_reg_ack_protocol_redesign_addendum_invariants.md)
+  content has been merged into §8.1 + §14; addendum retires to
+  docs/archive/ on this commit.
 ---
 
 # REG/REG_ACK protocol redesign — post-abstraction cleanup
@@ -50,34 +58,29 @@ now the queue abstraction's job or is dead weight.
 
 ## 2. The clean protocol — message by message
 
-For each message: purpose, wire shape, semantics under each of the
-five legal (topology × transport) cells, what changes vs. the
-current implementation.
+For each message: purpose, admission semantics, semantics under
+each of the five legal (topology × transport) cells, what changes
+vs. the current implementation.
+
+> **Wire shape is normatively defined in §14** (typed wire envelope
+> contract).  Every message is 5 frames: skeleton (Frames 0-3) +
+> per-msg-type typed body class (Frame 4).  §2 subsections below
+> reference the body class by name and describe admission
+> semantics; they do NOT re-state wire schema (single source of
+> truth in §14 avoids drift between prose and code).
+>
+> When §2 subsections list fields (for reader convenience), those
+> fields are the accessors on the typed body class in §14.3; they
+> are NOT a separate JSON-key contract.  Handlers read them via
+> `body.field()`, never via `body.value("field", "")`.
 
 ### 2.1 REG_REQ / CONSUMER_REG_REQ
 
 **Purpose.**  Ask the broker to admit this role on this channel.
 
-**Wire shape** (same for producer and consumer, `role_type`
-disambiguates):
-
-```
-REG_REQ / CONSUMER_REG_REQ
-  channel_name        : string      (required)
-  channel_topology    : string      ("fan-in" | "fan-out" | "one-to-one"; optional, default "one-to-one")
-  data_transport      : string      ("zmq" | "shm"; required)
-  role_uid            : string      (required, HEP-CORE-0033 §G2.2.0b grammar)
-  role_name           : string      (required)
-  role_type           : string      ("producer" | "consumer" | "processor")
-  zmq_pubkey          : string      (Z85, 40 chars; required — CURVE identity)
-  schema_hash         : string      (BLAKE2b-256 hex; required)
-  schema_version      : uint32      (required)
-  schema_id           : string      (may be empty for anonymous schemas)
-  schema_blds         : string      (canonical BLDS; required if anonymous)
-  schema_owner        : string      (schema owner uid; may be empty)
-  abi_fingerprint     : object      (HEP-CORE-0032 §8 version envelope)
-  correlation_id      : string      (optional)
-```
+**Body class.**  `RegReqBody` — see §14.3 for the field list.
+Same class for producer (`REG_REQ`) and consumer
+(`CONSUMER_REG_REQ`); `body.role_type()` disambiguates.
 
 **Semantics under the clean model.**  Broker runs the admission
 sequence in order:
@@ -129,23 +132,12 @@ topology-aware.  What changes is the broker-side logic (steps 5,
 **Purpose.**  Confirm admission + deliver the peer-side artifacts
 this role needs to establish the data plane.
 
-**Wire shape (clean):**
-
-```
-REG_ACK / CONSUMER_REG_ACK
-  status              : "success" | "error"
-  channel_name        : string
-  message             : string
-  correlation_id      : string
-  heartbeat           : object      (HEP-CORE-0023 §2.5 tolerated cadence)
-  broker_abi_fingerprint : object
-  broker_build_id     : string      (optional)
-  broker_observer_pubkey_z85 : string  (HEP-CORE-0041 §D1)
-  instance_id         : uint64      (HEP-CORE-0042 §5.5.3 stale-guard)
-  snapshot_version    : uint64      (channel_version at the moment
-                                     initial_allowlist was captured)
-  initial_allowlist   : array of peer objects (see below)
-```
+**Body class.**  `RegAckBody` — see §14.3.  Same class for
+producer (`REG_ACK`) and consumer (`CONSUMER_REG_ACK`).
+`snapshot_version` is the `channel_version` at the moment
+`initial_allowlist` was captured (kept as integrity witness — the
+client cross-checks subsequent NOTIFY versions against this
+baseline).
 
 **`initial_allowlist` — the unified topology-driven peer field.**
 Semantic depends on which side this ACK is going to:
@@ -184,24 +176,16 @@ after `apply_master_approval` drove the queue to Active.  The broker
 records it on `ChannelEntry.data_endpoint`; subsequent dialing-side
 REG_ACKs use it in their `initial_allowlist`.
 
-**Wire shape (unchanged):**
+**Body classes.**  `EndpointUpdateReqBody` / `EndpointUpdateAckBody`
+— see §14.3.  Under the clean model `endpoint_type = "zmq_node"`
+is the only value (inbox retires).
 
-```
-ENDPOINT_UPDATE_REQ
-  channel_name    : string
-  endpoint_type   : "zmq_node"    (only value under clean model — inbox retires)
-  endpoint        : string        (tcp://host:port or ipc://path)
-  correlation_id  : string
-
-ENDPOINT_UPDATE_ACK
-  status         : "success" | "error"
-  message        : string
-  correlation_id : string
-```
-
-**Sender validation — TOPOLOGY-AWARE.**  The clean rule: the sender's
-ZMTP identity must match the role that is the binding side for this
-channel's topology.
+**Sender validation — TOPOLOGY-AWARE.**  Under I-DEALER-IDENTITY,
+`env.identity() == body.role_uid()`.  Under I-CHANNEL-SINGLE-
+BINDING-SIDE, the check reduces to `env.identity() ==
+ChannelEntry.binding_side_uid()`.  All three sender-side handlers
+(§2.3, §2.5, §2.6) call the same `HubState::is_binding_side_sender`
+primitive; no per-handler roster walk.
 
 - fan-in     → sender must be in `ChannelEntry.consumers[]`
 - fan-out    → sender must be in `ChannelEntry.producers[]`
@@ -225,16 +209,9 @@ handler still validates the endpoint_type but the inbox branch dies.
 side when the channel's allowlist changed (a peer was admitted, left,
 or transitioned to Live).
 
-**Wire shape (unchanged, already topology-aware):**
-
-```
-CHANNEL_AUTH_CHANGED_NOTIFY
-  channel_name    : string
-  channel_version : uint64      (post-mutation)
-  role_uid        : string      (the peer whose state changed)
-  role_type       : string      ("producer" | "consumer")
-  phase           : string      ("admitted" | "live" | "left")
-```
+**Body class.**  `ChannelAuthChangedNotifyBody` — see §14.3.
+`body.role_uid()` names the subject peer whose state changed;
+`body.phase()` distinguishes admitted / live / left.
 
 **Target dispatch — TOPOLOGY-AWARE.**  Broker fans the notify to the
 BINDING side of the channel.
@@ -268,26 +245,15 @@ the authoritative snapshot.
 receiving `CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted|left)`.  Also
 used for defensive re-sync on any perceived drift.
 
-**Wire shape (unchanged):**
+**Body classes.**  `GetChannelAuthReqBody` /
+`GetChannelAuthAckBody` — see §14.3.  The ACK's `allowlist` is
+an array of Z85 pubkey strings; `channel_version` is the current
+`channel_version[K]` at snapshot capture time.
 
-```
-GET_CHANNEL_AUTH_REQ
-  channel_name    : string
-  role_uid        : string   (caller — broker validates it's binding side)
-  correlation_id  : string
-
-GET_CHANNEL_AUTH_ACK
-  status          : "success" | "error"
-  allowlist       : array of Z85 pubkey strings
-  channel_version : uint64
-  correlation_id  : string
-```
-
-**Sender validation — TOPOLOGY-AWARE.**  Same as ENDPOINT_UPDATE_REQ:
-caller must be the binding side.  Currently the handler doc-comment
-says "producer pulls the allowlist" — that reflects pre-migration
-"binding side is producer" only.  Doc + code both need the
-topology-agnostic rewrite.
+**Sender validation — TOPOLOGY-AWARE.**  Same as §2.3:
+`env.identity() == ChannelEntry.binding_side_uid()` via
+`HubState::is_binding_side_sender`.  Caller MUST be the binding
+side regardless of topology.
 
 ### 2.6 CHANNEL_AUTH_APPLIED_REQ / _ACK
 
@@ -296,35 +262,25 @@ to my ZAP."  Broker advances `confirmed_version[K][P]` and releases
 any dialing-side REG_REQs pending on `confirmed_version >= my_version`
 (R6 gate condition 3).
 
-**Wire shape (unchanged):**
+**Body classes.**  `ChannelAuthAppliedReqBody` /
+`ChannelAuthAppliedAckBody` — see §14.3.  `body.instance_id()` on
+the REQ is the stale-guard per HEP-CORE-0042 §5.5.3.
 
-```
-CHANNEL_AUTH_APPLIED_REQ
-  channel_name    : string
-  role_uid        : string
-  applied_version : uint64
-  instance_id     : uint64        (HEP-CORE-0042 §5.5.3 stale-guard)
-  correlation_id  : string
+**Sender validation — TOPOLOGY-AWARE.**  Same as §2.5.
 
-CHANNEL_AUTH_APPLIED_ACK
-  status          : "success" | "error"
-  confirmed_version : uint64
-  correlation_id  : string
-```
+### 2.7 Lifecycle messages
 
-**Sender validation — TOPOLOGY-AWARE.**  Same rule as §2.5.
-
-### 2.7 Lifecycle messages (unchanged in shape, unchanged in semantic)
-
-- `HEARTBEAT_REQ` / `HEARTBEAT_ACK` — presence maintenance
-  (HEP-CORE-0023).  Topology-independent.
-- `DEREG_REQ` / `DEREG_ACK`, `CONSUMER_DEREG_REQ` / `CONSUMER_DEREG_ACK`
-  — voluntary teardown.  Broker fires
-  `CHANNEL_AUTH_CHANGED_NOTIFY(phase=left)` to the binding side and,
-  when the last binding-side peer leaves, tears the channel down
-  and fires `CHANNEL_CLOSING_NOTIFY` to all remaining dialing-side
-  peers.
-- `DISC_REQ` / `DISC_ACK` — discovery query.  Topology-independent.
+- **HEARTBEAT_REQ / HEARTBEAT_ACK** — presence maintenance
+  (HEP-CORE-0023).  Bodies: `HeartbeatReqBody` /
+  `HeartbeatAckBody` (see §14.3).  Topology-independent.
+- **DEREG_REQ / DEREG_ACK**, **CONSUMER_DEREG_REQ / CONSUMER_DEREG_ACK**
+  — voluntary teardown.  Bodies: `DeregReqBody` / `DeregAckBody`.
+  Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY(phase=left)` to the
+  binding side and, when the last binding-side peer leaves, tears
+  the channel down and fires `CHANNEL_CLOSING_NOTIFY` to all
+  remaining dialing-side peers.
+- **DISC_REQ / DISC_ACK** — discovery query.  Bodies:
+  `DiscReqBody` / `DiscAckBody`.  Topology-independent.
 
 ## 3. What retires
 
@@ -811,38 +767,196 @@ be topology-driven, not role-type-hardcoded.
 
 These are not tunable — they are the assumptions the design's
 correctness rests on.  Any implementation change that violates
-one of these breaks the protocol.
+one of these breaks the protocol.  21 invariants grouped by
+concern: state / ordering (4), identity (4), security (3), wire
+envelope (2), delivery (3), state model (2), policy (3).
+
+#### State / ordering
 
 **I-ROUTER-SERIAL.**  Broker's ROUTER dispatch runs on a single
 thread.  All admission mutations, pending-queue mutations, and
-wake-trigger scans execute serialized by that thread.  Under this
-invariant the pending queue does not need external
-synchronization; the writer lock inside HubState is taken for
-`ChannelEntry` mutations only.  Any future thread that also
-mutates channel state (federation relay, background sweep) must
-either respect this by piping through the ROUTER thread or add
-its own synchronization to the pending queue.
+wake-trigger scans execute serialized by that thread.  Any future
+thread that also mutates channel state (federation relay,
+background sweep) must either pipe through the ROUTER thread or
+add its own synchronization to the pending queue.
+
+**I-STATE-MUTATION-ATOMIC.**  Every mutation on HubState that
+affects admission runs under HubState's writer lock (unique_lock).
+Every read that participates in an admission decision runs under
+shared_lock or is captured to a value copy under one such lock.
+The writer lock is the sole ordering primitive for allowlist +
+channel_version + confirmed_version consistency.  I-ROUTER-SERIAL
+ensures dispatch-thread serialization; I-STATE-MUTATION-ATOMIC
+ensures lock ownership.
 
 **I-OPT-ADMIT.**  When a dialing-side REG_REQ passes the topology,
 cardinality, and schema gates, its CURVE pubkey is added to the
 binding side's channel-scope allowlist BEFORE REG_ACK is sent
-(optimistic admission).  This is what lets the version-bump →
-NOTIFY → pull → APPLIED_REQ chain converge before the dialing
-peer's CURVE handshake fires.  Rollback happens on pending expiry
-(§7.2.3) or on the dialing peer's DEREG/heartbeat-timeout.  The
-window of optimistic admission is bounded by `pending_budget_ms`.
+(optimistic admission).  This lets the version-bump → NOTIFY →
+pull → APPLIED_REQ chain converge before the dialing peer's CURVE
+handshake fires.  Rollback on pending expiry or DEREG /
+heartbeat-timeout.  Window bounded by `pending_budget_ms`.
+
+**I-MONOTONIC-VERSION.**  `channel_version[K]` monotonically
+increases per channel over its lifetime (from creation to close).
+Bumped on any allowlist mutation (admit or revoke); unchanged on
+`phase=live` NOTIFYs (pure observability).
+`confirmed_version[K][B]` monotonically increases per binding-side
+role instance; resets on binding-side role re-registration
+(new `instance_id`).
+
+#### Identity
+
+**I-DEALER-IDENTITY.**  For every control-plane DEALER↔ROUTER
+connection between a role and a broker, the DEALER MUST set
+`ZMQ_ROUTING_ID` to its `role_uid` before `connect()`.  The
+broker MUST verify at REG admission that the ROUTER-captured
+identity frame equals the payload's `role_uid`; mismatch →
+`INVALID_REQUEST error_code="IDENTITY_MISMATCH"`.  Extended to
+hub-to-hub federation DEALERs (routing_id = sending hub's
+`hub_uid`) per §11.  Rationale: libzmq's default DEALER identity
+is `rand()`-derived and collides across fresh processes; without
+a stable per-role identity, unsolicited sends silently misroute.
+
+**I-PUBKEY-BINDING.**  Every entry in `known_roles` names a
+distinct `(role_uid, zmq_pubkey)` pair.  The pair is
+bidirectionally unique: no two entries share a role_uid, no two
+share a zmq_pubkey.  Broker startup rejects a config that violates
+this.  At REG admission the broker verifies (a) the payload's
+`(role_uid, zmq_pubkey)` matches an entry and (b) the DEALER's
+presented CURVE certificate (curve_publickey in ZAP AUTH) equals
+the payload's `zmq_pubkey`.
+
+**I-CURVE-IS-DECLARED.**  A role's CURVE identity is a single
+value applied uniformly: (a) BRC DEALER's `curve_publickey` at
+CTRL ROUTER connect, (b) data-plane socket's `curve_publickey`
+at connect / bind, (c) the `zmq_pubkey` field on every REG-family
+message.  Reading the pubkey from more than one config field
+produces silent "authenticates on control plane, denied on data
+plane" splits and is a design violation.  Role-side keystore is
+the single source (`secure().keys().pubkey(keystore_name)`).
+
+**I-CHANNEL-SINGLE-BINDING-SIDE.**  For every channel K at every
+instant t, `ChannelEntry.binding_side_uid()` returns exactly one
+role_uid or `nullopt` (channel not yet opened).  Enforced by the
+cardinality gate at REG admission (fan-in: 1 consumer; fan-out /
+one-to-one: 1 producer).  Every `confirmed_version[K][B]` write
+uses B = `binding_side_uid()` at write time.
+
+#### Security
+
+**I-REPLAY-BOUND.**  Every REG_REQ, CONSUMER_REG_REQ,
+ENDPOINT_UPDATE_REQ, CHANNEL_AUTH_APPLIED_REQ, DEREG_REQ,
+CONSUMER_DEREG_REQ carries a `client_nonce` (16 bytes,
+cryptographically random) AND a `client_wall_ts` (uint64,
+milliseconds since epoch).  Broker rejects with
+`error_code=REPLAY_OR_SKEW` when (a) `client_nonce` reuse within
+a sliding window of `2 * pending_budget_ms` OR (b)
+`|broker_wall_ts - client_wall_ts| > 30_000` ms.  Nonce dedup
+structure per-role_uid, in-memory, sliding-window pruned.
+Rationale: CURVE encrypts frames; it does NOT prevent replay of a
+captured message after the legitimate role has DEREG'd.
+
+**I-ENVELOPE-BODY-BINDING.**  Every msg_type body (Frame 4)
+includes an `envelope_hash` field computed as
+`BLAKE2b-256(Frame0_identity || Frame2_msg_type ||
+Frame3_correlation_id)` by the sender.  `WireEnvelope::parse`
+recomputes and rejects with `error_code=ENVELOPE_TAMPERED` on
+mismatch.  Rationale: CURVE encrypts each frame independently; an
+attacker with captured messages could splice a Frame 4 body from
+message X onto Frame 3 correlation_id / Frame 2 msg_type from
+message Y.  Hash binding refuses spliced bodies.
+
+**I-KEY-ROTATION-VIA-DEREG.**  A role's CURVE pubkey is immutable
+for a given `(role_uid, broker_lifetime)` pair.  Any REG-family
+request whose `zmq_pubkey` differs from the role's currently-
+registered pubkey is rejected with `error_code=UID_CONFLICT`
+(already-registered role reregistering under new pubkey) or
+`KEY_ROTATION_REQUIRES_DEREG` (post-DEREG re-REG with pubkey
+different from known_roles).  Key rotation is an operator action:
+(1) DEREG the role, (2) update `known_roles` config, (3) role
+re-REG with new key.  No in-band rotation, no dual-pubkey window.
+
+#### Wire envelope
+
+**I-WIRE-ENVELOPE.**  Every control-plane message is 5 ZMQ frames:
+4 skeleton frames (Frame 0 = identity, Frame 1 =
+`kFrameTypeControl` byte `'C'`, Frame 2 = msg_type ≤64 bytes ASCII,
+Frame 3 = correlation_id ≤64 bytes ASCII) + 1 body frame (Frame 4,
+per-msg-type JSON schema parsed via a typed body class).  Skeleton
+frames are identical shape across every REQ / ACK / NOTIFY.  NO
+handler reads a wire field via JSON key extraction; every wire
+field is exposed as a typed accessor on either `WireEnvelope`
+(Frames 0/2/3) or a msg_type-specific body class (Frame 4 fields).
+Adding a new msg_type = one new body class + one dispatch-table
+entry.  Full frame layout + body class catalog in §14.
+
+**I-WIRE-VERSION-ATOMIC.**  The typed envelope is not additive
+over pre-migration wire.  Every deployed component ships the
+envelope on the same version cut.  `broker_proto` on the REG
+envelope MUST match the current threshold; mismatch →
+`UNSUPPORTED_PROTO` reject at envelope parse.  No runtime
+tolerance for mixed-envelope deployments — mixed old/new breaks
+security invariants for the duration of the mix.
+
+#### Delivery
+
+**I-CORRELATION-STABLE.**  Every REQ MUST carry a non-empty
+`correlation_id`; every ACK MUST echo it.  Empty correlation_id
+on a REQ is rejected at `WireEnvelope::parse` with
+`error_code=INVALID_REQUEST`.  BRC's `pending_requests` map keys
+on `(msg_type, correlation_id)`.  No grace-period generation on
+the broker side — grace periods are documented attack windows
+under the CURVE frame.
+
+**I-NOTIFY-BEST-EFFORT.**  Fire-and-forget NOTIFYs are best-
+effort.  `ZMQ_ROUTER_MANDATORY` is left at default (0), so a send
+to a currently-disconnected identity is silently dropped.
+Recovery: (a) next NOTIFY for the same channel_name pulls current
+state, (b) pending-queue timeout releases the dialing peer with
+`CHANNEL_NOT_READY` triggering client-side re-REG, (c) binding-
+side reconnect resyncs via `REG_ACK.initial_allowlist`.
+
+**I-ROUTER-NOT-MANDATORY.**  Broker's CTRL ROUTER MUST NOT set
+`ZMQ_ROUTER_MANDATORY`.  The pending-queue + I-NOTIFY-BEST-EFFORT
+design relies on silent drops of sends to disconnected identities
+for transient reconnect windows; mandatory-mode would surface
+`EHOSTUNREACH` exceptions the current design neither catches nor
+benefits from.
+
+#### State model
+
+**I-INSTANCE-ID-EPHEMERAL.**  `instance_id` is monotonic within
+one broker process lifetime; not persisted across broker restart.
+Stale-instance guards (HEP-CORE-0042 §5.5.3) protect against
+in-flight ACK reordering within a broker lifetime, not across
+restarts.  Broker restart drops all in-flight admissions; clients
+re-register and receive fresh instance_ids.
+
+**I-PENDING-EPHEMERAL.**  The broker's pending REG_REQ queue is
+in-memory and lost on broker restart.  Clients whose REG_REQ was
+pending re-REG on their next BRC reconnect; broker's fresh
+pending queue accepts them.  No persistence of pending state
+across restart.
+
+#### Policy
 
 **I-BRC-BUDGET.**  `client_brc_reg_ack_timeout >= pending_budget_ms`.
 Enforced by operator configuration; violation causes retry storms
 and admission ambiguity (§7.2.4).
 
-**I-MONOTONIC-VERSION.**  `channel_version[K]` monotonically
-increases per channel over its lifetime (from creation to close).
-Bumped on any allowlist mutation (admit or revoke); unchanged on
-`phase=live` NOTIFYs (which are pure observability).
-`confirmed_version[K][B]` monotonically increases per binding-side
-role instance; resets on binding-side role re-registration
-(new `instance_id`).
+**I-REQ-IDEMPOTENT.**  Every control-plane REQ is idempotent under
+the `(role_uid, correlation_id)` key.  A duplicate REQ with the
+same key is either dropped as network-layer duplicate (broker
+already replied) or re-processed as a retry (broker still
+pending); in neither case does state mutation occur twice.
+Coupled with I-CORRELATION-STABLE + I-REPLAY-BOUND.
+
+**I-MSG-TYPE-TAXONOMY.**  msg_type suffix `_NOTIFY` ⇒ fire-and-
+forget (no ACK, best-effort per I-NOTIFY-BEST-EFFORT); suffix
+`_REQ` ⇒ request-reply requiring `_ACK` or `ERROR`.  Any deviation
+(e.g., a NOTIFY that expects an ACK) is a wire violation.
+Enforced by BRC shape-conformance check per HEP-CORE-0007 §12.2.1.
 
 ## 9. Open questions
 
@@ -964,34 +1078,102 @@ No client-side coordination needed.
   thereafter).
 - Bands — HEP-CORE-0030.  Independent of channel REG.
 
-## 12. Sequencing to implement (after this design locks)
+## 12. Sequencing to implement
 
-Once we agree the shape here is right:
+The design is locked; sequencing follows the invariant-first
+discipline — wire skeleton before handlers, security invariants
+before topology admission, atomic wire cut for the whole chain.
 
-1. Close the fan-in NOTIFY-routing bug (Q6).  Without it fan-in
-   doesn't work end-to-end.  Small.
-2. Rename the misnomers (`authorized_consumer_pubkeys` etc.).
-   Small mechanical sweep + doc-string fixes on the auth-refresh
-   handlers.
-3. Retire the attach protocol atomically: broker code + role code
-   + BRC method + 10 Flavor-A tests + wire schema doc + role code
-   marker emissions.  Big single commit, self-contained.
-4. Refactor the 2 Flavor-B tests onto R6-pending observations.
-5. Retire `data_endpoint` / `data_pubkey` scalars from REG_ACK
-   (subsumed by `initial_allowlist`).  Broker builder + role
-   parser + wire schema doc.
-6. Retire `ProducerEntry.zmq_node_endpoint` + `_set_producer_
-   zmq_node_endpoint` + associated per-producer endpoint API.
-7. Symmetric R6 gate: extend pending-REG queue + wake triggers to
-   fire for fan-in producer path.
-8. Retire `RxQueueOptions.producer_peers` + `ProducerPeer` struct
-   + `set_producer_peers` / `add_producer_peer` / `remove_producer_peer`
-   on `ZmqQueue`.  Depends on §5 above.
-9. Retire `zmq_bind` config field + `Rx/TxQueueOptions.zmq_bind`
-   + `TransportConfig.zmq_bind`.
-10. Add new coverage tests (§10).
+**Phase A — Typed envelope skeleton (foundation).**
 
-Each step passes ctest before the next lands.
+1. `WireEnvelope` class (utils/network_comm/wire_envelope.hpp) —
+   build / parse the 5-frame envelope per §14.2.  Validates
+   envelope↔body hash (I-ENVELOPE-BODY-BINDING) at parse.  L1
+   unit-tested.
+2. Per-msg-type typed body classes
+   (utils/network_comm/wire_bodies.hpp) — one class per msg_type
+   per §14.3.  Every REG-family body exposes `client_nonce()`,
+   `client_wall_ts()`, `envelope_hash()`.  L1 unit-tested.
+
+**Phase B — BRC + broker rewired to envelope.**
+
+3. BRC: DEALER `routing_id` set from `Config::role_uid`
+   (I-DEALER-IDENTITY); refuse-connect on empty.  Send + receive
+   paths route through `WireEnvelope::build` / `parse`.  ACK
+   matching keys on `(msg_type, correlation_id)`.  Every REQ
+   constructor stamps `client_nonce` + `client_wall_ts`
+   (I-REPLAY-BOUND).
+4. Broker ROUTER poll-loop: parse via `WireEnvelope`, dispatch on
+   `env.msg_type()`.
+5. Handler-by-handler sweep: replace every JSON-key extraction
+   (`req.value("channel_name")`, `body.value("role_uid")`, etc.)
+   with typed accessors on `WireEnvelope` (skeleton) or the
+   msg_type body class.  Every handler signature becomes
+   `handle_XXX(const WireEnvelope& env, const XxxBody& body, ...)`.
+
+**Phase C — Admission-gate ordering (security first).**
+
+6. Broker REG-family handlers: run gates 1-7 per §14.5 BEFORE any
+   state mutation — envelope hash, broker_proto, identity match,
+   grammar, known_roles binding, key-rotation, anti-replay.
+7. `HubState` API additions: `ChannelEntry::binding_side_uid()`,
+   `HubState::is_binding_side_sender()`, `HubState::nonce_seen()`.
+8. §2.3 / §2.5 / §2.6 handlers: replace bespoke sender-validation
+   with `is_binding_side_sender`.
+9. Broker startup: `known_roles` reverse-uniqueness check
+   (I-PUBKEY-BINDING); reject config with duplicate pubkeys.
+
+**Phase D — Retirements enabled by the invariants.**
+
+10. Retire `ConsumerEntry::zmq_identity`,
+    `ProducerEntry::zmq_identity`, `BandMember::zmq_identity`
+    (D1).  Every call site `x.zmq_identity` → `x.role_uid`.
+    Every `send_to_identity(x.zmq_identity, ...)` becomes
+    `WireEnvelope::build(x.role_uid, ...)` + ROUTER send.
+11. Rename misnomers: `authorized_consumer_pubkeys` →
+    `authorized_peer_pubkeys`, `_on_consumer_authorized` →
+    `_on_peer_authorized`.
+12. Retire attach protocol atomically: broker code + role code +
+    BRC method + 10 Flavor-A tests + wire schema doc.
+13. Refactor the 2 Flavor-B tests onto R6-pending observations.
+14. Retire scalar `data_endpoint` / `data_pubkey` on REG_ACK
+    (subsumed by `initial_allowlist`).
+15. Retire `ProducerEntry.zmq_node_endpoint` +
+    `_set_producer_zmq_node_endpoint` + per-producer endpoint API.
+16. Symmetric R6 gate: extend pending-REG queue + wake triggers
+    for the fan-in producer path.
+17. Retire `RxQueueOptions.producer_peers` + `ProducerPeer` struct
+    + `set_producer_peers` / `add_producer_peer` /
+    `remove_producer_peer` on `ZmqQueue`.
+18. Retire `zmq_bind` config field + `Rx/TxQueueOptions.zmq_bind`
+    + `TransportConfig.zmq_bind`.
+
+**Phase E — Coverage tests.**
+
+19. L2: BRC's DEALER `routing_id` equals `Config::role_uid`.
+20. L2: broker rejects identity-mismatched REG_REQ
+    (`IDENTITY_MISMATCH`).
+21. L2: `WireEnvelope::parse` rejects tampered envelope
+    (`ENVELOPE_TAMPERED`).
+22. L2: broker rejects replay (nonce reuse) and skew (clock)
+    (`REPLAY_OR_SKEW`).
+23. L2: broker rejects in-band key rotation
+    (`KEY_ROTATION_REQUIRES_DEREG`).
+24. L3: broker startup rejects duplicate-pubkey `known_roles`.
+25. L4: fan-in end-to-end passes without any identity workaround
+    (task #95 falls out here).
+26. L4: BAND_JOIN with 3 members — each receives its own NOTIFY.
+27. L4: DEREG + config update + re-REG succeeds (A11 operator
+    procedure).
+
+**Phase F — Federation follow-on.**  I-DEALER-IDENTITY extended
+to hub-to-hub DEALERs (G1); HEP-CORE-0022 addendum tracks.
+
+Each phase passes ctest before the next lands.  Phases A + B are
+one atomic commit (envelope + handler sweep together — mixed
+old/new envelope on the wire breaks I-CORRELATION-STABLE +
+I-REPLAY-BOUND for the mix duration).  Phases C-E can ship as
+sequential commits with `broker_proto` unchanged.
 
 ## 13. Scenario walkthrough + validation findings
 
@@ -1752,21 +1934,210 @@ directly — update §7.2 with the four-condition R6 gate and note
 the channel-open wake trigger.  Then re-walk each scenario against
 the updated draft to confirm no cascading effects.
 
-## 14. Requests for review
+## 14. Typed wire envelope contract
 
-Before we adopt this and start deleting code, verify with me:
+Every control-plane message uses one shape.  Handlers never carve
+fields out of a JSON body; every wire field is exposed through a
+typed accessor.  §14 is normative — the code implements exactly
+this contract; §2 subsections describe admission semantics that
+reference the typed body classes defined here.
 
-- Is anything in §2 wire-shape-wise different from what you've
-  been picturing?
-- Is the state model in §5 the way you want it, or should any
-  cell be different?
-- Are the retirement decisions in §3 all agreed?  Is there any
-  wire message you'd want to keep during a transition period
-  instead of atomic-retire?
-- Is the `initial_allowlist` semantic (unified field, semantic
-  varies by role side) the right final shape, or would you rather
-  have separate binding-side / dialing-side fields?
-- Are Q1–Q7 correctly resolved as stated, or does any need
-  more discussion?
-- Is the sequencing in §12 the right order, or should any step
-  move earlier / later?
+### 14.1 Frame layout
+
+Every message is 5 ZMQ frames:
+
+```
+Frame 0 : identity         (bytes; role_uid or hub_uid per
+                            I-DEALER-IDENTITY; ROUTER-managed on
+                            receive, DEALER-set via ZMQ_ROUTING_ID
+                            on send)
+Frame 1 : control marker   ('C', single byte; kFrameTypeControl)
+Frame 2 : msg_type         (ASCII, ≤64 bytes)
+Frame 3 : correlation_id   (ASCII, ≤64 bytes; empty for
+                            fire-and-forget NOTIFY only)
+Frame 4 : msg_type body    (JSON; schema per-msg-type; parsed via
+                            the typed body class named by msg_type)
+```
+
+Frames 0-3 are the **skeleton** — identical shape across every
+REQ / ACK / NOTIFY, decidable without JSON parse.  Frame 4 is the
+**body** — msg_type-specific.  The whole 5 frames together are the
+**envelope**.
+
+BRC's ACK-matching keys on `(Frame 2 msg_type, Frame 3
+correlation_id)` without parsing Frame 4.  Handler dispatch keys
+on Frame 2 alone.  Every routing / reject / correlate decision is
+made on skeleton frames alone.
+
+### 14.2 WireEnvelope class
+
+Single owner of frame layout.  BRC + broker both go through it;
+no other code path constructs or consumes wire frames.
+
+```cpp
+class WireEnvelope {
+public:
+    // Build the 5-frame envelope.  Sender-side omits Frame 0
+    // (ROUTER prepends identity on receive).  Stamps envelope_hash
+    // on the body per I-ENVELOPE-BODY-BINDING before returning.
+    template <typename BodyT>
+    static zmq::multipart_t build(const std::string& identity,
+                                    const std::string& msg_type,
+                                    const std::string& correlation_id,
+                                    BodyT              body);
+
+    // Parse a 5-frame inbound envelope.  Validates envelope↔body
+    // hash (I-ENVELOPE-BODY-BINDING); rejects with std::nullopt +
+    // ENVELOPE_TAMPERED WARN on mismatch.  Rejects empty
+    // correlation_id on a REQ (I-CORRELATION-STABLE) with
+    // std::nullopt + INVALID_REQUEST.
+    static std::optional<WireEnvelope> parse(zmq::multipart_t&& msg);
+
+    std::string_view identity()       const;   // Frame 0
+    std::string_view msg_type()       const;   // Frame 2
+    std::string_view correlation_id() const;   // Frame 3
+
+    // Typed body cast.  Chooses the body class by msg_type;
+    // throws on schema-shape mismatch or missing required fields.
+    template <typename BodyT>
+    BodyT body_as() const;
+};
+```
+
+### 14.3 Typed body classes
+
+Each msg_type owns a C++ class in
+`utils/network_comm/wire_bodies.hpp`.  Each class exposes ONLY the
+fields its msg_type carries via named accessors; validates required
+fields at construction.  No `body.value("field", ...)` scatter
+anywhere; the class is the schema.
+
+Every REG-family body (any msg_type that mutates admission state)
+carries the security triple `{client_nonce, client_wall_ts,
+envelope_hash}` per I-REPLAY-BOUND + I-ENVELOPE-BODY-BINDING.
+Every body (REQ / ACK / NOTIFY) carries `envelope_hash`.  For
+brevity the class catalog below notes "+ security triple" or
+"+ envelope_hash only" instead of repeating.
+
+- **RegReqBody** (msg_type = `REG_REQ`, `CONSUMER_REG_REQ`):
+  `channel_name`, `role_uid`, `role_type`, `role_name`,
+  `channel_topology`, `data_transport`, `zmq_pubkey`,
+  `broker_proto`, `schema_hash`, `schema_version`, `schema_id`,
+  `schema_blds`, `schema_owner`, `abi_fingerprint` + security triple.
+- **RegAckBody** (`REG_ACK`, `CONSUMER_REG_ACK`): `status`,
+  `error_code`, `message`, `channel_name`, `instance_id`,
+  `snapshot_version`, `heartbeat`, `initial_allowlist`,
+  `broker_abi_fingerprint`, `broker_build_id`,
+  `broker_observer_pubkey_z85` + envelope_hash only.
+- **ChannelAuthChangedNotifyBody**: `channel_name`, `role_uid`
+  (subject), `role_type` (subject), `phase`, `channel_version`
+  + envelope_hash only.
+- **ChannelClosingNotifyBody**: `channel_name`, `reason`
+  + envelope_hash only.
+- **ConsumerDiedNotifyBody**: `channel_name`, `role_uid`, `reason`,
+  `target_role` + envelope_hash only.
+- **EndpointUpdateReqBody**: `channel_name`, `endpoint_type`,
+  `endpoint` + security triple.
+- **EndpointUpdateAckBody**: `status`, `message`
+  + envelope_hash only.
+- **GetChannelAuthReqBody**: `channel_name`, `role_uid`
+  + envelope_hash only (pure query, no state mutation).
+- **GetChannelAuthAckBody**: `status`, `allowlist`, `channel_version`
+  + envelope_hash only.
+- **ChannelAuthAppliedReqBody**: `channel_name`, `role_uid`,
+  `applied_version`, `instance_id` + security triple.
+- **ChannelAuthAppliedAckBody**: `status`, `confirmed_version`
+  + envelope_hash only.
+- **HeartbeatReqBody**: `channel_name`, `role_uid` + envelope_hash
+  only (presence maintenance; no state mutation).
+- **HeartbeatAckBody**: `status` + envelope_hash only.
+- **DeregReqBody**: `channel_name`, `role_uid` + security triple.
+  **DeregAckBody**: `status` + envelope_hash only.
+- **DiscReqBody**: `channel_name` + envelope_hash only.
+  **DiscAckBody**: `status` + discovery payload + envelope_hash only.
+- **BandJoinNotifyBody / BandLeaveNotifyBody**: `band`, `role_uid`,
+  `role_name` + envelope_hash only.
+
+### 14.4 Handler dispatch pattern
+
+```cpp
+// Broker ROUTER poll loop:
+auto env = WireEnvelope::parse(std::move(frames));
+if (!env) { LOGGER_WARN(...); continue; }
+
+// Dispatch table maps msg_type string → typed handler:
+switch_on(env.msg_type()) {
+    case "REG_REQ":
+        handle_reg_req(*env, env->body_as<RegReqBody>()); break;
+    case "CONSUMER_REG_REQ":
+        handle_consumer_reg_req(*env, env->body_as<RegReqBody>()); break;
+    case "ENDPOINT_UPDATE_REQ":
+        handle_endpoint_update(*env, env->body_as<EndpointUpdateReqBody>()); break;
+    case "HEARTBEAT_REQ":
+        handle_heartbeat(*env, env->body_as<HeartbeatReqBody>()); break;
+    // ... one case per msg_type; no default fallthrough (unknown
+    // msg_types are wire violations, dropped with WARN).
+}
+```
+
+Every handler is:
+
+```cpp
+void handle_reg_req(const WireEnvelope& env, const RegReqBody& body,
+                     /* broker context */)
+{
+    // Skeleton fields via env:
+    //   env.identity()        → Frame 0, ROUTER-managed role_uid
+    //   env.correlation_id()  → Frame 3, for reply matching
+    // Body fields via typed accessors, no JSON key scatter:
+    //   body.role_uid()       → self-declared; MUST == env.identity()
+    //                           (I-DEALER-IDENTITY check runs once
+    //                           right after parse, per §14.5)
+    //   body.channel_name()   → routing key
+    //   body.role_type()      → admission-side determination
+    //   body.zmq_pubkey()     → CURVE identity check
+    //   body.schema_*()       → schema invariants
+    //   body.client_nonce() / body.client_wall_ts() → I-REPLAY-BOUND
+    //   body.envelope_hash()  → I-ENVELOPE-BODY-BINDING
+    //   body.broker_proto()   → I-WIRE-VERSION-ATOMIC
+}
+```
+
+### 14.5 Admission-gate ordering
+
+Every REG-family handler runs these gates BEFORE any state
+mutation, in this order:
+
+1. `WireEnvelope::parse` — envelope↔body hash validated
+   (I-ENVELOPE-BODY-BINDING); empty correlation_id rejected
+   (I-CORRELATION-STABLE); unknown msg_type dropped.
+2. `body.broker_proto() == kBrokerProtoVersion` else
+   `UNSUPPORTED_PROTO` (I-WIRE-VERSION-ATOMIC).
+3. `env.identity() == body.role_uid()` else `IDENTITY_MISMATCH`
+   (I-DEALER-IDENTITY).
+4. Grammar validation on role_uid / role_name / channel_name
+   (HEP-CORE-0033).
+5. `verify_known_role_binding(body.role_uid(), body.zmq_pubkey())`
+   else known-roles-mismatch (I-PUBKEY-BINDING).
+6. Key-rotation gate: pubkey ≠ role's currently-registered pubkey
+   → `UID_CONFLICT` or `KEY_ROTATION_REQUIRES_DEREG`
+   (I-KEY-ROTATION-VIA-DEREG).
+7. Anti-replay: `HubState::nonce_seen(body.role_uid(),
+   body.client_nonce(), body.client_wall_ts())` OR wall-clock skew
+   > 30 s → `REPLAY_OR_SKEW` (I-REPLAY-BOUND).
+8. Topology / cardinality / schema / transport gates per §2.1
+   admission sequence.
+
+Gates 1-7 are wire-level integrity + identity; gate 8 is protocol
+admission.  Failure at any gate stops processing and replies with
+the named error code before touching HubState.
+
+### 14.6 Backward-incompatible cut
+
+Pre-migration wire is 3 frames: `['C', msg_type, json_body]`.
+The typed envelope is not additive.  Every deployed component
+ships the envelope on the same version cut per I-WIRE-VERSION-
+ATOMIC.  Mixed old/new deployments break I-DEALER-IDENTITY,
+I-CORRELATION-STABLE, I-REPLAY-BOUND, and I-ENVELOPE-BODY-BINDING
+for the duration of the mix.  No runtime tolerance.  Old clients
+after the cut receive `UNSUPPORTED_PROTO` on their first REQ.
