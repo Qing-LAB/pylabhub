@@ -136,6 +136,61 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### ⚠ Uninvestigated L4 test failures (evidence discipline log)
+
+**Rule:** every L4 test failure gets an entry here, even if reruns
+subsequently pass.  L4 tests exercise real subprocesses, real
+sockets, real timing, real signals — a failure that "rerun-passes"
+is a **transient bug**, not a "flake."  There is nothing flaky
+about tests.  This log ensures the deep/transient bugs L4 tests
+reveal don't get papered over by a rerun-based dismissal.
+
+Each entry records: (a) test name + ctest test id, (b) when it
+was observed, (c) what evidence is available, (d) whether the
+failure has been reproduced under the evidence-preserving
+wrapper, (e) any partial diagnosis.
+
+#### 2480 — `PlhHubCliTest.ZmqE2E_MultiProducer_TwoAuthorized`
+
+- **Observed**: 2026-07-12 during an unfiltered `ctest -L layer4
+  -j 2` sweep (session context: post-REG-arc-commit review).
+  The sweep reported "99% tests passed, 1 tests failed out of 134"
+  and `LastTestsFailed.log` named test #2480.
+- **Evidence available**: NONE.  I violated
+  `feedback_read_log_before_rerun` and ran `ctest --rerun-failed`
+  which OVERWROTE `build/Testing/Temporary/LastTest.log`.  The
+  fresh copy showed only the passing rerun.  Fixture-preserved
+  artifact dirs for the failure run don't exist either — checking
+  `build/stage-debug/test_artifacts/plh_hub_l4/` shows only a
+  passing-rerun dir (`plh_hub_l4_zmqe2e_fanin_hub_619969_0`,
+  mtime 2026-07-12 13:52) and older dirs from 2026-07-11.  The
+  most plausible explanation for the missing failure-run artifacts
+  is that the test process died before the fixture's `tmp()` call
+  registered any paths in `paths_to_clean_` — i.e., a crash in
+  the setup phase before subprocess spawn.  Not confirmed.
+- **Reproduced under wrapper**: NO.  Investigation requires
+  running `tools/ctest_evidence.sh -R
+  '^PlhHubCliTest\.ZmqE2E_MultiProducer_TwoAuthorized$' -j 1`
+  in a loop until the failure recurs, then reading the preserved
+  logs (`build/Testing/logs/ctest-<ts>-pid<N>.log`) BEFORE any
+  further action.  Do NOT invoke `ctest --rerun-failed` on this
+  test — the wrapper will refuse without an evidence-read marker
+  anyway.
+- **Partial diagnosis**: none.  The fan-in E2E exercises 2
+  producers dialing 1 binding-side consumer over CURVE, with the
+  producers' `finalize_channel_connect` polling the broker for
+  peer readiness.  A transient failure at this test could
+  indicate: (a) a race between the two producers'
+  `finalize_channel_connect` polls and the consumer's
+  APPLIED_REQ ack; (b) a port collision on the PID-derived offset
+  under parallel `-j N`; (c) the CURVE-DENY-is-terminal libzmq
+  race the whole prior arc was closing; (d) an L4 harness bug in
+  subprocess reap/timeout.  Cannot narrow without the log.
+
+**When to pick this up.**  Before the next unfiltered L4 sweep
+lands green claims in any commit or docs.  A "green" claim that
+runs on a sweep that hides an earlier "flake" is a false claim.
+
 ### L4 fixture scoreboard: startup sweep for crash-orphans (2026-07-12)
 
 `plh_hub_fixture.h::make_tmp_dir` and its
