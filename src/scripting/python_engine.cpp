@@ -1086,29 +1086,47 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
 // invoke_on_init — on_init(api)
 // ============================================================================
 
-void PythonEngine::invoke_on_init()
+pylabhub::scripting::ScriptEngine::InitStatus
+PythonEngine::invoke_on_init()
 {
-    // No process_pending_() needed: any request enqueued before on_init
-    // returns is drained at the next owner-thread invoke (either
-    // role-side `invoke_produce` etc. inside the data loop, or
-    // hub-side `execute_direct_` inside the event/tick loop).  For the
-    // role-side fast path the original argument also holds — `ctrl_thread_`
-    // is not yet spawned, so no non-owner thread exists to queue
-    // requests.  For hub-side, AdminService is already running by
-    // ctor time, so a pre-on_init eval is theoretically possible —
-    // but it lands on the queue and waits at most one event/tick
-    // cycle (typically ms-to-1s) before draining via execute_direct_.
+    // HEP-CORE-0011 §"Loop-ready gate":
+    //   - No `on_init` defined                    → Ready (default alone)
+    //   - Callback returns None / no return       → Ready (back-compat)
+    //   - Callback returns True / truthy          → Ready
+    //   - Callback returns False / falsy          → NotReady
+    //   - Callback raises                         → NotReady (caught +
+    //                                                logged via
+    //                                                on_python_error_)
     if (!is_callable(py_on_init_))
-        return;
+        return InitStatus::Ready;
 
     py::gil_scoped_acquire g;
     try
     {
-        py_on_init_(api_obj_);
+        py::object result = py_on_init_(api_obj_);
+        // None → treated as Ready per back-compat (existing scripts
+        // whose on_init has no explicit return).
+        if (result.is_none())
+            return InitStatus::Ready;
+        return result.cast<bool>()
+                   ? InitStatus::Ready
+                   : InitStatus::NotReady;
     }
     catch (py::error_already_set &e)
     {
         on_python_error_("on_init", e);
+        return InitStatus::NotReady;
+    }
+    catch (const std::exception &e)
+    {
+        // Coercion failure (e.g. script returned an object that isn't
+        // bool-convertible) — treat as NotReady + surface the error
+        // through the standard script-error channel.
+        LOGGER_ERROR(
+            "[{}] on_init returned a value that is not convertible to "
+            "bool: {} — treating cycle as NotReady",
+            log_tag_, e.what());
+        return InitStatus::NotReady;
     }
 }
 

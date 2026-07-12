@@ -287,29 +287,52 @@ Direction: consumer → broker.
 
 §6.2.1 restates this shape in the ZMQ binding context (with `consumer_role_uid` for the fan-in tracker).
 
-#### 5.5.2 `CHANNEL_AUTH_APPLIED_REQ` / `_ACK` (producer → broker)
+#### 5.5.2 `CHANNEL_AUTH_APPLIED_REQ` / `_ACK` (binding-side role → broker)
 
-Direction: producer → broker.  Sent after producer's per-connection cache successfully receives the pulled allowlist snapshot.
+> **Amendment 2026-07-11.**  The pre-amendment message was
+> producer-only.  Under the singular-side topology model
+> (HEP-CORE-0017 §3.3.0) the binding-side role — whichever side
+> runs ZAP as server for the channel — is what needs to confirm
+> allowlist application.  Under fan-out / one-to-one that is the
+> producer; under fan-in that is the consumer.  The wire is
+> extended below with an optional `role_type` discriminator and
+> a corresponding consumer path in the broker handler that
+> updates a separate confirmation state on the channel's
+> `ChannelAccessEntry`.  Existing producer emitters are wire-
+> compatible with the amended broker (`role_type` defaults to
+> `"producer"` when absent).
+
+Direction: binding-side role → broker.  Sent after the binding-side role's per-connection auth cache (ZAP allowlist) has successfully applied the pulled allowlist snapshot.  Used by the broker to answer the mirror-side dialing role's `CHECK_PEER_READY_REQ` (HEP-CORE-0036 §6.6.3) — "has the guard's clipboard actually been updated so my handshake will admit?".
 
 **Request:**
 ```json
 {
   "channel_name":       "lab.sensors.temperature",
-  "producer_role_uid":  "prod.mysensor.uid00000001",
+  "role_uid":           "prod.mysensor.uid00000001",
+  "role_type":          "producer",
   "instance_id":        7,
   "applied_version":    42
 }
 ```
 
-- `instance_id` — producer's shift number (§5.5.3).  Broker rejects if it doesn't match `instance[P]`.
+- `role_uid` — the calling role's uid.  Historical field name `producer_role_uid` is accepted for back-compat when `role_type` is absent or `"producer"`.
+- `role_type` — one of `"producer"` or `"consumer"`.  Absent defaults to `"producer"` (back-compat with the pre-amendment wire).
+- `instance_id` — REQUIRED for `role_type="producer"` (producer's shift number per §5.5.3, closes the stale-instance race for producer paths).  MUST be omitted / ignored for `role_type="consumer"` (consumers do not have `instance[C]` state — a consumer's re-registration re-runs the entire notify-then-pull cycle before it can call APPLIED_REQ again, so there is no stale-message race to close).
 - `applied_version` — the `snapshot_version` from the preceding `GET_CHANNEL_AUTH_ACK`.
+
+**Broker handler branch by `role_type`:**
+
+- **`"producer"`** — unchanged: stale-instance guard against `instance[P]`; advance `confirmed_version[K][P]`; drain matching entries in `pending_attach_queue_[K][P]` per §5.4 step d.
+- **`"consumer"`** — no stale-instance guard; call `HubState::_on_binding_confirmed(channel_name)` which snapshots the current `ChannelAccessEntry.authorized_consumer_pubkeys` (topology-agnostic name; under fan-in these are producer pubkeys) into `ChannelAccessEntry.binding_side_confirmed_allowlist`.  This snapshot is what `CHECK_PEER_READY_REQ` (§6.6.3) reads to answer "is the caller admitted at the confirmed snapshot?".  No pending-queue drain (fan-in has no attach-time coordination — the equivalent guarantee for the fan-in dialing producer runs through `CHECK_PEER_READY_REQ`'s pull, not a broker-held queue).
 
 **Reply:**
 ```json
 { "status": "ok", "channel_name": "...", "applied_version": 42 }
 ```
 
-Silent drop on stale `instance_id` — producer's local ack timeout handles the missing reply path.
+Silent drop on stale `instance_id` (producer path only) — the caller's local ack timeout handles the missing reply path.
+
+**State model interaction (fan-in only).**  The consumer's APPLIED_REQ handler updates `ChannelAccessEntry.binding_side_confirmed_allowlist`.  This is the single source of truth for `CHECK_PEER_READY_REQ`.  A producer's readiness check consults this field; the producer is "ready to connect" iff its own pubkey is present in the confirmed snapshot.  The versioning arithmetic that closes the producer-side race in §5.4 (`channel_version` / `confirmed_version[K][P]` / per-attempt `target_version`) does not apply to the consumer-side confirmation — a set-membership check on the confirmed snapshot is topology-symmetric with the ZAP allowlist check that will run at the actual CURVE handshake, so a match here means the handshake will succeed.
 
 #### 5.5.3 `PRODUCER_REG_ACK` extension — `instance_id`
 

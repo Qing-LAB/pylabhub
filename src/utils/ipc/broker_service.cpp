@@ -1,6 +1,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/hub_queue_factory.hpp"  // Queue::reader_is_binding_side
 #include "utils/hub_state_queries.hpp"  // HEP-CORE-0039 for_each_presence_matching
 #include "utils/hub_state_json.hpp"
 #include "utils/naming.hpp"   // is_valid_identifier (audit R3.5)
@@ -116,7 +117,7 @@ bool channel_name_matches_glob(const std::string& name, const std::string& glob)
 // When adding a new msg_type to process_message(), it MUST also be listed
 // in the appropriate array below.
 
-constexpr std::array<std::string_view, 20> kRequestReplyTypes = {
+constexpr std::array<std::string_view, 21> kRequestReplyTypes = {
     "REG_REQ", "DISC_REQ", "DEREG_REQ",
     "CONSUMER_REG_REQ", "CONSUMER_DEREG_REQ",
     "ENDPOINT_UPDATE_REQ", "SCHEMA_REQ",
@@ -157,6 +158,13 @@ constexpr std::array<std::string_view, 20> kRequestReplyTypes = {
     // Phase 2.1 — full impl in Phase 2.2 (fast-path + APPLIED drain) +
     // Phase 2.4 (stale-instance drop).
     "CHANNEL_AUTH_APPLIED_REQ",
+    // Dialing-side role asks the broker "is the binding-side ZAP
+    // allowlist populated with my pubkey, i.e., will my next CURVE
+    // handshake succeed?".  Read-only against HubState —
+    // `ChannelAccessEntry.binding_side_confirmed_allowlist` is
+    // consulted.  Used by the fan-in producer between REG_ACK apply
+    // and `socket.connect()`.  See HEP-CORE-0036 §6.6.3.
+    "CHECK_PEER_READY_REQ",
 };
 
 constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
@@ -767,6 +775,19 @@ public:
     /// Takes `socket` so the §5.4 step d queue drain (Phase 2.3b) can
     /// send deferred CONSUMER_ATTACH_ACK_ZMQ replies to the ROUTER
     /// identities captured at wait-path enqueue time.
+    /// HEP-CORE-0036 §6.6.3 — CHECK_PEER_READY_REQ handler.
+    /// Authorization: caller must be a registered role on the
+    /// channel (either dialing side or binding side), rejected with
+    /// NOT_A_ROLE_OF_CHANNEL otherwise.  Under the operational
+    /// semantics the binding-side role never legitimately calls this
+    /// wire — the message names the topology mismatch when it does.
+    /// Membership check: caller's pubkey ∈
+    /// `binding_side_confirmed_allowlist` (populated via the
+    /// extended CHANNEL_AUTH_APPLIED_REQ consumer branch).
+    nlohmann::json handle_check_peer_ready_req(
+        const nlohmann::json      &req,
+        const zmq::message_t      &identity);
+
     nlohmann::json handle_channel_auth_applied_req(
         const nlohmann::json& req,
         zmq::socket_t&        socket);
@@ -1676,6 +1697,21 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         nlohmann::json resp = handle_channel_auth_applied_req(payload, socket);
         const std::string ack =
             (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
+        send_reply(socket, identity, ack, resp);
+    }
+    else if (msg_type == "CHECK_PEER_READY_REQ")
+    {
+        // HEP-CORE-0036 §6.6.3.  Dialing-side role pulls its
+        // readiness state before initiating the CURVE handshake.
+        // Read-only query against
+        // `ChannelAccessEntry.binding_side_confirmed_allowlist`.
+        nlohmann::json resp = handle_check_peer_ready_req(payload,
+                                                           identity);
+        const std::string status = resp.value("status", "");
+        const std::string ack =
+            (status == "ready" || status == "not_ready")
+                ? "CHECK_PEER_READY_ACK"
+                : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
     else if (msg_type == "CONSUMER_DEREG_REQ")
@@ -3513,14 +3549,69 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             "Channel '" + channel_name + "' vanished during admission");
     }
 
-    // HEP-CORE-0036 §6.5: pubkey was validated non-empty + 40-char Z85
-    // above.  Add it to the channel-scope allowlist and fire the
-    // change notify to all producers.
-    hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
-    fire_channel_auth_changed_notify(socket, channel_name,
-                                       /*phase=*/"admitted",
-                                       /*role_uid=*/role_uid,
-                                       /*role_type=*/"consumer");
+    // HEP-CORE-0036 §6.5 + §I11.1 + §6.6.2 — every channel admission
+    // wires a `ChannelAccessEntry` so `GET_CHANNEL_AUTH_REQ` finds a
+    // populated record to serve.  The wire response falls back to
+    // "empty allowlist + loud log" if the record is missing (§6.6.2
+    // response semantics), so a missed call here does not deadlock
+    // the caller — but the invariant "channel is open ⟹ access
+    // record exists" is what makes the fail-closed empty-list branch
+    // a genuine "no peers yet" observation rather than a chronic
+    // broker-state anomaly.  Wire the call symmetrically:
+    //   - Producer opens (fan-out / one-to-one): wired at
+    //     `handle_reg_req` when `admission.channel_opened == true`.
+    //   - Consumer opens (fan-in): wired here.  Under HEP-CORE-0017
+    //     §3.3.0 the fan-in consumer is the binding side and creates
+    //     the channel record on first arrival; the access record is
+    //     its symmetric partner.
+    // Missing this call was the pre-topology-migration bug that
+    // caused `GET_CHANNEL_AUTH_REQ` to hit the "no ChannelAccessEntry"
+    // branch on every fan-in consumer pull.  Under the amended §6.6.2
+    // response semantics that no longer produces `INTERNAL_ERROR`,
+    // but it would still fire an ERROR log on every pull — the
+    // invariant here is the primary fix; the amended response is
+    // defence-in-depth.
+    if (cons_admission.channel_opened)
+    {
+        hub_state_->_on_channel_access_opened(channel_name);
+    }
+
+    // HEP-CORE-0036 §6.5 — the "add pubkey to the channel-scope
+    // allowlist and fire the change notify" step is topology-scoped:
+    //   - Fan-out / one-to-one: the consumer is the dialing side.
+    //     Producer(s) bind and run ZAP as server; their ZAP allowlist
+    //     needs this new consumer's pubkey.  Add + notify producers.
+    //   - Fan-in: the consumer is the binding side.  The
+    //     `ChannelAccessEntry.authorized_consumer_pubkeys` set holds
+    //     producer pubkeys (topology-agnostic name; see the mirror
+    //     comment in the fan-in branch of handle_reg_req).  Adding
+    //     the consumer's own pubkey here would insert self into its
+    //     own ZAP allowlist and — worse — inflate every subsequent
+    //     `admitted_peers_count(channel)` reading on the loop-ready
+    //     gate (HEP-CORE-0011 §"Loop-ready gate") by 1, causing the
+    //     consumer's gate to flip Ready before any producer has been
+    //     admitted.  A self-targeted CHANNEL_AUTH_CHANGED_NOTIFY is
+    //     semantically meaningless — under fan-in the consumer IS
+    //     the only binding-side role and does not authenticate
+    //     against itself.  Skip both under fan-in.
+    // Effective topology: the channel-open path (fan-in first
+    // arrival) uses the declared topology since `channel_entry`
+    // hasn't been populated yet; the join-existing-channel path uses
+    // the stored topology from `channel_entry`.
+    const auto effective_topology = consumer_will_open_channel
+        ? *declared_topology     // must be FanIn per the
+                                 // `consumer_will_open_channel` guard
+        : channel_entry.topology;
+    const bool consumer_is_binding =
+        pylabhub::hub::Queue::reader_is_binding_side(effective_topology);
+    if (!consumer_is_binding)
+    {
+        hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
+        fire_channel_auth_changed_notify(socket, channel_name,
+                                           /*phase=*/"admitted",
+                                           /*role_uid=*/role_uid,
+                                           /*role_type=*/"consumer");
+    }
 
     // HEP-CORE-0036 §6.4 — one-shot per accepted CONSUMER_REG_REQ; format
     // parallels REG_REQ accepted (line ~1148) so test harnesses can grep
@@ -3732,65 +3823,108 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
                           "channel_name and role_uid");
     }
 
-    // Authorization: the caller MUST be a registered producer of the
-    // requested channel.  Defence-in-depth — even though Layer-1 ZAP
-    // already gated who can speak to the broker, we never reveal one
-    // channel's allowlist to a non-producer caller (HEP-CORE-0036 §6.6).
+    // Authorization: the caller MUST be a registered binding-side
+    // role of the requested channel.  Defence-in-depth — even though
+    // Layer-1 ZAP already gated who can speak to the broker, we
+    // never reveal one channel's allowlist to a role that doesn't
+    // legitimately need it.  The binding-side role runs ZAP as
+    // server for the channel and is the only role that seeds the
+    // allowlist into its own transport (HEP-CORE-0036 §6.5 +
+    // §6.6):
+    //   - Fan-out / one-to-one → producer binds → producer authorised
+    //   - Fan-in              → consumer binds → consumer authorised
+    // A dialing-side role has no ZAP allowlist to seed; sending it
+    // the peer set would leak information without operational need.
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
     {
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' does not exist");
     }
-    bool caller_is_producer = false;
-    for (const auto &prod : ch->producers)
+    const bool consumer_binds =
+        pylabhub::hub::Queue::reader_is_binding_side(ch->topology);
+    bool caller_is_binding_side = false;
+    if (consumer_binds)
     {
-        if (prod.role_uid == caller_uid)
+        for (const auto &cons : ch->consumers)
         {
-            caller_is_producer = true;
-            break;
+            if (cons.role_uid == caller_uid)
+            {
+                caller_is_binding_side = true;
+                break;
+            }
         }
     }
-    if (!caller_is_producer)
+    else
+    {
+        for (const auto &prod : ch->producers)
+        {
+            if (prod.role_uid == caller_uid)
+            {
+                caller_is_binding_side = true;
+                break;
+            }
+        }
+    }
+    if (!caller_is_binding_side)
     {
         // Defence-in-depth: a misbehaving (or compromised) role
         // querying another channel's allowlist is observable here,
         // separately from the wire-level CURVE+ZAP layer that gates
-        // who can speak to the broker at all.
+        // who can speak to the broker at all.  The wire code
+        // preserves `PRODUCER_NOT_AUTHORIZED` for back-compat with
+        // pre-topology-migration parsers; the message names the
+        // binding-side rule that actually applies.
         LOGGER_WARN(
             "Broker: GET_CHANNEL_AUTH_REQ rejected — role_uid='{}' is "
-            "not a registered producer of channel '{}' (HEP-CORE-0036 "
-            "§6.6 PRODUCER_NOT_AUTHORIZED)",
-            caller_uid, channel_name);
-        return make_error(corr_id, "PRODUCER_NOT_AUTHORIZED",
-                          "Caller role_uid='" + caller_uid +
-                              "' is not a registered producer of channel '" +
-                              channel_name + "'");
+            "not the binding-side role of channel '{}' (topology={}, "
+            "expected {} to bind) (HEP-CORE-0036 §6.6)",
+            caller_uid, channel_name,
+            static_cast<int>(ch->topology),
+            consumer_binds ? "consumer" : "producer");
+        return make_error(
+            corr_id, "PRODUCER_NOT_AUTHORIZED",
+            "Caller role_uid='" + caller_uid +
+                "' is not the binding-side role of channel '" +
+                channel_name + "' (topology requires " +
+                std::string(consumer_binds ? "consumer" : "producer") +
+                " to bind)");
     }
 
-    // Read the current authoritative allowlist.  REG_REQ wires
-    // `_on_channel_access_opened` on every channel admission, so the
-    // access record MUST exist for any channel that passed the
-    // producer-membership check above.  A missing record here means
-    // HubState is corrupted (e.g., a teardown path didn't call
-    // `_on_channel_access_closed` symmetrically) — return INTERNAL_ERROR
-    // rather than degrade to deny-all, because the caller would
-    // otherwise apply an empty allowlist and silently lock every
-    // consumer out.
+    // Read the current authoritative allowlist.  Two distinct
+    // situations are handled by the two-layer lookup above + here:
+    //   1. `ChannelEntry` missing → `CHANNEL_NOT_FOUND` (returned
+    //      already at line ~3742).  The channel isn't a thing.
+    //   2. `ChannelEntry` present but `ChannelAccessEntry` missing →
+    //      the channel exists but has no admitted peers on record.
+    //      This is either (a) a legitimate observation (no
+    //      `_on_consumer_authorized` call has landed since channel
+    //      open — normal at startup) or (b) a bug on some code path
+    //      that opened a channel without wiring
+    //      `_on_channel_access_opened`.  In both cases the
+    //      externally-observable truth is the same: zero admitted
+    //      pubkeys.  Wire response is `status=success`,
+    //      `allowlist=[]`; the caller's ZAP applies empty (fail-
+    //      closed, correct) and its default loop-ready gate stays
+    //      NotReady until the next NOTIFY drives a re-pull.  A loud
+    //      ERROR log fires so operators diagnosing case (b) via
+    //      grep / alerts see the anomaly, but the wire does not
+    //      fail — refusing to serve a query whose answer is
+    //      genuinely "zero" makes the wire semantics less truthful,
+    //      not more.
     auto access = hub_state_->channel_access(channel_name);
     if (!access.has_value())
     {
         LOGGER_ERROR(
             "Broker: GET_CHANNEL_AUTH_REQ for channel '{}' from role_uid='{}' "
             "found a ChannelEntry but no ChannelAccessEntry — HubState "
-            "invariant broken (REG path wires _on_channel_access_opened "
-            "for every channel admission).  Returning INTERNAL_ERROR.",
+            "invariant may be broken (REG path should wire "
+            "`_on_channel_access_opened` on every channel admission).  "
+            "Returning empty allowlist (fail-closed on wire; operator "
+            "should investigate the log to distinguish 'no peers admitted "
+            "yet' from 'callback not wired on some open path').",
             channel_name, caller_uid);
-        return make_error(corr_id, "INTERNAL_ERROR",
-                          "ChannelAccessEntry missing for channel '" +
-                              channel_name +
-                              "' — broker invariant broken; restart the hub "
-                              "to recover");
+        access = pylabhub::hub::ChannelAccessEntry{};
     }
     nlohmann::json resp;
     resp["status"]       = "success";
@@ -4225,17 +4359,61 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // authoritative phase mapping.
     const std::string corr_id            = req.value("correlation_id", "");
     const std::string channel_name       = req.value("channel_name", "");
-    const std::string producer_role_uid  = req.value("producer_role_uid", "");
+    // HEP-CORE-0042 §5.5.2 amendment 2026-07-11: accept both the
+    // producer-side wire (`producer_role_uid` field) and the amended
+    // binding-side-role-agnostic wire (`role_uid` + optional
+    // `role_type`).  Producer-only wire is back-compat: `role_type`
+    // absent implies `"producer"`.
+    const std::string role_type          = req.value("role_type",
+                                                      std::string{"producer"});
+    const std::string legacy_prod_uid    = req.value("producer_role_uid",
+                                                      std::string{});
+    const std::string role_uid           =
+        req.contains("role_uid")
+            ? req.value("role_uid", std::string{})
+            : legacy_prod_uid;
     const std::uint64_t incoming_instance = req.value("instance_id",
                                                        std::uint64_t{0});
     const std::uint64_t applied_version   = req.value("applied_version",
                                                        std::uint64_t{0});
 
-    if (channel_name.empty() || producer_role_uid.empty())
+    if (channel_name.empty() || role_uid.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST",
                           "CHANNEL_AUTH_APPLIED_REQ requires non-empty "
-                          "channel_name and producer_role_uid");
+                          "channel_name and role_uid (or legacy "
+                          "producer_role_uid)");
+    }
+
+    if (role_type == "consumer")
+    {
+        // HEP-CORE-0042 §5.5.2 consumer branch — no stale-instance
+        // guard.  Snapshot the current authorized_consumer_pubkeys
+        // into `binding_side_confirmed_allowlist` so subsequent
+        // CHECK_PEER_READY_REQ callers can consult a stable
+        // "the guard's clipboard is up to date" view.
+        hub_state_->_on_binding_confirmed(channel_name);
+
+        LOGGER_INFO(
+            "[broker] event=ChannelAuthAppliedConsumer channel='{}' "
+            "consumer_uid='{}' applied_version={} (HEP-CORE-0042 §5.5.2 "
+            "consumer branch — binding_side_confirmed_allowlist snapshotted)",
+            channel_name, role_uid, applied_version);
+
+        nlohmann::json resp;
+        resp["status"]          = "ok";
+        resp["channel_name"]    = channel_name;
+        resp["applied_version"] = applied_version;
+        if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        return resp;
+    }
+
+    if (role_type != "producer")
+    {
+        return make_error(
+            corr_id, "INVALID_REQUEST",
+            "CHANNEL_AUTH_APPLIED_REQ role_type must be 'producer' "
+            "or 'consumer' (or absent for producer back-compat)");
     }
 
     // §5.4 step (a): stale-instance guard.  If the echoed instance_id
@@ -4247,14 +4425,14 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // Phase 2.4 timer wiring which will let us withhold the reply
     // entirely).
     const std::uint64_t current_instance =
-        hub_state_->producer_instance(producer_role_uid);
+        hub_state_->producer_instance(role_uid);
     if (incoming_instance != current_instance)
     {
         LOGGER_WARN(
             "[broker] event=ChannelAuthAppliedStaleInstance channel='{}' "
             "producer_uid='{}' incoming_instance={} current_instance={} "
             "applied_version={} (HEP-CORE-0042 §5.2 stale-instance guard)",
-            channel_name, producer_role_uid, incoming_instance,
+            channel_name, role_uid, incoming_instance,
             current_instance, applied_version);
         return make_error(corr_id, "STALE_INSTANCE",
                           "CHANNEL_AUTH_APPLIED_REQ from stale producer "
@@ -4263,13 +4441,13 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
 
     // §5.4 step (c): confirmed_version[K][P] = max(current, applied_version).
     const std::uint64_t new_confirmed =
-        hub_state_->_on_producer_confirmed(channel_name, producer_role_uid,
+        hub_state_->_on_producer_confirmed(channel_name, role_uid,
                                             applied_version);
 
     LOGGER_INFO(
         "[broker] event=ChannelAuthApplied channel='{}' producer_uid='{}' "
         "instance={} applied_version={} confirmed_version={}",
-        channel_name, producer_role_uid, incoming_instance, applied_version,
+        channel_name, role_uid, incoming_instance, applied_version,
         new_confirmed);
 
     // §5.4 step (d): drain pending_attach_queue_[K][P] of every entry
@@ -4279,7 +4457,7 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // reply; the drain-then-reply order below is intent-preserving per
     // §5.4 step d wording ("walk … and remove").
     drain_pending_attach_queue_for_producer_confirmed_(
-        socket, channel_name, producer_role_uid, new_confirmed);
+        socket, channel_name, role_uid, new_confirmed);
 
     // §5.4 step (b): reply {status="ok", ...}.
     nlohmann::json resp;
@@ -4287,6 +4465,114 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     resp["channel_name"]     = channel_name;
     resp["applied_version"]  = new_confirmed;
     if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+    return resp;
+}
+
+nlohmann::json
+BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
+                                                const zmq::message_t &)
+{
+    // HEP-CORE-0036 §6.6.3 — dialing-side role's readiness pull.
+    const std::string corr_id      = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
+    const std::string role_uid     = req.value("role_uid", "");
+    const std::string pubkey_z85   = req.value("pubkey_z85", "");
+
+    if (channel_name.empty() || role_uid.empty() || pubkey_z85.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CHECK_PEER_READY_REQ requires non-empty "
+                          "channel_name, role_uid, and pubkey_z85");
+    }
+
+    auto ch = hub_state_->channel(channel_name);
+    if (!ch.has_value())
+    {
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' does not exist");
+    }
+
+    // Authorization — caller must be a registered *dialing-side*
+    // role of the channel per §6.6.3.  The dialing side is the mirror
+    // of §6.6.1's binding-side rule:
+    //   FanOut / OneToOne → dialing side is the consumer
+    //   FanIn            → dialing side is the producer
+    // A binding-side caller asking this question makes no operational
+    // sense (they ARE the guard) — also rejected with the same code
+    // so callers get one clear error rather than two.
+    const bool consumer_binds =
+        pylabhub::hub::Queue::reader_is_binding_side(ch->topology);
+    auto match_uid = [&](const auto &entry) {
+        return entry.role_uid == role_uid;
+    };
+    // Dialing side is the mirror of the binding side: consumer under
+    // fan-out / one-to-one, producer under fan-in.  Branch on
+    // topology to avoid ternary over different container element
+    // types (ProducerEntry vs ConsumerEntry).
+    const bool caller_is_dialing_side = consumer_binds
+        ? std::any_of(ch->producers.begin(), ch->producers.end(), match_uid)
+        : std::any_of(ch->consumers.begin(), ch->consumers.end(), match_uid);
+    if (!caller_is_dialing_side)
+    {
+        LOGGER_WARN(
+            "Broker: CHECK_PEER_READY_REQ rejected — role_uid='{}' is not "
+            "the dialing-side role of channel '{}' (topology={}, expected "
+            "{} to dial) (HEP-CORE-0036 §6.6.3)",
+            role_uid, channel_name,
+            static_cast<int>(ch->topology),
+            consumer_binds ? "producer" : "consumer");
+        return make_error(
+            corr_id, "NOT_A_ROLE_OF_CHANNEL",
+            "Caller role_uid='" + role_uid +
+                "' is not the dialing-side role of channel '" +
+                channel_name + "' (topology requires " +
+                std::string(consumer_binds ? "producer" : "consumer") +
+                " to dial)");
+    }
+
+    // Membership check — is caller's pubkey in
+    // `binding_side_confirmed_allowlist`?
+    const auto ready_opt =
+        hub_state_->is_pubkey_in_binding_confirmed(channel_name, pubkey_z85);
+
+    nlohmann::json resp;
+    resp["channel_name"] = channel_name;
+    if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+
+    if (!ready_opt.has_value())
+    {
+        // ChannelEntry exists but no ChannelAccessEntry — same
+        // fallback as §6.6.2 for GET_CHANNEL_AUTH_REQ.  Externally,
+        // the truthful answer is "no peers on record."  Log ERROR so
+        // operators diagnosing broker-state anomalies see the signal.
+        LOGGER_ERROR(
+            "Broker: CHECK_PEER_READY_REQ for channel '{}' from role_uid='{}' "
+            "found a ChannelEntry but no ChannelAccessEntry — HubState "
+            "invariant may be broken (REG path should wire "
+            "`_on_channel_access_opened` on every channel admission).  "
+            "Responding not_ready (fail-closed on wire).",
+            channel_name, role_uid);
+        resp["status"] = "not_ready";
+        resp["reason"] = "not_admitted";
+        return resp;
+    }
+
+    if (*ready_opt)
+    {
+        resp["status"] = "ready";
+        return resp;
+    }
+
+    // Distinguish "admitted but binding-side has not confirmed" from
+    // "not admitted at all," so operators diagnosing startup can tell
+    // which end is behind.  Both paths surface as not_ready on the
+    // wire, differ only in `reason`.
+    auto access = hub_state_->channel_access(channel_name);
+    const bool admitted =
+        access.has_value() &&
+        access->authorized_consumer_pubkeys.count(pubkey_z85) > 0;
+    resp["status"] = "not_ready";
+    resp["reason"] = admitted ? "not_confirmed" : "not_admitted";
     return resp;
 }
 
@@ -4570,6 +4856,21 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
             ++skipped_no_identity;
             return;
         }
+        // ZMQ identities are binary — hex-encode so the log is
+        // grep-friendly and byte-exact against the BRC-side capture.
+        std::string identity_hex;
+        identity_hex.reserve(identity.size() * 2);
+        constexpr const char kHex[] = "0123456789abcdef";
+        for (unsigned char b : identity)
+        {
+            identity_hex.push_back(kHex[(b >> 4) & 0xF]);
+            identity_hex.push_back(kHex[b & 0xF]);
+        }
+        LOGGER_INFO("[broker] event=ChannelAuthChangedNotifyFanning "
+                    "channel='{}' phase='{}' role_uid='{}' role_type='{}' "
+                    "target_identity_hex='{}' target_identity_bytes={}",
+                    channel_name, phase, role_uid, role_type,
+                    identity_hex, identity.size());
         send_to_identity(socket, identity,
                           "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
         ++fanned;

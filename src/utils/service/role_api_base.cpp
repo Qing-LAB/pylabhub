@@ -1406,10 +1406,34 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // §I11 cache-mirrors-queue: ZMQ branch above already reduced
         // `script_view` to the admitted subset; SHM branch's
         // script_view was never filtered (no §7.1 pre-attach loop).
+        //
+        // Seed both caches from the same script_view.
+        //   * `allowlist_cache` — the transport-agnostic, side-agnostic
+        //     script-observable cache per HEP-CORE-0036 §I11.1
+        //     invariant #1.  Backs `api.allowed_peers(channel)` and
+        //     `api.admitted_peers_count(channel)`.  Symmetric with the
+        //     seed in `apply_producer_reg_ack` from REG_ACK's
+        //     `initial_allowlist`.  The consumer's REG_ACK carries the
+        //     admitted producers as `producers[]`; seeding both from
+        //     that keeps the two caches coherent under §I11.1.
+        //   * `producer_peer_cache` — the consumer-side per-channel
+        //     snapshot preserved for legacy accessors that read it.
+        // The two caches carry the same data by construction here; a
+        // future consolidation pass may collapse them.
+        std::vector<AllowedPeer> pending_initial_seed_view;
+        bool have_initial_seed = false;
         if (has_producers)
         {
+            pending_initial_seed_view = script_view;   // copy for callback
+            pImpl->allowlist_cache.put(channel_name, script_view);
             pImpl->producer_peer_cache.put(
                 channel_name, std::move(script_view));
+            have_initial_seed = true;
+            LOGGER_INFO(
+                "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
+                "(HEP-CORE-0036 §3.6 + §I11.1; consumer-side)",
+                pImpl->short_tag, channel_name,
+                pending_initial_seed_view.size());
         }
 
         // HEP-CORE-0021 §16 endpoint publish on the BINDING side.
@@ -1450,6 +1474,30 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                             pImpl->short_tag, channel_name, ep);
                     }
                 }
+            }
+        }
+
+        // Fire `on_allowlist_changed(reason="initial_seed")` for
+        // parity with `apply_producer_reg_ack`.  §I11 invariant #2:
+        // the callback fires on every cache write, including the
+        // initial seed, so scripts observing membership see the live
+        // set immediately after REG_ACK — no wait for the next
+        // notify.  Callback exceptions do not roll back the cache
+        // write.
+        if (have_initial_seed && pImpl->engine)
+        {
+            try
+            {
+                pImpl->engine->invoke_on_allowlist_changed(
+                    channel_name, pending_initial_seed_view,
+                    "initial_seed");
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_ERROR(
+                    "[{}] on_allowlist_changed callback threw for channel "
+                    "'{}' (reason=initial_seed, consumer-side): {}",
+                    pImpl->short_tag, channel_name, e.what());
             }
         }
 
@@ -1864,8 +1912,13 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
     {
         const auto applied_version =
             ack.at("snapshot_version").get<std::uint64_t>();
+        // apply_producer_reg_ack is producer-side only per the
+        // enclosing function name (channel_auth_applied producer
+        // branch requires role_type="producer" + instance_id > 0).
         auto reply = brc->channel_auth_applied(
-            channel_name, pImpl->uid, applied_version, instance_id);
+            channel_name, pImpl->uid,
+            std::string_view{"producer"},
+            applied_version, instance_id);
         if (!reply.has_value())
         {
             LOGGER_WARN(
@@ -1978,6 +2031,145 @@ std::vector<AllowedPeer>
 RoleAPIBase::allowed_peers(const std::string &channel) const
 {
     return pImpl->allowlist_cache.snapshot(channel);
+}
+
+std::size_t
+RoleAPIBase::admitted_peers_count(const std::string &channel) const
+{
+    return pImpl->allowlist_cache.snapshot(channel).size();
+}
+
+bool RoleAPIBase::channel_admission_populated(
+    const std::string &channel) const noexcept
+{
+    // HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
+    // forward to the queue that holds this channel; the queue's
+    // own state answers.  No topology test at this layer.
+    //
+    // Resolution: processor's out_channel goes to tx_queue; primary
+    // channel goes to rx_queue if this role has one (consumer /
+    // processor input), else tx_queue (producer / processor output
+    // when reader is not present).
+    if (!pImpl->out_channel.empty() && channel == pImpl->out_channel)
+    {
+        return pImpl->tx_queue
+            ? pImpl->tx_queue->is_admission_populated()
+            : false;
+    }
+    if (channel == pImpl->channel)
+    {
+        if (pImpl->rx_queue) return pImpl->rx_queue->is_admission_populated();
+        if (pImpl->tx_queue) return pImpl->tx_queue->is_admission_populated();
+    }
+    return false;
+}
+
+bool RoleAPIBase::finalize_channel_connect(
+    const std::string           &channel,
+    std::uint64_t                timeout_ms,
+    const std::function<bool()> &is_cancelled) noexcept
+{
+    // HEP-CORE-0036 §I9.1 + §6.6.3.  Topology-agnostic entry point:
+    // no `topology::parse`, no `is_binding_side`, no `has_tx_side`
+    // branching in this function.  The queue's own state
+    // (`dial_pending`) decides whether to poll the oracle or no-op.
+    //
+    // Channel-to-writer resolution (single-source with the role's
+    // wiring in `role_host_frame::wire_role_channels`):
+    // - Two-channel role (processor): `pImpl->out_channel` non-empty;
+    //   tx_queue is bound to `pImpl->out_channel`.  IN channel
+    //   (`pImpl->channel`) has NO writer on this role — the OUT
+    //   queue's dial_pending is completed by the OUT call, and the
+    //   IN call must be a legitimate no-op success (there is no
+    //   IN-side writer to finalize).
+    // - Single-channel role (producer / consumer): `pImpl->out_channel`
+    //   empty; tx_queue (when present) holds `pImpl->channel`.
+    hub::QueueWriter *q = nullptr;
+    if (!pImpl->out_channel.empty())
+    {
+        if (channel == pImpl->out_channel)
+            q = pImpl->tx_queue.get();
+        // else: two-channel role IN — no writer to finalize.
+    }
+    else if (channel == pImpl->channel)
+    {
+        q = pImpl->tx_queue.get();
+    }
+    if (!q)
+    {
+        // Channel has no writer side on this role — no-op success.
+        // Consumers on fan-in / fan-out land here for their inbound
+        // channel; that is not an error, it means "nothing to
+        // finalize on this side."
+        LOGGER_DEBUG(
+            "[{}] finalize_channel_connect('{}'): no writer side on "
+            "this role — no-op success",
+            pImpl->short_tag, channel);
+        return true;
+    }
+
+    // Small internal oracle: closes over (BRC, channel, role_uid,
+    // own_pubkey) so the queue's poll site is arg-free.  The queue
+    // never sees BRC, wire codes, or the pubkey — it only sees a
+    // `PollResult`.  §I9.1 permitted shape.
+    struct BrcOracle : public ::pylabhub::hub::PeerReadinessOracle
+    {
+        hub::BrokerRequestComm *brc{nullptr};
+        std::string             channel;
+        std::string             role_uid;
+        std::string             pubkey_z85;
+        std::string             short_tag;
+
+        PollResult poll() noexcept override
+        {
+            if (!brc || pubkey_z85.empty())
+            {
+                LOGGER_ERROR(
+                    "[{}] finalize_channel_connect oracle: {} — "
+                    "PermanentError",
+                    short_tag,
+                    brc ? "own pubkey unavailable"
+                         : "no BRC resolved for channel");
+                return PollResult::PermanentError;
+            }
+            auto reply = brc->check_peer_ready(
+                channel, role_uid, pubkey_z85, 1000);
+            if (!reply.has_value())
+            {
+                // Transport timeout / broker hiccup — transient.
+                return PollResult::NotReady;
+            }
+            const auto status = reply->value("status", std::string{});
+            if (status == "ready")   return PollResult::Ready;
+            if (status == "error")
+            {
+                LOGGER_ERROR(
+                    "[{}] finalize_channel_connect oracle: broker error "
+                    "code='{}' message='{}' — PermanentError",
+                    short_tag,
+                    reply->value("error_code", std::string{}),
+                    reply->value("message",    std::string{}));
+                return PollResult::PermanentError;
+            }
+            // status == "not_ready" — keep polling.
+            return PollResult::NotReady;
+        }
+    };
+
+    BrcOracle oracle;
+    oracle.brc        = pImpl->resolve_bc_for_channel(channel);
+    oracle.channel    = channel;
+    oracle.role_uid   = pImpl->uid;
+    oracle.pubkey_z85 = q->own_pubkey_z85();
+    oracle.short_tag  = pImpl->short_tag;
+
+    // If the queue is not in deferred-connect state, `finalize_connect`
+    // is a no-op and none of BRC / pubkey are consulted.  If it IS
+    // deferred and BRC or pubkey is unavailable, the oracle's first
+    // poll returns PermanentError and the queue fails fast — surfaced
+    // through the returned false.
+    return q->finalize_connect(oracle, timeout_ms, is_cancelled,
+                                 pImpl->short_tag.c_str());
 }
 
 namespace
@@ -2229,20 +2421,65 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 const auto reason =
                     it->details.value("reason", std::string{"unknown"});
 
-                // Queue-side enforcement push (ZMQ tx queues only).
-                // Only ZmqQueue (PUSH-side) implements PeerAdmission;
-                // ShmQueue does NOT.  For SHM channels the broker
-                // pre-confirm at attach time (HEP-CORE-0041 §9 D4) is
-                // the authoritative gate — there is no on-role
-                // enforcement cache to seed, so the cast is null and
-                // we skip the queue push.  The script-side cache update
-                // below still fires unconditionally so observability
-                // (`api.allowed_peers(channel)` + the
-                // `on_allowlist_changed` callback) tracks the broker's
-                // current allowlist regardless of transport.
+                // Queue-side enforcement push, ZMQ binding-side queue.
+                // HEP-CORE-0036 §6.5 binding-side handler flow step 4:
+                // resolve the notified channel to whichever queue on
+                // this role binds it (fan-out producer → `tx_queue`;
+                // fan-in consumer / processor rx-fan-in input →
+                // `rx_queue`; processor tx-fan-out output → `tx_queue`).
+                //
+                // Both queue sides carry independent class hierarchies
+                // (`QueueReader` for rx, `QueueWriter` for tx) but the
+                // concrete `ZmqQueue` implements both AND
+                // `PeerAdmission`, so a `dynamic_cast` from either
+                // side succeeds when the underlying transport is ZMQ.
+                // `ZmqQueue::set_peer_allowlist` self-guards on the
+                // dialing side by returning false — the mutator is
+                // inert without a bind_socket — so a mis-directed apply
+                // is a no-op, not a corruption.
+                //
+                // Channel-to-queue resolution mirrors `is_channel_ready`
+                // (using `pImpl->channel` / `pImpl->out_channel`).
+                //
+                // ShmQueue does NOT implement PeerAdmission; SHM
+                // channels rely on the broker's per-attach pre-confirm
+                // gate per HEP-CORE-0041 §9 D4.  The script-side cache
+                // update below fires unconditionally regardless — the
+                // script-observable surface is transport-agnostic and
+                // side-agnostic per §I11.1 invariant #1.
+                // Channel-to-queue resolution (see also
+                // `finalize_channel_connect` for the writer-only
+                // sibling).  Under HEP-CORE-0036 §I9.1 the queue owns
+                // channel-locality; do NOT cross-resolve between IN
+                // and OUT queues on a two-channel role.  Corrupts
+                // per-channel state (e.g., mixed-transport processor
+                // with SHM IN + ZMQ OUT would install IN's allowlist
+                // onto OUT's ZAP via the old rx→tx fallback).
+                sec::PeerAdmission *admission = nullptr;
+                if (!pImpl->out_channel.empty())
+                {
+                    if (channel == pImpl->out_channel && pImpl->tx_queue)
+                        admission = dynamic_cast<sec::PeerAdmission *>(
+                            pImpl->tx_queue.get());
+                    else if (channel == pImpl->channel && pImpl->rx_queue)
+                        admission = dynamic_cast<sec::PeerAdmission *>(
+                            pImpl->rx_queue.get());
+                    // Two-channel role: NO fallback across channels.
+                }
+                else if (channel == pImpl->channel)
+                {
+                    // Single-channel role: rx_queue if present
+                    // (consumer); tx_queue only when no reader
+                    // (producer).
+                    if (pImpl->rx_queue)
+                        admission = dynamic_cast<sec::PeerAdmission *>(
+                            pImpl->rx_queue.get());
+                    else if (pImpl->tx_queue)
+                        admission = dynamic_cast<sec::PeerAdmission *>(
+                            pImpl->tx_queue.get());
+                }
+
                 bool publish_cache = true;
-                auto *admission =
-                    dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
                 if (admission)
                 {
                     const bool ok = admission->set_peer_allowlist(allowlist);
@@ -2256,30 +2493,48 @@ void RoleAPIBase::handle_channel_auth_notifies(
                     }
                     else
                     {
-                        // Keep cache consistent with ZAP enforcement:
-                        // if the queue refused the push, the next
-                        // handshake will NOT admit what's in
-                        // `script_view`, so don't publish a misleading
-                        // snapshot.
-                        LOGGER_WARN(
+                        // `ZmqQueue::set_peer_allowlist` returns false
+                        // on the DIALING side — the mutator is inert
+                        // without a bind_socket per §6.5 (dialing side
+                        // authenticates via curve_serverkey; no server-
+                        // side allowlist).  This is a normal outcome,
+                        // not an error — the dynamic_cast succeeded
+                        // because ZmqQueue implements PeerAdmission on
+                        // both sides, but the underlying queue is not
+                        // running ZAP as server.  We still publish the
+                        // script-side cache below so that
+                        // `api.allowed_peers(channel)` and
+                        // `on_allowlist_changed` observe the broker's
+                        // allowlist regardless of side (§I11.1
+                        // invariant #1: script-observable cache is
+                        // side-agnostic).
+                        LOGGER_DEBUG(
                             "[{}/{}] set_peer_allowlist returned false for "
-                            "channel '{}' (queue inert on this side?); "
-                            "skipping cache update to stay in sync with "
-                            "ZAP enforcement",
+                            "channel '{}' — dialing side (queue not "
+                            "running ZAP as server); script-side cache "
+                            "still publishes for observability",
                             pImpl->short_tag, pImpl->uid, channel);
-                        publish_cache = false;
                     }
                 }
                 else
                 {
-                    // Non-PeerAdmission tx queue (SHM today, or queue
-                    // wired post-1i-mig).  No queue-side enforcement to
-                    // seed; cache is pure observability.
+                    // Non-binding side or non-PeerAdmission queue.  This
+                    // role does not run ZAP as server for this channel:
+                    //   * Dialing-side reader / writer: the ZAP handler
+                    //     is a client; the framework's cache is pure
+                    //     observability of the broker's authoritative
+                    //     allowlist.
+                    //   * SHM channel: broker pre-confirms per attach
+                    //     (HEP-CORE-0041 §9 D4); no on-role enforcement
+                    //     cache to seed.
+                    // Either way, no `set_peer_allowlist` call — but the
+                    // script-side cache write below still fires so
+                    // `api.allowed_peers` and `on_allowlist_changed`
+                    // remain consistent across sides + transports.
                     LOGGER_DEBUG(
-                        "[{}/{}] auth notify for channel '{}' on non-ZAP "
-                        "tx queue (SHM); updating script-side cache only "
-                        "(HEP-CORE-0041 §9 D4 broker pre-confirm is the "
-                        "authoritative gate)",
+                        "[{}/{}] auth notify for channel '{}' on non-binding "
+                        "side or non-ZAP queue; updating script-side cache "
+                        "only (HEP-CORE-0036 §6.5 step 4 non-binding branch)",
                         pImpl->short_tag, pImpl->uid, channel);
                 }
 
@@ -2353,37 +2608,110 @@ void RoleAPIBase::handle_channel_auth_notifies(
                             ? reply->at("snapshot_version")
                                   .get<std::uint64_t>()
                             : std::uint64_t{0};
-                    if (admission && instance_id > 0 && have_snapshot_version)
+
+                    // HEP-CORE-0036 §I9.1 + §6.5 step 6 layer contract:
+                    // the queue tells us its role_type; role code never
+                    // pattern-matches `is_binding_side()`.  Single BRC
+                    // method + broker discriminates on `role_type`.
+                    //
+                    // Which queue owns this channel?  Same resolution
+                    // as the `set_peer_allowlist` cast site above:
+                    // rx_queue for the primary channel (consumer /
+                    // processor input), tx_queue for out_channel
+                    // (processor output) or when there is no rx_queue
+                    // (producer).  Non-binding sides return
+                    // `binding_role_type() == ""` and skip APPLIED_REQ
+                    // emission (nothing to confirm — no ZAP allowlist
+                    // was installed on this side).
+                    // Side resolution matches the writer-resolution
+                    // pattern used by `finalize_channel_connect` — do
+                    // NOT fall back from rx_queue to tx_queue on a
+                    // two-channel role (processor).  For processor's
+                    // IN notify, rx_queue's answer is authoritative;
+                    // tx_queue holds OUT, so borrowing its side
+                    // identity for the IN channel would fire the wrong
+                    // wire branch (producer-side APPLIED_REQ against
+                    // the IN channel where the role is a consumer —
+                    // broker rejects, WARN + skip).
+                    std::string_view side{};
+                    if (!pImpl->out_channel.empty())
                     {
-                        auto applied = brc->channel_auth_applied(
-                            channel, pImpl->uid, snapshot_version, instance_id);
-                        if (!applied.has_value())
+                        if (channel == pImpl->out_channel && pImpl->tx_queue)
+                            side = pImpl->tx_queue->binding_role_type();
+                        else if (channel == pImpl->channel && pImpl->rx_queue)
+                            side = pImpl->rx_queue->binding_role_type();
+                        // Two-channel role, unknown channel: side stays "".
+                    }
+                    else if (channel == pImpl->channel)
+                    {
+                        // Single-channel role.  rx_queue if present
+                        // (consumer); fall back to tx_queue only when
+                        // no reader is wired (producer case).
+                        if (pImpl->rx_queue)
+                            side = pImpl->rx_queue->binding_role_type();
+                        else if (pImpl->tx_queue)
+                            side = pImpl->tx_queue->binding_role_type();
+                    }
+
+                    if (admission && have_snapshot_version && !side.empty())
+                    {
+                        // Producer branch: instance_id-guarded per
+                        // HEP-CORE-0042 §5.4 stale-instance discipline
+                        // (broker rejects mismatched instance_id).
+                        // Consumer branch: no stale-instance guard
+                        // (see §5.5.2 amendment — pass instance_id=0).
+                        const bool is_producer = (side == "producer");
+                        const std::uint64_t effective_instance =
+                            is_producer ? instance_id : std::uint64_t{0};
+                        if (is_producer && instance_id == 0)
                         {
+                            // Producer role hasn't captured REG_ACK's
+                            // instance yet — skip; the next NOTIFY
+                            // after apply_producer_reg_ack retries.
                             LOGGER_WARN(
-                                "[{}/{}] CHANNEL_AUTH_APPLIED_REQ('{}') no "
-                                "reply within budget — cache stays applied, "
-                                "broker may re-drive on next NOTIFY (HEP-"
-                                "CORE-0042 §5.5.2 + §5.6)",
+                                "[{}/{}] handle_channel_auth_notifies: "
+                                "producer-side APPLIED_REQ for channel "
+                                "'{}' skipped — instance_id not yet "
+                                "captured (§5.5.2 stale-instance guard)",
                                 pImpl->short_tag, pImpl->uid, channel);
-                        }
-                        else if (applied->value("status",
-                                                 std::string{}) != "ok")
-                        {
-                            LOGGER_WARN(
-                                "[{}/{}] CHANNEL_AUTH_APPLIED_REQ('{}') "
-                                "non-ok reply: status='{}' error_code='{}'",
-                                pImpl->short_tag, pImpl->uid, channel,
-                                applied->value("status", std::string{}),
-                                applied->value("error_code", std::string{}));
                         }
                         else
                         {
-                            LOGGER_INFO(
-                                "[{}/{}] event=ChannelAuthApplied channel='{}'"
-                                " applied_version={} reason='{}' "
-                                "(HEP-CORE-0042 §5.5.2)",
-                                pImpl->short_tag, pImpl->uid, channel,
-                                snapshot_version, reason);
+                            auto applied = brc->channel_auth_applied(
+                                channel, pImpl->uid, side,
+                                snapshot_version, effective_instance);
+                            if (!applied.has_value())
+                            {
+                                LOGGER_WARN(
+                                    "[{}/{}] CHANNEL_AUTH_APPLIED_REQ("
+                                    "role_type='{}', '{}') no reply within "
+                                    "budget — cache stays applied, broker "
+                                    "may re-drive on next NOTIFY (HEP-"
+                                    "CORE-0042 §5.5.2 + §5.6)",
+                                    pImpl->short_tag, pImpl->uid,
+                                    side, channel);
+                            }
+                            else if (applied->value("status",
+                                                     std::string{}) != "ok")
+                            {
+                                LOGGER_WARN(
+                                    "[{}/{}] CHANNEL_AUTH_APPLIED_REQ("
+                                    "role_type='{}', '{}') non-ok reply: "
+                                    "status='{}' error_code='{}'",
+                                    pImpl->short_tag, pImpl->uid, side, channel,
+                                    applied->value("status", std::string{}),
+                                    applied->value("error_code", std::string{}));
+                            }
+                            else
+                            {
+                                LOGGER_INFO(
+                                    "[{}/{}] event=ChannelAuthApplied "
+                                    "channel='{}' role_type='{}' "
+                                    "applied_version={} reason='{}' "
+                                    "(HEP-CORE-0042 §5.5.2)",
+                                    pImpl->short_tag, pImpl->uid, channel,
+                                    side, snapshot_version, reason);
+                            }
                         }
                     }
                 }

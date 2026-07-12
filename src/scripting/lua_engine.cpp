@@ -1066,19 +1066,42 @@ size_t LuaEngine::type_sizeof(const std::string &type_name) const
 // invoke_on_init
 // ============================================================================
 
-void LuaEngine::invoke_on_init()
+pylabhub::scripting::ScriptEngine::InitStatus
+LuaEngine::invoke_on_init()
 {
+    // HEP-CORE-0011 §"Loop-ready gate" — Lua coercion:
+    //   - No `on_init` defined                     → Ready
+    //   - Callback returns nothing / nil           → Ready (back-compat)
+    //   - Callback returns true                    → Ready
+    //   - Callback returns false                   → NotReady
+    //   - Callback errors (pcall failure)          → NotReady (logged)
     if (!state_.is_ref_callable(ref_on_init_))
-        return;
+        return InitStatus::Ready;
 
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_init_);
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
-    if (!state_.pcall(1, 0, "on_init"))
+    // Request 1 result so we can inspect the return value.
+    if (!state_.pcall(1, 1, "on_init"))
     {
         on_pcall_error_("on_init");
+        return InitStatus::NotReady;
     }
+
+    // Read the return value at the top of the stack.
+    // nil or missing (LUA_TNIL) → treated as Ready (back-compat).
+    // false → NotReady; anything truthy → Ready.
+    InitStatus status = InitStatus::Ready;
+    const int top = lua_gettop(L);
+    if (top > 0 && !lua_isnil(L, -1))
+    {
+        // lua_toboolean returns 0 for false/nil, non-zero otherwise.
+        status = lua_toboolean(L, -1) ? InitStatus::Ready
+                                       : InitStatus::NotReady;
+    }
+    if (top > 0) lua_pop(L, 1);   // clear the returned value
+    return status;
 }
 
 // ============================================================================

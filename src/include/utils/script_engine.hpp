@@ -505,7 +505,23 @@ class ScriptEngine
 
     // ── Hot-path invocation (owner thread — data loop) ──────────────────
 
-    virtual void invoke_on_init() = 0;
+    /**
+     * @brief Loop-ready status returned by `invoke_on_init` — the value
+     *        the script's `on_init` produces, coerced by each engine's
+     *        binding per HEP-CORE-0011 §"Loop-ready gate" return-value
+     *        table.  Composed with the per-role framework default via
+     *        AND inside `run_data_loop`; the loop enters `acquire()`
+     *        only when both sides return `Ready`.  A script that does
+     *        not define `on_init`, or returns `void` / `None` / `nil`,
+     *        is treated as `Ready` (back-compat).
+     */
+    enum class InitStatus : uint8_t
+    {
+        NotReady = 0,
+        Ready    = 1,
+    };
+
+    virtual InitStatus invoke_on_init() = 0;
     virtual void invoke_on_stop() = 0;
 
     /**

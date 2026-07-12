@@ -24,11 +24,58 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 
 namespace pylabhub::hub
 {
+
+/**
+ * @brief HEP-CORE-0036 §I9.1 + §6.6.3 — dial-side peer-readiness probe.
+ *
+ * Abstract interface a `QueueWriter` uses to ask "can I connect now?"
+ * without knowing about the broker RPC, the CURVE identity of its
+ * peer, or the wire shape of `CHECK_PEER_READY_REQ`.  Injected into
+ * `QueueWriter::finalize_connect` at role-host startup; the concrete
+ * implementation lives on the role side and forwards to
+ * `BrokerRequestComm::check_peer_ready` with pre-bound context
+ * (channel, own role_uid, own pubkey).
+ *
+ * Keeping the interface arg-free lets the queue drive the poll loop
+ * without leaking topology or transport knowledge upward — the queue
+ * merely re-polls until it sees `Ready` or an error, and the oracle
+ * hides everything else.  Matches §I9.1 (topology and transport are
+ * queue-internal): the oracle is a "small injected interface" the
+ * queue is permitted to hold; role-side code populates it once at
+ * finalize-connect time.
+ */
+class PeerReadinessOracle
+{
+public:
+    enum class PollResult
+    {
+        /// Peer's binding-side ZAP allowlist is confirmed to contain
+        /// this queue's pubkey; the queue's next `socket.connect()`
+        /// will succeed the CURVE handshake.
+        Ready,
+        /// Peer's binding side has not yet confirmed the current
+        /// snapshot (or transport hiccup).  Queue should keep polling
+        /// until deadline.
+        NotReady,
+        /// Broker returned a permanent error (unresolvable BRC,
+        /// `CHANNEL_NOT_FOUND`, `NOT_A_ROLE_OF_CHANNEL`).  Queue
+        /// abandons the wait and returns failure from `finalize_connect`.
+        PermanentError,
+    };
+
+    virtual ~PeerReadinessOracle() = default;
+
+    /// Poll the readiness source once.  Non-blocking / bounded by
+    /// the oracle's own internal RPC timeout; the queue paces the
+    /// poll rate itself via `kBrokerReadinessPollInterval`.
+    virtual PollResult poll() noexcept = 0;
+};
 
 /**
  * @brief Overflow policy for the Processor output side.
@@ -389,6 +436,39 @@ public:
     }
 
     /**
+     * @brief HEP-CORE-0036 §I9.1 + §6.5 step 6 — queue's own binding
+     *        role_type identity for `CHANNEL_AUTH_APPLIED_REQ`.
+     *
+     * Returns `"consumer"` for a binding-side reader (fan-in
+     * consumer), `"producer"` for a binding-side writer (fan-out /
+     * one-to-one producer), empty string for a non-binding side
+     * (this queue doesn't own admission; no APPLIED_REQ to publish).
+     *
+     * Retires the role-side `rx_queue->is_binding_side()` branch in
+     * `handle_channel_auth_notifies`: the queue tells the role
+     * which `role_type` to declare on the wire; the role never
+     * pattern-matches queue shape.  Layer-clean per §I9.1.
+     */
+    virtual std::string_view binding_role_type() const noexcept { return {}; }
+
+    /**
+     * @brief HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1
+     *        — does this reader have any admitted peer to receive from?
+     *
+     * Queue-owned admission fact.  Consumers and processors read
+     * this on their rx side via the role-API forwarder to gate
+     * their data loop; the answer is authoritative because the
+     * queue owns the ZAP allowlist (binding side) or the known
+     * peer set (dialing side).  Layer-clean per §I9.1: no caller
+     * asks "is this fan-in?" — the queue's own state answers.
+     *
+     * Default `true` for transports without CURVE admission
+     * (plaintext, SHM — attach handshake gates admission externally).
+     * `ZmqQueue` overrides to check its allowlist / peer set.
+     */
+    virtual bool is_admission_populated() const noexcept { return true; }
+
+    /**
      * @brief True iff this reader is backed by shared memory (vs ZMQ).
      *
      * Single transport-discriminator exposed on the abstract interface, so
@@ -606,6 +686,92 @@ public:
     {
         return true;
     }
+
+    /**
+     * @brief HEP-CORE-0036 §I9.1 + §6.5 step 6 — queue's own binding
+     *        role_type identity for `CHANNEL_AUTH_APPLIED_REQ`.
+     *
+     * Returns `"producer"` for a binding-side writer (fan-out /
+     * one-to-one producer), `"consumer"` for a binding-side reader
+     * (fan-in consumer), empty string for a non-binding side.
+     * Retires the role-side `is_binding_side()` branch.  See the
+     * QueueReader mirror for the full rationale.
+     */
+    virtual std::string_view binding_role_type() const noexcept { return {}; }
+
+    /**
+     * @brief HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1
+     *        — does this writer have any admitted peer to write to?
+     *
+     * Queue-owned admission fact.  Consumers and processors read
+     * this on their rx side via the role-API forwarder to gate
+     * their data loop; the answer is authoritative because the
+     * queue owns the ZAP allowlist (binding side) or the known
+     * peer set (dialing side).  Layer-clean per §I9.1: no caller
+     * asks "is this fan-in?" — the queue's own state answers.
+     *
+     * Default `true` for transports without CURVE admission
+     * (plaintext, SHM — attach handshake gates admission externally).
+     * `ZmqQueue` overrides to check its allowlist / peer set.
+     */
+    virtual bool is_admission_populated() const noexcept { return true; }
+
+    /**
+     * @brief HEP-CORE-0036 §6.6.3 + §I9.1 — complete any deferred
+     *        connect that `apply_master_approval` left pending.
+     *
+     * Called by the role host UNIFORMLY for every role type and every
+     * topology, once, right after `apply_master_approval`.  The queue
+     * decides internally whether it has a deferred `socket.connect()`
+     * to complete:
+     * - Queues that did NOT defer (fan-out producer, one-to-one
+     *   binding-side producer, dialing consumer, SHM) return `true`
+     *   immediately.  The oracle is never touched.
+     * - Queues that deferred (fan-in DIALING PUSH, ZMQ transport)
+     *   poll `oracle` at `kBrokerReadinessPollInterval` until the
+     *   result is `Ready` (then run the deferred `start()` and
+     *   return `true`), `PermanentError` (return `false`),
+     *   `is_cancelled()` returns true (return `false`), or
+     *   `timeout_ms` elapses (return `false`).
+     *
+     * `is_cancelled` (optional; empty function disables cancellation)
+     * is polled between broker RPCs and before every sleep so a
+     * shutdown during startup exits within one poll interval.
+     *
+     * Default no-op returning `true`.  Only `ZmqQueue` overrides this.
+     *
+     * @param oracle       Readiness source; polled in a loop while
+     *                     the queue is dial-pending.  Ignored for
+     *                     non-deferred queues.
+     * @param timeout_ms   Maximum time to wait; 0 = wait forever.
+     * @param is_cancelled Optional shutdown-observer; return true to
+     *                     abort the wait early.
+     * @param log_tag      Log prefix for diagnostic messages.
+     *
+     * @return `true` when the queue is ready to send / the wait
+     *         completed successfully; `false` on timeout /
+     *         cancellation / permanent error.
+     */
+    virtual bool finalize_connect(PeerReadinessOracle & /*oracle*/,
+                                    std::uint64_t         /*timeout_ms*/,
+                                    const std::function<bool()> & /*is_cancelled*/,
+                                    const char *          /*log_tag*/) noexcept
+    {
+        return true;
+    }
+
+    /**
+     * @brief Z85-encoded CURVE identity pubkey this writer uses when
+     *        it is the CURVE client.
+     *
+     * Returned as an owning string because the underlying keystore
+     * lookup uses a name key that this queue owns.  Empty on writers
+     * with no CURVE identity (plaintext transports; SHM writers use
+     * capability-fd handshake, not CURVE).  Used by the role-side
+     * finalize_connect glue to seed the `PeerReadinessOracle` with
+     * the pubkey the broker checks against `binding_side_confirmed_allowlist`.
+     */
+    virtual std::string own_pubkey_z85() const noexcept { return {}; }
 
     /**
      * @brief True iff this writer is backed by shared memory (vs ZMQ).

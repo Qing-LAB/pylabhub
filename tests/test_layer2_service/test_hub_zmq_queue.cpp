@@ -3047,8 +3047,29 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducer_WireApplyMasterApproval)
     ASSERT_TRUE(push->apply_master_approval(reg_ack))
         << "apply_master_approval must promote initial_allowlist[0] "
            "endpoint + pubkey_z85 on a DIALING PUSH queue";
+
+    // HEP-CORE-0036 §I9.1 + §6.6.3 (2026-07-11 layer-contract amendment)
+    // — apply_master_approval on a fan-in DIALING PUSH queue defers the
+    // `socket.connect()` to `finalize_connect()` to avoid the CURVE
+    // handshake ordering race against the consumer's late ZAP allowlist
+    // apply.  Standby → Active requires an explicit `finalize_connect()`
+    // call driven by a `PeerReadinessOracle` whose `poll()` returns
+    // `Ready`; without it the queue stays not-running.  Pinning both
+    // halves of the two-phase flow.
+    EXPECT_FALSE(push->is_running())
+        << "apply_master_approval on fan-in DIALING PUSH defers connect "
+           "per §6.6.3 — queue must not be running yet";
+
+    struct AlwaysReadyOracle : public pylabhub::hub::PeerReadinessOracle
+    {
+        PollResult poll() noexcept override { return PollResult::Ready; }
+    } oracle;
+    ASSERT_TRUE(push->finalize_connect(oracle, /*timeout_ms=*/1000,
+                                        /*is_cancelled=*/{},
+                                        "[test]"))
+        << "finalize_connect() completes the deferred start()";
     EXPECT_TRUE(push->is_running())
-        << "apply_master_approval drives Standby → Active";
+        << "finalize_connect() drives Configured → Active";
     std::this_thread::sleep_for(100ms);
 
     void *wbuf = push->write_acquire(1000ms);

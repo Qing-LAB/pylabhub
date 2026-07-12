@@ -338,6 +338,125 @@ void write_zmq_consumer_script(const fs::path &script_dir,
          "    api.log('info', 'cons_test: stop')\n";
 }
 
+// ─── Processor config + script (ZMQ two-channel) ─────────────────────────
+//
+// Processor has BOTH `in_channel` and `out_channel`.  This helper
+// mirrors the producer/consumer helpers above but writes the
+// two-channel processor config shape (see
+// `share/py-demo-single-processor-zmq/processor/processor.json`),
+// with topology declared per-side so the broker's admission path
+// sees fan-in / fan-out / one-to-one consistently on both channels.
+//
+// The topology args pin the SIDE resolution the processor's
+// `RoleAPIBase` must get right for `finalize_channel_connect`,
+// `handle_channel_auth_notifies`, and `channel_admission_populated`
+// (HEP-CORE-0036 §I9.1 layer contract).  The load-bearing test
+// below uses (in="fan-in", out="fan-in"): processor binds PULL on
+// IN and dials PUSH on OUT, so the pre-cleanup channel-to-writer
+// resolution would have wrongly returned OUT's tx_queue for a
+// `finalize_channel_connect(in_channel)` call → CHECK_PEER_READY_REQ
+// against the WRONG channel → broker rejects with
+// NOT_A_ROLE_OF_CHANNEL → processor aborts startup.  Under the
+// post-cleanup resolution the IN call is a legitimate no-op and
+// the OUT call polls its own channel.
+void write_zmq_processor_config(const fs::path &cfg_path,
+                                 const fs::path &hub_dir,
+                                 const std::string &uid,
+                                 const std::string &in_channel,
+                                 const std::string &out_channel,
+                                 const std::string &in_topology,
+                                 const std::string &out_topology,
+                                 int in_port_hint,
+                                 int out_port_hint)
+{
+    nlohmann::json j;
+    j["processor"]["uid"]       = uid;
+    j["processor"]["name"]      = "L4ZmqProcessor";
+    j["processor"]["log_level"] = "info";
+    j["processor"]["auth"]["keyfile"] = "vault/" + uid + ".vault";
+
+    j["in_hub_dir"]     = hub_dir.string();
+    j["out_hub_dir"]    = hub_dir.string();
+    j["in_channel"]     = in_channel;
+    j["out_channel"]    = out_channel;
+    if (!in_topology.empty())  j["in_channel_topology"]  = in_topology;
+    if (!out_topology.empty()) j["out_channel_topology"] = out_topology;
+    j["loop_timing"]      = "fixed_rate";
+    j["target_period_ms"] = 25;
+
+    // Endpoints are placeholders per the same convention as the
+    // producer / consumer helpers: binding side uses port=0 for
+    // "any free port" (resolved endpoint published via
+    // ENDPOINT_UPDATE_REQ per HEP-CORE-0021 §16); dialing side
+    // ignores the field (target arrives on REG_ACK).
+    j["in_transport"]           = "zmq";
+    j["in_zmq_endpoint"]        = "tcp://127.0.0.1:" +
+                                    std::to_string(in_port_hint);
+    j["in_zmq_buffer_depth"]    = 256;
+    j["in_zmq_overflow_policy"] = "drop";
+
+    j["out_transport"]           = "zmq";
+    j["out_zmq_endpoint"]        = "tcp://127.0.0.1:" +
+                                     std::to_string(out_port_hint);
+    j["out_zmq_buffer_depth"]    = 256;
+    j["out_zmq_overflow_policy"] = "drop";
+
+    // Single-field schemas — value in / value out — for symmetry with
+    // the producer + consumer helpers above.  The processor forwards
+    // input value + 1000 so the consumer script can verify that data
+    // truly flowed through processor (not directly producer→consumer).
+    j["in_slot_schema"]["packing"] = "aligned";
+    j["in_slot_schema"]["fields"]  = nlohmann::json::array({
+        nlohmann::json{{"name", "value"}, {"type", "float32"}}
+    });
+    j["out_slot_schema"]["packing"] = "aligned";
+    j["out_slot_schema"]["fields"]  = nlohmann::json::array({
+        nlohmann::json{{"name", "value"}, {"type", "float32"}}
+    });
+
+    j["checksum"]             = "enforced";
+    j["flexzone_checksum"]    = false;
+    j["stop_on_script_error"] = false;
+    j["script"]["type"]       = "python";
+    j["script"]["path"]       = ".";
+
+    std::error_code ec;
+    fs::create_directories(cfg_path.parent_path(), ec);
+    std::ofstream f(cfg_path);
+    f << j.dump(2);
+}
+
+/// Processor script — forwards each input slot to the output side
+/// with `value += PROC_MARK`.  `proc_test:` prefix distinguishes
+/// processor lifecycle events from producer/consumer lines in the
+/// merged post-mortem dump.
+void write_zmq_processor_script(const fs::path &script_dir,
+                                 float proc_mark)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_MARK = " << proc_mark << "\n"
+      << "_iter = [0]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'proc_test: init mark=' + str(_MARK))\n"
+         "\n"
+         "def on_process(rx, tx, messages, api):\n"
+         "    if rx.slot is None or tx.slot is None:\n"
+         "        return False\n"
+         "    v = float(rx.slot.value) + _MARK\n"
+         "    tx.slot.value = v\n"
+         "    if _iter[0] < 20:\n"
+         "        api.log('info', 'proc_test: forwarded iter=' + str(_iter[0]) +\n"
+         "                        ' in=' + str(rx.slot.value) +\n"
+         "                        ' out=' + str(v))\n"
+         "    _iter[0] += 1\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'proc_test: stop iter=' + str(_iter[0]))\n";
+}
+
 } // namespace
 
 // ─── Scenario A: authorized producer + consumer over ZMQ ────────────────────
@@ -748,32 +867,15 @@ TEST_F(PlhHubCliTest, ZmqE2E_UnauthorizedConsumerDeniedByBroker)
 
 TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
 {
-    // Fan-in end-to-end wire piece-by-piece works:
-    //   - Consumer opens the channel via the shared
-    //     HubState::_open_channel_locked primitive.
-    //   - Consumer binds PULL, publishes bind endpoint via
-    //     ENDPOINT_UPDATE_REQ, broker sets ChannelEntry.data_endpoint.
-    //   - Producer REG_ACK's initial_allowlist carries the consumer's
-    //     {endpoint, pubkey_z85}; producer's PUSH queue reaches Active
-    //     with the correct dial target.
+    // Fan-in end-to-end (HEP-CORE-0017 §3.3.0):
+    //   - Consumer opens the channel via CONSUMER_REG_REQ, binds PULL,
+    //     publishes its bound endpoint via ENDPOINT_UPDATE_REQ.
+    //   - Producer's REG_ACK.initial_allowlist carries the consumer's
+    //     single {endpoint, pubkey_z85}; producer's PUSH dials it.
     //   - Broker fires CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted,
-    //     role_type=producer) to the consumer's zmq_identity when the
-    //     producer registers.
-    //
-    // Remaining gap: the NOTIFY does not reach the consumer's BRC
-    // handler (verified in-line — broker logs the send-to-identity
-    // call but the consumer's log never records `ChannelAuthLive` or
-    // the subsequent GET_CHANNEL_AUTH_REQ pull).  The consumer's ZAP
-    // allowlist therefore never learns the producer's pubkey, and
-    // producer PUSH-connect handshakes silently fail at the consumer's
-    // ZAP.  Producer's data never arrives.  Likely site: the ROUTER
-    // routing / NOTIFY dispatch for a binding-side CONSUMER on a
-    // fan-in channel is wired to the pre-migration
-    // "binding-side-is-producer" pattern.
-    GTEST_SKIP() << "Fan-in producer-admitted NOTIFY sent by broker but "
-                    "not received by consumer BRC handler; consumer's "
-                    "ZAP allowlist never admits producer pubkeys.";
-
+    //     role_type=producer) to the consumer's captured zmq_identity;
+    //     consumer pulls GET_CHANNEL_AUTH_REQ and admits the producer's
+    //     pubkey into its ZAP allowlist so PUSH→PULL CURVE succeeds.
     using std::chrono::seconds;
 
     const std::string channel   = "lab.l4.zmq.e2e.fanin";
@@ -1036,6 +1138,239 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
         << "producer A stderr [ERROR ]:\n" << prod_a.get_stderr();
     EXPECT_FALSE(contains_error(prod_b.get_stderr()))
         << "producer B stderr [ERROR ]:\n" << prod_b.get_stderr();
+    EXPECT_FALSE(contains_error(cons.get_stderr()))
+        << "consumer stderr [ERROR ]:\n" << cons.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Scenario D: three-role pipeline through processor ──────────────────────
+//
+// Producer → Processor → Consumer over ZMQ, three roles in three
+// subprocesses.  Topology: BOTH channels declared fan-in.  Load-
+// bearing regression guard for the queue-owned topology / layer
+// cleanup arc (HEP-CORE-0036 §I9.1) applied to the processor role.
+//
+//   ch1 (upstream_prod → processor.in):
+//     fan-in.  Processor.in BINDS PULL (fan-in binding consumer);
+//     upstream_prod DIALS PUSH (fan-in dialing producer).
+//   ch2 (processor.out → downstream_cons):
+//     fan-in.  Downstream_cons BINDS PULL (fan-in binding consumer);
+//     processor.out DIALS PUSH (fan-in dialing producer, defers
+//     connect via `apply_master_approval` → `dial_pending=true`).
+//
+// **What this pins**: the two-channel resolution fix landed
+// 2026-07-12 (see `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`
+// § "Post-review correctness fix").  Pre-fix, the primary-channel
+// branch fell back rx→tx: `finalize_channel_connect(in_channel)`
+// wrongly returned the OUT queue (dial_pending=true), the queue
+// polled the broker with `channel=in_channel` + OUT queue's
+// pubkey, and the broker's `handle_check_peer_ready_req` caller
+// check rejected with `NOT_A_ROLE_OF_CHANNEL` (processor is
+// CONSUMER of IN under fan-in, not the dialing-side producer
+// §6.6.3 expects to poll).  Result: `PollResult::PermanentError`
+// → processor teardown → this test fails at proc RegAckReceived
+// or cons_test complete.  Post-fix: IN call is a legitimate no-op;
+// OUT call polls its own channel; test passes.
+
+TEST_F(PlhHubCliTest, ZmqE2E_Processor_FanInBothChannels_ThreeRoles)
+{
+    using std::chrono::seconds;
+
+    const std::string ch1        = "lab.l4.zmq.e2e.proc.ch1";
+    const std::string ch2        = "lab.l4.zmq.e2e.proc.ch2";
+    const std::string prod_uid   = "prod.l4zmqproc.uid11111111";
+    const std::string proc_uid   = "proc.l4zmqproc.uid22222222";
+    const std::string cons_uid   = "cons.l4zmqproc.uid33333333";
+    constexpr int     kSlots     = 5;
+    constexpr int     kProdOffset = 0;
+    constexpr float   kProcMark   = 1000.0f;
+
+    const int prod_port     = 23000 + (::getpid() % 1000);
+    const int proc_in_port  = 24000 + (::getpid() % 1000);
+    const int proc_out_port = 25000 + (::getpid() % 1000);
+    (void)prod_port;      // dialing side, endpoint from REG_ACK.
+    (void)proc_out_port;  // dialing side, endpoint from REG_ACK.
+
+    // ── Hub init + keygen ──────────────────────────────────────────────
+    const fs::path hub_dir = tmp("zmqe2e_proc_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+            {hub_dir.string(), "--name", "L4ZmqProcHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"]           = false;
+        j["script"]["path"]             = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "zmqe2e-proc-hub-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+            {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    // ── Three role dirs + configs + scripts ────────────────────────────
+    const fs::path prod_dir = tmp("zmqe2e_proc_prod");
+    const fs::path proc_dir = tmp("zmqe2e_proc_proc");
+    const fs::path cons_dir = tmp("zmqe2e_proc_cons");
+    std::error_code ec;
+    fs::create_directories(prod_dir / "vault", ec);
+    fs::create_directories(proc_dir / "vault", ec);
+    fs::create_directories(cons_dir / "vault", ec);
+
+    write_zmq_producer_config(prod_dir / "producer.json", hub_dir,
+                               prod_uid, ch1, prod_port,
+                               /*channel_topology=*/"fan-in");
+    write_zmq_producer_script_with_offset(prod_dir / "script" / "python",
+                                           kSlots, kProdOffset);
+
+    write_zmq_processor_config(proc_dir / "processor.json", hub_dir,
+                                proc_uid,
+                                /*in_channel=*/  ch1,
+                                /*out_channel=*/ ch2,
+                                /*in_topology=*/ "fan-in",
+                                /*out_topology=*/"fan-in",
+                                proc_in_port, proc_out_port);
+    write_zmq_processor_script(proc_dir / "script" / "python", kProcMark);
+
+    write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir,
+                               cons_uid, ch2,
+                               /*channel_topology=*/"fan-in");
+    write_zmq_consumer_script(cons_dir / "script" / "python", kSlots);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "zmqe2e-proc-role-pw", /*overwrite=*/1);
+
+    const std::string prod_pubkey =
+        keygen_role_and_read_pubkey(prod_dir, "producer", prod_uid,
+                                     "zmqe2e-proc-role-pw");
+    const std::string proc_pubkey =
+        keygen_role_and_read_pubkey(proc_dir, "processor", proc_uid,
+                                     "zmqe2e-proc-role-pw");
+    const std::string cons_pubkey =
+        keygen_role_and_read_pubkey(cons_dir, "consumer", cons_uid,
+                                     "zmqe2e-proc-role-pw");
+
+    add_known_role(hub_dir, "zmqe2e_proc_prod", prod_uid, "producer",
+                   prod_pubkey);
+    add_known_role(hub_dir, "zmqe2e_proc_proc", proc_uid, "processor",
+                   proc_pubkey);
+    add_known_role(hub_dir, "zmqe2e_proc_cons", cons_uid, "consumer",
+                   cons_pubkey);
+
+    // ── Spawn hub run-mode ─────────────────────────────────────────────
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on"))
+        << "hub never bound.  Log:\n" << read_hub_log(hub_dir);
+
+    const std::string bound_ep =
+        extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // Startup ordering: both binding sides come up first so their
+    // endpoints are published before the dialing side needs them.
+
+    // ── Downstream consumer (binding side of ch2) ─────────────────────
+    WorkerProcess cons(plh_role_binary(), "--role",
+        {"consumer", cons_dir.string()});
+    auto dump_partial = [&](const std::string &where) -> std::string {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── consumer log ──\n" + read_role_log(cons_dir) + "\n";
+        s += "── consumer stderr ──\n" + cons.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=ConsumerRegReqAccepted role='" + cons_uid +
+        "' channel='" + ch2 + "'", seconds(10)))
+        << dump_partial("cons ConsumerRegReqAccepted");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "event=ConsumerRegAckReceived", seconds(5)))
+        << dump_partial("cons ConsumerRegAckReceived");
+
+    // ── Processor (binds ch1 IN, dials ch2 OUT) ───────────────────────
+    WorkerProcess proc(plh_role_binary(), "--role",
+        {"processor", proc_dir.string()});
+    auto dump_partial2 = [&](const std::string &where) -> std::string {
+        std::string s = dump_partial(where);
+        s += "── processor log ──\n" + read_role_log(proc_dir) + "\n";
+        s += "── processor stderr ──\n" + proc.get_stderr() + "\n";
+        return s;
+    };
+
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=RegReqAccepted role='" + proc_uid + "' channel='" +
+        ch2 + "'", seconds(7)))
+        << dump_partial2("proc RegReqAccepted (ch2/producer-side)");
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=ConsumerRegReqAccepted role='" + proc_uid +
+        "' channel='" + ch1 + "'", seconds(7)))
+        << dump_partial2("proc ConsumerRegReqAccepted (ch1/consumer-side)");
+
+    // Processor RegAckReceived — the marker the pre-fix
+    // two-channel resolution bug would have blocked.
+    ASSERT_TRUE(wait_for_role_marker(proc_dir, proc,
+        "event=RegAckReceived", seconds(5)))
+        << dump_partial2("proc RegAckReceived");
+    ASSERT_TRUE(wait_for_role_marker(proc_dir, proc,
+        "event=ConsumerRegAckReceived", seconds(5)))
+        << dump_partial2("proc ConsumerRegAckReceived");
+
+    // ── Upstream producer (dialing side of ch1) ───────────────────────
+    WorkerProcess prod(plh_role_binary(), "--role",
+        {"producer", prod_dir.string()});
+    auto dump_full = [&](const std::string &where) -> std::string {
+        std::string s = dump_partial2(where);
+        s += "── producer log ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        return s;
+    };
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir,
+        "event=RegReqAccepted role='" + prod_uid + "' channel='" +
+        ch1 + "'", seconds(7)))
+        << dump_full("prod RegReqAccepted");
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
+        "event=RegAckReceived", seconds(5)))
+        << dump_full("prod RegAckReceived");
+
+    // ── Data flow verification ────────────────────────────────────────
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "cons_test: complete N=", seconds(20)))
+        << dump_full("cons_test complete");
+
+    // ── Shutdown (reverse-startup order) ──────────────────────────────
+    prod.send_signal(SIGTERM);
+    EXPECT_EQ(prod.wait_for_exit(10), 0) << prod.get_stderr();
+    proc.send_signal(SIGTERM);
+    EXPECT_EQ(proc.wait_for_exit(10), 0) << proc.get_stderr();
+    cons.send_signal(SIGTERM);
+    EXPECT_EQ(cons.wait_for_exit(10), 0) << cons.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    auto contains_error = [](const std::string &s) {
+        return s.find("[ERROR ]") != std::string::npos;
+    };
+    EXPECT_FALSE(contains_error(read_hub_log(hub_dir)))
+        << "hub log [ERROR ]:\n" << read_hub_log(hub_dir);
+    EXPECT_FALSE(contains_error(prod.get_stderr()))
+        << "producer stderr [ERROR ]:\n" << prod.get_stderr();
+    EXPECT_FALSE(contains_error(proc.get_stderr()))
+        << "processor stderr [ERROR ]:\n" << proc.get_stderr();
     EXPECT_FALSE(contains_error(cons.get_stderr()))
         << "consumer stderr [ERROR ]:\n" << cons.get_stderr();
 

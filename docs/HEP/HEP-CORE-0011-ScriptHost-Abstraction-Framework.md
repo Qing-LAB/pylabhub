@@ -7,7 +7,7 @@
 | **Author**         | pylabhub development team                               |
 | **Status**         | Implemented (revised 2026-04-04; obsolete-term scrub 2026-04-14; engine-construction-on-worker + `PythonInterpreter` lifecycle module added 2026-05-07) |
 | **Created**        | 2026-02-28                                              |
-| **Updated**        | 2026-05-07: §"Engine Construction Lifecycle" (NEW) ratifies that script engines are constructed on the worker thread, not on `main()`. `PythonInterpreter` becomes a dynamic lifecycle module (`pylabhub::scripting::PythonInterpreter`) loaded lazily on first `PythonEngine` ctor, fixing the pybind11 `inc_ref()`-without-GIL violation that fired during process startup when class-level `py::object{py::none()}` defaults ran on `main` before the interpreter existed. `HostFactory` signature changes: drops the `unique_ptr<ScriptEngine>` parameter; the host's `worker_main_` constructs the engine via `make_engine_from_script_config`. — 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
+| **Updated**        | 2026-07-11: `invoke_on_init` return type changed from `void` to `InitStatus { Ready \| NotReady }`; the callback moves from a one-shot pre-broker call at role-host Step 5 into a per-cycle gate at the top of `run_data_loop` (new §"Loop-ready gate").  The framework AND-composes a per-role default predicate (reader requires ≥1 admitted peer for every rx-side channel; writer defaults `true`) with the script's return value.  API availability for `on_init` shifts markedly — handler-dependent APIs (`api.band_join`, `api.open_inbox`, `api.wait_for_role`) become usable inside `on_init` because the BRC is up by the time the gate is evaluated.  **Native C ABI bumped v3 → v4:** adds `plh_init_status_t`; pre-v4 plugins must rebuild against the amended `native_engine_api.h` header, since calling a void-returning `on_init` through a status-returning function pointer is undefined behavior on some target ABIs.  The bump is surfaced explicitly at plugin load: `NativeEngine::load_plugin` reads the plugin's `plh_plugin_abi_version` symbol and refuses < v4 with an actionable error.  Motivation: fan-in binding-side reader (HEP-CORE-0036 §4.3.2 binding-side consumer bullet) has no peer at REG_ACK time; the pre-amendment one-shot on_init could not gate the loop against a peer set that only populates later via `CHANNEL_AUTH_CHANGED_NOTIFY`. — 2026-05-07: §"Engine Construction Lifecycle" (NEW) ratifies that script engines are constructed on the worker thread, not on `main()`. `PythonInterpreter` becomes a dynamic lifecycle module (`pylabhub::scripting::PythonInterpreter`) loaded lazily on first `PythonEngine` ctor, fixing the pybind11 `inc_ref()`-without-GIL violation that fired during process startup when class-level `py::object{py::none()}` defaults ran on `main` before the interpreter existed. `HostFactory` signature changes: drops the `unique_ptr<ScriptEngine>` parameter; the host's `worker_main_` constructs the engine via `make_engine_from_script_config`. — 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
 | **Related**        | `HEP-CORE-0024` (Role Directory Service — `plh_role` unified binary; supersedes the per-role binaries originally in HEP-CORE-0018), `HEP-CORE-0023` (Startup Coordination & Role Liveness), `HEP-CORE-0019` §2.3 (per-presence heartbeat protocol — Phase 6) |
 
@@ -79,8 +79,9 @@ ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
   |     |               |-- register_slot_type() x N
   |     |               |-- build_api(RoleAPIBase)
   |     |
-  |     |-- calls --> engine->invoke_on_init()
-  |     |-- calls --> engine->invoke_produce / invoke_consume / invoke_process (loop)
+  |     |-- run_data_loop iterations:
+  |     |     |-- calls --> engine->invoke_on_init()  (per-cycle until Ready — loop-ready gate)
+  |     |     |-- calls --> engine->invoke_produce / invoke_consume / invoke_process
   |     |-- calls --> engine->invoke_on_stop()
   |     |-- calls --> engine->finalize()
   |     |-- engine_.reset()  → ~PythonEngine → release_python_interpreter()
@@ -256,7 +257,7 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `load_script(dir, entry, callback)` | worker | Load script file, validate required callback |
 | `register_slot_type(spec, name, packing)` | worker | Build language-native type (ctypes/FFI/sizeof) |
 | `build_api(RoleAPIBase&)` | worker | Create language-specific bindings, set accepting=true |
-| `invoke_on_init()` | worker | Call script's `on_init(api)` |
+| `invoke_on_init()` → `InitStatus { Ready \| NotReady }` | worker | Call script's `on_init(api)`; returned status participates in the loop-ready gate (see §"Loop-ready gate" below).  Invoked at the top of every data-loop cycle until it returns `Ready`; the framework then marks init done and skips further calls for the loop's life.  Script that does not define `on_init` OR returns void / `None` / `nil` is treated as `Ready` (back-compat: existing scripts see no change). |
 | `invoke_produce(tx, msgs)` | worker | Call `on_produce(tx, msgs, api)` -- hot path |
 | `invoke_consume(rx, msgs)` | worker | Call `on_consume(rx, msgs, api)` -- hot path |
 | `invoke_process(rx, tx, msgs)` | worker | Call `on_process(rx, tx, msgs, api)` -- hot path |
@@ -409,6 +410,238 @@ Design notes:
 
 ---
 
+### Loop-ready gate — `invoke_on_init` per-cycle contract
+
+The role's data loop enters `ops.acquire()` only when the framework
+has convinced itself that the cycle can produce useful work.  The
+convincing lives in a per-cycle gate at the top of `run_data_loop`
+that composes two predicates with AND:
+
+```
+init_done = Ops::default_init_ready(api) && script_hook_ready
+```
+
+- `Ops::default_init_ready(api)` is the framework's invariant.  It
+  is evaluated every cycle until it returns true; a script cannot
+  bypass or lower it.  Per role (`cycle_ops.hpp`):
+  - **Producer** → `true`.  Fire-and-forget stays the default; a
+    producer that must delay emission until a peer is present opts
+    in via its script hook.
+  - **Consumer** → for every rx-side channel `ch` (dialing or
+    binding), the queue's own "admission populated" fact:
+    `api.channel_admission_populated(ch)`.  The API forwards to
+    the queue's queue-level predicate; the queue owns the ground
+    truth (binding side: ZAP allowlist non-empty; dialing side:
+    known peer set from `REG_ACK.producers[]`).  This is the
+    layer-clean shape per HEP-CORE-0036 §I9.1 (topology and
+    transport are queue-internal); the shipped 2026-07-11 code
+    reads via `api.admitted_peers_count(ch) >= 1` which snapshots
+    the role-side `allowlist_cache` (same answer, one indirection
+    up).  The gate's read path consolidates to
+    `channel_admission_populated` in the follow-on layer
+    cleanup; `allowed_peers` / `admitted_peers_count` remain as
+    script-facing observability per HEP-CORE-0036 §I11 read-only
+    surface.
+  - **Processor** → same rule as Consumer on the rx side; tx side
+    contributes `true`.  ANDed across sides.
+- `script_hook_ready` is the return value of `invoke_on_init()`
+  coerced to `Ready` / `NotReady`.  Absent hook (script does not
+  define `on_init`), returned void / `None` / `nil`: treated as
+  `Ready` — the framework default alone decides.  Explicit
+  `NotReady`: script holds the loop until its own condition is met.
+
+The gate is FSM-orthogonal.  Presence transitions
+(`Registered → Authorized` at REG_ACK apply per HEP-CORE-0036
+§4.3.2) are unchanged; the outer `any_presence_authorized()`
+guard (HEP-CORE-0036 §8.2) is unchanged.  The loop-ready gate
+sits at the top of *each cycle* and gates only the acquire step —
+Step C (drain messages), Step D+E (invoke_and_commit — which
+applies pending NOTIFYs including `CHANNEL_AUTH_CHANGED_NOTIFY`),
+Step F (metrics), and Step G (deadline) still run every cycle
+regardless of gate state.  This is what advances `allowlist_cache`
+so the framework default eventually turns true on the reader-that-
+binds path.
+
+**When user `on_init` is called — the contract.**  While
+`init_done` is false, `run_data_loop` evaluates both sides of the
+AND at the top of every cycle:
+
+- The framework's `Ops::default_init_ready(api)` is always
+  evaluated.  It reads role-local state (e.g., admitted-peer
+  count) and returns immediately.
+- If the user script defines `on_init`, it is **always called on
+  every cycle regardless of whether the framework default is
+  Ready.**  The framework does not short-circuit on
+  `default_ready == false` — the user hook still runs so that the
+  script can do its own pre-Ready work (band-join, coordinating
+  with another role, incremental resource setup, periodic
+  "still-waiting" logging, etc.).  The two return values are
+  AND-composed, so the framework floor is a hard invariant even if
+  the script returns Ready.
+
+The corollary — **once `init_done` flips true, the gate block is
+never re-entered for the lifetime of this loop.**  `on_init` is
+NOT called again.  `default_init_ready` is NOT re-checked.  The
+loop proceeds to `acquire()` on this and every subsequent cycle,
+governed by the role's configured `period_us` / `loop_timing`.
+
+**Pre-Ready pacing.**  The pre-Ready phase is paced at a fixed
+`kLoopReadyPollInterval` (100 ms; defined in
+`utils/loop_timing_policy.hpp`), NOT at the role's `period_us`.
+The two phases have fundamentally different timing needs:
+
+- The data loop is user-tuned for throughput / latency (MaxRate,
+  fixed-rate at kHz, etc.).
+- The pre-Ready phase is admin-message-driven — it waits for
+  `CHANNEL_AUTH_CHANGED_NOTIFY` to arrive over the broker BRC,
+  which happens on network-scale latency (single-digit ms on
+  localhost, tens of ms on real networks).
+
+Polling the gate at data-plane cadence gains no observable
+responsiveness and, for a script whose `on_init` logs or does any
+non-trivial work, floods logs and burns CPU.  100 ms is the fixed
+cadence.  It is not user-configurable — the phase is admin, not
+data, and no reasonable role has an operator-visible dependency
+on its pre-Ready cycle rate.
+
+**Idiomatic script pattern.**  A user script's `on_init` should
+be a fast state-check.  The framework already surfaces the state
+via `api.admitted_peers_count(channel)`, `api.allowed_peers(channel)`,
+`api.producers(channel)`, `api.consumers(channel)`.  Idiomatic
+first check:
+
+```python
+def on_init(api):
+    if api.admitted_peers_count(api.channel()) < 1:
+        return False    # explicit — matches framework default;
+                        # trivially cheap
+    # additional script-specific conditions
+    if "coordinator.primary" not in api.consumers(api.out_channel()):
+        return False
+    return True
+```
+
+The redundant-with-default check is safe: `default_init_ready`
+still runs and the AND composition means the loop stays NotReady
+either way.  Scripts that DO want to do more than a state check
+during pre-Ready (band-join, coordination) simply put that logic
+above the check; it fires up to `startup_timeout / 100 ms` times.
+
+Cycle-by-cycle trace on a fan-in binding-side consumer with zero
+producers admitted at REG_ACK time (script defines `on_init`
+returning `False` when admitted count is 0):
+
+- Cycle 1 (t=0):
+  - `default_init_ready` → `allowed_peers == 0` → false
+  - `invoke_on_init` → user script returns `False` → NotReady
+  - `init_done` = false && false = false
+  - Skip acquire; Step C drains any queued `CHANNEL_AUTH_CHANGED_NOTIFY`;
+    Step D+E applies (allowlist may grow); pace 100 ms.
+- Cycle 2 (t=100 ms): same as Cycle 1 unless a NOTIFY arrived.
+- ... (repeat at 100 ms cadence until admitted producer appears)
+- Cycle N (t=k·100 ms, k depends on producer arrival time):
+  - `default_init_ready` → `allowed_peers == 1` → true
+  - `invoke_on_init` → user script returns `True` → Ready
+  - `init_done` = true && true = true
+  - Emit `event=LoopInitReady`.
+  - Acquire runs; producer's CURVE handshake succeeds against
+    the now-populated ZAP allowlist; first data arrives.
+- Cycle N+1..∞: gate block never re-entered; `on_init` never
+  called again; loop paces at `period_us` / `loop_timing`.
+
+**Startup timeout.**  The framework enforces a wall-clock budget
+(mirrors HEP-CORE-0023 `wait_for_roles` semantics).  If `init_done`
+never turns true within the budget, `run_data_loop` logs
+`event=LoopInitTimeout` with elapsed ms and unmet gates, marks the
+role critical, and tears down through the standard critical-error
+path (§"Stop / critical-error usage" below).  This prevents a
+role from sitting forever waiting for a peer that never comes.
+
+**User-script `on_init` — the graceful contract.**  A script that
+defines `on_init` MUST:
+
+- **Return promptly.**  `on_init` is called at the top of every
+  cycle until it returns `Ready`, paced at 100 ms
+  (`kLoopReadyPollInterval`).  No blocking calls, no I/O that
+  can hang, no external synchronous waits.  If the script needs
+  to wait on external state (a discovered peer UID landing in the
+  allowlist, an external file becoming present, a specific band
+  member joining), it should sample the state via `api.*`
+  accessors and return `NotReady`, not sleep.
+- **Be idempotent under repeated invocation.**  Any script-local
+  state the callback mutates (a "have I seen peer X" flag,
+  cached lookups) must be safe under repeated N-time calls
+  (up to `startup_timeout / 100 ms` at the upper bound).
+- **Consume framework state; do not mutate the data plane.**  Safe
+  to call from `on_init` under the new contract: `api.log*`,
+  `api.uid()`, `api.channel()`, `api.allowed_peers(channel)`,
+  `api.admitted_peers_count(channel)`, `api.producers(channel)`,
+  `api.consumers(channel)`, `api.is_channel_ready(channel)`,
+  `api.stop()` (immediate exit path).  Not safe: `api.write_acquire`,
+  `api.read_acquire`, or any data-plane mutator — the loop has not
+  yet decided data can flow.
+- **Respect the startup timeout.**  A `NotReady` that never turns
+  `Ready` within the framework's budget aborts the role.  Scripts
+  that need long-tail readiness (waiting for a slow peer on a
+  wide-area link) should raise `init_timeout_ms` in the role's
+  timing config, not fight the framework.
+- **Handle exceptions defensively.**  An exception thrown from
+  `on_init` is caught by the engine, logged, and treated as the
+  cycle's `NotReady`.  Scripts should not use exceptions as
+  control flow; return `NotReady` explicitly.
+
+**Threading and API availability change** — with `invoke_on_init`
+now called from inside `run_data_loop` rather than as a one-shot
+pre-broker call, the API-availability table in §"API availability
+per callback" (below) shifts markedly for the `on_init` column:
+handler-dependent APIs (`api.band_join`, `api.open_inbox`,
+`api.wait_for_role`) that were previously unavailable in `on_init`
+because the BRC was not yet up are now available — the loop-ready
+gate is evaluated after Step 6d (broker connected, REG_ACK
+applied, allowlist_cache seeded).  See that section for the full
+matrix.
+
+**Return-value coercion per engine.**
+
+| Engine  | `Ready` | `NotReady` | Missing hook / void / None / nil |
+|---------|---------|------------|----------------------------------|
+| Python  | `True`, `1`, any truthy value | `False`, `0`, any falsy value | Missing hook or `None` return: treated as `Ready` |
+| Lua     | `true` | `false` | Missing hook or `nil` return: treated as `Ready` |
+| Native  | `PLH_INIT_READY` | `PLH_INIT_NOT_READY` | Missing hook (no `on_init` symbol): treated as `Ready`.  A void-returning `on_init` compiled against the pre-amendment header (C ABI ≤ v3) is **not** ABI-compatible with the amended engine — calling a `void`-return function through a `plh_init_status_t (*)(void)` pointer is undefined behavior on some target ABIs.  Plugins **must** rebuild against the amended header (C ABI ≥ v4).  This is a hard breaking change; the ABI version bump surfaces it explicitly at plugin load — `NativeEngine::load_plugin` refuses plugins whose `plh_plugin_abi_version` symbol is < v4 with an actionable error message. |
+
+Back-compat: pre-amendment scripts and plugins that returned `void`
+from `on_init` (all of them, since the pre-amendment signature was
+`void`) see no behaviour change on writer roles (the framework
+default returns `Ready` immediately) and on reader roles that
+enter the loop with peers already admitted (dialing-side reader:
+`REG_ACK.producers[]` populated the cache; default gate holds at
+cycle 1).  Reader-that-binds paths — which did not work before —
+now work correctly under the default gate alone, no script change
+needed.
+
+**Composition example.**  A processor that must not begin
+processing until it has at least three input producers AND a
+specific downstream consumer named `analytics.primary`:
+
+```python
+def on_init(api):
+    ch_in = api.channel()
+    ch_out = api.out_channel()
+    if api.admitted_peers_count(ch_in) < 3:
+        return False    # additional requirement above framework default of >= 1
+    if "analytics.primary" not in api.consumers(ch_out):
+        return False    # tx-side condition; framework default alone would say True
+    return True
+```
+
+The framework default already enforces `admitted_peers_count(ch_in) >= 1`.
+The script tightens this to `>= 3` and adds a tx-side requirement
+by returning `False` until both are met.  Neither the framework
+default nor the script alone would produce the correct behaviour;
+the AND composition does.
+
+---
+
 ### Stop / critical-error usage (audit S2, 2026-05-18)
 
 Scripts have two explicit stop APIs and the framework auto-stops
@@ -523,6 +756,7 @@ audience.
 
 | Surface | Python (`pybind11`) | Lua (`luaL`) | Native C ABI (Tier 1) | Native C++ wrapper (Tier 2) |
 |---|---|---|---|---|
+| `on_init` return | `bool` (truthy → Ready, `None` → Ready; no coercion of pre-existing script — script compiled without an `on_init` returns Ready by default) | `boolean` (nil → Ready) | `plh_init_status_t` — C ABI v4 header REQUIRED; v3-and-earlier plugins must rebuild (see §"Loop-ready gate" return-value coercion table for the load-time refusal path) | `plh::InitStatus` enum class |
 | `queue_mechanism(side)` | `str` (e.g. `"Curve"`) | `string` | `int` + `PLH_MECHANISM_*` macros | `plh::Mechanism` enum class |
 | `stop_reason()` | `str` (e.g. `"normal"`) | `string` | `int` + `PLH_STOP_REASON_*` macros | `plh::StopReason` enum class |
 | `out_policy()` / `in_policy()` | `str` (e.g. `"shm"`) | `string` | `int` + `PLH_QUEUE_POLICY_*` macros | `plh::QueuePolicy` enum class |
@@ -1231,11 +1465,15 @@ Step 4   — Load engine via engine_lifecycle_startup()
                5. engine->build_api(RoleAPIBase)
                6. Assert engine type sizes == schema logical sizes
 
-Step 5   — engine_->invoke_on_init(api_)
-           - Script's on_init() runs here.  Queue is still Standby;
-             broker is not yet contacted; api APIs that need a BRC
-             (api.band_join, api.open_inbox, api.wait_for_role) return
-             None.  See § "When can a callback use which API".
+Step 5   — RETIRED (2026-07-11 amendment).
+           - The pre-amendment one-shot `engine_->invoke_on_init(api_)`
+             is retired.  `invoke_on_init` is now called from inside
+             `run_data_loop` at the top of every cycle until it returns
+             `Ready` (see §"Loop-ready gate").  By then Step 6d has
+             completed, so the BRC is up and the broker-facing APIs
+             (`api.band_join`, `api.open_inbox`, `api.wait_for_role`)
+             are usable inside `on_init`.  Step numbering preserved
+             below to keep cross-references stable; the slot is empty.
 
 Step 6   — Connect to broker, register, activate the data plane.
            Sub-steps 6a..6d execute in order; failures at 6c or 6d
@@ -1333,10 +1571,22 @@ Step 8   — Run the data loop via shared frame + cycle ops
              was already set to true at Step 7 — the role is
              "ready-but-empty," not aborted.
            - Normal path: run_data_loop(engine, cycle_ops, api_,
-             core_).  Per cycle: acquire → invoke_produce/consume/
-             process(api) → commit/release.  Inner cycle gates on
-             HEP-CORE-0036 §I12 (queue Active); pre-Active reads
-             return "queue not ready" and the loop iterates.
+             core_).  Per cycle top-of-loop:
+               (1) Loop-ready gate — if not yet Ready, evaluate
+                   `Ops::default_init_ready(api) && (has_on_init
+                   ? invoke_on_init() == Ready : true)`.  When
+                   NotReady, skip the acquire step (below) but
+                   continue with drain + invoke_and_commit so
+                   NOTIFYs still apply and advance state.
+                   Startup timeout: `event=LoopInitTimeout` +
+                   critical error if the gate never turns Ready
+                   within the configured budget.
+               (2) Once Ready: acquire → invoke_produce/consume/
+                   process(api) → commit/release.  Inner cycle
+                   gates on HEP-CORE-0036 §I12 (queue Active);
+                   pre-Active reads return "queue not ready" and
+                   the loop iterates.
+             See §"Loop-ready gate" for the full contract.
 
 Step 9   — do_role_teardown(api_, core_, teardown_infrastructure_)
            - The shared teardown helper runs the seven sub-steps
@@ -1475,6 +1725,124 @@ With `"path": "."` and `"type": "python"` --> `./script/python/__init__.py`.
 
 ## Script Callback Contract
 
+### Universal contract — what every callback must respect
+
+Individual callback signatures + threading facts live in the
+callback table (§"ScriptEngine Interface") and the unified
+dispatch table (§"Notification dispatch").  This subsection
+consolidates what applies to ALL of them so scripts have a single
+place to read the contract.
+
+**1. Return promptly.**  Every callback runs on the worker thread
+inside the data loop's per-cycle budget.  Long-running work
+starves the loop, delays heartbeats, and extends the cycle-work
+metric.  If the callback needs to wait on external state, it
+should sample and return — not block — and rely on the next cycle
+to retry.  Concretely:
+- `on_init` (per-cycle gate): return `NotReady`, wait for next
+  cycle.
+- Hot-path (`on_produce` / `on_consume` / `on_process`): return
+  `False` (skip / discard) rather than blocking; the loop will
+  come back around.
+- Notification callbacks (`on_channel_closing`, `on_hub_dead`,
+  `on_consumer_died`, `on_band_*`, `on_channel_ready`,
+  `on_allowlist_changed`, `on_inbox`): return quickly; delegate
+  any slow work to the hot path.
+
+**2. Exception semantics are uniform.**  Any callback that raises
+is caught by the engine adapter, the exception message is logged
+at ERROR, and `script_error_count` is incremented.  From there:
+- If the role's `stop_on_script_error=true` (config default),
+  the loop marks `StopReason::ScriptError`, requests stop, and
+  tears down through the standard critical-error path.
+- If `stop_on_script_error=false`, the exception is treated per
+  callback:
+  - `on_init` → cycle is `NotReady`; next cycle re-enters.
+  - Hot path → the slot is discarded (equivalent to `return
+    False`); the loop continues.
+  - Notification callbacks → the notify is consumed; the loop
+    continues.  The native default does NOT run as a fallback
+    after a script override raises — the override is considered
+    to have declined per §"Notification dispatch."
+- Native callbacks cannot let C++ exceptions cross the ABI
+  boundary; return an error code (`false` / `PLH_INIT_NOT_READY`)
+  and log via `api.log("error", …)` instead.
+
+**3. Threading + safe API subset.**  All callbacks run on the
+worker thread with the engine's global lock held (see §"Engine
+Thread Affinity").  The `api.*` surface is per-callback: consult
+§"API availability per callback" for the matrix.  Common rules:
+- `api.log*` / `api.metrics*` / `api.stop()` /
+  `api.set_critical_error()` — safe everywhere.
+- Data-plane mutators (`api.write_acquire` / `api.read_acquire`)
+  — only inside `on_produce` / `on_consume` / `on_process` and
+  only against the slot handed in.
+- Broker-facing sync APIs (`api.band_join`, `api.open_inbox`,
+  `api.wait_for_role`, `api.discover_channel`) — usable from
+  any callback that runs after Step 6d (all of them under the
+  amended lifecycle), subject to the prompt-return rule (short
+  timeouts, retry via next cycle).
+
+**4. Idempotency under repeated invocation.**  Notification
+callbacks are dispatched once per event.  Hot-path callbacks fire
+per slot.  `on_init` under the amended model may fire many times
+before returning `Ready`.  Script state mutated inside a callback
+must survive being called N times without corrupting itself —
+prefer guarded lazy-init (checked-once flag) over ambient
+side-effects.
+
+**5. Do not use exceptions as control flow.**  Exceptions are
+error signals, not "please retry."  Return typed values (`True`
+/ `False`, `Ready` / `NotReady`) to communicate intent.  A
+callback that raises to force retry burns the exception budget,
+spams logs, and (with `stop_on_script_error=true`) can crash the
+role.
+
+**6. Native-specific: no exceptions across the ABI boundary.**
+Native plugins declare `noexcept` on their exported callbacks
+(enforced by `PLH_EXPORT` macro contract in HEP-CORE-0028).  A
+plugin that throws hits `std::terminate`; the framework cannot
+recover.  Use error-return conventions (bool / plh_init_status_t
+/ log-and-return-false) inside the plugin.
+
+**7. Per-callback notes on graceful failure (for the callbacks
+whose contract goes beyond the universal rules above):**
+
+- **`on_init`** — see §"Loop-ready gate" for the full contract
+  (return promptly, idempotent, respect the startup timeout,
+  exceptions treated as `NotReady`, AND-composed with the
+  framework default).
+- **`on_stop`** — best-effort teardown.  Runs at role shutdown
+  regardless of stop reason (`normal`, `critical_error`,
+  `script_error`, `hub_dead`, etc.).  Exceptions are logged but
+  do NOT abort the teardown — the framework tears down its own
+  resources unconditionally.  Do not call `api.stop()` from
+  inside `on_stop` (already stopping).  Do not call
+  `api.set_critical_error()` (state is already latched).  Safe:
+  logging, metrics report, external-resource release.
+- **`on_inbox`** — per-message dispatch.  Return promptly; the
+  loop will re-drain on the next cycle.  If the script's inbox
+  handler needs to enqueue work for later, use a script-local
+  queue (mutated inside the callback) and drain it from the hot
+  path.  Exceptions consume the message and log at ERROR.
+- **`on_allowlist_changed`** — observability callback.  Fires
+  AFTER the framework has applied the new allowlist to the ZAP
+  cache (HEP-CORE-0036 §I11).  Scripts should treat this as a
+  notification, not a chance to veto the change — the change
+  has already taken effect.  Common use: log the new allowlist
+  size, adjust a script-local "how many peers am I serving"
+  gauge, decide whether to `api.stop()` if the peer count fell
+  below a policy threshold.
+- **`on_channel_ready`** (HEP-CORE-0042 §7.1) — one-shot per
+  channel.  Same graceful contract as other notifications.  If
+  the script decides the admitted subset is unacceptable, call
+  `api.channel_stop(channel)` rather than raising.
+- **Band callbacks** (`on_band_member_joined` / `_left` /
+  `_message` / `_lost`) — pure script-domain events; framework
+  provides delivery, script defines the protocol on top.
+  Graceful contract: return promptly; exceptions log and are
+  consumed.
+
 ### Python
 
 ```python
@@ -1592,12 +1960,25 @@ def on_stop(api):
     pass
 ```
 
-### API availability per callback (audit B10, 2026-05-21)
+### API availability per callback
 
 Not every `api.X(...)` method is usable from every callback.  The
 limiting factor is the per-callback init phase (see §"Initialization
 Protocol" Steps 0..14): some APIs depend on machinery that's not
 yet wired when the callback fires.
+
+> **Amendment 2026-07-11 — `on_init` moved into the data loop.**
+> Under the loop-ready gate contract (§"Loop-ready gate" above),
+> `invoke_on_init` is called from the top of every `run_data_loop`
+> cycle until it returns `Ready`, replacing the pre-amendment
+> one-shot call at role-host Step 5.  By the time on_init fires,
+> Step 6d has already completed — the BRC is connected, REG_ACK
+> has been applied, the queue has reached Active, and
+> `allowlist_cache` is seeded.  Handler-dependent APIs that were
+> previously ✗ in the `on_init` column (`api.band_join`,
+> `api.open_inbox`, `api.discover_channel`, `api.wait_for_role`)
+> are now ✓ — the handler is up.  The table below reflects the
+> post-amendment availability.
 
 | API | `on_init` | `on_produce`/`consume`/`process` | `on_stop` | `on_band_*` |
 |---|---|---|---|---|
@@ -1606,55 +1987,68 @@ yet wired when the callback fires.
 | `api.flexzone()` / `api.flexzone(side)` | ✓ | ✓ | ✓ | ✓ |
 | `api.update_flexzone_checksum()` | ✓ | ✓ | ✓ | ✓ |
 | `api.as_numpy(field)` | — (no slot) | ✓ | — (no slot) | — |
-| `api.metrics()` / `api.last_cycle_work_us()` / counters | ✓ (empty pre-loop) | ✓ | ✓ | ✓ |
+| `api.metrics()` / `api.last_cycle_work_us()` / counters | ✓ (zeros at cycle 1) | ✓ | ✓ | ✓ |
 | `api.report_metric()` / `api.clear_custom_metrics()` | ✓ | ✓ | ✓ | ✓ |
 | `api.stop()` / `api.set_critical_error()` / `api.critical_error()` | ✓ | ✓ | ✓ | ✓ |
 | `api.spinlock(idx)` (SHM only) | ✓ | ✓ | ✓ | ✓ |
-| `api.queue_mechanism(side)` (HEP-CORE-0035 §2; #186/#194) | ✓ | ✓ | ✓ | ✓ |
-| `api.is_channel_ready(channel)` (HEP-CORE-0036 §6.7; #190) | ✓ (always `false` pre-Active) | ✓ | ✓ | ✓ |
-| `api.allowed_peers(channel)` (HEP-CORE-0036 §I11; #194) | ✓ (empty until first auth-changed) | ✓ | ✓ | ✓ |
-| **`api.band_join(band)`** | **✗ FAILS SILENTLY** (returns `None` — handler not yet up at Step 5; needs Step 6 `start_handler_threads`) | ✓ | ✓ | ✓ |
-| `api.band_leave(band)` | ✗ same as band_join | ✓ | ✓ | ✓ |
-| `api.band_broadcast(band, dict)` | ✗ same | ✓ | ✓ | ✓ |
-| `api.band_members(band)` / `api.is_in_band(band)` | ✗ same | ✓ | ✓ | ✓ |
-| `api.discover_channel(channel)` | ✗ requires handler | ✓ | ✓ | ✓ |
-| `api.open_inbox(uid)` / `api.wait_for_role(uid, ...)` | ✗ requires handler | ✓ | ✓ | ✓ |
-| `api.notify_channel`, `api.broadcast_channel`, `api.broadcast`, `api.send`, `api.consumers()` [zero-arg P2P broadcast form] | RETIRED (R3.6 / M4f deleted backing infra; see README_Deployment §8.3 banner).  Not to be confused with the one-arg `api.consumers(channel)` LIVE-peer accessor added 2026-07-08 (HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a) — different signature, different backing store (binding-side `live_peers` map). |
+| `api.queue_mechanism(side)` (HEP-CORE-0035 §2) | ✓ | ✓ | ✓ | ✓ |
+| `api.is_channel_ready(channel)` (HEP-CORE-0036 §6.7) | ✓ (`true` from cycle 1 on paths that complete Step 6d) | ✓ | ✓ | ✓ |
+| `api.allowed_peers(channel)` (HEP-CORE-0036 §I11) | ✓ (seeded from REG_ACK on dialing side; may be empty at cycle 1 on binding-side and grow as CHANNEL_AUTH_CHANGED_NOTIFY drains — this is the state on_init is meant to observe) | ✓ | ✓ | ✓ |
+| `api.admitted_peers_count(channel)` (§I11) | ✓ (same source as `allowed_peers`; convenience count for the loop-ready gate) | ✓ | ✓ | ✓ |
+| `api.producers(channel)` / `api.consumers(channel)` (HEP-CORE-0017 §3.3.2 live-peer accessors) | ✓ (may be empty until first `phase=live` NOTIFY lands) | ✓ | ✓ | ✓ |
+| `api.band_join(band)` | ✓ (handler is up; BRC connected) | ✓ | ✓ | ✓ |
+| `api.band_leave(band)` | ✓ | ✓ | ✓ | ✓ |
+| `api.band_broadcast(band, dict)` | ✓ | ✓ | ✓ | ✓ |
+| `api.band_members(band)` / `api.is_in_band(band)` | ✓ | ✓ | ✓ | ✓ |
+| `api.discover_channel(channel)` | ✓ | ✓ | ✓ | ✓ |
+| `api.open_inbox(uid)` / `api.wait_for_role(uid, ...)` | ✓ (subject to graceful-return contract — see below) | ✓ | ✓ | ✓ |
+| `api.notify_channel`, `api.broadcast_channel`, `api.broadcast`, `api.send`, `api.consumers()` [zero-arg P2P broadcast form] | RETIRED (R3.6 / M4f deleted backing infra; see README_Deployment §8.3 banner).  Not to be confused with the one-arg `api.consumers(channel)` LIVE-peer accessor (HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a) — different signature, different backing store (binding-side `live_peers` map). |
 
-**Why `on_init` can't use handler-dependent APIs:** the role-host's
-`worker_main_` calls `invoke_on_init` at Step 5, but
-`start_handler_threads` (which connects the BRC pool) runs at
-Step 6.  All "talk to the broker" APIs need a BRC; in `on_init`
-they walk `resolve_bc_for_role()` → `handler_->connections()[0].brc`
-where `handler_` is still `nullptr`, and the call returns
-`std::nullopt`.  The Python binding surfaces that as `None`; the
-script sees no exception — the call simply did nothing.
-
-**Pattern for "join a band as soon as possible":** lazy-init in the
-data callback (gate with a module-level flag):
+**`on_init` is invoked per cycle** under the loop-ready gate;
+scripts must return promptly.  Long-running or blocking calls
+inside `on_init` stall the loop.  Instead of blocking, sample and
+return `NotReady`:
 
 ```python
-_band_joined = False
+_expected_producer = "sensors.lab7"
 
-def on_produce(tx, msgs, api):
-    global _band_joined
-    if not _band_joined:
-        res = api.band_join("!demo.coordination")
-        if res is not None and res.get("status") == "success":
-            _band_joined = True
-        else:
-            api.log("warn", f"band_join failed: {res}")
-            _band_joined = True  # don't retry forever
-    # ... normal slot work ...
+def on_init(api):
+    ch = api.channel()
+    # framework default already requires >=1 admitted producer; we
+    # additionally require the SPECIFIC expected producer to be present.
+    if _expected_producer not in api.producers(ch):
+        return False   # NotReady — framework re-enters on_init next cycle
+    # optional: opportunistic band-join now that the handler is up.
+    api.band_join("!lab7.coordination")
+    return True         # Ready — proceed to data loop
 ```
 
-See `share/py-demo-single-processor-shm/` for the working example.
+The band-join above is safe from `on_init` in the amended model.
+Under the pre-amendment model (band_join failed silently at Step 5),
+scripts used a lazy-init-in-`on_produce` pattern; that pattern is
+still valid but the `on_init` path is cleaner now.
 
-**Future code-fix candidates (Audit B10):** either (a) defer
-`band_join` etc. in `RoleAPIBase` so calls made before the handler
-is up enqueue and replay later, or (b) surface a clear error
-(`std::runtime_error("api.band_join: handler not yet up")`) so the
-silent-None failure is impossible.  (b) is the smaller change.
+**`api.wait_for_role` / `api.open_inbox` inside `on_init` — must
+return promptly.**  These APIs perform sync BRC round-trips;
+inside `on_init`'s per-cycle context, a long-running
+`wait_for_role(..., timeout_ms=30000)` will hold the loop for
+30 seconds and burn the startup budget.  Preferred pattern:
+use `wait_for_role` with a *short* per-cycle timeout (or non-
+blocking probe if available) and return `NotReady` when the
+target is absent, letting the framework retry on the next cycle:
+
+```python
+def on_init(api):
+    res = api.wait_for_role("coordinator.primary", timeout_ms=10)
+    if not res or res.get("status") != "success":
+        return False
+    return True
+```
+
+The alternative — a single long-timeout `wait_for_role` in
+`on_init` — works but couples the loop's timing to the discovery
+timeout.  The per-cycle short-poll pattern is more responsive and
+composes with the framework's startup timeout budget.
 
 ### Lua
 

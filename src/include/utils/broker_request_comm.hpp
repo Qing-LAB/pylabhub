@@ -271,12 +271,47 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// `{status="error", error_code="STALE_INSTANCE", ...}`), or
     /// `nullopt` on transport failure / timeout.  Default timeout
     /// matches `applied_ack_wait_ms` from HEP-0042 §5.6.
+    /// Producer branch: caller passes non-empty `role_type="producer"`
+    /// and `instance_id > 0` (stale-instance guard); broker updates
+    /// `confirmed_version[K][P]` and drains pending attach queue.
+    ///
+    /// Consumer branch (HEP-CORE-0042 §5.5.2 amendment 2026-07-11):
+    /// caller passes `role_type="consumer"` with `instance_id=0` (no
+    /// stale-instance race on the consumer path); broker snapshots
+    /// `authorized_consumer_pubkeys` into
+    /// `binding_side_confirmed_allowlist` so subsequent
+    /// `CHECK_PEER_READY_REQ` callers see the applied set.
+    ///
+    /// Single wire, single BRC method — role_type discriminates the
+    /// two semantics on the broker side per HEP-CORE-0036 §I9.1 (the
+    /// role_type value comes from the queue's `binding_role_type()`,
+    /// not from role-side `is_binding_side()` branching).
     [[nodiscard]] std::optional<nlohmann::json>
     channel_auth_applied(const std::string &channel,
                           const std::string &role_uid,
+                          std::string_view   role_type,
                           std::uint64_t      applied_version,
                           std::uint64_t      instance_id,
                           int                timeout_ms = 1000);
+
+    /// HEP-CORE-0036 §6.6.3 — dialing-side role's readiness pull.
+    /// Producer (under fan-in) calls this between REG_ACK apply and
+    /// its data-plane `socket.connect()` to check whether the
+    /// binding-side consumer's ZAP allowlist has been updated with
+    /// this producer's pubkey.  On `status="ready"` producer proceeds
+    /// with connect; on `status="not_ready"` producer polls again
+    /// after a bounded delay.
+    ///
+    /// Returns the broker reply body:
+    ///   ready:      `{status="ready",     channel_name, ...}`
+    ///   not_ready:  `{status="not_ready", channel_name, reason, ...}`
+    ///   error:      `{status="error",     error_code, message, ...}`
+    /// Returns `nullopt` on transport failure / timeout.
+    [[nodiscard]] std::optional<nlohmann::json>
+    check_peer_ready(const std::string &channel,
+                      const std::string &role_uid,
+                      const std::string &pubkey_z85,
+                      int                timeout_ms = 1000);
 
     /// HEP-CORE-0041 §9 D4 pre-attach broker confirmation.  Producer
     /// asks the broker whether one specific consumer is currently

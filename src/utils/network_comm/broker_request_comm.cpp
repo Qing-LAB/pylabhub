@@ -340,6 +340,10 @@ struct BrokerRequestComm::Impl
             }
 
             // Unsolicited notification — dispatch to callback.
+            LOGGER_INFO("[brc/{}] event=BrcNotifyReceived type='{}' "
+                        "role_uid='{}' has_callback={}",
+                        role_name, msg_type, role_uid,
+                        on_notification_cb ? "true" : "false");
             if (on_notification_cb)
                 on_notification_cb(msg_type, body);
         }
@@ -586,6 +590,27 @@ bool BrokerRequestComm::connect(const Config &cfg)
             [&](std::string_view sec) {
                 pImpl->dealer->set(zmq::sockopt::curve_secretkey, sec);
             });
+
+        // I-DEALER-IDENTITY (DRAFT_reg_ack_protocol_redesign.md §8.1):
+        //   the DEALER MUST set ZMQ_ROUTING_ID to its owning role's
+        //   role_uid before connect().  Without this, libzmq assigns
+        //   a rand()-derived 5-byte identity that collides across
+        //   fresh processes (rand() with unseeded state returns the
+        //   same first value in every process), so the broker's
+        //   ROUTER cannot uniquely address distinct roles for
+        //   unsolicited sends like CHANNEL_AUTH_CHANGED_NOTIFY.
+        //
+        // Empty role_uid is a broker-config error — refuse to connect
+        // loud, matching the no-CURVE-without-config discipline above.
+        if (cfg.role_uid.empty())
+        {
+            LOGGER_ERROR(
+                "BrokerRequestComm: role_uid empty; refusing to connect "
+                "(I-DEALER-IDENTITY §8.1 requires routing_id = role_uid).");
+            pImpl->dealer.reset();
+            return false;
+        }
+        pImpl->dealer->set(zmq::sockopt::routing_id, cfg.role_uid);
 
         // (Heartbeat 5s/30s + reconnect-disable + sndtimeo=500ms +
         // linger=0 are all applied above by `apply_socket_policy`,
@@ -947,17 +972,25 @@ BrokerRequestComm::get_channel_auth(const std::string &channel,
 std::optional<nlohmann::json>
 BrokerRequestComm::channel_auth_applied(const std::string &channel,
                                          const std::string &role_uid,
+                                         std::string_view   role_type,
                                          std::uint64_t      applied_version,
                                          std::uint64_t      instance_id,
                                          int                timeout_ms)
 {
-    // HEP-CORE-0042 §5.5.2 wire shape.  `producer_role_uid` is the
-    // canonical field name on the wire (broker handler dispatches on
-    // it); mapping from the `role_uid` parameter matches the naming
-    // used by sibling BRC methods (get_channel_auth, consumer_attach).
+    // HEP-CORE-0042 §5.5.2 wire.  Single wire; broker discriminates
+    // producer vs consumer branch on `role_type` per HEP-CORE-0036
+    // §I9.1.  `role_uid` populates BOTH `role_uid` (amended field)
+    // AND `producer_role_uid` (back-compat field for the producer
+    // branch) — broker's `handle_channel_auth_applied_req` reads
+    // `role_uid` when present and falls back to `producer_role_uid`
+    // otherwise, so writing both keeps a single caller shape and
+    // preserves the ack echo semantics for any older broker that
+    // hasn't taken the §5.5.2 amendment.
     nlohmann::json opts;
     opts["channel_name"]      = channel;
+    opts["role_uid"]          = role_uid;
     opts["producer_role_uid"] = role_uid;
+    opts["role_type"]         = std::string(role_type);
     opts["applied_version"]   = applied_version;
     opts["instance_id"]       = instance_id;
     auto reply = pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ",
@@ -977,10 +1010,41 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel,
         if (!echoed_channel.empty() && echoed_channel != channel)
         {
             LOGGER_WARN(
-                "BrokerRequestComm::channel_auth_applied('{}'): reply "
-                "echoed channel_name='{}' — cross-wire suspected; "
-                "treating as no-reply (broker will re-drive via next "
-                "NOTIFY per §5.5.2)",
+                "BrokerRequestComm::channel_auth_applied('{}', role_type="
+                "'{}'): reply echoed channel_name='{}' — cross-wire "
+                "suspected; treating as no-reply (broker will re-drive "
+                "via next NOTIFY per §5.5.2)",
+                channel, role_type, echoed_channel);
+            return std::nullopt;
+        }
+    }
+    return reply;
+}
+
+std::optional<nlohmann::json>
+BrokerRequestComm::check_peer_ready(const std::string &channel,
+                                     const std::string &role_uid,
+                                     const std::string &pubkey_z85,
+                                     int                timeout_ms)
+{
+    // HEP-CORE-0036 §6.6.3 wire.  Dialing-side role's readiness pull.
+    nlohmann::json opts;
+    opts["channel_name"] = channel;
+    opts["role_uid"]     = role_uid;
+    opts["pubkey_z85"]   = pubkey_z85;
+    auto reply = pImpl->do_request("CHECK_PEER_READY_REQ",
+                                    "CHECK_PEER_READY_ACK",
+                                    opts, timeout_ms);
+    if (reply.has_value())
+    {
+        const auto echoed_channel =
+            reply->value("channel_name", std::string{});
+        if (!echoed_channel.empty() && echoed_channel != channel)
+        {
+            LOGGER_WARN(
+                "BrokerRequestComm::check_peer_ready('{}'): reply echoed "
+                "channel_name='{}' — cross-wire suspected; treating as "
+                "no-reply",
                 channel, echoed_channel);
             return std::nullopt;
         }

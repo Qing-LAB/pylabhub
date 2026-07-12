@@ -60,6 +60,28 @@ TEST_F(RunDataLoopTest, InvokeReturnsFalseStopsLoop)
     ExpectWorkerOk(w);
 }
 
+// HEP-CORE-0011 §"Loop-ready gate" — AND composition invariant pin.
+// Framework default returns NotReady + user script `on_init` returns
+// Ready: the AND-composed gate MUST hold and the loop must NEVER call
+// acquire.  Load-bearing regression guard against:
+//   - composition changing from AND to OR
+//   - short-circuit that skips the framework default when a script
+//     hook is present
+//   - init_timeout_ms budget silently disabled
+TEST_F(RunDataLoopTest, FrameworkFloorHoldsGate)
+{
+    SKIP_IF_NO_TEST_ACCESS();
+    auto w = SpawnWorker("role_data_loop.framework_floor_holds_gate", {});
+    // The scenario deliberately drives the framework floor NotReady so
+    // the loop-ready gate holds until `init_timeout_ms` elapses; that
+    // path emits an ERROR-level `event=LoopInitTimeout` log line by
+    // design.  Declare it expected so the ERROR-scanning inside
+    // `ExpectWorkerOk` doesn't treat the intended failure signal as
+    // an unexpected error.
+    ExpectWorkerOk(w, /*required_substrings=*/{},
+                     /*expected_error_substrings=*/{"event=LoopInitTimeout"});
+}
+
 TEST_F(RunDataLoopTest, MetricsIncrement)
 {
     SKIP_IF_NO_TEST_ACCESS();

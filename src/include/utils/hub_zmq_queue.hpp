@@ -516,6 +516,56 @@ public:
     /// with a logged reason; queue state is unchanged.
     bool apply_master_approval(const nlohmann::json& artifacts) noexcept override;
 
+    /// HEP-CORE-0036 §6.6.3 — deferred dial for the fan-in DIALING
+    /// producer.  Called by the role host AFTER `wait_for_peer_ready`
+    /// returns success and the broker has confirmed the binding-side
+    /// consumer's ZAP allowlist contains this producer's pubkey.
+    ///
+    /// Under fan-in DIALING PUSH, `apply_master_approval` populates
+    /// `endpoint` + `server_pubkey_z85_` but does NOT call `start()`
+    /// — that would immediately dial and race the consumer's late
+    /// allowlist apply.  Once the peer is confirmed ready (via the
+    /// injected `PeerReadinessOracle`), this method runs `start()`,
+    /// which drives the actual `socket.connect()`, the CURVE
+    /// engagement guard, and the queue state transitions to
+    /// Configured → Active.
+    ///
+    /// No-op returning `true` on:
+    ///   - queues that did not defer their connect (fan-out producer,
+    ///     one-to-one binding-side producer, dialing consumer);
+    ///   - already-Active queues (idempotent by the same running_
+    ///     check as apply_master_approval).
+    ///
+    /// Returns `false` on: cancellation, timeout, permanent oracle
+    /// error, or `start()` failure.
+    bool finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
+                          std::uint64_t                          timeout_ms,
+                          const std::function<bool()>           &is_cancelled,
+                          const char                            *log_tag) noexcept override;
+
+    /// HEP-CORE-0036 §I9.1 — expose our CURVE client-side identity
+    /// pubkey to the role-side finalize glue.  Reads
+    /// `identity_key_name_` from the KeyStore; empty when the queue
+    /// has no CURVE identity (plaintext factories).
+    std::string own_pubkey_z85() const noexcept override;
+
+    /// HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
+    /// queue-owned admission fact.  Binding side (bind_socket=true):
+    /// ZAP allowlist snapshot non-empty.  Dialing reader
+    /// (mode=Read + !bind_socket): producer_peers_ non-empty.
+    /// Dialing writer (mode=Write + !bind_socket): server_pubkey_z85_
+    /// non-empty.  Overrides BOTH QueueReader and QueueWriter's
+    /// default (which return true) via the same implementation —
+    /// resolves through separate virtuals but the body is identical.
+    bool is_admission_populated() const noexcept override;
+
+    /// HEP-CORE-0036 §I9.1 + §6.5 step 6 — queue's own binding
+    /// role_type identity.  Binding reader: "consumer".  Binding
+    /// writer: "producer".  Non-binding side: "".  Used by
+    /// `handle_channel_auth_notifies` to emit CHANNEL_AUTH_APPLIED_REQ
+    /// without branching on `is_binding_side()`.
+    std::string_view binding_role_type() const noexcept override;
+
     /// Queue is Configured (artifacts present) per HEP-CORE-0036 §6.7.
     ///
     /// PULL side: returns true iff `server_pubkey_z85_` is populated

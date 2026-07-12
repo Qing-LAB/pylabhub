@@ -292,7 +292,8 @@ class RecordingEngine : public ScriptEngine
     {
         return {InvokeStatus::NotFound, {}};
     }
-    void invoke_on_init() override {}
+    pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
+    { return pylabhub::scripting::ScriptEngine::InitStatus::Ready; }
     void invoke_on_stop() override {}
     InvokeResult invoke_produce(
         InvokeTx,

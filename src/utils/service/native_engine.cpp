@@ -1357,7 +1357,7 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     }
 
     // ── Resolve optional callback symbols ──────────────────────────
-    fn_on_init_       = reinterpret_cast<FnVoidNoArgs>(resolve_sym_("on_init"));
+    fn_on_init_       = reinterpret_cast<FnInitStatusNoArgs>(resolve_sym_("on_init"));
     fn_on_stop_       = reinterpret_cast<FnVoidNoArgs>(resolve_sym_("on_stop"));
     fn_on_channel_closing_ =
         reinterpret_cast<FnOnChannelClosing>(resolve_sym_("on_channel_closing"));
@@ -1709,10 +1709,16 @@ size_t NativeEngine::type_sizeof(const std::string &type_name) const
 // Callback invocations — zero-marshaling direct function pointer calls
 // ============================================================================
 
-void NativeEngine::invoke_on_init()
+pylabhub::scripting::ScriptEngine::InitStatus
+NativeEngine::invoke_on_init()
 {
-    if (fn_on_init_)
-        fn_on_init_();
+    // Missing `on_init` symbol → treated as Ready at cycle 1
+    // (HEP-CORE-0011 §"Loop-ready gate" back-compat: no hook means
+    // framework default alone decides).
+    if (!fn_on_init_) return InitStatus::Ready;
+
+    const plh_init_status_t s = fn_on_init_();
+    return s == PLH_INIT_READY ? InitStatus::Ready : InitStatus::NotReady;
 }
 
 void NativeEngine::invoke_on_stop()

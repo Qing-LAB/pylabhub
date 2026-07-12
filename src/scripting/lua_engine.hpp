@@ -107,7 +107,7 @@ class LuaEngine : public ScriptEngine
 
     // ── Callback invocation ──────────────────────────────────────────────
 
-    void invoke_on_init() override;
+    pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override;
     void invoke_on_stop() override;
     void invoke_on_channel_closing(const std::string &channel,
                                     const std::string &reason) override;

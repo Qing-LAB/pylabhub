@@ -24,6 +24,95 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### Queue-owned topology + layer cleanup — P1+P2+P3 SHIPPED (2026-07-11)
+
+**Plan + landing log:** `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`
+
+Broker/HubState landings + open items:
+
+- **[HIGH bug] Stale `binding_side_confirmed_allowlist` (C3) ✅
+  FIXED 2026-07-11.**  `_on_consumer_revoked` now clears the
+  confirmed snapshot on any successful erase (D-2 whole-set
+  clear).  Next `_on_binding_confirmed` reconstructs.  Six L2
+  tests in `test_hub_state.cpp` pin the fix.  Channel-access-
+  close path is already covered by full-entry erase in
+  `_on_channel_access_closed` (no additional change needed).
+- **[MED] `handle_check_peer_ready_req` failure-mode split (C2)
+  ✅ ADDRESSED 2026-07-11.**  BRC method behavior unchanged;
+  role-side collapse eliminated by moving the readiness path
+  inside the queue's `finalize_connect` with a typed
+  `PeerReadinessOracle::PollResult` (Ready / NotReady /
+  PermanentError).
+- **[VERIFY] C4 admission derivation ✅ VERIFIED 2026-07-11.**
+  `role_api_base.cpp:2349-2364` binds `admission` from rx_queue
+  first with tx_queue fallback; fan-in consumer's rx_queue IS a
+  PeerAdmission, cast succeeds.  No bug.
+- **[Refactor P6 — PENDING] `binding_side_confirmed_allowlist`
+  full-set copy → version-tagged membership.**  Replace with
+  `confirmed_version: uint64` per channel + `authorized_at_version:
+  uint64` per pubkey.  Membership check becomes
+  `authorized_at_version <= confirmed_version`.  Removes the
+  duplicate string set; correctness matches P2.a semantics
+  without needing a separate invalidation step.  Reuse P2.a's
+  L2 test suite as the correctness gate.
+- **[Refactor P5 — PENDING] Queue emits its own apply-
+  confirmation.**  Retire the role-side `handle_channel_auth_notifies`
+  branching on `rx_queue->is_binding_side()`.  Queue's
+  `set_peer_allowlist` returns `AppliedResult{side,
+  applied_version}`; queue calls an injected `ConfirmationEmitter`
+  that publishes `CHANNEL_AUTH_APPLIED_REQ` with `role_type`
+  derived from `AppliedResult.side`.
+
+---
+
+### Loop-ready gate + fan-in binding-side reader arc ✅ SHIPPED (2026-07-11)
+
+Broker-side landings on the arc — full arc summary in
+`docs/todo/API_TODO.md`:
+
+- **`GET_CHANNEL_AUTH_REQ` handler.**  Caller authorization moved
+  from "must be a registered producer of the channel" to "must be
+  the binding-side role" (topology-aware).  Wire error code
+  `PRODUCER_NOT_AUTHORIZED` preserved for parser back-compat;
+  message names the topology-aware rule.  Response semantics
+  split: `CHANNEL_NOT_FOUND` when channel doesn't exist;
+  `status="success", allowlist=[]` (plus loud ERROR log) when
+  channel exists but `ChannelAccessEntry` is missing.  See
+  HEP-CORE-0036 §6.6.1 + §6.6.2.
+- **`CHECK_PEER_READY_REQ` handler (new wire).**  Dialing-side
+  role's readiness pull.  Authorization mirror of §6.6.1 — caller
+  must be a registered dialing-side role of the channel.
+  Read-only against `ChannelAccessEntry.binding_side_confirmed_allowlist`.
+  Reason codes: `not_admitted` (broker hasn't admitted caller) vs
+  `not_confirmed` (admitted but binding-side hasn't confirmed apply).
+  New error code `NOT_A_ROLE_OF_CHANNEL` in the §6.6 taxonomy.
+- **`CHANNEL_AUTH_APPLIED_REQ` handler extended.**  Accepts
+  `role_type` discriminator; consumer branch skips the
+  stale-instance guard (consumers have no `instance[C]`) and
+  snapshots the current `authorized_consumer_pubkeys` into
+  `binding_side_confirmed_allowlist` — the state
+  `CHECK_PEER_READY_REQ` consults.  Producer branch unchanged.
+- **Fan-in consumer-opens-channel `_on_channel_access_opened`
+  wiring.**  The invariant "channel opens ⟹ access record
+  exists" now holds symmetrically: producer opens on fan-out /
+  one-to-one; consumer opens on fan-in.
+- **Fan-in consumer self-admission suppression.**  On
+  CONSUMER_REG_REQ under fan-in, broker no longer adds the
+  consumer's own pubkey to `ChannelAccessEntry.authorized_consumer_pubkeys`
+  (that set holds producer pubkeys under fan-in) and no longer
+  fires the self-targeted CHANNEL_AUTH_CHANGED_NOTIFY — both
+  would have inflated the consumer's `admitted_peers_count`
+  reading of its own gate.
+- **`HubState::_on_binding_confirmed` mutator + `is_pubkey_in_binding_confirmed`
+  accessor.**  Snapshots `authorized_consumer_pubkeys` into
+  `binding_side_confirmed_allowlist`.  Read-only accessor for the
+  readiness handler.  `ChannelAccessEntry` gains one new
+  `unordered_set<string>` field; existing per-channel state is
+  unchanged.
+
+Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
++ HEP-CORE-0042 §5.5.2 amendment.
+
 ---
 
 ## Open broker-specific items

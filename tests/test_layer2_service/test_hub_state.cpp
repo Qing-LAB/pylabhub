@@ -3788,6 +3788,159 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_NoOpWithoutChannelAccess)
     EXPECT_FALSE(s.channel_access("ch.no.such").has_value());
 }
 
+// ── HEP-CORE-0036 §6.6.3 — binding_side_confirmed_allowlist invariants ─────
+
+TEST(HubStateChannelAccess, BindingConfirmedAllowlist_EmptyBeforeApply)
+{
+    // Fresh channel access record: confirmed set is empty until the
+    // binding side sends its first CHANNEL_AUTH_APPLIED_REQ.  Producer
+    // polling CHECK_PEER_READY_REQ before any apply must see
+    // `not_ready{reason=not_confirmed}` — the not-confirmed reason
+    // requires the pubkey to be in `authorized_consumer_pubkeys` but
+    // not in `binding_side_confirmed_allowlist`.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
+    auto a = s.channel_access("ch.fanin");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-P1"), 1u);
+    EXPECT_TRUE(a->binding_side_confirmed_allowlist.empty());
+    const auto opt = s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1");
+    ASSERT_TRUE(opt.has_value());
+    EXPECT_FALSE(*opt);
+}
+
+TEST(HubStateChannelAccess, BindingConfirmedAllowlist_SnapshottedByBindingConfirmed)
+{
+    // After the binding-side consumer applies + confirms, the confirmed
+    // set is set-equal to `authorized_consumer_pubkeys` at that moment.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P2");
+    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    auto a = s.channel_access("ch.fanin");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.size(), 2u);
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P1"), 1u);
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P2"), 1u);
+    ASSERT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1")
+                    .value_or(false));
+    ASSERT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
+                    .value_or(false));
+}
+
+TEST(HubStateChannelAccess, BindingConfirmedAllowlist_ClearedOnConsumerRevoke)
+{
+    // HEP-CORE-0036 §6.6.3 C3 — the load-bearing correctness pin.
+    // A successful revoke of ANY admitted pubkey MUST clear the whole
+    // `binding_side_confirmed_allowlist`.  Rationale: the binding-side
+    // ZAP cache is now stale relative to broker authoritative state
+    // (broker knows P is out; binding side hasn't received / applied
+    // the notify yet).  Any dial-side CHECK_PEER_READY_REQ during
+    // this window must see `not_ready` — including for pubkeys that
+    // remain admitted, because their confirmed status also lags.
+    // Regression this catches: the pre-fix behavior only removed the
+    // revoked pubkey from `authorized_consumer_pubkeys` but left the
+    // full pre-revoke snapshot in the confirmed set → dialing peer
+    // (including the revoked producer under a hostile-restart
+    // scenario) polls, gets `ready`, dials, ZAP DENY, terminal.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P2");
+    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    ASSERT_EQ(s.channel_access("ch.fanin")
+                   ->binding_side_confirmed_allowlist.size(), 2u);
+
+    // Revoke P1 — whole confirmed set clears, INCLUDING P2 which was
+    // not revoked (P2's confirmed-side lag is real too).
+    HubStateTestAccess::on_consumer_revoked(s, "ch.fanin", "PUB-P1");
+    auto a = s.channel_access("ch.fanin");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_TRUE(a->binding_side_confirmed_allowlist.empty())
+        << "revoke of any admitted pubkey MUST clear the whole confirmed "
+           "snapshot (D-2 whole-set clear).";
+    // authorized set correctly still has P2 (revoke only removed P1).
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-P1"), 0u);
+    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-P2"), 1u);
+    // CHECK_PEER_READY_REQ semantics from broker's perspective: P2
+    // still admitted but no longer confirmed → not_ready{not_confirmed}.
+    ASSERT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
+                    .has_value());
+    EXPECT_FALSE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
+                     .value());
+}
+
+TEST(HubStateChannelAccess, BindingConfirmedAllowlist_RepopulatedByNextApply)
+{
+    // After the revoke-triggered clear, the next binding-side APPLIED_REQ
+    // reconstructs the confirmed set from the current
+    // `authorized_consumer_pubkeys`.  Any admitted-and-still-admitted
+    // pubkey (P2) reappears; the revoked pubkey (P1) does not.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P2");
+    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_revoked(s, "ch.fanin", "PUB-P1");
+
+    // Binding side receives notify → pulls → applies → APPLIED_REQ.
+    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    auto a = s.channel_access("ch.fanin");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.size(), 1u);
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P2"), 1u);
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P1"), 0u);
+    // CHECK_PEER_READY_REQ semantics: P2 is ready; P1 is not_admitted.
+    EXPECT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
+                    .value_or(false));
+    EXPECT_FALSE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1")
+                     .value_or(true));
+}
+
+TEST(HubStateChannelAccess, BindingConfirmedAllowlist_NoOpRevokeDoesNotClear)
+{
+    // Idempotent-revoke discipline: revoking a pubkey that is not in
+    // `authorized_consumer_pubkeys` returns erased==0, must NOT bump
+    // channel_version, must NOT clear the confirmed set.  A regression
+    // that cleared unconditionally (regardless of erased count) would
+    // silently invalidate the confirmed set on any spurious revoke —
+    // costing correctness-unnecessary latency to every dialing peer.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
+    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    ASSERT_EQ(s.channel_access("ch.fanin")
+                   ->binding_side_confirmed_allowlist.size(), 1u);
+    const auto ver_before = s.channel_access("ch.fanin")->channel_version;
+
+    // Revoke a pubkey never authorized.  No-op.
+    HubStateTestAccess::on_consumer_revoked(s, "ch.fanin", "PUB-NEVER");
+    auto a = s.channel_access("ch.fanin");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->channel_version, ver_before) << "no-op revoke must not bump";
+    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P1"), 1u)
+        << "no-op revoke must NOT clear the confirmed set";
+}
+
+TEST(HubStateChannelAccess, BindingConfirmedAllowlist_ClearedByChannelClose)
+{
+    // `_on_channel_access_closed` erases the entire ChannelAccessEntry,
+    // so `binding_side_confirmed_allowlist` goes with it.  Pin this so
+    // a future refactor that keeps the entry alive (e.g. for federation
+    // eventual consistency) is forced to explicitly re-establish the
+    // clear-on-close semantic.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
+    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    HubStateTestAccess::on_channel_access_closed(s, "ch.fanin");
+    EXPECT_FALSE(s.channel_access("ch.fanin").has_value());
+    EXPECT_FALSE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1")
+                     .has_value());
+}
+
 TEST(HubStateChannelAccess, Close_Idempotent_NoSuchChannel)
 {
     HubState s;

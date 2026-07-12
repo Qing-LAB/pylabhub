@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -75,6 +76,19 @@ inline bool wait_for_roles(RoleAPIBase                      &api,
     }
     return true;
 }
+
+// ============================================================================
+// wait_for_peer_ready — RETIRED 2026-07-11 (queue-owned layer surgery)
+// ============================================================================
+//
+// The dial-side readiness pull moved INSIDE `hub::ZmqQueue::finalize_connect`
+// per HEP-CORE-0036 §I9.1 (topology and transport are queue-internal) +
+// §6.6.3 layer-contract amendment.  Producer role host now calls the
+// topology-agnostic `api.finalize_channel_connect(channel, timeout_ms,
+// is_cancelled)` uniformly for every role; the queue itself drives the
+// poll loop via an injected `hub::PeerReadinessOracle`.  Replaces the
+// shipped-2026-07-11 shape (`wait_for_peer_ready` + `dial_now` in
+// role code with a topology check).
 
 // ============================================================================
 // serialize_inbox_spec_json — inbox schema JSON for broker REG_REQ

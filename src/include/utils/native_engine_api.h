@@ -106,6 +106,18 @@
 #define PLH_STOP_REASON_CRITICAL_ERROR  3
 #define PLH_STOP_REASON_CHANNEL_CLOSED  4
 #define PLH_STOP_REASON_SCRIPT_ERROR    5
+#define PLH_STOP_REASON_INIT_TIMEOUT    6
+
+/** Loop-ready status returned by `on_init` (HEP-CORE-0011
+ *  §"Loop-ready gate").  Values chosen so that `PLH_INIT_NOT_READY=0`
+ *  matches the C convention of "0 = false / not-ready" and
+ *  `PLH_INIT_READY=1` matches "1 = true / ready", letting plugin
+ *  code use `return true;` idiomatically. */
+/* `plh_init_status_t` typedef lives in native_invoke_types.h (included
+ * below) so both plugin authors and the host-side engine wiring can
+ * agree on the type without one header including the other. */
+#define PLH_INIT_NOT_READY 0
+#define PLH_INIT_READY     1
 
 /* hub_post_event return values (API v7 #84): preserve the tristate the
  * C ABI emits so plugin authors can distinguish "the event name is
@@ -637,7 +649,18 @@ typedef struct PlhAbiInfo
  *
  *  Additive PlhAbiInfo fields are NOT breaking — they're
  *  guarded by struct_size. */
-#define PLH_NATIVE_API_VERSION 8
+/* v9 (2026-07-11): on_init export signature changed from `void
+ * on_init(void)` to `plh_init_status_t on_init(void)` per HEP-CORE-0011
+ * "Loop-ready gate" amendment.  The framework now calls `on_init` at
+ * the top of every data-loop cycle until it returns PLH_INIT_READY,
+ * composed with a per-role framework default gate ("Consumer / rx side:
+ * at least one admitted peer per rx channel").  Calling a v8-compiled
+ * void-returning `on_init` through the v9 status-returning pointer is
+ * UB on some target ABIs, so v8 plugins are refused at load with an
+ * actionable error; plugins must rebuild against this header.  A new
+ * PLH_STOP_REASON_INIT_TIMEOUT (6) surfaces the "on_init never turned
+ * Ready within budget" outcome. */
+#define PLH_NATIVE_API_VERSION 9
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants
@@ -733,7 +756,13 @@ typedef struct PlhAbiInfo
  *        - string is valid for the duration of the call (stack-owned by host)
  *        - callee must copy if needed beyond return
  */
-/* void on_init(void); */
+/* plh_init_status_t on_init(void);
+ *   Return PLH_INIT_READY when the plugin is prepared for the data
+ *   loop to enter its acquire step; PLH_INIT_NOT_READY to hold the
+ *   loop for another cycle (framework re-invokes at the top of every
+ *   cycle until PLH_INIT_READY, subject to init_timeout_ms).  A plugin
+ *   whose on_init export is absent is treated as PLH_INIT_READY at
+ *   cycle 1.  See HEP-CORE-0011 §"Loop-ready gate". */
 /* void on_stop(void); */
 /* void on_heartbeat(void); */
 /* void on_channel_closing  (const plh_channel_closing_args_t   *args); */
@@ -861,6 +890,7 @@ enum class StopReason : int
     CriticalError = PLH_STOP_REASON_CRITICAL_ERROR,
     ChannelClosed = PLH_STOP_REASON_CHANNEL_CLOSED,
     ScriptError   = PLH_STOP_REASON_SCRIPT_ERROR,
+    InitTimeout   = PLH_STOP_REASON_INIT_TIMEOUT,
 };
 
 /** Result of `Context::hub_post_event()`.  Tristate — the C ABI
@@ -911,6 +941,7 @@ enum class PostEventResult : int
     case StopReason::CriticalError: return "critical_error";
     case StopReason::ChannelClosed: return "channel_closed";
     case StopReason::ScriptError:   return "script_error";
+    case StopReason::InitTimeout:   return "init_timeout";
     }
     return "normal";
 }

@@ -180,6 +180,21 @@ struct HubState::Impl
     /// the existing `mu`).
     std::unordered_map<std::string, std::uint64_t> producer_instance;
 
+    // I-REPLAY-BOUND (DRAFT_reg_ack_protocol_redesign.md §8.1).  Per-role
+    // sliding-window dedup for REG-family client_nonces.  Entries older
+    // than `nonce_seen()`'s `window_ms` argument are pruned on the next
+    // `nonce_seen()` call for the same role_uid.  Prune-on-access is
+    // sufficient because the dispatch thread serializes access under
+    // I-ROUTER-SERIAL; a background sweep would only matter if a role's
+    // uid stopped registering while others kept churning, which is
+    // bounded by the sizeof(client_nonce)==16-bytes footprint.
+    struct NonceEntry
+    {
+        std::string   nonce;
+        std::uint64_t wall_ts;
+    };
+    std::unordered_map<std::string, std::vector<NonceEntry>> nonce_dedup;
+
     BrokerCounters                                counters;
 
     // Handler registries. Separate mutex so subscribe/unsubscribe and
@@ -2004,7 +2019,22 @@ void HubState::_on_consumer_revoked(const std::string &channel_name,
         it->second.authorized_consumer_pubkeys.erase(pubkey_z85);
     // HEP-CORE-0042 §5.2: same discipline as _on_consumer_authorized.
     // Erasing a pubkey not in the set is a no-op and must not bump.
-    if (erased > 0) ++it->second.channel_version;
+    if (erased > 0)
+    {
+        ++it->second.channel_version;
+        // HEP-CORE-0036 §6.6.3: revocation invalidates the binding-
+        // side confirmed snapshot until the binding side re-applies.
+        // Whole-set clear on any successful revoke — the next
+        // `CHANNEL_AUTH_APPLIED_REQ` from the binding side
+        // reconstructs the confirmed set via `_on_binding_confirmed`
+        // (which set-equals it to `authorized_consumer_pubkeys` at
+        // that moment).  Without this, a dialing peer polling
+        // `CHECK_PEER_READY_REQ` between the revoke and the next
+        // apply could receive `ready` from the stale snapshot and
+        // dial into a ZAP allowlist that no longer contains its
+        // pubkey — terminal libzmq DENY.
+        it->second.binding_side_confirmed_allowlist.clear();
+    }
 }
 
 std::uint64_t
@@ -2014,6 +2044,49 @@ HubState::producer_instance(const std::string &producer_role_uid) const
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->producer_instance.find(producer_role_uid);
     return (it == pImpl->producer_instance.end()) ? 0 : it->second;
+}
+
+bool
+HubState::nonce_seen(std::string_view role_uid,
+                      std::string_view client_nonce,
+                      std::uint64_t     wall_ts,
+                      std::uint64_t     window_ms)
+{
+    // I-REPLAY-BOUND: freshness check + record, atomic under the
+    // HubState writer lock.  Returns true when the nonce is fresh
+    // (added to the dedup set); false on collision within the window.
+    //
+    // Callers upstream (broker admission handlers) have already
+    // rejected wall-clock skew as a distinct reject class; here we
+    // only need to worry about nonce reuse.
+    if (role_uid.empty() || client_nonce.empty()) return false;
+
+    std::unique_lock lk(pImpl->mu);
+    const std::string role_uid_key{role_uid};
+    auto &entries = pImpl->nonce_dedup[role_uid_key];
+
+    // Prune-on-access: drop entries older than (wall_ts - window_ms).
+    // Underflow-safe: if window_ms > wall_ts, cutoff would wrap; use 0
+    // as the effective floor.
+    const std::uint64_t cutoff =
+        (wall_ts > window_ms) ? (wall_ts - window_ms) : 0;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                  [cutoff](const Impl::NonceEntry &e) {
+                                      return e.wall_ts < cutoff;
+                                  }),
+                   entries.end());
+
+    // Membership check on the pruned window.
+    for (const auto &e : entries)
+    {
+        if (e.nonce == client_nonce) return false;  // duplicate
+    }
+
+    Impl::NonceEntry fresh;
+    fresh.nonce.assign(client_nonce);
+    fresh.wall_ts = wall_ts;
+    entries.push_back(std::move(fresh));
+    return true;
 }
 
 std::uint64_t
@@ -2033,6 +2106,42 @@ HubState::_on_producer_confirmed(const std::string &channel_name,
     auto &slot = it->second.confirmed_version_per_producer[producer_role_uid];
     slot = std::max(slot, applied_version);
     return slot;
+}
+
+void
+HubState::_on_binding_confirmed(const std::string &channel_name)
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    {
+        bump_invalid_identifier(*pImpl);
+        return;
+    }
+    std::unique_lock lk(pImpl->mu);
+    auto it = pImpl->channel_access_index.find(channel_name);
+    if (it == pImpl->channel_access_index.end()) return;
+    // Snapshot-replace: `binding_side_confirmed_allowlist` is
+    // set-equal to the current `authorized_consumer_pubkeys`.  This
+    // means a peer that was previously admitted but has since been
+    // revoked will NOT appear in the confirmed set after the next
+    // binding-side apply — matches the ZAP allowlist state on the
+    // binding-side role.  HEP-CORE-0036 §6.6.3.
+    it->second.binding_side_confirmed_allowlist =
+        it->second.authorized_consumer_pubkeys;
+}
+
+std::optional<bool>
+HubState::is_pubkey_in_binding_confirmed(const std::string &channel_name,
+                                          const std::string &pubkey_z85) const
+{
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        pubkey_z85.empty())
+    {
+        return std::nullopt;
+    }
+    std::shared_lock lk(pImpl->mu);
+    auto it = pImpl->channel_access_index.find(channel_name);
+    if (it == pImpl->channel_access_index.end()) return std::nullopt;
+    return it->second.binding_side_confirmed_allowlist.count(pubkey_z85) > 0;
 }
 
 void HubState::_on_message_processed(const std::string &msg_type,

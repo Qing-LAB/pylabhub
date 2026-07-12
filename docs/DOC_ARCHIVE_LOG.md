@@ -6,6 +6,118 @@
 
 ## Archive batches
 
+### 2026-07-11 (loop-ready gate + fan-in binding queue draft merged into HEPs)
+
+Design draft `DRAFT_loop_ready_gate_and_binding_queue_2026-07-11.md`
+served as the working sketch for the fan-in binding-side reader
+correctness arc (Tasks #7 / #8 / #9).  All lasting design content
+now lives in the permanent HEPs and README topic summaries; draft
+archived to `docs/archive/transient-2026-07-11/`.
+
+Where the draft's content landed:
+
+- **§4.1 (`handle_channel_auth_notifies` consumer branch — binding-
+  side APPLIED_REQ)** → **HEP-CORE-0036 §6.5 step 6** (consumer
+  emits APPLIED_REQ after installing snapshot allowlist) and
+  **HEP-CORE-0042 §5.5.2 amendment 2026-07-11** (extended wire
+  with `role_type` discriminator; consumer branch has no
+  stale-instance guard).  Shipped code differs mechanically from
+  the draft sketch — draft used a `hub::Queue *q` intermediate
+  with `is_binding_side()`; shipped code uses direct `dynamic_cast`
+  on the separate `QueueReader` / `QueueWriter` hierarchies with
+  rx-then-tx fallback.  Semantically identical; the draft sketch
+  captured intent, the HEPs capture the final contract.
+
+- **§4.2 (loop-ready gate: framework floor AND script hook)** →
+  **HEP-CORE-0011 §"Loop-ready gate"** (contract) and shipped
+  `data_loop.hpp` `run_data_loop()` around
+  `init_done = Ops::default_init_ready(api) && script_hook_result`.
+  100 ms pacer (`kLoopReadyPollInterval`) lives in
+  `loop_timing_policy.hpp` and is referenced from HEP-CORE-0011
+  as the "pre-Ready cycle cadence" constant.
+
+- **§6 (per-role `default_init_ready` semantics)** → shipped
+  `cycle_ops.hpp` — Producer floor always true, Consumer /
+  Processor floor gated on `admitted_peers_count >= 1`.  Pinned
+  by the L2 `RunDataLoopTest.FrameworkFloorHoldsGate` scenario
+  (Task #7).
+
+- **§6.6.3 (dial-side readiness pull, new wire `CHECK_PEER_READY_REQ`)**
+  → **HEP-CORE-0036 §6.6.3** (authorization mirror of §6.6.1,
+  reply shape `"ready" | "not_ready"` with reason
+  `"not_admitted" | "not_confirmed"`, error codes
+  `CHANNEL_NOT_FOUND` and `NOT_A_ROLE_OF_CHANNEL`).  Shipped
+  handler at `src/utils/ipc/broker_service.cpp`
+  `handle_check_peer_ready_req` matches wire fields exactly
+  (`channel_name`, `role_uid`, `pubkey_z85`, `correlation_id`).
+
+- **Deferred-connect two-phase** (draft §4.1 tail) →
+  `src/utils/hub/hub_zmq_queue.cpp` `apply_master_approval`
+  detects fan-in DIALING PUSH and sets `dial_pending=true` without
+  calling `start()`; producer host calls `api_ref.dial_now()` only
+  after `wait_for_peer_ready` observes broker's readiness.  Test
+  `TopologyFactory_FanInProducer_WireApplyMasterApproval` pins
+  the two-phase contract.
+
+TODO index status recorded via Task #8 update pass on 2026-07-11
+(`docs/TODO_MASTER.md` fan-in arc entry, `docs/todo/API_TODO.md`,
+`docs/todo/MESSAGEHUB_TODO.md`, `docs/todo/TESTING_TODO.md`,
+`docs/todo/TOPOLOGY_TODO.md`).
+
+---
+
+### 2026-07-10 (REG protocol addendum merged — task #96 closes)
+
+Doc-only consolidation.  No code changes.  Task #96 (merge
+invariants addendum into main REG protocol draft) closes with the
+merge of `DRAFT_reg_ack_protocol_redesign_addendum_invariants.md`
+(design gap audit surfaced by the fan-in NOTIFY-routing bug on
+2026-07-10) into the main draft `DRAFT_reg_ack_protocol_redesign.md`.
+
+Main draft §8.1 expands from 4 invariants to 21, grouped by
+concern: state/ordering (I-ROUTER-SERIAL, I-STATE-MUTATION-ATOMIC,
+I-OPT-ADMIT, I-MONOTONIC-VERSION), identity (I-DEALER-IDENTITY,
+I-PUBKEY-BINDING, I-CURVE-IS-DECLARED, I-CHANNEL-SINGLE-BINDING-SIDE),
+security (I-REPLAY-BOUND, I-ENVELOPE-BODY-BINDING,
+I-KEY-ROTATION-VIA-DEREG), wire (I-WIRE-ENVELOPE,
+I-WIRE-VERSION-ATOMIC), delivery (I-CORRELATION-STABLE,
+I-NOTIFY-BEST-EFFORT, I-ROUTER-NOT-MANDATORY), state model
+(I-INSTANCE-ID-EPHEMERAL, I-PENDING-EPHEMERAL), policy
+(I-BRC-BUDGET, I-REQ-IDEMPOTENT, I-MSG-TYPE-TAXONOMY).
+
+Main draft new §14 (typed wire envelope contract) locks the wire
+skeleton (4 skeleton frames + 1 body frame) and the per-msg-type
+typed body class catalog (RegReqBody, RegAckBody, ...,
+BandJoinNotifyBody).  Replaces scattered `body.value("field")`
+JSON extraction across broker + role + BRC with typed accessors.
+
+Main draft §2 subsections rewritten to reference the typed body
+classes by name; §2's own wire-shape blocks retired (single source
+of truth in §14 avoids drift).
+
+Main draft §12 sequencing updated to the new phase order:
+A (typed envelope skeleton) → B (BRC + broker rewired) →
+C (admission-gate ordering) → D (retirements) → E (coverage tests)
+→ F (federation follow-on).
+
+Addressing primitives newly stated as invariants closed the fan-in
+NOTIFY-routing bug at design level (not patch level): libzmq's
+default `rand()`-derived DEALER identity collided across fresh role
+processes; I-DEALER-IDENTITY makes routing_id ≡ role_uid mandatory
+and wire-enforced.  Security invariants I-REPLAY-BOUND +
+I-ENVELOPE-BODY-BINDING + I-KEY-ROTATION-VIA-DEREG close attack
+surfaces (message replay after DEREG, envelope↔body splice, in-band
+key rotation) that CURVE frame encryption does not cover.
+
+Archived: `DRAFT_reg_ack_protocol_redesign_addendum_invariants.md`
+→ `docs/archive/transient-2026-07-10/`.
+
+Follow-on tasks: #97 (WireEnvelope class + typed body classes),
+#98 (handler sweep), #99 (retire zmq_identity), #95 (fan-in NOTIFY
+test passes as consequence).
+
+---
+
 ### 2026-07-08 (HEP-CORE-0021 §16 amendment — task #94 closes)
 
 Doc-only consolidation.  No code changes.  Task #94 (ephemeral

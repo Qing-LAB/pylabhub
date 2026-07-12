@@ -92,6 +92,34 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-07-11 — Loop-ready gate + fan-in binding-side reader arc coverage.**
+  Full arc E2E-covered by existing L4 tests + one new L2 test
+  pinning the AND-composition invariant.  Coverage matrix:
+  - **L4 fan-in `ZmqE2E_MultiProducer_TwoAuthorized`** — pins Bug A
+    binding-queue resolution (rx_queue on fan-in binding-side
+    consumer), G2 `allowlist_cache` seed in `apply_consumer_reg_ack`,
+    broker's topology-aware `GET_CHANNEL_AUTH_REQ` authorization,
+    `_on_channel_access_opened` for fan-in consumer-opens path,
+    fan-in consumer self-admission suppression, `CHECK_PEER_READY_REQ`
+    + consumer-branch `CHANNEL_AUTH_APPLIED_REQ`, producer's
+    `wait_for_peer_ready` + `dial_now()`, CURVE handshake ordering.
+    Runs in ~3.4 s (previously failed with 20 s timeout).
+  - **L4 fan-out `ZmqE2E_AuthorizedConsumerReceivesAllSlots`** —
+    regression coverage for the dialing-consumer + binding-producer
+    path.  Would fail if G2 removed (dialing consumer's
+    `allowlist_cache` empty → gate holds forever → InitTimeout).
+  - **L2 `RunDataLoopTest.FrameworkFloorHoldsGate` (NEW)** —
+    load-bearing regression guard on the AND-composition invariant.
+    Framework floor NotReady + user script `on_init` Ready → gate
+    MUST hold; loop MUST time out with `StopReason::InitTimeout`.
+    Catches: AND inverted to OR, short-circuit that skips framework
+    default when script hook present, `init_timeout_ms` budget
+    silently disabled.  Runs in 0.56 s.
+  - **L2 `ZmqQueueTest.TopologyFactory_FanInProducer_WireApplyMasterApproval`
+    (updated)** — pins the two-phase deferred-connect flow:
+    `apply_master_approval` returns Standby → Configured (deferred),
+    `dial_now()` completes Configured → Active.  Before Task #9
+    this test asserted the old single-phase flow.
 - **2026-06-27 — #177 KeyStore fixture infrastructure shipped.**  `CurveKeyStoreFixture`
   RAII guard (`tests/test_framework/curve_test_setup.h`) constructs
   `SecureMemorySubsystem` + `KeyStore` and seeds identities under
@@ -107,6 +135,121 @@ update the destination task's description, then delete the test.
   zmq_endpoint_registry) are AUTH-6 (#154) batch 2a/2b scope.
 
 ## Current Focus — Open coverage gaps
+
+### Queue-owned topology + layer cleanup — P1+P2+P3 SHIPPED (2026-07-11)
+
+**Plan + landing log:** `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`
+
+**Shipped coverage:**
+- `HubStateChannelAccess.BindingConfirmedAllowlist_EmptyBeforeApply`
+  — fresh channel access has empty confirmed set; pin for the
+  `not_confirmed` reason path.
+- `HubStateChannelAccess.BindingConfirmedAllowlist_SnapshottedByBindingConfirmed`
+  — after `_on_binding_confirmed`, confirmed set matches
+  authorized set.
+- `HubStateChannelAccess.BindingConfirmedAllowlist_ClearedOnConsumerRevoke`
+  — load-bearing regression guard on C3.  Revoke of ANY admitted
+  pubkey clears the WHOLE confirmed set (including still-admitted
+  peers, whose confirmed status also lags).
+- `HubStateChannelAccess.BindingConfirmedAllowlist_RepopulatedByNextApply`
+  — after clear, next binding-side apply reconstructs from
+  current authorized set.
+- `HubStateChannelAccess.BindingConfirmedAllowlist_NoOpRevokeDoesNotClear`
+  — revoking a pubkey not in the set is a no-op; must NOT clear
+  the confirmed set (protects against overzealous clear).
+- `HubStateChannelAccess.BindingConfirmedAllowlist_ClearedByChannelClose`
+  — channel-access-close erases the whole entry; regression pin
+  for any future refactor that keeps the entry alive.
+- `ZmqQueueTest.TopologyFactory_FanInProducer_WireApplyMasterApproval`
+  (updated) — drives the queue via a local `AlwaysReadyOracle` +
+  `finalize_connect` call, replacing the retired `dial_now`
+  test.  Pins the two-phase deferred-connect flow under the
+  new API.
+- `PlhHubCliTest.ZmqE2E_Processor_FanInBothChannels_ThreeRoles`
+  (NEW) — first L4 processor E2E test.  Three subprocesses
+  (upstream producer, processor, downstream consumer); ch1 and
+  ch2 both declared fan-in.  Load-bearing regression guard for
+  the processor two-channel resolution fix: under pre-fix code
+  the processor aborts at RegAck due to `NOT_A_ROLE_OF_CHANNEL`
+  from the wrongly-resolved `finalize_channel_connect(in_channel)`
+  broker RPC; under the fix the IN call no-ops and the OUT call
+  polls its own channel.  Runs ~3.4 s.
+
+**Regression sweep:** L2 1657/1657, L4 134/134 pass after P4+P5
++ processor resolution fix.
+
+**Still pending (P4 / P5 / P6):**
+
+Coverage matrix the plan commits to (L2 unless noted):
+
+**P2 correctness bugs (small surface, land before layer surgery):**
+- `HubStateStaleConfirmedAllowlist_ClearsOnAccessClose` — kill
+  fan-in consumer after successful APPLIED_REQ; assert
+  `CHECK_PEER_READY_REQ` returns `not_ready{reason=not_admitted}`
+  until fresh consumer confirms.  Pins C3.
+- `HubStateStaleConfirmedAllowlist_ClearsOnRevoke` — revoke a
+  producer's admission mid-session; assert
+  `binding_side_confirmed_allowlist` no longer reports that
+  pubkey as confirmed on next `CHECK_PEER_READY_REQ`.  Pins C3
+  (only if user picks D-2 pubkey-scoped variant).
+- `WaitForPeerReadyShutdownCancellation` — shutdown flag set
+  during wait; assert exit within one `kBrokerReadinessPollInterval`
+  rather than `init_timeout_ms`.  Pins C1.
+- `CheckPeerReadyPermanentErrorFailsFast` — unresolvable BRC
+  (channel not this role's); assert `wait_for_peer_ready` returns
+  false without burning the budget.  Pins C2.
+
+**P3 queue-owned dial (layer surgery):**
+- `FinalizeConnect_UniformInterface_AllRoles` — every role type
+  (producer / consumer / processor) calls
+  `api.finalize_channel_connect(channel, timeout_ms)` uniformly;
+  the queue's `finalize_connect` implementation branches on its
+  own `dial_pending` state, not on caller topology knowledge.
+- `FinalizeConnect_NoopOnNonDeferred` — fan-out producer,
+  one-to-one binding-side producer, dialing consumer, SHM
+  channels: `finalize_connect` returns immediately with no
+  broker RPC.  Instrument BRC with call counter.
+- `FinalizeConnect_BlocksThenDialsOnFanInProducer` — fan-in
+  DIALING PUSH producer: `finalize_connect` blocks until oracle
+  reports ready, then completes deferred `start()`.
+- `RoleAPIBase_NoTopologyMethodsInPublicSurface` — static/compile-
+  time check via header assertion: `RoleAPIBase` public API does
+  not expose `dial_now` / `check_peer_ready`.  Pins A2.
+  Alternatively — `feedback_no_flake_explanations`-compliant
+  runtime test that would fail if either method were re-exposed.
+
+**P4 gate reads queue-level fact:**
+- `LoopReadyGate_ReadsQueueNotSnapshotCount` — instrument
+  `admitted_peers_count` with a counter; assert loop-ready gate
+  does not increment it (gate goes through
+  `queue.is_admission_populated`).  Pins A4 + B1.
+
+**P5 queue-owned apply-confirmation:**
+- `SetPeerAllowlist_ReturnsAppliedResult` — L2 unit test on
+  `hub::Queue::set_peer_allowlist` returning an
+  `AppliedResult{side, version}` structure; role-side code no
+  longer branches on `is_binding_side()` to decide APPLIED_REQ
+  emission.  Pins A3.
+
+**P6 data-structure refactor:**
+- Reuse P2.a's stale-consumer test suite as the correctness gate
+  under the version-tagged membership representation.  Add
+  `ChannelAccessEntry_VersionTaggedMembership_MatchesSetSemantics`
+  as an equivalence test asserting the new representation
+  answers `is_pubkey_in_binding_confirmed` identically to the
+  legacy set-copy for all sequences of authorize / revoke /
+  confirm operations.
+
+**Discipline reminders:**
+- Per `feedback_tests_pin_design_not_current_behavior`: derive
+  assertions from the layer contract in the plan's §3, NOT from
+  the shipped code's shape.
+- Per `feedback_multi_engine_parity_audit`: if P7 touches
+  `invoke_on_init` / native ABI, all three engines get parity
+  coverage.
+- No test writing until user picks §7 decisions in the draft.
+
+---
 
 ### HEP-CORE-0042 Phase 3a.4 — L4 end-to-end scenarios (2026-07-02) ⏳
 

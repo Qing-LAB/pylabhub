@@ -310,10 +310,14 @@ void ProcessorRoleHost::worker_main_()
         return;
     }
 
-    // ── Step 5: invoke on_init ───────────────────────────────────────────────
-    engine_ref.invoke_on_init();
+    // ── Step 5: RETIRED (HEP-CORE-0011 loop-ready gate amendment) ────────
+    // The pre-amendment one-shot `engine_ref.invoke_on_init()` moved into
+    // `run_data_loop` at the top of every cycle until `on_init` returns
+    // Ready.  See HEP-CORE-0011 §"Loop-ready gate" for the contract.
 
-    // Sync flexzone checksum after on_init (user may have written to flexzone).
+    // Sync flexzone checksum before entering the data loop (defensive
+    // pre-loop sync; on_init writes will be handled by the loop's
+    // normal Step D+E fire path).
     if (api_ref.has_tx_side() && api_ref.has_tx_fz())
         api_ref.sync_tx_flexzone_checksum();
 
@@ -489,6 +493,46 @@ void ProcessorRoleHost::worker_main_()
 
         api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
                                    hub_max);
+
+        // Step 6d.1 — HEP-CORE-0036 §I9.1 topology-agnostic finalize.
+        // Processor has two channels (in + out); call for each so the
+        // queue on either side can complete a deferred connect if its
+        // topology + transport combination is one that defers.  Today
+        // the only combination that defers is fan-in DIALING PUSH,
+        // which surfaces on the processor's OUT side when the
+        // processor's output channel is fan-in.  Uniform call per
+        // channel; the queue decides no-op vs poll.
+        auto is_cancelled = [&core_]() -> bool {
+            return core_.is_shutdown_requested() ||
+                   core_.is_critical_error() ||
+                   core_.is_process_exit_requested();
+        };
+        if (!api_ref.finalize_channel_connect(
+                config_.in_channel(),
+                config_.timing().init_timeout_ms,
+                is_cancelled))
+        {
+            LOGGER_ERROR(
+                "[proc] Startup: finalize_channel_connect('{}') on IN "
+                "side failed — aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                config_.in_channel());
+            teardown_infrastructure_();
+            promise_ref.set_value(false);
+            return;
+        }
+        if (!api_ref.finalize_channel_connect(
+                config_.out_channel(),
+                config_.timing().init_timeout_ms,
+                is_cancelled))
+        {
+            LOGGER_ERROR(
+                "[proc] Startup: finalize_channel_connect('{}') on OUT "
+                "side failed — aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                config_.out_channel());
+            teardown_infrastructure_();
+            promise_ref.set_value(false);
+            return;
+        }
     }
 
     // Step 6e: Startup coordination — wait for prerequisite roles (HEP-0023).
@@ -544,7 +588,8 @@ void ProcessorRoleHost::worker_main_()
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
         lcfg.release_global_lock_during_wait =
             engine_ref.release_global_lock_during_wait();
-        scripting::run_data_loop(api_ref, core_, lcfg, ops);
+        lcfg.init_timeout_ms             = tc_loop.init_timeout_ms;
+        scripting::run_data_loop(api_ref, core_, lcfg, ops, engine_ref);
     }
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).

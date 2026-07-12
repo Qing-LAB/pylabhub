@@ -291,10 +291,17 @@ void ProducerRoleHost::worker_main_()
         return;
     }
 
-    // ── Step 5: invoke on_init ───────────────────────────────────────────────
-    engine_ref.invoke_on_init();
-
-    // Sync flexzone checksum after on_init (user may have written to flexzone).
+    // ── Step 5: RETIRED (HEP-CORE-0011 loop-ready gate amendment) ────────
+    // The pre-amendment one-shot `engine_ref.invoke_on_init()` moved into
+    // `run_data_loop` at the top of every cycle until `on_init` returns
+    // Ready.  Flexzone checksum sync moves into the first cycle's
+    // Step B' path (see below) so writes made during `on_init` still
+    // reach the queue before the first acquire.
+    // Sync flexzone checksum before entering the data loop (any writes
+    // scripts made to the flexzone via a hub-side setup path must
+    // reach the queue before acquire runs).  Under the amended model
+    // this is a defensive pre-loop sync; on_init writes will be
+    // handled by the loop's normal Step D+E fire path.
     if (api_ref.has_tx_side() && api_ref.has_tx_fz())
         api_ref.sync_tx_flexzone_checksum();
 
@@ -423,6 +430,31 @@ void ProducerRoleHost::worker_main_()
         auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
         api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
                                    hub_max);
+
+        // Step 6d.1 — HEP-CORE-0036 §I9.1 topology-agnostic finalize.
+        // The queue decides whether a deferred connect must be
+        // completed (fan-in DIALING PUSH) or whether this is a no-op
+        // (every other topology / transport combination).  Role host
+        // sees a uniform verb; no `topology == FanIn` branching, no
+        // SMS penetration for the pubkey, no wait/dial pairing.
+        auto is_cancelled = [&core_]() -> bool {
+            return core_.is_shutdown_requested() ||
+                   core_.is_critical_error() ||
+                   core_.is_process_exit_requested();
+        };
+        if (!api_ref.finalize_channel_connect(
+                config_.out_channel(),
+                config_.timing().init_timeout_ms,
+                is_cancelled))
+        {
+            LOGGER_ERROR(
+                "[prod] Startup: finalize_channel_connect('{}') failed "
+                "— aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                config_.out_channel());
+            teardown_infrastructure_();
+            promise_ref.set_value(false);
+            return;
+        }
     }
 
     // Step 6e: Startup coordination — wait for prerequisite roles (HEP-0023).
@@ -478,7 +510,8 @@ void ProducerRoleHost::worker_main_()
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
         lcfg.release_global_lock_during_wait =
             engine_ref.release_global_lock_during_wait();
-        scripting::run_data_loop(api_ref, core_, lcfg, ops);
+        lcfg.init_timeout_ms             = tc_loop.init_timeout_ms;
+        scripting::run_data_loop(api_ref, core_, lcfg, ops, engine_ref);
     }
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).

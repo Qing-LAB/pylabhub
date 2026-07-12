@@ -58,6 +58,11 @@ class BrokerService;
 class BrokerServiceImpl; ///< pImpl; grants the impl class friend access too.
 }
 
+namespace pylabhub::admission
+{
+class BrokerRegHandler; ///< Broker-side REG admission adapter.
+}
+
 namespace pylabhub::hub
 {
 
@@ -422,6 +427,33 @@ struct ChannelAccessEntry
     /// (§5.4 fast-path).
     std::unordered_map<std::string, std::uint64_t>
         confirmed_version_per_producer;
+
+    /// HEP-CORE-0036 §6.6.3 — snapshot of `authorized_consumer_pubkeys`
+    /// (topology-agnostic name; under fan-in these are producer
+    /// pubkeys) at the moment the binding-side role most recently
+    /// confirmed applying its ZAP allowlist via extended
+    /// `CHANNEL_AUTH_APPLIED_REQ` (HEP-CORE-0042 §5.5.2 amendment,
+    /// `role_type="consumer"` or `role_type="producer"` per
+    /// topology).  Read by `handle_check_peer_ready_req` to answer
+    /// the mirror-side dialing role's "am I ready to connect?"
+    /// query.  A caller pubkey's presence in this set means the
+    /// binding-side ZAP has that pubkey and the next CURVE handshake
+    /// will succeed.
+    ///
+    /// Empty initially — until the binding-side role's first
+    /// APPLIED_REQ arrives, `CHECK_PEER_READY_REQ` returns
+    /// `status="not_ready"` even for admitted callers.  This is
+    /// correct: the binding-side ZAP has nothing configured yet, so
+    /// a handshake attempt would be denied regardless.
+    ///
+    /// Reset triggers (same discipline as `confirmed_version_per_producer`
+    /// per HEP-CORE-0042 §5.4):
+    /// - Channel-access close (`_on_channel_access_closed` erases the
+    ///   entire entry).
+    /// - No per-role reset needed — the binding-side role is
+    ///   singular per channel; a fresh binding-side registration
+    ///   drives a fresh apply → APPLIED_REQ chain that repopulates.
+    std::unordered_set<std::string> binding_side_confirmed_allowlist;
 };
 
 enum class AddProducerResult
@@ -1620,6 +1652,43 @@ class PYLABHUB_UTILS_EXPORT HubState
     [[nodiscard]] std::uint64_t
     producer_instance(const std::string &producer_role_uid) const;
 
+    /// I-REPLAY-BOUND anti-replay dedup for REG-family messages
+    /// (DRAFT_reg_ack_protocol_redesign.md §8.1).  Records the
+    /// `(role_uid, client_nonce)` pair against a sliding window.
+    /// Returns:
+    ///   - true  = nonce is fresh (recorded; caller proceeds with
+    ///             admission)
+    ///   - false = nonce collision within the window (caller rejects
+    ///             the REQ with error_code=REPLAY_OR_SKEW)
+    ///
+    /// Prune-on-access: on every call, entries for `role_uid` with
+    /// `wall_ts < (incoming wall_ts) - window_ms` are dropped before
+    /// the membership check.  Under I-ROUTER-SERIAL the dispatch
+    /// thread is the sole caller; the writer lock inside guards
+    /// against a hypothetical future federation-relay thread.
+    ///
+    /// Reference-clock choice: the prune cutoff uses the incoming
+    /// `wall_ts` (client-supplied) rather than a separate `broker_now`
+    /// argument.  Rationale: gate 7 (I-REPLAY-BOUND skew check)
+    /// already bounds `|broker_now - wall_ts|` to `skew_tolerance_ms`
+    /// (30 s) BEFORE this method is called.  With `window_ms >>
+    /// skew_tolerance_ms` in every realistic configuration
+    /// (window = 2 * pending_budget_ms ≥ 10 s), using `wall_ts` as
+    /// reference tightens the effective window by at most 30 s — the
+    /// dedup remains correct (fewer false-fresh, no false-collision).
+    /// Callers who need strict broker-clock semantics for a specific
+    /// deployment can pre-pass `broker_now` as the `wall_ts` argument
+    /// after the skew check has cleared.
+    ///
+    /// Wall-clock skew (|broker_now - wall_ts| beyond broker
+    /// tolerance) is caller-checked BEFORE calling this method — skew
+    /// is a distinct wire-level reject, not a dedup event.
+    [[nodiscard]] bool
+    nonce_seen(std::string_view role_uid,
+                std::string_view client_nonce,
+                std::uint64_t     wall_ts,
+                std::uint64_t     window_ms);
+
     /// HEP-CORE-0042 §5.4 (APPLIED_REQ handler drain step).  Advance
     /// `confirmed_version[K][P]` to `max(current, new_version)` and
     /// return the new value.  No-op returning 0 if the channel access
@@ -1630,6 +1699,41 @@ class PYLABHUB_UTILS_EXPORT HubState
     _on_producer_confirmed(const std::string &channel_name,
                            const std::string &producer_role_uid,
                            std::uint64_t      applied_version);
+
+    /// HEP-CORE-0042 §5.5.2 amendment 2026-07-11 + HEP-CORE-0036 §6.6.3 —
+    /// snapshot the current `authorized_consumer_pubkeys` into
+    /// `binding_side_confirmed_allowlist`.  Called from the broker's
+    /// `handle_channel_auth_applied_req` handler on the consumer-side
+    /// branch (fan-in) — the binding-side role confirms it has
+    /// applied its ZAP allowlist and the broker records the snapshot
+    /// so subsequent `CHECK_PEER_READY_REQ` callers can answer
+    /// authoritatively.  Under fan-out / one-to-one, the mirror
+    /// direction (producer-side confirmation) uses
+    /// `_on_producer_confirmed` above with the `confirmed_version[K][P]`
+    /// versioning discipline — that path is unchanged.
+    ///
+    /// No-op on missing `ChannelAccessEntry` — a missing record
+    /// means the channel is being torn down; the confirmation is
+    /// silently lost per the same failure-tolerance discipline as
+    /// `_on_producer_confirmed`.
+    void
+    _on_binding_confirmed(const std::string &channel_name);
+
+    /// HEP-CORE-0036 §6.6.3 — read-only accessor returning whether
+    /// the caller's pubkey is present in
+    /// `binding_side_confirmed_allowlist` for the named channel.
+    /// Backs the `CHECK_PEER_READY_REQ` handler.  Returns `std::nullopt`
+    /// if the channel has no `ChannelAccessEntry` (matches the
+    /// "no such channel-access record" semantics of other read
+    /// accessors on this axis); returns `false` if the entry exists
+    /// but the pubkey is not present (also covering the "not yet
+    /// admitted" case, since a pubkey only enters
+    /// `binding_side_confirmed_allowlist` via
+    /// `authorized_consumer_pubkeys` at binding-side confirmation
+    /// time).
+    [[nodiscard]] std::optional<bool>
+    is_pubkey_in_binding_confirmed(const std::string &channel_name,
+                                    const std::string &pubkey_z85) const;
 
     /// Wave M1.4 (2026-05-11) — per-channel metrics aggregator.
     ///
@@ -1714,6 +1818,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     friend class ::pylabhub::broker::BrokerService;
     friend class ::pylabhub::broker::BrokerServiceImpl;
     friend struct ::pylabhub::hub::test::HubStateTestAccess;
+    friend class ::pylabhub::admission::BrokerRegHandler;
 
     // ── Private mutators (friend-only) ──────────────────────────────────
     // Pattern per mutator: acquire unique_lock on state → update map →

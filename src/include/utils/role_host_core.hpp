@@ -300,6 +300,16 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
                              ///< Producer/Consumer/Processor invoke_and_commit
                              ///< stop_on_error_ paths, and in each engine's
                              ///< `on_X_error_` helper.
+        InitTimeout   = 6,   ///< HEP-CORE-0011 §"Loop-ready gate" —
+                             ///< framework's stop when `on_init` (script
+                             ///< hook AND-composed with the per-role
+                             ///< framework default) never returns Ready
+                             ///< within the configured `init_timeout_ms`
+                             ///< budget.  Set before `set_critical_error`
+                             ///< in `run_data_loop`.  Distinguishes
+                             ///< "reader never had a peer admitted" from
+                             ///< generic `CriticalError` so operators can
+                             ///< diagnose stuck startups.
     };
 
     // ────────────────────────────────────────────────────────────────────
@@ -501,6 +511,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
         case 3: return "critical_error";
         case 4: return "channel_closed";
         case 5: return "script_error";
+        case 6: return "init_timeout";
         default: return "normal";
         }
     }
@@ -513,7 +524,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] StopReason stop_reason() const noexcept
     {
         const int v = stop_reason_.load(std::memory_order_relaxed);
-        if (v < 0 || v > static_cast<int>(StopReason::ScriptError))
+        if (v < 0 || v > static_cast<int>(StopReason::InitTimeout))
             return StopReason::Normal;
         return static_cast<StopReason>(v);
     }

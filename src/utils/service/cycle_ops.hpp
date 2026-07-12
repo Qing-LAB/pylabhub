@@ -311,6 +311,17 @@ class ProducerCycleOps final
           buf_sz_(api.write_item_size())
     {}
 
+    /// HEP-CORE-0011 §"Loop-ready gate" per-role default.
+    /// Producer: `true`.  Writers are fire-and-forget by default —
+    /// data written before any consumer connects is dropped by ZMQ
+    /// (or buffered per queue policy).  Scripts that need to gate
+    /// emission on a specific peer count / peer UID override `on_init`
+    /// and AND-compose with this default.
+    bool default_init_ready(const RoleAPIBase & /*api*/) const
+    {
+        return true;
+    }
+
     bool acquire(const AcquireContext &ctx)
     {
         // HEP-CORE-0036 §6.7 Standby gate (#189).  Short-circuit the
@@ -456,6 +467,21 @@ class ConsumerCycleOps final
           item_sz_(api.read_item_size())
     {}
 
+    /// HEP-CORE-0011 §"Loop-ready gate" per-role default.
+    /// Consumer: at least one admitted peer for the rx-side channel.
+    /// Reads the queue-level admission fact via
+    /// `RoleAPIBase::channel_admission_populated`, which forwards to
+    /// the queue's `is_admission_populated()`.  Layer-clean per
+    /// HEP-CORE-0036 §I9.1 — the queue owns the admission state
+    /// (binding-side ZAP allowlist or dialing-side known peer set)
+    /// and answers directly without allocating a snapshot vector.
+    /// Script-facing observability keeps using `allowed_peers` /
+    /// `admitted_peers_count`; those are unchanged.
+    bool default_init_ready(const RoleAPIBase &api) const
+    {
+        return api.channel_admission_populated(api.channel());
+    }
+
     bool acquire(const AcquireContext &ctx)
     {
         // HEP-CORE-0036 §6.7 Standby gate (#189).  Skip retry_acquire
@@ -588,6 +614,18 @@ class ProcessorCycleOps final
           stop_on_error_(stop_on_error), drop_mode_(drop_mode),
           in_sz_(api.read_item_size()), out_sz_(api.write_item_size())
     {}
+
+    /// HEP-CORE-0011 §"Loop-ready gate" per-role default.
+    /// Processor: rx side requires the queue's admission fact
+    /// (same predicate as Consumer); tx side has no default
+    /// requirement (same as Producer).  ANDed across sides.
+    /// Reads the queue-level admission fact via
+    /// `RoleAPIBase::channel_admission_populated` (HEP-CORE-0036
+    /// §I9.1) — no snapshot allocation.
+    bool default_init_ready(const RoleAPIBase &api) const
+    {
+        return api.channel_admission_populated(api.channel());
+    }
 
     /// Processor always returns true — maintains timing cadence on idle cycles.
     bool acquire(const AcquireContext &ctx)

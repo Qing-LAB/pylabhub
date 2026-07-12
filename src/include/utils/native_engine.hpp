@@ -69,7 +69,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
 
     // ── Callback invocation ──────────────────────────────────────────────
 
-    void invoke_on_init() override;
+    pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override;
     void invoke_on_stop() override;
     void invoke_on_channel_closing(const std::string &channel,
                                     const std::string &reason) override;
@@ -163,6 +163,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     using FnNativeInit       = bool (*)(const void *ctx);
     using FnNativeFinalize   = void (*)();
     using FnVoidNoArgs       = void (*)();
+    using FnInitStatusNoArgs = plh_init_status_t (*)();
     using FnVoid             = void (*)(const char *args_json);
     using FnOnChannelClosing   = void (*)(const plh_channel_closing_args_t *);
     using FnOnConsumerDied     = void (*)(const plh_consumer_died_args_t *);
@@ -183,7 +184,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
 
     FnNativeInit       fn_init_{nullptr};
     FnNativeFinalize   fn_finalize_{nullptr};
-    FnVoidNoArgs       fn_on_init_{nullptr};
+    FnInitStatusNoArgs fn_on_init_{nullptr};
     FnVoidNoArgs       fn_on_stop_{nullptr};
     FnOnChannelClosing   fn_on_channel_closing_{nullptr};
     FnOnConsumerDied     fn_on_consumer_died_{nullptr};

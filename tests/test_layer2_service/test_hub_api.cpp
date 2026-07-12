@@ -439,7 +439,8 @@ public:
         return {next_status, next_value};
     }
 
-    void invoke_on_init() override {}
+    pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
+    { return pylabhub::scripting::ScriptEngine::InitStatus::Ready; }
     void invoke_on_stop() override {}
     void invoke_on_channel_closing(const std::string &,
                                     const std::string &) override {}

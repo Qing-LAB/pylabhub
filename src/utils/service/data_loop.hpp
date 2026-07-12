@@ -20,6 +20,7 @@
 #include "utils/loop_timing_policy.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
+#include "utils/script_engine.hpp"          // ScriptEngine::InitStatus
 #include "utils/script_engine_factory.hpp"  // EngineGlobalLockRelease
 
 #include <chrono>
@@ -82,6 +83,20 @@ struct LoopConfig
     /// See ScriptEngine + HEP-CORE-0011 §"Engine Thread Affinity"
     /// "Optional global-lock release during idle waits".
     bool              release_global_lock_during_wait{false};
+
+    /// HEP-CORE-0011 §"Loop-ready gate" startup budget.  While
+    /// `on_init` (script hook AND-composed with the per-role
+    /// framework default) returns NotReady, the loop cycles through
+    /// drain + admin without touching acquire.  If Ready never fires
+    /// within this many milliseconds, the loop logs
+    /// `event=LoopInitTimeout` and stops via
+    /// `StopReason::InitTimeout`.  Value semantics:
+    ///   - 30_000 (default): 30 s — same order of magnitude as
+    ///     `wait_for_roles`; catches misconfigured peer sets.
+    ///   - 0: no timeout — wait forever.  For long-tail production
+    ///     paths where a peer may take minutes to boot.
+    /// Role config surfaces this as `timing.init_timeout_ms`.
+    std::uint64_t     init_timeout_ms{30'000};
 };
 
 // ============================================================================
@@ -99,7 +114,8 @@ struct LoopConfig
 ///   - void cleanup_on_exit()
 template <typename Ops>
 void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
-                   const LoopConfig &cfg, Ops &ops)
+                   const LoopConfig &cfg, Ops &ops,
+                   ScriptEngine &engine)
 {
     const std::string &tag = api.short_tag();
 
@@ -135,6 +151,43 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
     // the loop exits cleanly on its next iteration.  Multi-hub roles
     // (dual-hub processor) keep running as long as any presence on
     // any live hub stays Authorized.
+    // HEP-CORE-0011 §"Loop-ready gate" — per-cycle gate on top of
+    // the outer §8.2 guard.  Composed as
+    //   init_done = Ops::default_init_ready(api) && script_ready
+    // where `script_ready` is `invoke_on_init()`'s coerced return
+    // (Ready for missing hook / void return per HEP amendment).
+    //
+    // Both sides are ALWAYS evaluated while `init_done` is false —
+    // the user's on_init is called even when the framework default
+    // is not yet met, so scripts can do their own coordination work
+    // (band-join, waiting on another role, incremental setup, etc.)
+    // during the pre-Ready phase.  The framework does not
+    // short-circuit; the user script's on_init is expected to be
+    // lightweight, check state via `api.admitted_peers_count(...)`,
+    // and return NotReady quickly when its own conditions aren't met.
+    //
+    // Once `init_done` flips true, this block is NEVER re-entered —
+    // user on_init is not called again, and the loop reverts to the
+    // role's configured `period_us` / `loop_timing` policy for data.
+    //
+    // When the gate is NotReady the cycle skips Steps A + B (acquire
+    // + deadline wait) but still runs Step C (drain) + Step D+E
+    // (invoke_and_commit — which applies NOTIFYs and grows
+    // allowlist_cache).  The pre-Ready phase is paced at
+    // `kLoopReadyGateInterval` (100 ms — see loop_timing_policy.hpp),
+    // NOT at the data-loop's `period_us`, because the pre-Ready
+    // phase waits on admin messages at network-scale latency and
+    // spinning at data-plane cadence burns CPU for no gain.
+    //
+    // If Ready never fires within `cfg.init_timeout_ms` the loop
+    // stops via `StopReason::InitTimeout` (0 = wait forever).
+    bool init_done = false;
+    const bool has_on_init_hook = engine.has_callback("on_init");
+    const auto init_start = Clock::now();
+    const auto init_deadline = cfg.init_timeout_ms == 0
+        ? Clock::time_point::max()
+        : init_start + std::chrono::milliseconds(cfg.init_timeout_ms);
+
     while (core.is_running() &&
            !core.is_shutdown_requested() &&
            !core.is_critical_error() &&
@@ -144,6 +197,42 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
             break;
 
         const auto cycle_start = Clock::now();
+
+        // -- Loop-ready gate (top-of-cycle) --------------------------------
+        if (!init_done)
+        {
+            const bool default_ready = ops.default_init_ready(api);
+            bool script_ready = true;
+            if (has_on_init_hook)
+                script_ready =
+                    (engine.invoke_on_init() ==
+                     ScriptEngine::InitStatus::Ready);
+            init_done = default_ready && script_ready;
+
+            if (init_done)
+            {
+                LOGGER_INFO("[{}] event=LoopInitReady", tag);
+            }
+            else if (init_deadline != Clock::time_point::max() &&
+                     Clock::now() > init_deadline)
+            {
+                LOGGER_ERROR(
+                    "[{}] event=LoopInitTimeout budget_ms={} elapsed_ms={} "
+                    "default_ready={} script_ready={} — stopping with "
+                    "StopReason::InitTimeout",
+                    tag, cfg.init_timeout_ms,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        Clock::now() - init_start).count(),
+                    default_ready, script_ready);
+                // set_critical_error() latches the flag + writes
+                // StopReason::CriticalError; overwrite with InitTimeout
+                // AFTER so operators can distinguish this failure from
+                // a generic critical error.
+                core.set_critical_error();
+                core.set_stop_reason(RoleHostCore::StopReason::InitTimeout);
+                break;
+            }
+        }
 
         // -- Steps A + B + B': idle-wait region with INSIDE-the-wrap
         //    shutdown check.  Wrapped in EngineGlobalLockRelease iff
@@ -173,21 +262,48 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
         //    the worker thread after the timeout so the parent
         //    unblocks.
         AcquireContext ctx{short_timeout, short_timeout_us, deadline, is_max_rate};
-        bool has_data;
+        bool has_data = false;
         bool shutdown_observed = false;
         {
             std::optional<scripting::EngineGlobalLockRelease> idle_release;
             if (release_lock_idle)
                 idle_release.emplace();
 
-            // -- Step A: Role-specific acquire -----------------------------------
-            has_data = ops.acquire(ctx);
-
-            // -- Step B: Deadline wait -------------------------------------------
-            if (!is_max_rate && has_data &&
-                deadline != Clock::time_point::max() && Clock::now() < deadline)
+            // -- Step A + B: only when loop-ready gate has flipped.
+            //    When init_done is false, we skip both the acquire and
+            //    the deadline sleep and fall through to Step C (drain)
+            //    + D+E (invoke_and_commit) so admin messages continue
+            //    to apply.  This is what advances the framework
+            //    default's underlying state (allowlist_cache) toward
+            //    the condition that flips the gate.
+            if (init_done)
             {
-                std::this_thread::sleep_until(deadline);
+                // -- Step A: Role-specific acquire -----------------------------------
+                has_data = ops.acquire(ctx);
+
+                // -- Step B: Deadline wait -------------------------------------------
+                if (!is_max_rate && has_data &&
+                    deadline != Clock::time_point::max() && Clock::now() < deadline)
+                {
+                    std::this_thread::sleep_until(deadline);
+                }
+            }
+            else
+            {
+                // Loop-ready gate held — pace the pre-Ready cycle at
+                // `kLoopReadyGateInterval` (100 ms) rather than the
+                // data-loop's `short_timeout`.  The two phases have
+                // fundamentally different timing needs: the data loop
+                // is user-tuned for throughput / latency and can be
+                // MaxRate (period_us=0 → short_timeout at the µs
+                // floor), whereas the pre-Ready phase is
+                // admin-message-driven and admin messages arrive at
+                // network-scale (ms) — polling faster gains nothing
+                // and floods the log with `on_init` callbacks.  See
+                // loop_timing_policy.hpp for the constant's rationale
+                // and HEP-CORE-0011 §"Loop-ready gate" for the
+                // user-facing contract.
+                std::this_thread::sleep_for(kLoopReadyGateInterval);
             }
 
             // -- Step B': Shutdown observation + cleanup INSIDE the wrap.

@@ -97,6 +97,49 @@ static constexpr double kDefaultQueueIoWaitRatio = 0.1; // 10%
 static constexpr double kMinQueueIoWaitRatio = 0.1;
 static constexpr double kMaxQueueIoWaitRatio = 0.5;
 
+/// HEP-CORE-0011 §"Loop-ready gate" — pre-Ready cycle pacer.
+///
+/// Cadence at which `run_data_loop` re-evaluates the loop-ready gate
+/// (framework `Ops::default_init_ready` AND user `on_init`) while
+/// `init_done` is still false.  Fixed rather than user-configurable:
+/// the pre-Ready phase is admin-message-driven, not data-driven, so
+/// the data-loop's own `period_us` / `loop_timing` (which govern
+/// throughput and latency of the *data* plane) is the wrong knob for
+/// it.  100 ms sits comfortably above network-scale NOTIFY-arrival
+/// latency (single-digit ms on localhost, tens of ms on real
+/// networks), so polling faster gains nothing observable while
+/// polling this slow keeps CPU near-zero.
+///
+/// Applies ONLY while `init_done` is false.  Once the gate flips
+/// Ready, `run_data_loop` no longer re-enters the gate block — user
+/// `on_init` is not re-invoked, and the data loop reverts to the
+/// role's configured `period_us` / `loop_timing` policy.
+static constexpr auto kLoopReadyGateInterval =
+    std::chrono::milliseconds{100};
+
+/// HEP-CORE-0036 §6.6.3 — broker readiness pull cadence.
+///
+/// Cadence at which the queue's `finalize_connect` polls the
+/// injected `PeerReadinessOracle` while a deferred dial is pending
+/// (fan-in DIALING PUSH producer, ZMQ transport).  Separate from
+/// `kLoopReadyGateInterval` because the two constants pace
+/// semantically different loops:
+///
+/// - `kLoopReadyGateInterval` — inside `run_data_loop`, gating the
+///   acquire step against admission state that grows via NOTIFYs
+///   the loop itself drains.
+/// - `kBrokerReadinessPollInterval` — before `run_data_loop`
+///   starts, gating the socket `connect()` against a
+///   broker-authoritative confirmation from the peer's binding
+///   side.
+///
+/// Both numerically 100 ms today — same admin-message timescale —
+/// but tuning one MUST NOT couple to the other.  Kept split so a
+/// future change (e.g. faster gate polling for latency-tuned roles)
+/// does not silently accelerate broker RPC traffic during startup.
+static constexpr auto kBrokerReadinessPollInterval =
+    std::chrono::milliseconds{100};
+
 // ============================================================================
 // LoopTimingPolicy
 // ============================================================================

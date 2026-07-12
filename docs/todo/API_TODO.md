@@ -14,6 +14,122 @@ removals from D2 / D3 drift batches).
 
 ## Current Focus
 
+### Queue-owned topology + layer cleanup — P1+P2+P3+P4+P5 SHIPPED (2026-07-11)
+
+**Plan + landing log:** `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`
+
+Follow-on to the shipped loop-ready gate arc.  Reclaims the layer:
+`hub::Queue` alone owns topology + transport; role host uses
+uniform, topology-agnostic calls.
+
+**P1 (HEP contract) — SHIPPED:**
+- HEP-CORE-0036 §I9.1 NEW normative locality invariant.
+- HEP-CORE-0036 §6.5 step 6 + §6.6.3 amendment sub-blocks.
+- HEP-CORE-0011 Loop-ready gate consumer default reroute doc.
+
+**P2 (correctness bugs) — SHIPPED:**
+- P2.a C3 stale-allowlist fix — `_on_consumer_revoked` clears
+  `binding_side_confirmed_allowlist` on any successful erase; six
+  L2 tests pin.
+- P2.b C1 shutdown-cancel probe (superseded by P3; queue owns
+  the poll loop now).
+- P2.c C2 error split — synthesized `NO_BRC_FOR_CHANNEL` reply
+  (moved inside P3's BrcOracle).
+- P2.d C4 verified — no bug (rx_queue coverage confirmed).
+
+**P3 (layer surgery) — SHIPPED:**
+- `RoleAPIBase::dial_now()` REMOVED from public surface.
+- `RoleAPIBase::check_peer_ready()` REMOVED from public surface
+  (survives as internal BrcOracle inside `finalize_channel_connect`).
+- `RoleAPIBase::finalize_channel_connect(channel, timeout_ms,
+  is_cancelled)` NEW — topology-agnostic entry point.
+- `QueueWriter::dial_now` virtual RETIRED.
+- `QueueWriter::finalize_connect(oracle, timeout_ms, is_cancelled,
+  log_tag)` virtual — default no-op; `ZmqQueue` overrides.
+- `QueueWriter::own_pubkey_z85()` virtual — queue exposes its
+  CURVE identity (retires the role host's SMS penetration).
+- `hub::PeerReadinessOracle` interface NEW — small injected
+  interface the queue polls; role side implements as inline
+  BrcOracle.
+- Producer role host: fan-in ceremony block collapsed into a
+  single `finalize_channel_connect` call (no topology parse, no
+  SMS penetration).
+- Consumer + processor role hosts call the same verb uniformly.
+- `wait_for_peer_ready` helper DELETED.
+- `kLoopReadyPollInterval` renamed to `kLoopReadyGateInterval`;
+  `kBrokerReadinessPollInterval` new sibling.
+- L2 1657/1657, L4 133/133 pass.
+
+**P4 (gate reads queue-level fact) — SHIPPED:**
+- `QueueReader::is_admission_populated()` + `QueueWriter::
+  is_admission_populated()` virtuals added; default `true`.
+- `ZmqQueue::is_admission_populated()` override — binding side:
+  allowlist snapshot non-empty; dialing reader: peer list
+  non-empty; dialing writer: server_pubkey non-empty.
+- `RoleAPIBase::channel_admission_populated(channel)` new
+  forwarder — no snapshot allocation.
+- `ConsumerCycleOps::default_init_ready` +
+  `ProcessorCycleOps::default_init_ready` rerouted to it.
+  Script-facing `allowed_peers` / `admitted_peers_count` remain
+  as observability accessors.
+
+**P5 (queue emits apply-confirmation) — SHIPPED:**
+- `QueueReader::binding_role_type()` + `QueueWriter::
+  binding_role_type()` virtuals added; default `""`.
+- `ZmqQueue::binding_role_type()` returns "consumer" / "producer"
+  / "" based on mode + bind_socket.
+- `BrokerRequestComm::channel_auth_applied` consolidated to take
+  `role_type` parameter; `channel_auth_applied_consumer` RETIRED
+  as redundant plumbing.
+- `handle_channel_auth_notifies` uses queue's `binding_role_type()`
+  to pick the wire's `role_type`; NO `is_binding_side()` branch.
+
+**Remaining phases (in plan):**
+- P6 — Replace `binding_side_confirmed_allowlist` full-set copy
+  with version-tagged membership.
+- P7 — HEP sweep + archive.
+
+### Loop-ready gate + fan-in binding-side reader arc ✅ SHIPPED (2026-07-11)
+
+Multi-part correctness arc closing the fan-in binding-side reader
+gap.  All L4 fan-in and fan-out E2E tests pass end-to-end after
+landing; 1651 L2 tests pass with the AND-composition invariant
+pinned by a new dedicated test.  Detail across the arc:
+
+- **`ScriptEngine::invoke_on_init` contract change.**  Return type
+  changes from `void` to `InitStatus { Ready | NotReady }`.  Loop
+  in `run_data_loop` re-enters the hook every cycle at
+  `kLoopReadyPollInterval` (100 ms) until Ready, then never again
+  for the lifetime of the loop.  Composed as
+  `init_done = Ops::default_init_ready(api) && script_hook_result`
+  — framework floor is an invariant a script cannot lower.
+  `PLH_NATIVE_API_VERSION` v8 → v9 (breaking); pre-v9 native
+  plugins refuse at load.  New `StopReason::InitTimeout`
+  distinguishes the "loop-ready gate never turned Ready" outcome
+  from generic critical error.  Config: `timing.init_timeout_ms`
+  (default 30 000, sentinel 0 = wait forever).
+- **`Ops::default_init_ready` per role.**  Producer → `true`.
+  Consumer → `admitted_peers_count(channel) >= 1` for every
+  rx-side channel.  Processor → same as Consumer on rx; tx side
+  contributes `true`; ANDed.  Reads the transport-agnostic
+  `allowlist_cache` seeded by `apply_{producer,consumer}_reg_ack`
+  and grown by `handle_channel_auth_notifies` per HEP-CORE-0036
+  §I11.1.
+- **Dial-side readiness pull (fan-in only).**  Producer polls
+  broker with new `CHECK_PEER_READY_REQ` between REG_ACK apply
+  and `socket.connect()`.  `apply_master_approval` on fan-in
+  DIALING PUSH defers connect; new `ZmqQueue::dial_now()`
+  completes the deferred start after the pull returns `ready`.
+  Closes the CURVE handshake ordering race that was masking
+  as "consumer received zero data" under fan-in.  New pre-loop
+  helper `wait_for_peer_ready` in `role_host_helpers.hpp`
+  mirrors `wait_for_roles` shape.
+
+Design authority: HEP-CORE-0011 §"Loop-ready gate" +
+HEP-CORE-0036 §4.3.4 / §6.5 step 6 / §6.6.1 / §6.6.2 / §6.6.3 +
+HEP-CORE-0042 §5.5.2 amendment (extended APPLIED_REQ role_type
+discriminator).
+
 ### #238 ✅ SHIPPED — Standardize key log-message format (test-contract markers)
 
 CLOSED 2026-06-27.  `[component] event=<EventName> field=value` format

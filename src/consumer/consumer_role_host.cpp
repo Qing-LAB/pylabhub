@@ -273,8 +273,13 @@ void ConsumerRoleHost::worker_main_()
         return;
     }
 
-    // ── Step 5: invoke on_init ───────────────────────────────────────────────
-    engine_ref.invoke_on_init();
+    // ── Step 5: RETIRED (HEP-CORE-0011 loop-ready gate amendment) ────────
+    // The pre-amendment one-shot `engine_ref.invoke_on_init()` moved into
+    // `run_data_loop` at the top of every cycle until `on_init` returns
+    // Ready.  By then Step 6d has completed, so the BRC is up and
+    // handler-dependent APIs (`api.band_join`, `api.open_inbox`,
+    // `api.wait_for_role`) are usable from inside `on_init`.  See
+    // HEP-CORE-0011 §"Loop-ready gate" for the per-cycle contract.
 
     // ── Step 6: Connect to broker, start handler ctrl thread(s), register
     // (Wave-B M6 — handler-mode replaces legacy start_ctrl_thread; mirrors
@@ -373,6 +378,31 @@ void ConsumerRoleHost::worker_main_()
         auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
         api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
                                    hub_max);
+
+        // Step 6d.1 — HEP-CORE-0036 §I9.1 topology-agnostic finalize.
+        // No-op on consumer today (queue never defers on this side),
+        // called for uniformity across role hosts so a future topology
+        // that puts a deferred connect on the consumer side (e.g. a
+        // new fan-in-mirror variant) needs no role-host change.  The
+        // queue decides.
+        auto is_cancelled = [&core_]() -> bool {
+            return core_.is_shutdown_requested() ||
+                   core_.is_critical_error() ||
+                   core_.is_process_exit_requested();
+        };
+        if (!api_ref.finalize_channel_connect(
+                config_.in_channel(),
+                config_.timing().init_timeout_ms,
+                is_cancelled))
+        {
+            LOGGER_ERROR(
+                "[cons] Startup: finalize_channel_connect('{}') failed "
+                "— aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                config_.in_channel());
+            teardown_infrastructure_();
+            promise_ref.set_value(false);
+            return;
+        }
     }
 
     // Step 6e: Startup coordination — wait for prerequisite roles (HEP-0023).
@@ -408,7 +438,8 @@ void ConsumerRoleHost::worker_main_()
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
         lcfg.release_global_lock_during_wait =
             engine_ref.release_global_lock_during_wait();
-        scripting::run_data_loop(api_ref, core_, lcfg, ops);
+        lcfg.init_timeout_ms             = tc_loop.init_timeout_ms;
+        scripting::run_data_loop(api_ref, core_, lcfg, ops, engine_ref);
     }
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).

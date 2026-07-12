@@ -285,6 +285,15 @@ struct HubStateTestAccess
     {
         s._on_consumer_revoked(channel_name, pubkey_z85);
     }
+    // HEP-CORE-0036 §6.6.3 — snapshot the currently-authorized
+    // pubkey set into `binding_side_confirmed_allowlist`.  Called
+    // in production from the broker's
+    // `handle_channel_auth_applied_req` consumer branch.
+    static void on_binding_confirmed(HubState          &s,
+                                      const std::string &channel_name)
+    {
+        s._on_binding_confirmed(channel_name);
+    }
 
     // ── Schema-registry forwarders (HEP-CORE-0034 §11) ────────────────
     static ::pylabhub::schema::SchemaRegOutcome

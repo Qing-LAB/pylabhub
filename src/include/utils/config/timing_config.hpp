@@ -30,6 +30,17 @@ struct TimingConfig
     LoopTimingPolicy    loop_timing{LoopTimingPolicy::MaxRate};
     double              queue_io_wait_timeout_ratio{::pylabhub::kDefaultQueueIoWaitRatio};
     int                 heartbeat_interval_ms{0};
+    /// HEP-CORE-0011 §"Loop-ready gate" startup budget in milliseconds.
+    /// While `on_init` (script hook AND-composed with the per-role
+    /// framework default) returns NotReady, the data loop cycles
+    /// through drain + admin without touching acquire.  If Ready never
+    /// fires within this many milliseconds, `run_data_loop` logs
+    /// `event=LoopInitTimeout` and stops via `StopReason::InitTimeout`.
+    ///   - Default: 30_000 (30 s) — matches `wait_for_roles` order of
+    ///     magnitude.
+    ///   - 0: no timeout, wait forever.  For long-tail production
+    ///     paths where a peer may take minutes to boot.
+    std::uint64_t       init_timeout_ms{30'000};
 
     /// Build the canonical LoopTimingParams from validated fields.
     [[nodiscard]] ::pylabhub::LoopTimingParams timing_params() const noexcept
@@ -50,6 +61,9 @@ inline TimingConfig parse_timing_config(const nlohmann::json &j, const char *tag
     tc.queue_io_wait_timeout_ratio = config_value(j, "queue_io_wait_timeout_ratio",
                                                    ::pylabhub::kDefaultQueueIoWaitRatio);
     tc.heartbeat_interval_ms = config_value(j, "heartbeat_interval_ms", 0);
+    tc.init_timeout_ms = static_cast<std::uint64_t>(
+        config_value(j, "init_timeout_ms",
+                     static_cast<int>(tc.init_timeout_ms)));
 
     if (tc.queue_io_wait_timeout_ratio < ::pylabhub::kMinQueueIoWaitRatio ||
         tc.queue_io_wait_timeout_ratio > ::pylabhub::kMaxQueueIoWaitRatio)

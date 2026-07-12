@@ -13,6 +13,7 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/context_metrics.hpp"
 #include "utils/logger.hpp"
+#include "utils/loop_timing_policy.hpp"  // kBrokerReadinessPollInterval (finalize_connect)
 
 #include <nlohmann/json.hpp>
 #include "portable_atomic_shared_ptr.hpp"
@@ -70,6 +71,14 @@ struct ZmqQueueImpl
     std::string endpoint;
     std::string actual_endpoint; ///< Resolved after zmq_bind() — e.g. port 0 → actual port.
     bool        bind_socket{false};
+    /// HEP-CORE-0036 §6.6.3 — set to true by `apply_master_approval`
+    /// when the queue is a fan-in DIALING PUSH (write side + not
+    /// bind_socket).  Signals that `apply_master_approval` deliberately
+    /// deferred the `socket.connect()` to `finalize_connect()`, which
+    /// the role host invokes uniformly after apply for every role /
+    /// topology (HEP-CORE-0036 §I9.1 locality invariant).  Reset to
+    /// false once `finalize_connect()` completes.
+    bool        dial_pending{false};
     size_t      item_sz{0};
     size_t      max_depth{64};
     std::string queue_name;
@@ -1369,6 +1378,42 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                     "from=Standby to=Configured queue='{}' endpoint='{}'",
                     socket_type_label(pImpl->mode, pImpl->socket_pattern),
                     pImpl->queue_name, pImpl->endpoint);
+
+        // HEP-CORE-0036 §6.6.3 — defer connect for fan-in DIALING PUSH.
+        // Rationale: `socket.connect()` inside `start()` triggers the
+        // CURVE handshake at consumer's PULL socket immediately.  Under
+        // fan-in the consumer's ZAP allowlist is populated AFTER the
+        // consumer receives `CHANNEL_AUTH_CHANGED_NOTIFY(admitted, P)`
+        // + pulls the allowlist + applies it (~100 ms).  A connect at
+        // REG_ACK apply time (~ms) races and gets denied by ZAP; libzmq
+        // treats ZAP DENY as terminal (no client-side retry).  The
+        // role host invokes `finalize_connect()` UNIFORMLY after apply
+        // for every role type; this queue's override polls the injected
+        // `PeerReadinessOracle` at `kBrokerReadinessPollInterval` until
+        // `Ready` and then completes the deferred `start()`.
+        //
+        // Detection: write-side + not bind_socket is exclusively fan-in
+        // DIALING PUSH.  Fan-out producer binds PUB; one-to-one
+        // producer binds PUSH.  Read-side (any transport) also uses
+        // the DIALING code path — but for the reader, the peer set is
+        // known from REG_ACK.producers[] and the *reader's* client-
+        // side CURVE talks to a producer that's already up, so no
+        // race exists.
+        const bool is_fanin_dialing_push =
+            (pImpl->mode == ZmqQueueImpl::Mode::Write) &&
+            !pImpl->bind_socket;
+        if (is_fanin_dialing_push)
+        {
+            pImpl->dial_pending = true;
+            LOGGER_INFO(
+                "[hub::ZmqQueue] event=DialDeferred side={} endpoint='{}' "
+                "queue='{}' (HEP-CORE-0036 §6.6.3 — awaiting role-host "
+                "finalize_connect() with PeerReadinessOracle)",
+                socket_type_label(pImpl->mode, pImpl->socket_pattern),
+                pImpl->endpoint, pImpl->queue_name);
+            return true;
+        }
+
         return start();
     }
     catch (const std::exception& e)
@@ -1377,6 +1422,147 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                      "parsing artifacts: {}", e.what());
         return false;
     }
+}
+
+bool ZmqQueue::finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
+                                 std::uint64_t                         timeout_ms,
+                                 const std::function<bool()>          &is_cancelled,
+                                 const char                           *log_tag) noexcept
+{
+    if (!pImpl) return false;
+
+    // Non-deferred queues (fan-out producer, one-to-one binding-side
+    // producer, dialing consumer, any already-running queue): no-op
+    // success.  Oracle is untouched.
+    if (!pImpl->dial_pending)
+    {
+        return true;
+    }
+
+    const auto start_ts = std::chrono::steady_clock::now();
+    const auto deadline = timeout_ms == 0
+        ? std::chrono::steady_clock::time_point::max()
+        : start_ts + std::chrono::milliseconds(timeout_ms);
+    const bool cancellable = static_cast<bool>(is_cancelled);
+    const char *tag = log_tag ? log_tag : "hub::ZmqQueue::finalize_connect";
+    LOGGER_INFO(
+        "[{}] event=FinalizeConnectPolling side={} endpoint='{}' "
+        "queue='{}' timeout_ms={} cancellable={} "
+        "(HEP-CORE-0036 §6.6.3)",
+        tag, socket_type_label(pImpl->mode, pImpl->socket_pattern),
+        pImpl->endpoint, pImpl->queue_name, timeout_ms, cancellable);
+
+    for (;;)
+    {
+        if (cancellable && is_cancelled())
+        {
+            LOGGER_INFO(
+                "[{}] event=FinalizeConnectCancelled queue='{}' "
+                "elapsed_ms={} (shutdown / critical-error observed)",
+                tag, pImpl->queue_name,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start_ts).count());
+            return false;
+        }
+
+        auto result = oracle.poll();
+        if (result == ::pylabhub::hub::PeerReadinessOracle::PollResult::Ready)
+        {
+            break;
+        }
+        if (result == ::pylabhub::hub::PeerReadinessOracle::PollResult::PermanentError)
+        {
+            LOGGER_ERROR(
+                "[{}] event=FinalizeConnectPermanentError queue='{}' "
+                "elapsed_ms={} (oracle returned PermanentError)",
+                tag, pImpl->queue_name,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start_ts).count());
+            return false;
+        }
+        // NotReady — continue polling until deadline.
+        if (deadline != std::chrono::steady_clock::time_point::max() &&
+            std::chrono::steady_clock::now() >= deadline)
+        {
+            LOGGER_ERROR(
+                "[{}] event=FinalizeConnectTimeout queue='{}' "
+                "budget_ms={} — fatal (HEP-CORE-0036 §6.6.3)",
+                tag, pImpl->queue_name, timeout_ms);
+            return false;
+        }
+        std::this_thread::sleep_for(
+            ::pylabhub::kBrokerReadinessPollInterval);
+    }
+
+    pImpl->dial_pending = false;
+    LOGGER_INFO(
+        "[hub::ZmqQueue] event=FinalizeConnect side={} endpoint='{}' "
+        "queue='{}' elapsed_ms={} (peer confirmed ready, running "
+        "deferred start())",
+        socket_type_label(pImpl->mode, pImpl->socket_pattern),
+        pImpl->endpoint, pImpl->queue_name,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_ts).count());
+    return start();
+}
+
+std::string ZmqQueue::own_pubkey_z85() const noexcept
+{
+    if (!pImpl || pImpl->identity_key_name_.empty()) return {};
+    try
+    {
+        namespace sec = pylabhub::utils::security;
+        auto &ks = sec::secure().keys();
+        return std::string(ks.pubkey(pImpl->identity_key_name_));
+    }
+    catch (...)
+    {
+        // Fail-quiet on lookup: caller treats empty as "no CURVE
+        // identity" and the queue's finalize_connect default no-ops,
+        // so the queue-owned readiness path degrades to a safe wait-
+        // free success rather than a crash.  This matches how
+        // apply_master_approval already handles missing keystore
+        // material (LOGGER_WARN + skip).
+        return {};
+    }
+}
+
+std::string_view ZmqQueue::binding_role_type() const noexcept
+{
+    // HEP-CORE-0036 §I9.1 + §6.5 step 6 — queue-owned side identity.
+    if (!pImpl || !pImpl->bind_socket) return {};
+    return (pImpl->mode == ZmqQueueImpl::Mode::Read)
+        ? std::string_view{"consumer"}
+        : std::string_view{"producer"};
+}
+
+bool ZmqQueue::is_admission_populated() const noexcept
+{
+    // HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
+    // queue-owned admission fact.  Called by role-side loop-ready
+    // gate through `RoleAPIBase::channel_admission_populated`.
+    if (!pImpl) return false;
+    if (pImpl->bind_socket)
+    {
+        // Binding side: ZAP allowlist snapshot.  Empty = deny-all,
+        // no peer can dial in yet — gate NotReady.
+        auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
+        if (!snap) return false;
+        return !snap->peers.empty();
+    }
+    // Dialing side.
+    if (pImpl->mode == ZmqQueueImpl::Mode::Read)
+    {
+        // Dialing reader (fan-out consumer): peer set known?
+        // producer_peers_ populated by apply_master_approval from
+        // REG_ACK.producers[].
+        std::lock_guard<std::mutex> lk(pImpl->producer_peers_mu_);
+        return !pImpl->producer_peers_.empty();
+    }
+    // Dialing writer (fan-in producer): server_pubkey_z85_ non-empty
+    // means the peer to connect to is known.  Rarely queried
+    // (producer's gate default is true) but symmetric.
+    return !pImpl->server_pubkey_z85_.empty();
 }
 
 bool ZmqQueue::is_configured() const noexcept

@@ -16,6 +16,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/** Loop-ready status returned by `on_init` — HEP-CORE-0011 §"Loop-ready
+ *  gate".  Native ABI v9 changed `on_init` from `void`-return to this
+ *  status.  Values chosen so that PLH_INIT_NOT_READY=0 matches the C
+ *  convention of "0 = false / not-ready" and PLH_INIT_READY=1 matches
+ *  "1 = true / ready", letting plugin code use `return true;` idiomatically.
+ *  Defined here (not in native_engine_api.h) so both plugin authors
+ *  (via that header) AND the host-side engine wiring (native_engine.hpp)
+ *  see the same typedef without either including the other.
+ *  Symbolic PLH_INIT_* macros live in native_engine_api.h. */
+typedef int plh_init_status_t;
+
 /** Input direction — data received from upstream.
  *  fz/fz_size are populated by the native engine bridge at invoke time
  *  from the init-time cache — callers must NOT set these manually. */

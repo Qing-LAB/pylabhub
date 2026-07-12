@@ -92,6 +92,10 @@ class MockCycleOps final
         return invoke_returns_continue;
     }
     void cleanup_on_exit() { ++cleanup_exit_count; }
+    // HEP-CORE-0011 §"Loop-ready gate" — mock ops always report
+    // Ready so the framework default gate is a no-op in these tests;
+    // gate behaviour is exercised in dedicated cycle-ops tests.
+    bool default_init_ready(const RoleAPIBase &) const { return true; }
 };
 
 struct SlowOps final
@@ -107,6 +111,38 @@ struct SlowOps final
         return cycle_count < 4;
     }
     void cleanup_on_exit() {}
+    bool default_init_ready(const RoleAPIBase &) const { return true; }
+};
+
+// HEP-CORE-0011 §"Loop-ready gate" — Ops whose framework default
+// starts NotReady.  Used to pin the AND composition invariant: no
+// matter what the user script's `on_init` returns, the framework
+// floor holds the loop closed until `default_init_ready` also flips
+// true.  A script cannot bypass the floor by returning Ready alone.
+class FrameworkFloorHoldsOps final
+{
+  public:
+    int acquire_count{0};
+    int invoke_count{0};
+    int cleanup_shutdown_count{0};
+    int cleanup_exit_count{0};
+
+    bool acquire(const AcquireContext &)
+    {
+        ++acquire_count;
+        return false;
+    }
+    void cleanup_on_shutdown() { ++cleanup_shutdown_count; }
+    bool invoke_and_commit(std::vector<IncomingMessage> &)
+    {
+        ++invoke_count;
+        return true;
+    }
+    void cleanup_on_exit() { ++cleanup_exit_count; }
+    // Framework floor: not ready.  If the AND-composition invariant
+    // holds, run_data_loop must NEVER call `acquire` regardless of
+    // what the script's on_init returns.
+    bool default_init_ready(const RoleAPIBase &) const { return false; }
 };
 
 struct StubEngine : public ScriptEngine
@@ -132,7 +168,8 @@ struct StubEngine : public ScriptEngine
                                     const nlohmann::json &,
                                     int64_t) override
     { return {InvokeStatus::NotFound, {}}; }
-    void invoke_on_init() override {}
+    pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
+    { return pylabhub::scripting::ScriptEngine::InitStatus::Ready; }
     void invoke_on_stop() override {}
     void invoke_on_channel_closing(const std::string &,
                                     const std::string &) override {}
@@ -165,6 +202,23 @@ struct StubEngine : public ScriptEngine
     InvokeResult invoke_on_inbox(InvokeInbox) override { return InvokeResult::Commit; }
     uint64_t     script_error_count() const noexcept override { return 0; }
     bool         supports_multi_state() const noexcept override { return false; }
+};
+
+// HEP-CORE-0011 §"Loop-ready gate" — StubEngine variant that reports
+// a user-side on_init hook returning Ready.  Combined with
+// FrameworkFloorHoldsOps, exercises the case "user script says Ready
+// but framework floor says NotReady" — the loop MUST stay closed
+// (AND, not OR).
+struct StubEngineWithReadyHook : public StubEngine
+{
+    bool has_callback(const std::string &name) const noexcept override
+    {
+        return name == "on_init";
+    }
+    pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
+    {
+        return pylabhub::scripting::ScriptEngine::InitStatus::Ready;
+    }
 };
 
 /// Fresh RoleAPIBase per worker. The uid embeds the scenario name so each
@@ -242,6 +296,7 @@ int shutdown_stops_loop()
             auto         api = make_api(core, "shutdown_stops_loop");
             install_one_authorized_presence(*api, "ch.shutdown");
 
+            StubEngine   engine;
             MockCycleOps ops;
             core.set_running(true);
             std::thread stopper([&] {
@@ -253,7 +308,7 @@ int shutdown_stops_loop()
             cfg.period_us  = 0;
             cfg.loop_timing = LoopTimingPolicy::MaxRate;
 
-            run_data_loop(*api, core, cfg, ops);
+            run_data_loop(*api, core, cfg, ops, engine);
             stopper.join();
 
             EXPECT_GE(ops.acquire_count, 1);
@@ -261,6 +316,68 @@ int shutdown_stops_loop()
             EXPECT_EQ(ops.cleanup_exit_count, 1);
         },
         "role_data_loop::shutdown_stops_loop", Logger::GetLifecycleModule());
+}
+
+// HEP-CORE-0011 §"Loop-ready gate" — AND-composition invariant pin.
+//
+// Setup: Ops::default_init_ready returns false; engine reports a user
+// on_init hook that returns Ready.  If the framework composes as
+// `default && script`, the loop's init_done stays false and acquire is
+// never called; the init_timeout budget elapses and the loop exits
+// with `StopReason::InitTimeout`.
+//
+// Failure modes this catches:
+//   1. Composition inverted from AND to OR — script Ready alone
+//      would open the gate and `acquire_count > 0`.
+//   2. Short-circuit that skips the framework default when a script
+//      hook is present — same visible symptom.
+//   3. Init timeout budget silently disabled — the loop would run
+//      forever with acquire_count = 0 but no InitTimeout stop.
+int framework_floor_holds_gate()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            RoleHostCore core;
+            auto         api = make_api(core, "framework_floor_holds_gate");
+            install_one_authorized_presence(*api, "ch.floor_holds");
+
+            StubEngineWithReadyHook engine;
+            FrameworkFloorHoldsOps  ops;
+            core.set_running(true);
+
+            LoopConfig cfg;
+            cfg.period_us      = 0;
+            cfg.loop_timing    = LoopTimingPolicy::MaxRate;
+            // Small budget so the test completes quickly; the pre-Ready
+            // cycle pacer runs at kLoopReadyGateInterval (100 ms), so
+            // 500 ms allows a handful of paced cycles before the
+            // InitTimeout fires.
+            cfg.init_timeout_ms = 500;
+
+            run_data_loop(*api, core, cfg, ops, engine);
+
+            // Framework floor held → acquire never called.
+            EXPECT_EQ(ops.acquire_count, 0)
+                << "AND composition invariant broken: script Ready alone "
+                   "opened the loop-ready gate";
+            // Drain + invoke_and_commit still fires per cycle during
+            // the pre-Ready hold (Step D+E runs unconditionally so
+            // NOTIFYs can advance state).
+            EXPECT_GE(ops.invoke_count, 1)
+                << "pre-Ready phase must still drain messages";
+            // Loop exited cleanly.
+            EXPECT_EQ(ops.cleanup_exit_count, 1);
+            // Stop reason must be InitTimeout — distinguishes this
+            // failure mode from a generic critical error or a script
+            // error.
+            EXPECT_EQ(core.stop_reason(),
+                      RoleHostCore::StopReason::InitTimeout)
+                << "loop-ready gate timeout must surface as "
+                   "StopReason::InitTimeout";
+        },
+        "role_data_loop::framework_floor_holds_gate",
+        Logger::GetLifecycleModule());
 }
 
 int invoke_returns_false_stops_loop()
@@ -272,6 +389,7 @@ int invoke_returns_false_stops_loop()
             auto         api = make_api(core, "invoke_returns_false");
             install_one_authorized_presence(*api, "ch.invoke_false");
 
+            StubEngine   engine;
             MockCycleOps ops;
             ops.invoke_returns_continue = false;
             core.set_running(true);
@@ -280,7 +398,7 @@ int invoke_returns_false_stops_loop()
             cfg.period_us  = 0;
             cfg.loop_timing = LoopTimingPolicy::MaxRate;
 
-            run_data_loop(*api, core, cfg, ops);
+            run_data_loop(*api, core, cfg, ops, engine);
 
             EXPECT_EQ(ops.acquire_count, 1);
             EXPECT_EQ(ops.invoke_count, 1);
@@ -299,6 +417,7 @@ int metrics_increment()
             auto         api = make_api(core, "metrics_increment");
             install_one_authorized_presence(*api, "ch.metrics");
 
+            StubEngine   engine;
             MockCycleOps ops;
             core.set_running(true);
             std::thread stopper([&] {
@@ -310,7 +429,7 @@ int metrics_increment()
             cfg.period_us  = 0;
             cfg.loop_timing = LoopTimingPolicy::MaxRate;
 
-            run_data_loop(*api, core, cfg, ops);
+            run_data_loop(*api, core, cfg, ops, engine);
             stopper.join();
 
             EXPECT_GE(core.iteration_count(), 1u);
@@ -328,6 +447,7 @@ int no_data_skips_deadline_wait()
             auto         api = make_api(core, "no_data_skips_deadline_wait");
             install_one_authorized_presence(*api, "ch.no_data");
 
+            StubEngine   engine;
             MockCycleOps ops;
             ops.acquire_returns_data = false;
             core.set_running(true);
@@ -342,7 +462,7 @@ int no_data_skips_deadline_wait()
             cfg.queue_io_wait_timeout_ratio = 0.1;
 
             auto start = std::chrono::steady_clock::now();
-            run_data_loop(*api, core, cfg, ops);
+            run_data_loop(*api, core, cfg, ops, engine);
             stopper.join();
             auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -365,6 +485,7 @@ int overrun_detected()
             install_one_authorized_presence(*api, "ch.overrun");
 
             core.set_running(true);
+            StubEngine engine;
             SlowOps slow_ops;
 
             LoopConfig cfg;
@@ -372,7 +493,7 @@ int overrun_detected()
             cfg.loop_timing              = LoopTimingPolicy::FixedRate;
             cfg.queue_io_wait_timeout_ratio = 0.1;
 
-            run_data_loop(*api, core, cfg, slow_ops);
+            run_data_loop(*api, core, cfg, slow_ops, engine);
 
             EXPECT_GE(core.loop_overrun_count(), 1u);
         },
@@ -497,6 +618,8 @@ struct RoleDataLoopWorkerRegistrar
                     return shutdown_stops_loop();
                 if (sc == "invoke_returns_false_stops_loop")
                     return invoke_returns_false_stops_loop();
+                if (sc == "framework_floor_holds_gate")
+                    return framework_floor_holds_gate();
                 if (sc == "metrics_increment")
                     return metrics_increment();
                 if (sc == "no_data_skips_deadline_wait")

@@ -391,6 +391,60 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::vector<AllowedPeer>
     allowed_peers(const std::string &channel) const;
 
+    /// Count of admitted peers for the named channel — convenience
+    /// accessor equal to `allowed_peers(channel).size()`, provided for
+    /// the framework's default loop-ready gate (HEP-CORE-0011
+    /// §"Loop-ready gate") and for scripts that only need the cardinality
+    /// without materialising the full snapshot.  Reads the same
+    /// transport-agnostic, side-agnostic `allowlist_cache` seeded by
+    /// `apply_{producer,consumer}_reg_ack` and grown by
+    /// `handle_channel_auth_notifies` per HEP-CORE-0036 §I11.1.
+    /// Thread-safe.
+    [[nodiscard]] std::size_t
+    admitted_peers_count(const std::string &channel) const;
+
+    /// HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
+    /// queue-owned admission fact for the loop-ready gate.  Forwards
+    /// to the queue that holds `channel` on this role
+    /// (rx-side if present, else tx-side).  Layer-clean: no
+    /// admission-cache snapshot copy, no vector allocation for a
+    /// simple boolean question.  Used by `ConsumerCycleOps::default_init_ready`
+    /// and `ProcessorCycleOps::default_init_ready`; script-facing
+    /// observability keeps using `allowed_peers` / `admitted_peers_count`.
+    [[nodiscard]] bool
+    channel_admission_populated(const std::string &channel) const noexcept;
+
+    /// HEP-CORE-0036 §I9.1 + §6.6.3 — topology-agnostic finalize step.
+    ///
+    /// Called by every role host UNIFORMLY (producer / consumer /
+    /// processor) after `apply_master_approval`, once per channel.
+    /// The API resolves this role's writer for the channel, seeds a
+    /// `hub::PeerReadinessOracle` internally with the queue's own
+    /// CURVE pubkey and the BRC forwarder, and calls
+    /// `QueueWriter::finalize_connect`.  The queue decides whether
+    /// to poll (fan-in DIALING PUSH — deferred connect) or no-op
+    /// (every other topology / transport combination).
+    ///
+    /// Returns true on success or on legitimate no-op (queue not in
+    /// deferred state, channel has no writer side on this role,
+    /// SHM transport).  Returns false only on: permanent oracle
+    /// error, cancellation via `is_cancelled`, timeout, or
+    /// `start()` failure in the queue.
+    ///
+    /// `is_cancelled` is polled between broker RPCs and before every
+    /// sleep so a shutdown during startup exits within one poll
+    /// interval rather than burning `timeout_ms`.  Default (empty)
+    /// disables cancellation.
+    ///
+    /// This method replaces the shipped-2026-07-11 pair
+    /// `check_peer_ready` + `dial_now`, which are retired per §I9.1
+    /// (topology and transport are queue-internal — role-side API
+    /// carries topology-agnostic verbs only).
+    bool finalize_channel_connect(
+        const std::string           &channel,
+        std::uint64_t                timeout_ms,
+        const std::function<bool()> &is_cancelled = {}) noexcept;
+
     /// HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 + HEP-CORE-0007
     /// §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
     /// script-observable LIVE-peer role_uid lists for the named channel,

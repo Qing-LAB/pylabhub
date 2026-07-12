@@ -56,6 +56,52 @@ on top of that abstraction.
 - Phase D slices A/B/C/D — folded into "D phase field" above (shipped complete).
 - Phase G (was: "fan-out ZMQ role-host integration + demo") — its role-host migration content moved UP into C step 6; its demo content moved into Phase F.  Phase G label retired.
 
+### Fan-in binding-side reader correctness arc ✅ SHIPPED (2026-07-11)
+
+Not a topology phase, but the reason C step 7 is important: the
+fan-in binding-side *reader* had multiple correctness gaps
+underneath the topology migration, all rooted in pre-migration
+assumptions ("writer always binds", "REG_ACK carries the peer
+set", "producer opens the channel").  Landed as five related
+pieces per the arc summary in `docs/todo/API_TODO.md` +
+`docs/todo/MESSAGEHUB_TODO.md`:
+
+1. **Bug A binding-queue resolution** in `handle_channel_auth_notifies`
+   — `set_peer_allowlist` targets the queue-that-binds by channel,
+   not always `tx_queue`.
+2. **G2 `allowlist_cache` seed** in `apply_consumer_reg_ack` —
+   symmetric with `apply_producer_reg_ack`; makes
+   `admitted_peers_count` correct on both dialing- and binding-side
+   readers.
+3. **Loop-ready gate** (HEP-CORE-0011 §"Loop-ready gate") — per-cycle
+   AND composition of framework floor × user script.  Consumer's
+   default gate reads `admitted_peers_count >= 1` for each rx-side
+   channel.
+4. **Broker topology-aware authorization + response semantics**
+   for `GET_CHANNEL_AUTH_REQ` (§6.6.1 + §6.6.2) + fan-in
+   consumer-opens `_on_channel_access_opened` wiring + fan-in
+   consumer self-admission suppression.
+5. **Dial-side readiness pull** (§6.6.3) — new `CHECK_PEER_READY_REQ`
+   wire, extended `CHANNEL_AUTH_APPLIED_REQ` consumer branch,
+   `ZmqQueue::apply_master_approval` defer + `dial_now()`, producer
+   host `wait_for_peer_ready` pre-loop step.  Closes the CURVE
+   handshake ordering race that was making the fan-in E2E test fail
+   at 20 s timeout with zero data flow.
+
+L4 `ZmqE2E_MultiProducer_TwoAuthorized` (fan-in E2E) now passes in
+~3.4 s.  L4 `ZmqE2E_AuthorizedConsumerReceivesAllSlots` (fan-out
+regression) continues to pass.  1651 L2 tests pass, 133 L4 tests
+pass.  Design captured in HEP amendments; test coverage detail
+in `docs/todo/TESTING_TODO.md`.
+
+**Cross-reference for Phase C step 7.**  These fixes are
+independent of the C step 7 spawn-order flip — the fan-in tests
+pass whether the test harness spawns consumer-first or
+producer-first, because the producer's `wait_for_peer_ready`
+holds it until the consumer is ready regardless of spawn order.
+Landing C step 7 remains the correct next topology step, but the
+fan-in reader correctness gaps are no longer a blocker for it.
+
 ### Phase D — verified delta vs. HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864)
 
 **Source of truth:** HEP-CORE-0007 lines 1803-1864 already specifies
