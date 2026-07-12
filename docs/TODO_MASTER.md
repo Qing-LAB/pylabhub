@@ -84,14 +84,15 @@ authority: HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036
 - **Design authority:** `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
 - **Migration plan + finding detail:** `docs/todo/TOPOLOGY_TODO.md`
 
-**Queue-owned topology + layer cleanup arc — P1+P2+P3+P4+P5 SHIPPED (2026-07-11).**
-Follow-on to the fan-in binding-side reader arc.  The fix shipped
-correct behavior but pushed topology + transport awareness into the
-role host and RoleAPIBase public surface.  Now reclaimed: `hub::Queue`
-owns topology and transport; role host uses uniform, topology-agnostic
-`api.finalize_channel_connect(channel, timeout_ms, is_cancelled)`.
-Design draft + landing log:
-`docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`.
+**Queue-owned topology + layer cleanup arc — CLOSED 2026-07-12.**
+Follow-on to the fan-in binding-side reader arc.  Reclaimed the layer:
+`hub::Queue` owns topology and transport; role host uses uniform,
+topology-agnostic `api.finalize_channel_connect(channel, timeout_ms,
+is_cancelled)`.  Commits `c665de0c` (P1–P5) + `db2bbc21` (P7 HEP
+sweep + trailing §I9.1 code fixes).  Draft archived to
+`docs/archive/transient-2026-07-12/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`;
+lasting design in the amended HEPs (HEP-CORE-0011 §"Loop-ready gate"
++ HEP-CORE-0036 §I9.1 / §6.5 step 6 / §6.6.3 + HEP-CORE-0042 §5.5.2).
 
 **Landed:**
 - P1 (HEP contract) — HEP-CORE-0036 §I9.1 NEW locality invariant +
@@ -109,17 +110,13 @@ Design draft + landing log:
   split into `kLoopReadyGateInterval` + `kBrokerReadinessPollInterval`.
   Full L2 1657/1657 pass; L4 133/133 pass; L4 fan-in E2E 3.1 s.
 
-**P4 landed** — gate reads queue-level `is_admission_populated`
-via `RoleAPIBase::channel_admission_populated`; no snapshot
-allocation.  **P5 landed** — queue exposes `binding_role_type()`,
-the redundant `channel_auth_applied_consumer` BRC method retired,
-`handle_channel_auth_notifies` no longer branches on
-`is_binding_side()`.
-
-**Remaining:** P6 (data-structure cleanup: version-tagged
-membership for `binding_side_confirmed_allowlist`) + P7 (HEP
-sweep + archive).  Detail in `docs/todo/API_TODO.md` +
-`docs/todo/MESSAGEHUB_TODO.md` + `docs/todo/TESTING_TODO.md`.
+**Deferred follow-ups** (tracked; not required for arc close):
+- P6 — Replace `binding_side_confirmed_allowlist` full-set copy
+  with version-tagged membership.  Detail in
+  `docs/todo/MESSAGEHUB_TODO.md`.
+- D-3 — clang-tidy / clang-query rule that fails the build on
+  §I9.1 layer regressions in role-side code.  Detail in
+  `docs/todo/API_TODO.md`.
 
 **Legacy Line 1 remaining items** (#246 Phase 3a L4 close-out,
 #275 S2, #257, REVIEW-C) are largely subsumed by the migration;

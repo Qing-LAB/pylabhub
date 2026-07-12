@@ -84,10 +84,33 @@ uniform, topology-agnostic calls.
 - `handle_channel_auth_notifies` uses queue's `binding_role_type()`
   to pick the wire's `role_type`; NO `is_binding_side()` branch.
 
-**Remaining phases (in plan):**
-- P6 — Replace `binding_side_confirmed_allowlist` full-set copy
-  with version-tagged membership.
-- P7 — HEP sweep + archive.
+**P7 (HEP sweep) — SHIPPED (2026-07-12, commit db2bbc21):**
+- HEP-CORE-0011 Native ABI mentions corrected v3→v4 to v8→v9
+  in three places; matches shipped `PLH_NATIVE_API_VERSION 9`.
+- HEP-CORE-0011 `kLoopReadyPollInterval` references renamed to
+  `kLoopReadyGateInterval`.
+- HEP-CORE-0036 last-revised banner + §6.5 step 6 + §6.6.3 +
+  §I9.1 amendment text now reflect shipped design (no
+  `AppliedResult`/`ConfirmationEmitter`; queue's
+  `binding_role_type()` accessor is the shipped shape).
+- Trailing §I9.1 violations in `apply_consumer_reg_ack` (two
+  `is_binding_side()` control-flow branches) replaced with
+  `!binding_role_type().empty()`.
+
+**Follow-ups (deferred, not required for layer cleanup close):**
+- **P6** — Replace `binding_side_confirmed_allowlist` full-set
+  copy with version-tagged membership.  Correctness matches
+  P2.a via the simpler mechanism; P6 is a structural
+  refactor only.  Tracked under `docs/todo/MESSAGEHUB_TODO.md`
+  "Refactor P6 — PENDING."
+- **D-3** — clang-tidy / clang-query custom rule that fails
+  the build when role-side code contains `topology::parse`,
+  `is_binding_side` control-flow, `has_tx_side` / `tx_has_shm`
+  gating a control step, or `finalize_channel_connect` /
+  `check_peer_ready` / `dial_now` re-appearing on
+  `RoleAPIBase` public surface.  Under project frame the
+  invariant is hard-enforce (per §I9.1); a lint prevents
+  regression.  Owner: unassigned.  Tracked here.
 
 ### Loop-ready gate + fan-in binding-side reader arc ✅ SHIPPED (2026-07-11)
 

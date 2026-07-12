@@ -553,23 +553,48 @@ structure; then this refactor lands as a pure structural change).
 - Reuse P2.a's stale-consumer regression tests as the correctness
   gate for the refactor.
 
-### P7 — HEP + doc sweep
+### P7 — HEP + doc sweep ✅ LANDED 2026-07-12 (commit db2bbc21)
 
-**Deliverable:** every design doc reflects the new layer contract.
+- HEP-CORE-0011 Native ABI mentions corrected v3→v4 to v8→v9;
+  actual shipped constant is `PLH_NATIVE_API_VERSION 9`.
+- HEP-CORE-0011 `kLoopReadyPollInterval` references renamed to
+  `kLoopReadyGateInterval` (matches shipped constant split).
+- HEP-CORE-0036 last-revised banner + §6.5 step 6 + §6.6.3
+  amendments rewritten to reflect shipped design (queue's
+  `binding_role_type()` accessor rather than the proposed
+  `AppliedResult{side, applied_version}` + `ConfirmationEmitter`
+  shape).
+- HEP-CORE-0036 §I9.1 forbidden-patterns example now notes
+  `dial_now` / `check_peer_ready` as RETIRED in the same arc.
+- Two trailing §I9.1 violations in
+  `apply_consumer_reg_ack` (raw `is_binding_side()` control-flow
+  branches at lines 1309 and 1448) replaced with
+  `!binding_role_type().empty()`.
 
-- HEP-CORE-0011 §"Loop-ready gate" — clarify gate reads queue
-  fact; note constant split (B2).
-- HEP-CORE-0036 §6.5 step 6 — queue-owned apply-confirm (P5).
-- HEP-CORE-0036 §6.6.3 — role-side entry point is
-  `finalize_connect`; `check_peer_ready` demoted to internal
-  broker RPC (P3).
-- HEP-CORE-0042 §5.5.2 amendment — same story on the queue-owned
-  side.
-- Native ABI version (D1): confirm shipped is v9, HEP text
-  matches.
-- Archive log: append P1–P7 completions as they land, close by
-  merging remaining bits into the permanent HEPs and archiving
-  this draft.
+### Deferred follow-ups (not blocking arc close)
+
+- **P6** — Replace `binding_side_confirmed_allowlist` full-set
+  copy with version-tagged membership.  Correctness matches P2.a
+  via the simpler mechanism; P6 is a structural refactor only.
+  Tracked under `docs/todo/MESSAGEHUB_TODO.md` "Refactor P6 —
+  PENDING."
+- **D-3** — clang-tidy / clang-query custom rule that fails the
+  build when role-side code contains `topology::parse`,
+  `is_binding_side` control-flow, `has_tx_side` /
+  `tx_has_shm` gating a control step, or previously-retired
+  topology-named methods re-appearing on `RoleAPIBase` public
+  surface.  Hard-enforce the §I9.1 invariant so future
+  regressions are loud.  Tracked under `docs/todo/API_TODO.md`
+  in the arc's follow-up block.
+
+### Arc close
+
+All P1–P5 + P7 landed; P6 + D-3 deferred to follow-up work under
+canonical TODOs.  Draft archives to
+`docs/archive/transient-2026-07-12/` per
+`docs/DOC_STRUCTURE.md` §2.2.  Lasting design content is in the
+amended HEPs (HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036
+§I9.1 + §6.5 step 6 + §6.6.3 + HEP-CORE-0042 §5.5.2 amendment).
 
 ## 6. Sequencing rationale
 

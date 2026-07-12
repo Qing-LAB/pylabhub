@@ -6,6 +6,20 @@
 
 ## Archive batches
 
+### 2026-07-12 (queue-owned topology + layer cleanup plan closed)
+
+Design draft `DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`
+tracked the seven-phase queue-owned topology + layer cleanup arc
+(P1 contract → P2 correctness bugs → P3 queue-owned dial →
+P4 gate reads queue → P5 queue-owned confirm → P6 data-structure
+cleanup → P7 HEP sweep).  All arc-close phases landed with
+commits `c665de0c` (P1–P5 code + tests) and `db2bbc21` (P7 HEP
+sweep + trailing §I9.1 code fixes).  Deferred follow-ups (P6
+data-structure refactor + D-3 clang-tidy rule) tracked under
+canonical TODOs.  Draft archived; lasting design in HEP-CORE-0011
+§"Loop-ready gate" + HEP-CORE-0036 §I9.1 / §6.5 step 6 / §6.6.3
++ HEP-CORE-0042 §5.5.2 amendment.
+
 ### 2026-07-11 (loop-ready gate + fan-in binding queue draft merged into HEPs)
 
 Design draft `DRAFT_loop_ready_gate_and_binding_queue_2026-07-11.md`
