@@ -103,14 +103,17 @@ uniform, topology-agnostic calls.
   P2.a via the simpler mechanism; P6 is a structural
   refactor only.  Tracked under `docs/todo/MESSAGEHUB_TODO.md`
   "Refactor P6 — PENDING."
-- **D-3** — clang-tidy / clang-query custom rule that fails
-  the build when role-side code contains `topology::parse`,
-  `is_binding_side` control-flow, `has_tx_side` / `tx_has_shm`
-  gating a control step, or `finalize_channel_connect` /
-  `check_peer_ready` / `dial_now` re-appearing on
-  `RoleAPIBase` public surface.  Under project frame the
-  invariant is hard-enforce (per §I9.1); a lint prevents
-  regression.  Owner: unassigned.  Tracked here.
+- **D-3 (SHIPPED 2026-07-12)** — layer-invariant guardrail
+  registered under the CTest `guardrail` label
+  (`LayerInvariantGuardrail_NoTopologyLeakAboveQueue`).
+  Cross-platform via hand-mirrored `.sh` (Unix) + `.ps1`
+  (Windows); CMake dispatches on `WIN32`.  Checks:
+  `topology::parse`, `ChannelTopology::` comparisons/switches,
+  raw `is_binding_side()`, retired symbols (`dial_now`,
+  `wait_for_peer_ready`, `channel_auth_applied_consumer`),
+  RoleAPIBase public re-declarations.  Runs in <100 ms; part
+  of the standard `ctest` sweep.  See HEP-CORE-0036 §I9.1
+  "Enforcement" for the mirror-sync discipline.
 
 ### Loop-ready gate + fan-in binding-side reader arc ✅ SHIPPED (2026-07-11)
 

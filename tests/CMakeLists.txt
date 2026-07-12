@@ -118,6 +118,38 @@ if(BUILD_TESTS)
                        PROPERTIES LABELS "layer0;hep0036;guardrail"
                                   TIMEOUT 10)
 
+  # HEP-CORE-0036 §I9.1 locality invariant guardrail (D-3, arc
+  # closed 2026-07-12) — fails if role-side code reintroduces
+  # topology / transport awareness the queue-owned layer cleanup
+  # arc reclaimed.  Checks for: `topology::parse` in role code,
+  # `ChannelTopology::` enum comparisons/switches in role code,
+  # raw `is_binding_side()` calls (queue exposes it for logging;
+  # callers use `binding_role_type()`), retired symbols (`dial_now`,
+  # `wait_for_peer_ready`, `channel_auth_applied_consumer`), and
+  # public re-declarations of `dial_now`/`check_peer_ready` on
+  # `RoleAPIBase`.  Pure grep / Select-String; runs in <1s.
+  #
+  # Cross-platform: `.sh` for Unix (bash + grep); `.ps1` for
+  # Windows (PowerShell 5.1+ + Select-String).  The two scripts
+  # are hand-mirrored — every rule added to one MUST be added to
+  # the other.  See HEP-CORE-0036 §I9.1 "Enforcement" for the
+  # mirror discipline.
+  if(WIN32)
+    add_test(NAME LayerInvariantGuardrail_NoTopologyLeakAboveQueue
+             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/check_layer_invariant.ps1
+                     ${CMAKE_SOURCE_DIR}
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  else()
+    add_test(NAME LayerInvariantGuardrail_NoTopologyLeakAboveQueue
+             COMMAND ${CMAKE_SOURCE_DIR}/tools/check_layer_invariant.sh
+                     ${CMAKE_SOURCE_DIR}
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  endif()
+  set_tests_properties(LayerInvariantGuardrail_NoTopologyLeakAboveQueue
+                       PROPERTIES LABELS "layer0;hep0036;guardrail"
+                                  TIMEOUT 10)
+
   # Collect all test executables registered by the subdirectories
   get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)
 

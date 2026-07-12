@@ -848,9 +848,34 @@ layer:
   per HEP-CORE-0011 §"Cross-Engine Surface Parity."
 
 **Enforcement.**  Reviewers apply this at HEP amendment review
-and at code review.  A future clang-query / clang-tidy rule
-scanning for the forbidden calls above the queue layer is the
-long-term regression guard.
+and at code review.  A build-time regression guard registered
+under the CTest `guardrail` label (`LayerInvariantGuardrail_
+NoTopologyLeakAboveQueue`) scans the role-side surface
+(`src/producer`, `src/consumer`, `src/processor`,
+`src/utils/service/{role_api_base,role_host_frame,cycle_ops,
+data_loop}.*`, and the two role-facing headers) for the
+forbidden calls above and fails the sweep on a hit.
+
+The check exists in two mirror-synced implementations:
+`tools/check_layer_invariant.sh` (Unix — bash + grep) and
+`tools/check_layer_invariant.ps1` (Windows —
+PowerShell + Select-String).  CMake dispatches the
+platform-appropriate one at test time.  The two scripts MUST
+be kept semantically equivalent — every rule added to one MUST
+be mirrored in the other; each script's header comment carries
+a reciprocal cross-reference so an editor of either notices
+the sibling.  Textual pattern matching is intentional — the
+guardrail is a "warning flag" tier, not a full static
+analysis; it catches the concrete symbol shapes this arc
+retired and any obvious re-additions, and defers finer-grained
+"used in control flow vs used in a log line" distinctions to
+code review.  Run manually with:
+
+```
+tools/check_layer_invariant.sh                    # Unix
+powershell -File tools/check_layer_invariant.ps1  # Windows
+ctest -L guardrail                                # via CMake
+```
 
 **Rationale.**  The framework has three topologies and two data-
 plane transports.  Six-way branches at every step of the
