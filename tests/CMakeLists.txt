@@ -152,6 +152,28 @@ if(BUILD_TESTS)
                                   FIXTURES_SETUP Guardrails
                                   TIMEOUT 10)
 
+  # Meta-guardrail: fail the sweep if any gtest_discover_tests block
+  # under tests/ lacks `FIXTURES_REQUIRED Guardrails`.  Without this,
+  # a future test target could silently bypass the two guardrails
+  # above by omitting the fixture requirement.  Closes F3 of the
+  # 2026-07-12 evidence-discipline arc.
+  if(WIN32)
+    add_test(NAME MetaGuardrail_AllTestsRequireGuardrailsFixture
+             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/check_fixtures_required.ps1
+                     ${CMAKE_SOURCE_DIR}
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  else()
+    add_test(NAME MetaGuardrail_AllTestsRequireGuardrailsFixture
+             COMMAND ${CMAKE_SOURCE_DIR}/tools/check_fixtures_required.sh
+                     ${CMAKE_SOURCE_DIR}
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  endif()
+  set_tests_properties(MetaGuardrail_AllTestsRequireGuardrailsFixture
+                       PROPERTIES LABELS "layer0;guardrail;meta"
+                                  FIXTURES_SETUP Guardrails
+                                  TIMEOUT 10)
+
   # ── Guardrail fixture attachment ──────────────────────────────────────
   # The two guardrails above declare `FIXTURES_SETUP Guardrails`.
   # Every test in every layer subdirectory declares

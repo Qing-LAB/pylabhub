@@ -46,7 +46,18 @@ fi
 LOGS_DIR="$BUILD_DIR/Testing/logs"
 mkdir -p "$LOGS_DIR"
 
-TS=$(date +%Y%m%d-%H%M%S)
+# Nanosecond timestamp — plain seconds (%Y%m%d-%H%M%S) collides under
+# parallel invocations of this wrapper (same second, same shell PID
+# is impossible but different shells can race).  %N gives us
+# nanoseconds on GNU date; on BSD/macOS `date` doesn't support %N so
+# we fall back to appending a random 4-digit suffix.  Either path
+# gives per-invocation uniqueness.
+if TS=$(date +%Y%m%d-%H%M%S-%N 2>/dev/null) && \
+   [ "${TS: -1}" != "N" ]; then
+    :  # GNU date path — %N expanded successfully
+else
+    TS="$(date +%Y%m%d-%H%M%S)-$(awk 'BEGIN{srand();printf "%04d", rand()*10000}')"
+fi
 PID=$$
 LOG_PATH="$LOGS_DIR/ctest-${TS}-pid${PID}.log"
 BACKUP_LAST="$LOGS_DIR/LastTest-preserved-${TS}-pid${PID}.log"
@@ -55,12 +66,23 @@ BACKUP_FAILED="$LOGS_DIR/LastTestsFailed-preserved-${TS}-pid${PID}.log"
 # STEP 1 — Back up prior LastTest.log + LastTestsFailed.log BEFORE
 # invoking ctest.  Preserves evidence from the run that produced the
 # CURRENT failure state so a `--rerun-failed` cannot destroy it.
+# Backup failure is FATAL: a silent evidence-preservation failure is
+# exactly the anti-pattern this wrapper exists to prevent, so we
+# abort loudly rather than proceed with a false sense of safety.
 if [ -f "$BUILD_DIR/Testing/Temporary/LastTest.log" ]; then
-    cp -p "$BUILD_DIR/Testing/Temporary/LastTest.log" "$BACKUP_LAST"
+    if ! cp -p "$BUILD_DIR/Testing/Temporary/LastTest.log" "$BACKUP_LAST"; then
+        echo "FAIL [ctest_evidence] could not back up LastTest.log to $BACKUP_LAST" >&2
+        echo "  Refusing to run ctest — a silent evidence-preservation failure is the" >&2
+        echo "  exact anti-pattern this wrapper exists to prevent." >&2
+        exit 3
+    fi
     echo "[ctest_evidence] backed up LastTest.log -> $BACKUP_LAST" >&2
 fi
 if [ -f "$BUILD_DIR/Testing/Temporary/LastTestsFailed.log" ]; then
-    cp -p "$BUILD_DIR/Testing/Temporary/LastTestsFailed.log" "$BACKUP_FAILED"
+    if ! cp -p "$BUILD_DIR/Testing/Temporary/LastTestsFailed.log" "$BACKUP_FAILED"; then
+        echo "FAIL [ctest_evidence] could not back up LastTestsFailed.log to $BACKUP_FAILED" >&2
+        exit 3
+    fi
     echo "[ctest_evidence] backed up LastTestsFailed.log -> $BACKUP_FAILED" >&2
 fi
 

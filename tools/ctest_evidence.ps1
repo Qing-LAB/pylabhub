@@ -27,7 +27,10 @@ if (-not (Test-Path $BuildDir)) {
 $LogsDir = Join-Path $BuildDir 'Testing/logs'
 New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null
 
-$Ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+# Sub-second timestamp — plain seconds collide under parallel
+# invocations.  .NET's DateTime.Ticks gives 100-ns resolution which
+# is more than enough.
+$Ts = Get-Date -Format 'yyyyMMdd-HHmmssfff'
 $Pid = [System.Diagnostics.Process]::GetCurrentProcess().Id
 $LogPath      = Join-Path $LogsDir "ctest-$Ts-pid$Pid.log"
 $BackupLast   = Join-Path $LogsDir "LastTest-preserved-$Ts-pid$Pid.log"
@@ -37,13 +40,29 @@ $TempDir = Join-Path $BuildDir 'Testing/Temporary'
 $LastTest   = Join-Path $TempDir 'LastTest.log'
 $LastFailed = Join-Path $TempDir 'LastTestsFailed.log'
 
-# STEP 1 — Back up prior LastTest.log + LastTestsFailed.log.
+# STEP 1 — Back up prior LastTest.log + LastTestsFailed.log.  Backup
+# failure is FATAL: a silent evidence-preservation failure is exactly
+# the anti-pattern this wrapper exists to prevent.
 if (Test-Path $LastTest) {
-    Copy-Item -Path $LastTest -Destination $BackupLast -Force
+    try {
+        Copy-Item -Path $LastTest -Destination $BackupLast -Force
+    } catch {
+        [Console]::Error.WriteLine("FAIL [ctest_evidence] could not back up LastTest.log to $BackupLast")
+        [Console]::Error.WriteLine("  $($_.Exception.Message)")
+        [Console]::Error.WriteLine("  Refusing to run ctest — silent evidence-preservation failure is the")
+        [Console]::Error.WriteLine("  exact anti-pattern this wrapper exists to prevent.")
+        exit 3
+    }
     [Console]::Error.WriteLine("[ctest_evidence] backed up LastTest.log -> $BackupLast")
 }
 if (Test-Path $LastFailed) {
-    Copy-Item -Path $LastFailed -Destination $BackupFailed -Force
+    try {
+        Copy-Item -Path $LastFailed -Destination $BackupFailed -Force
+    } catch {
+        [Console]::Error.WriteLine("FAIL [ctest_evidence] could not back up LastTestsFailed.log to $BackupFailed")
+        [Console]::Error.WriteLine("  $($_.Exception.Message)")
+        exit 3
+    }
     [Console]::Error.WriteLine("[ctest_evidence] backed up LastTestsFailed.log -> $BackupFailed")
 }
 

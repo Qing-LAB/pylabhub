@@ -164,10 +164,20 @@ L4 test fixtures preserve subprocess scratch dirs on failure or
 under `PLH_KEEP_TEST_ARTIFACTS=1`.  Locations:
 `build/stage-debug/test_artifacts/plh_hub_l4/` and
 `plh_role_l4/`.  Each `tmp("prefix")` call appends the created
-path to `<test_artifacts>/.pending_paths`; a subsequent test
-invocation's fixture setup scans that file for orphans left by a
-prior CRASH (fixture teardown never ran) and preserves them.
-See `plh_hub_fixture.h::make_tmp_dir` for the mechanism.
+path to `<test_artifacts>/.pending_paths` **at allocation time**,
+so if the test process CRASHES before TearDown fires (SIGABRT,
+static-init fault, kill by parent ctest) the path is still
+recorded on disk.  See `plh_hub_fixture.h::make_tmp_dir` and
+`plh_role_fixture.h::make_tmp_dir` for the mechanism.
+
+**Current status of the scoreboard**: the `.pending_paths` file
+captures paths but there is no automatic startup sweep that
+preserves orphans yet.  If a test crashes and you suspect an
+orphan directory exists, `cat <test_artifacts>/.pending_paths`
+lists every path that a running fixture created — cross-check
+against directory listing to find crash-orphaned dirs.  An
+automatic startup-sweep-and-preserve step is a follow-up item;
+tracked in `docs/todo/TESTING_TODO.md`.
 
 ### Run Specific Test Suites
 

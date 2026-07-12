@@ -94,6 +94,22 @@ inline fs::path make_tmp_dir(const std::string &prefix)
     std::error_code ec;
     fs::remove_all(dir, ec);    // best-effort: previous aborted run
     fs::create_directories(dir);
+
+    // Scoreboard append (mirror of plh_hub_fixture.h::make_tmp_dir).
+    // Records path at allocation time so a crash-before-TearDown
+    // still leaves a trace of what dirs the test was using.  Best-
+    // effort I/O; never aborts the test.
+    try
+    {
+        fs::path scoreboard = root / ".pending_paths";
+        std::ofstream f(scoreboard, std::ios::app);
+        if (f)
+        {
+            f << dir.string() << "\n";
+        }
+    }
+    catch (...) { /* scoreboard is best-effort */ }
+
     return dir;
 }
 

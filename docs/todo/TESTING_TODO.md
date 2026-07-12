@@ -136,6 +136,27 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### L4 fixture scoreboard: startup sweep for crash-orphans (2026-07-12)
+
+`plh_hub_fixture.h::make_tmp_dir` and its
+`plh_role_fixture.h` sibling append every allocated path to
+`<test_artifacts>/.pending_paths` at allocation time (2026-07-12
+commit).  The scoreboard captures orphans left by a crash BEFORE
+TearDown fires, closing the gap where fixture-side artifact
+preservation only worked if teardown ran.  **What's missing**: an
+automatic startup sweep at test binary invocation time that
+reads `.pending_paths`, finds directories that STILL EXIST from a
+prior crashed run, and moves them to a well-named
+"crash-preserved-<pid>-<ts>/" holding area (or simply marks them
+with a `.crash_preserved` sentinel file for operator inspection).
+Until then, `cat <test_artifacts>/.pending_paths` is the manual
+way to enumerate what a running fixture created; cross-check
+against directory listing to find crash-orphaned dirs.  Follow-up
+work.  See `docs/README/README_testing.md § Persistent test
+artifacts (L4 fixtures)` for the current documented mechanism.
+
+
+
 ### Queue-owned topology + layer cleanup — P1+P2+P3 SHIPPED (2026-07-11)
 
 **Plan + landing log:** `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`
