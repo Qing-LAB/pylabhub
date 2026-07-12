@@ -834,6 +834,67 @@ gtest_discover_tests(test_layer2_hub_state
 )
 
 # ============================================================================
+# Test: HubState anti-replay nonce dedup (I-REPLAY-BOUND)
+# ============================================================================
+
+add_executable(test_layer2_hub_state_nonce_dedup
+    test_hub_state_nonce_dedup.cpp
+)
+
+target_link_libraries(test_layer2_hub_state_nonce_dedup
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_state_nonce_dedup)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_state_nonce_dedup
+    SUITE_NAME "Layer2_HubStateNonceDedup"
+)
+layer2_require_staged_utils(test_layer2_hub_state_nonce_dedup)
+
+gtest_discover_tests(test_layer2_hub_state_nonce_dedup
+    PROPERTIES
+        LABELS "layer2;service;hubstate;replay"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: BrokerRegHandler — pipeline integrated with real HubState
+# ============================================================================
+
+add_executable(test_layer2_broker_reg_handler
+    test_broker_reg_handler.cpp
+)
+
+target_link_libraries(test_layer2_broker_reg_handler
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        libzmq-static
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_broker_reg_handler)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_broker_reg_handler
+    SUITE_NAME "Layer2_BrokerRegHandler"
+)
+layer2_require_staged_utils(test_layer2_broker_reg_handler)
+
+gtest_discover_tests(test_layer2_broker_reg_handler
+    PROPERTIES
+        LABELS "layer2;service;admission;pipeline"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: HubState query helpers (HEP-CORE-0039 Phase A)
 # Pure value-type tests for the Layer 2a helpers in hub_state_queries.hpp.
 # No HubState instance needed; helpers operate over const refs to ChannelEntry

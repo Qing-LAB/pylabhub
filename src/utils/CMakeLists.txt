@@ -99,16 +99,21 @@ set(UTILS_SOURCES
   shm/slot_recovery.cpp
   shm/integrity_validator.cpp
 
-  # --- network_comm: ZMQ context, broker request comm ---
+  # --- network_comm: ZMQ context, wire envelope + typed bodies, broker request comm ---
   network_comm/zmq_context.cpp
+  network_comm/wire_envelope.cpp
+  network_comm/wire_bodies.cpp
   network_comm/broker_request_comm.cpp
 
-  # --- ipc: broker service, hub state aggregate, admin RPC ---
+  # --- ipc: broker service, hub state aggregate, admin RPC, admission gates ---
   ipc/heartbeat_manager.cpp
   ipc/broker_service.cpp
   ipc/hub_state.cpp
   ipc/hub_state_json.cpp
   ipc/admin_service.cpp
+  ipc/admission_gates.cpp
+  ipc/reg_admission_pipeline.cpp
+  ipc/broker_reg_handler.cpp
 
   # --- hub: transport-agnostic Queue + Processor + Inbox ---
   #     Tx/Rx queue ownership and factory logic moved into RoleAPIBase

@@ -333,6 +333,99 @@ gtest_discover_tests(test_layer1_periodic_task
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: WireEnvelope + typed body classes
+# ============================================================================
+
+add_executable(test_layer1_wire_envelope
+    test_wire_envelope.cpp
+)
+
+target_link_libraries(test_layer1_wire_envelope
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        libzmq-static
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_wire_envelope)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_wire_envelope
+    SUITE_NAME "Layer1_WireEnvelope"
+)
+layer1_require_staged_utils(test_layer1_wire_envelope)
+
+gtest_discover_tests(test_layer1_wire_envelope
+    PROPERTIES
+        LABELS "layer1;wire;envelope"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: Admission gates (reusable pre-state-mutation pipeline)
+# ============================================================================
+
+add_executable(test_layer1_admission_gates
+    test_admission_gates.cpp
+)
+
+target_link_libraries(test_layer1_admission_gates
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        libzmq-static
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_admission_gates)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_admission_gates
+    SUITE_NAME "Layer1_AdmissionGates"
+)
+layer1_require_staged_utils(test_layer1_admission_gates)
+
+gtest_discover_tests(test_layer1_admission_gates
+    PROPERTIES
+        LABELS "layer1;admission;gates"
+        TIMEOUT 30
+)
+
+# ============================================================================
+# Test: REG-family admission pipeline (Accepted / Rejected / Pended)
+# ============================================================================
+
+add_executable(test_layer1_reg_admission_pipeline
+    test_reg_admission_pipeline.cpp
+)
+
+target_link_libraries(test_layer1_reg_admission_pipeline
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        libzmq-static
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_reg_admission_pipeline)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_reg_admission_pipeline
+    SUITE_NAME "Layer1_RegAdmissionPipeline"
+)
+layer1_require_staged_utils(test_layer1_reg_admission_pipeline)
+
+gtest_discover_tests(test_layer1_reg_admission_pipeline
+    PROPERTIES
+        LABELS "layer1;admission;pipeline"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 1 (Base) tests configured successfully")
 message(STATUS "  - test_layer1_spinlock")
 message(STATUS "  - test_layer1_recursion_guard")
@@ -343,3 +436,4 @@ message(STATUS "  - test_layer1_backoff_strategy")
 message(STATUS "  - test_layer1_module_def")
 message(STATUS "  - test_layer1_debug_info")
 message(STATUS "  - test_layer1_periodic_task")
+message(STATUS "  - test_layer1_wire_envelope")
