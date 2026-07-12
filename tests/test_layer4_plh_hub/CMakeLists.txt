@@ -61,6 +61,7 @@ pylabhub_register_test_for_staging(TARGET test_layer4_plh_hub)
 
 gtest_discover_tests(test_layer4_plh_hub
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer4;plh_hub"
         TIMEOUT 60
     DISCOVERY_TIMEOUT 60

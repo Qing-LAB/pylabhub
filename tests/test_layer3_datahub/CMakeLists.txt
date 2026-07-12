@@ -329,6 +329,7 @@ pylabhub_register_test_for_staging(TARGET test_layer3_datahub)
 
 gtest_discover_tests(test_layer3_datahub
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer3;datahub"
     DISCOVERY_TIMEOUT 60
 )

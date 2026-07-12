@@ -66,6 +66,7 @@ pylabhub_register_test_for_staging(TARGET test_layer3_pattern4)
 
 gtest_discover_tests(test_layer3_pattern4
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer3;pattern4"
     DISCOVERY_TIMEOUT 60
 )

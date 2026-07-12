@@ -116,6 +116,7 @@ if(BUILD_TESTS)
            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
   set_tests_properties(AuthGuardrail_NoScriptAllowlistMutator
                        PROPERTIES LABELS "layer0;hep0036;guardrail"
+                                  FIXTURES_SETUP Guardrails
                                   TIMEOUT 10)
 
   # HEP-CORE-0036 §I9.1 locality invariant guardrail (D-3, arc
@@ -148,7 +149,20 @@ if(BUILD_TESTS)
   endif()
   set_tests_properties(LayerInvariantGuardrail_NoTopologyLeakAboveQueue
                        PROPERTIES LABELS "layer0;hep0036;guardrail"
+                                  FIXTURES_SETUP Guardrails
                                   TIMEOUT 10)
+
+  # ── Guardrail fixture attachment ──────────────────────────────────────
+  # The two guardrails above declare `FIXTURES_SETUP Guardrails`.
+  # Every test in every layer subdirectory declares
+  # `FIXTURES_REQUIRED Guardrails` inline in its
+  # `gtest_discover_tests(... PROPERTIES ...)` call.  CTest then
+  # GUARANTEES the guardrails run before ANY test, regardless of
+  # `-L <label>`, `-R <regex>`, or `--rerun-failed`.  Without this,
+  # a `ctest -L layer2` sweep silently skips guardrails (the label
+  # filter excludes them).  Applied via inline gtest_discover_tests
+  # PROPERTIES on all 94 test targets (see the sed migration recorded
+  # in the commit that added this comment).
 
   # Collect all test executables registered by the subdirectories
   get_property(test_executables_to_stage GLOBAL PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE)

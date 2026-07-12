@@ -88,6 +88,30 @@ inline fs::path make_tmp_dir(const std::string &prefix)
     std::error_code ec;
     fs::remove_all(dir, ec);   // best-effort: previous aborted run
     fs::create_directories(dir);
+
+    // Scoreboard append: the fixture's TearDown() preserves paths on
+    // failure via HasFailure() + a paths_to_clean_ walk, but if the
+    // test process CRASHES before TearDown runs (SIGABRT, static-init
+    // fault, uncaught exception in a worker dtor, kill by parent
+    // ctest), that path preservation never fires — and the evidence
+    // is lost.  We defend against that by appending the path to a
+    // shared scoreboard file HERE at allocation time.  TearDown()
+    // removes the specific entry on PASS.  A subsequent startup sweep
+    // preserves orphans (they belong to a prior crashed run).  Best-
+    // effort I/O (file lock contention is negligible for L4 tests,
+    // which are serial per binary; parallel `-j N` still writes to
+    // distinct PIDs so O_APPEND avoids interleaving on POSIX).
+    try
+    {
+        fs::path scoreboard = root / ".pending_paths";
+        std::ofstream f(scoreboard, std::ios::app);
+        if (f)
+        {
+            f << dir.string() << "\n";
+        }
+    }
+    catch (...) { /* scoreboard is best-effort; never abort the test */ }
+
     return dir;
 }
 

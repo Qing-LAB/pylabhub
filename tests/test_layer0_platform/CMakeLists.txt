@@ -51,6 +51,7 @@ layer0_require_staged_utils(test_layer0_platform_core)
 # Register with CTest
 gtest_discover_tests(test_layer0_platform_core
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer0;platform;core"
         TIMEOUT 30
 )
@@ -86,6 +87,7 @@ layer0_require_staged_utils(test_layer0_platform_debug)
 # Register with CTest
 gtest_discover_tests(test_layer0_platform_debug
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer0;platform;debug"
         TIMEOUT 30
 )
@@ -119,6 +121,7 @@ layer0_require_staged_utils(test_layer0_platform_shm)
 
 gtest_discover_tests(test_layer0_platform_shm
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer0;platform;shm"
         TIMEOUT 30
 )
@@ -149,6 +152,7 @@ layer0_require_staged_utils(test_layer0_platform_sanitizers)
 # Register with CTest (tests assert on stderr content only, not exit code)
 gtest_discover_tests(test_layer0_platform_sanitizers
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer0;platform;sanitizer"
         TIMEOUT 60
 )
@@ -177,6 +181,7 @@ layer0_require_staged_utils(test_layer0_uuid_and_format)
 
 gtest_discover_tests(test_layer0_uuid_and_format
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer0;platform;uuid;format"
         TIMEOUT 30
 )
@@ -205,6 +210,7 @@ layer0_require_staged_utils(test_layer0_abi_check)
 
 gtest_discover_tests(test_layer0_abi_check
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer0;platform;abi"
         TIMEOUT 30
 )

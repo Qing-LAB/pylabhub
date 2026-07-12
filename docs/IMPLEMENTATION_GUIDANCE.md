@@ -2285,6 +2285,74 @@ Per `docs/DOC_STRUCTURE.md §1.7` and `§2.2`:
 
 ---
 
+## Test Evidence Discipline (2026-07-12)
+
+**Applies to any test run or test failure investigation.**  A
+recurring failure mode in this project: a test fails, the
+investigator runs `ctest --rerun-failed`, it passes, the
+investigator says "flake" and moves on.  Meanwhile,
+`build/Testing/Temporary/LastTest.log` has been OVERWRITTEN by
+the rerun, destroying the failure evidence.  Real bugs get
+misclassified as flakes and stay latent for weeks.
+
+**Mandatory rules.**
+
+1. **Do not invoke `ctest` directly for test runs or reruns.**
+   Use the wrappers under `tools/`:
+   - `tools/ctest_evidence.sh` (Unix) / `tools/ctest_evidence.ps1`
+     (Windows) — every ctest sweep goes through this.  It backs
+     up `LastTest.log` + `LastTestsFailed.log` under
+     `build/Testing/logs/` with a timestamp BEFORE running ctest,
+     and forwards output to a timestamped `--output-log` file so
+     the failure record survives even under a subsequent rerun.
+   - `tools/rerun_failed_gated.sh run` (Unix) /
+     `rerun_failed_gated.ps1` (Windows) — MUST be used for
+     `--rerun-failed`.  It HARD-REFUSES to invoke ctest unless
+     the operator has recorded proof of reading the failure
+     evidence via `... read '<summary>'`.
+2. **Read the failure log BEFORE any rerun.**  `LastTest.log`,
+   the timestamped `build/Testing/logs/ctest-*.log`, and the
+   L4 fixture-preserved artifact dirs under
+   `build/stage-debug/test_artifacts/` are the primary sources.
+   Reruns overwrite `LastTest.log` — the backup under
+   `build/Testing/logs/` is what survives.
+3. **Never call a failure a "flake" without reading the log
+   and inspecting the preserved artifacts.**  A test that
+   passed-then-failed-then-passed with no read is a real bug of
+   unknown category, not a flake.  Every prior "flake" in this
+   project's history has been a real race, timing bug, or
+   resource-limit violation.
+4. **Guardrails ALWAYS run before other tests.**  Registered
+   via CMake `FIXTURES_SETUP Guardrails` +
+   `FIXTURES_REQUIRED Guardrails` on every layer's tests.  Any
+   `ctest -L <label>` or `-R <regex>` invocation auto-pulls
+   guardrails as prerequisites — cannot be silently bypassed.
+
+**Why this rule exists.**  The `feedback_no_flake_explanations`,
+`feedback_read_log_before_rerun`, and
+`feedback_persistent_test_artifacts` advisory memories exist to
+prevent exactly this reflex.  Advisory rules cannot gate the
+reflex.  The wrappers above ARE the gate: they refuse to execute
+the anti-pattern.  This rule codifies their mandatory status so
+new engineers (or a Claude Code session with a fresh context)
+adopt the discipline from the start.
+
+**Enforcement.**  Code review at the point where a test failure
+is discussed: verify the investigator used the wrappers, cited
+the specific log lines / artifact dir contents.  A comment like
+"looks like a flake, ignoring" without a log-line citation is a
+review reject.  A future CI job may also enforce this by
+requiring `build/Testing/logs/` to contain a fresh
+timestamped log for every CI run.
+
+**Cross-reference:** `docs/README/README_testing.md § "MANDATORY:
+use evidence-preserving wrappers, not raw ctest"` for the tool
+usage; auto-memory `feedback_read_log_before_rerun` +
+`feedback_no_flake_explanations` +
+`feedback_persistent_test_artifacts` for the discipline history.
+
+---
+
 ## REG Protocol Wire Discipline (HEP-CORE-0046)
 
 **Applies to any code touching a REG-family wire message**: `REG_REQ` /

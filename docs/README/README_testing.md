@@ -121,6 +121,54 @@ ctest --output-on-failure
 ctest -V
 ```
 
+### MANDATORY: use evidence-preserving wrappers, not raw ctest
+
+Raw `ctest` overwrites `build/Testing/Temporary/LastTest.log` on every
+invocation, including `--rerun-failed`.  A failing test that passes
+on rerun destroys the failure evidence.  This has caused real
+investigation dead-ends in this project — see
+`feedback_read_log_before_rerun` in the auto-memory system.
+
+**Use the wrapper scripts, not raw ctest:**
+
+| Task | Command |
+|---|---|
+| Full sweep (or filtered by `-L`, `-R`) | `tools/ctest_evidence.sh <ctest-args>` |
+| Rerun the last failure(s) | `tools/rerun_failed_gated.sh read '<summary>'` then `tools/rerun_failed_gated.sh run` |
+| Windows equivalents | `.ps1` mirrors under `tools/` |
+
+- `ctest_evidence.sh` (a) backs up the prior `LastTest.log` +
+  `LastTestsFailed.log` under `build/Testing/logs/` with a
+  timestamped filename BEFORE ctest runs; (b) adds
+  `--output-log <timestamped-path>` and `--output-on-failure` if
+  not already present; (c) prints where all preserved evidence
+  lives if ctest exits non-zero.
+- `rerun_failed_gated.sh` HARD-REFUSES to invoke
+  `ctest --rerun-failed` unless a marker file
+  `build/Testing/logs/.evidence-read` exists AND is newer than
+  the current `LastTest.log`.  The marker is created via
+  `rerun_failed_gated.sh read '<summary>'` which requires a
+  non-empty free-text summary of what the failure evidence
+  actually showed.  Rationale: the marker is a discipline gate
+  (not a proof), designed to interrupt the reflex "test failed →
+  rerun it" that repeatedly destroys evidence.
+
+**Rule (normative):** the anti-pattern is running `--rerun-failed`
+without first reading the failure evidence.  If the wrappers
+seem inconvenient, that's the point — the inconvenience is the
+gate.
+
+### Persistent test artifacts (L4 fixtures)
+
+L4 test fixtures preserve subprocess scratch dirs on failure or
+under `PLH_KEEP_TEST_ARTIFACTS=1`.  Locations:
+`build/stage-debug/test_artifacts/plh_hub_l4/` and
+`plh_role_l4/`.  Each `tmp("prefix")` call appends the created
+path to `<test_artifacts>/.pending_paths`; a subsequent test
+invocation's fixture setup scans that file for orphans left by a
+prior CRASH (fixture teardown never ran) and preserves them.
+See `plh_hub_fixture.h::make_tmp_dir` for the mechanism.
+
 ### Run Specific Test Suites
 
 ```bash

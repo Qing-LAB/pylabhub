@@ -44,6 +44,7 @@ layer1_require_staged_utils(test_layer1_spinlock)
 
 gtest_discover_tests(test_layer1_spinlock
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;guard;spinlock"
         TIMEOUT 120
 )
@@ -74,6 +75,7 @@ layer1_require_staged_utils(test_layer1_recursion_guard)
 
 gtest_discover_tests(test_layer1_recursion_guard
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;guard;recursion"
         TIMEOUT 30
 )
@@ -104,6 +106,7 @@ layer1_require_staged_utils(test_layer1_scope_guard)
 
 gtest_discover_tests(test_layer1_scope_guard
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;guard;scope"
         TIMEOUT 30
 )
@@ -134,6 +137,7 @@ layer1_require_staged_utils(test_layer1_format_tools)
 
 gtest_discover_tests(test_layer1_format_tools
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;format"
         TIMEOUT 30
 )
@@ -168,6 +172,7 @@ layer1_require_staged_utils(test_layer1_result)
 
 gtest_discover_tests(test_layer1_result
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;result"
         TIMEOUT 30
 )
@@ -198,6 +203,7 @@ layer1_require_staged_utils(test_layer1_backoff_strategy)
 
 gtest_discover_tests(test_layer1_backoff_strategy
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;backoff"
         TIMEOUT 30
 )
@@ -233,6 +239,7 @@ layer1_require_staged_utils(test_layer1_portable_atomic_shared_ptr)
 
 gtest_discover_tests(test_layer1_portable_atomic_shared_ptr
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;atomic;shared_ptr"
         TIMEOUT 30
 )
@@ -263,6 +270,7 @@ layer1_require_staged_utils(test_layer1_module_def)
 
 gtest_discover_tests(test_layer1_module_def
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;module"
         TIMEOUT 30
 )
@@ -293,6 +301,7 @@ layer1_require_staged_utils(test_layer1_debug_info)
 
 gtest_discover_tests(test_layer1_debug_info
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;debug"
         TIMEOUT 30
 )
@@ -329,6 +338,7 @@ layer1_require_staged_utils(test_layer1_periodic_task)
 
 gtest_discover_tests(test_layer1_periodic_task
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;base;periodic_task"
         TIMEOUT 30
 )
@@ -360,6 +370,7 @@ layer1_require_staged_utils(test_layer1_wire_envelope)
 
 gtest_discover_tests(test_layer1_wire_envelope
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;wire;envelope"
         TIMEOUT 30
 )
@@ -391,6 +402,7 @@ layer1_require_staged_utils(test_layer1_admission_gates)
 
 gtest_discover_tests(test_layer1_admission_gates
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;admission;gates"
         TIMEOUT 30
 )
@@ -422,6 +434,7 @@ layer1_require_staged_utils(test_layer1_reg_admission_pipeline)
 
 gtest_discover_tests(test_layer1_reg_admission_pipeline
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer1;admission;pipeline"
         TIMEOUT 30
 )

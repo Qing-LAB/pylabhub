@@ -52,6 +52,7 @@ layer2_require_staged_utils(test_layer2_framework_selftest)
 
 gtest_discover_tests(test_layer2_framework_selftest
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;framework;selftest;critical"
         TIMEOUT 60
 )
@@ -79,6 +80,7 @@ layer2_require_staged_utils(test_layer2_startup_config)
 
 gtest_discover_tests(test_layer2_startup_config
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;config;startup"
         TIMEOUT 30
 )
@@ -107,6 +109,7 @@ layer2_require_staged_utils(test_layer2_net_address)
 
 gtest_discover_tests(test_layer2_net_address
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;net"
         TIMEOUT 30
 )
@@ -149,6 +152,7 @@ layer2_require_staged_utils(test_layer2_zap_router)
 
 gtest_discover_tests(test_layer2_zap_router
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;zap_router"
         TIMEOUT 60
 )
@@ -188,6 +192,7 @@ layer2_require_staged_utils(test_layer2_key_store)
 
 gtest_discover_tests(test_layer2_key_store
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;key_store"
         TIMEOUT 60
 )
@@ -224,6 +229,7 @@ layer2_require_staged_utils(test_layer2_curve_test_fixtures)
 
 gtest_discover_tests(test_layer2_curve_test_fixtures
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;test_fixture;curve_test_setup"
         TIMEOUT 60
 )
@@ -260,6 +266,7 @@ layer2_require_staged_utils(test_layer2_zmq_queue_auth)
 
 gtest_discover_tests(test_layer2_zmq_queue_auth
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;zmq_queue;peer_admission"
         TIMEOUT 60
 )
@@ -302,6 +309,7 @@ layer2_require_staged_utils(test_layer2_known_roles)
 
 gtest_discover_tests(test_layer2_known_roles
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;known_roles"
         TIMEOUT 30
 )
@@ -334,6 +342,7 @@ layer2_require_staged_utils(test_layer2_build_flag_invariants)
 
 gtest_discover_tests(test_layer2_build_flag_invariants
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;build_flags"
         TIMEOUT 10
 )
@@ -395,12 +404,14 @@ layer2_require_staged_utils(test_layer2_role_reg_payload)
 
 gtest_discover_tests(test_layer2_role_reg_payload
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;role_reg_payload"
         TIMEOUT 10
 )
 
 gtest_discover_tests(test_layer2_curve_keypair
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;curve_keypair"
         TIMEOUT 10
 )
@@ -435,6 +446,7 @@ layer2_require_staged_utils(test_layer2_role_identity_policy)
 
 gtest_discover_tests(test_layer2_role_identity_policy
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;role_identity_policy"
         TIMEOUT 10
 )
@@ -471,6 +483,7 @@ layer2_require_staged_utils(test_layer2_shm_capability_channel)
 
 gtest_discover_tests(test_layer2_shm_capability_channel
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;shm_capability"
         TIMEOUT 10
 )
@@ -508,6 +521,7 @@ layer2_require_staged_utils(test_layer2_attach_protocol)
 
 gtest_discover_tests(test_layer2_attach_protocol
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;attach_protocol"
         TIMEOUT 30
 )
@@ -549,6 +563,7 @@ layer2_require_staged_utils(test_layer2_shm_attach_orchestrator)
 
 gtest_discover_tests(test_layer2_shm_attach_orchestrator
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;shm_attach_orchestrator"
         TIMEOUT 30
 )
@@ -588,6 +603,7 @@ layer2_require_staged_utils(test_layer2_data_block_fd_based)
 
 gtest_discover_tests(test_layer2_data_block_fd_based
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;shm;data_block;hep0041"
         TIMEOUT 30
 )
@@ -635,6 +651,7 @@ layer2_require_staged_utils(test_layer2_hub_queue_factory)
 
 gtest_discover_tests(test_layer2_hub_queue_factory
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;hep0017"
         TIMEOUT 30
 )
@@ -657,6 +674,7 @@ layer2_require_staged_utils(test_layer2_hub_shm_queue_capability)
 
 gtest_discover_tests(test_layer2_hub_shm_queue_capability
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;shm;hep0041"
         TIMEOUT 30
 )
@@ -697,6 +715,7 @@ layer2_require_staged_utils(test_layer2_hub_shm_queue_contract)
 
 gtest_discover_tests(test_layer2_hub_shm_queue_contract
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;shm;hep0041"
         TIMEOUT 30
 )
@@ -733,6 +752,7 @@ layer2_require_staged_utils(test_layer2_peer_admission)
 
 gtest_discover_tests(test_layer2_peer_admission
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;peer_admission"
         TIMEOUT 30
 )
@@ -767,6 +787,7 @@ layer2_require_staged_utils(test_layer2_key_file_acl)
 
 gtest_discover_tests(test_layer2_key_file_acl
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;security;key_file_acl"
         TIMEOUT 30
 )
@@ -798,6 +819,7 @@ layer2_require_staged_utils(test_layer2_naming)
 
 gtest_discover_tests(test_layer2_naming
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;naming"
         TIMEOUT 30
 )
@@ -829,6 +851,7 @@ layer2_require_staged_utils(test_layer2_hub_state)
 
 gtest_discover_tests(test_layer2_hub_state
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;hubstate"
         TIMEOUT 30
 )
@@ -859,6 +882,7 @@ layer2_require_staged_utils(test_layer2_hub_state_nonce_dedup)
 
 gtest_discover_tests(test_layer2_hub_state_nonce_dedup
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;hubstate;replay"
         TIMEOUT 30
 )
@@ -890,6 +914,7 @@ layer2_require_staged_utils(test_layer2_broker_reg_handler)
 
 gtest_discover_tests(test_layer2_broker_reg_handler
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;admission;pipeline"
         TIMEOUT 30
 )
@@ -925,6 +950,7 @@ layer2_require_staged_utils(test_layer2_hub_state_queries)
 
 gtest_discover_tests(test_layer2_hub_state_queries
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;hubstate;query_layer"
         TIMEOUT 30
 )
@@ -958,6 +984,7 @@ layer2_require_staged_utils(test_layer2_role_handler)
 
 gtest_discover_tests(test_layer2_role_handler
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;rolehandler"
         TIMEOUT 30
 )
@@ -991,6 +1018,7 @@ layer2_require_staged_utils(test_layer2_shared_memory_spinlock)
 
 gtest_discover_tests(test_layer2_shared_memory_spinlock
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;spinlock"
         TIMEOUT 30
 )
@@ -1029,6 +1057,7 @@ layer2_require_staged_utils(test_layer2_sms_primitives)
 
 gtest_discover_tests(test_layer2_sms_primitives
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;crypto;critical"
         TIMEOUT 60
 )
@@ -1064,6 +1093,7 @@ layer2_require_staged_utils(test_layer2_thread_manager_join_named)
 
 gtest_discover_tests(test_layer2_thread_manager_join_named
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;thread_manager"
         TIMEOUT 30
 )
@@ -1099,6 +1129,7 @@ layer2_require_staged_utils(test_layer2_thread_manager_active_loop)
 
 gtest_discover_tests(test_layer2_thread_manager_active_loop
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;thread_manager"
         TIMEOUT 30
 )
@@ -1130,6 +1161,7 @@ layer2_require_staged_utils(test_layer2_lifecycle)
 
 gtest_discover_tests(test_layer2_lifecycle
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;lifecycle"
         TIMEOUT 60
 )
@@ -1161,6 +1193,7 @@ layer2_require_staged_utils(test_layer2_lifecycle_dynamic)
 
 gtest_discover_tests(test_layer2_lifecycle_dynamic
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;lifecycle;dynamic"
         TIMEOUT 60
 )
@@ -1192,6 +1225,7 @@ layer2_require_staged_utils(test_layer2_filelock)
 
 gtest_discover_tests(test_layer2_filelock
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;filelock;multiprocess"
         TIMEOUT 120
 )
@@ -1224,6 +1258,7 @@ layer2_require_staged_utils(test_layer2_filelock_singleprocess)
 
 gtest_discover_tests(test_layer2_filelock_singleprocess
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;filelock;singleprocess"
         TIMEOUT 60
 )
@@ -1255,6 +1290,7 @@ layer2_require_staged_utils(test_layer2_logger)
 
 gtest_discover_tests(test_layer2_logger
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;logger"
         TIMEOUT 60
 )
@@ -1288,6 +1324,7 @@ layer2_require_staged_utils(test_layer2_jsonconfig)
 
 gtest_discover_tests(test_layer2_jsonconfig
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;jsonconfig"
         TIMEOUT 60
 )
@@ -1318,6 +1355,7 @@ layer2_require_staged_utils(test_layer2_hub_vault)
 
 gtest_discover_tests(test_layer2_hub_vault
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;vault;security"
         TIMEOUT 120
 )
@@ -1350,6 +1388,7 @@ layer2_require_staged_utils(test_layer2_role_vault)
 
 gtest_discover_tests(test_layer2_role_vault
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;vault;security"
         TIMEOUT 120
 )
@@ -1384,6 +1423,7 @@ layer2_require_staged_utils(test_layer2_zmq_context)
 
 gtest_discover_tests(test_layer2_zmq_context
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;zmq"
         TIMEOUT 30
 )
@@ -1413,6 +1453,7 @@ layer2_require_staged_utils(test_layer2_uid_utils)
 
 gtest_discover_tests(test_layer2_uid_utils
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;uid"
         TIMEOUT 30
 )
@@ -1445,6 +1486,7 @@ layer2_require_staged_utils(test_layer2_interactive_signal_handler)
 
 gtest_discover_tests(test_layer2_interactive_signal_handler
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;signal"
         TIMEOUT 30
 )
@@ -1482,6 +1524,7 @@ layer2_require_staged_utils(test_layer2_slot_view_helpers)
 
 gtest_discover_tests(test_layer2_slot_view_helpers
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;scripting;slotview"
         TIMEOUT 60
 )
@@ -1511,6 +1554,7 @@ layer2_require_staged_utils(test_layer2_role_directory)
 
 gtest_discover_tests(test_layer2_role_directory
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;role_directory"
         TIMEOUT 30
 )
@@ -1541,6 +1585,7 @@ layer2_require_staged_utils(test_layer2_hub_directory)
 
 gtest_discover_tests(test_layer2_hub_directory
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;hub_directory"
         TIMEOUT 30
 )
@@ -1629,7 +1674,7 @@ pylabhub_register_test_for_staging(
     TARGET test_layer2_role_cli SUITE_NAME "Layer2_RoleCli")
 layer2_require_staged_utils(test_layer2_role_cli)
 gtest_discover_tests(test_layer2_role_cli
-    PROPERTIES LABELS "layer2;service;role_cli" TIMEOUT 30)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_cli" TIMEOUT 30)
 
 # ============================================================================
 # Test: hub_cli::parse_hub_args + ParseResult (HEP-CORE-0033 §15 Phase 2)
@@ -1643,7 +1688,7 @@ pylabhub_register_test_for_staging(
     TARGET test_layer2_hub_cli SUITE_NAME "Layer2_HubCli")
 layer2_require_staged_utils(test_layer2_hub_cli)
 gtest_discover_tests(test_layer2_hub_cli
-    PROPERTIES LABELS "layer2;service;hub_cli" TIMEOUT 30)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;hub_cli" TIMEOUT 30)
 
 # ============================================================================
 # Test: RoleRegistry + RuntimeBuilder
@@ -1657,7 +1702,7 @@ pylabhub_register_test_for_staging(
     TARGET test_layer2_role_registry SUITE_NAME "Layer2_RoleRegistry")
 layer2_require_staged_utils(test_layer2_role_registry)
 gtest_discover_tests(test_layer2_role_registry
-    PROPERTIES LABELS "layer2;service;role_registry" TIMEOUT 30)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_registry" TIMEOUT 30)
 
 # ============================================================================
 # Test: make_engine_from_script_config (scripting layer helper)
@@ -1680,7 +1725,7 @@ pylabhub_register_test_for_staging(
     TARGET test_layer2_engine_factory SUITE_NAME "Layer2_EngineFactory")
 layer2_require_staged_utils(test_layer2_engine_factory)
 gtest_discover_tests(test_layer2_engine_factory
-    PROPERTIES LABELS "layer2;service;engine_factory" TIMEOUT 30)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;engine_factory" TIMEOUT 30)
 
 # ============================================================================
 # Test: RoleDirectory::init_directory with LogInitOverrides across 3 roles
@@ -1699,7 +1744,7 @@ pylabhub_register_test_for_staging(
     SUITE_NAME "Layer2_RoleInitDirectory")
 layer2_require_staged_utils(test_layer2_role_init_directory)
 gtest_discover_tests(test_layer2_role_init_directory
-    PROPERTIES LABELS "layer2;service;role_init_directory" TIMEOUT 60)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_init_directory" TIMEOUT 60)
 
 # ============================================================================
 # Test: config→opts translation round-trip (closes TODO #83 / N1)
@@ -1727,7 +1772,7 @@ pylabhub_register_test_for_staging(
     SUITE_NAME "Layer2_SetupInfrastructureTranslation")
 layer2_require_staged_utils(test_layer2_setup_infrastructure_translation)
 gtest_discover_tests(test_layer2_setup_infrastructure_translation
-    PROPERTIES LABELS "layer2;service;setup_infrastructure_translation"
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;setup_infrastructure_translation"
                TIMEOUT 60)
 
 # ============================================================================
@@ -1757,7 +1802,7 @@ pylabhub_register_test_for_staging(
     SUITE_NAME "Layer2_RoleLoggingRoundtrip")
 layer2_require_staged_utils(test_layer2_role_logging_roundtrip)
 gtest_discover_tests(test_layer2_role_logging_roundtrip
-    PROPERTIES LABELS "layer2;service;role_logging_roundtrip" TIMEOUT 60)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_logging_roundtrip" TIMEOUT 60)
 
 # ============================================================================
 # Test: configure_logger_from_config — auto-path, rotation params, errors
@@ -1783,7 +1828,7 @@ pylabhub_register_test_for_staging(
     SUITE_NAME "Layer2_ConfigureLogger")
 layer2_require_staged_utils(test_layer2_configure_logger)
 gtest_discover_tests(test_layer2_configure_logger
-    PROPERTIES LABELS "layer2;service;configure_logger" TIMEOUT 60)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;configure_logger" TIMEOUT 60)
 
 # ============================================================================
 # Test: RoleHostBase lifecycle (Pattern 3 — spawned workers + panic/abort)
@@ -1810,7 +1855,7 @@ pylabhub_register_test_for_staging(
     SUITE_NAME "Layer2_RoleHostBase")
 layer2_require_staged_utils(test_layer2_role_host_base)
 gtest_discover_tests(test_layer2_role_host_base
-    PROPERTIES LABELS "layer2;service;role_host_base" TIMEOUT 60)
+    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_host_base" TIMEOUT 60)
 
 # ============================================================================
 # Test: LoopTimingPolicy (pure header-only API)
@@ -1837,6 +1882,7 @@ layer2_require_staged_utils(test_layer2_loop_timing_policy)
 
 gtest_discover_tests(test_layer2_loop_timing_policy
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;loop_timing"
         TIMEOUT 30
 )
@@ -1874,6 +1920,7 @@ layer2_require_staged_utils(test_layer2_lua_engine)
 
 gtest_discover_tests(test_layer2_lua_engine
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;scripting;lua;engine"
         TIMEOUT 30
 )
@@ -1911,6 +1958,7 @@ layer2_require_staged_utils(test_layer2_python_engine)
 
 gtest_discover_tests(test_layer2_python_engine
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;scripting;python;engine"
         TIMEOUT 60
 )
@@ -1985,6 +2033,7 @@ pylabhub_register_test_for_staging(
 layer2_require_staged_utils(test_layer2_scriptengine_native_dylib)
 gtest_discover_tests(test_layer2_scriptengine_native_dylib
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;scripting;native;engine"
         TIMEOUT 60
 )
@@ -2026,6 +2075,7 @@ layer2_require_staged_utils(test_layer2_slot_rw_coordinator)
 
 gtest_discover_tests(test_layer2_slot_rw_coordinator
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;slotrw"
         TIMEOUT 60
 )
@@ -2056,6 +2106,7 @@ layer2_require_staged_utils(test_layer2_role_host_core)
 
 gtest_discover_tests(test_layer2_role_host_core
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;scripting"
         TIMEOUT 30
 )
@@ -2086,6 +2137,7 @@ layer2_require_staged_utils(test_layer2_hub_api)
 
 gtest_discover_tests(test_layer2_hub_api
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;hub_api"
         TIMEOUT 30
 )
@@ -2117,6 +2169,7 @@ layer2_require_staged_utils(test_layer2_log_capture_fixture)
 
 gtest_discover_tests(test_layer2_log_capture_fixture
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;test_framework;log_capture"
         TIMEOUT 30
 )
@@ -2158,6 +2211,7 @@ layer2_require_staged_utils(test_layer2_zmq_poll_loop)
 
 gtest_discover_tests(test_layer2_zmq_poll_loop
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;scripting;zmq_poll_loop"
         TIMEOUT 30
 )
@@ -2191,6 +2245,7 @@ layer2_require_staged_utils(test_layer2_role_config)
 
 gtest_discover_tests(test_layer2_role_config
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;config"
         TIMEOUT 30
 )
@@ -2224,6 +2279,7 @@ layer2_require_staged_utils(test_layer2_hub_config)
 
 gtest_discover_tests(test_layer2_hub_config
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;config"
         TIMEOUT 30
 )
@@ -2253,6 +2309,7 @@ layer2_require_staged_utils(test_layer2_schema_validation)
 
 gtest_discover_tests(test_layer2_schema_validation
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;schema"
         TIMEOUT 30
 )
@@ -2282,6 +2339,7 @@ layer2_require_staged_utils(test_layer2_engine_module_params)
 
 gtest_discover_tests(test_layer2_engine_module_params
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;engine_module_params"
         TIMEOUT 30
 )
@@ -2326,6 +2384,7 @@ layer2_require_staged_utils(test_layer2_metrics_api)
 
 gtest_discover_tests(test_layer2_metrics_api
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;metrics"
         TIMEOUT 60
     DISCOVERY_TIMEOUT 60
@@ -2362,6 +2421,7 @@ layer2_require_staged_utils(test_layer2_role_data_loop)
 
 gtest_discover_tests(test_layer2_role_data_loop
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;dataloop"
         TIMEOUT 30
 )
@@ -2399,6 +2459,7 @@ layer2_require_staged_utils(test_layer2_hub_zmq_queue)
 
 gtest_discover_tests(test_layer2_hub_zmq_queue
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;zmq_queue"
         TIMEOUT 60
 )
@@ -2440,6 +2501,7 @@ layer2_require_staged_utils(test_layer2_dispatch_notifications)
 
 gtest_discover_tests(test_layer2_dispatch_notifications
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;notifications"
         TIMEOUT 30
 )

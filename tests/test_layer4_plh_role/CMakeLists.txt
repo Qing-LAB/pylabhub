@@ -52,6 +52,7 @@ pylabhub_register_test_for_staging(TARGET test_layer4_plh_role)
 
 gtest_discover_tests(test_layer4_plh_role
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer4;plh_role"
         TIMEOUT 120
     DISCOVERY_TIMEOUT 60
