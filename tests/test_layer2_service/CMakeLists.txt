@@ -888,6 +888,40 @@ gtest_discover_tests(test_layer2_hub_state_nonce_dedup
 )
 
 # ============================================================================
+# Test: Wire adapter round-trip (HEP-CORE-0046 Phase B Tier 1) — proves
+# semantic equivalence between current-shape JSON payloads and encoded+
+# decoded wire multiparts, so Tier 2 can swap the wire path with
+# confidence that legacy handlers see the same body they see today.
+# ============================================================================
+
+add_executable(test_layer2_wire_adapter_roundtrip
+    test_wire_adapter_roundtrip.cpp
+)
+
+target_link_libraries(test_layer2_wire_adapter_roundtrip
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_wire_adapter_roundtrip)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_wire_adapter_roundtrip
+    SUITE_NAME "Layer2_WireAdapterRoundtrip"
+)
+layer2_require_staged_utils(test_layer2_wire_adapter_roundtrip)
+
+gtest_discover_tests(test_layer2_wire_adapter_roundtrip
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer2;service;wire;adapter;hep0046"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: BrokerRegHandler — pipeline integrated with real HubState
 # ============================================================================
 

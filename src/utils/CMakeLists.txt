@@ -103,6 +103,7 @@ set(UTILS_SOURCES
   network_comm/zmq_context.cpp
   network_comm/wire_envelope.cpp
   network_comm/wire_bodies.cpp
+  network_comm/wire_adapter.cpp
   network_comm/broker_request_comm.cpp
 
   # --- ipc: broker service, hub state aggregate, admin RPC, admission gates ---
