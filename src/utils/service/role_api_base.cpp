@@ -1305,8 +1305,15 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // and their pubkeys flow in via CHANNEL_AUTH_CHANGED_NOTIFY.
             // The queue transitions to Active with an empty allowlist
             // (deny-all default); each admitted producer adds a peer.
+            //
+            // "Am I binding?" answered by the queue's own
+            // `binding_role_type()` accessor (non-empty iff binding),
+            // per HEP-CORE-0036 §I9.1 (callers MUST NOT branch on
+            // the raw `is_binding_side()` predicate; use the queue-
+            // owned side-identity accessor instead).
             if (admitted_producers.empty() &&
-                !(pImpl->rx_queue && pImpl->rx_queue->is_binding_side()))
+                !(pImpl->rx_queue &&
+                  !pImpl->rx_queue->binding_role_type().empty()))
             {
                 LOGGER_WARN(
                     "[{}] apply_consumer_reg_ack: ZERO producers admitted"
@@ -1443,9 +1450,15 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // publish the actual endpoint to the broker so producers'
         // subsequent REG_ACK.initial_allowlist carries a real
         // dial-target.  Non-binding consumers (fan-out / one-to-one
-        // dial side) skip: is_binding_side() returns false, or
-        // actual_endpoint() returns empty.
-        if (pImpl->rx_queue && pImpl->rx_queue->is_binding_side())
+        // dial side) skip: `binding_role_type()` is empty, or
+        // `actual_endpoint()` returns empty.
+        //
+        // Uses the queue's own side-identity accessor per
+        // HEP-CORE-0036 §I9.1 (no direct branch on
+        // `is_binding_side()` — that raw predicate exists for
+        // logging only under the locality invariant).
+        if (pImpl->rx_queue &&
+            !pImpl->rx_queue->binding_role_type().empty())
         {
             const std::string ep = pImpl->rx_queue->actual_endpoint();
             if (!ep.empty())
