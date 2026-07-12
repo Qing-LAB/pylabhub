@@ -75,8 +75,6 @@ sites in HEP-CORE-0007, -0017, -0021, -0033, -0035, -0036, -0042.
 
 ---
 
-# REG/REG_ACK protocol redesign — post-abstraction cleanup
-
 ## 0. Why this document exists
 
 The queue abstraction (HEP-CORE-0017 §3.3.0) settled a load-bearing

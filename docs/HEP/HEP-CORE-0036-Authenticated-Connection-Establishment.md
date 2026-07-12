@@ -2853,12 +2853,13 @@ its data loop exit normally.
 
 ## 5b. Canonical wire schema & in-process structures (NORMATIVE — single standard)
 
-> **Design authority note.**  A whole-protocol redesign of REG_REQ /
+> **Design authority note.**  The whole-protocol redesign of REG_REQ /
 > REG_ACK / CONSUMER_REG_REQ / CONSUMER_REG_ACK + the auth-refresh
-> chain (§6.5) sits DESIGN LOCKED in
-> `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md`.  Reflects the
-> queue abstraction (HEP-CORE-0017 §3.3.0) — single endpoint per
-> channel owned by the topology-declared binding side, unified
+> chain (§6.5) is authoritatively specified in **HEP-CORE-0046 REG
+> Protocol Redesign** (promoted 2026-07-12 from
+> `DRAFT_reg_ack_protocol_redesign.md`).  Reflects the queue
+> abstraction (HEP-CORE-0017 §3.3.0) — single endpoint per channel
+> owned by the topology-declared binding side, unified
 > `initial_allowlist` field on REG_ACK, symmetric R6 gate,
 > topology-driven target dispatch on `CHANNEL_AUTH_CHANGED_NOTIFY`.
 > Retires `CONSUMER_ATTACH_REQ_ZMQ` / `CONSUMER_ATTACH_ACK_ZMQ` and
@@ -3518,10 +3519,11 @@ survives.  See §14.1 for the HEP-0021 update list.
 ### 6.5 Channel-state synchronization (notify-then-pull)
 
 > **Design authority note.**  The full REG_REQ + REG_ACK + notify-
-> then-pull redesign sits DESIGN LOCKED in
-> `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md`.  Its §7.2
-> replaces the pre-topology "producer-Live gate" with a symmetric
-> R6 that pends on four topology-agnostic conditions:
+> then-pull redesign is authoritatively specified in **HEP-CORE-0046
+> REG Protocol Redesign** (promoted 2026-07-12 from
+> `DRAFT_reg_ack_protocol_redesign.md`).  Its §7.2 replaces the
+> pre-topology "producer-Live gate" with a symmetric R6 that pends
+> on four topology-agnostic conditions:
 > `awaiting_channel_created`, `awaiting_binding_side_live`,
 > `awaiting_endpoint_resolved`, `awaiting_allowlist_confirmed`.  Its
 > §8.1 introduces four load-bearing invariants (I-ROUTER-SERIAL,

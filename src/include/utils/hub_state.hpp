@@ -1653,7 +1653,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     producer_instance(const std::string &producer_role_uid) const;
 
     /// I-REPLAY-BOUND anti-replay dedup for REG-family messages
-    /// (DRAFT_reg_ack_protocol_redesign.md §8.1).  Records the
+    /// (HEP-CORE-0046 §8.1).  Records the
     /// `(role_uid, client_nonce)` pair against a sliding window.
     /// Returns:
     ///   - true  = nonce is fresh (recorded; caller proceeds with

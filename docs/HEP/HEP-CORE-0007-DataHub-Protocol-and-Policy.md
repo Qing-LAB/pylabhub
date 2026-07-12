@@ -695,12 +695,15 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 > unified `initial_allowlist` field that consolidates the
 > dialing-side `data_endpoint` + `data_pubkey` scalars and the
 > retired `producers[]` array into a single topology-driven
-> peer-list — sits DESIGN LOCKED in
-> `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md`.  Also retires
+> peer-list — is authoritatively specified in
+> **HEP-CORE-0046 REG Protocol Redesign** (promoted 2026-07-12
+> from `DRAFT_reg_ack_protocol_redesign.md`).  Also retires
 > `CONSUMER_ATTACH_REQ_ZMQ` / `CONSUMER_ATTACH_ACK_ZMQ` from this
-> catalog.  Wire schema body updates below adopt the redesigned
-> shape when the code retirement lands; until that commit, the
-> draft is the current design source of truth.
+> catalog per HEP-CORE-0046 §3.  Wire schema body updates below
+> adopt the redesigned shape when the code retirement lands
+> (HEP-CORE-0046 Phase D); until that commit, HEP-CORE-0046 is
+> the design source of truth for the target shape and this
+> catalog remains accurate for the shipped shape.
 
 > **Amendment (2026-07-08) — topology migration.**  Every
 > `REG_REQ` / `CONSUMER_REG_REQ` gains an OPTIONAL `channel_topology`

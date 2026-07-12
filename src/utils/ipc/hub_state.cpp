@@ -180,7 +180,7 @@ struct HubState::Impl
     /// the existing `mu`).
     std::unordered_map<std::string, std::uint64_t> producer_instance;
 
-    // I-REPLAY-BOUND (DRAFT_reg_ack_protocol_redesign.md §8.1).  Per-role
+    // I-REPLAY-BOUND (HEP-CORE-0046 §8.1).  Per-role
     // sliding-window dedup for REG-family client_nonces.  Entries older
     // than `nonce_seen()`'s `window_ms` argument are pruned on the next
     // `nonce_seen()` call for the same role_uid.  Prune-on-access is

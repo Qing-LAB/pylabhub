@@ -591,7 +591,7 @@ bool BrokerRequestComm::connect(const Config &cfg)
                 pImpl->dealer->set(zmq::sockopt::curve_secretkey, sec);
             });
 
-        // I-DEALER-IDENTITY (DRAFT_reg_ack_protocol_redesign.md §8.1):
+        // I-DEALER-IDENTITY (HEP-CORE-0046 §8.1):
         //   the DEALER MUST set ZMQ_ROUTING_ID to its owning role's
         //   role_uid before connect().  Without this, libzmq assigns
         //   a rand()-derived 5-byte identity that collides across
