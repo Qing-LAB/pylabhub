@@ -160,10 +160,12 @@ constexpr std::array<std::string_view, 21> kRequestReplyTypes = {
     "CHANNEL_AUTH_APPLIED_REQ",
     // Dialing-side role asks the broker "is the binding-side ZAP
     // allowlist populated with my pubkey, i.e., will my next CURVE
-    // handshake succeed?".  Read-only against HubState —
-    // `ChannelAccessEntry.binding_side_confirmed_allowlist` is
-    // consulted.  Used by the fan-in producer between REG_ACK apply
-    // and `socket.connect()`.  See HEP-CORE-0036 §6.6.3.
+    // handshake succeed?".  Read-only against HubState — resolved via
+    // `HubState::is_pubkey_visible_to(chan, binding_role_uid, pk)`
+    // which delegates to the channel's `VersionedAdmissionLedger`
+    // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  Used by the fan-in
+    // producer between REG_ACK apply and `socket.connect()`.
+    // See HEP-CORE-0036 §6.6.3.
     "CHECK_PEER_READY_REQ",
 };
 
@@ -684,10 +686,12 @@ public:
                                           const nlohmann::json& req);
 
     /// `GET_CHANNEL_AUTH_REQ` handler (HEP-CORE-0036 §6.5).  Returns
-    /// the channel's current `authorized_consumer_pubkeys` allowlist
-    /// to a producer that asks.  Errors: `CHANNEL_NOT_FOUND` (channel
-    /// does not exist), `PRODUCER_NOT_AUTHORIZED` (caller's role_uid
-    /// is not a registered producer of the named channel).
+    /// the channel's currently-admitted pubkey set (sourced from
+    /// `ChannelAccessEntry::ledger` per HEP-CORE-0042 §5.5.2 unified
+    /// 2026-07-13) to a producer that asks.  Errors:
+    /// `CHANNEL_NOT_FOUND` (channel does not exist),
+    /// `PRODUCER_NOT_AUTHORIZED` (caller's role_uid is not a
+    /// registered producer of the named channel).
     /// Defence-in-depth: never return another channel's allowlist to a
     /// non-producer caller.
     nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
@@ -781,9 +785,11 @@ public:
     /// NOT_A_ROLE_OF_CHANNEL otherwise.  Under the operational
     /// semantics the binding-side role never legitimately calls this
     /// wire — the message names the topology mismatch when it does.
-    /// Membership check: caller's pubkey ∈
-    /// `binding_side_confirmed_allowlist` (populated via the
-    /// extended CHANNEL_AUTH_APPLIED_REQ consumer branch).
+    /// Visibility check delegates to
+    /// `HubState::is_pubkey_visible_to(chan, binding_role_uid, pk)`
+    /// which queries the channel's `VersionedAdmissionLedger`
+    /// (HEP-CORE-0042 §5.5.2 unified 2026-07-13
+    /// INVARIANT-BIND-CONFIRM-2).
     nlohmann::json handle_check_peer_ready_req(
         const nlohmann::json      &req,
         const zmq::message_t      &identity);
@@ -1704,7 +1710,8 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         // HEP-CORE-0036 §6.6.3.  Dialing-side role pulls its
         // readiness state before initiating the CURVE handshake.
         // Read-only query against
-        // `ChannelAccessEntry.binding_side_confirmed_allowlist`.
+        // `ChannelAccessEntry.ledger` via `is_pubkey_visible_to`
+        // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).
         nlohmann::json resp = handle_check_peer_ready_req(payload,
                                                            identity);
         const std::string status = resp.value("status", "");
@@ -2694,7 +2701,18 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             entry["endpoint"]   = *ch_snapshot->data_endpoint;
             entry["pubkey_z85"] = ch_snapshot->consumers.front().zmq_pubkey;
             allowlist.push_back(std::move(entry));
-            snapshot_version = ch_snapshot->channel_version;
+            // Source snapshot_version from the ledger, not the retired
+            // `ChannelEntry.channel_version` field (dead pre-2026-07-13,
+            // always 0).  Under fan-in the producer is DIALING so it
+            // does not own a ZAP allowlist to install; the returned
+            // version is still meaningful — it lets the producer
+            // correlate the received endpoint/pubkey pair with the
+            // channel's admission-state generation.
+            if (auto access = hub_state_->channel_access(channel_name);
+                access.has_value())
+            {
+                snapshot_version = access->ledger.current_version();
+            }
         }
         // else: consumer hasn't fully published yet.  Emit empty
         // allowlist; producer's queue stays in Standby until a
@@ -2705,13 +2723,16 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     else if (auto access = hub_state_->channel_access(channel_name);
              access.has_value())
     {
-        for (const auto &pk : access->authorized_consumer_pubkeys)
-        {
-            nlohmann::json entry;
-            entry["pubkey_z85"] = pk;
-            allowlist.push_back(std::move(entry));
-        }
-        snapshot_version = access->channel_version;
+        // for_each_admitted avoids the per-request vector allocation
+        // that `admitted_snapshot()` would incur — this is a hot wire
+        // path (every producer REG_ACK).
+        access->ledger.for_each_admitted(
+            [&](const std::string &pk) {
+                nlohmann::json entry;
+                entry["pubkey_z85"] = pk;
+                allowlist.push_back(std::move(entry));
+            });
+        snapshot_version = access->ledger.current_version();
     }
     resp["initial_allowlist"] = std::move(allowlist);
 
@@ -2758,15 +2779,16 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         ch.has_value() &&
         ch->topology == pylabhub::hub::ChannelTopology::FanIn)
     {
-        // Add producer's pubkey to the channel-scope allowlist.
-        // The `_on_consumer_authorized` name is a pre-topology
-        // misnomer — the underlying set (`ChannelAccessEntry
-        // ::authorized_consumer_pubkeys`) is topology-agnostic:
-        // it holds "pubkeys admitted to the binding side's ZAP
-        // allowlist."  Under fan-out / one-to-one those are
-        // consumers; under fan-in they are producers.  Bumps
-        // channel_version so the consumer's follow-up
-        // GET_CHANNEL_AUTH_REQ pulls the new pubkey.
+        // Admit producer's pubkey into the channel's unified ledger
+        // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  The
+        // `_on_consumer_authorized` name is a pre-topology misnomer
+        // — the underlying primitive (`ledger.admit`) is topology-
+        // agnostic: it holds "pubkeys admitted to the binding side's
+        // ZAP allowlist."  Under fan-out / one-to-one those are
+        // consumers; under fan-in they are producers.  Advances the
+        // ledger's `current_version_` so the consumer's follow-up
+        // GET_CHANNEL_AUTH_REQ pulls the new pubkey with an updated
+        // `snapshot_version`.
         hub_state_->_on_consumer_authorized(channel_name, producer_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
                                            /*phase=*/"admitted",
@@ -3582,9 +3604,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //     Producer(s) bind and run ZAP as server; their ZAP allowlist
     //     needs this new consumer's pubkey.  Add + notify producers.
     //   - Fan-in: the consumer is the binding side.  The
-    //     `ChannelAccessEntry.authorized_consumer_pubkeys` set holds
-    //     producer pubkeys (topology-agnostic name; see the mirror
-    //     comment in the fan-in branch of handle_reg_req).  Adding
+    //     `ChannelAccessEntry.ledger` (HEP-CORE-0042 §5.5.2 unified
+    //     2026-07-13) holds producer pubkeys admitted for the binding
+    //     consumer's ZAP; see the mirror comment in the fan-in branch
+    //     of handle_reg_req.  Adding
     //     the consumer's own pubkey here would insert self into its
     //     own ZAP allowlist and — worse — inflate every subsequent
     //     `admitted_peers_count(channel)` reading on the loop-ready
@@ -3943,10 +3966,10 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     // `known_roles` view, not via this ACK).  Earlier 2026-06-10
     // `{role_uid, pubkey}` shape retired; see AUTH_TODO sub-6.1.
     nlohmann::json allowlist_arr = nlohmann::json::array();
-    for (const auto &pk : access->authorized_consumer_pubkeys)
-    {
-        allowlist_arr.push_back(pk);
-    }
+    access->ledger.for_each_admitted(
+        [&](const std::string &pk) {
+            allowlist_arr.push_back(pk);
+        });
     resp["allowlist"] = std::move(allowlist_arr);
 
     // HEP-CORE-0042 §5.5.4: GET_CHANNEL_AUTH_ACK echoes
@@ -3957,10 +3980,10 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     // snapshot_version` so the broker can advance
     // confirmed_version[K][P] and drain any pending attach requests
     // waiting for this producer to catch up (§5.4 wait-path).
-    // Reading `access->channel_version` here reflects the same
+    // Reading `access->ledger.current_version()` here reflects the same
     // snapshot as the allowlist copy above (single-threaded ROUTER
     // dispatch context, no interleaved writer).
-    resp["snapshot_version"] = access->channel_version;
+    resp["snapshot_version"] = access->ledger.current_version();
     return resp;
 }
 
@@ -4066,8 +4089,7 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     }
 
     const bool authorized =
-        access->authorized_consumer_pubkeys.find(consumer_pubkey) !=
-        access->authorized_consumer_pubkeys.end();
+        access->ledger.admission_version_of(consumer_pubkey).has_value();
 
     nlohmann::json resp;
     resp["channel_name"]    = channel_name;
@@ -4176,7 +4198,19 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         return resp;
     };
 
-    // Step 2: consumer's pubkey must be in the channel allowlist.
+    // Step 2: consumer's pubkey must be in the channel allowlist —
+    // BUT ONLY under fan-out / one-to-one, where the consumer is the
+    // DIALING side and therefore needs an admission entry the binding
+    // producer's ZAP will honour.  Under FAN-IN the consumer IS the
+    // binding side (it owns the ZAP allowlist itself); its own pubkey
+    // is not — and MUST NOT be — in the channel's admitted-set (which
+    // under fan-in holds the dialing-side producer pubkeys, per the
+    // topology-agnostic ledger contract at hub_state.hpp).  Applying
+    // the fan-out admission check under fan-in would always deny
+    // `consumer_not_in_channel_allowlist` — pinned by
+    // `Pattern4AttachCoordinationTest.WaitPathDrainOnProducerDisconnect`
+    // which exercises the wait-path drain of ATTACH_REQ_ZMQ enqueue-
+    // then-DEREG under fan-in.
     auto access = hub_state_->channel_access(channel_name);
     if (!access.has_value())
     {
@@ -4184,8 +4218,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         // "consumer not in allowlist" for the caller — deny per §5.4.
         return make_denied("consumer_not_in_channel_allowlist");
     }
-    if (access->authorized_consumer_pubkeys.find(consumer_pubkey) ==
-        access->authorized_consumer_pubkeys.end())
+    auto ch = hub_state_->channel(channel_name);
+    if (!ch.has_value()) return make_denied("producer_not_live");
+    const bool is_fan_in =
+        (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
+    if (!is_fan_in &&
+        !access->ledger.admission_version_of(consumer_pubkey).has_value())
     {
         return make_denied("consumer_not_in_channel_allowlist");
     }
@@ -4200,8 +4238,6 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // presence-state-aware "Connected+first_heartbeat_seen" gating (finer
     // than reap-based), Phase 2.3 will wire in the snapshot-lookup pattern
     // used by handle_discover_channel_req.
-    auto ch = hub_state_->channel(channel_name);
-    if (!ch.has_value()) return make_denied("producer_not_live");
     bool        producer_registered = false;
     std::string producer_zmq_identity;
     for (const auto &prod : ch->producers)
@@ -4220,19 +4256,18 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
 
     // Step 4: fast-path check — is producer P caught up to the current
     // allowlist version?
-    std::uint64_t confirmed = 0;
-    auto pit = access->confirmed_version_per_producer.find(producer_role_uid);
-    if (pit != access->confirmed_version_per_producer.end())
-        confirmed = pit->second;
+    const std::uint64_t confirmed =
+        access->ledger.confirmed_version_of(producer_role_uid).value_or(0);
+    const std::uint64_t channel_version = access->ledger.current_version();
 
-    if (confirmed >= access->channel_version)
+    if (confirmed >= channel_version)
     {
         LOGGER_DEBUG(
             "[broker] event=AttachReqZmqFastPath channel='{}' "
             "producer_uid='{}' consumer_uid='{}' confirmed_version={} "
             "channel_version={} (HEP-CORE-0042 §5.4 fast-path admit)",
             channel_name, producer_role_uid, consumer_role_uid,
-            confirmed, access->channel_version);
+            confirmed, channel_version);
         nlohmann::json resp;
         resp["status"]            = "success";
         resp["channel_name"]      = channel_name;
@@ -4280,7 +4315,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     entry.correlation_id    = corr_id;
     entry.consumer_pubkey   = consumer_pubkey;
     entry.consumer_role_uid = consumer_role_uid;
-    entry.target_version    = access->channel_version;
+    entry.target_version    = channel_version;
     entry.enqueued_at       = std::chrono::steady_clock::now();
     pending_attach_queue_[channel_name][producer_role_uid]
         .push_back(std::move(entry));
@@ -4291,7 +4326,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         "confirmed_version={} queue_depth={} (HEP-CORE-0042 §5.4 wait-path; "
         "firing CHANNEL_AUTH_CHANGED_NOTIFY doorbell)",
         channel_name, producer_role_uid, consumer_role_uid, consumer_pubkey,
-        access->channel_version, confirmed,
+        channel_version, confirmed,
         pending_attach_queue_[channel_name][producer_role_uid].size());
 
     // Targeted doorbell to producer P only — HEP-CORE-0042 §5.4 step 5b.
@@ -4311,7 +4346,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         // bump (the consumer that just registered).
         nlohmann::json notify;
         notify["channel_name"]    = channel_name;
-        notify["channel_version"] = access->channel_version;
+        notify["channel_version"] = channel_version;
         notify["role_uid"]        = consumer_role_uid;
         notify["role_type"]       = "consumer";
         notify["phase"]           = "admitted";
@@ -4385,25 +4420,69 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
                           "producer_role_uid)");
     }
 
+    // HEP-CORE-0042 §5.5.2 registration guard (Agent-2 review finding
+    // 2026-07-13).  The wire's `role_uid` is client-supplied — any
+    // authenticated peer could otherwise poison ANOTHER role's
+    // confirmed_version and, combined with the ledger clamp, still
+    // achieve a "confirm at max issued version" for a role that has
+    // done no work.  Verify via HubState's shared registration primitive
+    // that `role_uid` is currently registered on `channel_name` in the
+    // appropriate role_type before advancing the ledger.  A wire that
+    // identifies a channel/role pair the broker has no admission
+    // record for is a wire-protocol violation, not a transient race —
+    // hard-error the request.
+    if (!hub_state_->channel(channel_name).has_value())
+    {
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "CHANNEL_AUTH_APPLIED_REQ for channel '" +
+                              channel_name + "' — no such channel");
+    }
+    if (!hub_state_->is_role_registered_on_channel(channel_name, role_uid,
+                                                     role_type))
+    {
+        LOGGER_WARN(
+            "[broker] event=ChannelAuthAppliedNotARoleOfChannel "
+            "channel='{}' role_uid='{}' role_type='{}' "
+            "(HEP-CORE-0042 §5.5.2 registration guard — rejecting to "
+            "prevent cross-role confirmed_version poisoning)",
+            channel_name, role_uid, role_type);
+        return make_error(
+            corr_id, "NOT_A_ROLE_OF_CHANNEL",
+            "CHANNEL_AUTH_APPLIED_REQ role_uid='" + role_uid +
+                "' is not a registered " + role_type +
+                " on channel '" + channel_name + "'");
+    }
+
     if (role_type == "consumer")
     {
-        // HEP-CORE-0042 §5.5.2 consumer branch — no stale-instance
-        // guard.  Snapshot the current authorized_consumer_pubkeys
-        // into `binding_side_confirmed_allowlist` so subsequent
-        // CHECK_PEER_READY_REQ callers can consult a stable
-        // "the guard's clipboard is up to date" view.
-        hub_state_->_on_binding_confirmed(channel_name);
+        // HEP-CORE-0042 §5.5.2 consumer (binding-side) branch (unified
+        // 2026-07-13 per INVARIANT-BIND-CONFIRM-1).  Advance this role's
+        // confirmed_version in the ledger — same primitive the fan-out
+        // producer branch below uses.  The wire's `applied_version` is
+        // the sole source of truth for what the consumer installed;
+        // broker MUST NOT snapshot its own current state (the retired
+        // `_on_binding_confirmed` did exactly that, causing the test
+        // #2480 race: broker over-confirmed pubkeys admitted after the
+        // consumer's APPLIED_REQ was sent but before broker processed
+        // it, letting producer-B's premature dial DENY at the
+        // consumer's ZAP).  The ledger's `confirm()` also CLAMPS
+        // applied_version at `current_version_` — see
+        // versioned_admission_ledger.hpp INVARIANT-BIND-CONFIRM-1
+        // (Agent-1 bound guard).
+        const std::uint64_t new_confirmed =
+            hub_state_->_on_role_confirmed(channel_name, role_uid,
+                                            applied_version);
 
         LOGGER_INFO(
             "[broker] event=ChannelAuthAppliedConsumer channel='{}' "
-            "consumer_uid='{}' applied_version={} (HEP-CORE-0042 §5.5.2 "
-            "consumer branch — binding_side_confirmed_allowlist snapshotted)",
-            channel_name, role_uid, applied_version);
+            "consumer_uid='{}' applied_version={} confirmed_version={} "
+            "(HEP-CORE-0042 §5.5.2 unified — ledger.confirm advanced)",
+            channel_name, role_uid, applied_version, new_confirmed);
 
         nlohmann::json resp;
         resp["status"]          = "ok";
         resp["channel_name"]    = channel_name;
-        resp["applied_version"] = applied_version;
+        resp["applied_version"] = new_confirmed;
         if (!corr_id.empty()) resp["correlation_id"] = corr_id;
         return resp;
     }
@@ -4440,9 +4519,12 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     }
 
     // §5.4 step (c): confirmed_version[K][P] = max(current, applied_version).
+    // Unified 2026-07-13 — same `_on_role_confirmed` primitive the
+    // consumer branch uses.  Producer-side vs consumer-side is just
+    // "which role_uid" — the ledger is role-agnostic.
     const std::uint64_t new_confirmed =
-        hub_state_->_on_producer_confirmed(channel_name, role_uid,
-                                            applied_version);
+        hub_state_->_on_role_confirmed(channel_name, role_uid,
+                                        applied_version);
 
     LOGGER_INFO(
         "[broker] event=ChannelAuthApplied channel='{}' producer_uid='{}' "
@@ -4530,30 +4612,71 @@ BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
                 " to dial)");
     }
 
-    // Membership check — is caller's pubkey in
-    // `binding_side_confirmed_allowlist`?
-    const auto ready_opt =
-        hub_state_->is_pubkey_in_binding_confirmed(channel_name, pubkey_z85);
-
+    // HEP-CORE-0042 §5.5.2 INVARIANT-BIND-CONFIRM-2 — visibility query
+    // against the unified ledger.  The binding-side role is singular
+    // per channel (one consumer under fan-in / one-to-one; one producer
+    // under fan-out); resolve its uid from the topology to key the
+    // per-role confirmation lookup.
     nlohmann::json resp;
     resp["channel_name"] = channel_name;
-    if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+    if (!corr_id.empty())
+    {
+        resp["correlation_id"] = corr_id;
+    }
+    std::string binding_role_uid;
+    if (consumer_binds)
+    {
+        if (!ch->consumers.empty())
+        {
+            binding_role_uid = ch->consumers.front().role_uid;
+        }
+    }
+    else
+    {
+        if (!ch->producers.empty())
+        {
+            binding_role_uid = ch->producers.front().role_uid;
+        }
+    }
+    if (binding_role_uid.empty())
+    {
+        LOGGER_WARN(
+            "Broker: CHECK_PEER_READY_REQ for channel '{}' — no "
+            "binding-side role present yet (consumer_binds={}); "
+            "responding not_ready (HEP-CORE-0042 §5.5.2)",
+            channel_name, consumer_binds);
+        resp["status"] = "not_ready";
+        resp["reason"] = "not_confirmed";
+        return resp;
+    }
+
+    const auto ready_opt = hub_state_->is_pubkey_visible_to(
+        channel_name, binding_role_uid, pubkey_z85);
 
     if (!ready_opt.has_value())
     {
-        // ChannelEntry exists but no ChannelAccessEntry — same
-        // fallback as §6.6.2 for GET_CHANNEL_AUTH_REQ.  Externally,
-        // the truthful answer is "no peers on record."  Log ERROR so
-        // operators diagnosing broker-state anomalies see the signal.
-        LOGGER_ERROR(
-            "Broker: CHECK_PEER_READY_REQ for channel '{}' from role_uid='{}' "
-            "found a ChannelEntry but no ChannelAccessEntry — HubState "
-            "invariant may be broken (REG path should wire "
-            "`_on_channel_access_opened` on every channel admission).  "
-            "Responding not_ready (fail-closed on wire).",
-            channel_name, role_uid);
+        // Either ChannelAccessEntry is missing (HubState invariant
+        // broken) OR the binding role has never confirmed anything yet
+        // (INVARIANT-BIND-CONFIRM-2: nullopt distinguishes "role has
+        // not applied anything" from the concrete false answer).
+        auto access = hub_state_->channel_access(channel_name);
+        if (!access.has_value())
+        {
+            LOGGER_ERROR(
+                "Broker: CHECK_PEER_READY_REQ for channel '{}' from "
+                "role_uid='{}' found a ChannelEntry but no "
+                "ChannelAccessEntry — HubState invariant may be broken "
+                "(REG path should wire `_on_channel_access_opened` on "
+                "every channel admission).  Responding not_ready "
+                "(fail-closed on wire).",
+                channel_name, role_uid);
+            resp["status"] = "not_ready";
+            resp["reason"] = "not_admitted";
+            return resp;
+        }
+        // Access record exists; binding role just hasn't confirmed yet.
         resp["status"] = "not_ready";
-        resp["reason"] = "not_admitted";
+        resp["reason"] = "not_confirmed";
         return resp;
     }
 
@@ -4563,14 +4686,14 @@ BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
         return resp;
     }
 
-    // Distinguish "admitted but binding-side has not confirmed" from
-    // "not admitted at all," so operators diagnosing startup can tell
-    // which end is behind.  Both paths surface as not_ready on the
-    // wire, differ only in `reason`.
+    // Distinguish "admitted but binding-side has not caught up in
+    // confirmed_version" from "not admitted at all," so operators
+    // diagnosing startup can tell which end is behind.  Both surface
+    // as not_ready on the wire, differ only in `reason`.
     auto access = hub_state_->channel_access(channel_name);
     const bool admitted =
         access.has_value() &&
-        access->authorized_consumer_pubkeys.count(pubkey_z85) > 0;
+        access->ledger.admission_version_of(pubkey_z85).has_value();
     resp["status"] = "not_ready";
     resp["reason"] = admitted ? "not_confirmed" : "not_admitted";
     return resp;
@@ -4834,10 +4957,22 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
     }
     // Payload per HEP-CORE-0007 lines 1840-1849.  channel_version:
     // bumped on phase=admitted / phase=left; unchanged on phase=live.
-    // Broker reads the current post-mutation value from HubState.
+    // Sourced from the ledger on ChannelAccessEntry (HEP-CORE-0042
+    // §5.5.2 unified 2026-07-13) — the single authority for per-channel
+    // admission version.  The pre-2026-07-13 code read the dead
+    // ChannelEntry.channel_version field which was never written and
+    // shipped 0 to every subscriber.
     nlohmann::json notify;
     notify["channel_name"]    = channel_name;
-    notify["channel_version"] = ch->channel_version;
+    if (auto access = hub_state_->channel_access(channel_name);
+        access.has_value())
+    {
+        notify["channel_version"] = access->ledger.current_version();
+    }
+    else
+    {
+        notify["channel_version"] = std::uint64_t{0};
+    }
     notify["role_uid"]        = role_uid;
     notify["role_type"]       = role_type;
     notify["phase"]           = phase;
@@ -5859,16 +5994,16 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 // was never called.  Symmetric with the VoluntaryDereg
                 // last-producer path in handle_dereg_req (line ~2430);
                 // omitting this call would leak the full
-                // ChannelAccessEntry — authorized_consumer_pubkeys,
-                // channel_version, and confirmed_version_per_producer
-                // — into channel_access_index[K] even though the
-                // channel itself is gone.  Prior to the 2026-07-01
-                // Phase 2.2 close-out this asymmetry was masked by
+                // ChannelAccessEntry — including the unified `ledger`
+                // (admission_version_ + confirmed_version_ per role) —
+                // into channel_access_index[K] even though the channel
+                // itself is gone.  Prior to the 2026-07-01 Phase 2.2
+                // close-out this asymmetry was masked by
                 // channel_access_index being drained on broker restart
                 // (only path); with HEP-CORE-0042's fast-path reading
-                // channel_version + confirmed_version, a subsequent
-                // channel re-open on the same name would inherit stale
-                // state.
+                // ledger.current_version() + confirmed_version_of, a
+                // subsequent channel re-open on the same name would
+                // inherit stale state.
                 hub_state_->_on_channel_access_closed(d.channel);
                 // HEP-CORE-0042 §5.4 channel-close drain — reply
                 // {status="denied", reason="channel_closing"} to every

@@ -187,6 +187,26 @@ wrapper, (e) any partial diagnosis.
   race the whole prior arc was closing; (d) an L4 harness bug in
   subprocess reap/timeout.  Cannot narrow without the log.
 
+- **RESOLVED 2026-07-13** — root cause was hypothesis (a) +
+  (c): broker's `_on_binding_confirmed` set-snapshot mechanism
+  over-confirmed pubkeys admitted after consumer's APPLIED_REQ
+  was sent but before broker processed it, so producer B's
+  `CHECK_PEER_READY_REQ` returned `ready` prematurely; producer
+  B dialed, CURVE handshake arrived at consumer's ZAP
+  ~50ms before consumer installed B's pubkey, was silently
+  DENIED terminally (libzmq does not retry after ZAP DENY).
+  Preserved artifacts at PID 710828 (2026-07-12 17:10) gave
+  the full timeline post-hoc after the DENY-WARN log
+  instrumentation was added.  Fix: unified
+  `VersionedAdmissionLedger` retires the set-snapshot path;
+  broker uses per-role monotonic confirmed_version against
+  per-pubkey admission_version.  See
+  `docs/tech_draft/DRAFT_versioned_admission_ledger_2026-07-13.md`
+  + HEP-CORE-0042 §5.5.2 amendment 2026-07-13 + §5.5.2.1
+  INVARIANT-BIND-CONFIRM-1..3.  Verified: 30/30 pass under 4x
+  CPU stress (probability at pre-fix ~14% failure rate:
+  ≈1%).
+
 **When to pick this up.**  Before the next unfiltered L4 sweep
 lands green claims in any commit or docs.  A "green" claim that
 runs on a sweep that hides an earlier "flake" is a false claim.

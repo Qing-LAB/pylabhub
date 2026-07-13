@@ -285,14 +285,21 @@ struct HubStateTestAccess
     {
         s._on_consumer_revoked(channel_name, pubkey_z85);
     }
-    // HEP-CORE-0036 §6.6.3 — snapshot the currently-authorized
-    // pubkey set into `binding_side_confirmed_allowlist`.  Called
-    // in production from the broker's
-    // `handle_channel_auth_applied_req` consumer branch.
-    static void on_binding_confirmed(HubState          &s,
-                                      const std::string &channel_name)
+    // HEP-CORE-0042 §5.5.2 (unified 2026-07-13) — advance a role's
+    // ledger confirmed_version.  Role-agnostic: works for
+    // binding-side (consumer under fan-in / one-to-one; producer
+    // under fan-out) AND dialing-side (producer's own
+    // confirmed_version for §5.4 fast-path).  Called in production
+    // from the broker's `handle_channel_auth_applied_req` handler
+    // via `HubState::_on_role_confirmed`.
+    static std::uint64_t
+    on_role_confirmed(HubState          &s,
+                      const std::string &channel_name,
+                      const std::string &role_uid,
+                      std::uint64_t      applied_version)
     {
-        s._on_binding_confirmed(channel_name);
+        return s._on_role_confirmed(channel_name, role_uid,
+                                     applied_version);
     }
 
     // ── Schema-registry forwarders (HEP-CORE-0034 §11) ────────────────

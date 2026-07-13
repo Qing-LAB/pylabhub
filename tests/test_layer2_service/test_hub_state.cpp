@@ -19,6 +19,7 @@
 #include "hub_state_test_access.h"
 #include "binary_lifecycle.h"
 #include "curve_test_setup.h"
+#include "test_patterns.h"
 
 #include <gtest/gtest.h>
 
@@ -912,35 +913,31 @@ TEST(HubStateValidation, ConsumerJoined_InvalidRoleUid_DroppedAndCounted)
     EXPECT_EQ(counts.count("CONSUMER_REG_REQ"), 0u);
 }
 
-// ═══ BrokerService plumbing ═════════════════════════════════════════════════
+// ═══ BrokerService plumbing (isolated-process pattern, 2026-07-13) ══════════
+//
+// These two tests mutate the process-wide `SecureSubsystem::keys()`
+// KeyStore — a documented process singleton per HEP-CORE-0043 §1.3.
+// L2 discipline (documented in `test_curve_test_fixtures.cpp` lines
+// 18-20) requires that any test-body mutation of a process singleton
+// run in a fresh subprocess so a subsequent test in the same binary
+// does not inherit the polluted state.  Prior to 2026-07-13 both
+// tests were written as raw `TEST(...)` with in-process mutations —
+// which happened to "pass" under `gtest_discover_tests`' incidental
+// one-process-per-test isolation but violated the contract and broke
+// under any raw-binary invocation.  Converted to
+// `SpawnWorker`+worker-body per the same pattern
+// `test_curve_test_fixtures.cpp` uses.  Actual assertion bodies live
+// in `workers/broker_service_workers.cpp`.
 
-TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
+class BrokerServiceIsolated : public pylabhub::tests::IsolatedProcessTest
 {
-    pylabhub::hub::HubState state;
+};
 
-    // CURVE is unconditional (HEP-CORE-0035 §2); HEP-CORE-0040 §172
-    // moved hub identity into the process KeyStore, so BrokerService
-    // ctor now requires the "hub_identity" entry to be present.
-    // Construct a seed_curve_identities for an ephemeral hub identity
-    // — this test never calls run() so no socket is bound, but the
-    // ctor's KeyStore check still fires.
-    auto setup = pylabhub::tests::make_curve_setup({});
-    pylabhub::tests::seed_curve_identities(setup);
-
-    pylabhub::broker::BrokerService::Config cfg;
-    cfg.endpoint = "tcp://127.0.0.1:0";
-    pylabhub::broker::BrokerService broker(cfg, state);
-
-    const auto &state_ref = broker.hub_state();
-    auto        snap      = state_ref.snapshot();
-    EXPECT_TRUE(snap.channels.empty());
-    EXPECT_TRUE(snap.roles.empty());
-    EXPECT_TRUE(snap.bands.empty());
-    EXPECT_TRUE(snap.peers.empty());
-    EXPECT_TRUE(snap.shm_blocks.empty());
-
-    EXPECT_EQ(&state_ref, &state);
-    EXPECT_EQ(&state_ref, &broker.hub_state());
+TEST_F(BrokerServiceIsolated, HubStateAccessorReturnsExternalAggregate)
+{
+    auto w = SpawnWorker(
+        "broker_service.hub_state_accessor_returns_external_aggregate");
+    ExpectWorkerOk(w);
 }
 
 // #161 Phase 1 mutation pin: HEP-CORE-0040 §172 specifies the
@@ -958,47 +955,11 @@ TEST(BrokerServicePlumbing, HubStateAccessorReturnsExternalAggregate)
 //     std::runtime_error or similar.
 //   - Inverting the condition (using `if (has(...))` to throw,
 //     which would break the positive plumbing test above).
-TEST(BrokerServiceCtor, MissingHubIdentityInKeyStoreThrowsLogicError)
+TEST_F(BrokerServiceIsolated, MissingHubIdentityInKeyStoreThrowsLogicError)
 {
-    namespace sec = pylabhub::utils::security;
-
-
-    // Seed an UNRELATED name so the KeyStore is non-empty but the
-    // ctor's specific lookup for "hub_identity" misses.  Catching
-    // "empty KeyStore" as the failure mode would let a future
-    // refactor that uses some other name (e.g. "broker_identity")
-    // silently pass — this assertion forces the ctor to use the
-    // exact HEP-CORE-0040 §172 contract name.
-    const auto kp = pylabhub::tests::gen_curve_keypair();
-    sec::secure().keys().add_identity_from_z85(
-        "not_hub_identity", kp.public_z85, kp.secret_z85);
-
-    pylabhub::hub::HubState state;
-    pylabhub::broker::BrokerService::Config cfg;
-    cfg.endpoint = "tcp://127.0.0.1:0";
-
-    try
-    {
-        pylabhub::broker::BrokerService broker(cfg, state);
-        ADD_FAILURE() << "Expected BrokerService ctor to throw "
-                         "std::logic_error when 'hub_identity' is "
-                         "absent from KeyStore; ctor returned normally.";
-    }
-    catch (const std::logic_error &e)
-    {
-        const std::string what = e.what();
-        EXPECT_NE(what.find("hub_identity"), std::string::npos)
-            << "Ctor threw, but the message must name the missing "
-               "literal 'hub_identity' so an operator can correct the "
-               "vault / fixture wiring.  Got: " << what;
-    }
-    catch (const std::exception &e)
-    {
-        ADD_FAILURE() << "Ctor threw, but the type must be "
-                         "std::logic_error (programmer-error contract, "
-                         "HEP-CORE-0035 §4.6.5 no-bypass).  Got: "
-                      << typeid(e).name() << " — " << e.what();
-    }
+    auto w = SpawnWorker(
+        "broker_service.ctor_missing_hub_identity_throws_logic_error");
+    ExpectWorkerOk(w);
 }
 
 // ═══ Heartbeat/observable contract ══════════════════════════════════════════
@@ -3703,7 +3664,7 @@ TEST(HubStateChannelAccess, OpenedThenClosed_Roundtrip)
     HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_TRUE(a->authorized_consumer_pubkeys.empty());
+    EXPECT_EQ(a->ledger.admitted_count(), 0u);
 
     HubStateTestAccess::on_channel_access_closed(s, "ch.auth");
     EXPECT_FALSE(s.channel_access("ch.auth").has_value());
@@ -3736,9 +3697,9 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_AddsToAllowlist)
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-CONS-B");
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 2u);
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-CONS-A"), 1u);
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-CONS-B"), 1u);
+    EXPECT_EQ(a->ledger.admitted_count(), 2u);
+    EXPECT_TRUE(a->ledger.admission_version_of("PUB-CONS-A").has_value());
+    EXPECT_TRUE(a->ledger.admission_version_of("PUB-CONS-B").has_value());
 }
 
 TEST(HubStateChannelAccess, ConsumerAuthorized_Idempotent)
@@ -3749,7 +3710,11 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_Idempotent)
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
+    EXPECT_EQ(a->ledger.admitted_count(), 1u);
+    // Re-admit must NOT bump current_version (would falsely invalidate
+    // role confirmations at the pre-re-admit version).  HEP-CORE-0042
+    // §5.5.2 INVARIANT-BIND-CONFIRM-1.
+    EXPECT_EQ(a->ledger.current_version(), 1u);
 }
 
 TEST(HubStateChannelAccess, ConsumerRevoked_RemovesFromAllowlist)
@@ -3761,22 +3726,29 @@ TEST(HubStateChannelAccess, ConsumerRevoked_RemovesFromAllowlist)
     HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "PUB-A");
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-A"), 0u);
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-B"), 1u);
+    EXPECT_EQ(a->ledger.admitted_count(), 1u);
+    EXPECT_FALSE(a->ledger.admission_version_of("PUB-A").has_value());
+    EXPECT_TRUE(a->ledger.admission_version_of("PUB-B").has_value());
 }
 
-TEST(HubStateChannelAccess, ConsumerRevoked_Idempotent_NoSuchPubkey)
+TEST(HubStateChannelAccess, ConsumerRevoked_MissingPubkey_IsNoOp)
 {
+    // HEP-CORE-0042 §5.5.2 INVARIANT-BIND-CONFIRM-1: only real
+    // mutations advance the version.  A revoke targeting a never-
+    // admitted pubkey is a full no-op — no bump, no side effect on
+    // any role's confirmation.  Symmetric with idempotent-authorize
+    // no-bump (§5.2).  A false bump here would force spurious re-
+    // confirmation traffic from every role that had already caught up.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.auth");
     HubStateTestAccess::on_consumer_authorized(s, "ch.auth", "PUB-A");
-    // Revoke a pubkey that was never authorized — no-op.
+    const auto v_before = s.channel_access("ch.auth")->ledger.current_version();
     HubStateTestAccess::on_consumer_revoked(s, "ch.auth", "PUB-NEVER");
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-A"), 1u);
+    EXPECT_EQ(a->ledger.current_version(), v_before);
+    EXPECT_EQ(a->ledger.admitted_count(), 1u);
+    EXPECT_TRUE(a->ledger.admission_version_of("PUB-A").has_value());
 }
 
 TEST(HubStateChannelAccess, ConsumerAuthorized_NoOpWithoutChannelAccess)
@@ -3788,157 +3760,245 @@ TEST(HubStateChannelAccess, ConsumerAuthorized_NoOpWithoutChannelAccess)
     EXPECT_FALSE(s.channel_access("ch.no.such").has_value());
 }
 
-// ── HEP-CORE-0036 §6.6.3 — binding_side_confirmed_allowlist invariants ─────
+// ── HEP-CORE-0042 §5.5.2 (unified 2026-07-13) — versioned ledger invariants ─
 
-TEST(HubStateChannelAccess, BindingConfirmedAllowlist_EmptyBeforeApply)
+TEST(HubStateChannelAccess, BindingConfirm_UnconfirmedRole_YieldsNullopt)
 {
-    // Fresh channel access record: confirmed set is empty until the
-    // binding side sends its first CHANNEL_AUTH_APPLIED_REQ.  Producer
-    // polling CHECK_PEER_READY_REQ before any apply must see
-    // `not_ready{reason=not_confirmed}` — the not-confirmed reason
-    // requires the pubkey to be in `authorized_consumer_pubkeys` but
-    // not in `binding_side_confirmed_allowlist`.
+    // Fresh channel-access record with an admitted pubkey.  Binding-side
+    // role has never confirmed anything yet.  INVARIANT-BIND-CONFIRM-2
+    // requires `is_pubkey_visible_to(role) == nullopt` — the wire layer
+    // uses that to surface `not_ready`, `reason="not_confirmed"`.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
     HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
     auto a = s.channel_access("ch.fanin");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-P1"), 1u);
-    EXPECT_TRUE(a->binding_side_confirmed_allowlist.empty());
-    const auto opt = s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1");
-    ASSERT_TRUE(opt.has_value());
-    EXPECT_FALSE(*opt);
+    EXPECT_TRUE(a->ledger.admission_version_of("PUB-P1").has_value());
+    EXPECT_FALSE(a->ledger.confirmed_version_of("consumer.uid").has_value());
+    EXPECT_FALSE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P1")
+            .has_value());
 }
 
-TEST(HubStateChannelAccess, BindingConfirmedAllowlist_SnapshottedByBindingConfirmed)
+TEST(HubStateChannelAccess, BindingConfirm_AdvancesRoleVersion_MakesAdmittedPubkeysVisible)
 {
-    // After the binding-side consumer applies + confirms, the confirmed
-    // set is set-equal to `authorized_consumer_pubkeys` at that moment.
+    // After the binding-side role confirms at the current channel
+    // version, all admitted-at-or-before-that-version pubkeys become
+    // visible to it.  INVARIANT-BIND-CONFIRM-1 + -2.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
     HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
     HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P2");
-    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    const auto ver = s.channel_access("ch.fanin")->ledger.current_version();
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", ver);
     auto a = s.channel_access("ch.fanin");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.size(), 2u);
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P1"), 1u);
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P2"), 1u);
-    ASSERT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1")
-                    .value_or(false));
-    ASSERT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
-                    .value_or(false));
+    EXPECT_EQ(a->ledger.confirmed_version_of("consumer.uid").value(), ver);
+    EXPECT_TRUE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P1")
+            .value_or(false));
+    EXPECT_TRUE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P2")
+            .value_or(false));
 }
 
-TEST(HubStateChannelAccess, BindingConfirmedAllowlist_ClearedOnConsumerRevoke)
+TEST(HubStateChannelAccess, Test2480_RaceRegression_NewAdmissionInvisibleUntilReconfirm)
 {
-    // HEP-CORE-0036 §6.6.3 C3 — the load-bearing correctness pin.
-    // A successful revoke of ANY admitted pubkey MUST clear the whole
-    // `binding_side_confirmed_allowlist`.  Rationale: the binding-side
-    // ZAP cache is now stale relative to broker authoritative state
-    // (broker knows P is out; binding side hasn't received / applied
-    // the notify yet).  Any dial-side CHECK_PEER_READY_REQ during
-    // this window must see `not_ready` — including for pubkeys that
-    // remain admitted, because their confirmed status also lags.
-    // Regression this catches: the pre-fix behavior only removed the
-    // revoked pubkey from `authorized_consumer_pubkeys` but left the
-    // full pre-revoke snapshot in the confirmed set → dialing peer
-    // (including the revoked producer under a hostile-restart
-    // scenario) polls, gets `ready`, dials, ZAP DENY, terminal.
+    // HEP-CORE-0042 §5.5.2 INVARIANT-BIND-CONFIRM-2 — the load-bearing
+    // race pin.  Sequence mirrors test #2480:
+    //   T1: producer A admitted → version bumps to V1.
+    //   T2: consumer applies + confirms at V1 (has installed A only).
+    //   T3: producer B admitted → version bumps to V2.
+    //   T4: broker asks "is B visible to consumer?" — MUST be false
+    //       (admission_version(B)=V2 > confirmed(consumer)=V1).
+    //   T5: consumer applies + confirms at V2.
+    //   T6: broker asks again — MUST be true now.
+    // Pre-fix bug: set-snapshot in `_on_binding_confirmed` copied
+    // current authorized_consumer_pubkeys (which by T2's processing
+    // moment already contained B), letting B pass the T4 check
+    // prematurely.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-A");
+    const auto v1 = s.channel_access("ch.fanin")->ledger.current_version();
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", v1);
+    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-B");
+    // T4 — the moment of the race.
+    auto t4 = s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-B");
+    ASSERT_TRUE(t4.has_value());
+    EXPECT_FALSE(*t4);
+    // A is still visible (confirmed at v1 which covers A's admission).
+    EXPECT_TRUE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-A")
+            .value_or(false));
+    // T5–T6 — consumer catches up.
+    const auto v2 = s.channel_access("ch.fanin")->ledger.current_version();
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", v2);
+    auto t6 = s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-B");
+    ASSERT_TRUE(t6.has_value());
+    EXPECT_TRUE(*t6);
+}
+
+TEST(HubStateChannelAccess, BindingConfirm_RevokedPubkeyImmediatelyInvisible)
+{
+    // Revocation kills visibility immediately — the ledger removes the
+    // admission_version entry, so `is_visible_to` returns false
+    // regardless of the role's confirmed_version.  Closes the
+    // revocation race by construction (no stale "confirmed" snapshot
+    // to unlearn from — the pre-2026-07-13 `binding_side_confirmed_
+    // allowlist` needed an explicit whole-set clear to close this
+    // window; the ledger doesn't have that class of bug at all).
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
     HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
     HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P2");
-    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
-    ASSERT_EQ(s.channel_access("ch.fanin")
-                   ->binding_side_confirmed_allowlist.size(), 2u);
+    const auto ver = s.channel_access("ch.fanin")->ledger.current_version();
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", ver);
+    ASSERT_TRUE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P1")
+            .value_or(false));
 
-    // Revoke P1 — whole confirmed set clears, INCLUDING P2 which was
-    // not revoked (P2's confirmed-side lag is real too).
     HubStateTestAccess::on_consumer_revoked(s, "ch.fanin", "PUB-P1");
-    auto a = s.channel_access("ch.fanin");
-    ASSERT_TRUE(a.has_value());
-    EXPECT_TRUE(a->binding_side_confirmed_allowlist.empty())
-        << "revoke of any admitted pubkey MUST clear the whole confirmed "
-           "snapshot (D-2 whole-set clear).";
-    // authorized set correctly still has P2 (revoke only removed P1).
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-P1"), 0u);
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-P2"), 1u);
-    // CHECK_PEER_READY_REQ semantics from broker's perspective: P2
-    // still admitted but no longer confirmed → not_ready{not_confirmed}.
-    ASSERT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
-                    .has_value());
-    EXPECT_FALSE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
-                     .value());
+    auto vis = s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P1");
+    ASSERT_TRUE(vis.has_value());
+    EXPECT_FALSE(*vis);
+    // P2 stayed admitted, but its visibility now depends on whether the
+    // consumer's confirmed_version still covers P2's admission_version.
+    // The revoke bumped current_version but did not touch P2's admission
+    // version (which stayed at 2), and consumer confirmed at ver (=2
+    // — P2's admission version).  So P2 remains visible.
+    EXPECT_TRUE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P2")
+            .value_or(false));
 }
 
-TEST(HubStateChannelAccess, BindingConfirmedAllowlist_RepopulatedByNextApply)
+TEST(HubStateChannelAccess, BindingConfirm_Monotonic_StaleAppliedVersionAbsorbed)
 {
-    // After the revoke-triggered clear, the next binding-side APPLIED_REQ
-    // reconstructs the confirmed set from the current
-    // `authorized_consumer_pubkeys`.  Any admitted-and-still-admitted
-    // pubkey (P2) reappears; the revoked pubkey (P1) does not.
+    // INVARIANT-BIND-CONFIRM-1 monotonicity: a delayed / duplicated
+    // APPLIED_REQ carrying a stale (older) version MUST be silently
+    // absorbed — confirmed_version never regresses.  Combined with the
+    // clamp: applied_version cannot exceed the ledger's current_version,
+    // so this test admits enough pubkeys (5) before confirming at v=5.
+    HubState s;
+    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
+    for (int i = 1; i <= 5; ++i)
+    {
+        HubStateTestAccess::on_consumer_authorized(
+            s, "ch.fanin", "PUB-P" + std::to_string(i));
+    }
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", 5u);
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", 3u);
+    auto a = s.channel_access("ch.fanin");
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->ledger.confirmed_version_of("consumer.uid").value(), 5u);
+}
+
+// ── HEP-CORE-0042 §5.5.2 registration guard (Agent-2 2026-07-13) ───────────
+
+TEST(HubStateChannelAccess, IsRoleRegistered_ReturnsFalse_NoSuchChannel)
+{
+    HubState s;
+    EXPECT_FALSE(s.is_role_registered_on_channel("ch.absent", "role.uid",
+                                                   "consumer"));
+    EXPECT_FALSE(s.is_role_registered_on_channel("ch.absent", "role.uid",
+                                                   "producer"));
+}
+
+TEST(HubStateChannelAccess, IsRoleRegistered_ReturnsFalse_EmptyInputs)
+{
+    HubState s;
+    // Empty channel_name: invalid identifier per the guard.
+    EXPECT_FALSE(s.is_role_registered_on_channel("", "role.uid",
+                                                   "consumer"));
+    // Empty role_uid: invalid.
+    HubStateTestAccess::set_channel_opened(s,
+        make_channel("ch.registered"));
+    EXPECT_FALSE(s.is_role_registered_on_channel("ch.registered", "",
+                                                   "consumer"));
+    // Malformed role_type (not "consumer" or "producer"): returns false
+    // (used at handler boundary to reject bad wire input).
+    EXPECT_FALSE(s.is_role_registered_on_channel("ch.registered",
+                                                   "role.uid", "operator"));
+    EXPECT_FALSE(s.is_role_registered_on_channel("ch.registered",
+                                                   "role.uid", ""));
+}
+
+TEST(HubStateChannelAccess, IsRoleRegistered_FindsConsumer)
+{
+    HubState s;
+    const std::string ch = "ch.reg.cons";
+    // FanOut allows multiple consumers per HEP-CORE-0017 §3.3.0.
+    HubStateTestAccess::set_channel_opened(s,
+        make_channel(ch, pylabhub::hub::ChannelTopology::FanOut));
+    HubStateTestAccess::add_consumer(s, ch,
+        make_consumer("cons.a.uid"));
+    HubStateTestAccess::add_consumer(s, ch,
+        make_consumer("cons.b.uid"));
+    EXPECT_TRUE(s.is_role_registered_on_channel(ch, "cons.a.uid",
+                                                  "consumer"));
+    EXPECT_TRUE(s.is_role_registered_on_channel(ch, "cons.b.uid",
+                                                  "consumer"));
+    // Asking as producer for a consumer's uid — false (cross-role
+    // poisoning attempt).
+    EXPECT_FALSE(s.is_role_registered_on_channel(ch, "cons.a.uid",
+                                                   "producer"));
+    // Unregistered uid — false.
+    EXPECT_FALSE(s.is_role_registered_on_channel(ch, "cons.c.uid",
+                                                   "consumer"));
+}
+
+TEST(HubStateChannelAccess, IsRoleRegistered_FindsProducer)
+{
+    // Producers register via `_on_producer_added_fanin` — use its
+    // helper.  Add one producer and verify lookup.
+    HubState s;
+    const std::string ch = "ch.reg.prod";
+    ASSERT_EQ(
+        HubStateTestAccess::on_producer_added_fanin(
+            s, ch, make_schema_invariants(), make_zmq_transport(),
+            make_producer("prod.a.uid", 6001))
+            .producer_result,
+        pylabhub::hub::AddProducerResult::Created);
+    EXPECT_TRUE(s.is_role_registered_on_channel(ch, "prod.a.uid",
+                                                  "producer"));
+    // Asking as consumer for a producer's uid — false.
+    EXPECT_FALSE(s.is_role_registered_on_channel(ch, "prod.a.uid",
+                                                   "consumer"));
+    EXPECT_FALSE(s.is_role_registered_on_channel(ch, "prod.b.uid",
+                                                   "producer"));
+}
+
+TEST(HubStateChannelAccess, IsRoleRegistered_ReflectsRemoval)
+{
+    HubState s;
+    const std::string ch = "ch.reg.rem";
+    HubStateTestAccess::set_channel_opened(s,
+        make_channel(ch));
+    HubStateTestAccess::add_consumer(s, ch,
+        make_consumer("cons.a.uid"));
+    ASSERT_TRUE(s.is_role_registered_on_channel(ch, "cons.a.uid",
+                                                  "consumer"));
+    HubStateTestAccess::remove_consumer(s, ch, "cons.a.uid");
+    EXPECT_FALSE(s.is_role_registered_on_channel(ch, "cons.a.uid",
+                                                   "consumer"))
+        << "after remove_consumer, guard must reject subsequent "
+           "APPLIED_REQ from that role_uid";
+}
+
+TEST(HubStateChannelAccess, BindingConfirm_ClearedByChannelClose)
+{
+    // `_on_channel_access_closed` erases the whole ChannelAccessEntry,
+    // taking the ledger with it.  Pin: a future refactor that keeps
+    // the entry alive must explicitly reset the ledger.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
     HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
-    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P2");
-    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
-    HubStateTestAccess::on_consumer_revoked(s, "ch.fanin", "PUB-P1");
-
-    // Binding side receives notify → pulls → applies → APPLIED_REQ.
-    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
-    auto a = s.channel_access("ch.fanin");
-    ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.size(), 1u);
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P2"), 1u);
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P1"), 0u);
-    // CHECK_PEER_READY_REQ semantics: P2 is ready; P1 is not_admitted.
-    EXPECT_TRUE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P2")
-                    .value_or(false));
-    EXPECT_FALSE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1")
-                     .value_or(true));
-}
-
-TEST(HubStateChannelAccess, BindingConfirmedAllowlist_NoOpRevokeDoesNotClear)
-{
-    // Idempotent-revoke discipline: revoking a pubkey that is not in
-    // `authorized_consumer_pubkeys` returns erased==0, must NOT bump
-    // channel_version, must NOT clear the confirmed set.  A regression
-    // that cleared unconditionally (regardless of erased count) would
-    // silently invalidate the confirmed set on any spurious revoke —
-    // costing correctness-unnecessary latency to every dialing peer.
-    HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
-    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
-    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
-    ASSERT_EQ(s.channel_access("ch.fanin")
-                   ->binding_side_confirmed_allowlist.size(), 1u);
-    const auto ver_before = s.channel_access("ch.fanin")->channel_version;
-
-    // Revoke a pubkey never authorized.  No-op.
-    HubStateTestAccess::on_consumer_revoked(s, "ch.fanin", "PUB-NEVER");
-    auto a = s.channel_access("ch.fanin");
-    ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->channel_version, ver_before) << "no-op revoke must not bump";
-    EXPECT_EQ(a->binding_side_confirmed_allowlist.count("PUB-P1"), 1u)
-        << "no-op revoke must NOT clear the confirmed set";
-}
-
-TEST(HubStateChannelAccess, BindingConfirmedAllowlist_ClearedByChannelClose)
-{
-    // `_on_channel_access_closed` erases the entire ChannelAccessEntry,
-    // so `binding_side_confirmed_allowlist` goes with it.  Pin this so
-    // a future refactor that keeps the entry alive (e.g. for federation
-    // eventual consistency) is forced to explicitly re-establish the
-    // clear-on-close semantic.
-    HubState s;
-    HubStateTestAccess::on_channel_access_opened(s, "ch.fanin");
-    HubStateTestAccess::on_consumer_authorized(s, "ch.fanin", "PUB-P1");
-    HubStateTestAccess::on_binding_confirmed(s, "ch.fanin");
+    HubStateTestAccess::on_role_confirmed(s, "ch.fanin", "consumer.uid", 1u);
     HubStateTestAccess::on_channel_access_closed(s, "ch.fanin");
     EXPECT_FALSE(s.channel_access("ch.fanin").has_value());
-    EXPECT_FALSE(s.is_pubkey_in_binding_confirmed("ch.fanin", "PUB-P1")
-                     .has_value());
+    EXPECT_FALSE(
+        s.is_pubkey_visible_to("ch.fanin", "consumer.uid", "PUB-P1")
+            .has_value());
 }
 
 TEST(HubStateChannelAccess, Close_Idempotent_NoSuchChannel)
@@ -3961,8 +4021,8 @@ TEST(HubStateChannelAccess, MultiChannel_Isolated)
     auto b = s.channel_access("ch.B");
     ASSERT_TRUE(a.has_value());
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.size(), 1u);
-    EXPECT_EQ(b->authorized_consumer_pubkeys.size(), 2u);
+    EXPECT_EQ(a->ledger.admitted_count(), 1u);
+    EXPECT_EQ(b->ledger.admitted_count(), 2u);
 
     // Closing one doesn't affect the other.
     HubStateTestAccess::on_channel_access_closed(s, "ch.A");
@@ -4002,7 +4062,7 @@ TEST(HubStateChannelAccess, EmptyPubkey_BumpsCounterAndNoOp)
         << "Empty pubkey must bump counter and no-op.";
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_TRUE(a->authorized_consumer_pubkeys.empty());
+    EXPECT_TRUE(a->ledger.admitted_count() == 0);
 }
 
 // ── Audit H4 follow-ons (2026-06-03 close-out 2) ────────────────────────────
@@ -4071,7 +4131,7 @@ TEST(HubStateChannelAccess, EmptyPubkey_Revoke_BumpsCounter)
     // Allowlist unchanged.
     auto a = s.channel_access("ch.auth");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-A"), 1u);
+    EXPECT_EQ(a->ledger.admission_version_of("PUB-A").has_value() ? 1u : 0u, 1u);
 }
 
 TEST(HubStateChannelAccess, InvalidChannel_AllFourMutators_BumpCounter)
@@ -4119,8 +4179,8 @@ TEST(HubStateChannelAccess, MultiChannel_SamePubkey_RevokeIsScoped)
     auto b = s.channel_access("ch.B");
     ASSERT_TRUE(a.has_value());
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(a->authorized_consumer_pubkeys.count("PUB-SAME"), 0u);
-    EXPECT_EQ(b->authorized_consumer_pubkeys.count("PUB-SAME"), 1u)
+    EXPECT_EQ(a->ledger.admission_version_of("PUB-SAME").has_value() ? 1u : 0u, 0u);
+    EXPECT_EQ(b->ledger.admission_version_of("PUB-SAME").has_value() ? 1u : 0u, 1u)
         << "revoke on ch.A leaked into ch.B — allowlist is not per-channel";
 }
 
@@ -4145,17 +4205,17 @@ TEST(HubStateHep0042, ChannelVersion_BumpsOnDistinctAuthorize)
 
     auto v0 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v0.has_value());
-    EXPECT_EQ(v0->channel_version, 0u) << "initial channel_version must be 0";
+    EXPECT_EQ(v0->ledger.current_version(), 0u) << "initial channel_version must be 0";
 
     HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-A");
     auto v1 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v1.has_value());
-    EXPECT_EQ(v1->channel_version, 1u);
+    EXPECT_EQ(v1->ledger.current_version(), 1u);
 
     HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-B");
     auto v2 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v2.has_value());
-    EXPECT_EQ(v2->channel_version, 2u);
+    EXPECT_EQ(v2->ledger.current_version(), 2u);
 }
 
 TEST(HubStateHep0042, ChannelVersion_NoBumpOnDuplicateAuthorize)
@@ -4169,12 +4229,12 @@ TEST(HubStateHep0042, ChannelVersion_NoBumpOnDuplicateAuthorize)
     HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-DUP");
     auto v1 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v1.has_value());
-    ASSERT_EQ(v1->channel_version, 1u);
+    ASSERT_EQ(v1->ledger.current_version(), 1u);
 
     HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-DUP");
     auto v2 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v2.has_value());
-    EXPECT_EQ(v2->channel_version, 1u)
+    EXPECT_EQ(v2->ledger.current_version(), 1u)
         << "idempotent re-authorize must not bump channel_version";
 }
 
@@ -4186,12 +4246,12 @@ TEST(HubStateHep0042, ChannelVersion_BumpsOnRevoke)
     HubStateTestAccess::on_consumer_authorized(s, "ch.hep42", "PUB-X");
     auto v1 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v1.has_value());
-    ASSERT_EQ(v1->channel_version, 1u);
+    ASSERT_EQ(v1->ledger.current_version(), 1u);
 
     HubStateTestAccess::on_consumer_revoked(s, "ch.hep42", "PUB-X");
     auto v2 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v2.has_value());
-    EXPECT_EQ(v2->channel_version, 2u);
+    EXPECT_EQ(v2->ledger.current_version(), 2u);
 }
 
 TEST(HubStateHep0042, ChannelVersion_NoBumpOnMissingRevoke)
@@ -4202,12 +4262,12 @@ TEST(HubStateHep0042, ChannelVersion_NoBumpOnMissingRevoke)
     HubStateTestAccess::on_channel_access_opened(s, "ch.hep42");
     auto v0 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v0.has_value());
-    ASSERT_EQ(v0->channel_version, 0u);
+    ASSERT_EQ(v0->ledger.current_version(), 0u);
 
     HubStateTestAccess::on_consumer_revoked(s, "ch.hep42", "PUB-NOT-THERE");
     auto v1 = s.channel_access("ch.hep42");
     ASSERT_TRUE(v1.has_value());
-    EXPECT_EQ(v1->channel_version, 0u);
+    EXPECT_EQ(v1->ledger.current_version(), 0u);
 }
 
 TEST(HubStateHep0042, ProducerInstance_BumpsOnFirstRegistration)
@@ -4317,6 +4377,14 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
 
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, ch);
+    // Establish ledger.current_version >= 42 so the clamp doesn't
+    // absorb our confirm(42) below (INVARIANT-BIND-CONFIRM-1
+    // 2026-07-13).
+    for (int i = 0; i < 42; ++i)
+    {
+        HubStateTestAccess::on_consumer_authorized(
+            s, ch, "PUB-" + std::to_string(i));
+    }
 
     // Register + advance confirmed to 42.  Fan-in for the multi-producer
     // sibling scenario below.
@@ -4325,7 +4393,7 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
                   make_producer(uid, 4001))
                   .producer_result,
               AddProducerResult::Created);
-    ASSERT_EQ(s._on_producer_confirmed(ch, uid, 42), 42u);
+    ASSERT_EQ(s._on_role_confirmed(ch, uid, 42), 42u);
 
     // Sibling to keep the channel alive across the reap.
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
@@ -4341,7 +4409,7 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
     // Verify confirmed_version cleared after the drop.
     auto after_drop = s.channel_access(ch);
     ASSERT_TRUE(after_drop.has_value());
-    EXPECT_EQ(after_drop->confirmed_version_per_producer.count(uid), 0u)
+    EXPECT_FALSE(after_drop->ledger.confirmed_version_of(uid).has_value())
         << "producer drop must erase confirmed_version[K][P]";
 
     // Re-register the crashed uid.  Instance bumps 1 → 2 AND
@@ -4353,10 +4421,12 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
               AddProducerResult::Created);
     auto after_readd = s.channel_access(ch);
     ASSERT_TRUE(after_readd.has_value());
-    auto it = after_readd->confirmed_version_per_producer.find(uid);
-    if (it != after_readd->confirmed_version_per_producer.end())
+    auto cv = after_readd->ledger.confirmed_version_of(uid);
+    if (cv.has_value())
+    {
         FAIL() << "confirmed_version must be reset (map entry erased) "
-                  "on re-registration; instead saw " << it->second;
+                  "on re-registration; instead saw " << *cv;
+    }
 }
 
 TEST(HubStateHep0042, ChannelAccess_ErasedByChannelAccessClosed)
@@ -4380,8 +4450,8 @@ TEST(HubStateHep0042, ChannelAccess_ErasedByChannelAccessClosed)
     HubStateTestAccess::on_consumer_authorized(s, "ch.hep42.teardown", "PUB-A");
     auto before = s.channel_access("ch.hep42.teardown");
     ASSERT_TRUE(before.has_value());
-    ASSERT_EQ(before->channel_version, 1u);
-    ASSERT_EQ(before->authorized_consumer_pubkeys.count("PUB-A"), 1u);
+    ASSERT_EQ(before->ledger.current_version(), 1u);
+    ASSERT_TRUE(before->ledger.admission_version_of("PUB-A").has_value());
 
     HubStateTestAccess::on_channel_access_closed(s, "ch.hep42.teardown");
     EXPECT_FALSE(s.channel_access("ch.hep42.teardown").has_value())
@@ -4399,9 +4469,10 @@ TEST(HubStateHep0042, ChannelAccess_ErasedByChannelAccessClosed)
     HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.teardown");
     auto after = s.channel_access("ch.hep42.teardown");
     ASSERT_TRUE(after.has_value());
-    EXPECT_EQ(after->channel_version, 0u);
-    EXPECT_EQ(after->authorized_consumer_pubkeys.size(), 0u);
-    EXPECT_EQ(after->confirmed_version_per_producer.size(), 0u);
+    EXPECT_EQ(after->ledger.current_version(), 0u);
+    EXPECT_EQ(after->ledger.admitted_count(), 0u);
+    EXPECT_FALSE(
+        after->ledger.confirmed_version_of("any.role.uid").has_value());
 }
 
 TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
@@ -4422,6 +4493,13 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
 
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, ch);
+    // Establish ledger.current_version >= 42 so the clamp permits
+    // confirm(uid_a, 42) below.  INVARIANT-BIND-CONFIRM-1 2026-07-13.
+    for (int i = 0; i < 42; ++i)
+    {
+        HubStateTestAccess::on_consumer_authorized(
+            s, ch, "PUB-" + std::to_string(i));
+    }
     // Fan-in — two producers on one channel per the topology-migration model.
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(),
@@ -4435,7 +4513,7 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
               AddProducerResult::Created);
 
     // A applies allowlist v42 — the state that the timeout must clear.
-    ASSERT_EQ(s._on_producer_confirmed(ch, uid_a, 42), 42u);
+    ASSERT_EQ(s._on_role_confirmed(ch, uid_a, 42), 42u);
 
     // First heartbeat for both so the FSM has a Connected state to
     // transition FROM.
@@ -4455,33 +4533,107 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
     // producer removal.
     auto after = s.channel_access(ch);
     ASSERT_TRUE(after.has_value());
-    EXPECT_EQ(after->confirmed_version_per_producer.count(uid_a), 0u)
+    EXPECT_FALSE(after->ledger.confirmed_version_of(uid_a).has_value())
         << "kDead (heartbeat-timeout) must erase confirmed_version[K][P] "
            "(HEP-CORE-0042 §5.4 kDead reset trigger)";
     // Sanity: didn't clobber B's state (B was never confirmed here, but
-    // the count must be 0 for the un-confirmed uid too — i.e., no
+    // it must remain absent for the un-confirmed uid too — i.e., no
     // spurious side-effect on the sibling).
-    EXPECT_EQ(after->confirmed_version_per_producer.count(uid_b), 0u);
+    EXPECT_FALSE(after->ledger.confirmed_version_of(uid_b).has_value());
+}
+
+TEST(HubStateHep0042, ConfirmedVersion_ResetOnConsumerLeft)
+{
+    // Symmetric with `ConfirmedVersion_ResetOnReRegistration` and
+    // `ConfirmedVersion_ResetOnHeartbeatTimeout`: when a consumer
+    // (binding-side role under fan-in) leaves the channel via
+    // `_remove_consumer`, the ledger MUST erase that role's
+    // confirmed_version entry.  Without this, a stale confirmation
+    // could service a future `is_visible_to(role_uid, ...)` query if
+    // the role_uid were re-used (memory hygiene per Agent-4 review
+    // finding 2026-07-13).
+    HubState s;
+    const std::string ch     = "ch.hep42.cons_left";
+    const std::string cons_a = "cons.a.uid";
+    const std::string cons_b = "cons.b.uid";
+
+    // Set up ChannelEntry first so `_add_consumer` + `_remove_consumer`
+    // can find it.
+    HubStateTestAccess::set_channel_opened(s, make_channel(ch));
+    HubStateTestAccess::on_channel_access_opened(s, ch);
+    // Admit before confirm — the ledger clamp requires current_version >= 1.
+    HubStateTestAccess::on_consumer_authorized(s, ch, "PUB-A");
+    HubStateTestAccess::on_role_confirmed(s, ch, cons_a, 1);
+    HubStateTestAccess::on_role_confirmed(s, ch, cons_b, 1);
+    ASSERT_TRUE(s.channel_access(ch)->ledger.confirmed_version_of(cons_a).has_value())
+        << "prerequisite: confirm at v1 must be recorded (clamp not triggered)";
+    ASSERT_TRUE(s.channel_access(ch)->ledger.confirmed_version_of(cons_b).has_value());
+
+    // Add consumers via ChannelEntry so `_remove_consumer` finds them.
+    HubStateTestAccess::add_consumer(s, ch, make_consumer(cons_a));
+    HubStateTestAccess::add_consumer(s, ch, make_consumer(cons_b));
+    ASSERT_TRUE(s.channel_access(ch)->ledger.confirmed_version_of(cons_a).has_value());
+    ASSERT_TRUE(s.channel_access(ch)->ledger.confirmed_version_of(cons_b).has_value());
+
+    // Non-last consumer drop — channel survives.
+    HubStateTestAccess::remove_consumer(s, ch, cons_a);
+    auto access = s.channel_access(ch);
+    ASSERT_TRUE(access.has_value());
+    EXPECT_FALSE(access->ledger.confirmed_version_of(cons_a).has_value())
+        << "consumer-left must erase confirmed_version[K][consumer_uid] "
+           "symmetric with producer drop paths";
+    // Sibling untouched.
+    EXPECT_TRUE(access->ledger.confirmed_version_of(cons_b).has_value());
+    // Admissions untouched (revocation is a separate concern).
+    EXPECT_TRUE(access->ledger.admission_version_of("PUB-A").has_value());
+}
+
+TEST(HubStateHep0042, ConfirmedVersion_ResetOnConsumerLeft_NoAccessRecord)
+{
+    // Idempotence: consumer-left on a channel with no ChannelAccessEntry
+    // must not crash.  Best-effort semantics (matches producer path).
+    HubState s;
+    const std::string ch     = "ch.no_access";
+    const std::string cons_a = "cons.a.uid";
+    HubStateTestAccess::set_channel_opened(s,
+        make_channel(ch));
+    HubStateTestAccess::add_consumer(s, ch,
+                                      make_consumer(cons_a));
+    // No _on_channel_access_opened, no admissions.
+    EXPECT_FALSE(s.channel_access(ch).has_value());
+    HubStateTestAccess::remove_consumer(s, ch, cons_a);
+    // Still no access record; no crash.
+    EXPECT_FALSE(s.channel_access(ch).has_value());
 }
 
 TEST(HubStateHep0042, ProducerConfirmed_AdvancesConfirmedVersion)
 {
-    // §5.4 step c: _on_producer_confirmed advances
-    // confirmed_version[K][P] to max(current, applied).  Read-back via
-    // channel_access() reflects the new value.
+    // §5.4 step c: `_on_role_confirmed` advances
+    // confirmed_version[K][P] to `max(current, min(applied, ledger.current_version()))`.
+    // Read-back via channel_access() reflects the new value.  The
+    // clamp at ledger.current_version() (INVARIANT-BIND-CONFIRM-1
+    // 2026-07-13) means the test must admit enough pubkeys first to
+    // let the requested applied_version be reached legitimately.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.confirm");
+    for (int i = 0; i < 42; ++i)
+    {
+        HubStateTestAccess::on_consumer_authorized(
+            s, "ch.hep42.confirm",
+            "PUB-" + std::to_string(i));
+    }
+    ASSERT_EQ(s.channel_access("ch.hep42.confirm")->ledger.current_version(),
+              42u);
 
     const auto ret =
-        s._on_producer_confirmed("ch.hep42.confirm", "prod.confirm.uid1", 42);
+        s._on_role_confirmed("ch.hep42.confirm", "prod.confirm.uid1", 42);
     EXPECT_EQ(ret, 42u);
 
     auto access = s.channel_access("ch.hep42.confirm");
     ASSERT_TRUE(access.has_value());
-    auto it = access->confirmed_version_per_producer.find(
-        "prod.confirm.uid1");
-    ASSERT_NE(it, access->confirmed_version_per_producer.end());
-    EXPECT_EQ(it->second, 42u);
+    auto cv = access->ledger.confirmed_version_of("prod.confirm.uid1");
+    ASSERT_TRUE(cv.has_value());
+    EXPECT_EQ(*cv, 42u);
 }
 
 TEST(HubStateHep0042, ProducerConfirmed_MonotonicMax)
@@ -4489,20 +4641,29 @@ TEST(HubStateHep0042, ProducerConfirmed_MonotonicMax)
     // §5.4 step c wording "= max(current, applied)": a lower incoming
     // applied_version must NOT regress the stored confirmed_version.
     // Guards against out-of-order APPLIED_REQ arrivals from the SAME
-    // producer instance (network reorder).
+    // producer instance (network reorder).  Combined with the
+    // ledger's clamp at current_version_ (INVARIANT-BIND-CONFIRM-1
+    // 2026-07-13): a stale wire is absorbed even if it happens to
+    // arrive below current_version.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.hep42.mono");
+    for (int i = 0; i < 15; ++i)
+    {
+        HubStateTestAccess::on_consumer_authorized(
+            s, "ch.hep42.mono",
+            "PUB-" + std::to_string(i));
+    }
 
-    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 10),
+    EXPECT_EQ(s._on_role_confirmed("ch.hep42.mono", "prod.mono.uid1", 10),
               10u);
     // Out-of-order lower version — no regression.
-    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 5),
+    EXPECT_EQ(s._on_role_confirmed("ch.hep42.mono", "prod.mono.uid1", 5),
               10u);
     // Same-version idempotent.
-    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 10),
+    EXPECT_EQ(s._on_role_confirmed("ch.hep42.mono", "prod.mono.uid1", 10),
               10u);
     // Higher advances.
-    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.mono", "prod.mono.uid1", 15),
+    EXPECT_EQ(s._on_role_confirmed("ch.hep42.mono", "prod.mono.uid1", 15),
               15u);
 }
 
@@ -4512,7 +4673,7 @@ TEST(HubStateHep0042, ProducerConfirmed_NoOpOnMissingChannel)
     // access record returns 0 and mutates nothing.  Guards against
     // typo channels reaching the storage layer.
     HubState s;
-    EXPECT_EQ(s._on_producer_confirmed("ch.hep42.does-not-exist",
+    EXPECT_EQ(s._on_role_confirmed("ch.hep42.does-not-exist",
                                         "prod.p1.uid1", 99),
               0u);
     // Verify no access record magically appeared.

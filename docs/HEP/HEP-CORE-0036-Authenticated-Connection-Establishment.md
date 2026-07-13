@@ -3819,18 +3819,19 @@ client, not a server.
    allowlist update — the cache state remains correct regardless of
    what the script does.
 
-6. **Handler emits `CHANNEL_AUTH_APPLIED_REQ` (HEP-CORE-0042 §5.5.2).**
+6. **Handler emits `CHANNEL_AUTH_APPLIED_REQ` (HEP-CORE-0042 §5.5.2
+   unified 2026-07-13).**
    AFTER `set_peer_allowlist` returns success (step 4), the handler
    sends a `CHANNEL_AUTH_APPLIED_REQ` back to the broker with
    `role_type` set to this role's kind (`"consumer"` under fan-in;
    `"producer"` under fan-out / one-to-one) and `applied_version`
    set to the snapshot version from the preceding
-   `GET_CHANNEL_AUTH_ACK`.  The broker updates
-   `ChannelAccessEntry.binding_side_confirmed_allowlist` from this
-   confirmation; that state is the single source of truth for the
-   **mirror-side dialing role's `CHECK_PEER_READY_REQ`** (§6.6.3) —
-   "has the guard's clipboard actually been updated so my next
-   handshake will admit?".  Without this call, a dialing peer that
+   `GET_CHANNEL_AUTH_ACK`.  The broker advances this role's
+   `confirmed_version` in `ChannelAccessEntry.ledger` via
+   `HubState::_on_role_confirmed`; that state backs the
+   **mirror-side dialing role's `CHECK_PEER_READY_REQ`** (§6.6.3)
+   answer via `is_pubkey_visible_to` — "has the guard's clipboard
+   actually been updated so my next handshake will admit?".  Without this call, a dialing peer that
    races the binding-side apply may attempt CURVE handshake against
    a stale ZAP cache and be rejected; libzmq at the client does not
    spontaneously retry a ZAP-denied handshake (documented behaviour
@@ -4387,36 +4388,49 @@ binding-side role IS the guard; it has no handshake to defer) —
 the broker rejects with `NOT_A_ROLE_OF_CHANNEL` in that case as
 well; the wire error message names the mismatch.
 
-**Ready computation.**  When the caller has passed the
-authorization check, the broker looks up
-`ChannelAccessEntry.binding_side_confirmed_allowlist` (populated
-by the binding-side role's `CHANNEL_AUTH_APPLIED_REQ` per
-HEP-CORE-0042 §5.5.2 amended).
+**Ready computation (updated 2026-07-13, HEP-CORE-0042 §5.5.2
+unified).**  When the caller has passed the authorization check,
+the broker resolves the channel's binding-side role_uid from
+topology (fan-in / one-to-one → consumers[0].role_uid; fan-out →
+producers[0].role_uid) and queries
+`HubState::is_pubkey_visible_to(channel_name, binding_role_uid,
+pubkey_z85)`.  That primitive delegates to
+`ChannelAccessEntry.ledger.is_visible_to`, which returns:
 
-- Caller's `pubkey_z85` ∈ `binding_side_confirmed_allowlist` →
-  `status="ready"`.  The binding-side ZAP has this pubkey; the
-  next CURVE handshake will succeed.
-- Caller's `pubkey_z85` ∉ `binding_side_confirmed_allowlist`,
-  but ∈ `authorized_consumer_pubkeys` (the current authoritative
-  allowlist) → `status="not_ready"`, `reason="not_confirmed"`.
-  Broker knows caller is admitted, but binding-side role
-  hasn't yet applied the snapshot that includes them.
-- Caller's `pubkey_z85` ∉ `authorized_consumer_pubkeys` →
-  `status="not_ready"`, `reason="not_admitted"`.  Broker
-  has not yet admitted this caller (either genuinely not
-  authorised, or its admission is in flight but not yet
-  visible).
+- `true` iff `pubkey_z85` is currently admitted AND
+  `admission_version(pubkey_z85) <= confirmed_version(binding_role_uid)`
+  → wire `status="ready"`.  The binding-side ZAP has this pubkey;
+  the next CURVE handshake will succeed.
+- `false` iff `pubkey_z85` is admitted but its admission version
+  is ahead of the binding role's last confirmation → wire
+  `status="not_ready"`, `reason="not_confirmed"`.  Broker knows
+  caller is admitted, but binding-side role hasn't yet applied the
+  snapshot that includes them.
+- `false` iff `pubkey_z85` is not currently admitted → wire
+  `status="not_ready"`, `reason="not_admitted"`.  Broker has not
+  yet admitted this caller (either genuinely not authorised, or
+  its admission is in flight but not yet visible).
+- `nullopt` iff `binding_role_uid` has never sent an APPLIED_REQ →
+  wire `status="not_ready"`, `reason="not_confirmed"`.
 
-**Rationale for using confirmed-set membership (not version
-arithmetic).**  Broker could in principle track the
-`channel_version` at which each producer was admitted and require
-`consumer_confirmed_version >= admit_version_for_P`, but the set-
-membership check is topology-symmetric with the ZAP check that
-actually runs at CURVE handshake time.  A match here means the
-handshake will succeed (up to the observation window in §I11);
-no separate arithmetic to reason about.  Broker's per-channel
-state grows by one `unordered_set<pubkey_z85>` per channel — the
-same shape as `authorized_consumer_pubkeys`.
+**Rationale for version arithmetic (HEP-CORE-0042 §5.5.2
+INVARIANT-BIND-CONFIRM-2).**  The pre-2026-07-13 wording of this
+section endorsed a set-membership check against a
+`binding_side_confirmed_allowlist` snapshot.  Test #2480 exposed
+that snapshot as race-prone: broker snapshotted its own current
+`authorized_consumer_pubkeys` at APPLIED_REQ time, over-confirming
+pubkeys admitted after the consumer's APPLIED_REQ was sent but
+before broker processed it.  The corrected mechanism is per-role
+`confirmed_version` compared against per-pubkey `admission_version`
+— the same primitive fan-out has always used for
+`CONSUMER_ATTACH_REQ_ZMQ`.  Broker's per-channel state is now one
+`VersionedAdmissionLedger<pubkey_z85, role_uid>` per channel, which
+consolidates the pre-2026-07-13 four-field mix
+(`authorized_consumer_pubkeys`, `channel_version`,
+`confirmed_version_per_producer`,
+`binding_side_confirmed_allowlist`) into a single primitive with
+tested invariants.  See `docs/tech_draft/DRAFT_versioned_admission_ledger_2026-07-13.md`
+for the timeline evidence.
 
 **Polling cadence.**  Producer polls at 100 ms
 (`kLoopReadyPollInterval` in `loop_timing_policy.hpp`; same

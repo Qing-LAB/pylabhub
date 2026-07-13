@@ -2498,9 +2498,19 @@ void RoleAPIBase::handle_channel_auth_notifies(
                     const bool ok = admission->set_peer_allowlist(allowlist);
                     if (ok)
                     {
+                        // Event-summary log (dispatcher-level).  Content
+                        // of the snapshot is enumerated as a diff at the
+                        // install site in `ZmqQueue::set_peer_allowlist`
+                        // — see there for the `added=/removed=` trace
+                        // that reconstructs the full pubkey table by
+                        // timestamp replay.  Kept size-only here so the
+                        // dispatcher's timing profile does not shift
+                        // (string ops in the NOTIFY-handler stack unwind
+                        // were closing the race window we were trying
+                        // to observe — 2026-07-12).
                         LOGGER_INFO(
-                            "[{}/{}] applied channel '{}' allowlist (size={}, "
-                            "reason='{}', HEP-CORE-0036 §6.5)",
+                            "[{}/{}] applied channel '{}' allowlist "
+                            "(size={}, reason='{}', HEP-CORE-0036 §6.5)",
                             pImpl->short_tag, pImpl->uid, channel,
                             allowlist.peers.size(), reason);
                     }

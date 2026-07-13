@@ -275,12 +275,16 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// and `instance_id > 0` (stale-instance guard); broker updates
     /// `confirmed_version[K][P]` and drains pending attach queue.
     ///
-    /// Consumer branch (HEP-CORE-0042 §5.5.2 amendment 2026-07-11):
+    /// Consumer branch (HEP-CORE-0042 §5.5.2 unified 2026-07-13):
     /// caller passes `role_type="consumer"` with `instance_id=0` (no
-    /// stale-instance race on the consumer path); broker snapshots
-    /// `authorized_consumer_pubkeys` into
-    /// `binding_side_confirmed_allowlist` so subsequent
-    /// `CHECK_PEER_READY_REQ` callers see the applied set.
+    /// stale-instance race on the consumer path); broker calls
+    /// `ledger.confirm(role_uid, applied_version)` — advancing the
+    /// role's confirmed_version by the same primitive the producer
+    /// branch uses.  Subsequent `CHECK_PEER_READY_REQ` callers get
+    /// answered via `ledger.is_visible_to`.  Broker MUST NOT snapshot
+    /// its own current admission state — that was the pre-2026-07-13
+    /// bug (test #2480 race).  The ledger's `confirm` also CLAMPS
+    /// applied_version at `current_version_` (INVARIANT-BIND-CONFIRM-1).
     ///
     /// Single wire, single BRC method — role_type discriminates the
     /// two semantics on the broker side per HEP-CORE-0036 §I9.1 (the

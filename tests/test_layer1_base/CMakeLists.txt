@@ -439,6 +439,39 @@ gtest_discover_tests(test_layer1_reg_admission_pipeline
         TIMEOUT 30
 )
 
+# ============================================================================
+# Test: VersionedAdmissionLedger (header-only template) — the primitive
+# that fan-in/fan-out/one-to-one topologies all reduce to (HEP-CORE-0042
+# §5.5.2 INVARIANT-BIND-CONFIRM-1..3).
+# ============================================================================
+
+add_executable(test_layer1_versioned_admission_ledger
+    test_versioned_admission_ledger.cpp
+)
+
+target_link_libraries(test_layer1_versioned_admission_ledger
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_versioned_admission_ledger)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_versioned_admission_ledger
+    SUITE_NAME "Layer1_VersionedAdmissionLedger"
+)
+layer1_require_staged_utils(test_layer1_versioned_admission_ledger)
+
+gtest_discover_tests(test_layer1_versioned_admission_ledger
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer1;admission;ledger;hep0042"
+        TIMEOUT 30
+)
+
 message(STATUS "Layer 1 (Base) tests configured successfully")
 message(STATUS "  - test_layer1_spinlock")
 message(STATUS "  - test_layer1_recursion_guard")
@@ -450,3 +483,4 @@ message(STATUS "  - test_layer1_module_def")
 message(STATUS "  - test_layer1_debug_info")
 message(STATUS "  - test_layer1_periodic_task")
 message(STATUS "  - test_layer1_wire_envelope")
+message(STATUS "  - test_layer1_versioned_admission_ledger")

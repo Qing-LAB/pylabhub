@@ -37,6 +37,7 @@
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
 #include "utils/schema_record.hpp"  // SchemaRecord, SchemaRegOutcome, CitationOutcome
+#include "utils/versioned_admission_ledger.hpp"
 
 #include <array>
 #include <chrono>
@@ -225,10 +226,11 @@ struct ConsumerEntry
     /// Consumer's CURVE pubkey (Z85, exactly 40 chars).  Mirrors the
     /// producer-side `ProducerEntry::zmq_pubkey` field — populated from
     /// CONSUMER_REG_REQ wire body at REG accept (HEP-CORE-0036 §6.5).
-    /// Used by the broker to populate
-    /// `ChannelAccessEntry::authorized_consumer_pubkeys` via
-    /// `_on_consumer_authorized` and to revoke via `_on_consumer_revoked`
-    /// at DEREG / heartbeat timeout.  Wire admission HARD-REJECTS empty
+    /// Used by the broker to admit into
+    /// `ChannelAccessEntry::ledger` via `_on_consumer_authorized`
+    /// (→ `ledger.admit`) and to revoke via `_on_consumer_revoked`
+    /// (→ `ledger.revoke`) at DEREG / heartbeat timeout — HEP-CORE-
+    /// 0042 §5.5.2 unified 2026-07-13.  Wire admission HARD-REJECTS empty
     /// or non-40-char values per HEP-CORE-0035 §2 (unconditional CURVE);
     /// every stored ConsumerEntry must carry a 40-char Z85 key.
     /// "No-self-claims" hardening (User-Id extraction) is a separate
@@ -373,13 +375,17 @@ struct ChannelTransportInvariants
     std::string data_transport{"shm"};
 };
 
-/// HEP-CORE-0036 §4.1 — per-channel access scaffolding.
-///   - `authorized_consumer_pubkeys`: Z85 (40-char) consumer pubkeys
-///     allowed to pull from this channel.  Producer's ZAP handler
-///     enforces; updated via CHANNEL_AUTH_UPDATE pushes (HEP-0036 §6.5).
-///     Per-channel, NOT per-producer — a consumer authorized for a
-///     channel can connect to ANY producer of that channel (fan-in
-///     per HEP-CORE-0023 §2.1.1).
+/// HEP-CORE-0036 §4.1 + HEP-CORE-0042 §5.5.2 — per-channel access
+/// scaffolding.
+///   - `ledger` (`VersionedAdmissionLedger<pubkey, role_uid>`, 2026-07-13):
+///     the unified admission book-keeping primitive.  Z85 (40-char)
+///     pubkeys of dialing-side peers admitted to the channel are stored
+///     as `admit`s; the binding-side ZAP admits the CURVE handshake iff
+///     `ledger.is_visible_to(binding_role_uid, pk)` returns true.
+///     Per-channel, NOT per-producer — under fan-in, an admitted
+///     producer's pubkey is visible to the single binding-side consumer
+///     regardless of which producer entry initiated the REG (HEP-CORE-
+///     0023 §2.1.1).
 ///
 /// Per-producer identity (pubkey + endpoint) is NOT duplicated here —
 /// it lives on `ProducerEntry::zmq_pubkey` + `zmq_node_endpoint`.
@@ -390,70 +396,44 @@ struct ChannelTransportInvariants
 /// (HEP-CORE-0041 §5.5), not a broker-minted shared token.
 struct ChannelAccessEntry
 {
-    std::unordered_set<std::string> authorized_consumer_pubkeys;
-
-    /// HEP-CORE-0042 §5.2 — `channel_version[K]`.  Monotonic uint64_t
-    /// bumped on ANY mutation to `authorized_consumer_pubkeys` (add /
-    /// remove / any consumer pubkey change).  Shared across all
-    /// producers on the channel.  Bumped in `_on_consumer_authorized`
-    /// and `_on_consumer_revoked` (2026-07-01, Phase 2.2).  At 1
-    /// mutation per ms, wraparound is >584 million years — practically
-    /// infinite.  Read by the ZMQ pre-attach fast-path in
-    /// `handle_consumer_attach_req_zmq`.
-    std::uint64_t channel_version = 0;
-
-    /// HEP-CORE-0042 §5.2 — `confirmed_version[K][P]`.  Per-producer
-    /// uint64_t; the highest allowlist snapshot version each
-    /// producer's current instance has confirmed applying via
-    /// `CHANNEL_AUTH_APPLIED_REQ`.  Keyed by producer `role_uid`.
-    /// Reset to 0 by erasing the map entry on the two normative
-    /// §5.4 trigger paths that leave the channel alive:
-    /// - Producer re-registration under the same role_uid
-    ///   (`_on_producer_added`, alongside the `HubState::producer_instance`
-    ///   bump — atomically under the writer lock).
-    /// - Producer disconnect / drop — VoluntaryDereg via
-    ///   `_on_producer_dropped` non-last-producer branch, and
-    ///   HeartbeatTimeout (kDead) via `_on_pending_timeout` non-
-    ///   last-producer branch.
-    /// The last-producer branch of either path is expected to be
-    /// followed by `_on_channel_access_closed(channel)` (which
-    /// erases the entire `ChannelAccessEntry` including this map).
-    /// That call site is a caller responsibility — verify at the
-    /// call chain rather than assume it fires automatically from the
-    /// producer-drop op.  Broker restart is naturally clean (fresh
-    /// state).  Read by the fast-path check
-    /// `confirmed_version[K][P] >= channel_version[K]`; a missing
-    /// map entry is treated as 0 by `handle_consumer_attach_req_zmq`
-    /// (§5.4 fast-path).
-    std::unordered_map<std::string, std::uint64_t>
-        confirmed_version_per_producer;
-
-    /// HEP-CORE-0036 §6.6.3 — snapshot of `authorized_consumer_pubkeys`
-    /// (topology-agnostic name; under fan-in these are producer
-    /// pubkeys) at the moment the binding-side role most recently
-    /// confirmed applying its ZAP allowlist via extended
-    /// `CHANNEL_AUTH_APPLIED_REQ` (HEP-CORE-0042 §5.5.2 amendment,
-    /// `role_type="consumer"` or `role_type="producer"` per
-    /// topology).  Read by `handle_check_peer_ready_req` to answer
-    /// the mirror-side dialing role's "am I ready to connect?"
-    /// query.  A caller pubkey's presence in this set means the
-    /// binding-side ZAP has that pubkey and the next CURVE handshake
-    /// will succeed.
+    /// HEP-CORE-0042 §5.5.2 (unified 2026-07-13) — the single primitive
+    /// that all three topologies (fan-in / fan-out / one-to-one) reduce
+    /// to.  Admissions carry monotonic versions; roles carry confirmed-
+    /// versions advanced by `CHANNEL_AUTH_APPLIED_REQ`; a peer is
+    /// visible to a role iff `admission_version(pk) <=
+    /// confirmed_version(role)`.
     ///
-    /// Empty initially — until the binding-side role's first
-    /// APPLIED_REQ arrives, `CHECK_PEER_READY_REQ` returns
-    /// `status="not_ready"` even for admitted callers.  This is
-    /// correct: the binding-side ZAP has nothing configured yet, so
-    /// a handshake attempt would be denied regardless.
+    /// Replaces the pre-2026-07-13 quartet of `authorized_consumer_pubkeys`
+    /// (set) + `channel_version` (uint64_t) + `confirmed_version_per_producer`
+    /// (map) + `binding_side_confirmed_allowlist` (set).  The old
+    /// set-snapshot mechanism was race-prone: broker over-confirmed
+    /// pubkeys admitted after the consumer's APPLIED_REQ was sent but
+    /// before broker processed it (test #2480, 2026-07-12).
     ///
-    /// Reset triggers (same discipline as `confirmed_version_per_producer`
-    /// per HEP-CORE-0042 §5.4):
-    /// - Channel-access close (`_on_channel_access_closed` erases the
-    ///   entire entry).
-    /// - No per-role reset needed — the binding-side role is
-    ///   singular per channel; a fresh binding-side registration
-    ///   drives a fresh apply → APPLIED_REQ chain that repopulates.
-    std::unordered_set<std::string> binding_side_confirmed_allowlist;
+    /// - `ledger.admit(pk)` — replaces `authorized_consumer_pubkeys.insert(pk)`
+    ///   AND `++channel_version` on genuine mutation (idempotent no-bump
+    ///   on re-admit).
+    /// - `ledger.revoke(pk)` — replaces `.erase(pk)` + `++channel_version`.
+    /// - `ledger.confirm(role_uid, applied_version)` — replaces both
+    ///   `confirmed_version_per_producer[role_uid]` advance AND (for the
+    ///   binding-side role) the buggy `binding_side_confirmed_allowlist`
+    ///   snapshot.
+    /// - `ledger.is_visible_to(role_uid, pk)` — the single query behind
+    ///   `handle_check_peer_ready_req` (fan-in/one-to-one) AND
+    ///   `handle_consumer_attach_req_zmq` fast-path (fan-out; unchanged
+    ///   semantically, now shares primitive).
+    /// - `ledger.current_version()` — replaces `channel_version`.
+    /// - `ledger.admitted_snapshot()` — replaces iteration over
+    ///   `authorized_consumer_pubkeys`.
+    /// - `ledger.reset_role_confirmation(role_uid)` — the per-role reset
+    ///   used on producer re-registration + non-last-producer drop
+    ///   (HEP-CORE-0042 §5.4) + consumer non-last-consumer drop (symmetric).
+    ///
+    /// Whole-entry teardown: `_on_channel_access_closed` erases the
+    /// entire `ChannelAccessEntry` from `channel_access_index`, so the
+    /// ledger is destroyed with the containing entry.  There is no
+    /// separate `ledger.reset()` — the destructor is the reset.
+    VersionedAdmissionLedger<std::string, std::string> ledger;
 };
 
 enum class AddProducerResult
@@ -683,22 +663,17 @@ struct ChannelEntry
     /// - 1-to-1 SHM: producer's capability-transport socket.
     std::optional<std::string> data_endpoint;
 
-    /// Monotonic version bumped each time the ZAP allowlist changes
-    /// (dialing-side REG admitted or DEREG'd/timed-out — `phase=admitted`
-    /// or `phase=left` per HEP-CORE-0007 §12.5).  NOT bumped on
-    /// `phase=live` NOTIFYs (those don't change the allowlist).
-    ///
-    /// `role_registration_version` for a pending dialing-side REG_REQ
-    /// captures this value at admission time; R6 releases the REG_REQ
-    /// once `confirmed_version >= role_registration_version`.
-    uint64_t channel_version{0};
-
-    /// Scalar per-channel confirmed-applied version.  Tracks the
-    /// binding side's applied-allowlist snapshot per tech draft §5.6.
-    /// Written by the `CHANNEL_AUTH_APPLIED_REQ` handler when the
-    /// binding side confirms it applied allowlist version V.
-    /// Monotonic — later versions win.
-    uint64_t confirmed_version{0};
+    // The per-channel admission version + per-role confirmed_version
+    // live on `ChannelAccessEntry::ledger` (HEP-CORE-0042 §5.5.2
+    // unified 2026-07-13).  The historical scalar fields
+    // `channel_version{0}` and `confirmed_version{0}` were RETIRED
+    // 2026-07-13: they had no writer and shipped 0 to every reader
+    // (broker_service.cpp's fan-in REG_ACK `snapshot_version`,
+    // CHANNEL_AUTH_CHANGED_NOTIFY payload, broker_reg_handler.cpp's
+    // `translate_producer_admission`, hub_state_json.cpp's admin
+    // serializer).  All readers now source these values from
+    // `HubState::channel_access(K)->ledger.current_version()` and
+    // `->ledger.max_confirmed_version()`.
 
     // ── end topology-migration state fields ───────────────────────────
 
@@ -971,12 +946,14 @@ struct ChannelEntry
 
     // ── Topology-migration mutators ──────────────────────────────────
     //
-    // Fields (`topology`, `data_endpoint`, `channel_version`,
-    // `confirmed_version`) are public — the struct is directly
-    // mutated by `HubState`'s admission machinery under its writer
-    // lock.  These methods encapsulate the mutators that carry
-    // non-trivial invariants (idempotence, monotonicity, bump-then-
-    // return) — direct field reads/writes suffice for everything else.
+    // Fields (`topology`, `data_endpoint`) are public — the struct is
+    // directly mutated by `HubState`'s admission machinery under its
+    // writer lock.  Historical `channel_version` / `confirmed_version`
+    // scalar fields + their `bump_channel_version` /
+    // `set_confirmed_version` mutators were RETIRED 2026-07-13 —
+    // superseded by `ChannelAccessEntry::ledger` (HEP-CORE-0042 §5.5.2
+    // unified 2026-07-13).  The ledger is the single source of truth
+    // for both per-channel admission version and per-role confirmation.
 
     /// Set the data-plane endpoint per HEP-CORE-0021 §16.4.  Called
     /// by the `ENDPOINT_UPDATE_REQ` handler after validating the
@@ -985,25 +962,6 @@ struct ChannelEntry
     void set_data_endpoint(std::string endpoint) noexcept
     {
         data_endpoint = std::move(endpoint);
-    }
-
-    /// Bump the allowlist version and return the new value.  Called
-    /// on dialing-side admit / DEREG / heartbeat-timeout
-    /// (phase=admitted / phase=left per HEP-CORE-0007 §12.5).  NOT
-    /// called on phase=live transitions.
-    uint64_t bump_channel_version() noexcept
-    {
-        return ++channel_version;
-    }
-
-    /// Record the binding side's confirmed-applied version.
-    /// Monotonic — silently ignores calls with
-    /// `applied <= confirmed_version` (out-of-order or duplicate
-    /// APPLIED_REQs).
-    void set_confirmed_version(uint64_t applied) noexcept
-    {
-        if (applied > confirmed_version)
-            confirmed_version = applied;
     }
 
     // ── end topology-migration mutators ──────────────────────────────
@@ -1689,51 +1647,65 @@ class PYLABHUB_UTILS_EXPORT HubState
                 std::uint64_t     wall_ts,
                 std::uint64_t     window_ms);
 
-    /// HEP-CORE-0042 §5.4 (APPLIED_REQ handler drain step).  Advance
-    /// `confirmed_version[K][P]` to `max(current, new_version)` and
-    /// return the new value.  No-op returning 0 if the channel access
-    /// record does not exist.  Called after the stale-instance guard
-    /// passes; caller is the APPLIED_REQ handler on the broker's
-    /// single-threaded ROUTER dispatch.
-    std::uint64_t
-    _on_producer_confirmed(const std::string &channel_name,
-                           const std::string &producer_role_uid,
-                           std::uint64_t      applied_version);
-
-    /// HEP-CORE-0042 §5.5.2 amendment 2026-07-11 + HEP-CORE-0036 §6.6.3 —
-    /// snapshot the current `authorized_consumer_pubkeys` into
-    /// `binding_side_confirmed_allowlist`.  Called from the broker's
-    /// `handle_channel_auth_applied_req` handler on the consumer-side
-    /// branch (fan-in) — the binding-side role confirms it has
-    /// applied its ZAP allowlist and the broker records the snapshot
-    /// so subsequent `CHECK_PEER_READY_REQ` callers can answer
-    /// authoritatively.  Under fan-out / one-to-one, the mirror
-    /// direction (producer-side confirmation) uses
-    /// `_on_producer_confirmed` above with the `confirmed_version[K][P]`
-    /// versioning discipline — that path is unchanged.
+    /// HEP-CORE-0042 §5.4 + §5.5.2 (unified 2026-07-13) — advance
+    /// `ledger.confirm(role_uid, applied_version)` for the named
+    /// channel.  Role-agnostic: works for BOTH the fan-in consumer
+    /// (binding-side) branch AND the fan-in dialing producer branch
+    /// AND the fan-out binding-side producer branch — they all share
+    /// this primitive per INVARIANT-BIND-CONFIRM-1.  Returns the
+    /// role's confirmed_version after the advance.  No-op returning
+    /// 0 if the channel access record does not exist.
     ///
-    /// No-op on missing `ChannelAccessEntry` — a missing record
-    /// means the channel is being torn down; the confirmation is
-    /// silently lost per the same failure-tolerance discipline as
-    /// `_on_producer_confirmed`.
-    void
-    _on_binding_confirmed(const std::string &channel_name);
+    /// Renamed from `_on_producer_confirmed` (2026-07-13) — the old
+    /// name reflected the pre-unification per-producer semantics and
+    /// is now misleading.
+    std::uint64_t
+    _on_role_confirmed(const std::string &channel_name,
+                       const std::string &role_uid,
+                       std::uint64_t      applied_version);
 
-    /// HEP-CORE-0036 §6.6.3 — read-only accessor returning whether
-    /// the caller's pubkey is present in
-    /// `binding_side_confirmed_allowlist` for the named channel.
-    /// Backs the `CHECK_PEER_READY_REQ` handler.  Returns `std::nullopt`
-    /// if the channel has no `ChannelAccessEntry` (matches the
-    /// "no such channel-access record" semantics of other read
-    /// accessors on this axis); returns `false` if the entry exists
-    /// but the pubkey is not present (also covering the "not yet
-    /// admitted" case, since a pubkey only enters
-    /// `binding_side_confirmed_allowlist` via
-    /// `authorized_consumer_pubkeys` at binding-side confirmation
-    /// time).
+    /// HEP-CORE-0036 §6.6.3 + HEP-CORE-0042 §5.5.2 INVARIANT-BIND-
+    /// CONFIRM-2 — the core dialing-role readiness query.  Returns
+    /// whether the dialing role's pubkey is currently visible to the
+    /// binding role on the named channel: admitted AND admission_version
+    /// <= binding_role's confirmed_version.
+    ///
+    /// Returns `std::nullopt` on missing `ChannelAccessEntry` OR on a
+    /// binding role that has never confirmed anything (wire callers
+    /// surface these as `not_ready`, `reason="not_confirmed"`).
+    /// Returns `false` when the pubkey is not currently admitted or
+    /// its admission_version is ahead of the binding role's
+    /// confirmed_version (`reason="not_admitted"` / racing catch-up).
+    /// Returns `true` when the CURVE handshake will succeed.
+    ///
+    /// Replaces the pre-2026-07-13 `is_pubkey_in_binding_confirmed`
+    /// which used a set-snapshot mechanism (`_on_binding_confirmed`
+    /// copying current `authorized_consumer_pubkeys` at APPLIED_REQ
+    /// time — race-prone, see test #2480 evidence 2026-07-12).
     [[nodiscard]] std::optional<bool>
-    is_pubkey_in_binding_confirmed(const std::string &channel_name,
-                                    const std::string &pubkey_z85) const;
+    is_pubkey_visible_to(const std::string &channel_name,
+                          const std::string &binding_role_uid,
+                          const std::string &pubkey_z85) const;
+
+    /// HEP-CORE-0042 §5.5.2 registration guard primitive (2026-07-13).
+    /// Returns true iff `role_uid` is currently registered on
+    /// `channel_name` in the container matching `role_type` (which
+    /// must be one of `"producer"` or `"consumer"`).  Any other
+    /// `role_type` value returns false (used to reject malformed wire
+    /// input at the handler boundary).  Returns false if
+    /// `channel_name` has no `ChannelEntry`.
+    ///
+    /// Backs both `CHANNEL_AUTH_APPLIED_REQ`'s registration guard
+    /// (Agent-2 finding 2026-07-13 — prevents cross-role
+    /// confirmed_version poisoning) AND `CHECK_PEER_READY_REQ`'s
+    /// dialing-side check (HEP-CORE-0036 §6.6.3).  Extracted here so
+    /// the handlers share one primitive with tested semantics
+    /// (mismatched role_type, empty channel, empty role_uid all
+    /// deterministic).
+    [[nodiscard]] bool
+    is_role_registered_on_channel(const std::string &channel_name,
+                                    const std::string &role_uid,
+                                    const std::string &role_type) const;
 
     /// Wave M1.4 (2026-05-11) — per-channel metrics aggregator.
     ///

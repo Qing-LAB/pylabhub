@@ -169,16 +169,28 @@ nlohmann::json build_current_check_peer_ready_req_payload()
 
 TEST(WireAdapterFamily, RegFamilyIdentifiedByMsgType)
 {
+    // HEP-CORE-0046 §I-REPLAY-BOUND — the 6 msg_types that MUST carry
+    // (client_nonce, client_wall_ts, envelope_hash) per the invariant.
+    // Pinned as a full list here so any silent drop or addition
+    // surfaces at L1 before Tier 2 wire migration touches it.  The
+    // pre-Tier-2 list omitted CHANNEL_AUTH_APPLIED_REQ and
+    // CONSUMER_DEREG_REQ — that omission was a bug pinned by the
+    // pre-Tier-2 negative EXPECT_FALSE line for CHANNEL_AUTH_APPLIED_REQ,
+    // which retired 2026-07-13 when the list was corrected.
     EXPECT_TRUE(msg_type_carries_security_triple("REG_REQ"));
     EXPECT_TRUE(msg_type_carries_security_triple("CONSUMER_REG_REQ"));
-    EXPECT_TRUE(msg_type_carries_security_triple("DEREG_REQ"));
     EXPECT_TRUE(msg_type_carries_security_triple("ENDPOINT_UPDATE_REQ"));
+    EXPECT_TRUE(msg_type_carries_security_triple("CHANNEL_AUTH_APPLIED_REQ"));
+    EXPECT_TRUE(msg_type_carries_security_triple("DEREG_REQ"));
+    EXPECT_TRUE(msg_type_carries_security_triple("CONSUMER_DEREG_REQ"));
 
     EXPECT_FALSE(msg_type_carries_security_triple("GET_CHANNEL_AUTH_REQ"));
     EXPECT_FALSE(msg_type_carries_security_triple("CHECK_PEER_READY_REQ"));
-    EXPECT_FALSE(msg_type_carries_security_triple("CHANNEL_AUTH_APPLIED_REQ"));
     EXPECT_FALSE(msg_type_carries_security_triple(""));
     EXPECT_FALSE(msg_type_carries_security_triple("HEARTBEAT_REQ"));
+    // NOTIFYs and ACKs are not REG-family per §I-MSG-TYPE-TAXONOMY.
+    EXPECT_FALSE(msg_type_carries_security_triple("CHANNEL_AUTH_CHANGED_NOTIFY"));
+    EXPECT_FALSE(msg_type_carries_security_triple("REG_ACK"));
 }
 
 // ── REG-family round-trip: fields preserved + security triple injected ─

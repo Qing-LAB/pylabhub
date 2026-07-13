@@ -1089,6 +1089,50 @@ bool ZmqQueue::set_peer_allowlist(
     // inherited PeerAllowlist mutator is inert on them.
     if (!pImpl->bind_socket)
         return false;
+
+    // Diff-based install log — event-sourcing over the ZAP allowlist.
+    // Reader replays `added=/removed=` lines against timestamps to
+    // reconstruct the full snapshot at any point.  Idempotent replays
+    // (broker fires NOTIFY twice per admission) log nothing so the
+    // signal is O(delta), not O(size).  Correlates 1:1 with
+    // `ZapRouter::pump_one: ALLOW/DENY pubkey=...` on the pump thread
+    // — timestamp gap between an `added=[X]` line and a `DENY pubkey=X`
+    // line pins the exact race window in which the peer dialed before
+    // its pubkey was installed.
+    auto prev = pImpl->allowlist_.load(std::memory_order_acquire);
+    std::set<std::string> now_keys;
+    for (const auto &p : allowlist.peers)
+        now_keys.insert(p.data);
+    std::set<std::string> prev_keys;
+    if (prev)
+    {
+        for (const auto &p : prev->peers) prev_keys.insert(p.data);
+    }
+    std::vector<std::string> added, removed;
+    std::set_difference(now_keys.begin(), now_keys.end(),
+                        prev_keys.begin(), prev_keys.end(),
+                        std::back_inserter(added));
+    std::set_difference(prev_keys.begin(), prev_keys.end(),
+                        now_keys.begin(), now_keys.end(),
+                        std::back_inserter(removed));
+    if (!added.empty() || !removed.empty())
+    {
+        auto join = [](const std::vector<std::string> &v) {
+            std::string s;
+            for (const auto &e : v)
+            {
+                if (!s.empty()) s += ",";
+                s += e;
+            }
+            return s;
+        };
+        LOGGER_INFO(
+            "[hub::ZmqQueue::set_peer_allowlist] endpoint='{}' zap_domain='{}' "
+            "delta: added=[{}] removed=[{}] new_size={} (HEP-CORE-0036 §6.5)",
+            pImpl->endpoint, pImpl->resolved_zap_domain_,
+            join(added), join(removed), now_keys.size());
+    }
+
     pImpl->allowlist_.store(
         std::make_shared<const pylabhub::utils::security::PeerAllowlist>(
             std::move(allowlist)),

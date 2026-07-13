@@ -245,7 +245,12 @@ nlohmann::json HubAPI::list_channels() const
     for (const auto &kv : snap.channels)
     {
         const auto obs = pylabhub::hub::observe_channel(kv.second, snap);
-        arr.push_back(pylabhub::hub::channel_to_json(kv.second, obs));
+        // Fetch the paired ChannelAccessEntry so channel_to_json can
+        // source `channel_version` + `confirmed_version` from the unified
+        // ledger (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  Access may
+        // be absent for a channel that has no admissions yet.
+        const auto access = impl_->host->state().channel_access(kv.first);
+        arr.push_back(pylabhub::hub::channel_to_json(kv.second, obs, access));
     }
     return arr;
 }
@@ -265,7 +270,8 @@ nlohmann::json HubAPI::get_channel(const std::string &name) const
     if (cit == snap.channels.end())
         return nullptr;
     const auto obs = pylabhub::hub::observe_channel(cit->second, snap);
-    return pylabhub::hub::channel_to_json(cit->second, obs);
+    const auto access = impl_->host->state().channel_access(name);
+    return pylabhub::hub::channel_to_json(cit->second, obs, access);
 }
 
 nlohmann::json HubAPI::list_roles() const

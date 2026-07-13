@@ -303,6 +303,34 @@ Direction: consumer → broker.
 > `ChannelAccessEntry`.  Existing producer emitters are wire-
 > compatible with the amended broker (`role_type` defaults to
 > `"producer"` when absent).
+>
+> **Amendment 2026-07-13 (unified ledger).**  The 2026-07-11
+> amendment introduced a SEPARATE confirmation state on
+> `ChannelAccessEntry` for the consumer branch —
+> `binding_side_confirmed_allowlist`, a set snapshotted from
+> the CURRENT `authorized_consumer_pubkeys` at each APPLIED_REQ.
+> This set-snapshot mechanism was race-prone: if a new admission
+> landed at broker between the consumer sending APPLIED_REQ(V)
+> and broker processing it, broker over-confirmed — its snapshot
+> included pubkeys the consumer had NOT installed at version V.
+> Test #2480 (`ZmqE2E_MultiProducer_TwoAuthorized`) exposed
+> this: producer B's CURVE handshake arrived at consumer ~50ms
+> before consumer's second APPLIED_REQ, was ZAP-DENIED
+> terminally (2026-07-12 evidence at
+> `docs/tech_draft/DRAFT_versioned_admission_ledger_2026-07-13.md`).
+>
+> This amendment retires the separate consumer state and
+> unifies both branches under a single primitive:
+> `VersionedAdmissionLedger<pubkey, role_uid>` on
+> `ChannelAccessEntry`.  Every mutation of the admitted set
+> assigns a monotonic version to the mutated pubkey; every
+> APPLIED_REQ (producer OR consumer) advances that role's
+> confirmed_version; visibility is
+> `admission_version(pk) <= confirmed_version(role_uid)`.
+> The unified primitive removes the class of "set-snapshot vs
+> current-state" bugs entirely — see INVARIANT-BIND-CONFIRM-1..3
+> in §5.5.2.1 below.  Wire is UNCHANGED: `applied_version` is
+> the only per-message state; no field addition.
 
 Direction: binding-side role → broker.  Sent after the binding-side role's per-connection auth cache (ZAP allowlist) has successfully applied the pulled allowlist snapshot.  Used by the broker to answer the mirror-side dialing role's `CHECK_PEER_READY_REQ` (HEP-CORE-0036 §6.6.3) — "has the guard's clipboard actually been updated so my handshake will admit?".
 
@@ -322,10 +350,12 @@ Direction: binding-side role → broker.  Sent after the binding-side role's per
 - `instance_id` — REQUIRED for `role_type="producer"` (producer's shift number per §5.5.3, closes the stale-instance race for producer paths).  MUST be omitted / ignored for `role_type="consumer"` (consumers do not have `instance[C]` state — a consumer's re-registration re-runs the entire notify-then-pull cycle before it can call APPLIED_REQ again, so there is no stale-message race to close).
 - `applied_version` — the `snapshot_version` from the preceding `GET_CHANNEL_AUTH_ACK`.
 
-**Broker handler branch by `role_type`:**
+**Broker handler branch by `role_type`** (unified 2026-07-13):
 
-- **`"producer"`** — unchanged: stale-instance guard against `instance[P]`; advance `confirmed_version[K][P]`; drain matching entries in `pending_attach_queue_[K][P]` per §5.4 step d.
-- **`"consumer"`** — no stale-instance guard; call `HubState::_on_binding_confirmed(channel_name)` which snapshots the current `ChannelAccessEntry.authorized_consumer_pubkeys` (topology-agnostic name; under fan-in these are producer pubkeys) into `ChannelAccessEntry.binding_side_confirmed_allowlist`.  This snapshot is what `CHECK_PEER_READY_REQ` (§6.6.3) reads to answer "is the caller admitted at the confirmed snapshot?".  No pending-queue drain (fan-in has no attach-time coordination — the equivalent guarantee for the fan-in dialing producer runs through `CHECK_PEER_READY_REQ`'s pull, not a broker-held queue).
+Both branches converge on the same primitive: `HubState::_on_role_confirmed(channel, role_uid, applied_version)` → `ledger.confirm(role_uid, applied_version)`.  The branches differ only in guards / side effects:
+
+- **`"producer"`** — stale-instance guard against `instance[P]` (§5.4 step a); then advance ledger; then drain matching entries in `pending_attach_queue_[K][P]` per §5.4 step d.
+- **`"consumer"`** — no stale-instance guard (consumer has no `instance[C]` state); then advance ledger.  No pending-queue drain (fan-in has no attach-time coordination — the equivalent guarantee for the fan-in dialing producer runs through `CHECK_PEER_READY_REQ`'s pull, not a broker-held queue).
 
 **Reply:**
 ```json
@@ -334,7 +364,23 @@ Direction: binding-side role → broker.  Sent after the binding-side role's per
 
 Silent drop on stale `instance_id` (producer path only) — the caller's local ack timeout handles the missing reply path.
 
-**State model interaction (fan-in only).**  The consumer's APPLIED_REQ handler updates `ChannelAccessEntry.binding_side_confirmed_allowlist`.  This is the single source of truth for `CHECK_PEER_READY_REQ`.  A producer's readiness check consults this field; the producer is "ready to connect" iff its own pubkey is present in the confirmed snapshot.  The versioning arithmetic that closes the producer-side race in §5.4 (`channel_version` / `confirmed_version[K][P]` / per-attempt `target_version`) does not apply to the consumer-side confirmation — a set-membership check on the confirmed snapshot is topology-symmetric with the ZAP allowlist check that will run at the actual CURVE handshake, so a match here means the handshake will succeed.
+#### 5.5.2.1 Binding-side confirmation semantics (unified 2026-07-13)
+
+BINDING-side confirmation of a channel's admission state SHALL be recorded as a monotonic version integer per (channel, role_uid), NOT as a set-snapshot of currently-admitted pubkeys.  All three topologies (fan-in, fan-out, one-to-one) share the same primitive: `pylabhub::hub::VersionedAdmissionLedger` on `ChannelAccessEntry`.
+
+**INVARIANT-BIND-CONFIRM-1** — For every `CHANNEL_AUTH_APPLIED_REQ` carrying `applied_version=V` from any role R on channel K, broker's `confirmed_version[K][R] = max(current, V)`.  The broker MUST NOT snapshot its own current admission state — the wire's `applied_version` is the sole source of truth for what R installed.  Monotonic: a delayed / duplicated APPLIED_REQ carrying an older version MUST be silently absorbed as a no-op (`ledger.confirm` never regresses).
+
+**INVARIANT-BIND-CONFIRM-2** — A dialing-side role D asking whether its pubkey P is admissible to bind-side role R on channel K is answered YES iff:
+- P is currently in the admitted set (revocation clears the admission_version entry entirely), AND
+- `admission_version(K, P) <= confirmed_version[K][R]`.
+
+The broker MUST NOT use any other predicate.  Neither R nor D's own `confirmed_version` is checked against `channel_version[K]` — the per-pubkey version alone determines visibility.  This closes the race where `confirmed_version >= channel_version` gate would falsely admit a pubkey admitted after R's last confirmation but before R's next.
+
+**INVARIANT-BIND-CONFIRM-3** — `CHECK_PEER_READY_REQ` (fan-in / one-to-one; HEP-CORE-0036 §6.6.3) AND `CONSUMER_ATTACH_REQ_ZMQ` (fan-out; §5.4) SHALL both resolve to the same underlying ledger primitive.  Their divergent wire shapes are historical; the semantic question they express is a single one ("has the binding-side role installed the dialing-side role's pubkey?").  Under the unified primitive, adding a new topology is one new mapping (which role_uid resolves to "the binding-side role"), not a new confirmation-state field on `ChannelAccessEntry`.
+
+**Rationale.** The pre-2026-07-13 mechanism used a per-branch approach: producer branch of APPLIED_REQ advanced `confirmed_version_per_producer` (versioned, correct); consumer branch of APPLIED_REQ populated `binding_side_confirmed_allowlist` (set-snapshotted from current authorized set, race-prone).  Broker's `_on_binding_confirmed(channel)` snapshotted `authorized_consumer_pubkeys` AT BROKER-APPLY TIME, ignoring the wire's `applied_version`.  If a new admission landed at broker between the consumer sending APPLIED_REQ(V) and broker processing it, broker over-confirmed — its snapshot included pubkeys the consumer had NOT installed at version V.  Test #2480 (`ZmqE2E_MultiProducer_TwoAuthorized`) exposed this: producer B's CURVE handshake arrived at consumer ~50ms before consumer's second APPLIED_REQ, was ZAP-DENIED terminally (libzmq does not retry after ZAP DENY).  See `docs/tech_draft/DRAFT_versioned_admission_ledger_2026-07-13.md` for the full timeline (broker + consumer + producer B logs correlated with millisecond precision) and the ledger design.
+
+**Wire compatibility.** No wire changes.  All fields already exist (`applied_version` in APPLIED_REQ, `channel_version` in `GET_CHANNEL_AUTH_RESP`).  The semantic reinterpretation is client-transparent — roles continue to send/receive the same fields.  Broker interprets them via the ledger primitive; the field-level meaning is unchanged.
 
 #### 5.5.3 `PRODUCER_REG_ACK` extension — `instance_id`
 

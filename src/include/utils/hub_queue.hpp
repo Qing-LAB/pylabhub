@@ -769,7 +769,9 @@ public:
      * with no CURVE identity (plaintext transports; SHM writers use
      * capability-fd handshake, not CURVE).  Used by the role-side
      * finalize_connect glue to seed the `PeerReadinessOracle` with
-     * the pubkey the broker checks against `binding_side_confirmed_allowlist`.
+     * the pubkey the broker checks via `is_pubkey_visible_to` against
+     * the channel's `VersionedAdmissionLedger` (HEP-CORE-0042 §5.5.2
+     * unified 2026-07-13).
      */
     virtual std::string own_pubkey_z85() const noexcept { return {}; }
 

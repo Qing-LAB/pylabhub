@@ -709,6 +709,26 @@ void HubState::_remove_consumer(const std::string &channel, const std::string &r
                                   [&](const ConsumerEntry &c) { return c.role_uid == role_uid; }),
                    cons.end());
         removed = cons.size() < old;
+        if (removed)
+        {
+            // Symmetric with `_on_producer_dropped` / `_on_pending_timeout`
+            // (HEP-CORE-0042 §5.4 reset triggers) — clear this role's
+            // confirmed_version in the ledger so a stale entry cannot
+            // service a future `is_visible_to(role_uid, ...)` query if
+            // the role_uid were re-used (UID-conflict policy blocks
+            // re-use at RoleEntry level, so this is memory hygiene, but
+            // the asymmetry with the producer path was a review finding
+            // — Agent-4, 2026-07-13).  Whole-channel teardown
+            // (`_on_channel_access_closed`) erases the entire
+            // ChannelAccessEntry so the ledger goes with it; this path
+            // handles the non-last-consumer case where the channel
+            // survives.
+            auto acc_it = pImpl->channel_access_index.find(channel);
+            if (acc_it != pImpl->channel_access_index.end())
+            {
+                acc_it->second.ledger.reset_role_confirmation(role_uid);
+            }
+        }
     }
     if (!removed) return;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->cons_removed))
@@ -1342,8 +1362,10 @@ HubState::_on_producer_added(const std::string&              channel_name,
             ++pImpl->producer_instance[producer_uid];
             auto acc_it = pImpl->channel_access_index.find(channel_name);
             if (acc_it != pImpl->channel_access_index.end())
-                acc_it->second.confirmed_version_per_producer
-                    .erase(producer_uid);
+            {
+                acc_it->second.ledger
+                    .reset_role_confirmation(producer_uid);
+            }
         }
     } // release writer lock before firing handlers.
 
@@ -1431,8 +1453,9 @@ HubState::_on_producer_dropped(const std::string& channel_name,
             // _on_channel_access_closed downstream.
             auto acc_it = pImpl->channel_access_index.find(channel_name);
             if (acc_it != pImpl->channel_access_index.end())
-                acc_it->second.confirmed_version_per_producer
-                    .erase(role_uid);
+            {
+                acc_it->second.ledger.reset_role_confirmation(role_uid);
+            }
             // Fall through to dispatch after lock release.
         }
         // Last-producer path: leave the producer in producers[] so
@@ -1863,8 +1886,9 @@ HubState::_on_pending_timeout(const std::string &channel,
             // the state triple stays consistent for readers.
             auto acc_it = pImpl->channel_access_index.find(channel);
             if (acc_it != pImpl->channel_access_index.end())
-                acc_it->second.confirmed_version_per_producer
-                    .erase(role_uid);
+            {
+                acc_it->second.ledger.reset_role_confirmation(role_uid);
+            }
             // Fall through to the dispatch step.
         }
         // Last-producer path: leave the producer in producers[] so
@@ -1994,13 +2018,15 @@ void HubState::_on_consumer_authorized(const std::string &channel_name,
     }
     std::unique_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
-    if (it == pImpl->channel_access_index.end()) return; // no-op per contract
-    auto [_, inserted] =
-        it->second.authorized_consumer_pubkeys.insert(pubkey_z85);
-    // HEP-CORE-0042 §5.2: bump channel_version on ANY mutation to the
-    // allowlist.  Only bump if the pubkey was actually new — idempotent
-    // reauthorizations do not change state so must not bump.
-    if (inserted) ++it->second.channel_version;
+    if (it == pImpl->channel_access_index.end())
+    {
+        return;  // no-op per contract
+    }
+    // Ledger's `admit` is idempotent (no-bump on re-admit) and captures
+    // the admission version.  Later `is_visible_to` calls use that
+    // version to gate visibility per HEP-CORE-0042 §5.5.2
+    // INVARIANT-BIND-CONFIRM-2.
+    it->second.ledger.admit(pubkey_z85);
 }
 
 void HubState::_on_consumer_revoked(const std::string &channel_name,
@@ -2014,27 +2040,17 @@ void HubState::_on_consumer_revoked(const std::string &channel_name,
     }
     std::unique_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
-    if (it == pImpl->channel_access_index.end()) return; // no-op per contract
-    const std::size_t erased =
-        it->second.authorized_consumer_pubkeys.erase(pubkey_z85);
-    // HEP-CORE-0042 §5.2: same discipline as _on_consumer_authorized.
-    // Erasing a pubkey not in the set is a no-op and must not bump.
-    if (erased > 0)
+    if (it == pImpl->channel_access_index.end())
     {
-        ++it->second.channel_version;
-        // HEP-CORE-0036 §6.6.3: revocation invalidates the binding-
-        // side confirmed snapshot until the binding side re-applies.
-        // Whole-set clear on any successful revoke — the next
-        // `CHANNEL_AUTH_APPLIED_REQ` from the binding side
-        // reconstructs the confirmed set via `_on_binding_confirmed`
-        // (which set-equals it to `authorized_consumer_pubkeys` at
-        // that moment).  Without this, a dialing peer polling
-        // `CHECK_PEER_READY_REQ` between the revoke and the next
-        // apply could receive `ready` from the stale snapshot and
-        // dial into a ZAP allowlist that no longer contains its
-        // pubkey — terminal libzmq DENY.
-        it->second.binding_side_confirmed_allowlist.clear();
+        return;  // no-op per contract
     }
+    // Ledger's `revoke` always bumps current_version (revocation is a
+    // state-change signal for role confirmations to catch up to).
+    // Removes `pubkey_z85` from the admission map entirely — subsequent
+    // `is_visible_to` returns false regardless of confirmed_version,
+    // closing the revocation race by construction (no stale
+    // "confirmed" snapshot to unlearn from).
+    it->second.ledger.revoke(pubkey_z85);
 }
 
 std::uint64_t
@@ -2090,58 +2106,80 @@ HubState::nonce_seen(std::string_view role_uid,
 }
 
 std::uint64_t
-HubState::_on_producer_confirmed(const std::string &channel_name,
-                                  const std::string &producer_role_uid,
-                                  std::uint64_t      applied_version)
+HubState::_on_role_confirmed(const std::string &channel_name,
+                              const std::string &role_uid,
+                              std::uint64_t      applied_version)
 {
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        producer_role_uid.empty())
+        role_uid.empty())
     {
         bump_invalid_identifier(*pImpl);
         return 0;
     }
     std::unique_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
-    if (it == pImpl->channel_access_index.end()) return 0;
-    auto &slot = it->second.confirmed_version_per_producer[producer_role_uid];
-    slot = std::max(slot, applied_version);
-    return slot;
+    if (it == pImpl->channel_access_index.end())
+    {
+        return 0;
+    }
+    // Ledger's `confirm` is monotonic (max(current, applied_version));
+    // stale APPLIED_REQ wires are silently absorbed.  Works for BOTH
+    // the binding-side role (was `_on_binding_confirmed` — that set-
+    // snapshot path is retired) AND the dialing-side producer's own
+    // confirmed_version (§5.4 fast-path callers keep working via the
+    // same primitive).
+    return it->second.ledger.confirm(role_uid, applied_version);
 }
 
-void
-HubState::_on_binding_confirmed(const std::string &channel_name)
+bool
+HubState::is_role_registered_on_channel(const std::string &channel_name,
+                                          const std::string &role_uid,
+                                          const std::string &role_type) const
 {
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
+        role_uid.empty())
     {
-        bump_invalid_identifier(*pImpl);
-        return;
+        return false;
     }
-    std::unique_lock lk(pImpl->mu);
-    auto it = pImpl->channel_access_index.find(channel_name);
-    if (it == pImpl->channel_access_index.end()) return;
-    // Snapshot-replace: `binding_side_confirmed_allowlist` is
-    // set-equal to the current `authorized_consumer_pubkeys`.  This
-    // means a peer that was previously admitted but has since been
-    // revoked will NOT appear in the confirmed set after the next
-    // binding-side apply — matches the ZAP allowlist state on the
-    // binding-side role.  HEP-CORE-0036 §6.6.3.
-    it->second.binding_side_confirmed_allowlist =
-        it->second.authorized_consumer_pubkeys;
+    std::shared_lock lk(pImpl->mu);
+    auto it = pImpl->channels.find(channel_name);
+    if (it == pImpl->channels.end())
+    {
+        return false;
+    }
+    const auto &ch = it->second;
+    if (role_type == "consumer")
+    {
+        return std::any_of(
+            ch.consumers.begin(), ch.consumers.end(),
+            [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
+    }
+    if (role_type == "producer")
+    {
+        return std::any_of(
+            ch.producers.begin(), ch.producers.end(),
+            [&](const ProducerEntry &p) { return p.role_uid == role_uid; });
+    }
+    return false;
 }
 
 std::optional<bool>
-HubState::is_pubkey_in_binding_confirmed(const std::string &channel_name,
-                                          const std::string &pubkey_z85) const
+HubState::is_pubkey_visible_to(const std::string &channel_name,
+                                const std::string &binding_role_uid,
+                                const std::string &pubkey_z85) const
 {
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        pubkey_z85.empty())
+        binding_role_uid.empty() || pubkey_z85.empty())
     {
         return std::nullopt;
     }
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
-    if (it == pImpl->channel_access_index.end()) return std::nullopt;
-    return it->second.binding_side_confirmed_allowlist.count(pubkey_z85) > 0;
+    if (it == pImpl->channel_access_index.end())
+    {
+        return std::nullopt;
+    }
+    return it->second.ledger.is_visible_to(binding_role_uid, pubkey_z85);
 }
 
 void HubState::_on_message_processed(const std::string &msg_type,

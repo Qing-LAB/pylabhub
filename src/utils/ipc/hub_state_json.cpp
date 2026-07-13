@@ -38,7 +38,9 @@ inline std::string fmt_time(std::chrono::system_clock::time_point tp)
 
 } // namespace
 
-nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
+nlohmann::json
+channel_to_json(const ChannelEntry &c, ChannelObservable obs,
+                 const std::optional<ChannelAccessEntry> &access)
 {
     // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
     // transport-classification field; pre-§5b duplicates `shm_name`
@@ -64,8 +66,24 @@ nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs)
     j["data_endpoint"]     = c.data_endpoint.has_value()
                                 ? nlohmann::json(*c.data_endpoint)
                                 : nlohmann::json(nullptr);
-    j["channel_version"]   = c.channel_version;
-    j["confirmed_version"] = c.confirmed_version;
+    // channel_version + confirmed_version sourced from the unified
+    // ledger (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  Absence of an
+    // access record means no admissions have happened yet on this
+    // channel; report both as 0 (matches the pre-first-admission
+    // semantics).  `confirmed_version` here summarizes the whole
+    // channel with a single scalar: the MAXIMUM across all roles'
+    // confirmed_versions — "how caught up is the channel."  Per-role
+    // detail is exposed via other admin paths.
+    if (access.has_value())
+    {
+        j["channel_version"]   = access->ledger.current_version();
+        j["confirmed_version"] = access->ledger.max_confirmed_version();
+    }
+    else
+    {
+        j["channel_version"]   = std::uint64_t{0};
+        j["confirmed_version"] = std::uint64_t{0};
+    }
 
     j["_collected_at"]       = fmt_time(c.created_at);
     j["observable"]          = to_string(obs);

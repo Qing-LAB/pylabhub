@@ -21,11 +21,22 @@ namespace pylabhub::wire::adapter
 
 namespace
 {
-constexpr std::array<std::string_view, 4> kRegFamilyMsgTypes = {
+// HEP-CORE-0046 §I-REPLAY-BOUND — the 6 msg_types that carry the
+// security triple `(client_nonce, client_wall_ts, envelope_hash)`:
+// REG_REQ, CONSUMER_REG_REQ, ENDPOINT_UPDATE_REQ,
+// CHANNEL_AUTH_APPLIED_REQ, DEREG_REQ, CONSUMER_DEREG_REQ.
+// The pre-Tier-2 list (2026-07-12) only listed 4 — missing
+// CHANNEL_AUTH_APPLIED_REQ and CONSUMER_DEREG_REQ.  Sending either
+// without the triple would silently violate I-REPLAY-BOUND: an
+// attacker with captured messages could replay them beyond the
+// nonce-dedup window since no nonce would be present to reject.
+constexpr std::array<std::string_view, 6> kRegFamilyMsgTypes = {
     "REG_REQ",
     "CONSUMER_REG_REQ",
-    "DEREG_REQ",
     "ENDPOINT_UPDATE_REQ",
+    "CHANNEL_AUTH_APPLIED_REQ",
+    "DEREG_REQ",
+    "CONSUMER_DEREG_REQ",
 };
 }  // namespace
 

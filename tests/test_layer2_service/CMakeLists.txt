@@ -831,6 +831,7 @@ gtest_discover_tests(test_layer2_naming
 
 add_executable(test_layer2_hub_state
     test_hub_state.cpp
+    workers/broker_service_workers.cpp
 )
 
 target_link_libraries(test_layer2_hub_state

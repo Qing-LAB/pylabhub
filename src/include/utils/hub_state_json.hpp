@@ -37,8 +37,15 @@ namespace pylabhub::hub
 /// `absent | registering | stalled | live`) computed from the producer
 /// presence the caller passes in.  `obs` is typically computed via
 /// `observe_channel(c, snapshot)` at the call site.
+///
+/// `access` (optional) is the paired `ChannelAccessEntry` snapshot for
+/// the same channel.  When present, `channel_version` and
+/// `confirmed_version` are sourced from the unified ledger (HEP-CORE-
+/// 0042 §5.5.2 unified 2026-07-13).  When absent (no admissions yet
+/// on this channel), both fields serialize as 0.
 [[nodiscard]] nlohmann::json
-channel_to_json(const ChannelEntry &c, ChannelObservable obs);
+channel_to_json(const ChannelEntry &c, ChannelObservable obs,
+                 const std::optional<ChannelAccessEntry> &access = std::nullopt);
 
 /// Serialize a registered role.  Includes the latest pushed metrics
 /// payload so callers don't have to issue a separate fetch.

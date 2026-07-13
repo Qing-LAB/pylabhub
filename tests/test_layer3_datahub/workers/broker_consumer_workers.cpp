@@ -602,8 +602,10 @@ int get_channel_auth_returns_allowlist()
 // ── CONSUMER_ATTACH_REQ_SHM (HEP-CORE-0041 §9 D4 = HEP-0042 §6.1) ────────
 //
 // Pre-attach broker confirmation.  Producer queries broker before
-// handing a SHM capability fd to a consumer; broker checks
-// `authorized_consumer_pubkeys` and replies success | denied | ERROR.
+// handing a SHM capability fd to a consumer; broker consults the
+// channel's `VersionedAdmissionLedger` via
+// `ledger.admission_version_of(pubkey).has_value()` (HEP-CORE-0042
+// §5.5.2 unified 2026-07-13) and replies success | denied | ERROR.
 //
 // Test coverage (5 workers):
 //   - consumer_attach_authorized       : success path
@@ -690,8 +692,8 @@ int consumer_attach_denied()
 
             // Consumer's keypair exists in CurveSetup (so we have a
             // well-formed Z85 pubkey to query) but the consumer has
-            // NOT called register_consumer — pubkey is NOT in the
-            // channel's authorized_consumer_pubkeys.
+            // NOT called register_consumer — pubkey is NOT admitted
+            // in the channel's `VersionedAdmissionLedger`.
             const std::string fake_pubkey =
                 curve.role(fake_cons_uid).public_z85;
 

@@ -380,12 +380,22 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
         // so the side label reflects reality (not the wire-only view
         // that would default to OneToOne when the wire omitted topology
         // and the stored topology differs).
+        //
+        // `channel_version` is sourced from the ledger (HEP-CORE-0042
+        // §5.5.2 unified 2026-07-13) via `channel_access`, not the
+        // dead `ChannelEntry.channel_version` field that this call
+        // used to read.  That field was retired 2026-07-13; the ledger
+        // on `ChannelAccessEntry` is the single source of truth for
+        // per-channel admission version.
         std::uint64_t channel_version = 0;
         std::optional<ChTopo> post_topology;
         if (auto ch = hub_state_.channel(r.channel_name))
         {
-            channel_version = ch->channel_version;
-            post_topology   = ch->topology;
+            post_topology = ch->topology;
+        }
+        if (auto acc = hub_state_.channel_access(r.channel_name))
+        {
+            channel_version = acc->ledger.current_version();
         }
         const AdmissionSide side = side_for(r.role_type, post_topology);
         const std::uint64_t instance_id =

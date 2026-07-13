@@ -546,6 +546,20 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
     }
     else
     {
+        // Symmetric to the ALLOW-path INFO line above.  Previously the
+        // DENY branch was silent (only a counter incremented) — that
+        // hid a whole class of "CURVE handshake dropped" bugs where
+        // the operator could not tell which pubkey was being rejected.
+        // Added 2026-07-12 during test #2480 investigation:
+        // producer A's slots never reached consumer despite a
+        // successful `finalize_connect(ready)` broker response.  The
+        // producer's actual ZAP handshake at the consumer's ZapRouter
+        // was denied silently.
+        LOGGER_WARN(
+            "ZapRouter::pump_one: DENY pubkey='{}' on domain='{}' — "
+            "not in allowlist (peer's CURVE handshake will be terminal "
+            "per libzmq; no client-side retry)",
+            z85, domain);
         send_zap_reply(sock, request_id, "400",
                        "Not in allowlist", "");
         impl_->denied_count.fetch_add(1, std::memory_order_relaxed);
