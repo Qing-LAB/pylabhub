@@ -253,8 +253,9 @@ add_executable(test_layer3_datahub
     workers/datahub_metrics_workers.cpp
 
     # ── HEP-CORE-0021 ZMQ Endpoint Registry protocol tests ────────────
-    test_datahub_zmq_endpoint_registry.cpp
-    workers/zmq_endpoint_registry_workers.cpp
+    # MIGRATED to tests/test_layer3_pattern4/test_pattern4_zmq_endpoint_registry.cpp
+    # (task #52 Round 2 — all 8 workers wire-only; shm_and_zmq_coexist +
+    # req_shape reframed off in-process reads to CHANNEL_LIST_REQ / wire drain).
 
     # ── HEP-CORE-0022 Hub Federation Broadcast protocol tests ────────────
     # DEFER (#154 AUTH-6 C6, 2026-06-30 — audit File 9): TEST_F driver

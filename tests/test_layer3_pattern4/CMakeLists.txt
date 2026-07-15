@@ -27,6 +27,7 @@ add_executable(test_layer3_pattern4
     test_pattern4_broker_protocol.cpp
     test_pattern4_broker_schema.cpp
     test_pattern4_broker_consumer.cpp
+    test_pattern4_zmq_endpoint_registry.cpp
     test_pattern4_attach_coordination.cpp
     test_pattern4_registration.cpp
     test_pattern4_heartbeat.cpp
