@@ -387,11 +387,44 @@ File: `src/utils/ipc/broker_service.cpp`.
 
 - Verify `cfg.known_roles` is populated from the vault-loaded `KnownRolesStore` (HEP-CORE-0035 §4.8.2). If not, wire the `lookup_known_role` callback against `KnownRolesStore::find()` directly. This is a research step — read the load path first.
 
+> **ERRATUM 2026-07-14: Group 7 investigation complete — no-op for this cleanup cycle.**
+>
+> Audit trace: `hub_host.cpp:211-221` loads `KnownRolesStore::load_from_file(<hub_dir>/vault/known_roles.json)`; entries copied into `bcfg.known_roles` → moved into `BrokerServiceImpl::cfg` (`broker_service.cpp:6905`). Both:
+> - Admission-gate `lookup_known_role` (`broker_service.cpp:6920-6935`) — iterates `impl->cfg.known_roles`.
+> - ZAP `PeerAllowlist` (`broker_service.cpp:1101-1142`) — built as UNION of `cfg.known_roles[].pubkey_z85` + `cfg.peers[].pubkey_z85`, wrapped in `BrokerCtrlAdmission`.
+>
+> derive from the SAME `cfg.known_roles` snapshot at HubHost startup. `admin_service.cpp:325-336` shows `add_known_role`/`remove_known_role`/`list_known_roles` in `kDeferredMethods` (returns `not_implemented`). No runtime mutator path → no drift reachable today.
+>
+> ZAP allowlist is a strict SUPERSET (adds federation peers). A federation pubkey passing ZAP but sending REG_REQ fails the admission gate with `uid_unknown` — safe direction. **No case where admission accepts what ZAP rejects.** Not a security bug.
+>
+> **However:** HEP-CORE-0035 §4.2 mandates "single index" invariant for the known-roles lookup. Current dual storage (`PeerAllowlist` snapshot + `cfg.known_roles` vector) violates this and will become drift-prone the moment §4.8.5 hot-reload lands. Group 7 becomes a **prophylactic refactor** best done alongside the hot-reload feature work, not as part of this wire-cleanup pass. Recommendation: retain `KnownRolesStore` on the broker, bind `lookup_known_role` to `KnownRolesStore::find()`, rebuild `PeerAllowlist` from the same store on mutation. Track in the hot-reload TODO.
+>
+> Net: no code changes in this cleanup; forward Group 7 to the hot-reload branch.
+
 ### Group 8 — Locking-comment cleanup
 
 Files: any comment referencing writer_lock / shared_lock on HubState.
 
 - Correct comments to say "under HubState's single mutex" per HEP-CORE-0033 §8. Not a code fix, just doc alignment.
+
+> **ERRATUM 2026-07-14: Group 8 is unsafe as written; blocked on HEP-CORE-0033 §8 clarification.**
+>
+> HEP-CORE-0033 §8 is internally inconsistent:
+> - Line 1133 (mermaid): `HubState[HubState<br/>single mutex]`
+> - Line 1167 (ChannelEntry row): "...mutated by HubState's admission machinery under its **writer lock**..."
+> - Line 1183 (Consistency): "**Consistency**: single internal mutex; accessors return snapshot structs."
+>
+> Actual code (`src/include/utils/hub_state.hpp:155`): `mutable std::shared_mutex mu;` — reader/writer lock. Usage: ~15 `std::shared_lock` sites, ~40 `std::unique_lock` sites. `hub_state.cpp:13-14` docstring correctly documents: "`mu` (shared_mutex) guards the state maps and `counters`. Readers take std::shared_lock; mutators take std::unique_lock."
+>
+> The DRAFT proposal to rewrite comments to "under HubState's single mutex" would MASK the actual reader/writer semantics — a documentation regression. §8 line 1183's "single internal mutex" phrasing is what triggered the misread; §8 line 1167 already uses "writer lock" so §8 is self-inconsistent.
+>
+> **Two paths:**
+> 1. **Preferred:** clarify HEP-0033 §8 line 1183 to "single internal `std::shared_mutex`; readers take shared-lock, mutators take writer-lock; accessors return snapshot structs" — brings §8 in line with its own §8:1167 and with the code. Group 8 becomes truly no-op.
+> 2. **Alternative:** if design authority actually wants a single exclusive `std::mutex`, that's a **code change** (drop `shared_mutex`, replace all `std::shared_lock` with `std::unique_lock`/`std::lock_guard`) with a performance rationale — reader parallelism goes away.
+>
+> Comment sites the DRAFT would touch if Option 2 were chosen (leave alone otherwise): `hub_state.cpp` lines 7, 13-14, 504, 756, 798, 983, 1173, 1211, 1245, 1338, 1375, 1387, 1463, 1491, 1687, 1702, 1855, 1902, 2089, 2314; `hub_state.hpp` lines 30-34, 486, 541, 780, 958, 1081, 1520, 1592, 1606, 1632, 1782-1811, 1823, 1900-1907, 1934, 1977, 1987, 2070-2076; `broker_service.cpp` lines 2658, 2785, 3254, 3630, 3682, 5959, 6403, 7039; `reg_admission_pipeline.cpp` line 97.
+>
+> Net: no code changes in this cleanup; forward Group 8 to design authority for §8 clarification.
 
 ---
 
