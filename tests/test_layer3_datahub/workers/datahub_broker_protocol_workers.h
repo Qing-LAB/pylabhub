@@ -19,27 +19,20 @@ int checksum_error_report_unknown_channel_silent();
 // task #225 (Pattern 4 rung 8 `Pattern4ChannelNotifiesTest`).  See
 // driver file's retirement doc-block for full reasoning.
 
-// Duplicate registration
-int duplicate_reg_shm_cardinality();
-int duplicate_reg_different_schema_hash();
+// Duplicate registration — MIGRATED to tests/test_layer3_pattern4/
+// (task #54 Round 1).
 
-// Heartbeat → Ready transition + wire payload
+// Heartbeat → Ready transition + keying.  transitions_to_ready +
+// keying_producer_vs_consumer_distinct_rows stay here (in-process
+// HubState inspection — Round 3 RATIONALE).  wire_payload is a
+// Round-1 Batch-D candidate (broker-log observation).
 int heartbeat_transitions_to_ready();
 int heartbeat_wire_payload_includes_uid_and_role_type();
 int heartbeat_keying_producer_vs_consumer_distinct_rows();
 
-// Role presence / info queries — MIGRATED to
+// Role presence / info queries, Transport arbitration, and REG_ACK /
+// CONSUMER_REG_ACK heartbeat-block tests MIGRATED to
 // tests/test_layer3_pattern4/ (task #54 Round 1).
-
-// Transport arbitration
-int transport_mismatch_shm_producer_zmq_consumer();
-int transport_match_shm_consumer_shm_producer();
-int transport_match_no_driver_field();
-
-// REG_ACK heartbeat-negotiation block
-int reg_ack_contains_heartbeat_block_defaults();
-int reg_ack_heartbeat_block_honors_custom_config();
-int consumer_reg_ack_contains_heartbeat_block();
 
 // CHANNEL_BROADCAST_SEND_NOTIFY fan-out
 int broadcast_fan_out_delivered_to_producer_and_consumers();

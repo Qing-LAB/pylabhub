@@ -21,6 +21,7 @@
 
 #include "plh_platform.hpp"
 #include "utils/role_reg_payload.hpp"
+#include "utils/security/shm_capability_channel.hpp"
 #include "utils/timeout_constants.hpp"
 
 #include <cppzmq/zmq.hpp>
@@ -92,6 +93,58 @@ protected:
         return BrokerWireClient(ctx, c);
     }
 
+    /// Pure REG_REQ body builder (no wire I/O, no assertions).  Lets
+    /// error-path tests inspect the reply and success-path tests add
+    /// extra body fields (schema_hash, consumer_queue_type, …).  Pubkey
+    /// comes from the shared curve setup; `shm=true` selects the SHM
+    /// capability transport, else ZMQ on an unused port.
+    nlohmann::json producer_reg_body(
+        const pylabhub::tests::pattern4::Pattern4Setup &setup,
+        const std::string                              &channel,
+        const std::string                              &uid,
+        bool                                            shm)
+    {
+        namespace sec = pylabhub::utils::security;
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel    = channel;
+        in.role_uid   = uid;
+        in.role_name  = "test_producer";
+        in.role_type  = "producer";
+        in.zmq_pubkey = setup.curve.role(uid).public_z85;
+        if (shm)
+        {
+            in.has_shm                  = true;
+            in.shm_capability_endpoint  =
+                sec::default_shm_capability_endpoint(channel);
+        }
+        else
+        {
+            in.is_zmq_transport  = true;
+            in.zmq_node_endpoint =
+                "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+        }
+        return pylabhub::hub::build_producer_reg_payload(in);
+    }
+
+    /// Pure CONSUMER_REG_REQ body builder.  data_transport="zmq" mirrors
+    /// the make_cons_opts default; transport arbitration keys off the
+    /// separate `consumer_queue_type` field, which callers add when a
+    /// transport-match test needs it.
+    nlohmann::json consumer_reg_body(
+        const pylabhub::tests::pattern4::Pattern4Setup &setup,
+        const std::string                              &channel,
+        const std::string                              &uid)
+    {
+        pylabhub::hub::ConsumerRegInputs in;
+        in.channel        = channel;
+        in.role_uid       = uid;
+        in.role_name      = "test_consumer";
+        in.role_type      = "consumer";
+        in.data_transport = "zmq";
+        in.zmq_pubkey     = setup.curve.role(uid).public_z85;
+        return pylabhub::hub::build_consumer_reg_payload(in);
+    }
+
     /// Producer REG_REQ → assert REG_ACK.status=="success".  ZMQ
     /// transport (Pattern 4 convention); the pubkey is the role's curve
     /// identity so ZAP authorizes and the broker records a valid
@@ -104,17 +157,8 @@ protected:
         const std::string                              &uid,
         nlohmann::json                                 *out_ack = nullptr)
     {
-        pylabhub::hub::ProducerRegInputs in;
-        in.channel          = channel;
-        in.role_uid         = uid;
-        in.role_name        = "test_producer";
-        in.role_type        = "producer";
-        in.is_zmq_transport = true;
-        in.zmq_node_endpoint =
-            "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
-        in.zmq_pubkey = setup.curve.role(uid).public_z85;
-        auto reply    = client.request(
-            "REG_REQ", pylabhub::hub::build_producer_reg_payload(in),
+        auto reply = client.request(
+            "REG_REQ", producer_reg_body(setup, channel, uid, /*shm=*/false),
             "REG_ACK", std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "REG_REQ timed out for " << uid;
         ASSERT_EQ(reply->value("status", std::string{}), "success")
@@ -154,15 +198,8 @@ protected:
         const std::string                              &uid,
         nlohmann::json                                 *out_ack = nullptr)
     {
-        pylabhub::hub::ConsumerRegInputs in;
-        in.channel        = channel;
-        in.role_uid       = uid;
-        in.role_name      = "test_consumer";
-        in.role_type      = "consumer";
-        in.data_transport = "zmq";
-        in.zmq_pubkey     = setup.curve.role(uid).public_z85;
-        auto reply        = client.request(
-            "CONSUMER_REG_REQ", pylabhub::hub::build_consumer_reg_payload(in),
+        auto reply = client.request(
+            "CONSUMER_REG_REQ", consumer_reg_body(setup, channel, uid),
             "CONSUMER_REG_ACK",
             std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value())
@@ -739,6 +776,330 @@ TEST_F(Pattern4BrokerProtocolTest, WireConformance_BandAck_Shapes)
                             "BAND_LEAVE_ACK", "HEP-CORE-0030 §5.1");
     expect_string_field(*leave_ack, "status", "success",
                          "BAND_LEAVE_ACK", "HEP-CORE-0030 §5.1");
+
+    broker.signal_quit();
+}
+
+// ─── Duplicate REG_REQ — SHM cardinality + schema-hash conflict ────────────
+//
+// Two distinct producers race for one channel.  Migrated from the
+// retired in-process harness (task #54 Round 1).
+
+TEST_F(Pattern4BrokerProtocolTest,
+       DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedOneToOneCardinality)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.dup.same" + suffix;
+    const std::string uid1    = "prod.dup.same.uid1" + suffix;
+    const std::string uid2    = "prod.dup.same.uid2" + suffix;
+    const std::string hash(64, 'a');
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_dup_card");
+    const auto     setup    = make_pattern4_setup({uid1, uid2});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           p1 = make_wire_client(ctx, setup, uid1);
+    auto           b1 = producer_reg_body(setup, channel, uid1, /*shm=*/true);
+    b1["schema_hash"] = hash;
+    auto r1 = p1.request("REG_REQ", b1, "REG_ACK",
+                          milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(r1.has_value()) << "first REG_REQ timed out";
+    ASSERT_EQ(r1->value("status", std::string{}), "success")
+        << "first SHM producer should register; body=" << r1->dump();
+
+    auto p2 = make_wire_client(ctx, setup, uid2);
+    auto b2 = producer_reg_body(setup, channel, uid2, /*shm=*/true);
+    b2["schema_hash"] = hash;
+    auto r2 = p2.request("REG_REQ", b2, "REG_ACK",
+                          milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(r2.has_value())
+        << "broker must return a structured error, not transport failure";
+    EXPECT_EQ(r2->value("status", std::string{}), "error")
+        << "second SHM producer must reject; body=" << r2->dump();
+    // A default (undeclared) SHM channel stores topology `one-to-one`;
+    // the second producer trips ONE_TO_ONE_CARDINALITY_VIOLATED (was
+    // MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM pre-topology-migration).
+    EXPECT_EQ(r2->value("error_code", std::string{}),
+              "ONE_TO_ONE_CARDINALITY_VIOLATED")
+        << "body=" << r2->dump();
+    // Broker-side path pin: the WARN emitted for the rejected second
+    // producer on a default one-to-one SHM channel.
+    expect_log(broker,
+                "event=RegReqRejected reason='ONE_TO_ONE_CARDINALITY_VIOLATED'",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.dup.diff" + suffix;
+    const std::string uid1    = "prod.dup.diff.uid1" + suffix;
+    const std::string uid2    = "prod.dup.diff.uid2" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_dup_schema");
+    const auto     setup    = make_pattern4_setup({uid1, uid2});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           p1 = make_wire_client(ctx, setup, uid1);
+    auto           b1 = producer_reg_body(setup, channel, uid1, /*shm=*/true);
+    b1["schema_hash"] = std::string(64, 'a');
+    auto r1 = p1.request("REG_REQ", b1, "REG_ACK",
+                          milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(r1.has_value()) << "first REG_REQ timed out";
+    ASSERT_EQ(r1->value("status", std::string{}), "success");
+
+    auto p2 = make_wire_client(ctx, setup, uid2);
+    auto b2 = producer_reg_body(setup, channel, uid2, /*shm=*/true);
+    b2["schema_hash"] = std::string(64, 'b');
+    auto r2 = p2.request("REG_REQ", b2, "REG_ACK",
+                          milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(r2.has_value())
+        << "broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(r2->value("status", std::string{}), "error");
+    EXPECT_EQ(r2->value("error_code", std::string{}), "SCHEMA_MISMATCH")
+        << "body=" << r2->dump();
+
+    broker.signal_quit();
+}
+
+// ─── Transport arbitration (producer transport vs consumer_queue_type) ─────
+
+TEST_F(Pattern4BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "proto.transport.shm_zmq" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_tx_mismatch");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    auto pr = prod.request("REG_REQ",
+                            producer_reg_body(setup, channel, prod_uid, true),
+                            "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(pr.has_value()) << "producer REG_REQ timed out";
+    ASSERT_EQ(pr->value("status", std::string{}), "success");
+    // R6 producer-kLive gate must clear before the broker reaches the
+    // transport-arbitration check that is this test's subject.
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons  = make_wire_client(ctx, setup, cons_uid);
+    auto cbody = consumer_reg_body(setup, channel, cons_uid);
+    cbody["consumer_queue_type"] = "zmq";
+    auto cr = cons.request("CONSUMER_REG_REQ", cbody, "CONSUMER_REG_ACK",
+                            milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(cr.has_value())
+        << "broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(cr->value("status", std::string{}), "error");
+    EXPECT_EQ(cr->value("error_code", std::string{}), "TRANSPORT_MISMATCH")
+        << "body=" << cr->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succeeds)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "proto.transport.shm_shm" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_tx_shm");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    auto pr = prod.request("REG_REQ",
+                            producer_reg_body(setup, channel, prod_uid, true),
+                            "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(pr.has_value()) << "producer REG_REQ timed out";
+    ASSERT_EQ(pr->value("status", std::string{}), "success");
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons  = make_wire_client(ctx, setup, cons_uid);
+    auto cbody = consumer_reg_body(setup, channel, cons_uid);
+    cbody["consumer_queue_type"] = "shm";
+    auto cr = cons.request("CONSUMER_REG_REQ", cbody, "CONSUMER_REG_ACK",
+                            milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(cr.has_value()) << "CONSUMER_REG_REQ timed out";
+    EXPECT_EQ(cr->value("status", std::string{}), "success")
+        << "both sides use SHM — should succeed; body=" << cr->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "proto.transport.nofield" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_tx_nofield");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    auto pr = prod.request("REG_REQ",
+                            producer_reg_body(setup, channel, prod_uid, true),
+                            "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(pr.has_value()) << "producer REG_REQ timed out";
+    ASSERT_EQ(pr->value("status", std::string{}), "success");
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    // No consumer_queue_type field — broker skips transport arbitration.
+    auto cr = cons.request("CONSUMER_REG_REQ",
+                            consumer_reg_body(setup, channel, cons_uid),
+                            "CONSUMER_REG_ACK",
+                            milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(cr.has_value()) << "CONSUMER_REG_REQ timed out";
+    EXPECT_EQ(cr->value("status", std::string{}), "success")
+        << "omitted consumer_queue_type must succeed; body=" << cr->dump();
+
+    broker.signal_quit();
+}
+
+// ─── REG_ACK / CONSUMER_REG_ACK heartbeat-negotiation block ────────────────
+
+TEST_F(Pattern4BrokerProtocolTest, RegAck_ContainsHeartbeatBlock_Defaults)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.regack.hb_default" + suffix;
+    const std::string uid     = "prod." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_hb_default");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, uid);
+    nlohmann::json reg;
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, uid, &reg));
+
+    ASSERT_TRUE(reg.contains("heartbeat")) << "REG_ACK missing heartbeat block";
+    const auto &hb = reg["heartbeat"];
+    ASSERT_TRUE(hb.is_object());
+    EXPECT_EQ(hb.value("heartbeat_interval_ms", -1),
+              pylabhub::kDefaultHeartbeatIntervalMs);
+    EXPECT_EQ(hb.value("ready_miss_heartbeats", std::uint32_t{0}),
+              pylabhub::kDefaultReadyMissHeartbeats);
+    EXPECT_EQ(hb.value("pending_miss_heartbeats", std::uint32_t{0}),
+              pylabhub::kDefaultPendingMissHeartbeats);
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, RegAck_HeartbeatBlock_HonorsCustomConfig)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.regack.hb_custom" + suffix;
+    const std::string uid     = "prod." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_hb_custom");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    // "hb_custom" profile: heartbeat_interval=250ms, ready_miss=12,
+    // pending_miss=8 — the REG_ACK block must echo these.
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "hb_custom"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, uid);
+    nlohmann::json reg;
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, uid, &reg));
+
+    ASSERT_TRUE(reg.contains("heartbeat"));
+    const auto &hb = reg["heartbeat"];
+    EXPECT_EQ(hb.value("heartbeat_interval_ms", -1), 250);
+    EXPECT_EQ(hb.value("ready_miss_heartbeats", std::uint32_t{0}), 12u);
+    EXPECT_EQ(hb.value("pending_miss_heartbeats", std::uint32_t{0}), 8u);
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "proto.cons_regack.hb" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_cons_hb");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto           cons = make_wire_client(ctx, setup, cons_uid);
+    nlohmann::json cons_reg;
+    ASSERT_NO_FATAL_FAILURE(
+        register_consumer(cons, setup, channel, cons_uid, &cons_reg));
+
+    ASSERT_TRUE(cons_reg.contains("heartbeat"))
+        << "CONSUMER_REG_ACK missing heartbeat block";
+    const auto &hb = cons_reg["heartbeat"];
+    EXPECT_TRUE(hb.contains("heartbeat_interval_ms"));
+    EXPECT_TRUE(hb.contains("ready_miss_heartbeats"));
+    EXPECT_TRUE(hb.contains("pending_miss_heartbeats"));
 
     broker.signal_quit();
 }

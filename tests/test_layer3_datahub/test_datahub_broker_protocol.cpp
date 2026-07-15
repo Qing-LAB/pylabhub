@@ -59,20 +59,9 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 // ============================================================================
 // 3. Duplicate REG_REQ — SHM cardinality + schema hash conflict
 // ============================================================================
-
-TEST_F(BrokerProtocolTest,
-       DuplicateReg_TwoDistinctProducers_OnShmChannel_RejectedOneToOneCardinality)
-{
-    auto w = SpawnWorker("broker_protocol.duplicate_reg_shm_cardinality");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.duplicate_reg_different_schema_hash");
-    ExpectWorkerOk(w);
-}
+// DuplicateReg_* MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (task #54 Round 1 — HubHostBrokerHandle antipattern sweep).
 
 // ============================================================================
 // 4. HEARTBEAT_NOTIFY — PendingReady → Ready + wire payload + keying
@@ -108,51 +97,16 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 // ============================================================================
 // 6. Transport arbitration
 // ============================================================================
-
-TEST_F(BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.transport_mismatch_shm_producer_zmq_consumer");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succeeds)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.transport_match_shm_consumer_shm_producer");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
-{
-    auto w = SpawnWorker("broker_protocol.transport_match_no_driver_field");
-    ExpectWorkerOk(w);
-}
+// TransportMismatch_* / TransportMatch_* MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).
 
 // ============================================================================
 // 7. REG_ACK / CONSUMER_REG_ACK heartbeat-negotiation block
 // ============================================================================
-
-TEST_F(BrokerProtocolTest, RegAck_ContainsHeartbeatBlock_Defaults)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.reg_ack_contains_heartbeat_block_defaults");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, RegAck_HeartbeatBlock_HonorsCustomConfig)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.reg_ack_heartbeat_block_honors_custom_config");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.consumer_reg_ack_contains_heartbeat_block");
-    ExpectWorkerOk(w);
-}
+// RegAck_ContainsHeartbeatBlock_Defaults,
+// RegAck_HeartbeatBlock_HonorsCustomConfig (broker "hb_custom" profile),
+// ConsumerRegAck_ContainsHeartbeatBlock MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).
 
 // ============================================================================
 // 8. CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to producer + ALL consumers

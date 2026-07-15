@@ -348,95 +348,18 @@ int checksum_error_report_unknown_channel_silent()
 // ============================================================================
 // 3. Duplicate REG_REQ — SHM cardinality + schema hash conflict
 // ============================================================================
-
-int duplicate_reg_shm_cardinality()
-{
-    return run_with_host(
-        "broker_protocol::duplicate_reg_shm_cardinality",
-        {"prod.proto.dup.same.uid00000001", "prod.proto.dup.same.uid00000002"},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  = pid_chan("proto.dup.same");
-            const std::string hash_hex = std::string(64, 'a');
-            const std::string uid1 = "prod.proto.dup.same.uid00000001";
-            const std::string uid2 = "prod.proto.dup.same.uid00000002";
-
-            BrcHandle bh1;
-            bh1.start(broker->endpoint, broker->pubkey, uid1, pylabhub::tests::role_keystore_name(uid1));
-            auto opts1 = make_reg_opts(channel, uid1);
-            opts1["schema_hash"] = hash_hex;
-            auto h1 = bh1.brc.register_channel(opts1, 3000);
-            ASSERT_TRUE(h1.has_value());
-
-            BrcHandle bh2;
-            bh2.start(broker->endpoint, broker->pubkey, uid2, pylabhub::tests::role_keystore_name(uid2));
-            auto opts2 = make_reg_opts(channel, uid2);
-            opts2["schema_hash"] = hash_hex;
-            auto h2 = bh2.brc.register_channel(opts2, 3000);
-            ASSERT_TRUE(h2.has_value())
-                << "Broker must return a structured error envelope, "
-                   "not transport failure";
-            EXPECT_EQ(h2->value("status", std::string{}), "error")
-                << "Second SHM producer must reject; got: " << h2->dump();
-            // 2026-07-08 topology migration — SHM cardinality is now
-            // enforced via the topology cardinality gate.  A default
-            // (undeclared) SHM channel stores topology `one-to-one`;
-            // the second producer trips
-            // `ONE_TO_ONE_CARDINALITY_VIOLATED`.  Pre-migration this
-            // was `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`.
-            EXPECT_EQ(h2->value("error_code", std::string{}),
-                      "ONE_TO_ONE_CARDINALITY_VIOLATED")
-                << "SHM cardinality reject must surface as "
-                   "ONE_TO_ONE_CARDINALITY_VIOLATED; got: "
-                << h2->dump();
-
-            bh2.stop();
-            bh1.stop();
-        },
-        // Topology cardinality gate — the WARN line the broker emits
-        // for a second producer on a default (`one-to-one`) SHM channel.
-        {"event=RegReqRejected reason='ONE_TO_ONE_CARDINALITY_VIOLATED'"});
-}
-
-int duplicate_reg_different_schema_hash()
-{
-    return run_with_host(
-        "broker_protocol::duplicate_reg_different_schema_hash",
-        {"prod.proto.dup.diff.uid00000001", "prod.proto.dup.diff.uid00000002"},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel = pid_chan("proto.dup.diff");
-            const std::string hash_a  = std::string(64, 'a');
-            const std::string hash_b  = std::string(64, 'b');
-            const std::string uid1 = "prod.proto.dup.diff.uid00000001";
-            const std::string uid2 = "prod.proto.dup.diff.uid00000002";
-
-            BrcHandle bh1;
-            bh1.start(broker->endpoint, broker->pubkey, uid1, pylabhub::tests::role_keystore_name(uid1));
-            auto opts1 = make_reg_opts(channel, uid1);
-            opts1["schema_hash"] = hash_a;
-            auto h1 = bh1.brc.register_channel(opts1, 3000);
-            ASSERT_TRUE(h1.has_value());
-
-            BrcHandle bh2;
-            bh2.start(broker->endpoint, broker->pubkey, uid2, pylabhub::tests::role_keystore_name(uid2));
-            auto opts2 = make_reg_opts(channel, uid2);
-            opts2["schema_hash"] = hash_b;
-            auto h2 = bh2.brc.register_channel(opts2, 3000);
-            ASSERT_TRUE(h2.has_value())
-                << "Broker should respond with ERROR, not silent timeout";
-            EXPECT_EQ(h2->value("status", std::string{}), "error");
-            EXPECT_EQ(h2->value("error_code", std::string{}),
-                      "SCHEMA_MISMATCH");
-
-            bh2.stop();
-            bh1.stop();
-        },
-        /*warns=*/{},
-        /*errors=*/{"Cat1 schema mismatch", "CHANNEL_ERROR_NOTIFY"});
-}
+// duplicate_reg_shm_cardinality + duplicate_reg_different_schema_hash
+// MIGRATED to tests/test_layer3_pattern4/ (task #54 Round 1).
 
 // ============================================================================
 // 4. HEARTBEAT_NOTIFY — PendingReady → Ready + wire payload + keying
 // ============================================================================
+// heartbeat_transitions_to_ready + heartbeat_keying_producer_vs_consumer_distinct_rows
+// stay here — they inspect in-process broker HubState (channel-snapshot
+// observable state; RolePresence rows) that has no wire equivalent.
+// Round 3 of the sweep adds their RATIONALE blocks per Path 1.
+// heartbeat_wire_payload_includes_uid_and_role_type is a Round-1
+// Batch-D candidate (broker-log observation via expect_log).
 
 int heartbeat_transitions_to_ready()
 {
@@ -655,214 +578,17 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows()
 // ============================================================================
 // 6. Transport arbitration
 // ============================================================================
-
-int transport_mismatch_shm_producer_zmq_consumer()
-{
-    return run_with_host(
-        "broker_protocol::transport_mismatch_shm_producer_zmq_consumer",
-        {"prod." + pid_chan("proto.transport.shm_zmq"), "cons." + pid_chan("proto.transport.shm_zmq")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  =
-                pid_chan("proto.transport.shm_zmq");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-            // Producer must reach kLive (Connected + first_heartbeat_seen)
-            // before the broker admits CONSUMER_REG_REQ — see HEP-CORE-0036
-            // §5.2 R6 gate (broker_service.cpp:2444-2454).  Without this
-            // heartbeat the consumer-side register hits CHANNEL_NOT_READY
-            // / "awaiting_first_heartbeat" before the transport-arbitration
-            // check that's the actual subject of this test.
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-            BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
-            auto cons_opts = make_cons_opts(channel, cons_uid);
-            cons_opts["consumer_queue_type"] = "zmq";
-            auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-            ASSERT_TRUE(cons_reg.has_value())
-                << "Broker should respond with ERROR, not silent timeout";
-            EXPECT_EQ(cons_reg->value("status", std::string{}), "error");
-            EXPECT_EQ(cons_reg->value("error_code", std::string{}),
-                      "TRANSPORT_MISMATCH");
-
-            cons_bh.stop();
-            prod_bh.stop();
-        },
-        {"transport mismatch"});
-}
-
-int transport_match_shm_consumer_shm_producer()
-{
-    return run_with_host(
-        "broker_protocol::transport_match_shm_consumer_shm_producer",
-        {"prod." + pid_chan("proto.transport.shm_shm"), "cons." + pid_chan("proto.transport.shm_shm")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  =
-                pid_chan("proto.transport.shm_shm");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-            BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
-            auto cons_opts = make_cons_opts(channel, cons_uid);
-            cons_opts["consumer_queue_type"] = "shm";
-            auto cons_reg = cons_bh.brc.register_consumer(cons_opts, 3000);
-            EXPECT_TRUE(cons_reg.has_value())
-                << "Both sides use SHM — should succeed";
-
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
-
-int transport_match_no_driver_field()
-{
-    return run_with_host(
-        "broker_protocol::transport_match_no_driver_field",
-        {"prod." + pid_chan("proto.transport.nofield"), "cons." + pid_chan("proto.transport.nofield")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  =
-                pid_chan("proto.transport.nofield");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-            BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
-            auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, cons_uid), 3000);
-            EXPECT_TRUE(cons_reg.has_value())
-                << "Should succeed when consumer_queue_type is omitted";
-
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
+// transport_mismatch_shm_producer_zmq_consumer,
+// transport_match_shm_consumer_shm_producer, transport_match_no_driver_field
+// MIGRATED to tests/test_layer3_pattern4/ (task #54 Round 1).
 
 // ============================================================================
 // 7. REG_ACK / CONSUMER_REG_ACK heartbeat-negotiation block
 // ============================================================================
-
-int reg_ack_contains_heartbeat_block_defaults()
-{
-    return run_with_host(
-        "broker_protocol::reg_ack_contains_heartbeat_block_defaults",
-        {"prod." + pid_chan("proto.regack.hb_default")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel = pid_chan("proto.regack.hb_default");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            ASSERT_TRUE(reg->contains("heartbeat"))
-                << "REG_ACK missing heartbeat block";
-            const auto &hb = (*reg)["heartbeat"];
-            ASSERT_TRUE(hb.is_object());
-
-            EXPECT_EQ(hb.value("heartbeat_interval_ms", -1),
-                      ::pylabhub::kDefaultHeartbeatIntervalMs);
-            EXPECT_EQ(hb.value("ready_miss_heartbeats", uint32_t{0}),
-                      ::pylabhub::kDefaultReadyMissHeartbeats);
-            EXPECT_EQ(hb.value("pending_miss_heartbeats", uint32_t{0}),
-                      ::pylabhub::kDefaultPendingMissHeartbeats);
-
-            bh.stop();
-        });
-}
-
-int reg_ack_heartbeat_block_honors_custom_config()
-{
-    return run_with_host(
-        "broker_protocol::reg_ack_heartbeat_block_honors_custom_config",
-        {"prod." + pid_chan("proto.regack.hb_custom")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            broker.reset();
-            BrokerService::Config cfg;
-            cfg.endpoint                = "tcp://127.0.0.1:0";
-            cfg.heartbeat_interval      = std::chrono::milliseconds(250);
-            cfg.ready_miss_heartbeats   = 12;
-            cfg.pending_miss_heartbeats = 8;
-            broker.emplace(start_local_broker(std::move(cfg), curve));
-
-            const std::string channel = pid_chan("proto.regack.hb_custom");
-            const std::string uid     = "prod." + channel;
-
-            BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            ASSERT_TRUE(reg->contains("heartbeat"));
-            const auto &hb = (*reg)["heartbeat"];
-            EXPECT_EQ(hb.value("heartbeat_interval_ms", -1), 250);
-            EXPECT_EQ(hb.value("ready_miss_heartbeats", uint32_t{0}), 12u);
-            EXPECT_EQ(hb.value("pending_miss_heartbeats", uint32_t{0}), 8u);
-
-            bh.stop();
-        });
-}
-
-int consumer_reg_ack_contains_heartbeat_block()
-{
-    return run_with_host(
-        "broker_protocol::consumer_reg_ack_contains_heartbeat_block",
-        {"prod." + pid_chan("proto.cons_regack.hb"), "cons." + pid_chan("proto.cons_regack.hb")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  = pid_chan("proto.cons_regack.hb");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-
-            BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-            BrcHandle cons_bh;
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
-            auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, cons_uid), 3000);
-            ASSERT_TRUE(cons_reg.has_value());
-
-            ASSERT_TRUE(cons_reg->contains("heartbeat"))
-                << "CONSUMER_REG_ACK missing heartbeat block";
-            const auto &hb = (*cons_reg)["heartbeat"];
-            EXPECT_TRUE(hb.contains("heartbeat_interval_ms"));
-            EXPECT_TRUE(hb.contains("ready_miss_heartbeats"));
-            EXPECT_TRUE(hb.contains("pending_miss_heartbeats"));
-
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
+// reg_ack_contains_heartbeat_block_defaults,
+// reg_ack_heartbeat_block_honors_custom_config (broker "hb_custom"
+// profile), consumer_reg_ack_contains_heartbeat_block MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).
 
 // ============================================================================
 // 8. CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to producer + ALL consumers
@@ -1244,30 +970,16 @@ struct BrokerProtocolRegistrar
                     return checksum_error_report_unknown_channel_silent();
                 // closing_notify_delivered_to_producer_and_consumer
                 // RETIRED 2026-06-28 → task #225 (Pattern 4 rung 8).
-                if (sc == "duplicate_reg_shm_cardinality")
-                    return duplicate_reg_shm_cardinality();
-                if (sc == "duplicate_reg_different_schema_hash")
-                    return duplicate_reg_different_schema_hash();
+                // duplicate_reg_* MIGRATED to Pattern 4 (task #54 Round 1).
                 if (sc == "heartbeat_transitions_to_ready")
                     return heartbeat_transitions_to_ready();
                 if (sc == "heartbeat_wire_payload_includes_uid_and_role_type")
                     return heartbeat_wire_payload_includes_uid_and_role_type();
                 if (sc == "heartbeat_keying_producer_vs_consumer_distinct_rows")
                     return heartbeat_keying_producer_vs_consumer_distinct_rows();
-                // role_presence_req_* / role_info_req_* MIGRATED to
-                // Pattern 4 (task #54 Round 1).
-                if (sc == "transport_mismatch_shm_producer_zmq_consumer")
-                    return transport_mismatch_shm_producer_zmq_consumer();
-                if (sc == "transport_match_shm_consumer_shm_producer")
-                    return transport_match_shm_consumer_shm_producer();
-                if (sc == "transport_match_no_driver_field")
-                    return transport_match_no_driver_field();
-                if (sc == "reg_ack_contains_heartbeat_block_defaults")
-                    return reg_ack_contains_heartbeat_block_defaults();
-                if (sc == "reg_ack_heartbeat_block_honors_custom_config")
-                    return reg_ack_heartbeat_block_honors_custom_config();
-                if (sc == "consumer_reg_ack_contains_heartbeat_block")
-                    return consumer_reg_ack_contains_heartbeat_block();
+                // role_presence_req_* / role_info_req_* / transport_* /
+                // reg_ack_* / consumer_reg_ack_contains_heartbeat_block
+                // MIGRATED to Pattern 4 (task #54 Round 1).
                 if (sc == "broadcast_fan_out_delivered_to_producer_and_consumers")
                     return broadcast_fan_out_delivered_to_producer_and_consumers();
                 if (sc == "broadcast_fan_out_data_payload_round_trip")

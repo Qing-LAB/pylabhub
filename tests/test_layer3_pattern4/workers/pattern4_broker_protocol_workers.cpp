@@ -83,9 +83,32 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
             pylabhub::broker::BrokerService::Config cfg;
             cfg.endpoint = setup.broker_endpoint;
             pylabhub::tests::apply_curve_to(cfg, setup.curve);
-            // Future config profiles branch here.  For now `default` is
-            // the only shape any migrated broker_protocol test needs.
-            if (profile != "default")
+            // Config profiles: a migrated test that needs a non-default
+            // broker config picks a named profile via argv[3] instead of
+            // spawning its own broker binary.  Each branch sets only the
+            // fields that test exercises; everything else stays default.
+            if (profile == "default")
+            {
+                // Canonical broker config — the common case.
+            }
+            else if (profile == "hb_custom")
+            {
+                // reg_ack_heartbeat_block_honors_custom_config — the
+                // REG_ACK heartbeat block must echo these negotiated
+                // values (HEP-CORE-0023 §2.5.1).
+                cfg.heartbeat_interval      = std::chrono::milliseconds{250};
+                cfg.ready_miss_heartbeats   = 12;
+                cfg.pending_miss_heartbeats = 8;
+            }
+            else if (profile == "checksum_notify")
+            {
+                // checksum_error_report_forwarded_to_producer — broker
+                // forwards CHECKSUM_ERROR_REPORT as CHANNEL_EVENT_NOTIFY
+                // rather than attempting repair (HEP-CORE-0019 Cat2).
+                cfg.checksum_repair_policy =
+                    pylabhub::broker::ChecksumRepairPolicy::NotifyOnly;
+            }
+            else
             {
                 std::fprintf(stderr,
                              "pattern4_broker_protocol.broker: unknown "

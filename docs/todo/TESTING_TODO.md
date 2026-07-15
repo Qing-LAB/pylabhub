@@ -673,21 +673,28 @@ that legitimately need in-process broker state inspection keep
 
 **Rounds (open):**
 - **Round 1** — 22 wire-only workers in
-  `datahub_broker_protocol_workers.cpp`.  ✅ 10 done:
-  `WireConformance_Band_CorrIdEcho` (commit `327b3abb`) + the
-  query/shape cluster (`RolePresenceReq_*`, `RoleInfoReq_*`,
-  `WireConformance_{RegAck,ConsumerRegAck,RoleInfoAck,BandAck}_Shape`).
-  Recipe: production REG builders (`hub::build_producer_reg_payload`
-  / `build_consumer_reg_payload`) + `BrokerWireClient`; explicit
-  producer HEARTBEAT_NOTIFY before consumer REG (R6 gate — the old
-  BRC `register_consumer` masked this with a CHANNEL_NOT_READY retry
-  loop).  Dead `raw_req` helper removed on this pass.  Remaining ~12:
-  trivial REG-based (`duplicate_reg_*`, `transport_*`, `reg_ack_*`,
-  `consumer_reg_ack_contains_heartbeat_block`,
-  `heartbeat_transitions_to_ready`, `heartbeat_keying_*`); and
-  NOTIFY-capture (`broadcast_fan_out_*`, `checksum_error_report_*`,
-  `heartbeat_wire_payload_includes_uid_and_role_type`) — need a
-  parent-side unsolicited-NOTIFY drain via `BrokerWireClient::receive`.
+  `datahub_broker_protocol_workers.cpp`.  ✅ 18 done: the query/shape
+  cluster + Batch C (`DuplicateReg_*`, `TransportMismatch_*`,
+  `TransportMatch_*`, `RegAck_*`, `ConsumerRegAck_ContainsHeartbeatBlock`).
+  Recipe: production REG builders (`hub::build_producer_reg_payload` /
+  `build_consumer_reg_payload`) + `BrokerWireClient`; explicit producer
+  HEARTBEAT_NOTIFY before consumer REG (R6 gate — the old BRC
+  `register_consumer` masked this with a CHANNEL_NOT_READY retry loop).
+  Custom broker config via named profiles in
+  `pattern4_broker_protocol_workers.cpp` (`hb_custom`, `checksum_notify`).
+  Dead `raw_req` helper removed.
+  - **Batch D (NOTIFY-capture, remaining wire-only)** —
+    `checksum_error_report_forwarded_to_producer` (profile
+    `checksum_notify`), `broadcast_fan_out_*`,
+    `heartbeat_wire_payload_includes_uid_and_role_type`
+    (broker-log observation via `expect_log`).  Need a parent-side
+    unsolicited-NOTIFY drain via `BrokerWireClient::receive`.
+  - **Round-3 hybrids (stay in L3, need RATIONALE block)** —
+    `heartbeat_transitions_to_ready`,
+    `heartbeat_keying_producer_vs_consumer_distinct_rows`,
+    `checksum_error_report_unknown_channel_silent` — all inspect
+    in-process broker `HubState` (channel-snapshot observable state;
+    `RolePresence` rows) with no wire equivalent.
 - **Round 2** — remaining 6 wire-only-heavy worker files (~38
   workers).
 - **Round 3** — author `RATIONALE:` blocks for the legitimate
