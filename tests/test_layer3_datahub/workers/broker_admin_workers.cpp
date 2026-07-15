@@ -411,134 +411,6 @@ json make_baseline_zmq_reg(const std::string &channel,
 
 } // anonymous namespace
 
-int reg_validation_missing_data_transport()
-{
-    const std::string channel = pid_chan("reg.val.missing_dt");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::reg_validation_missing_data_transport", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            auto reg_opts = make_baseline_shm_reg(
-                channel, uid, curve.role(uid).public_z85);
-            reg_opts.erase("data_transport");
-
-            auto resp = bh.brc.register_channel(reg_opts, 3000);
-            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
-            EXPECT_EQ(resp->value("status", std::string{}), "error");
-            // HEP-CORE-0046 §14.3: `data_transport` is REQUIRED on the
-            // ProducerRegReqBody wire class per HEP-CORE-0036 §5b.4.
-            // Missing / wrong-typed required fields surface as
-            // BODY_SCHEMA_VIOLATION from the wire body class ctor —
-            // the pre-Group-1 broker-level per-field validator that
-            // returned INVALID_REQUEST no longer runs; contract now
-            // lives in the wire body class.
-            EXPECT_EQ(resp->value("error_code", std::string{}),
-                      "BODY_SCHEMA_VIOLATION");
-            EXPECT_NE(resp->value("message", std::string{})
-                          .find("data_transport"),
-                      std::string::npos)
-                << "Error message should name the missing field; got: "
-                << resp->value("message", std::string{});
-
-            bh.stop();
-        },
-        // Broker's dispatch-level admission-rejected WARN — allow the
-        // new (Group 4) format naming the specific BODY_SCHEMA_VIOLATION.
-        {"admission rejected msg_type='REG_REQ'"});
-}
-
-int reg_validation_empty_data_transport()
-{
-    const std::string channel = pid_chan("reg.val.empty_dt");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::reg_validation_empty_data_transport", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            auto reg_opts = make_baseline_shm_reg(
-                channel, uid, curve.role(uid).public_z85);
-            reg_opts["data_transport"] = "";
-
-            auto resp = bh.brc.register_channel(reg_opts, 3000);
-            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
-            EXPECT_EQ(resp->value("status", std::string{}), "error");
-            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
-
-            bh.stop();
-        },
-        // Broker emits the "not one of {shm,zmq}" WARN for explicit empty.
-        {"is not one of"});
-}
-
-int reg_validation_bogus_data_transport()
-{
-    const std::string channel = pid_chan("reg.val.bogus_dt");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::reg_validation_bogus_data_transport", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            auto reg_opts = make_baseline_shm_reg(
-                channel, uid, curve.role(uid).public_z85);
-            reg_opts["data_transport"] = "tcp";
-
-            auto resp = bh.brc.register_channel(reg_opts, 3000);
-            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
-            EXPECT_EQ(resp->value("status", std::string{}), "error");
-            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
-            EXPECT_NE(resp->value("message", std::string{}).find("tcp"),
-                      std::string::npos)
-                << "Error message should echo the bad value; got: "
-                << resp->value("message", std::string{});
-
-            bh.stop();
-        },
-        {"is not one of"});
-}
-
-int reg_validation_shm_missing_endpoint()
-{
-    const std::string channel = pid_chan("reg.val.shm_no_ep");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::reg_validation_shm_missing_endpoint", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            auto reg_opts = make_baseline_shm_reg(
-                channel, uid, curve.role(uid).public_z85);
-            // data_transport stays "shm"; explicitly drop the endpoint.
-            // This closes the pre-#281 coverage gap from #268
-            // (1i-prod-hardening shipped the §5.1 endpoint-required
-            // check without a wire-level regression pin).
-            reg_opts.erase("shm_capability_endpoint");
-
-            auto resp = bh.brc.register_channel(reg_opts, 3000);
-            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
-            EXPECT_EQ(resp->value("status", std::string{}), "error");
-            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
-            EXPECT_NE(resp->value("message", std::string{})
-                          .find("shm_capability_endpoint"),
-                      std::string::npos)
-                << "Error message should name the missing endpoint field; got: "
-                << resp->value("message", std::string{});
-
-            bh.stop();
-        },
-        {"data_transport='shm' but `shm_capability_endpoint` is empty"});
-}
 
 int reg_validation_shm_success()
 {
@@ -653,14 +525,10 @@ struct BrokerAdminRegistrar
                 if (sc == "close_channel_non_existent")
                     return close_channel_non_existent();
                 // #281 (2026-06-23) REG_REQ wire-contract pins
-                if (sc == "reg_validation_missing_data_transport")
-                    return reg_validation_missing_data_transport();
-                if (sc == "reg_validation_empty_data_transport")
-                    return reg_validation_empty_data_transport();
-                if (sc == "reg_validation_bogus_data_transport")
-                    return reg_validation_bogus_data_transport();
-                if (sc == "reg_validation_shm_missing_endpoint")
-                    return reg_validation_shm_missing_endpoint();
+                // reg_validation_{missing,empty,bogus}_data_transport +
+                // reg_validation_shm_missing_endpoint MIGRATED to
+                // tests/test_layer3_pattern4/test_pattern4_broker_admin.cpp
+                // (task #52 Round 2 — wire-only error paths).
                 if (sc == "reg_validation_shm_success")
                     return reg_validation_shm_success();
                 if (sc == "reg_validation_zmq_success")

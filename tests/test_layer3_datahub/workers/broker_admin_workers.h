@@ -27,10 +27,10 @@ int close_channel_non_existent();
 //     pre-#281 §5.1 H3c check; never had its own pin before #281).
 // Positive pins anchor that the production-shaped wire shapes still
 // succeed end-to-end.
-int reg_validation_missing_data_transport();
-int reg_validation_empty_data_transport();
-int reg_validation_bogus_data_transport();
-int reg_validation_shm_missing_endpoint();
+// reg_validation error paths (missing/empty/bogus data_transport +
+// shm_missing_endpoint) MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_broker_admin.cpp (task #52 Round 2).  The *_success
+// variants stay — they inspect the in-process channel snapshot.
 int reg_validation_shm_success();
 int reg_validation_zmq_success();
 

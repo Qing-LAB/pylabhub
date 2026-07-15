@@ -75,29 +75,11 @@ TEST_F(BrokerAdminTest, CloseChannel_NonExistent)
 // and the §5.1 endpoint-required check shipped under #268 had no
 // regression pin either.  These tests close both gaps.
 
-TEST_F(BrokerAdminTest, RegValidation_MissingDataTransport_Rejected)
-{
-    auto w = SpawnWorker("broker_admin.reg_validation_missing_data_transport");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, RegValidation_EmptyDataTransport_Rejected)
-{
-    auto w = SpawnWorker("broker_admin.reg_validation_empty_data_transport");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, RegValidation_BogusDataTransport_Rejected)
-{
-    auto w = SpawnWorker("broker_admin.reg_validation_bogus_data_transport");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, RegValidation_ShmMissingEndpoint_Rejected)
-{
-    auto w = SpawnWorker("broker_admin.reg_validation_shm_missing_endpoint");
-    ExpectWorkerOk(w);
-}
+// RegValidation error paths (Missing/Empty/Bogus DataTransport +
+// ShmMissingEndpoint) MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_admin.cpp
+// (task #52 Round 2).  The *_Success variants below stay — they inspect
+// the in-process channel snapshot.
 
 TEST_F(BrokerAdminTest, RegValidation_ShmSuccess)
 {

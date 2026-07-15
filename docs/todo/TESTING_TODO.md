@@ -728,8 +728,10 @@ that legitimately need in-process broker state inspection keep
       `consumer_liveness_check_interval`).
     - `zmq_endpoint_registry` — **7 wire-only, 1 hybrid**
       (`shm_and_zmq_coexist` reads `query_channel_snapshot`).
-    - `broker_admin` — **4 wire-only** (`reg_validation_*` error paths),
-      **10 hybrid** (list/snapshot/close via `broker.service()`).
+    - ✅ `broker_admin` — **4 wire-only** (`reg_validation_*` error paths)
+      migrated to `test_pattern4_broker_admin.cpp`; **10 hybrid** stay in
+      L3 (list/snapshot/close + `reg_validation_*_success` via
+      `broker.service()` — Round-3 disposition).
     - `datahub_metrics` — **0 wire-only, 16 hybrid** — every test reads
       `svc.query_metrics*` in-process (no metrics wire query exists;
       `METRICS_REPORT_REQ` is retired → UNKNOWN_MSG_TYPE).  Round-3
