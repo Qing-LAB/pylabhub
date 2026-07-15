@@ -118,9 +118,7 @@ nlohmann::json build_current_reg_req_payload()
     p["channel_topology"] = "fan-in";
     p["data_transport"]   = "zmq";
     p["zmq_pubkey"]       = "yg$m){l]+lK!u{CGx0n*vd17T1K4-Ky5Z9qXigWf1zZ";
-    p["broker_proto"]     = 7U;
     p["schema_hash"]      = "abcdef1234567890";
-    p["schema_version"]   = 1U;
     p["schema_id"]        = "test.schema.v1";
     p["schema_blds"]      = "";
     p["schema_owner"]     = "";
@@ -187,7 +185,7 @@ TEST(WireAdapterFamily, RegFamilyIdentifiedByMsgType)
     EXPECT_FALSE(msg_type_carries_security_triple("GET_CHANNEL_AUTH_REQ"));
     EXPECT_FALSE(msg_type_carries_security_triple("CHECK_PEER_READY_REQ"));
     EXPECT_FALSE(msg_type_carries_security_triple(""));
-    EXPECT_FALSE(msg_type_carries_security_triple("HEARTBEAT_REQ"));
+    EXPECT_FALSE(msg_type_carries_security_triple("HEARTBEAT_NOTIFY"));
     // NOTIFYs and ACKs are not REG-family per §I-MSG-TYPE-TAXONOMY.
     EXPECT_FALSE(msg_type_carries_security_triple("CHANNEL_AUTH_CHANGED_NOTIFY"));
     EXPECT_FALSE(msg_type_carries_security_triple("REG_ACK"));

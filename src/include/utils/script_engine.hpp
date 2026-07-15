@@ -673,7 +673,7 @@ class ScriptEngine
 
     /**
      * @brief Invoke on_band_message(band, sender_role_uid, body, api)
-     *        for `BAND_BROADCAST_NOTIFY` (HEP-CORE-0030 §5.3).
+     *        for `BAND_BROADCAST_DELIVER_NOTIFY` (HEP-CORE-0030 §5.3).
      *
      * @param band             Wire `band` field.
      * @param sender_role_uid  Wire `role_uid` field (the broadcasting

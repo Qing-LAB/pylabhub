@@ -687,7 +687,7 @@ typedef struct PlhAbiInfo
  *   unification — every role-context wire message now uses
  *   `role_uid`/`role_name`.  Renames: CONSUMER_REG_REQ.consumer_uid/
  *   consumer_name → role_uid/role_name; HEARTBEAT_REQ.uid →
- *   role_uid; BAND_BROADCAST_REQ.sender_uid → role_uid;
+ *   role_uid; BAND_BROADCAST_SEND_NOTIFY.sender_uid → role_uid;
  *   CONSUMER_DIED_NOTIFY body.consumer_uid → role_uid.  Broker also
  *   enforces grammar (HEP-CORE-0033 §G2.2.0b) + side-aware role-tag
  *   policy at every gate (REG_REQ/DEREG_REQ accept tags {prod,proc};
@@ -695,7 +695,7 @@ typedef struct PlhAbiInfo
  *   HEARTBEAT_REQ cross-checks role_type against tag).  Old clients
  *   using legacy keys get INVALID_REQUEST / INVALID_ROLE_TAG.
  *   Federation peer-context `sender_uid` (HUB_TARGETED_MSG /
- *   CHANNEL_BROADCAST_REQ from hubs) preserved (peer.uid, not
+ *   CHANNEL_BROADCAST_SEND_NOTIFY from hubs) preserved (peer.uid, not
  *   role.uid).  Inbox-message `sender_uid` (PyInboxMsg /
  *   plh_inbox_msg_t / msg.sender_uid in Lua) preserved (authoring
  *   producer of an inbox payload — semantically distinct from local

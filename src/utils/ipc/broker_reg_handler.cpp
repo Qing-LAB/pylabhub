@@ -104,10 +104,10 @@ make_schema_from(const RegRequest &r)
 {
     ::pylabhub::hub::ChannelSchemaInvariants s;
     s.schema_hash    = r.schema_hash;
-    s.schema_version = r.schema_version;
     s.schema_id      = r.schema_id;
     s.schema_blds    = r.schema_blds;
     s.schema_owner   = r.schema_owner;
+    // schema_version retired per C2 — version rides inside schema_id.
     return s;
 }
 
@@ -242,14 +242,16 @@ BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
 
 RegOutcome
 BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
-                          const ::pylabhub::wire::RegReqBody    &body)
+                          const ::pylabhub::wire::ProducerRegReqBody    &body)
 {
     // ── Ambient context ──────────────────────────────────────────────
     AdmissionContext ctx;
     ctx.cb                = &gate_callbacks_;
-    ctx.broker_proto      = config_.broker_proto;
     ctx.skew_tolerance_ms = config_.skew_tolerance_ms;
     ctx.nonce_window_ms   = config_.nonce_window_ms;
+    // No `broker_proto` field on AdmissionContext (retired per C3);
+    // ABI verification uses `abi_fingerprint` at the broker's REG
+    // handler, not this pipeline.
 
     // ── Commit callback (state mutation + protocol gates) ────────────
     //
@@ -338,7 +340,7 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
         // Design mandates grammar on role_uid / role_name / channel_name
         // at gate 4; the shared `gate_grammar` covers universal fields
         // (role_uid + channel_name) since role_name only exists on
-        // RegReqBody per §14.3.  The role_name check lives here where
+        // ProducerRegReqBody per §14.3.  The role_name check lives here where
         // the body class is known.  Uses the same is_id_char grammar
         // as the shared gate — [A-Za-z0-9._-], 1..128 chars.
         {

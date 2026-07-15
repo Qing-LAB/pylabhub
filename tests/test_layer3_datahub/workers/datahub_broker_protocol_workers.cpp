@@ -2,9 +2,9 @@
  * @file datahub_broker_protocol_workers.cpp
  * @brief Worker bodies for broker control-plane protocol tests
  *        (CHECKSUM_ERROR, CHANNEL_CLOSING_NOTIFY, REG_REQ duplicate /
- *         schema mismatch, HEARTBEAT_REQ, ROLE_PRESENCE_REQ,
+ *         schema mismatch, HEARTBEAT_NOTIFY, ROLE_PRESENCE_REQ,
  *         ROLE_INFO_REQ, transport arbitration, REG_ACK heartbeat
- *         negotiation, CHANNEL_BROADCAST_REQ fan-out).
+ *         negotiation, CHANNEL_BROADCAST_SEND_NOTIFY fan-out).
  *
  * Migrated 2026-05-14 from `tests/test_layer3_datahub/test_datahub_broker_protocol.cpp`
  * where it used the in-process `SetUpTestSuite`-owned `LifecycleGuard`
@@ -43,8 +43,11 @@
 #include "utils/role_reg_payload.hpp"
 #include "utils/scope_guard.hpp"
 #include "utils/security/key_store.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 #include "utils/timeout_constants.hpp"
+#include "utils/wire_adapter.hpp"
+#include "utils/wire_envelope.hpp"
 
 #include <cppzmq/zmq.hpp>
 #include <cppzmq/zmq_addon.hpp>   // zmq::send_multipart (R3.6)
@@ -255,33 +258,89 @@ json raw_req(const std::string& endpoint,
         }
     }
 
+    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.
+    const std::string routing_id = role_identity_name.empty()
+        ? std::string{"raw-req-anon-protocol"}
+        : role_identity_name;
+    dealer.set(zmq::sockopt::routing_id, routing_id);
     dealer.connect(endpoint);
 
-    static constexpr char kCtrl       = 'C';
-    const std::string     payload_str = payload.dump();
-    std::vector<zmq::const_buffer> send_frames = {
-        zmq::buffer(&kCtrl, 1),
-        zmq::buffer(msg_type),
-        zmq::buffer(payload_str)};
-    if (!zmq::send_multipart(dealer, send_frames))
-        return {};
-
-    std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
-    zmq::poll(items, std::chrono::milliseconds(timeout_ms));
-    if ((items[0].revents & ZMQ_POLLIN) == 0)
-        return {};
-
-    std::vector<zmq::message_t> recv_frames;
-    auto result = zmq::recv_multipart(dealer, std::back_inserter(recv_frames));
-    if (!result || recv_frames.size() < 3)
-        return {};
+    // HEP-CORE-0046 §14 envelope encode.  Respect caller-set
+    // `payload["correlation_id"]` (non-empty string) so conformance
+    // tests can pin the value; else generate a fresh one.
+    namespace sec = pylabhub::utils::security;
+    std::string correlation_id;
+    if (payload.is_object())
+    {
+        auto it = payload.find("correlation_id");
+        if (it != payload.end() && it->is_string())
+            correlation_id = it->get<std::string>();
+    }
+    if (correlation_id.empty())
+    {
+        std::array<std::uint8_t, 16> corr_raw{};
+        sec::secure().random_bytes(corr_raw);
+        char corr_hex[33] = {};
+        sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
+                              corr_raw.size());
+        correlation_id.assign(corr_hex, 32);
+    }
+    std::string nonce_hex;
+    std::uint64_t wall_ts = 0;
+    if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
+    {
+        std::array<std::uint8_t, 16> nonce_raw{};
+        sec::secure().random_bytes(nonce_raw);
+        char nh[33] = {};
+        sec::secure().bin2hex(nh, sizeof(nh), nonce_raw.data(), nonce_raw.size());
+        nonce_hex = std::string(nh, 32);
+        using namespace std::chrono;
+        wall_ts = static_cast<std::uint64_t>(
+            duration_cast<milliseconds>(
+                system_clock::now().time_since_epoch()).count());
+    }
+    ::pylabhub::wire::adapter::EncodeContext ectx;
+    ectx.dealer_role_uid = routing_id;
+    ectx.correlation_id  = correlation_id;
+    ectx.client_nonce    = nonce_hex;
+    ectx.client_wall_ts  = wall_ts;
     try
     {
-        return json::parse(recv_frames.back().to_string());
+        zmq::multipart_t wire =
+            ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ectx, payload);
+        wire.send(dealer);
     }
-    catch (const json::exception&)
+    catch (const std::exception&)
     {
         return {};
+    }
+
+    // Under I-DEALER-IDENTITY, loop past NOTIFYs — see datahub_broker_workers::raw_req.
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true)
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return {};
+        auto ms_left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           deadline - now)
+                           .count();
+        std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
+        zmq::poll(items, std::chrono::milliseconds(ms_left));
+        if ((items[0].revents & ZMQ_POLLIN) == 0) return {};
+
+        zmq::multipart_t raw;
+        if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
+        ::pylabhub::wire::ParseError perr = {};
+        auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
+            std::move(raw), routing_id, &perr);
+        if (!env_opt.has_value()) return {};
+        ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
+        if (env.is_notify()) continue;
+        json body_out = env.body();
+        if (!env.correlation_id().empty())
+            body_out["correlation_id"] = std::string(env.correlation_id());
+        return body_out;
     }
 }
 
@@ -528,7 +587,7 @@ int duplicate_reg_different_schema_hash()
 }
 
 // ============================================================================
-// 4. HEARTBEAT_REQ — PendingReady → Ready + wire payload + keying
+// 4. HEARTBEAT_NOTIFY — PendingReady → Ready + wire payload + keying
 // ============================================================================
 
 int heartbeat_transitions_to_ready()
@@ -603,11 +662,11 @@ int heartbeat_wire_payload_includes_uid_and_role_type()
 
             bh.brc.send_heartbeat(channel, uid, role_type, {});
 
-            // broker_proto 4→5 (R3.5b): HEARTBEAT_REQ wire key renamed
-            // `uid` → `role_uid`.  The broker's HEARTBEAT_REQ log line
+            // broker_proto 4→5 (R3.5b): HEARTBEAT_NOTIFY wire key renamed
+            // `uid` → `role_uid`.  The broker's HEARTBEAT_NOTIFY log line
             // mirrors the wire field name.
             const std::string expected =
-                "Broker: HEARTBEAT_REQ channel='" + channel +
+                "Broker: HEARTBEAT_NOTIFY channel='" + channel +
                 "' role_uid='" + uid +
                 "' role_type='" + role_type + "'";
 
@@ -1086,7 +1145,7 @@ int consumer_reg_ack_contains_heartbeat_block()
 }
 
 // ============================================================================
-// 8. CHANNEL_BROADCAST_REQ — fan-out to producer + ALL consumers
+// 8. CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to producer + ALL consumers
 // ============================================================================
 
 int broadcast_fan_out_delivered_to_producer_and_consumers()
@@ -1109,7 +1168,7 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
 
             auto only_bcast = [](std::shared_ptr<EventCollector> col) {
                 return [col](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_NOTIFY") col->push(t, b);
+                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY") col->push(t, b);
                 };
             };
 
@@ -1160,11 +1219,11 @@ int broadcast_fan_out_delivered_to_producer_and_consumers()
                                           "hello-fan-out", "");
 
             ASSERT_TRUE(prod_evts->wait_for(1, 5000))
-                << "producer did not receive CHANNEL_BROADCAST_NOTIFY";
+                << "producer did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
             ASSERT_TRUE(cons1_evts->wait_for(1, 5000))
-                << "cons1 did not receive CHANNEL_BROADCAST_NOTIFY";
+                << "cons1 did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
             ASSERT_TRUE(cons2_evts->wait_for(1, 5000))
-                << "cons2 did not receive CHANNEL_BROADCAST_NOTIFY";
+                << "cons2 did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
 
             auto check_payload =
                 [&](const json &b, const char *who) {
@@ -1228,7 +1287,7 @@ int broadcast_fan_out_data_payload_round_trip()
             BrcHandle cons_bh;
             cons_bh.brc.on_notification(
                 [cons_evts](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_NOTIFY")
+                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
                         cons_evts->push(t, b);
                 });
             cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
@@ -1283,7 +1342,7 @@ int broadcast_unknown_channel_no_notify_delivered()
             BrcHandle spec_bh;
             spec_bh.brc.on_notification(
                 [spec_evts](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_NOTIFY")
+                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
                         spec_evts->push(t, b);
                 });
             spec_bh.start(broker->endpoint, broker->pubkey, spec_uid, pylabhub::tests::role_keystore_name(spec_uid));
@@ -1332,7 +1391,7 @@ int broadcast_fan_out_hub_queue_path_fans_out_same()
             BrcHandle prod_bh;
             prod_bh.brc.on_notification(
                 [prod_evts](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_NOTIFY")
+                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
                         prod_evts->push(t, b);
                 });
             prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
@@ -1345,7 +1404,7 @@ int broadcast_fan_out_hub_queue_path_fans_out_same()
             BrcHandle cons_bh;
             cons_bh.brc.on_notification(
                 [cons_evts](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_NOTIFY")
+                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
                         cons_evts->push(t, b);
                 });
             cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
@@ -1772,10 +1831,19 @@ int wire_conformance_band_corr_id_echo()
                       err_corr)
                 << "BAND_LEAVE error reply echoed wrong correlation_id";
 
-            // ── Case 4: backward compat — no corr_id in req → none in ACK ──
-            // Re-join (no corr_id), verify ACK lacks the field rather
-            // than carrying an empty one.  `make_error` + the success
-            // echo are both gated on `!corr_id.empty()`.
+            // ── Case 4: Frame 3 correlation_id is authoritative ────────
+            // HEP-CORE-0046 I-CORRELATION-STABLE: `correlation_id` lives
+            // on Frame 3 of the envelope and MUST be echoed on every
+            // ACK.  When the caller omits `correlation_id` from the
+            // request BODY, `raw_req` still generates a Frame 3 value
+            // (per §14 non-NOTIFY requirement) and the broker's
+            // dispatch injects it into the body so ACK body reflects
+            // the authoritative Frame 3 echo.  A previous iteration of
+            // this test asserted the OPPOSITE ("no body corr_id in
+            // req → none in ACK") pinning a legacy handler-only gate
+            // that dispatch-level injection has superseded.  ACK body
+            // MUST carry `correlation_id` regardless of body-level
+            // presence in the request per the new design.
             nlohmann::json rejoin_req;
             rejoin_req["band"]      = band;
             rejoin_req["role_uid"]  = uid;
@@ -1784,11 +1852,14 @@ int wire_conformance_band_corr_id_echo()
                 broker->endpoint, "BAND_JOIN_REQ", rejoin_req, 3000,
                 broker->pubkey, pylabhub::tests::role_keystore_name(uid));
             ASSERT_FALSE(rejoin.is_null())
-                << "BAND_JOIN_REQ (no-corr-id) timed out";
+                << "BAND_JOIN_REQ (no body correlation_id) timed out";
             ASSERT_EQ(rejoin.value("status", std::string{}), "success");
-            EXPECT_FALSE(rejoin.contains("correlation_id"))
-                << "BAND_JOIN_ACK must not carry correlation_id when "
-                   "the request omitted it; body=" << rejoin.dump();
+            ASSERT_TRUE(rejoin.contains("correlation_id"))
+                << "BAND_JOIN_ACK must echo Frame 3 correlation_id per "
+                   "I-CORRELATION-STABLE regardless of request body "
+                   "content; body=" << rejoin.dump();
+            EXPECT_FALSE(rejoin.at("correlation_id").get<std::string>().empty())
+                << "echoed correlation_id must be non-empty per §14";
 
             bh.stop();
         });

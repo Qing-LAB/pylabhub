@@ -48,7 +48,7 @@ channel_to_json(const ChannelEntry &c, ChannelObservable obs,
     nlohmann::json j;
     j["name"]                = c.name;
     j["schema_hash"]         = c.schema_hash;
-    j["schema_version"]      = c.schema_version;
+    // schema_version retired per C2 — version rides inside schema_id.
     j["schema_id"]           = c.schema_id;
     j["schema_owner"]        = c.schema_owner;
     j["data_transport"]      = c.data_transport;

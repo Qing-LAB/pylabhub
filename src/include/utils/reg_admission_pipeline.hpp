@@ -55,7 +55,7 @@
 namespace pylabhub::wire
 {
 class WireEnvelope;
-class RegReqBody;
+class ProducerRegReqBody;
 }
 
 namespace pylabhub::admission
@@ -63,7 +63,7 @@ namespace pylabhub::admission
 
 // ── Typed protocol-level intermediates ────────────────────────────────
 //
-// Extracted from RegReqBody before state mutation.  Distinct from the
+// Extracted from ProducerRegReqBody before state mutation.  Distinct from the
 // body-class accessors so the state-mutation callback receives a
 // well-shaped input rather than a raw JSON reference.  This is the
 // interface the caller (broker or test) binds to.
@@ -79,7 +79,7 @@ enum class AdmissionSide
     dialing,   ///< fan-in producer, or fan-out / one-to-one consumer
 };
 
-/// The subset of RegReqBody fields the state-mutation primitive needs.
+/// The subset of ProducerRegReqBody fields the state-mutation primitive needs.
 /// Ordered and typed to match the HubState `_on_producer_added` /
 /// `_on_consumer_joined` calling convention.
 struct RegRequest
@@ -93,7 +93,8 @@ struct RegRequest
     std::string   data_transport;      ///< "zmq" | "shm"
     // Schema invariants — passed through verbatim to _on_producer_added.
     std::string   schema_hash;
-    std::uint32_t schema_version;
+    // schema_version retired per C2 — version rides inside schema_id
+    // (`$name.v<N>`) per HEP-CORE-0033 §G2.2.0b.
     std::string   schema_id;
     std::string   schema_blds;
     std::string   schema_owner;
@@ -165,7 +166,7 @@ using RegCommitFn = std::function<RegOutcome(const RegRequest &)>;
 // ── Pipeline runner ───────────────────────────────────────────────────
 
 /// Run the REG-family admission pipeline for a REG_REQ or CONSUMER_REG_REQ.
-/// Both msg_types share `RegReqBody` per §14.3; the pipeline itself is
+/// Both msg_types share `ProducerRegReqBody` per §14.3; the pipeline itself is
 /// role-type-agnostic.  The commit callback disambiguates producer vs
 /// consumer side by reading `RegRequest::role_type` and dispatching to
 /// the appropriate HubState primitive (`_on_producer_added` /
@@ -187,7 +188,7 @@ using RegCommitFn = std::function<RegOutcome(const RegRequest &)>;
 /// source of truth, no parallel copy on the pipeline surface.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT RegOutcome
 run_reg_admission(const ::pylabhub::wire::WireEnvelope &env,
-                   const ::pylabhub::wire::RegReqBody    &body,
+                   const ::pylabhub::wire::ProducerRegReqBody    &body,
                    const AdmissionContext                &gate_ctx,
                    const RegCommitFn                     &commit);
 

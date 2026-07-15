@@ -326,16 +326,19 @@ int disc_shows_consumer_count()
 
 int consumer_reg_unknown_role()
 {
-    // HEP-CORE-0036 §6.3 Layer-2 verification step 1: when CONSUMER_REG_REQ
-    // body claims a role_uid that is not in `cfg.known_roles[]`, broker
-    // rejects with UNKNOWN_ROLE.  Layer-1 ZAP is satisfied because the
-    // BRC authenticates with a legitimately-known role's key; the
-    // verification gate then catches the body-level uid lie.
+    // HEP-CORE-0046 §14.5 gate order pins I-DEALER-IDENTITY first:
+    // Frame 0 routing_id MUST equal body.role_uid before any other
+    // gate runs.  BRC sets routing_id from its start-time identity
+    // (real_uid); a body claiming fake_uid therefore triggers
+    // IDENTITY_MISMATCH, not UNKNOWN_ROLE — the known-role check is
+    // downstream.  This test still exercises the boundary rejection
+    // (broker refuses the wire on the spoofed body).  Coverage for
+    // gate_known_role_binding's UNKNOWN_ROLE branch specifically lives
+    // in the L1 admission-gate suite (`test_admission_gates.cpp`)
+    // where the identity gate is bypassed by direct primitive calls.
     //
     // Pre-registers a producer so the channel exists (CHANNEL_NOT_FOUND
-    // would otherwise fire first).  Uses a syntactically-valid but
-    // unregistered cons-uid in the body to surface UNKNOWN_ROLE
-    // specifically.
+    // would otherwise fire first).
     const std::string channel  = pid_chan("consumer.reg_unknown_role");
     const std::string prod_uid = "prod." + channel;
     const std::string real_uid = "cons.real." + channel;
@@ -377,9 +380,15 @@ int consumer_reg_unknown_role()
                 3000);
             ASSERT_TRUE(resp.has_value());
             EXPECT_EQ(resp->value("status", std::string{}), "error");
-            EXPECT_EQ(resp->value("error_code", std::string{}), "UNKNOWN_ROLE");
+            // Per §14.5 gate order: I-DEALER-IDENTITY fires first when
+            // Frame 0 routing_id (BRC's real_uid) != body.role_uid
+            // (fake_uid), shadowing the known-role check.
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "IDENTITY_MISMATCH");
         },
-        {"CONSUMER_REG_REQ rejected"});
+        // Dispatch-level admission-rejected WARN (Group 4 format).
+        {"admission rejected msg_type='CONSUMER_REG_REQ'",
+         "error_code='IDENTITY_MISMATCH'"});
 }
 
 int consumer_reg_pubkey_mismatch()
@@ -434,7 +443,11 @@ int consumer_reg_pubkey_mismatch()
             EXPECT_EQ(resp->value("error_code", std::string{}),
                       "PUBKEY_MISMATCH");
         },
-        {"CONSUMER_REG_REQ rejected"});
+        // Dispatch-level admission-rejected WARN (Group 4 format) —
+        // pattern pins msg_type + specific error_code so the allow only
+        // covers this rejection class.
+        {"admission rejected msg_type='CONSUMER_REG_REQ'",
+         "error_code='PUBKEY_MISMATCH'"});
 }
 
 int consumer_reg_ack_emits_producers_zmq()

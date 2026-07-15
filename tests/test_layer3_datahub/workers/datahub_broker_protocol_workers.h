@@ -45,7 +45,7 @@ int reg_ack_contains_heartbeat_block_defaults();
 int reg_ack_heartbeat_block_honors_custom_config();
 int consumer_reg_ack_contains_heartbeat_block();
 
-// CHANNEL_BROADCAST_REQ fan-out
+// CHANNEL_BROADCAST_SEND_NOTIFY fan-out
 int broadcast_fan_out_delivered_to_producer_and_consumers();
 int broadcast_fan_out_data_payload_round_trip();
 int broadcast_unknown_channel_no_notify_delivered();

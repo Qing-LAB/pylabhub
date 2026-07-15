@@ -318,6 +318,13 @@ void ConsumerRoleHost::worker_main_()
         cons_reg_in.channel   = ch;
         cons_reg_in.role_uid  = id.uid;
         cons_reg_in.role_name = id.name;
+        cons_reg_in.role_type = "consumer";
+        // Consumer input transport → wire `data_transport` per HEP-CORE-0036 §5b.4.
+        cons_reg_in.data_transport =
+            (config_.in_transport().transport ==
+                 pylabhub::config::Transport::Zmq)
+                ? std::string{"zmq"}
+                : std::string{"shm"};
         cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::
                                               secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
         // 2026-07-08 topology migration — consumer declares its input

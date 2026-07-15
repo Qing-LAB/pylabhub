@@ -82,7 +82,7 @@ ChannelEntry make_channel(const std::string &name,
     ChannelEntry e;
     e.name           = name;
     e.schema_hash    = std::string(64, 'a');
-    e.schema_version = 1;
+    // schema_version retired per C2 — version rides inside schema_id.
     // Test-helper channels default to `FanIn` (matches pre-migration
     // multi-producer test patterns).  Multi-consumer skeleton tests
     // should pass `ChannelTopology::FanOut`.  Tests that want the
@@ -332,6 +332,7 @@ TEST(HubStateSkeleton, BandJoinLeave_MembershipAndHandlers)
         [&](const std::string &, const BandMember &m) { joined.push_back(m.role_uid); });
     s.subscribe_band_left(
         [&](const std::string &, const std::string &uid,
+            const std::string & /*role_name*/,
             const std::string & /*reason*/) { left.push_back(uid); });
 
     BandMember m;
@@ -406,10 +407,10 @@ TEST(HubStateSkeleton, BumpCounter_Accumulates)
     HubState s;
     HubStateTestAccess::bump_counter(s, "REG_REQ");
     HubStateTestAccess::bump_counter(s, "REG_REQ", 3);
-    HubStateTestAccess::bump_counter(s, "HEARTBEAT_REQ");
+    HubStateTestAccess::bump_counter(s, "HEARTBEAT_NOTIFY");
     auto c = s.counters();
     EXPECT_EQ(c.msg_type_counts.at("REG_REQ"), 4u);
-    EXPECT_EQ(c.msg_type_counts.at("HEARTBEAT_REQ"), 1u);
+    EXPECT_EQ(c.msg_type_counts.at("HEARTBEAT_NOTIFY"), 1u);
 }
 
 // ─── Unsubscribe ────────────────────────────────────────────────────────────
@@ -1022,7 +1023,7 @@ TEST(HubStateHeartbeat, HeartbeatOnUnknownPresenceIsNoop)
                                      std::chrono::steady_clock::now(),
                                      std::nullopt);
     EXPECT_FALSE(s.channel("no.such.ch").has_value());
-    EXPECT_EQ(s.counters().msg_type_counts.count("HEARTBEAT_REQ"), 0u);
+    EXPECT_EQ(s.counters().msg_type_counts.count("HEARTBEAT_NOTIFY"), 0u);
 }
 
 TEST(HubStateHeartbeat, ConsumerHeartbeatDoesNotRefreshProducerPresence)
@@ -1773,7 +1774,7 @@ ChannelSchemaInvariants make_schema_invariants(const std::string &hash =
 {
     ChannelSchemaInvariants s;
     s.schema_hash    = hash;
-    s.schema_version = 1;
+    // schema_version retired per C2 — version rides inside schema_id.
     return s;
 }
 
@@ -2404,11 +2405,12 @@ TEST(HubStateBandCascade, TerminalCleanup_RemovesUidFromAllBands_FiresBandLeftWi
     HubStateTestAccess::set_band_joined(s, "!alpha", m);
     HubStateTestAccess::set_band_joined(s, "!beta",  m);
 
-    std::vector<std::tuple<std::string,std::string,std::string>> band_left_events;
+    std::vector<std::tuple<std::string,std::string,std::string,std::string>> band_left_events;
     s.subscribe_band_left(
         [&](const std::string &band, const std::string &uid,
+            const std::string &role_name,
             const std::string &reason) {
-            band_left_events.emplace_back(band, uid, reason);
+            band_left_events.emplace_back(band, uid, role_name, reason);
         });
 
     ASSERT_TRUE(s.band("!alpha").has_value());
@@ -2430,7 +2432,7 @@ TEST(HubStateBandCascade, TerminalCleanup_RemovesUidFromAllBands_FiresBandLeftWi
     std::sort(band_left_events.begin(), band_left_events.end());
     EXPECT_EQ(std::get<0>(band_left_events[0]), "!alpha");
     EXPECT_EQ(std::get<0>(band_left_events[1]), "!beta");
-    for (const auto &[band, uid, reason] : band_left_events)
+    for (const auto &[band, uid, role_name, reason] : band_left_events)
     {
         EXPECT_EQ(uid,    "prod.cam.uid01234567");
         EXPECT_EQ(reason, "role_closed");
@@ -2460,7 +2462,7 @@ TEST(HubStateBandCascade, MultiPresenceRole_StaysAlive_KeepsBandMembership)
         ChannelEntry e;
         e.name           = "ch.bandcascade.b";
         e.schema_hash    = std::string(64, 'a');
-        e.schema_version = 1;
+        // schema_version retired per C2.
         ProducerEntry p;
         p.producer_pid = 9999;
         p.role_uid     = "prod.other.uid88888888";
@@ -2572,7 +2574,7 @@ TEST(HubStateLifecycle, ReRegister_AfterPartialDereg_PresenceFreshConnected)
         ChannelEntry e;
         e.name           = "ch.rereg.b";
         e.schema_hash    = std::string(64, 'a');
-        e.schema_version = 1;
+        // schema_version retired per C2.
         ProducerEntry p;
         p.producer_pid = 9999;
         p.role_uid     = "prod.other.uid88888888";
@@ -2782,7 +2784,7 @@ TEST(HubStateConsumerAdmissionContract, InvalidChannelName_ReturnsInvalidIdentif
 // Wave M1.4 (2026-05-11) — channel_metrics_snapshot tests.  Replace the
 // retired `MetricsReported_StoresOnPresenceWithoutLivenessSideEffect`
 // test (the dedicated `_on_metrics_reported` op + `METRICS_REPORT_REQ`
-// wire message are gone; metrics piggyback on HEARTBEAT_REQ per
+// wire message are gone; metrics piggyback on HEARTBEAT_NOTIFY per
 // HEP-CORE-0019 §2.3 Phase 6).  Pin the new contract: per-presence-row
 // metrics aggregated by HubState::channel_metrics_snapshot.
 // ──────────────────────────────────────────────────────────────────────

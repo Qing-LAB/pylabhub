@@ -455,8 +455,9 @@ public:
      *
      * Thread-safe.  The request is queued and drained during the next poll
      * iteration of the broker run() loop.  The broker will send
-     * CHANNEL_BROADCAST_NOTIFY to both producer and all consumers of the
-     * named channel, exactly as an incoming CHANNEL_BROADCAST_REQ would.
+     * CHANNEL_BROADCAST_DELIVER_NOTIFY to both producer and all consumers of
+     * the named channel, exactly as an incoming CHANNEL_BROADCAST_SEND_NOTIFY
+     * would.
      *
      * @param channel  Target channel name.
      * @param message  Broadcast message tag (e.g., "start", "stop").

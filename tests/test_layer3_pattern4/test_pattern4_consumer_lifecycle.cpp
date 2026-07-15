@@ -237,10 +237,11 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     zmq::context_t ctx;
     const auto &cons_kp = setup.curve.role(consumer_uid);
     BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint = setup.broker_endpoint;
-    cons_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey   = cons_kp.public_z85;
-    cons_cfg.client_seckey   = cons_kp.secret_z85;
+    cons_cfg.broker_endpoint  = setup.broker_endpoint;
+    cons_cfg.broker_pubkey    = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey    = cons_kp.public_z85;
+    cons_cfg.client_seckey    = cons_kp.secret_z85;
+    cons_cfg.client_role_uid  = consumer_uid;
     BrokerWireClient cons_client(ctx, cons_cfg);
 
     // ── 3. Consumer REG — bumps channel_version[K] 0→1 and fires
@@ -248,10 +249,12 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     //      its BRC inbox unread. ──
     {
         pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = "data.test";
-        in.role_uid   = consumer_uid;
-        in.role_name  = "pattern4cons";
-        in.zmq_pubkey = cons_kp.public_z85;
+        in.channel        = "data.test";
+        in.role_uid       = consumer_uid;
+        in.role_name      = "pattern4cons";
+        in.role_type      = "consumer";
+        in.data_transport = "zmq";
+        in.zmq_pubkey     = cons_kp.public_z85;
         auto payload = pylabhub::hub::build_consumer_reg_payload(in);
         auto reply = cons_client.request(
             "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",

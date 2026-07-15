@@ -124,10 +124,12 @@ using pylabhub::hub::build_consumer_reg_payload;
 ConsumerRegInputs make_consumer_baseline()
 {
     ConsumerRegInputs in;
-    in.channel   = "test.channel";
-    in.role_uid  = "cons.test.uid00000001";
-    in.role_name = "test_consumer";
-    in.zmq_pubkey = "01234567890123456789012345678901234567";
+    in.channel        = "test.channel";
+    in.role_uid       = "cons.test.uid00000001";
+    in.role_name      = "test_consumer";
+    in.role_type      = "consumer";
+    in.data_transport = "zmq";
+    in.zmq_pubkey     = "01234567890123456789012345678901234567";
     return in;
 }
 

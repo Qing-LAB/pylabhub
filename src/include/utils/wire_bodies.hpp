@@ -135,7 +135,14 @@ PYLABHUB_UTILS_EXPORT void require_envelope_hash(const nlohmann::json &body);
 
 // === REG-family (carries security triple) ============================
 
-PLH_WIRE_BODY_CLASS(RegReqBody)
+// **ProducerRegReqBody** — REG_REQ from a producer or processor per
+// HEP-CORE-0036 §5b.4 + HEP-CORE-0034 §10.1.  Producer DECLARES the
+// schema (schema_hash + schema_blds + schema_packing); the id string
+// carries the version (`$name.v<N>` per HEP-CORE-0033 §G2.2.0b) so
+// no separate `schema_version` wire field exists.  Wire-version + ABI
+// compatibility is carried by `abi_fingerprint` per HEP-CORE-0032 §8;
+// no separate `broker_proto` scalar on this body.
+PLH_WIRE_BODY_CLASS(ProducerRegReqBody)
   public:
     [[nodiscard]] std::string channel_name() const
     {
@@ -165,34 +172,205 @@ PLH_WIRE_BODY_CLASS(RegReqBody)
     {
         return detail::read_string(body_, "zmq_pubkey");
     }
-    [[nodiscard]] std::uint32_t broker_proto() const
-    {
-        return detail::read_u32(body_, "broker_proto");
-    }
-    [[nodiscard]] std::string schema_hash() const
-    {
-        return detail::read_string(body_, "schema_hash");
-    }
-    [[nodiscard]] std::uint32_t schema_version() const
-    {
-        return detail::read_u32(body_, "schema_version");
-    }
+    // HEP-CORE-0034 §10.1 producer schema-declaration fields.  All
+    // OPTIONAL individually — when `schema_id` non-empty the others
+    // become required per HEP-0034 §10.1 (checked by broker at
+    // admission, not by this body class).  Version is embedded in
+    // `schema_id` (`$name.v<N>`); no separate schema_version field
+    // per C2 resolution.
     [[nodiscard]] std::string schema_id() const
     {
         return detail::read_string_or_empty(body_, "schema_id");
+    }
+    [[nodiscard]] std::string schema_hash() const
+    {
+        return detail::read_string_or_empty(body_, "schema_hash");
     }
     [[nodiscard]] std::string schema_blds() const
     {
         return detail::read_string_or_empty(body_, "schema_blds");
     }
+    [[nodiscard]] std::string schema_packing() const
+    {
+        return detail::read_string_or_empty(body_, "schema_packing");
+    }
     [[nodiscard]] std::string schema_owner() const
     {
         return detail::read_string_or_empty(body_, "schema_owner");
     }
+    [[nodiscard]] std::string flexzone_blds() const
+    {
+        return detail::read_string_or_empty(body_, "flexzone_blds");
+    }
+    [[nodiscard]] std::string flexzone_packing() const
+    {
+        return detail::read_string_or_empty(body_, "flexzone_packing");
+    }
+    // Transport-specific endpoints.  Both OPTIONAL — one of the two
+    // is populated depending on `data_transport`; broker validates
+    // presence per HEP-CORE-0036 §5b.4.
+    [[nodiscard]] std::string zmq_node_endpoint() const
+    {
+        return detail::read_string_or_empty(body_, "zmq_node_endpoint");
+    }
+    [[nodiscard]] std::string shm_capability_endpoint() const
+    {
+        return detail::read_string_or_empty(body_, "shm_capability_endpoint");
+    }
+    // Diagnostic / early-death-detection field per C10.  OPTIONAL;
+    // not used for target resolution (role_uid is the authoritative
+    // resolution key post broker_proto 2→3 per HEP-CORE-0023 §2.1.1).
+    [[nodiscard]] std::uint64_t producer_pid() const
+    {
+        return detail::read_u64_or_zero(body_, "producer_pid");
+    }
+    // ABI carrier per HEP-CORE-0032 §8.  REQUIRED.
     [[nodiscard]] const nlohmann::json &abi_fingerprint() const
     {
         return detail::read_object(body_, "abi_fingerprint");
     }
+    [[nodiscard]] std::string build_id() const
+    {
+        return detail::read_string_or_empty(body_, "build_id");
+    }
+    // Optional inbox companion fields per HEP-CORE-0027 §4.1.
+    [[nodiscard]] std::string inbox_endpoint() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_endpoint");
+    }
+    [[nodiscard]] std::string inbox_schema_json() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_schema_json");
+    }
+    [[nodiscard]] std::string inbox_packing() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_packing");
+    }
+    [[nodiscard]] std::string inbox_checksum() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_checksum");
+    }
+    // Security triple per HEP-CORE-0046 §I-REPLAY-BOUND.
+    [[nodiscard]] std::string client_nonce() const
+    {
+        return detail::read_string(body_, "client_nonce");
+    }
+    [[nodiscard]] std::uint64_t client_wall_ts() const
+    {
+        return detail::read_u64(body_, "client_wall_ts");
+    }
+};
+
+// **ConsumerRegReqBody** — CONSUMER_REG_REQ from a consumer or
+// processor per HEP-CORE-0036 §5b.6 + HEP-CORE-0034 §10.2.  Consumer
+// CITES the schema (`expected_schema_*` prefix); the `expected_`
+// prefix is normative per HEP-0034 §10.2 last paragraph.  Same
+// version-in-id form as producer (`$name.v<N>`); no separate
+// `expected_schema_version` field.
+PLH_WIRE_BODY_CLASS(ConsumerRegReqBody)
+  public:
+    [[nodiscard]] std::string channel_name() const
+    {
+        return detail::read_string(body_, "channel_name");
+    }
+    [[nodiscard]] std::string role_uid() const
+    {
+        return detail::read_string(body_, "role_uid");
+    }
+    [[nodiscard]] std::string role_type() const
+    {
+        return detail::read_string(body_, "role_type");
+    }
+    [[nodiscard]] std::string role_name() const
+    {
+        return detail::read_string(body_, "role_name");
+    }
+    [[nodiscard]] std::string channel_topology() const
+    {
+        return detail::read_string_or_empty(body_, "channel_topology");
+    }
+    // REQUIRED per HEP-CORE-0036 §5b.6 (C9 resolution).  Broker
+    // rejects TRANSPORT_MISMATCH if this disagrees with channel's
+    // stored `data_transport`.
+    [[nodiscard]] std::string data_transport() const
+    {
+        return detail::read_string(body_, "data_transport");
+    }
+    [[nodiscard]] std::string zmq_pubkey() const
+    {
+        return detail::read_string(body_, "zmq_pubkey");
+    }
+    // HEP-CORE-0034 §10.2 consumer schema-citation fields; the
+    // `expected_` prefix is normative per §10.2 last paragraph.
+    // Named-citation mode: expected_schema_id + expected_schema_hash
+    // required; blds + packing optional (defense-in-depth).
+    // Anonymous-citation mode: expected_schema_blds +
+    // expected_schema_packing required; expected_schema_hash
+    // optional (self-consistency).  Empty mode: none required
+    // (legacy backward-compat).  Broker checks mode + fields per
+    // §10.2; this body class exposes accessors only.
+    [[nodiscard]] std::string expected_schema_id() const
+    {
+        return detail::read_string_or_empty(body_, "expected_schema_id");
+    }
+    [[nodiscard]] std::string expected_schema_hash() const
+    {
+        return detail::read_string_or_empty(body_, "expected_schema_hash");
+    }
+    [[nodiscard]] std::string expected_schema_blds() const
+    {
+        return detail::read_string_or_empty(body_, "expected_schema_blds");
+    }
+    [[nodiscard]] std::string expected_schema_packing() const
+    {
+        return detail::read_string_or_empty(body_, "expected_schema_packing");
+    }
+    [[nodiscard]] std::string expected_flexzone_blds() const
+    {
+        return detail::read_string_or_empty(body_, "expected_flexzone_blds");
+    }
+    [[nodiscard]] std::string expected_flexzone_packing() const
+    {
+        return detail::read_string_or_empty(body_,
+                                              "expected_flexzone_packing");
+    }
+    // Diagnostic / early-death-detection fields per C10.  Both
+    // OPTIONAL; role_uid is the authoritative resolution key.
+    [[nodiscard]] std::uint64_t consumer_pid() const
+    {
+        return detail::read_u64_or_zero(body_, "consumer_pid");
+    }
+    [[nodiscard]] std::string consumer_hostname() const
+    {
+        return detail::read_string_or_empty(body_, "consumer_hostname");
+    }
+    // ABI carrier per HEP-CORE-0032 §8.  REQUIRED.
+    [[nodiscard]] const nlohmann::json &abi_fingerprint() const
+    {
+        return detail::read_object(body_, "abi_fingerprint");
+    }
+    [[nodiscard]] std::string build_id() const
+    {
+        return detail::read_string_or_empty(body_, "build_id");
+    }
+    // Optional inbox companion fields per HEP-CORE-0027 §4.1.
+    [[nodiscard]] std::string inbox_endpoint() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_endpoint");
+    }
+    [[nodiscard]] std::string inbox_schema_json() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_schema_json");
+    }
+    [[nodiscard]] std::string inbox_packing() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_packing");
+    }
+    [[nodiscard]] std::string inbox_checksum() const
+    {
+        return detail::read_string_or_empty(body_, "inbox_checksum");
+    }
+    // Security triple per HEP-CORE-0046 §I-REPLAY-BOUND.
     [[nodiscard]] std::string client_nonce() const
     {
         return detail::read_string(body_, "client_nonce");
@@ -386,18 +564,10 @@ PLH_WIRE_BODY_CLASS(DeregAckBody)
     }
 };
 
-PLH_WIRE_BODY_CLASS(HeartbeatReqBody)
-  public:
-    [[nodiscard]] std::string channel_name() const
-    {
-        return detail::read_string(body_, "channel_name");
-    }
-    [[nodiscard]] std::string role_uid() const
-    {
-        return detail::read_string(body_, "role_uid");
-    }
-};
-
+// HeartbeatAckBody retained as archaeological reference — no wire
+// message reads it under the current `HEARTBEAT_NOTIFY` shape (which
+// is fire-and-forget per HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY).  Kept
+// zero-cost until callers are audited for removal in a follow-on.
 PLH_WIRE_BODY_CLASS(HeartbeatAckBody)
   public:
     [[nodiscard]] std::string status() const
@@ -429,6 +599,40 @@ PLH_WIRE_BODY_CLASS(DiscAckBody)
 };
 
 // === NOTIFY bodies (fire-and-forget; envelope_hash only) =============
+
+// **HeartbeatNotifyBody** — presence maintenance (HEP-CORE-0023 §2.5).
+// Renamed from `HeartbeatReqBody` per C13 for taxonomy consistency
+// with HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY (`_NOTIFY` suffix =
+// fire-and-forget; heartbeat has no ACK path in the broker).
+PLH_WIRE_BODY_CLASS(HeartbeatNotifyBody)
+  public:
+    [[nodiscard]] std::string channel_name() const
+    {
+        return detail::read_string(body_, "channel_name");
+    }
+    [[nodiscard]] std::string role_uid() const
+    {
+        return detail::read_string(body_, "role_uid");
+    }
+    [[nodiscard]] std::string role_type() const
+    {
+        return detail::read_string(body_, "role_type");
+    }
+    // Diagnostic / early-death-detection field per C10.  OPTIONAL.
+    [[nodiscard]] std::uint64_t producer_pid() const
+    {
+        return detail::read_u64_or_zero(body_, "producer_pid");
+    }
+    // Optional metrics piggyback per HEP-CORE-0019 §2.3 Phase 6.
+    [[nodiscard]] const nlohmann::json &metrics() const
+    {
+        return detail::read_object(body_, "metrics");
+    }
+    [[nodiscard]] bool has_metrics() const
+    {
+        return body_.contains("metrics") && body_.at("metrics").is_object();
+    }
+};
 
 PLH_WIRE_BODY_CLASS(ChannelAuthChangedNotifyBody)
   public:

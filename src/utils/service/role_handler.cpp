@@ -379,7 +379,7 @@ RoleHandler::find_presence_from_notification(
         }
 
         // Class D — body has `band` (HEP-CORE-0030 §5.1 wire field on
-        // BAND_JOIN_NOTIFY / BAND_LEAVE_NOTIFY / BAND_BROADCAST_NOTIFY).
+        // BAND_JOIN_NOTIFY / BAND_LEAVE_NOTIFY / BAND_BROADCAST_DELIVER_NOTIFY).
         // Pre-audit-B2 (2026-05-17) this looked for the never-emitted
         // key `band_name`, an invention from Wave-B M4b
         // (commit `8c3994c`) that never matched any broker payload.

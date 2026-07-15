@@ -301,11 +301,13 @@ nlohmann::json make_cons_opts(const std::string &channel,
     namespace sec = pylabhub::utils::security;
     auto opts = pylabhub::hub::build_consumer_reg_payload(
         pylabhub::hub::ConsumerRegInputs{
-            .channel    = channel,
-            .role_uid   = consumer_uid,
-            .role_name  = "test_consumer",
+            .channel        = channel,
+            .role_uid       = consumer_uid,
+            .role_name      = "test_consumer",
+            .role_type      = "consumer",
+            .data_transport = "zmq",
             // Same §I10 derivation as `make_reg_opts`.
-            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
+            .zmq_pubkey     = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(consumer_uid))},
             .channel_topology = channel_topology,
         });

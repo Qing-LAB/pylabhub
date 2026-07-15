@@ -606,7 +606,7 @@ TEST(RoleHandlerRouting, OnBandJoined_PopulatesIndex_FindByNotification)
     // without exercising the real wire shape.
     nlohmann::json body;
     body["band"] = "my.band";
-    EXPECT_EQ(h.find_presence_from_notification("BAND_BROADCAST_NOTIFY", body), p)
+    EXPECT_EQ(h.find_presence_from_notification("BAND_BROADCAST_DELIVER_NOTIFY", body), p)
         << "After on_band_joined, find_presence_from_notification "
            "resolves body['band'] to the joined presence.";
 }

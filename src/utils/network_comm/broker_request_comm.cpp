@@ -9,9 +9,13 @@
 #include "utils/broker_request_comm.hpp"
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_store.hpp"
+#include "utils/security/secure_subsystem.hpp"
 
 #include "plh_platform.hpp"   // platform::get_pid()
 #include "utils/logger.hpp"
+#include "utils/wire_adapter.hpp"
+#include "utils/wire_bodies.hpp"   // WireBodyError
+#include "utils/wire_envelope.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/zmq_socket_policy.hpp"
@@ -24,9 +28,11 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -38,10 +44,37 @@ namespace pylabhub::hub
 {
 
 // ============================================================================
-// Wire protocol constant
+// Wire protocol helpers (HEP-CORE-0046 §14)
 // ============================================================================
 
-static constexpr char kFrameTypeControl = 'C';
+namespace
+{
+
+/// Generate a fresh 16-byte random hex correlation_id (32 hex chars).
+/// Cryptographically random per I-CORRELATION-STABLE + I-REPLAY-BOUND —
+/// nonce reuse must be statistically impossible so the broker's nonce-
+/// dedup window can't collide across roles.
+std::string make_random_hex16()
+{
+    std::array<std::uint8_t, 16> raw{};
+    namespace sec = pylabhub::utils::security;
+    sec::secure().random_bytes(raw);
+    // 2 hex chars per byte + NUL terminator.
+    char hex[33] = {};
+    sec::secure().bin2hex(hex, sizeof(hex), raw.data(), raw.size());
+    return std::string(hex, 32);
+}
+
+std::uint64_t system_wall_now_ms()
+{
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(
+            system_clock::now().time_since_epoch())
+            .count());
+}
+
+} // anonymous namespace
 
 // ============================================================================
 // Command types for the MonitoredQueue
@@ -50,20 +83,35 @@ static constexpr char kFrameTypeControl = 'C';
 namespace
 {
 
-/// Fire-and-forget: send 3 frames and forget.
+/// Fire-and-forget: send the 5-frame envelope (HEP-CORE-0046 §14).
+/// Per I-CORRELATION-STABLE, correlation_id is non-empty for non-NOTIFY
+/// msg_types; the sender site generates one via `make_random_hex16()`.
+/// For REG-family msg_types (see §14.3 / kRegFamilyMsgTypes in
+/// wire_adapter.cpp) the sender also fills in the security triple —
+/// `client_nonce` + `client_wall_ts` — per I-REPLAY-BOUND.
 struct SendCmd
 {
     std::string    msg_type;
+    std::string    correlation_id;
+    std::string    client_nonce;
+    std::uint64_t  client_wall_ts{0};
     nlohmann::json payload;
 };
 
-/// Request-reply: send 3 frames, wait for matching reply.
+/// Request-reply: send 5 frames, wait for matching reply.
 struct RequestCmd
 {
     std::string              msg_type;
     /// Expected reply msg_types (e.g. ["REG_ACK"] or ["DISC_ACK", "DISC_PENDING"]).
     /// Any reply matching one of these is accepted as a response for this request.
     std::vector<std::string> expected_acks;
+    /// Non-empty per I-CORRELATION-STABLE — the wire authority for reply
+    /// matching.  Broker echoes it in Frame 3 of the ACK; BRC's
+    /// pending_requests map keys on this value.
+    std::string              correlation_id;
+    /// Set for REG-family REQs per I-REPLAY-BOUND.  Empty on other types.
+    std::string              client_nonce;
+    std::uint64_t            client_wall_ts{0};
     nlohmann::json           payload;
 
     // Signaling: broker thread sets result and notifies.
@@ -123,8 +171,15 @@ struct BrokerRequestComm::Impl
     // Command queue.
     MonitoredQueue<BrokerCommand> cmd_queue;
 
-    // Pending request-reply map: keyed by expected_ack msg_type.
-    // Supports concurrent requests with different expected reply types.
+    // Pending request-reply map: keyed by correlation_id (Frame 3 of
+    // the incoming reply per HEP-CORE-0046 §14 I-CORRELATION-STABLE).
+    // Each REQ generates a fresh correlation_id in `do_request_multi`;
+    // the broker echoes it back on the ACK / ERROR reply.  Only ONE
+    // entry per RequestCmd (not per expected_ack) since correlation_id
+    // is unique per REQ regardless of how many ack types the caller
+    // will accept.  ERROR replies also carry the same correlation_id
+    // (broker's `make_error` populates it from the request body),
+    // so no cross-wiring against pending REQs.
     std::unordered_map<std::string, std::shared_ptr<RequestCmd>> pending_requests;
 
     /// HEP-CORE-0007 §12.2.1 shape-conformance observability counter.
@@ -162,7 +217,17 @@ struct BrokerRequestComm::Impl
 
     // ── Wire protocol helpers ──────────────────────────────────────────
 
-    void send_message(const std::string &msg_type, const nlohmann::json &payload)
+    /// Build + send the 5-frame wire envelope (HEP-CORE-0046 §14).
+    /// The envelope encoder stamps `envelope_hash` and — for REG-family
+    /// msg_types — the security triple `client_nonce` + `client_wall_ts`
+    /// into the body per I-REPLAY-BOUND before serializing.  Callers
+    /// generate `correlation_id` (and the triple for REG-family) at the
+    /// REQ construction site; SendCmd / RequestCmd carry them here.
+    void send_message(const std::string    &msg_type,
+                      const std::string    &correlation_id,
+                      const std::string    &client_nonce,
+                      std::uint64_t         client_wall_ts,
+                      const nlohmann::json &payload)
     {
         if (!dealer)
             return;
@@ -181,19 +246,31 @@ struct BrokerRequestComm::Impl
                         broker_endpoint, msg_type);
             return;
         }
-        const std::string body = payload.dump();
-        std::vector<zmq::const_buffer> frames = {
-            zmq::buffer(&kFrameTypeControl, 1),
-            zmq::buffer(msg_type),
-            zmq::buffer(body)};
         try
         {
-            zmq::send_multipart(*dealer, frames);
+            ::pylabhub::wire::adapter::EncodeContext ctx;
+            ctx.dealer_role_uid = role_uid;
+            ctx.correlation_id  = correlation_id;
+            ctx.client_nonce    = client_nonce;
+            ctx.client_wall_ts  = client_wall_ts;
+            zmq::multipart_t wire =
+                ::pylabhub::wire::adapter::encode_dealer_send(
+                    msg_type, ctx, payload);
+            wire.send(*dealer);
         }
         catch (const zmq::error_t &e)
         {
             LOGGER_WARN("BrokerRequestComm: send '{}' failed: {}",
                         msg_type, e.what());
+        }
+        catch (const ::pylabhub::wire::WireBodyError &e)
+        {
+            // Encoder-side contract violation.  This is a programmer bug
+            // (empty correlation_id on a non-NOTIFY, missing security
+            // triple on a REG-family REQ) — log LOUD and let the caller
+            // observe the missing reply as a timeout.
+            LOGGER_ERROR("BrokerRequestComm: envelope encoder rejected '{}': {}",
+                         msg_type, e.what());
         }
     }
 
@@ -205,123 +282,78 @@ struct BrokerRequestComm::Impl
         // Non-blocking receive all pending messages.
         while (true)
         {
-            std::vector<zmq::message_t> msgs;
-            auto n = zmq::recv_multipart(*dealer, std::back_inserter(msgs),
-                                         zmq::recv_flags::dontwait);
-            if (!n.has_value() || *n == 0)
+            zmq::multipart_t msg;
+            if (!msg.recv(*dealer, ZMQ_DONTWAIT))
+                break;
+            if (msg.empty())
                 break;
 
-            // Wire format: ['C'] [msg_type] [json_body]
-            if (msgs.size() < 3)
-                continue;
-
-            const std::string msg_type = msgs[1].to_string();
-            nlohmann::json body;
-            try
+            // 4-frame envelope on DEALER receive (libzmq strips Frame 0
+            // during routing per WireEnvelope::parse_dealer_recv contract).
+            ::pylabhub::wire::ParseError err = {};
+            auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
+                std::move(msg), role_uid, &err);
+            if (!env_opt.has_value())
             {
-                body = nlohmann::json::parse(msgs[2].to_string());
-            }
-            catch (const nlohmann::json::exception &)
-            {
-                LOGGER_WARN("BrokerRequestComm: bad JSON in '{}' reply", msg_type);
+                LOGGER_WARN("BrokerRequestComm[{}]: envelope parse rejected "
+                            "reply (ParseError={})",
+                            role_name, static_cast<int>(err));
                 continue;
             }
+            ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
+            const std::string msg_type       = std::string(env.msg_type());
+            const std::string correlation_id = std::string(env.correlation_id());
+            // Materialize a mutable body copy + inject the envelope
+            // correlation_id so legacy handlers reading
+            // `body.value("correlation_id","")` keep working unchanged
+            // (adapter Tier 2 contract).
+            nlohmann::json body = env.body();
+            if (!correlation_id.empty())
+                body["correlation_id"] = correlation_id;
 
-            // Check if this is a reply to a pending request.
-            auto it = pending_requests.find(msg_type);
-            if (it != pending_requests.end())
+            // Match this reply to a pending request by correlation_id
+            // per I-CORRELATION-STABLE.  ERROR replies carry the same
+            // correlation_id (broker's make_error populates it from the
+            // request body), so no per-msg_type ERROR fallback needed.
+            if (!correlation_id.empty())
             {
-                auto req = it->second;
-                remove_from_pending(req); // erase all ack-key entries for this request
-                // HEP-CORE-0042 Phase 3 review fix (2026-07-02):
-                // if the caller has ABANDONED this request (client-
-                // side timeout fired), drop the reply on the floor
-                // rather than delivering it to the caller's next
-                // sync REQ of the same ack type.  The caller has
-                // already returned nullopt and moved on; delivering
-                // this stale reply would cross-wire it.
-                if (req->abandoned.load(std::memory_order_acquire))
+                auto it = pending_requests.find(correlation_id);
+                if (it != pending_requests.end())
                 {
-                    LOGGER_WARN("BrokerRequestComm: late reply for '{}' "
-                                "arrived after caller-side timeout; "
-                                "dropping to prevent cross-wire",
-                                msg_type);
-                    continue;
-                }
-                {
-                    std::lock_guard<std::mutex> lk(req->mu);
-                    req->result = std::move(body);
-                    req->done = true;
-                }
-                req->cv.notify_one();
-                continue;
-            }
-
-            // ERROR replies: try to match against any pending request.
-            // The broker sends ERROR when a request fails. We deliver it
-            // to the oldest pending request (FIFO order not guaranteed by
-            // unordered_map, but in practice only one request is outstanding).
-            //
-            // Per HEP-CORE-0007 §12.3 ERROR payload — the broker sends a
-            // structured response (`status="error"`, `error_code`,
-            // `message`, optional `correlation_id`).  The client is
-            // responsible for switching on `error_code` to choose recovery
-            // behavior (HEP-0007 §12.4a Error Code Taxonomy).  Preserve
-            // the body so callers can inspect it; `optional<json>` now
-            // means "broker responded" — `nullopt` is reserved for
-            // timeout/disconnect.
-            if (msg_type == "ERROR" && !pending_requests.empty())
-            {
-                // HEP-CORE-0042 Phase 3 review-C fix (2026-07-02): scan
-                // pending requests for the FIRST non-abandoned entry.
-                // Prior code always picked `pending_requests.begin()`
-                // without an abandoned check — a late ERROR for a
-                // client-side-timed-out request would be delivered to
-                // whatever REQ currently owns an ack slot, producing a
-                // misleading `{status=error, error_code=STALE_INSTANCE}`
-                // reply for the WRONG channel.  ERROR bodies do NOT
-                // carry `producer_role_uid` / `channel_name`, so the
-                // wrapper-level echo check in `consumer_attach_zmq` and
-                // `channel_auth_applied` can't rescue this — the
-                // abandoned filter MUST live in poll_recv.
-                //
-                // If ALL pending requests are abandoned, drop the ERROR
-                // (nobody's waiting for it that we can identify safely).
-                std::shared_ptr<RequestCmd> live;
-                for (auto &kv : pending_requests)
-                {
-                    if (!kv.second->abandoned.load(
-                            std::memory_order_acquire))
+                    auto req = it->second;
+                    pending_requests.erase(it);
+                    // HEP-CORE-0042 Phase 3 review fix (2026-07-02):
+                    // if the caller has ABANDONED this request (client-
+                    // side timeout fired), drop the reply on the floor
+                    // rather than delivering it to the caller's next
+                    // sync REQ of the same ack type.  The caller has
+                    // already returned nullopt and moved on; delivering
+                    // this stale reply would cross-wire it.
+                    if (req->abandoned.load(std::memory_order_acquire))
                     {
-                        live = kv.second;
-                        break;
+                        LOGGER_WARN("BrokerRequestComm: late reply for '{}' "
+                                    "(corr_id='{}') arrived after caller-"
+                                    "side timeout; dropping to prevent "
+                                    "cross-wire",
+                                    msg_type, correlation_id);
+                        continue;
                     }
-                }
-                if (!live)
-                {
-                    LOGGER_WARN("BrokerRequestComm: ERROR reply arrived "
-                                "but all pending requests are abandoned; "
-                                "dropping to prevent cross-wire");
+                    {
+                        std::lock_guard<std::mutex> lk(req->mu);
+                        req->result = std::move(body);
+                        req->done = true;
+                    }
+                    req->cv.notify_one();
                     continue;
                 }
-                remove_from_pending(live);
-                {
-                    std::lock_guard<std::mutex> lk(live->mu);
-                    live->result = std::move(body);
-                    live->done = true;
-                }
-                live->cv.notify_one();
-                continue;
             }
 
             // Shape-conformance check (HEP-CORE-0007 §12.2.1): a
             // reply-shape message (`*_ACK` or `ERROR`) at this point
-            // has no pending waiter — it would otherwise have matched
-            // one of the two branches above.  Silently delivering it
-            // to `on_notification_cb` would mask a real protocol bug.
-            // Count + WARN so the drop is observable to runtime
-            // monitoring and to the dedicated shape-conformance L3
-            // test (ReqShapeConformance_FireAndForgetReqsHaveNoReply).
+            // has no pending waiter — silently delivering it to
+            // `on_notification_cb` would mask a real protocol bug
+            // (unexpected ACK or ERROR with an unknown correlation_id).
+            // Count + WARN so the drop is observable.
             const bool is_reply_shape =
                 (msg_type.size() >= 4 &&
                  msg_type.compare(msg_type.size() - 4, 4, "_ACK") == 0) ||
@@ -332,10 +364,9 @@ struct BrokerRequestComm::Impl
                     1, std::memory_order_relaxed);
                 LOGGER_WARN("BrokerRequestComm: received unexpected "
                             "reply-shape message with no pending "
-                            "request: type='{}' (HEP-0007 §12.2.1 "
-                            "shape contract violation — broker may be "
-                            "emitting an ACK for a fire-and-forget REQ)",
-                            msg_type);
+                            "request: type='{}' corr_id='{}' (HEP-0007 "
+                            "§12.2.1 shape contract violation)",
+                            msg_type, correlation_id);
                 continue;
             }
 
@@ -422,15 +453,19 @@ struct BrokerRequestComm::Impl
 
     void handle_command(SendCmd &cmd)
     {
-        send_message(cmd.msg_type, cmd.payload);
+        send_message(cmd.msg_type, cmd.correlation_id,
+                     cmd.client_nonce, cmd.client_wall_ts, cmd.payload);
     }
 
     void handle_command(std::shared_ptr<RequestCmd> &cmd)
     {
-        // Register the same shared_ptr under each accepted ack type.
-        for (const auto &ack : cmd->expected_acks)
-            pending_requests[ack] = cmd;
-        send_message(cmd->msg_type, cmd->payload);
+        // Key on correlation_id per I-CORRELATION-STABLE — the wire
+        // authority for reply matching.  expected_acks stays as a
+        // caller-side sanity list (e.g. DISC accepts DISC_ACK or
+        // DISC_PENDING) but the wire uses correlation_id alone.
+        pending_requests[cmd->correlation_id] = cmd;
+        send_message(cmd->msg_type, cmd->correlation_id,
+                     cmd->client_nonce, cmd->client_wall_ts, cmd->payload);
     }
 
     void handle_command(InstallPeriodicTaskCmd &cmd)
@@ -445,17 +480,6 @@ struct BrokerRequestComm::Impl
         }
         active_loop_periodic_tasks->emplace_back(
             std::move(cmd.action), cmd.interval_ms, std::move(cmd.get_iteration));
-    }
-
-    /// Remove a completed/cancelled request from all of its ack keys.
-    void remove_from_pending(const std::shared_ptr<RequestCmd> &cmd)
-    {
-        for (const auto &ack : cmd->expected_acks)
-        {
-            auto it = pending_requests.find(ack);
-            if (it != pending_requests.end() && it->second.get() == cmd.get())
-                pending_requests.erase(it);
-        }
     }
 
     /// Submit a request-reply and block until reply or timeout.
@@ -479,9 +503,36 @@ struct BrokerRequestComm::Impl
         int timeout_ms)
     {
         auto req = std::make_shared<RequestCmd>();
-        req->msg_type      = msg_type;
-        req->expected_acks = std::move(expected_acks);
-        req->payload       = std::move(payload);
+        req->msg_type       = msg_type;
+        req->expected_acks  = std::move(expected_acks);
+        // Caller-provided `payload["correlation_id"]` (if a non-empty
+        // string) wins; otherwise generate a fresh 32-hex value.
+        // Non-empty per I-CORRELATION-STABLE.  Tests that pin a
+        // specific correlation_id (WireConformance BandCorrIdEcho,
+        // Band CorrIdEcho, etc.) rely on this pass-through — the
+        // caller-set value must reach Frame 3 unchanged so broker's
+        // ACK echoes it verbatim.
+        {
+            std::string caller_corr;
+            if (payload.is_object())
+            {
+                auto it = payload.find("correlation_id");
+                if (it != payload.end() && it->is_string())
+                    caller_corr = it->get<std::string>();
+            }
+            req->correlation_id = caller_corr.empty()
+                ? make_random_hex16()
+                : std::move(caller_corr);
+        }
+        // Security triple for REG-family REQs per I-REPLAY-BOUND.  The
+        // encoder validates non-empty nonce + non-zero wall_ts and
+        // stamps them into the body before serializing.
+        if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
+        {
+            req->client_nonce   = make_random_hex16();
+            req->client_wall_ts = system_wall_now_ms();
+        }
+        req->payload = std::move(payload);
 
         cmd_queue.push(req);
 
@@ -489,8 +540,9 @@ struct BrokerRequestComm::Impl
         if (!req->cv.wait_for(lk, std::chrono::milliseconds{timeout_ms},
                               [&] { return req->done; }))
         {
-            LOGGER_WARN("BrokerRequestComm: {} timed out after {}ms",
-                        msg_type, timeout_ms);
+            LOGGER_WARN("BrokerRequestComm: {} timed out after {}ms "
+                        "(corr_id='{}')",
+                        msg_type, timeout_ms, req->correlation_id);
             // HEP-CORE-0042 Phase 3 review fix (2026-07-02) — mark
             // the request ABANDONED so if a late broker reply arrives
             // (client-side timeout fired but the reply was in flight),
@@ -893,7 +945,11 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel,
     payload["producer_pid"] = pylabhub::platform::get_pid();
     if (!metrics.empty())
         payload["metrics"] = metrics;
-    pImpl->cmd_queue.push(SendCmd{"HEARTBEAT_REQ", std::move(payload)});
+    SendCmd cmd;
+    cmd.msg_type       = "HEARTBEAT_NOTIFY";
+    cmd.correlation_id = make_random_hex16();
+    cmd.payload        = std::move(payload);
+    pImpl->cmd_queue.push(std::move(cmd));
 }
 
 // M1.4 (2026-05-11): `BrokerRequestComm::send_metrics_report` deleted.
@@ -917,12 +973,20 @@ void BrokerRequestComm::send_broadcast(const std::string &target,
     payload["sender_uid"] = sender_uid;
     payload["message"] = msg;
     payload["data"] = data;
-    pImpl->cmd_queue.push(SendCmd{"CHANNEL_BROADCAST_REQ", std::move(payload)});
+    SendCmd cmd;
+    cmd.msg_type       = "CHANNEL_BROADCAST_SEND_NOTIFY";
+    cmd.correlation_id = make_random_hex16();
+    cmd.payload        = std::move(payload);
+    pImpl->cmd_queue.push(std::move(cmd));
 }
 
 void BrokerRequestComm::send_checksum_error(const nlohmann::json &report)
 {
-    pImpl->cmd_queue.push(SendCmd{"CHECKSUM_ERROR_REPORT", report});
+    SendCmd cmd;
+    cmd.msg_type       = "CHECKSUM_ERROR_REPORT";
+    cmd.correlation_id = make_random_hex16();
+    cmd.payload        = report;
+    pImpl->cmd_queue.push(std::move(cmd));
 }
 
 std::optional<nlohmann::json>
@@ -1297,13 +1361,17 @@ void BrokerRequestComm::band_broadcast(const std::string &band,
     // broker_proto 4→5 (audit R3.5b, 2026-05-19): sender wire key
     // renamed `sender_uid` → `role_uid` — uniform with all other
     // role-context gates.  Federation peer-context `sender_uid` (used
-    // for HUB_TARGETED_MSG / CHANNEL_BROADCAST_REQ from hubs) carries
+    // for HUB_TARGETED_MSG / CHANNEL_BROADCAST_SEND_NOTIFY from hubs) carries
     // a peer.uid not a role.uid and keeps its name.
     nlohmann::json payload;
     payload["band"] = band;
     payload["role_uid"] = pImpl->role_uid;
     payload["body"] = body;
-    pImpl->cmd_queue.push(SendCmd{"BAND_BROADCAST_REQ", std::move(payload)});
+    SendCmd cmd;
+    cmd.msg_type       = "BAND_BROADCAST_SEND_NOTIFY";
+    cmd.correlation_id = make_random_hex16();
+    cmd.payload        = std::move(payload);
+    pImpl->cmd_queue.push(std::move(cmd));
 }
 
 std::optional<nlohmann::json>

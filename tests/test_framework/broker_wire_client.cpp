@@ -4,7 +4,13 @@
  */
 #include "broker_wire_client.h"
 
+#include "utils/security/secure_subsystem.hpp"
+#include "utils/wire_adapter.hpp"
+#include "utils/wire_envelope.hpp"
+
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -16,13 +22,31 @@ namespace pylabhub::tests::pattern4 {
 
 namespace {
 
-// Matches BrokerService + BrokerRequestComm frame-type control byte.
-constexpr char kFrameTypeControl = 'C';
-
 // Broker's canonical error msg_type.  Match BrokerService::send_reply's
 // error envelope — a caller that expected some ACK but got ERROR wants
 // the error body returned rather than silently discarded.
 constexpr char kErrorMsgType[] = "ERROR";
+
+/// Generate a fresh 16-byte random hex correlation_id (32 hex chars).
+/// Cryptographically random per I-CORRELATION-STABLE + I-REPLAY-BOUND.
+std::string make_random_hex16()
+{
+    std::array<std::uint8_t, 16> raw{};
+    namespace sec = pylabhub::utils::security;
+    sec::secure().random_bytes(raw);
+    char hex[33] = {};
+    sec::secure().bin2hex(hex, sizeof(hex), raw.data(), raw.size());
+    return std::string(hex, 32);
+}
+
+std::uint64_t system_wall_now_ms()
+{
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(
+            system_clock::now().time_since_epoch())
+            .count());
+}
 
 } // anon
 
@@ -30,10 +54,12 @@ struct BrokerWireClient::Impl
 {
     zmq::socket_t dealer;
     std::string   broker_endpoint;
+    std::string   client_role_uid;
 
     Impl(zmq::context_t &ctx, const Config &cfg)
         : dealer(ctx, zmq::socket_type::dealer),
-          broker_endpoint(cfg.broker_endpoint)
+          broker_endpoint(cfg.broker_endpoint),
+          client_role_uid(cfg.client_role_uid)
     {
         // Socket policy — match production BRC.
         dealer.set(zmq::sockopt::linger, cfg.linger_ms);
@@ -50,6 +76,15 @@ struct BrokerWireClient::Impl
         dealer.set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
         dealer.set(zmq::sockopt::curve_publickey, cfg.client_pubkey);
         dealer.set(zmq::sockopt::curve_secretkey, cfg.client_seckey);
+
+        // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid, set
+        // before connect so broker's envelope parse sees a stable
+        // Frame 0.
+        if (client_role_uid.empty())
+            throw std::runtime_error(
+                "BrokerWireClient: Config::client_role_uid is empty; "
+                "I-DEALER-IDENTITY requires non-empty routing_id.");
+        dealer.set(zmq::sockopt::routing_id, client_role_uid);
 
         // TCP connect is asynchronous; a bad endpoint / server-key
         // does NOT throw here — it surfaces later as a receive-side
@@ -69,17 +104,37 @@ BrokerWireClient::~BrokerWireClient() = default;
 void BrokerWireClient::send(std::string_view      msg_type,
                              const nlohmann::json &body)
 {
-    const std::string body_str = body.dump();
-    std::vector<zmq::const_buffer> frames = {
-        zmq::buffer(&kFrameTypeControl, 1),
-        zmq::buffer(msg_type),
-        zmq::buffer(body_str),
-    };
+    // HEP-CORE-0046 §14 envelope encoder.  If the caller pre-set
+    // `body["correlation_id"]` (non-empty string), use it verbatim so
+    // conformance tests can pin the value the broker must echo.  Else
+    // generate a fresh random 32-hex id per I-CORRELATION-STABLE.
+    std::string corr_id;
+    if (body.is_object())
+    {
+        auto it = body.find("correlation_id");
+        if (it != body.end() && it->is_string())
+            corr_id = it->get<std::string>();
+    }
+    if (corr_id.empty())
+        corr_id = make_random_hex16();
+    ::pylabhub::wire::adapter::EncodeContext ctx;
+    ctx.dealer_role_uid = pImpl->client_role_uid;
+    ctx.correlation_id  = corr_id;
+
+    std::string nonce_holder;
+    if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
+    {
+        nonce_holder       = make_random_hex16();
+        ctx.client_nonce   = nonce_holder;
+        ctx.client_wall_ts = system_wall_now_ms();
+    }
     // `send_multipart` throws `zmq::error_t` on SNDTIMEO / socket-in-
     // bad-state — matches BRC.  Contract on the header: this is by
     // design and callers under stress paths should catch or drain
     // between bursts.
-    zmq::send_multipart(pImpl->dealer, frames);
+    zmq::multipart_t wire =
+        ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ctx, body);
+    wire.send(pImpl->dealer);
 }
 
 std::optional<std::pair<std::string, nlohmann::json>>
@@ -99,44 +154,32 @@ BrokerWireClient::receive(std::chrono::milliseconds timeout)
     if (n_ready <= 0)
         return std::nullopt;
 
-    std::vector<zmq::message_t> msgs;
-    auto recv_n = zmq::recv_multipart(pImpl->dealer, std::back_inserter(msgs),
-                                       zmq::recv_flags::dontwait);
-    if (!recv_n.has_value())
+    zmq::multipart_t raw;
+    if (!raw.recv(pImpl->dealer, ZMQ_DONTWAIT))
     {
-        // Poll said readable, but recv_multipart yielded no message —
-        // spurious wake (rare but possible with TCP-DEALER contention).
-        // Distinguish from short/over-frame count so debugging isn't
-        // misled by "got 0" wording.
         throw std::runtime_error(
             "BrokerWireClient::receive: poll reported readable but "
-            "recv_multipart returned no message (spurious wake?)");
-    }
-    if (*recv_n != 3)
-        throw std::runtime_error(fmt::format(
-            "BrokerWireClient::receive: 3-frame wire violation — got "
-            "{} frames (expected [C, msg_type, body])",
-            *recv_n));
-
-    // Frame 0: control byte 'C' — sanity-check.
-    if (msgs[0].size() != 1 ||
-        *static_cast<const char *>(msgs[0].data()) != kFrameTypeControl)
-    {
-        throw std::runtime_error(
-            "BrokerWireClient::receive: frame 0 is not 'C' control byte");
+            "multipart recv returned no message (spurious wake?)");
     }
 
-    std::string msg_type = msgs[1].to_string();
-    nlohmann::json body;
-    try
-    {
-        body = nlohmann::json::parse(msgs[2].to_string());
-    }
-    catch (const nlohmann::json::exception &e)
+    ::pylabhub::wire::ParseError err = {};
+    auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
+        std::move(raw), pImpl->client_role_uid, &err);
+    if (!env_opt.has_value())
     {
         throw std::runtime_error(fmt::format(
-            "BrokerWireClient::receive: body is not valid JSON: {}", e.what()));
+            "BrokerWireClient::receive: envelope parse failed "
+            "(ParseError={})", static_cast<int>(err)));
     }
+    ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
+    std::string msg_type       = std::string(env.msg_type());
+    std::string correlation_id = std::string(env.correlation_id());
+    nlohmann::json body        = env.body();
+    // Inject correlation_id into body so tests that inspect
+    // body["correlation_id"] see the envelope value (matches BRC's
+    // legacy-handler compat pattern).
+    if (!correlation_id.empty())
+        body["correlation_id"] = correlation_id;
     return std::make_pair(std::move(msg_type), std::move(body));
 }
 

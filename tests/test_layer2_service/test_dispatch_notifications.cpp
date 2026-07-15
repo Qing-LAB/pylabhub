@@ -405,7 +405,7 @@ IncomingMessage make_band_broadcast_notify(const std::string &band,
                                            const nlohmann::json &body)
 {
     IncomingMessage m;
-    m.event              = "BAND_BROADCAST_NOTIFY";
+    m.event              = "BAND_BROADCAST_DELIVER_NOTIFY";
     m.notification_id    = parse_notification_id(m.event);
     m.details            = nlohmann::json::object();
     m.details["band"]      = band;

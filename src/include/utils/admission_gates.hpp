@@ -19,12 +19,7 @@
  *     └──────┬──────┘
  *            │
  *            ▼
- *     ┌─────────────┐   gate 2: broker_proto == kBrokerProtoVersion
- *     │  ProtoOk    │           else UNSUPPORTED_PROTO
- *     └──────┬──────┘
- *            │
- *            ▼
- *     ┌─────────────┐   gate 3: env.identity() == body.role_uid()
+ *     ┌─────────────┐   gate 2: env.identity() == body.role_uid()
  *     │ IdentityOk  │           else IDENTITY_MISMATCH
  *     └──────┬──────┘
  *            │
@@ -78,9 +73,8 @@ namespace pylabhub::admission
 /// them per HEP-CORE-0007 §12.4a taxonomy.
 enum class RejectCode
 {
-    // Skeleton / typed body integrity (gates 1-2)
+    // Skeleton / typed body integrity (gate 1)
     envelope_tampered,   ///< I-ENVELOPE-BODY-BINDING: hash mismatch
-    unsupported_proto,   ///< I-WIRE-VERSION-ATOMIC: broker_proto mismatch
     body_schema_violation,  ///< Typed body construction threw WireBodyError
 
     // Identity + binding (gates 3-6)
@@ -93,6 +87,10 @@ enum class RejectCode
 
     // Anti-replay (gate 7)
     replay_or_skew,      ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
+
+    // Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8 table)
+    invalid_role_tag,    ///< role_uid tag not in the allowed set for this
+                          ///< msg_type (e.g. a `cons.*` uid on REG_REQ).
 
     // Server-side conditions (NOT client wire violations)
     broker_internal_error,  ///< Broker misconfiguration or unimplemented path;
@@ -186,9 +184,13 @@ struct AdmissionCallbacks
 struct AdmissionContext
 {
     const AdmissionCallbacks *cb{nullptr};              ///< non-owning
-    std::uint32_t             broker_proto{0};          ///< set by caller — 0 = any (test-only path)
     std::uint64_t             skew_tolerance_ms{30'000ULL};
     std::uint64_t             nonce_window_ms{10'000ULL};  ///< I-REPLAY-BOUND: 2 * pending_budget_ms
+    // Note: no `broker_proto` field.  C3 resolution retired the
+    // scalar-`broker_proto` gate for REG-family REQs; wire-version +
+    // ABI compatibility is verified via `abi_fingerprint` per
+    // HEP-CORE-0032 §8 in the broker's REG handler, not in the shared
+    // admission pipeline.
 };
 
 // ── Bundled per-gate call signature ────────────────────────────────────
@@ -223,7 +225,6 @@ struct RegFamilyBodyView
     std::string_view role_uid;
     std::string_view channel_name;
     std::string_view zmq_pubkey;
-    std::uint32_t    broker_proto;
     std::string_view client_nonce;
     std::uint64_t    client_wall_ts;
 };
@@ -231,11 +232,17 @@ struct RegFamilyBodyView
 // ── Individual gates ──────────────────────────────────────────────────
 //
 // Public for unit testing.  Handlers should prefer `run_reg_family_gates`
-// which runs all seven in order.
-
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_supported_proto(const RegFamilyBodyView &body,
-                      const AdmissionContext  &ctx) noexcept;
+// which runs all in order.
+//
+// C3 resolution 2026-07-14: `gate_supported_proto` (scalar
+// `broker_proto` equality check) is retired.  Wire-version + ABI
+// compatibility for REG-family REQs is verified through
+// `abi_fingerprint` per HEP-CORE-0032 §8, using
+// `verify_peer_versions()` at the broker's REG handler (not at
+// the shared admission pipeline).  The removed gate never fired
+// against real production clients (they never stamped the scalar
+// field).  See DRAFT_reg_wire_alignment_cleanup_2026-07-13.md §10
+// C3.
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
@@ -256,7 +263,82 @@ gate_key_rotation(const RegFamilyBodyView &body,
 gate_replay_bound(const RegFamilyBodyView &body,
                    const AdmissionContext  &ctx) noexcept;
 
-// ── Pipeline runner ───────────────────────────────────────────────────
+/// HEP-CORE-0033 §G2.2.0b.8 per-msg-type role-tag policy.  Rejects with
+/// `invalid_role_tag` when the leading tag embedded in @p role_uid
+/// (`prod`/`cons`/`proc`) is not permitted for @p msg_type.  When
+/// `msg_type == "HEARTBEAT_NOTIFY"`, the allowed set is derived from
+/// @p role_type_field on the body (a HEARTBEAT declaring
+/// `role_type="producer"` must carry a `prod.*` uid, and so on).
+/// Precondition: role_uid grammar already validated by `gate_grammar`
+/// or the equivalent universal-grammar check.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
+gate_role_tag_policy(std::string_view msg_type,
+                       std::string_view role_uid,
+                       std::string_view role_type_field) noexcept;
+
+// ── Authenticated-REG-family view + gate runner ───────────────────────
+//
+// REG-family messages OTHER than REG_REQ / CONSUMER_REG_REQ (i.e., all
+// admission-mutating REQs that arrive AFTER initial registration:
+// DEREG_REQ, CONSUMER_DEREG_REQ, ENDPOINT_UPDATE_REQ,
+// CHANNEL_AUTH_APPLIED_REQ) do NOT carry `zmq_pubkey` in their body
+// — the pubkey was bound to the role at REG time.  They carry the
+// security triple (client_nonce + client_wall_ts) and identity, so the
+// applicable gates are:
+//
+//   - identity_match (I-DEALER-IDENTITY): env.identity() == body.role_uid
+//   - grammar (universal fields only): role_uid + channel_name
+//   - role_tag_policy (HEP-CORE-0033 §G2.2.0b.8)
+//   - replay_bound (I-REPLAY-BOUND): nonce dedup + wall_ts skew
+//
+// gate_known_role_binding and gate_key_rotation don't apply — the
+// role's pubkey was already established by the successful REG_REQ that
+// preceded this message.
+struct AuthenticatedRegFamilyView
+{
+    std::string_view role_uid;
+    std::string_view channel_name;
+    std::string_view client_nonce;
+    std::uint64_t    client_wall_ts;
+};
+
+/// Runs identity + universal grammar + replay for non-REG_REQ REG-family
+/// msg_types.  Same short-circuit semantics as `run_reg_family_gates`.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
+run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
+                                     const AuthenticatedRegFamilyView    &body,
+                                     const AdmissionContext              &ctx) noexcept;
+
+// ── Control-tier view + gate runner ───────────────────────────────────
+//
+// Non-mutating control REQs (HEARTBEAT_REQ, GET_CHANNEL_AUTH_REQ,
+// CHECK_PEER_READY_REQ, DISC_REQ, BAND_*_REQ, ROLE_*_REQ, etc.) don't
+// mutate admission state so I-REPLAY-BOUND doesn't require nonce dedup.
+// The only universal check is I-DEALER-IDENTITY when the body carries
+// `role_uid` — the identity claim must match the socket identity.
+//
+// Bodies without role_uid (DISC_REQ, CHANNEL_LIST_REQ) get envelope-only
+// enforcement — identity check is skipped when role_uid is empty.
+struct ControlBodyView
+{
+    std::string_view role_uid;      ///< empty if the body doesn't carry it
+    std::string_view channel_name;  ///< empty if the body doesn't carry it
+    std::string_view role_type;     ///< "producer"|"consumer"|"processor";
+                                     ///< populated by HEARTBEAT_NOTIFY per
+                                     ///< HEP-0033 §G2.2.0b.8 (tag derived
+                                     ///< from this field for that msg_type).
+                                     ///< Empty for other control msg_types.
+};
+
+/// Runs identity_match if `role_uid` non-empty; grammar on role_uid /
+/// channel_name if non-empty; no replay check.  Returns nullopt if all
+/// checks pass (or no checks applied).
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
+run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
+                   const ControlBodyView                &body,
+                   const AdmissionContext               &ctx) noexcept;
+
+// ── Pipeline runner (REG_REQ / CONSUMER_REG_REQ) ──────────────────────
 
 /// Runs gates 2-7 (gate 1 already ran inside WireEnvelope::parse) in
 /// the §14.5 order.  Returns std::nullopt on all-passed, or the first
@@ -264,7 +346,9 @@ gate_replay_bound(const RegFamilyBodyView &body,
 /// gate stops the sequence; downstream gates do not run (avoids
 /// double-logging + wasted work).
 ///
-/// Handlers use this once per REG-family REQ before any state mutation.
+/// Handlers use this once per REG_REQ / CONSUMER_REG_REQ (bodies that
+/// carry zmq_pubkey) before any state mutation.  Other REG-family
+/// msg_types use `run_authenticated_reg_family_gates`.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
                       const RegFamilyBodyView              &body,

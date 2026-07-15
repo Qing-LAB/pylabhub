@@ -97,7 +97,7 @@ int connect_and_heartbeat()
     });
 
     // Wire-format probe: per HEP-CORE-0019 §4.1 (Phase 6),
-    // HEARTBEAT_REQ requires (channel, uid, role_type).
+    // HEARTBEAT_NOTIFY requires (channel, uid, role_type).
     ch.send_heartbeat("test_channel", "prod.test.uid00000001", "producer",
                       {{"test_key", 42}});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});

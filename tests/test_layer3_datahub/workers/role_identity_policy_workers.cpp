@@ -275,7 +275,9 @@ int open_policy_accepts_anonymous()
             // Empty uid → rejected at the grammar gate.
             EXPECT_FALSE(try_register(ep, pk, pid_chan("lab.open.empty")));
         },
-        {"REG_REQ rejected"});
+        // Dispatch-level admission-rejected WARN (Group 4 format);
+        // grammar-gate rejection surfaces via the new pipeline.
+        {"admission rejected msg_type='REG_REQ'"});
 }
 
 int open_policy_accepts_with_identity()
@@ -308,7 +310,9 @@ int required_policy_rejects_anonymous()
         [](const std::string &ep, const std::string &pk) {
             EXPECT_FALSE(try_register(ep, pk, pid_chan("lab.req.anon")));
         },
-        {"REG_REQ rejected"});
+        // Dispatch-level admission-rejected WARN (Group 4 format);
+        // grammar-gate rejection surfaces via the new pipeline.
+        {"admission rejected msg_type='REG_REQ'"});
 }
 
 int required_policy_accepts_with_identity()

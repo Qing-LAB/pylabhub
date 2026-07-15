@@ -165,7 +165,7 @@ int channel_msg_fanout()
 
     ChannelClient c1, c2;
     c2.ch.on_notification([&](const std::string &type, const nlohmann::json &payload) {
-        if (type == "BAND_BROADCAST_NOTIFY")
+        if (type == "BAND_BROADCAST_DELIVER_NOTIFY")
         {
             std::lock_guard<std::mutex> lk(body_mu);
             last_body = payload.value("body", nlohmann::json::object());
@@ -190,7 +190,7 @@ int channel_msg_fanout()
     bool got = pylabhub::tests::helper::poll_until(
         [&] { return msg_count.load() > 0; },
         std::chrono::seconds{3});
-    EXPECT_TRUE(got) << "BAND_BROADCAST_NOTIFY never received";
+    EXPECT_TRUE(got) << "BAND_BROADCAST_DELIVER_NOTIFY never received";
 
     if (got)
     {
@@ -359,19 +359,19 @@ int roleapi_channel()
     // Role A sends a channel message via RoleAPIBase.
     bc1->band_broadcast("!api_test_ch", {{"action", "start"}, {"seq", 1}});
 
-    // Wait for Role B to receive BAND_BROADCAST_NOTIFY.
+    // Wait for Role B to receive BAND_BROADCAST_DELIVER_NOTIFY.
     bool got_msg = pylabhub::tests::helper::poll_until(
         [&] {
             auto msgs = core2.drain_messages();
             for (const auto &m : msgs)
             {
-                if (m.event == "BAND_BROADCAST_NOTIFY")
+                if (m.event == "BAND_BROADCAST_DELIVER_NOTIFY")
                     return true;
             }
             return false;
         },
         std::chrono::seconds{3});
-    EXPECT_TRUE(got_msg) << "BAND_BROADCAST_NOTIFY not received in core2";
+    EXPECT_TRUE(got_msg) << "BAND_BROADCAST_DELIVER_NOTIFY not received in core2";
 
     // Query members via RoleAPIBase.
     auto members = bc1->band_members("!api_test_ch");
@@ -481,11 +481,11 @@ int channel_self_excluded()
 
     ChannelClient c1, c2;
     c1.ch.on_notification([&](const std::string &type, const nlohmann::json &) {
-        if (type == "BAND_BROADCAST_NOTIFY")
+        if (type == "BAND_BROADCAST_DELIVER_NOTIFY")
             sender_msg_count.fetch_add(1);
     });
     c2.ch.on_notification([&](const std::string &type, const nlohmann::json &) {
-        if (type == "BAND_BROADCAST_NOTIFY")
+        if (type == "BAND_BROADCAST_DELIVER_NOTIFY")
             receiver_msg_count.fetch_add(1);
     });
 
@@ -539,7 +539,7 @@ int channel_multi_channel()
 
     ChannelClient c1;
     c1.ch.on_notification([&](const std::string &type, const nlohmann::json &payload) {
-        if (type == "BAND_BROADCAST_NOTIFY")
+        if (type == "BAND_BROADCAST_DELIVER_NOTIFY")
         {
             // HEP-CORE-0030 §5.1 wire key is `band`.
             std::string ch = payload.value("band", "");

@@ -92,7 +92,7 @@ enum class NotificationId : std::uint8_t
     BandMemberLeft   = 5,   ///< BAND_LEAVE_NOTIFY       (HEP-CORE-0030 §5.3)
                             ///< Another role left.  Carries `reason ∈ {voluntary,
                             ///< heartbeat_timeout, process_dead}`.
-    BandMessage      = 6,   ///< BAND_BROADCAST_NOTIFY   (HEP-CORE-0030 §5.3)
+    BandMessage      = 6,   ///< BAND_BROADCAST_DELIVER_NOTIFY (HEP-CORE-0030 §5.3)
                             ///< Broadcast from another band member.
     BandLost         = 7,   ///< Synthetic, enqueued from `on_hub_dead` lambda
                             ///< per band whose routing was on the dead
@@ -126,7 +126,7 @@ parse_notification_id(std::string_view type) noexcept
     if (type == "HUB_DEAD")                 return NotificationId::HubDead;
     if (type == "BAND_JOIN_NOTIFY")         return NotificationId::BandMemberJoined;
     if (type == "BAND_LEAVE_NOTIFY")        return NotificationId::BandMemberLeft;
-    if (type == "BAND_BROADCAST_NOTIFY")    return NotificationId::BandMessage;
+    if (type == "BAND_BROADCAST_DELIVER_NOTIFY") return NotificationId::BandMessage;
     if (type == "BAND_LOST")                return NotificationId::BandLost;
     if (type == "CHANNEL_AUTH_CHANGED_NOTIFY") return NotificationId::ChannelAuthChanged;
     return NotificationId::Unknown;

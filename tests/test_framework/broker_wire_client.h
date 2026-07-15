@@ -74,6 +74,15 @@ public:
         std::string client_pubkey;
         std::string client_seckey;
 
+        /// DEALER routing_id (I-DEALER-IDENTITY, HEP-CORE-0046 §8.1).
+        /// Set to the role_uid this wire client masquerades as;
+        /// broker's envelope parse uses it as Frame 0 identity so
+        /// envelope_hash reconstructs against a stable per-connection
+        /// value.  Non-empty; defaults to `pattern4-wire-client` if
+        /// the test does not set one (adequate for smoke tests but
+        /// per-role tests should set distinct values).
+        std::string client_role_uid{"pattern4-wire-client"};
+
         /// Optional linger override (ms).  Default 0 — matches production
         /// BRC's DEALER teardown (drop in-flight per HEP-CORE-0023
         /// §2.5.3 "disconnection is terminal"; the client mirrors this
@@ -96,7 +105,7 @@ public:
     /// silent ZAP-side handshake failure (per class docblock line 21),
     /// observed as a `receive()` timeout.  Tests that want to gate on
     /// "handshake actually succeeded" should send a lightweight REQ
-    /// (e.g. HEARTBEAT_REQ) and treat a matching reply as the ready
+    /// (e.g. HEARTBEAT_NOTIFY) and treat a matching reply as the ready
     /// signal — there is no dedicated `wait_ready` helper.
     ///
     /// The only cases that throw at construct time are libzmq's

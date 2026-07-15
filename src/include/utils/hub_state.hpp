@@ -358,7 +358,12 @@ struct ProducerEntry
 struct ChannelSchemaInvariants
 {
     std::string schema_hash;
-    uint32_t    schema_version{0};
+    // C2 resolution: `schema_version` field retired.  Version rides
+    // inside `schema_id` string (`$name.v<N>` per HEP-CORE-0033
+    // §G2.2.0b).  Broker validates schema identity via `schema_id`
+    // string equality (which subsumes version) then content via
+    // `schema_hash`.  Use `pylabhub::hub::parse_schema_id(schema_id)`
+    // if the version integer is needed structurally.
     std::string schema_id;
     std::string schema_blds;
     std::string schema_owner;
@@ -525,8 +530,8 @@ struct ProducerAdmissionResult
     bool               channel_opened{false};
 
     /// Names which invariant didn't match, when `invariant_result ==
-    /// RejectedMismatch`.  One of: `"schema_hash"`, `"schema_version"`,
-    /// `"schema_id"`, `"schema_blds"`, `"schema_owner"`, `"data_transport"`.
+    /// RejectedMismatch`.  One of: `"schema_hash"`, `"schema_id"`,
+    /// `"schema_blds"`, `"schema_owner"`, `"data_transport"`.
     /// Empty on success.
     std::string        mismatched_invariant;
 };
@@ -590,7 +595,9 @@ struct ChannelEntry
     std::string schema_hash;   ///< Hex (64 chars).  Channel-wide
                                ///< invariant — all producers MUST
                                ///< agree (HEP-CORE-0023 §2.1.1).
-    uint32_t    schema_version{0};
+    // C2 resolution: `schema_version` field retired here too.  Version
+    // rides inside `schema_id` (`$name.v<N>`) per HEP-CORE-0033 §G2.2.0b;
+    // no separate integer needed.
     std::string schema_id;     ///< Named-schema id; empty = anonymous.
     std::string schema_blds;
 
@@ -1759,8 +1766,14 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// for role-disconnect cascade.  Wave M3 step 5f (2026-05-11) added
     /// the reason field so the broker subscriber can fan out the wire
     /// notification with the correct reason for both paths.
+    /// `role_name` is captured from the BandMember record at leave time
+    /// so downstream (BAND_LEAVE_NOTIFY emit) can populate the required
+    /// wire field per HEP-CORE-0030 §5.3 (BandLeaveNotifyBody schema).
+    /// Post-leave the member has been erased from the band; the handler
+    /// receives the pre-erase name snapshot.
     using BandLeftHandler             = std::function<void(const std::string & /*band*/,
                                                            const std::string & /*role_uid*/,
+                                                           const std::string & /*role_name*/,
                                                            const std::string & /*reason*/)>;
     using PeerConnectedHandler        = std::function<void(const PeerEntry &)>;
     using PeerDisconnectedHandler     = std::function<void(const std::string & /*hub_uid*/)>;

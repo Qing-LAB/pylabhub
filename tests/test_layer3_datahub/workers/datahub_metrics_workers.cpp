@@ -54,6 +54,9 @@
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/security/secure_subsystem.hpp"
+#include "utils/wire_adapter.hpp"
+#include "utils/wire_envelope.hpp"
 
 #include <gtest/gtest.h>
 #include <cppzmq/zmq_addon.hpp>
@@ -136,6 +139,7 @@ std::string pid_chan(const std::string &base)
 json raw_request(const std::string                  &endpoint,
                  const std::string                  &server_pubkey,
                  const pylabhub::tests::CurveKeypair &client_keys,
+                 const std::string                  &role_uid,
                  const std::string                  &msg_type,
                  const json                         &payload,
                  int                                 timeout_ms = 2000)
@@ -159,25 +163,85 @@ json raw_request(const std::string                  &endpoint,
         sodium_memzero(sec_tmp.data(), sec_tmp.size());
     }
 
+    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.
+    dealer.set(zmq::sockopt::routing_id, role_uid);
     dealer.connect(endpoint);
 
-    static constexpr char kCtrl = 'C';
-    const std::string     body  = payload.dump();
-    std::vector<zmq::const_buffer> frames = {zmq::buffer(&kCtrl, 1),
-                                              zmq::buffer(msg_type),
-                                              zmq::buffer(body)};
-    if (!zmq::send_multipart(dealer, frames)) return {};
-
-    std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
-    zmq::poll(items, std::chrono::milliseconds(timeout_ms));
-    if ((items[0].revents & ZMQ_POLLIN) == 0) return {};  // timeout
-
-    std::vector<zmq::message_t> recv_frames;
-    if (!zmq::recv_multipart(dealer, std::back_inserter(recv_frames)))
+    // Respect caller-set `payload["correlation_id"]` per contract.
+    namespace sec = pylabhub::utils::security;
+    std::string correlation_id;
+    if (payload.is_object())
+    {
+        auto it = payload.find("correlation_id");
+        if (it != payload.end() && it->is_string())
+            correlation_id = it->get<std::string>();
+    }
+    if (correlation_id.empty())
+    {
+        std::array<std::uint8_t, 16> corr_raw{};
+        sec::secure().random_bytes(corr_raw);
+        char corr_hex[33] = {};
+        sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
+                              corr_raw.size());
+        correlation_id.assign(corr_hex, 32);
+    }
+    std::string nonce_hex;
+    std::uint64_t wall_ts = 0;
+    if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
+    {
+        std::array<std::uint8_t, 16> nonce_raw{};
+        sec::secure().random_bytes(nonce_raw);
+        char nh[33] = {};
+        sec::secure().bin2hex(nh, sizeof(nh), nonce_raw.data(), nonce_raw.size());
+        nonce_hex = std::string(nh, 32);
+        using namespace std::chrono;
+        wall_ts = static_cast<std::uint64_t>(
+            duration_cast<milliseconds>(
+                system_clock::now().time_since_epoch()).count());
+    }
+    ::pylabhub::wire::adapter::EncodeContext ectx;
+    ectx.dealer_role_uid = role_uid;
+    ectx.correlation_id  = correlation_id;
+    ectx.client_nonce    = nonce_hex;
+    ectx.client_wall_ts  = wall_ts;
+    try
+    {
+        zmq::multipart_t wire =
+            ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ectx, payload);
+        wire.send(dealer);
+    }
+    catch (const std::exception&)
+    {
         return {};
-    if (recv_frames.size() < 2) return {};
-    return json::parse(std::string(recv_frames.back().data<char>(),
-                                    recv_frames.back().size()));
+    }
+
+    // Under I-DEALER-IDENTITY, loop past NOTIFYs — see datahub_broker_workers::raw_req.
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true)
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return {};
+        auto ms_left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           deadline - now)
+                           .count();
+        std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
+        zmq::poll(items, std::chrono::milliseconds(ms_left));
+        if ((items[0].revents & ZMQ_POLLIN) == 0) return {};
+
+        zmq::multipart_t raw;
+        if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
+        ::pylabhub::wire::ParseError perr = {};
+        auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
+            std::move(raw), role_uid, &perr);
+        if (!env_opt.has_value()) return {};
+        ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
+        if (env.is_notify()) continue;
+        json body_out = env.body();
+        if (!env.correlation_id().empty())
+            body_out["correlation_id"] = std::string(env.correlation_id());
+        return body_out;
+    }
 }
 
 /// Module list for every worker in this TU.  HubConfig load +
@@ -227,7 +291,7 @@ int run_with_broker(std::string_view              worker_name,
             //   - SHM recovery probes the test's fresh channel name
             //     before producer reg; channel doesn't exist yet so
             //     `open()` fails.  Benign.
-            //   - HEARTBEAT_REQ from a CONSUMER carries no
+            //   - HEARTBEAT_NOTIFY from a CONSUMER carries no
             //     producer_pid; broker logs at ERROR for diagnostics
             //     but accepts the heartbeat.  Benign.
             log_cap.ExpectLogError("recovery: Failed to open '");
@@ -365,7 +429,7 @@ int consumer_heartbeat_metrics_stored_by_broker()
             ASSERT_EQ(cons_reg->value("status", ""), "success")
                 << "CONSUMER_REG_REQ failed: " << cons_reg->dump();
 
-            // M1.4: metrics piggyback on HEARTBEAT_REQ.
+            // M1.4: metrics piggyback on HEARTBEAT_NOTIFY.
             json cons_metrics;
             cons_metrics["read_count"] = 100;
             cons_bh.brc.send_heartbeat(channel, cons_uid, "consumer",
@@ -893,6 +957,15 @@ int old_metrics_report_req_gets_unknown_msg_type()
                             3000)
                             .has_value());
 
+            // Under I-DEALER-IDENTITY the DEALER routing_id = role_uid.
+            // BRC and raw_request both use `uid`, so leaving BRC's
+            // dealer connected while raw_request opens a second dealer
+            // with the same identity leaves libzmq's ROUTER routing to
+            // whichever socket connected last — the broker's ERROR
+            // reply then misroutes.  Stop BRC before the raw dispatch
+            // fallback probe so raw_request owns the routing_id.
+            bh.stop();
+
             json payload;
             payload["channel_name"] = channel;
             payload["uid"]          = uid;
@@ -902,7 +975,7 @@ int old_metrics_report_req_gets_unknown_msg_type()
             // because the test is about the broker's dispatch table
             // fallback, not BRC behavior.
             json reply = raw_request(broker.endpoint, broker.pubkey,
-                                      curve.role(uid),
+                                      curve.role(uid), uid,
                                       "METRICS_REPORT_REQ", payload);
             ASSERT_FALSE(reply.is_null())
                 << "Expected an UNKNOWN_MSG_TYPE reply within 2 s; got "
@@ -914,7 +987,6 @@ int old_metrics_report_req_gets_unknown_msg_type()
                 << "Wire-protocol break must surface as UNKNOWN_MSG_TYPE per "
                    "broker_service.cpp dispatch fallback";
 
-            bh.stop();
             broker.stop_and_join();
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();

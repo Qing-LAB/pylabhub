@@ -74,23 +74,27 @@ protected:
     // misattributed failure.  (Per MEMORY rule "tests pin path + timing".)
 
     /// Construct a BrokerWireClient bound to `setup.broker_endpoint`
-    /// using the given role keypair.  Delegates to Phase 2.4a's
-    /// movable BrokerWireClient — one ctx per test is enough.
+    /// using the given role keypair + role_uid.  role_uid becomes the
+    /// DEALER routing_id per I-DEALER-IDENTITY (HEP-CORE-0046 §8.1)
+    /// so the broker's ROUTER routes replies to the intended DEALER
+    /// and envelope_hash covers the same identity on both sides.
     BrokerWireClient make_wire_client(
         zmq::context_t &ctx,
         const pylabhub::tests::pattern4::Pattern4Setup &setup,
-        const pylabhub::tests::CurveKeypair &kp)
+        const pylabhub::tests::CurveKeypair &kp,
+        const std::string &role_uid)
     {
         BrokerWireClient::Config c;
-        c.broker_endpoint = setup.broker_endpoint;
-        c.broker_pubkey   = setup.curve.hub.public_z85;
-        c.client_pubkey   = kp.public_z85;
-        c.client_seckey   = kp.secret_z85;
+        c.broker_endpoint  = setup.broker_endpoint;
+        c.broker_pubkey    = setup.curve.hub.public_z85;
+        c.client_pubkey    = kp.public_z85;
+        c.client_seckey    = kp.secret_z85;
+        c.client_role_uid  = role_uid;
         return BrokerWireClient(ctx, c);
     }
 
     /// Producer REG_REQ → assert REG_ACK.status=="success", then
-    /// HEARTBEAT_REQ (fire-and-forget) to clear the
+    /// HEARTBEAT_NOTIFY (fire-and-forget) to clear the
     /// `awaiting_first_heartbeat` gate that CONSUMER_REG_REQ trips
     /// (HEP-CORE-0023 §2.5.3).  Sleeps 100ms to give the broker time
     /// to process the heartbeat before the caller proceeds — the
@@ -160,7 +164,7 @@ protected:
         hb["role_uid"]     = uid;
         hb["role_type"]    = "producer";
         hb["producer_pid"] = 1;
-        client.send("HEARTBEAT_REQ", hb);
+        client.send("HEARTBEAT_NOTIFY", hb);
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
     }
 
@@ -258,10 +262,10 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
-    // ── 4. Producer REG_REQ + HEARTBEAT_REQ ──
+    // ── 4. Producer REG_REQ + HEARTBEAT_NOTIFY ──
     // Capture the broker-assigned `instance_id` from REG_ACK (§5.5.3
     // echo).  On first REG for this uid the broker assigns 1; we
     // don't hard-code that here — the whole point of the echo is
@@ -287,7 +291,10 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     {
         nlohmann::json applied;
         applied["channel_name"]     = channel_name;
-        applied["producer_role_uid"] = producer_uid;
+        // ChannelAuthAppliedReqBody wire class requires canonical
+        // `role_uid` per HEP-CORE-0046 §14.3 + HEP-CORE-0042 §5.5.2.
+        applied["role_uid"]         = producer_uid;
+        applied["role_type"]        = "producer";
         applied["applied_version"]  = 1u;
         applied["instance_id"]      = producer_instance;
 
@@ -361,8 +368,8 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedConsumerNotInAllowlist)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     // Producer REG + heartbeat — opens the channel.
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
@@ -437,8 +444,8 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         prod_client, channel_name, producer_uid,
@@ -518,8 +525,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     std::uint64_t producer_instance = 0;
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
@@ -579,7 +586,11 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     {
         nlohmann::json applied;
         applied["channel_name"]      = channel_name;
-        applied["producer_role_uid"] = producer_uid;
+        // Canonical wire fields per HEP-CORE-0046 §14.3 +
+        // HEP-CORE-0042 §5.5.2 — ChannelAuthAppliedReqBody requires
+        // `role_uid` (not legacy `producer_role_uid`).
+        applied["role_uid"]          = producer_uid;
+        applied["role_type"]         = "producer";
         applied["applied_version"]   = 1u;
         // §5.5.3 echo — quote what REG_ACK returned, not a hardcoded
         // guess.  Pins the round-trip so an echo regression breaks
@@ -664,9 +675,9 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
     const auto &p1_kp   = setup.curve.role(producer1_uid);
     const auto &p2_kp   = setup.curve.role(producer2_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto p1_client   = make_wire_client(ctx, setup, p1_kp);
-    auto p2_client   = make_wire_client(ctx, setup, p2_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto p1_client   = make_wire_client(ctx, setup, p1_kp, producer1_uid);
+    auto p2_client   = make_wire_client(ctx, setup, p2_kp, producer2_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     // Fan-in — two producers on one channel per the topology-migration
     // model.  Default topology (one-to-one) would trip
@@ -769,8 +780,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         prod_client, channel_name, producer_uid,
@@ -885,8 +896,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
-    auto cons_client = make_wire_client(ctx, setup, cons_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
+    auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         prod_client, channel_name, producer_uid,
@@ -967,7 +978,7 @@ TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
-    auto prod_client = make_wire_client(ctx, setup, prod_kp);
+    auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
 
     // Producer REG + heartbeat.  Broker assigns instance[P] = 1 on
     // first REG.  (Heartbeat is not strictly required for this test
@@ -984,7 +995,11 @@ TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
     {
         nlohmann::json applied;
         applied["channel_name"]      = channel_name;
-        applied["producer_role_uid"] = producer_uid;
+        // Canonical wire fields per HEP-CORE-0046 §14.3 +
+        // HEP-CORE-0042 §5.5.2 — ChannelAuthAppliedReqBody requires
+        // `role_uid` (not legacy `producer_role_uid`).
+        applied["role_uid"]          = producer_uid;
+        applied["role_type"]         = "producer";
         applied["applied_version"]   = 1u;
         applied["instance_id"]       = 999u;  // deliberately wrong
 

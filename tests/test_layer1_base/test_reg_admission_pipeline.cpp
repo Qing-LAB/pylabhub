@@ -6,7 +6,7 @@
 //   - Pre-mutation gate failures propagate as RegRejected verbatim
 //   - Pre-mutation gates run BEFORE commit (commit not invoked on
 //     rejection — no state mutation on a bad REQ)
-//   - Typed RegRequest reaches commit populated from the RegReqBody
+//   - Typed RegRequest reaches commit populated from the ProducerRegReqBody
 //   - Commit's variant outcome flows through unchanged
 //
 // Together with test_admission_gates.cpp this pins the state transitions
@@ -28,14 +28,13 @@
 
 namespace ag = pylabhub::admission;
 using pylabhub::wire::WireEnvelope;
-using pylabhub::wire::RegReqBody;
+using pylabhub::wire::ProducerRegReqBody;
 
 namespace
 {
 
 nlohmann::json make_reg_req_body_json(std::string_view role_uid,
                                         std::string_view pubkey,
-                                        std::uint32_t     proto,
                                         std::string_view  nonce,
                                         std::uint64_t     wall_ts)
 {
@@ -47,9 +46,7 @@ nlohmann::json make_reg_req_body_json(std::string_view role_uid,
     body["channel_topology"] = "one-to-one";
     body["data_transport"]  = "zmq";
     body["zmq_pubkey"]      = std::string{pubkey};
-    body["broker_proto"]    = proto;
     body["schema_hash"]     = "deadbeef";
-    body["schema_version"]  = 1U;
     body["schema_id"]       = "";
     body["schema_blds"]     = "";
     body["schema_owner"]    = "";
@@ -59,22 +56,21 @@ nlohmann::json make_reg_req_body_json(std::string_view role_uid,
     return body;
 }
 
-// Build a fully-round-tripped WireEnvelope + RegReqBody the pipeline
+// Build a fully-round-tripped WireEnvelope + ProducerRegReqBody the pipeline
 // will accept.  Returns both by value; caller owns.
 struct EnvelopePair
 {
     WireEnvelope env;
-    RegReqBody   body;
+    ProducerRegReqBody   body;
 };
 
 EnvelopePair make_valid_pair(
     std::string_view role_uid      = "prod.test.uid1",
     std::string_view pubkey        = "abcdefghij0123456789abcdefghij0123456789",
-    std::uint32_t     broker_proto = 7U,
     std::string_view  nonce        = "nonce.test.001",
     std::uint64_t     wall_ts      = 1'000'000ULL)
 {
-    auto body_json = make_reg_req_body_json(role_uid, pubkey, broker_proto,
+    auto body_json = make_reg_req_body_json(role_uid, pubkey,
                                               nonce, wall_ts);
 
     // Build+parse a router envelope so envelope_hash is stamped and
@@ -84,7 +80,7 @@ EnvelopePair make_valid_pair(
     pylabhub::wire::ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     if (!env) throw std::runtime_error("make_valid_pair: parse failed");
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
     return {std::move(*env), std::move(body)};
 }
 
@@ -122,7 +118,6 @@ ag::AdmissionContext make_ctx(const ag::AdmissionCallbacks &cb)
 {
     ag::AdmissionContext c;
     c.cb                = &cb;
-    c.broker_proto      = 7U;
     c.skew_tolerance_ms = 30'000ULL;
     c.nonce_window_ms   = 10'000ULL;
     return c;
@@ -140,7 +135,7 @@ TEST(RegAdmissionPipeline, AcceptedPathReachesCommitWithTypedRequest)
     auto ctx     = make_ctx(gate_cb);
 
     // Commit callback captures its input so we can assert the pipeline
-    // populated RegRequest correctly from the RegReqBody accessors.
+    // populated RegRequest correctly from the ProducerRegReqBody accessors.
     ag::RegRequest captured;
     bool           commit_invoked = false;
 
@@ -167,7 +162,7 @@ TEST(RegAdmissionPipeline, AcceptedPathReachesCommitWithTypedRequest)
     EXPECT_EQ(captured.channel_topology,"one-to-one");
     EXPECT_EQ(captured.data_transport,  "zmq");
     EXPECT_EQ(captured.schema_hash,     "deadbeef");
-    EXPECT_EQ(captured.schema_version,  1U);
+    // schema_version retired per C2 — version rides inside schema_id.
 
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(outcome));
     auto &accepted = std::get<ag::RegAccepted>(outcome);
@@ -178,14 +173,17 @@ TEST(RegAdmissionPipeline, AcceptedPathReachesCommitWithTypedRequest)
 }
 
 // ── Rejected flow: pre-mutation gate fails, commit not called ─────────
+//
+// C3 retired the broker_proto gate — protocol drift is now caught by
+// abi_fingerprint at the ABI layer, not per-message.  Nonce-replay gate
+// remains and is the cheapest observable pre-mutation failure.
 
 TEST(RegAdmissionPipeline, RejectedByGateStopsBeforeCommit)
 {
-    // Use wrong broker_proto → gate 2 fails.
-    auto pair = make_valid_pair(/*uid*/"prod.test.uid1",
-                                  /*pk*/"abcdefghij0123456789abcdefghij0123456789",
-                                  /*proto*/6U);  // wrong
+    auto pair = make_valid_pair();
     std::unordered_set<std::string> nonces;
+    // Pre-seed the dedup set so the pipeline's first look-up sees a replay.
+    nonces.insert(std::string{"prod.test.uid1|nonce.test.001"});
     auto gate_cb = make_permissive_gate_callbacks(nonces);
     auto ctx     = make_ctx(gate_cb);
 
@@ -204,8 +202,8 @@ TEST(RegAdmissionPipeline, RejectedByGateStopsBeforeCommit)
 
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
     auto &rejected = std::get<ag::RegRejected>(outcome);
-    EXPECT_EQ(rejected.detail.code, ag::RejectCode::unsupported_proto);
-    EXPECT_EQ(rejected.detail.field, "broker_proto");
+    EXPECT_EQ(rejected.detail.code, ag::RejectCode::replay_or_skew);
+    EXPECT_EQ(rejected.detail.field, "client_nonce");
 }
 
 // ── Pended flow: commit returns Pended, pipeline forwards ─────────────

@@ -492,7 +492,7 @@ int req_shape_no_unmatched_replies_for_fire_and_forget()
             // BRC client side; if the broker side accidentally emits
             // a reply, the BRC's unmatched_replies counter increments.
             //
-            // HEARTBEAT_REQ — per-presence liveness.
+            // HEARTBEAT_NOTIFY — per-presence liveness.
             bh.brc.send_heartbeat(channel, uid, "producer",
                                    nlohmann::json::object());
 
@@ -505,18 +505,18 @@ int req_shape_no_unmatched_replies_for_fire_and_forget()
             csum_report["observed_hash"]  = "cafebabe";
             bh.brc.send_checksum_error(csum_report);
 
-            // CHANNEL_BROADCAST_REQ — fan-out to channel members.
+            // CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to channel members.
             bh.brc.send_broadcast(channel, uid, "test-broadcast",
                                    "test-data");
 
-            // BAND_BROADCAST_REQ — fan-out to band members.
+            // BAND_BROADCAST_SEND_NOTIFY — fan-out to band members.
             // Join a band first so the broadcast has a valid target.
             const std::string band = "!shape.test";
             auto bj = bh.brc.band_join(band);
             ASSERT_TRUE(bj.has_value());
             nlohmann::json body;
             body["msg"] = "test-band-broadcast";
-            bh.brc.send_broadcast(band, uid, "BAND_BROADCAST_REQ",
+            bh.brc.send_broadcast(band, uid, "BAND_BROADCAST_SEND_NOTIFY",
                                    body.dump());
 
             // Give the broker time to (incorrectly) emit any replies.

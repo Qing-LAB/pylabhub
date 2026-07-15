@@ -204,10 +204,12 @@ json make_cons_opts(const std::string &channel, const std::string &uid)
     namespace sec = pylabhub::utils::security;
     auto opts = pylabhub::hub::build_consumer_reg_payload(
         pylabhub::hub::ConsumerRegInputs{
-            .channel    = channel,
-            .role_uid   = uid,
-            .role_name  = "L3TestConsumer",
-            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
+            .channel        = channel,
+            .role_uid       = uid,
+            .role_name      = "L3TestConsumer",
+            .role_type      = "consumer",
+            .data_transport = "zmq",
+            .zmq_pubkey     = std::string{sec::secure().keys().pubkey(
                 pylabhub::tests::role_keystore_name(uid))},
         });
     opts["consumer_pid"] = ::getpid();

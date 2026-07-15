@@ -44,7 +44,7 @@ class HubState;
 namespace pylabhub::wire
 {
 class WireEnvelope;
-class RegReqBody;
+class ProducerRegReqBody;
 }
 
 namespace pylabhub::admission
@@ -65,9 +65,16 @@ struct KnownRolesConfig
 
 /// Broker tunables consumed by the admission gates.  Kept in one struct
 /// so BrokerServiceImpl can pass its config through cleanly.
+///
+/// C3 resolution 2026-07-14: no `broker_proto` scalar field.
+/// Wire-version + ABI compatibility is carried by REG-family REQ
+/// bodies' `abi_fingerprint` object (7-axis ComponentVersions per
+/// HEP-CORE-0032 §8) and verified through
+/// `pylabhub::version::verify_peer_versions()` at the broker's REG
+/// handler.  The former hardcoded `broker_proto{7U}` field is
+/// retired.
 struct BrokerAdmissionConfig
 {
-    std::uint32_t broker_proto{7U};             ///< I-WIRE-VERSION-ATOMIC
     std::uint64_t skew_tolerance_ms{30'000ULL}; ///< I-REPLAY-BOUND
     std::uint64_t nonce_window_ms{10'000ULL};   ///< I-REPLAY-BOUND
 };
@@ -102,7 +109,7 @@ class PYLABHUB_UTILS_EXPORT BrokerRegHandler
     /// pending-queue-park and to fire the recorded NOTIFY manifest.
     [[nodiscard]] RegOutcome
     handle(const ::pylabhub::wire::WireEnvelope &env,
-            const ::pylabhub::wire::RegReqBody    &body);
+            const ::pylabhub::wire::ProducerRegReqBody    &body);
 
   private:
     ::pylabhub::hub::HubState &hub_state_;

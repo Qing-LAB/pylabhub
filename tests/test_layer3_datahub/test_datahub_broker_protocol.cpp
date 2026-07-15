@@ -75,7 +75,7 @@ TEST_F(BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
 }
 
 // ============================================================================
-// 4. HEARTBEAT_REQ — PendingReady → Ready + wire payload + keying
+// 4. HEARTBEAT_NOTIFY — PendingReady → Ready + wire payload + keying
 // ============================================================================
 
 TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
@@ -182,7 +182,7 @@ TEST_F(BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
 }
 
 // ============================================================================
-// 8. CHANNEL_BROADCAST_REQ — fan-out to producer + ALL consumers
+// 8. CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to producer + ALL consumers
 // ============================================================================
 
 TEST_F(BrokerProtocolTest, BroadcastFanOut_DeliveredToProducerAndAllConsumers)

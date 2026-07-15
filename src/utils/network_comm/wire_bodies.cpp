@@ -105,6 +105,30 @@ void require(const nlohmann::json &body, const char *field, JsonKind kind)
     }
 }
 
+// Validate-if-present: the field is OPTIONAL, but when the caller
+// includes it the type MUST match.  Missing is allowed; wrong-typed
+// is rejected — the "when non-empty" pattern from HEP-CORE-0023
+// §2.5.4 (role_name grammar validation) generalized.
+void validate_if_present(const nlohmann::json &body, const char *field,
+                          JsonKind kind)
+{
+    auto it = body.find(field);
+    if (it == body.end()) return;  // absent → OK per contract
+    bool ok = false;
+    switch (kind)
+    {
+        case JsonKind::String: ok = it->is_string(); break;
+        case JsonKind::U32:    ok = it->is_number_unsigned(); break;
+        case JsonKind::U64:    ok = it->is_number_unsigned(); break;
+        case JsonKind::Object: ok = it->is_object(); break;
+        case JsonKind::Array:  ok = it->is_array(); break;
+    }
+    if (!ok)
+    {
+        throw WireBodyError(mkerr(field, "present but wrong JSON kind"));
+    }
+}
+
 void require_envelope_hash(const nlohmann::json &body)
 {
     // WireEnvelope::parse enforces this on inbound; body-class constructors
@@ -134,19 +158,60 @@ namespace pylabhub::wire
 
 namespace d = detail;
 
-RegReqBody::RegReqBody(nlohmann::json body)
+// ProducerRegReqBody — REG_REQ per HEP-CORE-0036 §5b.4 + HEP-CORE-0034
+// §10.1.  Required: identity quintuple + transport + pubkey + abi
+// fingerprint + security triple.  Schema fields are OPTIONAL at the
+// wire-shape level (schema_id="" means anonymous per HEP-0034 §10.1);
+// when schema_id is non-empty the broker's admission handler
+// enforces the schema field trio (hash + blds + packing) per §10.1.
+// No broker_proto scalar (C3: abi_fingerprint canonical per HEP-0032
+// §8).  No schema_version wire field (C2: version rides inside
+// schema_id `$name.v<N>` per HEP-CORE-0033 §G2.2.0b).
+ProducerRegReqBody::ProducerRegReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
+    // Per HEP-CORE-0046 §7.1 required-field table: channel_name,
+    // role_uid, role_type, zmq_pubkey, data_transport.  role_name is
+    // OPTIONAL per HEP-CORE-0023 §2.5.4 ("when non-empty" validation
+    // pattern) — role_uid already embeds a name component via
+    // HEP-CORE-0033 §G2.2.0b grammar, so role_name is a redundant
+    // display-only label.  Accessor returns empty string when absent.
     d::require(body_, "channel_name",     d::JsonKind::String);
     d::require(body_, "role_uid",         d::JsonKind::String);
     d::require(body_, "role_type",        d::JsonKind::String);
-    d::require(body_, "role_name",        d::JsonKind::String);
     d::require(body_, "data_transport",   d::JsonKind::String);
     d::require(body_, "zmq_pubkey",       d::JsonKind::String);
-    d::require(body_, "broker_proto",     d::JsonKind::U32);
-    d::require(body_, "schema_hash",      d::JsonKind::String);
-    d::require(body_, "schema_version",   d::JsonKind::U32);
     d::require(body_, "abi_fingerprint",  d::JsonKind::Object);
+    // Validate-if-present: role_name is OPTIONAL per HEP-CORE-0046
+    // §7.1 required-field table; when present it MUST be a string
+    // per HEP-CORE-0023 §2.5.4 grammar (further identifier-grammar
+    // check runs downstream at gate_grammar, not here).
+    d::validate_if_present(body_, "role_name", d::JsonKind::String);
+    d::require_security_triple(body_);
+}
+
+// ConsumerRegReqBody — CONSUMER_REG_REQ per HEP-CORE-0036 §5b.6 +
+// HEP-CORE-0034 §10.2.  Required: identity quintuple + transport +
+// pubkey + abi fingerprint + security triple.  Schema-citation
+// fields (`expected_schema_*` per §10.2 `expected_` prefix rule)
+// are OPTIONAL at the wire-shape level; the citation mode
+// (named / anonymous / empty) determines which of them are
+// required, checked by the broker's admission handler.
+// `data_transport` REQUIRED per C9 resolution.
+ConsumerRegReqBody::ConsumerRegReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    // role_name OPTIONAL — see ProducerRegReqBody ctor for rationale
+    // (HEP-CORE-0046 §7.1 + HEP-CORE-0023 §2.5.4).
+    d::require(body_, "channel_name",     d::JsonKind::String);
+    d::require(body_, "role_uid",         d::JsonKind::String);
+    d::require(body_, "role_type",        d::JsonKind::String);
+    d::require(body_, "data_transport",   d::JsonKind::String);
+    d::require(body_, "zmq_pubkey",       d::JsonKind::String);
+    d::require(body_, "abi_fingerprint",  d::JsonKind::Object);
+    // Validate-if-present: role_name is OPTIONAL per HEP-CORE-0046
+    // §7.1 required-field table; parallel to ProducerRegReqBody.
+    d::validate_if_present(body_, "role_name", d::JsonKind::String);
     d::require_security_triple(body_);
 }
 
@@ -225,11 +290,16 @@ DeregAckBody::DeregAckBody(nlohmann::json body)
     d::require_envelope_hash(body_);
 }
 
-HeartbeatReqBody::HeartbeatReqBody(nlohmann::json body)
+// HeartbeatNotifyBody — renamed from HeartbeatReqBody per C13 for
+// taxonomy consistency with HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY
+// (`_NOTIFY` suffix = fire-and-forget; heartbeat has no ACK path).
+// `role_type` REQUIRED per HEP-CORE-0023 §2.5.2.
+HeartbeatNotifyBody::HeartbeatNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
     d::require(body_, "role_uid",     d::JsonKind::String);
+    d::require(body_, "role_type",    d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 

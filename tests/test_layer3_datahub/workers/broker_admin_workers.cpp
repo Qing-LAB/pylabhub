@@ -429,7 +429,15 @@ int reg_validation_missing_data_transport()
             auto resp = bh.brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
             EXPECT_EQ(resp->value("status", std::string{}), "error");
-            EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST");
+            // HEP-CORE-0046 §14.3: `data_transport` is REQUIRED on the
+            // ProducerRegReqBody wire class per HEP-CORE-0036 §5b.4.
+            // Missing / wrong-typed required fields surface as
+            // BODY_SCHEMA_VIOLATION from the wire body class ctor —
+            // the pre-Group-1 broker-level per-field validator that
+            // returned INVALID_REQUEST no longer runs; contract now
+            // lives in the wire body class.
+            EXPECT_EQ(resp->value("error_code", std::string{}),
+                      "BODY_SCHEMA_VIOLATION");
             EXPECT_NE(resp->value("message", std::string{})
                           .find("data_transport"),
                       std::string::npos)
@@ -438,8 +446,9 @@ int reg_validation_missing_data_transport()
 
             bh.stop();
         },
-        // Broker emits a LOGGER_WARN naming the rejection — allowlist it.
-        {"missing required `data_transport` field"});
+        // Broker's dispatch-level admission-rejected WARN — allow the
+        // new (Group 4) format naming the specific BODY_SCHEMA_VIOLATION.
+        {"admission rejected msg_type='REG_REQ'"});
 }
 
 int reg_validation_empty_data_transport()

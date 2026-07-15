@@ -37,7 +37,7 @@ PLH_BINARY_LIFECYCLE_MODULES(
 namespace ag = pylabhub::admission;
 using pylabhub::hub::HubState;
 using pylabhub::wire::WireEnvelope;
-using pylabhub::wire::RegReqBody;
+using pylabhub::wire::ProducerRegReqBody;
 using pylabhub::wire::ParseError;
 
 namespace
@@ -46,11 +46,9 @@ namespace
 constexpr std::string_view kTestUid    = "prod.test.uid1";
 constexpr std::string_view kTestPubkey =
     "abcdefghij0123456789abcdefghij0123456789";
-constexpr std::uint32_t     kBrokerProto = 7U;
 
 nlohmann::json make_body_json(std::string_view uid       = kTestUid,
                                 std::string_view pubkey    = kTestPubkey,
-                                std::uint32_t     proto    = kBrokerProto,
                                 std::string_view  nonce    = "nonce.integration.001",
                                 std::uint64_t     wall_ts  = 0)
 {
@@ -71,9 +69,7 @@ nlohmann::json make_body_json(std::string_view uid       = kTestUid,
     body["channel_topology"] = "one-to-one";
     body["data_transport"]  = "zmq";
     body["zmq_pubkey"]      = std::string{pubkey};
-    body["broker_proto"]    = proto;
     body["schema_hash"]     = "deadbeef";
-    body["schema_version"]  = 1U;
     body["schema_id"]       = "";
     body["schema_blds"]     = "";
     body["schema_owner"]    = "";
@@ -86,21 +82,20 @@ nlohmann::json make_body_json(std::string_view uid       = kTestUid,
 struct EnvelopePair
 {
     WireEnvelope env;
-    RegReqBody   body;
+    ProducerRegReqBody   body;
 };
 
 EnvelopePair make_envelope_pair(std::string_view uid    = kTestUid,
                                  std::string_view pubkey = kTestPubkey,
-                                 std::uint32_t     proto  = kBrokerProto,
                                  std::string_view  nonce  = "nonce.integration.001")
 {
-    auto body_json = make_body_json(uid, pubkey, proto, nonce);
+    auto body_json = make_body_json(uid, pubkey, nonce);
     auto frames    = WireEnvelope::build_router_send(uid, "REG_REQ",
                                                         "cid-1", body_json);
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     if (!env) throw std::runtime_error("test setup: envelope parse failed");
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
     return {std::move(*env), std::move(body)};
 }
 
@@ -132,7 +127,7 @@ class Fixture
             return (it == known_roles_.end()) ? std::string{} : it->second;
         };
         ag::BrokerAdmissionConfig cfg;
-        cfg.broker_proto = kBrokerProto;
+        // broker_proto field retired per C3.
         handler_ = std::make_unique<ag::BrokerRegHandler>(hub_, std::move(kr),
                                                             cfg);
     }
@@ -169,7 +164,7 @@ TEST(BrokerRegHandler, SecondAdmissionOnSameChannelDoesNotReopen)
 {
     Fixture f;
     // First producer admits + opens channel.
-    auto p1 = make_envelope_pair(kTestUid, kTestPubkey, kBrokerProto,
+    auto p1 = make_envelope_pair(kTestUid, kTestPubkey,
                                    /*nonce=*/"nonce.001");
     auto out1 = f.handler().handle(p1.env, p1.body);
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(out1));
@@ -178,7 +173,7 @@ TEST(BrokerRegHandler, SecondAdmissionOnSameChannelDoesNotReopen)
     // Same producer re-registering with a new nonce should be admitted
     // by pre-mutation gates but rejected by HubState's UID_CONFLICT
     // (role_uid already registered on this channel).
-    auto p2 = make_envelope_pair(kTestUid, kTestPubkey, kBrokerProto,
+    auto p2 = make_envelope_pair(kTestUid, kTestPubkey,
                                    /*nonce=*/"nonce.002");
     auto out2 = f.handler().handle(p2.env, p2.body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(out2));
@@ -186,15 +181,9 @@ TEST(BrokerRegHandler, SecondAdmissionOnSameChannelDoesNotReopen)
               ag::RejectCode::uid_conflict);
 }
 
-TEST(BrokerRegHandler, RejectsWrongProto)
-{
-    Fixture f;
-    auto pair = make_envelope_pair(kTestUid, kTestPubkey, /*proto=*/6U);
-    auto outcome = f.handler().handle(pair.env, pair.body);
-    ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
-    EXPECT_EQ(std::get<ag::RegRejected>(outcome).detail.code,
-              ag::RejectCode::unsupported_proto);
-}
+// RejectsWrongProto — retired per C3.  broker_proto wire field and the
+// unsupported_proto reject code are gone; ABI drift is caught at the
+// abi_fingerprint gate, not per-message.
 
 TEST(BrokerRegHandler, RejectsUnknownRole)
 {
@@ -223,13 +212,13 @@ TEST(BrokerRegHandler, NonceReplayPersistsAcrossCalls)
 {
     Fixture f;
     // First REG with nonce N1: accepted.
-    auto p1 = make_envelope_pair(kTestUid, kTestPubkey, kBrokerProto,
+    auto p1 = make_envelope_pair(kTestUid, kTestPubkey,
                                    /*nonce=*/"nonce.replay.test");
     auto out1 = f.handler().handle(p1.env, p1.body);
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(out1));
 
     // Second REG with SAME nonce (same role): rejected as replay.
-    auto p2 = make_envelope_pair(kTestUid, kTestPubkey, kBrokerProto,
+    auto p2 = make_envelope_pair(kTestUid, kTestPubkey,
                                    /*nonce=*/"nonce.replay.test");
     auto out2 = f.handler().handle(p2.env, p2.body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(out2));
@@ -254,7 +243,7 @@ TEST(BrokerRegHandler, FanInProducerAsFirstAdmissionIsRejectedUntilR6Wired)
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     ASSERT_TRUE(env.has_value());
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
 
     auto outcome = f.handler().handle(*env, body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome))
@@ -285,7 +274,7 @@ TEST(BrokerRegHandler, ProducerAcceptedSideMatchesEffectiveTopology)
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     ASSERT_TRUE(env.has_value());
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
 
     auto outcome = f.handler().handle(*env, body);
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(outcome));
@@ -311,7 +300,7 @@ TEST(BrokerRegHandler, OmittedTopologyUsesStoredTopologyForSideDerivation)
     // callback does not handle; that test lands with the consumer
     // path.  Meanwhile the fan-in-producer-first F14 test above proves
     // the F15 fix's pre-admission side of the check.
-    auto b1 = make_body_json(kTestUid, kTestPubkey, kBrokerProto,
+    auto b1 = make_body_json(kTestUid, kTestPubkey,
                                "nonce-a");
     b1["channel_topology"] = "fan-out";
     auto f1 = WireEnvelope::build_router_send(kTestUid, "REG_REQ",
@@ -319,7 +308,7 @@ TEST(BrokerRegHandler, OmittedTopologyUsesStoredTopologyForSideDerivation)
     ParseError err{};
     auto e1 = WireEnvelope::parse_router_recv(std::move(f1), &err);
     ASSERT_TRUE(e1.has_value());
-    auto out1 = f.handler().handle(*e1, RegReqBody{e1->body()});
+    auto out1 = f.handler().handle(*e1, ProducerRegReqBody{e1->body()});
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(out1));
 
     // Simulate a same-role second REG with OMITTED topology.  This will
@@ -329,14 +318,14 @@ TEST(BrokerRegHandler, OmittedTopologyUsesStoredTopologyForSideDerivation)
     // effective topology.  We validate F15's read-from-stored code
     // path is executed by exercising this path; full verification lands
     // when N-distinct-uid producers are supported.
-    auto b2 = make_body_json(kTestUid, kTestPubkey, kBrokerProto,
+    auto b2 = make_body_json(kTestUid, kTestPubkey,
                                "nonce-b");
     b2["channel_topology"] = "";  // omitted
     auto f2 = WireEnvelope::build_router_send(kTestUid, "REG_REQ",
                                                 "cid-2", b2);
     auto e2 = WireEnvelope::parse_router_recv(std::move(f2), &err);
     ASSERT_TRUE(e2.has_value());
-    auto out2 = f.handler().handle(*e2, RegReqBody{e2->body()});
+    auto out2 = f.handler().handle(*e2, ProducerRegReqBody{e2->body()});
     // uid_conflict is HubState's rejection — proves we routed through
     // _on_producer_added under the effective-topology-aware pipeline.
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(out2));
@@ -356,7 +345,7 @@ TEST(BrokerRegHandler, UnknownTopologyStringRejected)
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     ASSERT_TRUE(env.has_value());
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
 
     auto outcome = f.handler().handle(*env, body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
@@ -389,7 +378,7 @@ TEST(BrokerRegHandler, FanOutSecondProducerRejectedByCardinalityGate)
     Fixture f({{std::string{kProd2Uid}, std::string{kProd2Pubkey}}});
 
     // First producer opens the fan-out channel.
-    auto b1 = make_body_json(kTestUid, kTestPubkey, kBrokerProto,
+    auto b1 = make_body_json(kTestUid, kTestPubkey,
                                "nonce-p1");
     b1["channel_topology"] = "fan-out";
     auto f1 = WireEnvelope::build_router_send(kTestUid, "REG_REQ",
@@ -397,13 +386,13 @@ TEST(BrokerRegHandler, FanOutSecondProducerRejectedByCardinalityGate)
     ParseError err{};
     auto e1 = WireEnvelope::parse_router_recv(std::move(f1), &err);
     ASSERT_TRUE(e1.has_value());
-    auto out1 = f.handler().handle(*e1, RegReqBody{e1->body()});
+    auto out1 = f.handler().handle(*e1, ProducerRegReqBody{e1->body()});
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(out1))
         << "first fan-out producer must open channel";
     EXPECT_TRUE(std::get<ag::RegAccepted>(out1).channel_opened);
 
     // Second producer with distinct uid must be rejected.
-    auto b2 = make_body_json(kProd2Uid, kProd2Pubkey, kBrokerProto,
+    auto b2 = make_body_json(kProd2Uid, kProd2Pubkey,
                                "nonce-p2");
     b2["channel_topology"] = "fan-out";
     b2["role_uid"]         = std::string{kProd2Uid};
@@ -412,7 +401,7 @@ TEST(BrokerRegHandler, FanOutSecondProducerRejectedByCardinalityGate)
                                                 "cid-p2", b2);
     auto e2 = WireEnvelope::parse_router_recv(std::move(f2), &err);
     ASSERT_TRUE(e2.has_value());
-    auto out2 = f.handler().handle(*e2, RegReqBody{e2->body()});
+    auto out2 = f.handler().handle(*e2, ProducerRegReqBody{e2->body()});
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(out2))
         << "second fan-out producer must be rejected by cardinality "
            "gate (I-CHANNEL-SINGLE-BINDING-SIDE)";
@@ -444,7 +433,7 @@ TEST(BrokerRegHandler, EmptyRoleNameRejectedByGate4)
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     ASSERT_TRUE(env.has_value());
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
 
     auto outcome = f.handler().handle(*env, body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome))
@@ -468,7 +457,7 @@ TEST(BrokerRegHandler, BadCharacterRoleNameRejectedByGate4)
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     ASSERT_TRUE(env.has_value());
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
 
     auto outcome = f.handler().handle(*env, body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
@@ -486,7 +475,7 @@ TEST(BrokerRegHandler, IdentityMismatchRejected)
     ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
     ASSERT_TRUE(env.has_value());
-    RegReqBody body{env->body()};
+    ProducerRegReqBody body{env->body()};
 
     auto outcome = f.handler().handle(*env, body);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));

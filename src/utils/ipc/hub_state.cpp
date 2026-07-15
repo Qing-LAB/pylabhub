@@ -772,11 +772,13 @@ void HubState::_set_role_disconnected(const std::string &uid)
     bool                      fire           = false;
     std::size_t               schemas_evicted = 0;
     std::vector<std::string>  bands_left;
+    std::string               role_name;  // captured pre-erase for BAND_LEAVE_NOTIFY payload
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
         if (it == pImpl->roles.end()) return;  // idempotent — already gone
         fire = true;
+        role_name = it->second.name;
         schemas_evicted = cascade_role_terminal_cleanup_locked(*pImpl, uid, bands_left);
         pImpl->counters.schema_evicted_total += schemas_evicted;
         pImpl->roles.erase(it);
@@ -786,7 +788,7 @@ void HubState::_set_role_disconnected(const std::string &uid)
     for (const auto &band_name : bands_left)
     {
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
-            h(band_name, uid, "role_closed");
+            h(band_name, uid, role_name, "role_closed");
     }
 }
 
@@ -806,12 +808,14 @@ void HubState::_dispatch_role_disconnected_if_dead(const std::string &uid)
     bool                      fire           = false;
     std::size_t               schemas_evicted = 0;
     std::vector<std::string>  bands_left;
+    std::string               role_name;  // captured pre-erase for BAND_LEAVE_NOTIFY payload
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->roles.find(uid);
         if (it == pImpl->roles.end()) return;       // already cleaned up
         if (it->second.any_presence_alive()) return; // re-armed; skip
         fire = true;
+        role_name = it->second.name;
         schemas_evicted = cascade_role_terminal_cleanup_locked(*pImpl, uid, bands_left);
         pImpl->counters.schema_evicted_total += schemas_evicted;
         pImpl->roles.erase(it);
@@ -821,7 +825,7 @@ void HubState::_dispatch_role_disconnected_if_dead(const std::string &uid)
     for (const auto &band_name : bands_left)
     {
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
-            h(band_name, uid, "role_closed");
+            h(band_name, uid, role_name, "role_closed");
     }
 }
 
@@ -846,13 +850,24 @@ void HubState::_set_band_joined(const std::string &band, BandMember member)
 void HubState::_set_band_left(const std::string &band, const std::string &role_uid,
                                 const std::string &reason)
 {
-    bool fire = false;
+    bool        fire = false;
+    std::string role_name;  // captured pre-erase for the handler
     {
         std::unique_lock lk(pImpl->mu);
         auto             it = pImpl->bands.find(band);
         if (it == pImpl->bands.end()) return;
         auto &m   = it->second.members;
         auto  old = m.size();
+        // Snapshot role_name from the departing member (BAND_LEAVE_NOTIFY
+        // wire body requires it per HEP-CORE-0030 §5.3).
+        for (const auto &x : m)
+        {
+            if (x.role_uid == role_uid)
+            {
+                role_name = x.role_name;
+                break;
+            }
+        }
         m.erase(std::remove_if(m.begin(), m.end(),
                                [&](const BandMember &x) { return x.role_uid == role_uid; }),
                 m.end());
@@ -862,7 +877,7 @@ void HubState::_set_band_left(const std::string &band, const std::string &role_u
     }
     if (!fire) return;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
-        h(band, role_uid, reason);
+        h(band, role_uid, role_name, reason);
 }
 
 void HubState::_set_peer_connected(PeerEntry entry)
@@ -1179,7 +1194,7 @@ HubState::_open_channel_locked(
     ChannelEntry entry;
     entry.name           = channel_name;
     entry.schema_hash    = schema.schema_hash;
-    entry.schema_version = schema.schema_version;
+    // schema_version retired per C2 — version rides inside schema_id.
     entry.schema_id      = schema.schema_id;
     entry.schema_blds    = schema.schema_blds;
     entry.schema_owner   = schema.schema_owner;
@@ -1289,7 +1304,9 @@ HubState::_on_producer_added(const std::string&              channel_name,
                 result.mismatched_invariant = name;
             };
             if (cur.schema_hash    != schema.schema_hash)    { reject_invariant("schema_hash");    return result; }
-            if (cur.schema_version != schema.schema_version) { reject_invariant("schema_version"); return result; }
+            // schema_version check retired per C2 — version rides
+            // inside schema_id string; schema_id equality (below)
+            // covers name AND version identity per HEP-CORE-0034 §5.1.
             if (cur.schema_id      != schema.schema_id)      { reject_invariant("schema_id");      return result; }
             if (cur.schema_blds    != schema.schema_blds)    { reject_invariant("schema_blds");    return result; }
             if (cur.schema_owner   != schema.schema_owner)   { reject_invariant("schema_owner");   return result; }

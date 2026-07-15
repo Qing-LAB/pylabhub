@@ -20,7 +20,11 @@
 #include "utils/format_tools.hpp"  // bytes_to_hex
 #include "utils/security/key_store.hpp"
 #include "utils/security/known_roles.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/security/shm_capability_channel.hpp"
+#include "utils/wire_adapter.hpp"
+#include "utils/wire_envelope.hpp"
+#include "plh_version_registry.hpp"  // abi_fingerprint (HEP-CORE-0032 §8.2)
 
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -291,14 +295,33 @@ static void apply_5b_canonical_fields(nlohmann::json &req,
         req["zmq_pubkey"] = std::string{sec::secure().keys().pubkey(ks_name)};
     if (!req.contains("role_type"))
         req["role_type"] = is_cons ? "consumer" : "producer";
+    // HEP-CORE-0036 §5b.4 + C9: `data_transport` is REQUIRED on both
+    // ProducerRegReqBody and ConsumerRegReqBody wire classes.  The
+    // consumer's data_transport reflects the CHANNEL's transport
+    // (matches producer side); default "shm" mirrors this file's
+    // producer-side default so the two sides register on the same
+    // channel type.
+    if (!req.contains("data_transport")) req["data_transport"] = "shm";
     if (!is_cons)
     {
-        if (!req.contains("data_transport")) req["data_transport"] = "shm";
         if (!req.contains("has_shm"))        req["has_shm"]        = true;
         if (!req.contains("shm_capability_endpoint"))
             req["shm_capability_endpoint"] =
                 sec::default_shm_capability_endpoint(
                     req.value("channel_name", std::string{}));
+    }
+    // HEP-CORE-0032 §8.2 — abi_fingerprint (15-field ComponentVersions
+    // envelope) is REQUIRED on REG_REQ / CONSUMER_REG_REQ per
+    // HEP-CORE-0046 §14.3 wire body class.  Production
+    // `build_producer_reg_payload` / `build_consumer_reg_payload` emit
+    // it unconditionally via `pylabhub::version::to_json_object`; test
+    // helpers must mirror that shape or the wire body class rejects
+    // the payload with BODY_SCHEMA_VIOLATION before any admission gate
+    // runs.  Absent local override, use the current-build snapshot.
+    if (!req.contains("abi_fingerprint"))
+    {
+        req["abi_fingerprint"] = pylabhub::version::to_json_object(
+            pylabhub::version::current());
     }
 }
 
@@ -379,42 +402,100 @@ nlohmann::json raw_req(const std::string& endpoint,
             });
     }
 
+    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.  The
+    // broker's envelope parse uses Frame 0 (libzmq attaches it from
+    // routing_id) to reconstruct envelope_hash.  Use the caller-owned
+    // wire identity (role_identity_name) or, if empty, a stable fallback.
+    const std::string routing_id = role_identity_name.empty()
+        ? std::string{"raw-req-anon"}
+        : role_identity_name;
+    dealer.set(zmq::sockopt::routing_id, routing_id);
     dealer.connect(endpoint);
 
-    // Frame 0: 'C' (control), Frame 1: type string, Frame 2: JSON body
-    static constexpr char kCtrl = 'C';
-    const std::string payload_str = payload.dump();
-    std::vector<zmq::const_buffer> send_frames = {zmq::buffer(&kCtrl, 1),
-                                                  zmq::buffer(msg_type),
-                                                  zmq::buffer(payload_str)};
-    if (!zmq::send_multipart(dealer, send_frames))
+    // HEP-CORE-0046 §14 envelope encode.  Respect caller-set
+    // `payload["correlation_id"]` (non-empty string) so conformance
+    // tests can pin the value; else generate a fresh one.  Security
+    // triple (client_nonce + client_wall_ts) is added below for
+    // REG-family msg_types per I-REPLAY-BOUND.
+    namespace sec = pylabhub::utils::security;
+    std::string correlation_id;
+    if (payload.is_object())
     {
-        return {};
+        auto it = payload.find("correlation_id");
+        if (it != payload.end() && it->is_string())
+            correlation_id = it->get<std::string>();
+    }
+    if (correlation_id.empty())
+    {
+        std::array<std::uint8_t, 16> corr_raw{};
+        sec::secure().random_bytes(corr_raw);
+        char corr_hex[33] = {};
+        sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
+                              corr_raw.size());
+        correlation_id.assign(corr_hex, 32);
     }
 
-    std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
-    zmq::poll(items, std::chrono::milliseconds(timeout_ms));
-    if ((items[0].revents & ZMQ_POLLIN) == 0)
+    std::string nonce_hex;
+    std::uint64_t wall_ts = 0;
+    if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
     {
-        return {}; // timeout
+        std::array<std::uint8_t, 16> nonce_raw{};
+        sec::secure().random_bytes(nonce_raw);
+        char nh[33] = {};
+        sec::secure().bin2hex(nh, sizeof(nh), nonce_raw.data(), nonce_raw.size());
+        nonce_hex = std::string(nh, 32);
+        using namespace std::chrono;
+        wall_ts = static_cast<std::uint64_t>(
+            duration_cast<milliseconds>(
+                system_clock::now().time_since_epoch()).count());
     }
-
-    std::vector<zmq::message_t> recv_frames;
-    auto result = zmq::recv_multipart(dealer, std::back_inserter(recv_frames));
-    // Reply layout: ['C', ack_type_string, body_JSON]
-    if (!result || recv_frames.size() < 3)
-    {
-        return {};
-    }
-
-    // recv_frames[0] = 'C', recv_frames[1] = ack_type, recv_frames[2] = body JSON
+    ::pylabhub::wire::adapter::EncodeContext enc_ctx;
+    enc_ctx.dealer_role_uid = routing_id;
+    enc_ctx.correlation_id  = correlation_id;
+    enc_ctx.client_nonce    = nonce_hex;
+    enc_ctx.client_wall_ts  = wall_ts;
     try
     {
-        return nlohmann::json::parse(recv_frames.back().to_string());
+        zmq::multipart_t wire =
+            ::pylabhub::wire::adapter::encode_dealer_send(msg_type, enc_ctx, payload);
+        wire.send(dealer);
     }
-    catch (const nlohmann::json::exception&)
+    catch (const std::exception &)
     {
         return {};
+    }
+
+    // Under I-DEALER-IDENTITY the DEALER's routing_id is stable, so
+    // unsolicited NOTIFYs (e.g. CHANNEL_CLOSING_NOTIFY on a DEREG_REQ
+    // cascade) now reach THIS receive path.  Loop until the ACK-shape
+    // reply arrives OR the budget expires, discarding NOTIFYs.
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (true)
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return {};
+        auto ms_left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           deadline - now)
+                           .count();
+        std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
+        zmq::poll(items, std::chrono::milliseconds(ms_left));
+        if ((items[0].revents & ZMQ_POLLIN) == 0) return {};
+
+        zmq::multipart_t raw;
+        if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
+        ::pylabhub::wire::ParseError perr = {};
+        auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
+            std::move(raw), routing_id, &perr);
+        if (!env_opt.has_value()) return {};
+        ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
+        // Skip NOTIFYs — the raw_req contract is "return the next reply
+        // to my REQ", not "return whatever the broker sent me next".
+        if (env.is_notify()) continue;
+        nlohmann::json body_out = env.body();
+        if (!env.correlation_id().empty())
+            body_out["correlation_id"] = std::string(env.correlation_id());
+        return body_out;
     }
 }
 
@@ -427,7 +508,7 @@ struct BrokerHandle;  // Defined above in the outer anonymous namespace.
 // raw_heartbeat: HEP-CORE-0036 §5.2 R6 producer-kLive heartbeat — drives a
 // just-registered producer presence to kLive so the broker admits the
 // following CONSUMER_REG_REQ.  Fire-and-forget: the broker doesn't reply
-// to HEARTBEAT_REQ, so we send and rely on the dealer's linger to flush
+// to HEARTBEAT_NOTIFY, so we send and rely on the dealer's linger to flush
 // before its destructor runs.  Replaces the 11-line inline block that
 // was copied 11 times pre-2026-06-29 (REVIEW_C2 F8 + F12).
 //
@@ -469,14 +550,34 @@ void raw_heartbeat(const std::string &endpoint,
                            std::string(sec_z85));
             });
     }
+    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = producer_uid so
+    // broker's envelope parse sees a Frame 0 identity matching the
+    // caller's role.  HEARTBEAT_NOTIFY is NOT REG-family (no security
+    // triple), but I-CORRELATION-STABLE requires non-empty
+    // correlation_id on any non-NOTIFY message.
+    dealer.set(zmq::sockopt::routing_id, producer_uid);
     dealer.connect(endpoint);
 
-    static constexpr char kCtrl = 'C';
-    const std::string body = hb_req.dump();
-    std::vector<zmq::const_buffer> frames = {zmq::buffer(&kCtrl, 1),
-                                             zmq::buffer(std::string("HEARTBEAT_REQ")),
-                                             zmq::buffer(body)};
-    (void)zmq::send_multipart(dealer, frames);
+    std::array<std::uint8_t, 16> corr_raw{};
+    sec::secure().random_bytes(corr_raw);
+    char corr_hex[33] = {};
+    sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
+                          corr_raw.size());
+    const std::string correlation_id(corr_hex, 32);
+    ::pylabhub::wire::adapter::EncodeContext enc_ctx;
+    enc_ctx.dealer_role_uid = producer_uid;
+    enc_ctx.correlation_id  = correlation_id;
+    try
+    {
+        zmq::multipart_t wire =
+            ::pylabhub::wire::adapter::encode_dealer_send(
+                "HEARTBEAT_NOTIFY", enc_ctx, hb_req);
+        wire.send(dealer);
+    }
+    catch (const std::exception &)
+    {
+        // Best-effort — a rejected encode isn't fatal for a heartbeat.
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
 
@@ -533,7 +634,7 @@ int broker_reg_disc_happy_path()
                         sec::default_shm_capability_endpoint(channel),
                 });
             reg_opts["producer_pid"]   = ::getpid();
-            reg_opts["schema_version"] = 7;
+            // schema_version retired per C2 — version rides inside schema_id.
             auto reg = bh.brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
 
@@ -543,7 +644,7 @@ int broker_reg_disc_happy_path()
             auto disc = bh.brc.discover_channel(channel, {}, 5000);
             ASSERT_TRUE(disc.has_value()) << "discover_channel must find registered channel";
             // HEP-CORE-0036 §5b.4: shm_name retired (was always == channel_name).
-            EXPECT_EQ(disc->value("schema_version", 0), 7);
+            // schema_version retired per C2 — schema_id includes version.
 
             // bh.~BrcHandle() runs stop() + join() + disconnect() — no
             // explicit teardown needed here.
@@ -577,7 +678,6 @@ int broker_schema_mismatch()
             nlohmann::json req1;
             req1["channel_name"]     = channel;
             req1["schema_hash"]      = zero_hex();
-            req1["schema_version"]   = 1;
             req1["producer_pid"]     = pid;
             req1["producer_hostname"] = "localhost";
             req1["role_uid"]         = role_uid;
@@ -729,7 +829,6 @@ int broker_dereg_pid_mismatch()
             nlohmann::json reg_req;
             reg_req["channel_name"]      = channel;
             reg_req["schema_hash"]       = zero_hex();
-            reg_req["schema_version"]    = 1;
             reg_req["producer_pid"]      = correct_pid;
             reg_req["producer_hostname"] = "localhost";
             reg_req["role_uid"]          = role_uid;
@@ -737,7 +836,7 @@ int broker_dereg_pid_mismatch()
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
 
-            // Send HEARTBEAT_REQ with the producer's REAL pid so the
+            // Send HEARTBEAT_NOTIFY with the producer's REAL pid so the
             // broker flips `first_heartbeat_seen=true` and the
             // presence is kLive (HEP-CORE-0019 §4.1 + broker_proto 5
             // R3.5b).  Fire-and-forget via raw_heartbeat helper.
@@ -803,7 +902,6 @@ int broker_dereg_missing_role_uid_rejected()
             nlohmann::json reg_req;
             reg_req["channel_name"]      = channel;
             reg_req["schema_hash"]       = zero_hex();
-            reg_req["schema_version"]    = 1;
             reg_req["producer_pid"]      = pid;
             reg_req["producer_hostname"] = "localhost";
             reg_req["role_uid"]          = role_uid;
@@ -827,8 +925,14 @@ int broker_dereg_missing_role_uid_rejected()
             ASSERT_FALSE(resp.is_null()) << "DEREG_REQ timed out";
             EXPECT_EQ(resp.value("status", std::string{}), "error")
                 << "Missing role_uid must be rejected; got: " << resp.dump();
-            EXPECT_EQ(resp.value("error_code", std::string{}), "INVALID_REQUEST")
-                << "Error code must be INVALID_REQUEST; got: " << resp.dump();
+            // Wire body class rejects at shape layer per HEP-CORE-0046
+            // §14.3: DeregReqBody requires role_uid; missing → the
+            // wire body class ctor throws WireBodyError which the
+            // dispatch converts to BODY_SCHEMA_VIOLATION.  The old
+            // pre-Group-1 broker-level per-field validator that
+            // returned INVALID_REQUEST no longer runs.
+            EXPECT_EQ(resp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION")
+                << "Error code must be BODY_SCHEMA_VIOLATION; got: " << resp.dump();
 
             // Same shape for CONSUMER_DEREG_REQ — register a consumer
             // first (CONSUMER_DEREG without a registered consumer is
@@ -855,8 +959,11 @@ int broker_dereg_missing_role_uid_rejected()
             EXPECT_EQ(cresp.value("status", std::string{}), "error")
                 << "Missing role_uid on CONSUMER_DEREG must be rejected; got: "
                 << cresp.dump();
-            EXPECT_EQ(cresp.value("error_code", std::string{}), "INVALID_REQUEST")
-                << "Error code must be INVALID_REQUEST; got: " << cresp.dump();
+            // Same rationale as DEREG_REQ above: ConsumerDeregReqBody
+            // wire class requires role_uid → missing yields
+            // BODY_SCHEMA_VIOLATION at the wire body class layer.
+            EXPECT_EQ(cresp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION")
+                << "Error code must be BODY_SCHEMA_VIOLATION; got: " << cresp.dump();
 
             broker.stop_and_join();
         },
@@ -882,7 +989,6 @@ nlohmann::json reg_req_template(const std::string &channel,
     nlohmann::json r;
     r["channel_name"]     = channel;
     r["schema_hash"]      = zero_hex();
-    r["schema_version"]   = 1;
     r["producer_pid"]     = pylabhub::platform::get_pid();
     r["producer_hostname"] = "localhost";
     r["role_uid"]         = role_uid;
@@ -891,6 +997,20 @@ nlohmann::json reg_req_template(const std::string &channel,
 
 } // namespace
 
+// L3 wire-behavior pin for REG-family body-shape rejection.
+//
+// HEP-CORE-0046 §14 pipeline runs the wire body class validation at
+// dispatch — BEFORE any admission gate.  The `wire.gate.uid00000099`
+// sentinel bypasses `apply_5b_canonical_fields` so bad role_uid values
+// survive to the broker; under the new design the missing REQUIRED
+// canonical fields (role_type, data_transport, zmq_pubkey,
+// abi_fingerprint) trip BODY_SCHEMA_VIOLATION at the wire body class
+// before any grammar / tag / identity gate runs.  L1 test_admission_
+// gates.cpp exercises `gate_grammar` and `gate_role_tag_policy`
+// directly with fully-populated bodies — that's where the grammar +
+// tag reject-code coverage lives.  L3 here pins the wire-layer
+// behavior: bad body → BODY_SCHEMA_VIOLATION.
+
 int broker_gate_reg_req_rejects_empty_uid()
 {
     return run_gtest_worker(
@@ -898,17 +1018,15 @@ int broker_gate_reg_req_rejects_empty_uid()
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
                 "broker.broker_gate_reg_req_rejects_empty_uid");
-            // REG_REQ with empty role_uid → INVALID_REQUEST (grammar).
             auto req = reg_req_template("r35b.empty_uid.ch", "");
             auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "error");
+            // Wire body class rejects the shape at dispatch; grammar
+            // gate coverage for empty role_uid is L1
+            // (AdmissionGate_Grammar.EmptyUidRejects).
             EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "INVALID_REQUEST");
-            EXPECT_NE(resp.value("message", std::string{}).find("role_uid"),
-                      std::string::npos)
-                << "Error message should mention the offending field; got: "
-                << resp.dump();
+                      "BODY_SCHEMA_VIOLATION");
             broker.stop_and_join();
         },
         "broker.gate_reg_req_rejects_empty_uid",
@@ -923,27 +1041,27 @@ int broker_gate_reg_req_rejects_malformed_uid()
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
                 "broker.broker_gate_reg_req_rejects_malformed_uid");
-            // "not-a-uid" → single component, no '.' → fails grammar.
+            // Wire body class rejects at shape layer; grammar-gate
+            // coverage for malformed role_uid is L1
+            // (AdmissionGate_Grammar.BadCharacterRejects and siblings).
             auto req = reg_req_template("r35b.malformed_uid.ch",
                                         "not-a-uid");
             auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "INVALID_REQUEST");
+                      "BODY_SCHEMA_VIOLATION");
 
-            // "prod." — has prefix tag but no name/unique components.
             req = reg_req_template("r35b.malformed_uid.ch2", "prod.");
             resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "INVALID_REQUEST");
+                      "BODY_SCHEMA_VIOLATION");
 
-            // "prod.x" — only 2 components; RoleUid requires ≥3.
             req = reg_req_template("r35b.malformed_uid.ch3", "prod.x");
             resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "INVALID_REQUEST");
+                      "BODY_SCHEMA_VIOLATION");
             broker.stop_and_join();
         },
         "broker.gate_reg_req_rejects_malformed_uid",
@@ -958,14 +1076,15 @@ int broker_gate_reg_req_rejects_consumer_tag()
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
                 "broker.broker_gate_reg_req_rejects_consumer_tag");
-            // role_uid="cons.x.y" on REG_REQ → INVALID_ROLE_TAG.
-            // REG_REQ accepts {prod, proc}; consumer tag is wrong side.
+            // Wire body class rejects at shape layer; tag-policy
+            // coverage for wrong-side tags is L1
+            // (AdmissionGate_RoleTagPolicy.RegReqRejectsConsumerUid).
             auto req = reg_req_template("r35b.wrong_tag.ch",
                                         "cons.r35b.uid00000001");
             auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "INVALID_ROLE_TAG");
+                      "BODY_SCHEMA_VIOLATION");
             broker.stop_and_join();
         },
         "broker.gate_reg_req_rejects_consumer_tag",
@@ -1013,12 +1132,19 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
                       "success");
 
             // CONSUMER_REG_REQ with role_uid="prod.x.y" → INVALID_ROLE_TAG.
+            // Wire identity MUST equal body.role_uid or gate_identity_match
+            // (§14.5 first-in-order gate per HEP-CORE-0046) shadows the
+            // role-tag policy check.  To exercise HEP-CORE-0033 §G2.2.0b.8
+            // (CONSUMER_REG_REQ tag set {cons, proc}), send with the
+            // prod-tagged uid on BOTH the wire (routing_id/CURVE key)
+            // AND the body — identity gate passes → tag gate fires →
+            // INVALID_ROLE_TAG surfaces cleanly.
             nlohmann::json creg;
             creg["channel_name"] = channel;
             creg["consumer_pid"] = pylabhub::platform::get_pid();
             creg["role_uid"]     = "prod.r35b.intruder.uid00000002";
             creg["role_name"]    = "intruder";
-            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey, "prod.r35b.cregwt.uid00000001");
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey, "prod.r35b.intruder.uid00000002");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("error_code", std::string{}),
                       "INVALID_ROLE_TAG");
@@ -1081,7 +1207,6 @@ nlohmann::json baseline_reg_req(const std::string &channel,
 {
     nlohmann::json req;
     req["channel_name"]      = channel;
-    req["schema_version"]    = 1;
     req["producer_pid"]      = pylabhub::platform::get_pid();
     req["producer_hostname"] = "localhost";
     req["role_uid"]          = uid;

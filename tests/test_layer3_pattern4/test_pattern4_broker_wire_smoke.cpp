@@ -111,10 +111,11 @@ TEST_F(Pattern4BrokerWireSmokeTest, ClientCurveHandshakeAndReply)
     const auto &role_kp = setup.curve.role(client_uid);
 
     BrokerWireClient::Config cfg;
-    cfg.broker_endpoint = setup.broker_endpoint;
-    cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cfg.client_pubkey   = role_kp.public_z85;
-    cfg.client_seckey   = role_kp.secret_z85;
+    cfg.broker_endpoint  = setup.broker_endpoint;
+    cfg.broker_pubkey    = setup.curve.hub.public_z85;
+    cfg.client_pubkey    = role_kp.public_z85;
+    cfg.client_seckey    = role_kp.secret_z85;
+    cfg.client_role_uid  = client_uid;
 
     BrokerWireClient client(ctx, cfg);
 
@@ -212,10 +213,11 @@ TEST_F(Pattern4BrokerWireSmokeTest, StrictModeRejects_MajorAbiMismatchOnRegReq)
     const auto &role_kp = setup.curve.role(client_uid);
 
     BrokerWireClient::Config cfg;
-    cfg.broker_endpoint = setup.broker_endpoint;
-    cfg.broker_pubkey   = setup.curve.hub.public_z85;
-    cfg.client_pubkey   = role_kp.public_z85;
-    cfg.client_seckey   = role_kp.secret_z85;
+    cfg.broker_endpoint  = setup.broker_endpoint;
+    cfg.broker_pubkey    = setup.curve.hub.public_z85;
+    cfg.client_pubkey    = role_kp.public_z85;
+    cfg.client_seckey    = role_kp.secret_z85;
+    cfg.client_role_uid  = client_uid;
 
     BrokerWireClient client(ctx, cfg);
 

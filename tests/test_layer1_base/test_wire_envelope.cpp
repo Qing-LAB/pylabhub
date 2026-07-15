@@ -43,9 +43,7 @@ nlohmann::json make_reg_req_body()
     body["channel_topology"] = "one-to-one";
     body["data_transport"]  = "zmq";
     body["zmq_pubkey"]      = "abcdefghij0123456789abcdefghij0123456789";
-    body["broker_proto"]    = 7U;
     body["schema_hash"]     = "deadbeef";
-    body["schema_version"]  = 1U;
     body["schema_id"]       = "";
     body["schema_blds"]     = "";
     body["schema_owner"]    = "";
@@ -267,7 +265,7 @@ TEST(WireBodies, RegReqBodyValidatesRequiredFields)
     body_json["envelope_hash"] =
         WireEnvelope::compute_envelope_hash("id-x", "REG_REQ", "cid-1");
 
-    pylabhub::wire::RegReqBody body(body_json);
+    pylabhub::wire::ProducerRegReqBody body(body_json);
     EXPECT_EQ(body.channel_name(),     "lab.test.channel");
     EXPECT_EQ(body.role_uid(),         "prod.test.uid1");
     EXPECT_EQ(body.role_type(),        "producer");
@@ -276,9 +274,9 @@ TEST(WireBodies, RegReqBodyValidatesRequiredFields)
     EXPECT_EQ(body.data_transport(),   "zmq");
     EXPECT_EQ(body.zmq_pubkey(),
               "abcdefghij0123456789abcdefghij0123456789");
-    EXPECT_EQ(body.broker_proto(),   7U);
+    // broker_proto retired per C3.
     EXPECT_EQ(body.schema_hash(),      "deadbeef");
-    EXPECT_EQ(body.schema_version(), 1U);
+    // schema_version retired per C2 — version rides inside schema_id.
     EXPECT_EQ(body.schema_id(),        "");
     EXPECT_EQ(body.schema_blds(),      "");
     EXPECT_EQ(body.schema_owner(),     "");
@@ -296,7 +294,7 @@ TEST(WireBodies, RegReqBodyRejectsMissingClientNonce)
     auto body_json = make_reg_req_body();
     body_json["envelope_hash"] = "deadbeef";
     body_json.erase("client_nonce");
-    EXPECT_THROW(pylabhub::wire::RegReqBody{std::move(body_json)},
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(body_json)},
                  WireBodyError);
 }
 
@@ -308,14 +306,14 @@ TEST(WireBodies, RegReqBodyRejectsMissingClientWallTs)
     auto body_json = make_reg_req_body();
     body_json["envelope_hash"] = "deadbeef";
     body_json.erase("client_wall_ts");
-    EXPECT_THROW(pylabhub::wire::RegReqBody{std::move(body_json)},
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(body_json)},
                  WireBodyError);
 }
 
 TEST(WireBodies, RegReqBodyRejectsMissingEnvelopeHash)
 {
     auto body_json = make_reg_req_body();  // has security triple, no envelope_hash
-    EXPECT_THROW(pylabhub::wire::RegReqBody{std::move(body_json)},
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(body_json)},
                  WireBodyError);
 }
 
@@ -402,30 +400,35 @@ TEST(WireBodies, RegAckBodyRejectsMissingInitialAllowlist)
                  WireBodyError);
 }
 
-// ── Design-derived tests: HeartbeatReqBody (§14.3) ────────────────────
+// ── Design-derived tests: HeartbeatNotifyBody (§14.3) ─────────────────
 //
-// Design mandates: channel_name + role_uid + envelope_hash (no security
-// triple — HEARTBEAT_REQ is presence maintenance, not state mutation).
+// C5 renamed HEARTBEAT_REQ → HEARTBEAT_NOTIFY (fire-and-forget presence
+// signal; no ACK).  Design mandates: channel_name + role_uid + role_type
+// + envelope_hash (no security triple — presence maintenance, not state
+// mutation).
 
-TEST(WireBodies, HeartbeatReqBodyValidatesFields)
+TEST(WireBodies, HeartbeatNotifyBodyValidatesFields)
 {
     nlohmann::json body;
     body["channel_name"]  = "lab.x";
     body["role_uid"]      = "prod.x";
+    body["role_type"]     = "producer";
     body["envelope_hash"] = "deadbeef";
 
-    pylabhub::wire::HeartbeatReqBody hb(std::move(body));
+    pylabhub::wire::HeartbeatNotifyBody hb(std::move(body));
     EXPECT_EQ(hb.channel_name(),  "lab.x");
     EXPECT_EQ(hb.role_uid(),      "prod.x");
+    EXPECT_EQ(hb.role_type(),     "producer");
     EXPECT_EQ(hb.envelope_hash(), "deadbeef");
 }
 
-TEST(WireBodies, HeartbeatReqBodyRejectsMissingChannelName)
+TEST(WireBodies, HeartbeatNotifyBodyRejectsMissingChannelName)
 {
     nlohmann::json body;
     body["role_uid"]      = "prod.x";
+    body["role_type"]     = "producer";
     body["envelope_hash"] = "deadbeef";
-    EXPECT_THROW(pylabhub::wire::HeartbeatReqBody{std::move(body)},
+    EXPECT_THROW(pylabhub::wire::HeartbeatNotifyBody{std::move(body)},
                  WireBodyError);
 }
 

@@ -128,7 +128,7 @@ typedef struct
 } plh_band_member_left_args_t;
 
 /** on_band_message args (HEP-CORE-0030 §5.3).
- *  Fired on every BAND_BROADCAST_NOTIFY received.  Body is passed as
+ *  Fired on every BAND_BROADCAST_DELIVER_NOTIFY received.  Body is passed as
  *  JSON-string-serialized text (plugin must parse).  Lifetime: valid
  *  for the duration of the callback only. */
 typedef struct

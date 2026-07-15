@@ -23,6 +23,8 @@
 #include "portable_atomic_shared_ptr.hpp"      // sibling header in src/utils/
 #include "plh_version_registry.hpp"            // HEP-CORE-0032 §8 ABI fingerprint
 #include "utils/timeout_constants.hpp"
+#include "utils/wire_dispatch.hpp"              // HEP-CORE-0046 unified receive+validate
+#include "utils/wire_envelope.hpp"              // HEP-CORE-0046 §14 typed envelope
 #include "utils/zmq_context.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -171,14 +173,14 @@ constexpr std::array<std::string_view, 21> kRequestReplyTypes = {
 
 constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
     // M1.4 (2026-05-11) — `METRICS_REPORT_REQ` retired.  Metrics now
-    // piggyback on `HEARTBEAT_REQ` per HEP-CORE-0019 §2.3 Phase 6.
-    "HEARTBEAT_REQ", "CHECKSUM_ERROR_REPORT",
+    // piggyback on `HEARTBEAT_NOTIFY` per HEP-CORE-0019 §2.3 Phase 6.
+    "HEARTBEAT_NOTIFY", "CHECKSUM_ERROR_REPORT",
     // Audit R3.6 (2026-05-17): CHANNEL_NOTIFY_REQ removed.  Role-side
     // BRC::send_notify was deleted in O1; federation peer-relay uses
     // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  No
     // caller exists anywhere in src/.  Old clients sending
     // CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE.
-    "CHANNEL_BROADCAST_REQ", "BAND_BROADCAST_REQ",
+    "CHANNEL_BROADCAST_SEND_NOTIFY", "BAND_BROADCAST_SEND_NOTIFY",
     "HUB_PEER_BYE",
     // Inbound on outbound DEALER (peer→us); not request-reply but valid:
     "HUB_RELAY_MSG", "HUB_TARGETED_MSG",
@@ -444,6 +446,18 @@ public:
     pylabhub::hub::HubState *hub_state_{nullptr};
     std::atomic<bool>     stop_requested{false};
 
+    /// HEP-CORE-0046 §14 unified receive+validate binder.  Owns the
+    /// admission callbacks (known_roles lookup, key-rotation check,
+    /// nonce dedup, wall clock) bound against `cfg.known_roles` +
+    /// `hub_state_`.  Populated once at BrokerService construction
+    /// (see `bind_admission_context`); used by the ROUTER poll loop's
+    /// `wire::dispatch::receive_and_validate` call.
+    ///
+    /// This binder is the SINGLE place identity / replay / known-role /
+    /// rotation checks are enforced for incoming REG-family + control
+    /// REQs.  No handler re-runs these checks.
+    ::pylabhub::wire::dispatch::AdmissionBinder admission_binder_;
+
     /// HEP-CORE-0041 §D1(d) broker observer pubkey (task #317 C.2.a).
     /// Broker generates a fresh CURVE keypair at construction via
     /// `keystore.generate_and_add_identity("broker.observer")`; the
@@ -653,6 +667,16 @@ public:
     nlohmann::json collect_shm_info(const std::string &channel) const;
 
     void run();
+
+    /// HEP-CORE-0046 §14 dispatch entry — visits the ReceivedMessage
+    /// variant produced by `wire::dispatch::receive_and_validate`.
+    /// Successful variants (Validated<Body>) extract the body JSON,
+    /// inject correlation_id for legacy-handler compat, and call the
+    /// existing `handle_*` methods.  RejectedMessage variants build
+    /// an ERROR envelope via `wire::dispatch::build_error_reply`
+    /// and send it to the (already known) sender identity.
+    void dispatch_received(zmq::socket_t                                     &socket,
+                            ::pylabhub::wire::dispatch::ReceivedMessage      &&received);
 
     void process_message(zmq::socket_t&       socket,
                          const zmq::message_t& identity,
@@ -870,9 +894,10 @@ public:
     /// `band_on_role_closed` that also mutated HubState — now HubState
     /// owns the state mutation and this helper only fans out the wire
     /// notification.
-    void send_band_leave_notify(zmq::socket_t&    socket,
+    void send_band_leave_notify(zmq::socket_t&     socket,
                                  const std::string& band_name,
                                  const std::string& role_uid,
+                                 const std::string& role_name,
                                  const std::string& reason);
 
     void send_closing_notify(zmq::socket_t&                            socket,
@@ -1163,9 +1188,10 @@ void BrokerServiceImpl::run()
     active_router_       = &router;
     band_left_handler_id_ = hub_state_->subscribe_band_left(
         [this](const std::string &band, const std::string &uid,
+               const std::string &role_name,
                const std::string &reason) {
             if (active_router_ == nullptr) return;
-            send_band_leave_notify(*active_router_, band, uid, reason);
+            send_band_leave_notify(*active_router_, band, uid, role_name, reason);
         });
 
     // ── Federation: outbound DEALER sockets per peer (HEP-CORE-0022) ────────
@@ -1323,7 +1349,7 @@ void BrokerServiceImpl::run()
             }
             for (const auto& br : pending_broadcasts)
             {
-                // Build a synthetic CHANNEL_BROADCAST_REQ payload and delegate.
+                // Build a synthetic CHANNEL_BROADCAST_SEND_NOTIFY payload and delegate.
                 // sender_uid = self_hub_uid: the broadcast originates inside
                 // this hub instance (the request_broadcast_channel API has
                 // no caller-identity field — the natural sender is the hub).
@@ -1378,61 +1404,36 @@ void BrokerServiceImpl::run()
             prune_relay_dedup();
 
             // --- Handle ROUTER socket (local clients + inbound peer DEALERs) ---
+            //
+            // HEP-CORE-0046 §14 unified receive+validate.  One call parses
+            // the 5-frame envelope, validates envelope_hash, constructs the
+            // typed body for the msg_type, and runs the tier-appropriate
+            // admission gates (identity match, replay dedup, known_roles
+            // binding, key rotation, grammar) BEFORE any handler runs.
+            //
+            // The variant `received` encodes success (a `Validated<Body>`
+            // per msg_type — guaranteed to have passed every gate its tier
+            // requires) or `RejectedMessage` carrying the reject code +
+            // correlation_id + identity needed to build the ERROR reply.
+            //
+            // The visit below dispatches each success case to the
+            // corresponding legacy handler (still takes JSON) so this
+            // commit only rewires the entry.  Handler-signature migration
+            // to typed bodies is per-msg_type follow-on work.
             if ((items[0].revents & ZMQ_POLLIN) != 0)
             {
-                std::vector<zmq::message_t> frames;
-                auto num_parts = zmq::recv_multipart(router, std::back_inserter(frames));
-                if (!num_parts.has_value())
+                zmq::multipart_t raw;
+                if (!raw.recv(router))
                 {
-                    LOGGER_WARN("Broker: recv_multipart failed, possible ZMQ error or context termination.");
-                }
-                // Expected layout: [identity, 'C', msg_type_string, json_body]
-                else if (*num_parts < 4)
-                {
-                    LOGGER_WARN("Broker: malformed message (expected ≥4 frames, got {})",
-                                *num_parts);
+                    LOGGER_WARN("Broker: multipart recv failed, possible ZMQ "
+                                "error or context termination.");
                 }
                 else
                 {
-                    try
-                    {
-                        // S1 frame validation — reject oversized payloads
-                        // before string construction and JSON parse.
-                        // ROUTER socket: no mandatory reply (HEP-0033 §9.3).
-                        static constexpr size_t kMaxPayloadBytes = 1u << 20; // 1 MB
-                        if (frames[3].size() > kMaxPayloadBytes)
-                        {
-                            LOGGER_WARN("Broker: oversized payload ({} bytes) — dropped",
-                                        frames[3].size());
-                            hub_state_->_bump_counter("sys.malformed_frame");
-                            emit_processing_error(/*msg_type=*/"",
-                                                  "malformed_frame",
-                                                  "oversized payload " +
-                                                      std::to_string(frames[3].size()) +
-                                                      " bytes",
-                                                  &frames[0]);
-                        }
-                        else
-                        {
-                            const std::string msg_type    = frames[2].to_string();
-                            const std::string payload_raw = frames[3].to_string();
-                            LOGGER_TRACE("Broker: recv msg_type='{}' payload_len={}",
-                                         msg_type, payload_raw.size());
-                            nlohmann::json payload = nlohmann::json::parse(payload_raw);
-                            process_message(router, frames[0], msg_type, payload,
-                                            payload_raw.size());
-                        }
-                    }
-                    catch (const nlohmann::json::exception& e)
-                    {
-                        // S2 body parse — drop, count, hook (no reply path
-                        // because we don't yet know msg_type / corr_id).
-                        LOGGER_WARN("Broker: malformed JSON: {}", e.what());
-                        hub_state_->_bump_counter("sys.malformed_json");
-                        emit_processing_error(/*msg_type=*/"",
-                                              "malformed_json", e.what(),
-                                              &frames[0]);
-                    }
+                    auto received =
+                        ::pylabhub::wire::dispatch::receive_and_validate(
+                            std::move(raw), admission_binder_.context);
+                    dispatch_received(router, std::move(received));
                 }
             }
 
@@ -1513,6 +1514,128 @@ void BrokerServiceImpl::run()
 // ============================================================================
 // Message dispatch
 // ============================================================================
+
+namespace
+{
+/// Convert one Validated<Body> variant into the legacy (msg_type, body_json,
+/// identity_frame) triple the existing handlers expect.  Injects
+/// correlation_id + role_uid into the body so handlers that read them
+/// via `body.value("correlation_id","")` / `body.value("role_uid","")`
+/// keep working unchanged.  This is the adapter that lets the
+/// wire::dispatch entry land WITHOUT rewriting every handler signature
+/// in the same commit.  Handler-signature migration to typed bodies is
+/// per-msg_type follow-on work; the dispatch entry (identity + replay
+/// + known_roles + rotation checks) is already enforced.
+struct LegacyDispatchInputs
+{
+    std::string    msg_type;
+    nlohmann::json body_json;
+    std::string    identity_str;
+};
+
+template <typename ValidatedT>
+LegacyDispatchInputs to_legacy(ValidatedT &&v, const char *msg_type)
+{
+    LegacyDispatchInputs out;
+    out.msg_type     = msg_type;
+    out.body_json    = v.body.to_json();
+    out.identity_str = v.identity();
+    const std::string corr = v.correlation_id();
+    if (!corr.empty())
+        out.body_json["correlation_id"] = corr;
+    return out;
+}
+}  // anonymous namespace
+
+void BrokerServiceImpl::dispatch_received(
+    zmq::socket_t                                &socket,
+    ::pylabhub::wire::dispatch::ReceivedMessage &&received)
+{
+    namespace wd = ::pylabhub::wire::dispatch;
+
+    // Helper to invoke `process_message` with a reconstructed identity
+    // frame; the legacy handlers all take `zmq::message_t` for the
+    // identity because they forward it to ROUTER send.
+    auto dispatch_legacy = [&](LegacyDispatchInputs &&li) {
+        zmq::message_t id_frame(li.identity_str.data(),
+                                 li.identity_str.size());
+        process_message(socket, id_frame, li.msg_type, li.body_json,
+                        li.body_json.dump().size());
+    };
+
+    std::visit(
+        [&](auto &&v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, wd::RejectedMessage>)
+            {
+                // Log — the enforcement wins here belong in operator logs.
+                const auto code_str =
+                    ::pylabhub::admission::to_wire_string(v.code);
+                LOGGER_WARN("Broker: admission rejected msg_type='{}' "
+                            "identity='{}' corr_id='{}' error_code='{}' "
+                            "field='{}' message='{}'",
+                            v.msg_type, v.identity, v.correlation_id,
+                            code_str, v.field, v.message);
+                // C12 resolution — per-code + total counters instead of
+                // a single opaque `sys.admission_rejected`.  The total
+                // is the aggregate operator monitors track; the
+                // per-code map surfaces which gate is firing.
+                hub_state_->_bump_counter("sys.admission_rejected_total");
+                hub_state_->_bump_counter(
+                    "sys.admission_rejected_by_code." + std::string{code_str});
+                // Only emit an ERROR envelope when the sender identity is
+                // recoverable (envelope parse got past Frame 0).  If the
+                // parse failed before that, we cannot address a reply
+                // safely and drop silently.
+                if (!v.identity.empty())
+                {
+                    try
+                    {
+                        auto reply = wd::build_error_reply(v);
+                        reply.send(socket);
+                    }
+                    catch (const std::exception &e)
+                    {
+                        LOGGER_WARN("Broker: failed to send admission-"
+                                    "reject ERROR reply: {}", e.what());
+                    }
+                }
+            }
+            else if constexpr (std::is_same_v<T, wd::ValidatedRawControl>)
+            {
+                // EnvelopeOnly tier — msg_type known, no typed body yet.
+                // Body was validated for envelope_hash only.  Handler still
+                // takes JSON.  Injects corr_id for legacy compat.
+                const std::string msg_type = v.msg_type();
+                nlohmann::json body        = std::move(v.body);
+                const std::string corr     = v.correlation_id();
+                if (!corr.empty()) body["correlation_id"] = corr;
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                process_message(socket, id_frame, msg_type, body,
+                                body.dump().size());
+            }
+            else if constexpr (std::is_same_v<T, wd::ValidatedRegReq>)
+                dispatch_legacy(to_legacy(std::move(v), "REG_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedConsumerRegReq>)
+                dispatch_legacy(to_legacy(std::move(v), "CONSUMER_REG_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedDeregReq>)
+                dispatch_legacy(to_legacy(std::move(v), "DEREG_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedConsumerDeregReq>)
+                dispatch_legacy(to_legacy(std::move(v), "CONSUMER_DEREG_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedEndpointUpdateReq>)
+                dispatch_legacy(to_legacy(std::move(v), "ENDPOINT_UPDATE_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedChannelAuthAppliedReq>)
+                dispatch_legacy(to_legacy(std::move(v), "CHANNEL_AUTH_APPLIED_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedHeartbeatNotify>)
+                dispatch_legacy(to_legacy(std::move(v), "HEARTBEAT_NOTIFY"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
+                dispatch_legacy(to_legacy(std::move(v), "GET_CHANNEL_AUTH_REQ"));
+            else if constexpr (std::is_same_v<T, wd::ValidatedDiscReq>)
+                dispatch_legacy(to_legacy(std::move(v), "DISC_REQ"));
+        },
+        std::move(received));
+}
 
 void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
                                         const zmq::message_t& identity,
@@ -1728,7 +1851,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
             (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
         send_reply(socket, identity, ack, resp);
     }
-    else if (msg_type == "HEARTBEAT_REQ")
+    else if (msg_type == "HEARTBEAT_NOTIFY")
     {
         // Fire-and-forget from client.  Presence FSM transitions (e.g.
         // first-heartbeat sub-Live → Live; Pending → Connected recovery)
@@ -1757,7 +1880,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     // BRC::send_notify (no caller), and federation peer-relay uses
     // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  Old
     // clients receive UNKNOWN_MSG_TYPE via the dispatch fall-through.
-    else if (msg_type == "CHANNEL_BROADCAST_REQ")
+    else if (msg_type == "CHANNEL_BROADCAST_SEND_NOTIFY")
     {
         // Fire-and-forget: fan out broadcast to ALL members of a channel.
         handle_channel_broadcast_req(socket, payload);
@@ -1829,7 +1952,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
         send_reply(socket, identity,
             resp.value("status", "") == "success" ? "BAND_LEAVE_ACK" : "ERROR", resp);
     }
-    else if (msg_type == "BAND_BROADCAST_REQ")
+    else if (msg_type == "BAND_BROADCAST_SEND_NOTIFY")
     {
         handle_band_broadcast_req(socket, payload, identity);
         // fire-and-forget — no reply
@@ -2162,8 +2285,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // would also catch this as RejectedMismatch on `schema_hash`, but
     // running the check here lets us short-circuit BEFORE creating
     // schema records (path B/C / inbox), preventing orphans.  The
-    // other invariant mismatches (schema_version / schema_blds /
-    // schema_owner / schema_id / transport_*) are caught by
+    // other invariant mismatches (schema_blds / schema_owner /
+    // schema_id / transport_*) are caught by
     // `_on_producer_added` after record creation; an orphan record
     // there is a rare anomaly the broker logs as an ERROR.
     //
@@ -2483,15 +2606,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT, FAN_OUT_IS_SINGLE_PRODUCER,
     // ONE_TO_ONE_CARDINALITY_VIOLATED) — the latter subsumes the
     // retired MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM check; and the
-    // broader invariant-mismatch class (schema_version, schema_blds,
-    // schema_owner, schema_id, data_transport).
+    // broader invariant-mismatch class (schema_blds, schema_owner,
+    // schema_id, data_transport).
     // (HEP-CORE-0036 §5b.4 retired the legacy duplicates
     // has_shared_memory / shm_name / channel_pattern.)
     // A reject in those remaining cases CAN leave an orphan schema record in
     // HubState.schemas (rare anomaly); broker logs ERROR.
     pylabhub::hub::ChannelSchemaInvariants schema_inv;
     schema_inv.schema_hash    = attempted_schema;
-    schema_inv.schema_version = req.value("schema_version", uint32_t{0});
+    // schema_version retired per C2 — version rides inside schema_id.
     schema_inv.schema_id      = final_schema_id;
     schema_inv.schema_blds    = schema_blds_in;
     schema_inv.schema_owner   = final_schema_owner;
@@ -2569,7 +2692,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         pylabhub::hub::InvariantSetResult::RejectedMismatch)
     {
         const auto &field = admission.mismatched_invariant;
-        if (field == "schema_hash" || field == "schema_version" ||
+        if (field == "schema_hash" ||
             field == "schema_id"   || field == "schema_blds"    ||
             field == "schema_owner")
         {
@@ -2921,7 +3044,8 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     nlohmann::json resp;
     resp["status"]            = "success";
     resp["schema_hash"]       = entry_ref.schema_hash;
-    resp["schema_version"]    = entry_ref.schema_version;
+    // schema_version retired per C2 — consumers can parse the version
+    // from `schema_id` via `pylabhub::hub::parse_schema_id()` if needed.
     // metadata wire shape decided in §6.1: per-producer tree keyed by
     // role_uid (HEP-CORE-0007 §12.4 commit 25dc376).
     resp["metadata"]          = entry_ref.aggregate_metadata_tree();
@@ -3517,7 +3641,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     {
         pylabhub::hub::ChannelSchemaInvariants s;
         s.schema_hash    = expected_hash_hex;
-        s.schema_version = req.value("expected_schema_version", uint32_t{0});
+        // expected_schema_version retired per C2 — version rides inside
+        // expected_schema_id (`$name.v<N>`) per HEP-CORE-0034 §5.1.
         s.schema_id      = expected_schema_id;
         s.schema_blds    = expected_blds;
         s.schema_owner   = req.value("expected_schema_owner", std::string{});
@@ -5048,13 +5173,13 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
 {
     const std::string channel_name = req.value("channel_name", "");
     // Audit R3.5b (2026-05-19): channel_name grammar check at the gate
-    // (HEP-CORE-0033 §G2.2.0b).  HEARTBEAT_REQ is fire-and-forget so
+    // (HEP-CORE-0033 §G2.2.0b).  HEARTBEAT_NOTIFY is fire-and-forget so
     // we log + drop on failure (no reply path) — matches the existing
     // pattern for missing uid/role_type further below.
     if (!pylabhub::hub::is_valid_identifier(
             channel_name, pylabhub::hub::IdentifierKind::Channel))
     {
-        LOGGER_WARN("Broker: HEARTBEAT_REQ dropped — invalid "
+        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY dropped — invalid "
                     "channel_name '{}' (HEP-CORE-0033 §G2.2.0b)",
                     channel_name);
         return;
@@ -5071,7 +5196,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     const auto cit  = snap.channels.find(channel_name);
     if (cit == snap.channels.end())
     {
-        LOGGER_WARN("Broker: HEARTBEAT_REQ for unknown channel '{}'", channel_name);
+        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for unknown channel '{}'", channel_name);
         return;
     }
     // Channel observable is the BEST-of all producer-presences
@@ -5099,16 +5224,16 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     // pre-Phase-6 fallback that derived uid from the channel's first
     // producer.  broker_proto 4→5 (audit R3.5b, 2026-05-19) renamed
     // the wire key `uid` → `role_uid` for cross-message consistency.
-    // Missing/empty fields → silent drop with WARN log (HEARTBEAT_REQ
+    // Missing/empty fields → silent drop with WARN log (HEARTBEAT_NOTIFY
     // is fire-and-forget so there is no reply path for INVALID_REQUEST).
     const std::string wire_uid       = req.value("role_uid",  std::string{});
     const std::string wire_role_type = req.value("role_type", std::string{});
-    LOGGER_DEBUG("Broker: HEARTBEAT_REQ channel='{}' role_uid='{}' role_type='{}'",
+    LOGGER_DEBUG("Broker: HEARTBEAT_NOTIFY channel='{}' role_uid='{}' role_type='{}'",
                  channel_name, wire_uid, wire_role_type);
 
     if (wire_uid.empty() || wire_role_type.empty())
     {
-        LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' rejected — missing "
+        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' rejected — missing "
                     "'role_uid' or 'role_type' (HEP-CORE-0019 §4.1 "
                     "Phase 6 wire format; broker_proto >=5)",
                     channel_name);
@@ -5121,7 +5246,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     if (!pylabhub::hub::is_valid_identifier(
             wire_uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
-        LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' dropped — invalid "
+        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' dropped — invalid "
                     "role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
                     channel_name, wire_uid);
         return;
@@ -5136,7 +5261,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
             tag_ok = (tag == "cons" || tag == "proc");
         if (!tag_ok)
         {
-            LOGGER_WARN("Broker: HEARTBEAT_REQ for '{}' dropped — "
+            LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' dropped — "
                         "role_uid tag '{}' does not match role_type "
                         "'{}' (producer expects prod/proc; consumer "
                         "expects cons/proc — HEP-CORE-0033 §G2.2.0b)",
@@ -5162,7 +5287,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
         // it for presence resolution (the Phase 6 `(channel, uid,
         // role_type)` tuple is authoritative).  Missing or zero pid
         // is logged for diagnostics but does not reject the heartbeat.
-        LOGGER_ERROR("Broker: HEARTBEAT_REQ for '{}' missing or zero producer_pid",
+        LOGGER_ERROR("Broker: HEARTBEAT_NOTIFY for '{}' missing or zero producer_pid",
                      channel_name);
     }
 
@@ -6267,9 +6392,10 @@ void BrokerServiceImpl::federation_on_channel_closed(
     // channel is gone, no NOTIFY arrives.
 }
 
-void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&    socket,
+void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&     socket,
                                                  const std::string& band_name,
                                                  const std::string& role_uid,
+                                                 const std::string& role_name,
                                                  const std::string& reason)
 {
     if (role_uid.empty() || band_name.empty()) return;
@@ -6284,10 +6410,17 @@ void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&    socket,
                 role_uid, band_name, reason);
     auto remaining = hub_state_->band(band_name);
     if (!remaining.has_value()) return;  // auto-deleted; no NOTIFY targets
+    // BandLeaveNotifyBody REQUIRED fields per wire_bodies.cpp:323 =
+    // {band, role_uid, role_name}.  role_name is captured pre-erase by
+    // HubState::_set_band_left and threaded through the handler; empty
+    // here means the leaver was never a member (defensive) — still emit
+    // for wire consistency; downstream body-class construction would
+    // reject on empty string anyway.
     nlohmann::json notify;
-    notify["band"]     = band_name;     // HEP-CORE-0030 §5.1 wire key
-    notify["role_uid"] = role_uid;
-    notify["reason"]   = reason;
+    notify["band"]      = band_name;     // HEP-CORE-0030 §5.1 wire key
+    notify["role_uid"]  = role_uid;
+    notify["role_name"] = role_name;
+    notify["reason"]    = reason;
     for (const auto& m : remaining->members)
     {
         if (!m.zmq_identity.empty())
@@ -6350,7 +6483,8 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 // sending CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE.
 
 // ============================================================================
-// CHANNEL_BROADCAST_REQ — fan out message to ALL members of a channel
+// CHANNEL_BROADCAST_SEND_NOTIFY — fan out message to ALL members of a channel
+// (broker emits CHANNEL_BROADCAST_DELIVER_NOTIFY to each recipient).
 // ============================================================================
 
 void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socket,
@@ -6362,14 +6496,14 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
 
     if (target_channel.empty())
     {
-        LOGGER_WARN("Broker: CHANNEL_BROADCAST_REQ with empty target_channel");
+        LOGGER_WARN("Broker: CHANNEL_BROADCAST_SEND_NOTIFY with empty target_channel");
         return;
     }
 
     auto entry = hub_state_->channel(target_channel);
     if (!entry)
     {
-        LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ for '{}' — channel not found",
+        LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_SEND_NOTIFY for '{}' — channel not found",
                      target_channel);
         return;
     }
@@ -6390,7 +6524,7 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
             continue;
         try
         {
-            send_to_identity(socket, consumer.zmq_identity, "CHANNEL_BROADCAST_NOTIFY", fwd);
+            send_to_identity(socket, consumer.zmq_identity, "CHANNEL_BROADCAST_DELIVER_NOTIFY", fwd);
         }
         catch (const zmq::error_t& e)
         {
@@ -6406,7 +6540,7 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         try
         {
             send_to_identity(socket, prod.zmq_identity,
-                             "CHANNEL_BROADCAST_NOTIFY", fwd);
+                             "CHANNEL_BROADCAST_DELIVER_NOTIFY", fwd);
         }
         catch (const zmq::error_t& e)
         {
@@ -6415,7 +6549,7 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
         }
     }
 
-    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_REQ '{}' msg='{}' ->{} consumers + {} producer(s)",
+    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_SEND_NOTIFY '{}' msg='{}' ->{} consumers + {} producer(s)",
                  target_channel, message, entry->consumers.size(),
                  entry->producers.size());
 
@@ -6677,11 +6811,23 @@ void BrokerServiceImpl::send_to_identity(zmq::socket_t&        socket,
                                           const std::string&    msg_type,
                                           const nlohmann::json& body)
 {
-    const std::string body_str = body.dump();
-    socket.send(zmq::message_t(identity.data(), identity.size()), zmq::send_flags::sndmore);
-    socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
-    socket.send(zmq::message_t(msg_type.data(), msg_type.size()), zmq::send_flags::sndmore);
-    socket.send(zmq::message_t(body_str.data(), body_str.size()), zmq::send_flags::none);
+    // HEP-CORE-0046 §14 wire envelope.  Extract correlation_id from the
+    // body (handlers echo it, or NOTIFY sites leave it empty — is_notify
+    // check in build_router_send allows empty for _NOTIFY suffix per
+    // I-CORRELATION-STABLE / I-MSG-TYPE-TAXONOMY).
+    const std::string corr_id = body.value("correlation_id", std::string{});
+    try
+    {
+        zmq::multipart_t wire =
+            ::pylabhub::wire::WireEnvelope::build_router_send(
+                identity, msg_type, corr_id, body);
+        wire.send(socket);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_WARN("Broker: send_to_identity '{}' failed: {}",
+                    msg_type, e.what());
+    }
 }
 
 // ============================================================================
@@ -6694,13 +6840,27 @@ void BrokerServiceImpl::send_reply(zmq::socket_t&       socket,
                                    const nlohmann::json& body)
 {
     LOGGER_TRACE("Broker: send {} status='{}'", msg_type_ack, body.value("status", ""));
-    // Reply layout: [identity, 'C', ack_type_string, json_body]
-    const std::string body_str = body.dump();
-    socket.send(zmq::message_t(identity.data(), identity.size()), zmq::send_flags::sndmore);
-    socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
-    socket.send(zmq::message_t(msg_type_ack.data(), msg_type_ack.size()),
-                zmq::send_flags::sndmore);
-    socket.send(zmq::message_t(body_str.data(), body_str.size()), zmq::send_flags::none);
+    // HEP-CORE-0046 §14 wire envelope.  correlation_id echoed from the
+    // request body per adapter Tier 2 contract; ERROR / ACK bodies both
+    // carry it (make_error stamps it, handlers set resp[correlation_id]
+    // = corr_id).  Empty is allowed only for _NOTIFY suffix — send_reply
+    // is only used for REQ replies so a missing echo is a bug we want
+    // loud (envelope build will throw).
+    const std::string identity_str(
+        static_cast<const char *>(identity.data()), identity.size());
+    const std::string corr_id = body.value("correlation_id", std::string{});
+    try
+    {
+        zmq::multipart_t wire =
+            ::pylabhub::wire::WireEnvelope::build_router_send(
+                identity_str, msg_type_ack, corr_id, body);
+        wire.send(socket);
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_WARN("Broker: send_reply '{}' failed: {}",
+                    msg_type_ack, e.what());
+    }
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
@@ -6744,6 +6904,77 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
             "building the broker.");
     pImpl->cfg = std::move(cfg);
     pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
+
+    // HEP-CORE-0046 §14.5 admission binder — bind the callbacks the
+    // wire::dispatch::receive_and_validate call needs.  Constructed
+    // once here so per-request handling never re-binds std::function
+    // objects.  Every callback captures the pImpl pointer by value;
+    // BrokerServiceImpl is non-movable / non-copyable so the captures
+    // remain valid for the impl's lifetime.
+    {
+        auto *impl = pImpl.get();
+
+        // I-PUBKEY-BINDING: look up (role_uid, zmq_pubkey) in the
+        // hub's known_roles table (loaded from vault/known_roles.json
+        // at HubHost startup, or seeded by tests).
+        impl->admission_binder_.callbacks.lookup_known_role =
+            [impl](std::string_view uid, std::string_view pubkey)
+                -> ::pylabhub::admission::KnownRoleLookup {
+            for (const auto &kr : impl->cfg.known_roles)
+            {
+                if (kr.uid == uid)
+                {
+                    if (kr.pubkey_z85 == pubkey)
+                        return ::pylabhub::admission::KnownRoleLookup::
+                            binding_matches;
+                    return ::pylabhub::admission::KnownRoleLookup::
+                        pubkey_mismatch;
+                }
+            }
+            return ::pylabhub::admission::KnownRoleLookup::uid_unknown;
+        };
+
+        // I-KEY-ROTATION-VIA-DEREG: HubState does not currently expose
+        // a role_uid → current-pubkey index (per-channel pubkeys only).
+        // Return not_yet_registered as the safe default; UID_CONFLICT
+        // catches the actual rotation attempt at the state-mutation
+        // layer (`_on_producer_added`).  This matches the
+        // BrokerRegHandler placeholder pending the per-role pubkey
+        // index HEP addendum.
+        impl->admission_binder_.callbacks.check_key_rotation =
+            [](std::string_view /*uid*/,
+                std::string_view /*pubkey*/)
+                -> ::pylabhub::admission::KeyRotationCheck {
+            return ::pylabhub::admission::KeyRotationCheck::
+                not_yet_registered;
+        };
+
+        // I-REPLAY-BOUND: nonce dedup delegated to HubState's per-role
+        // sliding-window map (`nonce_seen` returns true = fresh).
+        impl->admission_binder_.callbacks.record_and_check_nonce =
+            [impl](std::string_view uid, std::string_view nonce,
+                    std::uint64_t wall_ts) {
+                return impl->hub_state_->nonce_seen(
+                    uid, nonce, wall_ts,
+                    impl->admission_binder_.context.nonce_window_ms);
+            };
+
+        impl->admission_binder_.callbacks.wall_now_ms = []() {
+            using namespace std::chrono;
+            return static_cast<std::uint64_t>(
+                duration_cast<milliseconds>(
+                    system_clock::now().time_since_epoch())
+                    .count());
+        };
+
+        // Ambient context knobs.  No `broker_proto` field on
+        // AdmissionContext (retired per C3 — wire-version + ABI is
+        // verified through `abi_fingerprint` at the REG handler per
+        // HEP-CORE-0032 §8, not by this admission pipeline).
+        impl->admission_binder_.context.skew_tolerance_ms = 30'000ULL;
+        impl->admission_binder_.context.nonce_window_ms   = 10'000ULL;
+        impl->admission_binder_.finalize();
+    }
 
     // HEP-CORE-0041 §D1(d) — generate broker's ephemeral observer
     // keypair (task #317 C.2.a).  Called ONCE at broker startup.
@@ -7223,7 +7454,7 @@ void BrokerService::send_hub_targeted_msg(const std::string& target_hub_uid,
 
 // M1.4 (2026-05-11): `update_producer_metrics`, `update_consumer_metrics`,
 // `handle_metrics_report_req` deleted.  Metrics now piggyback on
-// HEARTBEAT_REQ and live on `HubState.roles[uid].presences[(ch, role_type)].latest_metrics`.
+// HEARTBEAT_NOTIFY and live on `HubState.roles[uid].presences[(ch, role_type)].latest_metrics`.
 // See `hub_state.cpp:_on_heartbeat` for the write path and
 // `HubState::channel_metrics_snapshot` for the read path.
 
@@ -7739,13 +7970,13 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     if (band_name.empty()) return;
 
     // Audit R3.5 (2026-05-17): silent-drop on invalid identifier.
-    // BAND_BROADCAST_REQ is fire-and-forget so there is no error
+    // BAND_BROADCAST_SEND_NOTIFY is fire-and-forget so there is no error
     // response to return; we log + drop.  The caller cannot
     // observe the failure (matches existing fire-and-forget
     // semantics) — operators see the WARN log.
     if (!pylabhub::hub::is_valid_identifier(band_name, pylabhub::hub::IdentifierKind::Band))
     {
-        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped — invalid band "
+        LOGGER_WARN("Broker: BAND_BROADCAST_SEND_NOTIFY dropped — invalid band "
                     "identifier '{}' (HEP-CORE-0030 §3)", band_name);
         return;
     }
@@ -7755,7 +7986,7 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     if (!pylabhub::hub::is_valid_identifier(
             role_uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
-        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped on band '{}' — "
+        LOGGER_WARN("Broker: BAND_BROADCAST_SEND_NOTIFY dropped on band '{}' — "
                     "invalid role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
                     band_name, role_uid);
         return;
@@ -7767,12 +7998,12 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     // actually a member of the band — accepting broadcasts from
     // non-members.  That undermines the broker-authority principle:
     // membership rules don't apply uniformly across band ops.  Now
-    // a non-member's BAND_BROADCAST_REQ is dropped + WARN'd.
+    // a non-member's BAND_BROADCAST_SEND_NOTIFY is dropped + WARN'd.
     // Fire-and-forget so no reply is emitted; operators see the WARN.
     auto band = hub_state_->band(band_name);
     if (!band.has_value())
     {
-        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped — band '{}' "
+        LOGGER_WARN("Broker: BAND_BROADCAST_SEND_NOTIFY dropped — band '{}' "
                     "does not exist (sender uid='{}')",
                     band_name, role_uid);
         return;
@@ -7784,7 +8015,7 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     }
     if (!sender_is_member)
     {
-        LOGGER_WARN("Broker: BAND_BROADCAST_REQ dropped — sender '{}' "
+        LOGGER_WARN("Broker: BAND_BROADCAST_SEND_NOTIFY dropped — sender '{}' "
                     "is not a member of band '{}' (HEP-CORE-0030 §5.2 "
                     "sender-must-be-member rule)",
                     role_uid, band_name);
@@ -7801,7 +8032,7 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     {
         if (m.role_uid == role_uid) continue;
         if (m.zmq_identity.empty()) continue;
-        send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_NOTIFY", notify);
+        send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_DELIVER_NOTIFY", notify);
         ++recipients;
     }
 
@@ -7815,6 +8046,13 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.
     const std::string band_name = req.value("band", "");
 
+    // I-CORRELATION-STABLE: BAND_MEMBERS_REQ is a REQ, so BAND_MEMBERS_ACK
+    // and ERROR replies MUST echo the caller's correlation_id.  Missing
+    // this echo makes `WireEnvelope::build_router_send` throw at send
+    // time (empty correlation_id on non-NOTIFY = wire violation), the
+    // reply gets dropped, and the caller sees a 5000 ms timeout.
+    const std::string corr_id = req.value("correlation_id", std::string{});
+
     // Audit R3.5 (2026-05-17): explicit band-name validation.  Pre-fix
     // an invalid identifier would silently miss in `hub_state_->band()`
     // (because no band by that invalid name exists) and we'd return
@@ -7826,7 +8064,7 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
     {
         LOGGER_WARN("Broker: BAND_MEMBERS_REQ rejected — invalid band "
                     "identifier '{}'", band_name);
-        return make_error("", "INVALID_BAND_NAME",
+        return make_error(corr_id, "INVALID_BAND_NAME",
                           "Band identifier failed validation "
                           "(HEP-CORE-0030 §3 grammar)");
     }
@@ -7846,6 +8084,10 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
     nlohmann::json resp;
     resp["band"]    = band_name;
     resp["members"] = std::move(members_json);
+    if (!corr_id.empty())
+    {
+        resp["correlation_id"] = corr_id;
+    }
     return resp;
 }
 

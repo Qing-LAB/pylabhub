@@ -408,6 +408,38 @@ gtest_discover_tests(test_layer1_admission_gates
 )
 
 # ============================================================================
+# Test: wire_dispatch::kDispatchTable regression pin (Group 5 gap 3)
+# ============================================================================
+
+add_executable(test_layer1_wire_dispatch_table
+    test_wire_dispatch_table.cpp
+)
+
+target_link_libraries(test_layer1_wire_dispatch_table
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+        libzmq-static
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_wire_dispatch_table)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_wire_dispatch_table
+    SUITE_NAME "Layer1_WireDispatchTable"
+)
+layer1_require_staged_utils(test_layer1_wire_dispatch_table)
+
+gtest_discover_tests(test_layer1_wire_dispatch_table
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer1;wire;dispatch"
+        TIMEOUT 15
+)
+
+# ============================================================================
 # Test: REG-family admission pipeline (Accepted / Rejected / Pended)
 # ============================================================================
 

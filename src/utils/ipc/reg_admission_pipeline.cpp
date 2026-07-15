@@ -9,7 +9,7 @@ namespace pylabhub::admission
 namespace
 {
 
-// Extract the gate-facing view from a RegReqBody without allocating.
+// Extract the gate-facing view from a ProducerRegReqBody without allocating.
 // The view holds string_views into the body's cached strings; both
 // live as long as the body does.
 struct ViewHolders
@@ -21,9 +21,9 @@ struct ViewHolders
 };
 
 RegFamilyBodyView
-make_view(const ::pylabhub::wire::RegReqBody &body, ViewHolders &h)
+make_view(const ::pylabhub::wire::ProducerRegReqBody &body, ViewHolders &h)
 {
-    // RegReqBody accessors return by value; hold them so the string_view
+    // ProducerRegReqBody accessors return by value; hold them so the string_view
     // fields remain valid for the duration of gate execution.
     h.role_uid     = body.role_uid();
     h.channel_name = body.channel_name();
@@ -34,13 +34,12 @@ make_view(const ::pylabhub::wire::RegReqBody &body, ViewHolders &h)
     v.role_uid       = h.role_uid;
     v.channel_name   = h.channel_name;
     v.zmq_pubkey     = h.zmq_pubkey;
-    v.broker_proto   = body.broker_proto();
     v.client_nonce   = h.client_nonce;
     v.client_wall_ts = body.client_wall_ts();
     return v;
 }
 
-RegRequest make_request(const ::pylabhub::wire::RegReqBody &body)
+RegRequest make_request(const ::pylabhub::wire::ProducerRegReqBody &body)
 {
     RegRequest r;
     r.channel_name     = body.channel_name();
@@ -51,7 +50,7 @@ RegRequest make_request(const ::pylabhub::wire::RegReqBody &body)
     r.channel_topology = body.channel_topology();
     r.data_transport   = body.data_transport();
     r.schema_hash      = body.schema_hash();
-    r.schema_version   = body.schema_version();
+    // schema_version retired per C2 — version rides inside schema_id.
     r.schema_id        = body.schema_id();
     r.schema_blds      = body.schema_blds();
     r.schema_owner     = body.schema_owner();
@@ -69,7 +68,7 @@ RegRejected reject_from_gate(RejectDetail detail)
 
 RegOutcome
 run_reg_admission(const ::pylabhub::wire::WireEnvelope &env,
-                   const ::pylabhub::wire::RegReqBody    &body,
+                   const ::pylabhub::wire::ProducerRegReqBody    &body,
                    const AdmissionContext                &gate_ctx,
                    const RegCommitFn                     &commit)
 {

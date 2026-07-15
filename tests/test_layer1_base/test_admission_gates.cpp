@@ -105,7 +105,7 @@ struct Fixture
     {
         ag::AdmissionContext c;
         c.cb                = &cb;
-        c.broker_proto      = 7U;
+        // broker_proto retired per C3.
         c.skew_tolerance_ms = 30'000ULL;
         c.nonce_window_ms   = 10'000ULL;
         return c;
@@ -114,7 +114,6 @@ struct Fixture
     ag::RegFamilyBodyView body(std::string_view uid = "prod.test.uid1",
                                  std::string_view pubkey =
                                      "abcdefghij0123456789abcdefghij0123456789",
-                                 std::uint32_t     proto = 7U,
                                  std::string_view  nonce = "n1",
                                  std::uint64_t     ts    = 1'000'000ULL,
                                  std::string_view  channel_name =
@@ -124,7 +123,7 @@ struct Fixture
         v.role_uid       = uid;
         v.channel_name   = channel_name;
         v.zmq_pubkey     = pubkey;
-        v.broker_proto   = proto;
+        // broker_proto retired per C3.
         v.client_nonce   = nonce;
         v.client_wall_ts = ts;
         return v;
@@ -143,8 +142,7 @@ TEST(AdmissionGates, RejectCodeWireStrings)
     // covering all of them here catches accidental drift.
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::envelope_tampered),
               "ENVELOPE_TAMPERED");
-    EXPECT_EQ(ag::to_wire_string(ag::RejectCode::unsupported_proto),
-              "UNSUPPORTED_PROTO");
+    // unsupported_proto retired per C3.
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::body_schema_violation),
               "BODY_SCHEMA_VIOLATION");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::identity_mismatch),
@@ -161,30 +159,105 @@ TEST(AdmissionGates, RejectCodeWireStrings)
               "KEY_ROTATION_REQUIRES_DEREG");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::replay_or_skew),
               "REPLAY_OR_SKEW");
+    EXPECT_EQ(ag::to_wire_string(ag::RejectCode::invalid_role_tag),
+              "INVALID_ROLE_TAG");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::broker_internal_error),
               "BROKER_INTERNAL_ERROR");
 }
 
-// ── Gate 2: broker_proto ──────────────────────────────────────────────
+// ── Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8) ───────────
 
-TEST(AdmissionGate_Proto, MatchPasses)
+TEST(AdmissionGate_RoleTagPolicy, RegReqAllowsProdAndProc)
 {
-    Fixture f;
-    auto b = f.body();
-    b.broker_proto = 7U;
-    EXPECT_EQ(ag::gate_supported_proto(b, f.ctx()), std::nullopt);
+    EXPECT_EQ(ag::gate_role_tag_policy("REG_REQ", "prod.foo.uid1", ""),
+              std::nullopt);
+    EXPECT_EQ(ag::gate_role_tag_policy("REG_REQ", "proc.bar.uid2", ""),
+              std::nullopt);
 }
 
-TEST(AdmissionGate_Proto, MismatchRejects)
+TEST(AdmissionGate_RoleTagPolicy, RegReqRejectsConsumerUid)
 {
-    Fixture f;
-    auto b = f.body();
-    b.broker_proto = 6U;
-    auto r = ag::gate_supported_proto(b, f.ctx());
+    auto r = ag::gate_role_tag_policy("REG_REQ", "cons.bad.uid3", "");
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->code, ag::RejectCode::unsupported_proto);
-    EXPECT_EQ(r->field, "broker_proto");
+    EXPECT_EQ(r->code, ag::RejectCode::invalid_role_tag);
+    EXPECT_EQ(r->field, "role_uid");
 }
+
+TEST(AdmissionGate_RoleTagPolicy, ConsumerRegReqAllowsConsAndProc)
+{
+    EXPECT_EQ(ag::gate_role_tag_policy("CONSUMER_REG_REQ",
+                                          "cons.foo.uid1", ""),
+              std::nullopt);
+    EXPECT_EQ(ag::gate_role_tag_policy("CONSUMER_REG_REQ",
+                                          "proc.bar.uid2", ""),
+              std::nullopt);
+}
+
+TEST(AdmissionGate_RoleTagPolicy, ConsumerRegReqRejectsProducerUid)
+{
+    auto r = ag::gate_role_tag_policy("CONSUMER_REG_REQ",
+                                        "prod.bad.uid3", "");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::invalid_role_tag);
+}
+
+TEST(AdmissionGate_RoleTagPolicy, DeregReqAllowsProdAndProc)
+{
+    EXPECT_EQ(ag::gate_role_tag_policy("DEREG_REQ",
+                                          "prod.foo.uid1", ""),
+              std::nullopt);
+    auto r = ag::gate_role_tag_policy("DEREG_REQ", "cons.bad.uid3", "");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::invalid_role_tag);
+}
+
+TEST(AdmissionGate_RoleTagPolicy, HeartbeatNotifyRequiresTagMatchRoleType)
+{
+    // Correct: producer role_type + prod.* uid.
+    EXPECT_EQ(ag::gate_role_tag_policy("HEARTBEAT_NOTIFY",
+                                          "prod.foo.uid1", "producer"),
+              std::nullopt);
+    EXPECT_EQ(ag::gate_role_tag_policy("HEARTBEAT_NOTIFY",
+                                          "cons.bar.uid2", "consumer"),
+              std::nullopt);
+    EXPECT_EQ(ag::gate_role_tag_policy("HEARTBEAT_NOTIFY",
+                                          "proc.baz.uid3", "processor"),
+              std::nullopt);
+}
+
+TEST(AdmissionGate_RoleTagPolicy, HeartbeatNotifyRejectsRoleTypeMismatch)
+{
+    // consumer role_type carrying a prod.* uid — impersonation attempt.
+    auto r = ag::gate_role_tag_policy("HEARTBEAT_NOTIFY",
+                                        "prod.foo.uid1", "consumer");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::invalid_role_tag);
+}
+
+TEST(AdmissionGate_RoleTagPolicy, HeartbeatNotifyEmptyRoleTypeRejected)
+{
+    auto r = ag::gate_role_tag_policy("HEARTBEAT_NOTIFY",
+                                        "prod.foo.uid1", "");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::invalid_request);
+    EXPECT_EQ(r->field, "role_type");
+}
+
+TEST(AdmissionGate_RoleTagPolicy, UniversalSetAllowsAllRecognizedTags)
+{
+    // Msg_types outside the table (e.g. ROLE_PRESENCE_REQ) allow all
+    // three recognized tags.
+    for (auto uid : {"prod.a.uid1", "cons.b.uid2", "proc.c.uid3"})
+    {
+        EXPECT_EQ(ag::gate_role_tag_policy("ROLE_PRESENCE_REQ", uid, ""),
+                  std::nullopt);
+    }
+}
+
+// ── Gate 2 (broker_proto) retired per C3 ──────────────────────────────
+//
+// The per-message broker_proto gate was removed; ABI/protocol drift is
+// now caught by the abi_fingerprint gate at REG-family admission.
 
 // ── Gate 3: identity match ────────────────────────────────────────────
 
@@ -254,7 +327,7 @@ TEST(AdmissionGate_Grammar, EmptyChannelNameRejects)
     Fixture f;
     auto b = f.body("prod.test.uid1",
                      "abcdefghij0123456789abcdefghij0123456789",
-                     /*proto*/7, "n1", 1'000'000ULL, /*channel_name*/"");
+                     "n1", 1'000'000ULL, /*channel_name*/"");
     auto r = ag::gate_grammar(b);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->code, ag::RejectCode::invalid_request);
@@ -266,7 +339,7 @@ TEST(AdmissionGate_Grammar, BadChannelNameCharacterRejects)
     Fixture f;
     auto b = f.body("prod.test.uid1",
                      "abcdefghij0123456789abcdefghij0123456789",
-                     /*proto*/7, "n1", 1'000'000ULL,
+                     "n1", 1'000'000ULL,
                      /*channel_name*/"lab space.name");
     auto r = ag::gate_grammar(b);
     ASSERT_TRUE(r.has_value());
@@ -347,7 +420,6 @@ TEST(AdmissionGate_Replay, FreshNoncePasses)
     Fixture f;
     EXPECT_EQ(ag::gate_replay_bound(f.body(/*uid*/"prod.test.uid1",
                                              /*pk*/"abcdefghij0123456789abcdefghij0123456789",
-                                             /*proto*/7,
                                              /*nonce*/"n1",
                                              /*ts*/1'000'000ULL),
                                        f.ctx()),
@@ -358,7 +430,7 @@ TEST(AdmissionGate_Replay, ReusedNonceRejects)
 {
     Fixture f;
     auto b = f.body("prod.test.uid1",
-                     "abcdefghij0123456789abcdefghij0123456789", 7,
+                     "abcdefghij0123456789abcdefghij0123456789",
                      "n1", 1'000'000ULL);
     // First call records; second call surfaces the collision.
     EXPECT_EQ(ag::gate_replay_bound(b, f.ctx()), std::nullopt);
@@ -374,7 +446,7 @@ TEST(AdmissionGate_Replay, ClockSkewRejects)
     f.stub.now_ms = 1'000'000ULL;
     f.cb          = f.stub.make();
     auto b = f.body("prod.test.uid1",
-                     "abcdefghij0123456789abcdefghij0123456789", 7,
+                     "abcdefghij0123456789abcdefghij0123456789",
                      "n1", /*ts=*/500'000ULL);  // 500 s off from broker
     auto r = ag::gate_replay_bound(b, f.ctx());
     ASSERT_TRUE(r.has_value());
@@ -396,16 +468,18 @@ TEST(AdmissionPipeline, HappyPathPasses)
 
 TEST(AdmissionPipeline, FirstFailingGateWins)
 {
-    // Multiple gates would fail: broker_proto AND identity mismatch.
-    // Order of gates is proto → identity → grammar → ..., so proto
-    // failure wins.
+    // Multiple gates would fail: identity mismatch AND unknown role.
+    // Order of gates is identity → grammar → known_role → ..., so
+    // identity failure wins.
     Fixture f;
     nlohmann::json body = nlohmann::json::object();
     auto env = build_envelope("attacker.uid", "REG_REQ", "cid-1",
                                 std::move(body));
     auto b = f.body();
-    b.broker_proto = 6U;  // wrong
+    b.role_uid = "prod.test.uid1";  // body claims known uid, envelope
+                                     // carries attacker.uid → identity
+                                     // mismatch fires before known_role
     auto r = ag::run_reg_family_gates(env, b, f.ctx());
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->code, ag::RejectCode::unsupported_proto);
+    EXPECT_EQ(r->code, ag::RejectCode::identity_mismatch);
 }

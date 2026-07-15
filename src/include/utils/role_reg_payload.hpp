@@ -102,6 +102,21 @@ struct ConsumerRegInputs
     std::string role_uid;
     std::string role_name;
 
+    /// Wire role_type field — REQUIRED per HEP-CORE-0033 §G2.2.0b.8.
+    /// "consumer" for a pure consumer, "processor" for a processor
+    /// attaching on the consuming side.  CONSUMER_REG_REQ accepts both
+    /// (allowed tag set {cons, proc}).  Empty is a caller bug that
+    /// broker rejects with BODY_SCHEMA_VIOLATION at the wire; the
+    /// payload builder does not paper over it with a fallback.
+    std::string role_type;
+
+    /// Wire data_transport field — REQUIRED per HEP-CORE-0036 §5b.4.
+    /// One of `"zmq"` or `"shm"`.  Empty is a caller bug; broker
+    /// rejects with BODY_SCHEMA_VIOLATION.  The payload builder does
+    /// not default — every caller must state the transport explicitly
+    /// so config mismatches surface at the source.
+    std::string data_transport;
+
     /// Consumer's CURVE pubkey (Z85, exactly 40 chars).  REQUIRED per
     /// HEP-CORE-0036 §6.5: the broker uses it to populate the channel's
     /// authorized-consumer allowlist via
@@ -237,12 +252,19 @@ inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
     // value per HEP-CORE-0033 §G2.2.0b).  `zmq_pubkey` is the
     // consumer's CURVE pubkey for the channel-scope allowlist, mirroring
     // the producer-side `zmq_pubkey` on REG_REQ (HEP-CORE-0036 §6.5).
+    // role_type + data_transport are REQUIRED per HEP-CORE-0033
+    // §G2.2.0b.8 and HEP-CORE-0036 §5b.4.  We do NOT silently default
+    // — an empty value here becomes an empty wire field and the broker
+    // rejects with BODY_SCHEMA_VIOLATION, so the caller sees the
+    // contract violation at its source.
     nlohmann::json reg;
-    reg["channel_name"] = in.channel;
-    reg["role_uid"]     = in.role_uid;
-    reg["role_name"]    = in.role_name;
-    reg["consumer_pid"] = pylabhub::platform::get_pid();
-    reg["zmq_pubkey"]   = in.zmq_pubkey;
+    reg["channel_name"]   = in.channel;
+    reg["role_uid"]       = in.role_uid;
+    reg["role_name"]      = in.role_name;
+    reg["role_type"]      = in.role_type;
+    reg["data_transport"] = in.data_transport;
+    reg["consumer_pid"]   = pylabhub::platform::get_pid();
+    reg["zmq_pubkey"]     = in.zmq_pubkey;
 
     apply_common_reg_envelope(reg, in.channel_topology);
     return reg;

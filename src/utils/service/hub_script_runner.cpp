@@ -302,9 +302,11 @@ void HubScriptRunner::worker_main_()
         });
     state.subscribe_band_left(
         [enqueue](const std::string &band, const std::string &role_uid,
+                  const std::string &role_name,
                   const std::string &reason) {
             enqueue("band_left", band,
                     nlohmann::json{{"band", band}, {"role_uid", role_uid},
+                                    {"role_name", role_name},
                                     {"reason", reason}});
         });
     state.subscribe_peer_connected(

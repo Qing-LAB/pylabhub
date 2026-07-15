@@ -161,14 +161,14 @@ inline constexpr uint8_t kShmMinor             = 0;
 // `role_name` instead of role-flavor-specific keys.  Renames:
 //   - CONSUMER_REG_REQ: `consumer_uid`/`consumer_name` → `role_uid`/`role_name`
 //   - HEARTBEAT_REQ:    `uid`                          → `role_uid`
-//   - BAND_BROADCAST_REQ: `sender_uid`                 → `role_uid`
+//   - BAND_BROADCAST_SEND_NOTIFY: `sender_uid`         → `role_uid`
 //   - CONSUMER_DIED_NOTIFY body: `consumer_uid`        → `role_uid`
 // Plus broker-side grammar + side-aware tag validation at every gate
 // (HEP-CORE-0033 §G2.2.0b): empty / malformed / wrong-tag role_uid is
 // rejected with INVALID_REQUEST or INVALID_ROLE_TAG (HEARTBEAT_REQ
 // drops with WARN since fire-and-forget).  Old clients using legacy
 // field names get the typed grammar error.  Federation peer-context
-// `sender_uid` (HUB_TARGETED_MSG, CHANNEL_BROADCAST_REQ from hubs) is
+// `sender_uid` (HUB_TARGETED_MSG, CHANNEL_BROADCAST_SEND_NOTIFY from hubs) is
 // PRESERVED — that field carries a peer.uid, not a role.uid, and
 // remains distinct.  Inbox-message `sender_uid` (PyInboxMsg /
 // IncomingMessage / plh_inbox_msg_t) is also PRESERVED — it's the

@@ -2076,6 +2076,99 @@ brevity the class catalog below notes "+ security triple" or
   `channel_topology`, `data_transport`, `zmq_pubkey`,
   `broker_proto`, `schema_hash`, `schema_version`, `schema_id`,
   `schema_blds`, `schema_owner`, `abi_fingerprint` + security triple.
+
+  > ⚠ **ERRATUM PENDING — supersede this entry with a split into
+  > two body classes.**
+  >
+  > HEP-CORE-0034 §10.2 is the authority on consumer-side schema
+  > wire fields and explicitly requires the `expected_` prefix
+  > (`expected_schema_id`, `expected_schema_hash`,
+  > `expected_schema_blds`, `expected_schema_packing`, plus
+  > optional `expected_flexzone_blds` / `expected_flexzone_packing`).
+  > §10.2 last paragraph: *"The form `expected_blds` /
+  > `expected_packing` (no `schema_` infix) was used in pre-Phase-4d
+  > code and is no longer accepted."*  The unified `RegReqBody`
+  > catalog above with a `schema_hash` accessor on both REQ shapes
+  > conflicts with that.  Producer's `schema_hash` is a declaration;
+  > consumer's `expected_schema_hash` is a citation — the wire-level
+  > prefix carries the semantic distinction.
+  >
+  > Pending amended catalog entries (to replace the RegReqBody line
+  > above when this HEP is next edited):
+  > - **ProducerRegReqBody** (`REG_REQ`): `channel_name`, `role_uid`,
+  >   `role_type`, `channel_topology`, `data_transport`,
+  >   `zmq_pubkey`, plus HEP-0034 §10.1 producer schema fields
+  >   (`schema_id`, `schema_hash`, `schema_blds`, `schema_packing`,
+  >   `schema_owner`, optional `flexzone_blds`, `flexzone_packing`),
+  >   plus `producer_pid`, `zmq_node_endpoint` (required when
+  >   `data_transport == "zmq"` AND producer is binding side per
+  >   HEP-CORE-0017 §3.3.0 topology matrix),
+  >   `shm_capability_endpoint` (required when
+  >   `data_transport == "shm"`), optional inbox companion fields
+  >   per HEP-CORE-0027 §4.1, `abi_fingerprint`, optional `build_id`
+  >   + security triple.  Note: HEP-CORE-0036 §5b.4's single
+  >   `data_transport` string is the transport discriminator;
+  >   HEP-CORE-0007 §12.3's older `has_shared_memory` +
+  >   `shm_name` shape is superseded.
+  > - **ConsumerRegReqBody** (`CONSUMER_REG_REQ`): `channel_name`,
+  >   `role_uid`, `role_type`, `channel_topology`,
+  >   `data_transport`, `zmq_pubkey` (consumer's own identity
+  >   pubkey), plus HEP-0034 §10.2 consumer schema fields
+  >   (`expected_schema_id`, `expected_schema_hash`,
+  >   `expected_schema_blds`, `expected_schema_packing`, optional
+  >   `expected_flexzone_blds`, `expected_flexzone_packing`), plus
+  >   `consumer_pid`, `consumer_hostname`, optional inbox companion
+  >   fields, `abi_fingerprint`, optional `build_id` + security
+  >   triple.
+  >
+  > **role_name is OPTIONAL** on both ProducerRegReqBody and
+  > ConsumerRegReqBody.  It is a redundant human-friendly label —
+  > `role_uid` per HEP-CORE-0033 §G2.2.0b already embeds a name
+  > component (`<tag>.<name>.<unique>`), so `role_name` adds no
+  > correctness or discrimination.  §7.1's required-field table
+  > (`channel_name, role_uid, role_type, zmq_pubkey, data_transport`)
+  > is the authoritative required list; wire body classes MUST match
+  > it.  Validation follows the "when non-empty" pattern from
+  > HEP-CORE-0023 §2.5.4: absent is OK; when present, MUST be a
+  > string (identifier-grammar check runs at gate_grammar
+  > downstream, not at wire body class construction).  Implementers
+  > use `d::validate_if_present(body_, "role_name", JsonKind::String)`
+  > in the body ctor.
+  >
+  > `schema_version` on the current catalog is not a separate wire
+  > field.  Version rides inside `schema_id` per HEP-CORE-0033
+  > §G2.2.0b naming grammar (`$base.v<N>` form).  Contract identity
+  > is `(owner_uid, schema_id)` where `schema_id` includes the
+  > version; the fingerprint (`schema_hash`) is a separate CONTENT
+  > check.  Two contracts with the same fingerprint but different
+  > versions produce different `schema_id` strings and are rejected
+  > as different contracts by string-equality on `schema_id` alone.
+  > All schema-id construction / parsing / validation MUST go
+  > through the unified API in `naming.hpp`:
+  > `pylabhub::hub::make_schema_id(base, version)` (canonical
+  > constructor; to be added),
+  > `pylabhub::hub::parse_schema_id(id_view)` (canonical parser),
+  > `pylabhub::hub::is_valid_identifier(id, IdentifierKind::Schema)`
+  > (grammar check).  Removed `schema_version` from both amended
+  > entries.  See C2 in the pending errata batch.
+  >
+  > `broker_proto` scalar on the current catalog is retired for
+  > REG_REQ / CONSUMER_REG_REQ.  The canonical wire-version + ABI
+  > carrier per HEP-CORE-0032 §8 is the `abi_fingerprint` object
+  > — 7 axes (`library`, `shm`, `broker_proto`, `zmq_frame`,
+  > `script_api`, `script_engine`, `config`), each major/minor,
+  > verified via `pylabhub::version::verify_peer_versions()` with
+  > the §8.5 policy taxonomy (`Ok` / `BuildOnly` / `MinorMismatch`
+  > / `MajorMismatchAccepted` / `MajorMismatchRejected` / `Absent`
+  > / `InvalidEnvelope`).  Strict mode opt-in via
+  > `broker.strict_abi_mismatch`.  Removed the scalar
+  > `broker_proto` field from both amended entries.  Scalar
+  > `broker_proto` IS retained on HEP-CORE-0036 §6.5 auth-family
+  > messages (`CHANNEL_AUTH_CHANGED_NOTIFY`,
+  > `GET_CHANNEL_AUTH_REQ`, `GET_CHANNEL_AUTH_ACK`) — that is a
+  > per-auth-message protocol version, distinct from the
+  > initial-REG ABI verification.  See C3 in the pending errata
+  > batch.
 - **RegAckBody** (`REG_ACK`, `CONSUMER_REG_ACK`): `status`,
   `error_code`, `message`, `channel_name`, `instance_id`,
   `snapshot_version`, `heartbeat`, `initial_allowlist`,
