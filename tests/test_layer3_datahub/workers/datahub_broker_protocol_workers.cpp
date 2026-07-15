@@ -256,55 +256,11 @@ int run_with_host(std::string_view worker_name,
 // ============================================================================
 // 1. CHECKSUM_ERROR_REPORT — broker forwards as CHANNEL_EVENT_NOTIFY
 // ============================================================================
-
-int checksum_error_report_forwarded_to_producer()
-{
-    return run_with_host(
-        "broker_protocol::checksum_error_report_forwarded_to_producer",
-        {"prod." + pid_chan("proto.checksum.prod"), "REPORT-" + pid_chan("proto.checksum.prod")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            broker.reset();
-            BrokerService::Config cfg;
-            cfg.endpoint               = "tcp://127.0.0.1:0";
-            cfg.schema_search_dirs     = {};
-            cfg.checksum_repair_policy = ChecksumRepairPolicy::NotifyOnly;
-            broker.emplace(start_local_broker(std::move(cfg), curve));
-
-            const std::string channel = pid_chan("proto.checksum.prod");
-            const std::string uid     = "prod." + channel;
-
-            auto prod_events = std::make_shared<EventCollector>();
-            BrcHandle prod_bh;
-            prod_bh.brc.on_notification(
-                [prod_events](const std::string &type, const json &body) {
-                    if (type == "CHANNEL_EVENT_NOTIFY")
-                        prod_events->push(type, body);
-                });
-            prod_bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            BrcHandle reporter;
-            reporter.start(broker->endpoint, broker->pubkey,
-                           "REPORT-" + channel, pylabhub::tests::role_keystore_name("REPORT-" + channel));
-
-            json report;
-            report["channel_name"] = channel;
-            report["slot_index"]   = 42;
-            report["error"]        = "bad CRC in slot 42";
-            report["reporter_pid"] = ::getpid();
-            reporter.brc.send_checksum_error(report);
-
-            ASSERT_TRUE(prod_events->wait_for(1, 3000))
-                << "Producer did not receive checksum error notify";
-
-            reporter.stop();
-            prod_bh.stop();
-        },
-        {"Cat2 checksum error"});
-}
+// checksum_error_report_forwarded_to_producer MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1, broker "checksum_notify"
+// profile).  checksum_error_report_unknown_channel_silent stays here —
+// it inspects the broker's in-process channel snapshot for liveness
+// (Round 3 RATIONALE).
 
 int checksum_error_report_unknown_channel_silent()
 {
@@ -593,231 +549,14 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows()
 // ============================================================================
 // 8. CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to producer + ALL consumers
 // ============================================================================
-
-int broadcast_fan_out_delivered_to_producer_and_consumers()
-{
-    return run_with_host(
-        "broker_protocol::broadcast_fan_out_delivered_to_producer_and_consumers",
-        {"prod." + pid_chan("proto.bcast.fanout"), "cons.first." + pid_chan("proto.bcast.fanout"), "cons.second." + pid_chan("proto.bcast.fanout"), "prod.broadcast.sender.pid" + std::to_string(static_cast<unsigned long>(::getpid()))},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel   = pid_chan("proto.bcast.fanout");
-            const std::string prod_uid  = "prod." + channel;
-            const std::string cons1_uid = "cons.first." + channel;
-            const std::string cons2_uid = "cons.second." + channel;
-            const std::string send_uid  =
-                "prod.broadcast.sender.pid" +
-                std::to_string(static_cast<unsigned long>(::getpid()));
-
-            auto prod_evts  = std::make_shared<EventCollector>();
-            auto cons1_evts = std::make_shared<EventCollector>();
-            auto cons2_evts = std::make_shared<EventCollector>();
-
-            auto only_bcast = [](std::shared_ptr<EventCollector> col) {
-                return [col](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY") col->push(t, b);
-                };
-            };
-
-            BrcHandle prod_bh;
-            prod_bh.brc.on_notification(only_bcast(prod_evts));
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            // Fan-out — 1 producer, 2 consumers.  Explicit topology
-            // required under the 2026-07-08 topology migration
-            // (default is one-to-one; second consumer would trip
-            // ONE_TO_ONE_CARDINALITY_VIOLATED).
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid, std::nullopt,
-                              /*channel_topology=*/"fan-out"), 3000);
-            ASSERT_TRUE(reg.has_value());
-            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-            BrcHandle cons1_bh;
-            cons1_bh.brc.on_notification(only_bcast(cons1_evts));
-            cons1_bh.start(broker->endpoint, broker->pubkey, cons1_uid, pylabhub::tests::role_keystore_name(cons1_uid));
-            {
-                auto opts = make_cons_opts(channel, cons1_uid, std::nullopt,
-                                            /*channel_topology=*/"fan-out");
-                opts["consumer_pid"] =
-                    static_cast<uint64_t>(::getpid()) * 100u + 1u;
-                ASSERT_TRUE(cons1_bh.brc.register_consumer(opts, 3000)
-                                .has_value());
-            }
-
-            BrcHandle cons2_bh;
-            cons2_bh.brc.on_notification(only_bcast(cons2_evts));
-            cons2_bh.start(broker->endpoint, broker->pubkey, cons2_uid, pylabhub::tests::role_keystore_name(cons2_uid));
-            {
-                auto opts = make_cons_opts(channel, cons2_uid, std::nullopt,
-                                            /*channel_topology=*/"fan-out");
-                opts["consumer_pid"] =
-                    static_cast<uint64_t>(::getpid()) * 100u + 2u;
-                ASSERT_TRUE(cons2_bh.brc.register_consumer(opts, 3000)
-                                .has_value());
-            }
-
-            BrcHandle sender_bh;
-            auto sender_evts = std::make_shared<EventCollector>();
-            sender_bh.brc.on_notification(only_bcast(sender_evts));
-            sender_bh.start(broker->endpoint, broker->pubkey, send_uid, pylabhub::tests::role_keystore_name(send_uid));
-
-            sender_bh.brc.send_broadcast(channel, send_uid,
-                                          "hello-fan-out", "");
-
-            ASSERT_TRUE(prod_evts->wait_for(1, 5000))
-                << "producer did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
-            ASSERT_TRUE(cons1_evts->wait_for(1, 5000))
-                << "cons1 did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
-            ASSERT_TRUE(cons2_evts->wait_for(1, 5000))
-                << "cons2 did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
-
-            auto check_payload =
-                [&](const json &b, const char *who) {
-                    EXPECT_EQ(b.value("channel_name", ""), channel) << who;
-                    EXPECT_EQ(b.value("event", ""), "broadcast") << who;
-                    EXPECT_EQ(b.value("sender_uid", ""), send_uid) << who;
-                    EXPECT_EQ(b.value("message", ""), "hello-fan-out") << who;
-                };
-            {
-                std::lock_guard<std::mutex> lk(prod_evts->mtx);
-                ASSERT_FALSE(prod_evts->events.empty());
-                check_payload(prod_evts->events.front().second, "producer");
-            }
-            {
-                std::lock_guard<std::mutex> lk(cons1_evts->mtx);
-                ASSERT_FALSE(cons1_evts->events.empty());
-                check_payload(cons1_evts->events.front().second, "cons1");
-            }
-            {
-                std::lock_guard<std::mutex> lk(cons2_evts->mtx);
-                ASSERT_FALSE(cons2_evts->events.empty());
-                check_payload(cons2_evts->events.front().second, "cons2");
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            EXPECT_EQ(sender_evts->size(), 0u)
-                << "external (non-member) sender unexpectedly received "
-                   "NOTIFY";
-
-            sender_bh.stop();
-            cons2_bh.stop();
-            cons1_bh.stop();
-            prod_bh.stop();
-        });
-}
-
-int broadcast_fan_out_data_payload_round_trip()
-{
-    return run_with_host(
-        "broker_protocol::broadcast_fan_out_data_payload_round_trip",
-        {"prod." + pid_chan("proto.bcast.payload"), "cons." + pid_chan("proto.bcast.payload"), "ext.bcast.payload.uid00000077"},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  = pid_chan("proto.bcast.payload");
-            const std::string prod_uid = "prod." + channel;
-            const std::string cons_uid = "cons." + channel;
-            const std::string send_uid = "ext.bcast.payload.uid00000077";
-            const std::string msg      = "payload-test";
-            const std::string data     =
-                R"({"k":"v","n":42,"arr":[1,2,3]})";
-
-            auto cons_evts = std::make_shared<EventCollector>();
-
-            BrcHandle prod_bh;
-            prod_bh.start(broker->endpoint, broker->pubkey, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            ASSERT_TRUE(prod_bh.brc.register_channel(
-                            make_reg_opts(channel, prod_uid), 3000)
-                            .has_value());
-            // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-
-            BrcHandle cons_bh;
-            cons_bh.brc.on_notification(
-                [cons_evts](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
-                        cons_evts->push(t, b);
-                });
-            cons_bh.start(broker->endpoint, broker->pubkey, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
-            ASSERT_TRUE(cons_bh.brc.register_consumer(
-                            make_cons_opts(channel, cons_uid), 3000)
-                            .has_value());
-
-            BrcHandle sender_bh;
-            sender_bh.start(broker->endpoint, broker->pubkey, send_uid, pylabhub::tests::role_keystore_name(send_uid));
-            sender_bh.brc.send_broadcast(channel, send_uid, msg, data);
-
-            ASSERT_TRUE(cons_evts->wait_for(1, 5000))
-                << "consumer did not receive broadcast NOTIFY with data "
-                   "payload";
-
-            std::lock_guard<std::mutex> lk(cons_evts->mtx);
-            ASSERT_FALSE(cons_evts->events.empty());
-            const auto &body = cons_evts->events.front().second;
-            EXPECT_EQ(body.value("channel_name", ""), channel);
-            EXPECT_EQ(body.value("event", ""), "broadcast");
-            EXPECT_EQ(body.value("sender_uid", ""), send_uid);
-            EXPECT_EQ(body.value("message", ""), msg);
-            EXPECT_EQ(body.value("data", ""), data)
-                << "data payload was modified in transit";
-
-            sender_bh.stop();
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
-
-int broadcast_unknown_channel_no_notify_delivered()
-{
-    return run_with_host(
-        "broker_protocol::broadcast_unknown_channel_no_notify_delivered",
-        {"prod." + pid_chan("proto.bcast.other"), "cons." + pid_chan("proto.bcast.other"), "ext.bcast.unknown.uid00000088"},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel  = pid_chan("proto.bcast.unknown");
-            const std::string send_uid = "ext.bcast.unknown.uid00000088";
-
-            const std::string other_ch  = pid_chan("proto.bcast.other");
-            const std::string other_prd = "prod." + other_ch;
-            const std::string spec_uid  = "cons." + other_ch;
-            auto spec_evts = std::make_shared<EventCollector>();
-
-            BrcHandle other_prod;
-            other_prod.start(broker->endpoint, broker->pubkey, other_prd, pylabhub::tests::role_keystore_name(other_prd));
-            ASSERT_TRUE(other_prod.brc.register_channel(
-                            make_reg_opts(other_ch, other_prd), 3000)
-                            .has_value());
-
-            BrcHandle spec_bh;
-            spec_bh.brc.on_notification(
-                [spec_evts](const std::string &t, const json &b) {
-                    if (t == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
-                        spec_evts->push(t, b);
-                });
-            spec_bh.start(broker->endpoint, broker->pubkey, spec_uid, pylabhub::tests::role_keystore_name(spec_uid));
-            ASSERT_TRUE(spec_bh.brc.register_consumer(
-                            make_cons_opts(other_ch, spec_uid), 3000)
-                            .has_value());
-
-            BrcHandle sender_bh;
-            sender_bh.start(broker->endpoint, broker->pubkey, send_uid, pylabhub::tests::role_keystore_name(send_uid));
-            sender_bh.brc.send_broadcast(channel, send_uid,
-                                          "into-the-void", "");
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
-            EXPECT_EQ(spec_evts->size(), 0u)
-                << "broadcast for unknown channel leaked to other-channel "
-                   "consumer";
-
-            EXPECT_NO_THROW({
-                auto snap =
-                    broker->host->broker().query_channel_snapshot();
-                (void)snap;
-            }) << "broker stopped servicing requests after broadcast for "
-                  "unknown channel";
-
-            sender_bh.stop();
-            spec_bh.stop();
-            other_prod.stop();
-        });
-}
+// broadcast_fan_out_delivered_to_producer_and_consumers,
+// broadcast_fan_out_data_payload_round_trip, and
+// broadcast_unknown_channel_no_notify_delivered MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1, parent-side NOTIFY
+// drain).  broadcast_fan_out_hub_queue_path_fans_out_same stays here —
+// it triggers the broadcast via the in-process hub API
+// (`request_broadcast_channel`), which has no wire equivalent, and
+// asserts sender_uid==self_hub_uid (Round 3 RATIONALE).
 
 int broadcast_fan_out_hub_queue_path_fans_out_same()
 {
@@ -964,8 +703,8 @@ struct BrokerProtocolRegistrar
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_protocol;
 
-                if (sc == "checksum_error_report_forwarded_to_producer")
-                    return checksum_error_report_forwarded_to_producer();
+                // checksum_error_report_forwarded_to_producer MIGRATED to
+                // Pattern 4 (task #54 Round 1).
                 if (sc == "checksum_error_report_unknown_channel_silent")
                     return checksum_error_report_unknown_channel_silent();
                 // closing_notify_delivered_to_producer_and_consumer
@@ -980,12 +719,10 @@ struct BrokerProtocolRegistrar
                 // role_presence_req_* / role_info_req_* / transport_* /
                 // reg_ack_* / consumer_reg_ack_contains_heartbeat_block
                 // MIGRATED to Pattern 4 (task #54 Round 1).
-                if (sc == "broadcast_fan_out_delivered_to_producer_and_consumers")
-                    return broadcast_fan_out_delivered_to_producer_and_consumers();
-                if (sc == "broadcast_fan_out_data_payload_round_trip")
-                    return broadcast_fan_out_data_payload_round_trip();
-                if (sc == "broadcast_unknown_channel_no_notify_delivered")
-                    return broadcast_unknown_channel_no_notify_delivered();
+                // broadcast_fan_out_delivered_to_producer_and_consumers,
+                // broadcast_fan_out_data_payload_round_trip,
+                // broadcast_unknown_channel_no_notify_delivered MIGRATED to
+                // Pattern 4 (task #54 Round 1).
                 if (sc == "broadcast_fan_out_hub_queue_path_fans_out_same")
                     return broadcast_fan_out_hub_queue_path_fans_out_same();
                 // Audit TR1 wire-conformance shape tests

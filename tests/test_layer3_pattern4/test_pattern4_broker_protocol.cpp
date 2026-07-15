@@ -30,7 +30,9 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -102,15 +104,17 @@ protected:
         const pylabhub::tests::pattern4::Pattern4Setup &setup,
         const std::string                              &channel,
         const std::string                              &uid,
-        bool                                            shm)
+        bool                                            shm,
+        const std::string                              &topology = {})
     {
         namespace sec = pylabhub::utils::security;
         pylabhub::hub::ProducerRegInputs in;
-        in.channel    = channel;
-        in.role_uid   = uid;
-        in.role_name  = "test_producer";
-        in.role_type  = "producer";
-        in.zmq_pubkey = setup.curve.role(uid).public_z85;
+        in.channel          = channel;
+        in.role_uid         = uid;
+        in.role_name        = "test_producer";
+        in.role_type        = "producer";
+        in.channel_topology = topology;
+        in.zmq_pubkey       = setup.curve.role(uid).public_z85;
         if (shm)
         {
             in.has_shm                  = true;
@@ -133,16 +137,43 @@ protected:
     nlohmann::json consumer_reg_body(
         const pylabhub::tests::pattern4::Pattern4Setup &setup,
         const std::string                              &channel,
-        const std::string                              &uid)
+        const std::string                              &uid,
+        const std::string                              &topology = {})
     {
         pylabhub::hub::ConsumerRegInputs in;
-        in.channel        = channel;
-        in.role_uid       = uid;
-        in.role_name      = "test_consumer";
-        in.role_type      = "consumer";
-        in.data_transport = "zmq";
-        in.zmq_pubkey     = setup.curve.role(uid).public_z85;
+        in.channel          = channel;
+        in.role_uid         = uid;
+        in.role_name        = "test_consumer";
+        in.role_type        = "consumer";
+        in.data_transport   = "zmq";
+        in.channel_topology = topology;
+        in.zmq_pubkey       = setup.curve.role(uid).public_z85;
         return pylabhub::hub::build_consumer_reg_payload(in);
+    }
+
+    /// Drain unsolicited frames from `client` until one of msg_type
+    /// `want` arrives (returns its body) or the budget elapses (returns
+    /// nullopt).  Non-matching frames (e.g. an interleaved
+    /// CHANNEL_AUTH_CHANGED_NOTIFY) are discarded.  Used to observe
+    /// broker-pushed NOTIFYs on a registered member's DEALER without a
+    /// request/reply pairing.
+    std::optional<nlohmann::json> drain_for(
+        BrokerWireClient          &client,
+        std::string_view           want,
+        std::chrono::milliseconds  budget)
+    {
+        using clock = std::chrono::steady_clock;
+        const auto deadline = clock::now() + budget;
+        while (true)
+        {
+            const auto now = clock::now();
+            if (now >= deadline) return std::nullopt;
+            auto frame = client.receive(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - now));
+            if (!frame) return std::nullopt;
+            if (frame->first == want) return frame->second;
+        }
     }
 
     /// Producer REG_REQ → assert REG_ACK.status=="success".  ZMQ
@@ -155,10 +186,12 @@ protected:
         const pylabhub::tests::pattern4::Pattern4Setup &setup,
         const std::string                              &channel,
         const std::string                              &uid,
-        nlohmann::json                                 *out_ack = nullptr)
+        nlohmann::json                                 *out_ack = nullptr,
+        const std::string                              &topology = {})
     {
         auto reply = client.request(
-            "REG_REQ", producer_reg_body(setup, channel, uid, /*shm=*/false),
+            "REG_REQ",
+            producer_reg_body(setup, channel, uid, /*shm=*/false, topology),
             "REG_ACK", std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "REG_REQ timed out for " << uid;
         ASSERT_EQ(reply->value("status", std::string{}), "success")
@@ -196,10 +229,11 @@ protected:
         const pylabhub::tests::pattern4::Pattern4Setup &setup,
         const std::string                              &channel,
         const std::string                              &uid,
-        nlohmann::json                                 *out_ack = nullptr)
+        nlohmann::json                                 *out_ack = nullptr,
+        const std::string                              &topology = {})
     {
         auto reply = client.request(
-            "CONSUMER_REG_REQ", consumer_reg_body(setup, channel, uid),
+            "CONSUMER_REG_REQ", consumer_reg_body(setup, channel, uid, topology),
             "CONSUMER_REG_ACK",
             std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value())
@@ -1100,6 +1134,232 @@ TEST_F(Pattern4BrokerProtocolTest, ConsumerRegAck_ContainsHeartbeatBlock)
     EXPECT_TRUE(hb.contains("heartbeat_interval_ms"));
     EXPECT_TRUE(hb.contains("ready_miss_heartbeats"));
     EXPECT_TRUE(hb.contains("pending_miss_heartbeats"));
+
+    broker.signal_quit();
+}
+
+// ─── CHECKSUM_ERROR_REPORT → CHANNEL_EVENT_NOTIFY forward ──────────────────
+//
+// Broker profile `checksum_notify` (ChecksumRepairPolicy::NotifyOnly):
+// a reporter's CHECKSUM_ERROR_REPORT is forwarded to the channel's
+// producer as an unsolicited CHANNEL_EVENT_NOTIFY (HEP-CORE-0019 Cat2).
+
+TEST_F(Pattern4BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
+{
+    using namespace std::chrono;
+    const std::string suffix       = ".pid" + std::to_string(::getpid());
+    const std::string channel      = "proto.checksum.prod" + suffix;
+    const std::string prod_uid     = "prod." + channel;
+    const std::string reporter_uid = "reporter" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_checksum_fwd");
+    const auto     setup    = make_pattern4_setup({prod_uid, reporter_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "checksum_notify"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+
+    auto           reporter = make_wire_client(ctx, setup, reporter_uid);
+    nlohmann::json report;
+    report["channel_name"] = channel;
+    report["slot_index"]   = 42;
+    report["error"]        = "bad CRC in slot 42";
+    report["reporter_pid"] = pylabhub::platform::get_pid();
+    reporter.send("CHECKSUM_ERROR_REPORT", report);
+
+    auto notify = drain_for(prod, "CHANNEL_EVENT_NOTIFY",
+                             milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(notify.has_value())
+        << "producer did not receive the forwarded checksum-error NOTIFY";
+    EXPECT_EQ(notify->value("channel_name", std::string{}), channel)
+        << "forwarded NOTIFY body=" << notify->dump();
+
+    broker.signal_quit();
+}
+
+// ─── CHANNEL_BROADCAST_SEND_NOTIFY → fan-out CHANNEL_BROADCAST_DELIVER_NOTIFY ─
+//
+// A sender's broadcast fans out to the channel's producer + ALL
+// consumers, and NOT to a non-member sender (HEP-CORE-0030 broadcast
+// semantics).  Members are observed via a parent-side NOTIFY drain.
+
+TEST_F(Pattern4BrokerProtocolTest, BroadcastFanOut_DeliveredToProducerAndAllConsumers)
+{
+    using namespace std::chrono;
+    const std::string suffix    = ".pid" + std::to_string(::getpid());
+    const std::string channel   = "proto.bcast.fanout" + suffix;
+    const std::string prod_uid  = "prod." + channel;
+    const std::string cons1_uid = "cons.first." + channel;
+    const std::string cons2_uid = "cons.second." + channel;
+    const std::string send_uid  = "prod.broadcast.sender" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_bcast_fanout");
+    const auto     setup =
+        make_pattern4_setup({prod_uid, cons1_uid, cons2_uid, send_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    // Fan-out — 1 producer, 2 consumers.  Explicit topology required
+    // (default one-to-one would trip ONE_TO_ONE_CARDINALITY_VIOLATED on
+    // the second consumer).
+    auto prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer(prod, setup, channel, prod_uid, nullptr, "fan-out"));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons1 = make_wire_client(ctx, setup, cons1_uid);
+    ASSERT_NO_FATAL_FAILURE(
+        register_consumer(cons1, setup, channel, cons1_uid, nullptr, "fan-out"));
+    auto cons2 = make_wire_client(ctx, setup, cons2_uid);
+    ASSERT_NO_FATAL_FAILURE(
+        register_consumer(cons2, setup, channel, cons2_uid, nullptr, "fan-out"));
+
+    auto           sender = make_wire_client(ctx, setup, send_uid);
+    nlohmann::json bcast;
+    bcast["target_channel"] = channel;
+    bcast["sender_uid"]     = send_uid;
+    bcast["message"]        = "hello-fan-out";
+    bcast["data"]           = "";
+    sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
+
+    auto check = [&](BrokerWireClient &c, const char *who) {
+        auto n = drain_for(c, "CHANNEL_BROADCAST_DELIVER_NOTIFY",
+                            milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(n.has_value())
+            << who << " did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
+        EXPECT_EQ(n->value("channel_name", std::string{}), channel) << who;
+        EXPECT_EQ(n->value("event", std::string{}), "broadcast") << who;
+        EXPECT_EQ(n->value("sender_uid", std::string{}), send_uid) << who;
+        EXPECT_EQ(n->value("message", std::string{}), "hello-fan-out") << who;
+    };
+    ASSERT_NO_FATAL_FAILURE(check(prod, "producer"));
+    ASSERT_NO_FATAL_FAILURE(check(cons1, "cons1"));
+    ASSERT_NO_FATAL_FAILURE(check(cons2, "cons2"));
+
+    // The external non-member sender must NOT receive the fan-out.
+    auto leaked = drain_for(sender, "CHANNEL_BROADCAST_DELIVER_NOTIFY",
+                             milliseconds{300});
+    EXPECT_FALSE(leaked.has_value())
+        << "non-member sender unexpectedly received the broadcast NOTIFY";
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, BroadcastFanOut_DataPayloadRoundTrip)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "proto.bcast.payload" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string send_uid = "ext.bcast.payload" + suffix;
+    const std::string msg      = "payload-test";
+    const std::string data     = R"({"k":"v","n":42,"arr":[1,2,3]})";
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_bcast_data");
+    const auto setup = make_pattern4_setup({prod_uid, cons_uid, send_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+
+    auto           sender = make_wire_client(ctx, setup, send_uid);
+    nlohmann::json bcast;
+    bcast["target_channel"] = channel;
+    bcast["sender_uid"]     = send_uid;
+    bcast["message"]        = msg;
+    bcast["data"]           = data;
+    sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
+
+    auto n = drain_for(cons, "CHANNEL_BROADCAST_DELIVER_NOTIFY",
+                        milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(n.has_value())
+        << "consumer did not receive broadcast NOTIFY with data payload";
+    EXPECT_EQ(n->value("channel_name", std::string{}), channel);
+    EXPECT_EQ(n->value("event", std::string{}), "broadcast");
+    EXPECT_EQ(n->value("sender_uid", std::string{}), send_uid);
+    EXPECT_EQ(n->value("message", std::string{}), msg);
+    EXPECT_EQ(n->value("data", std::string{}), data)
+        << "data payload was modified in transit";
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, BroadcastUnknownChannel_NoNotifyDelivered)
+{
+    using namespace std::chrono;
+    const std::string suffix    = ".pid" + std::to_string(::getpid());
+    const std::string other_ch  = "proto.bcast.other" + suffix;
+    const std::string other_prd = "prod." + other_ch;
+    const std::string spec_uid  = "cons." + other_ch;
+    const std::string unknown   = "proto.bcast.unknown" + suffix;
+    const std::string send_uid  = "ext.bcast.unknown" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_bcast_unknown");
+    const auto setup = make_pattern4_setup({other_prd, spec_uid, send_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           other_prod = make_wire_client(ctx, setup, other_prd);
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer(other_prod, setup, other_ch, other_prd));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(other_prod, other_ch, other_prd));
+
+    auto spec = make_wire_client(ctx, setup, spec_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(spec, setup, other_ch, spec_uid));
+
+    auto           sender = make_wire_client(ctx, setup, send_uid);
+    nlohmann::json bcast;
+    bcast["target_channel"] = unknown;  // no such channel
+    bcast["sender_uid"]     = send_uid;
+    bcast["message"]        = "into-the-void";
+    bcast["data"]           = "";
+    sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
+
+    // The unrelated other-channel consumer must not receive the leak.
+    auto leaked = drain_for(spec, "CHANNEL_BROADCAST_DELIVER_NOTIFY",
+                             milliseconds{300});
+    EXPECT_FALSE(leaked.has_value())
+        << "broadcast for an unknown channel leaked to another channel's "
+           "consumer";
+
+    // Broker liveness after the unknown-channel broadcast — wire-observed
+    // (a subsequent request still gets a reply).  This replaces the old
+    // in-process query_channel_snapshot() liveness probe.
+    nlohmann::json req;
+    req["role_uid"] = other_prd;
+    auto pres = sender.request("ROLE_PRESENCE_REQ", req, "ROLE_PRESENCE_ACK",
+                                milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(pres.has_value())
+        << "broker stopped servicing requests after unknown-channel broadcast";
+    EXPECT_TRUE(pres->value("present", false))
+        << "liveness probe: registered other-channel producer should be present";
 
     broker.signal_quit();
 }

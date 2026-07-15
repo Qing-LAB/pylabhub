@@ -28,12 +28,8 @@ class BrokerProtocolTest : public IsolatedProcessTest
 // 1. CHECKSUM_ERROR_REPORT — broker forwards as CHANNEL_EVENT_NOTIFY
 // ============================================================================
 
-TEST_F(BrokerProtocolTest, ChecksumErrorReport_ForwardedToProducer)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.checksum_error_report_forwarded_to_producer");
-    ExpectWorkerOk(w);
-}
+// ChecksumErrorReport_ForwardedToProducer MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).
 
 TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 {
@@ -112,26 +108,10 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 // 8. CHANNEL_BROADCAST_SEND_NOTIFY — fan-out to producer + ALL consumers
 // ============================================================================
 
-TEST_F(BrokerProtocolTest, BroadcastFanOut_DeliveredToProducerAndAllConsumers)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.broadcast_fan_out_delivered_to_producer_and_consumers");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, BroadcastFanOut_DataPayloadRoundTrip)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.broadcast_fan_out_data_payload_round_trip");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, BroadcastUnknownChannel_NoNotifyDelivered)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.broadcast_unknown_channel_no_notify_delivered");
-    ExpectWorkerOk(w);
-}
+// BroadcastFanOut_DeliveredToProducerAndAllConsumers,
+// BroadcastFanOut_DataPayloadRoundTrip, and
+// BroadcastUnknownChannel_NoNotifyDelivered MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).
 
 TEST_F(BrokerProtocolTest, BroadcastFanOut_HubQueuePath_FansOutSame)
 {

@@ -11,8 +11,9 @@ namespace pylabhub::tests::worker
 namespace broker_protocol
 {
 
-// Checksum error forwarding
-int checksum_error_report_forwarded_to_producer();
+// Checksum error forwarding.  forwarded_to_producer MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).  unknown_channel_silent
+// stays here (in-process snapshot liveness — Round 3 RATIONALE).
 int checksum_error_report_unknown_channel_silent();
 
 // Closing notify fanout — RETIRED 2026-06-28: contract absorbed by
@@ -34,10 +35,10 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows();
 // CONSUMER_REG_ACK heartbeat-block tests MIGRATED to
 // tests/test_layer3_pattern4/ (task #54 Round 1).
 
-// CHANNEL_BROADCAST_SEND_NOTIFY fan-out
-int broadcast_fan_out_delivered_to_producer_and_consumers();
-int broadcast_fan_out_data_payload_round_trip();
-int broadcast_unknown_channel_no_notify_delivered();
+// CHANNEL_BROADCAST_SEND_NOTIFY fan-out.  delivered / data_payload /
+// unknown_channel MIGRATED to tests/test_layer3_pattern4/ (task #54
+// Round 1).  hub_queue_path stays here — in-process broadcast trigger
+// (request_broadcast_channel) with no wire equivalent (Round 3 RATIONALE).
 int broadcast_fan_out_hub_queue_path_fans_out_same();
 
 // Audit TR1 — wire-conformance ACK-shape regressions (2026-05-17)
