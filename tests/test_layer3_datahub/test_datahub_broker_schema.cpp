@@ -23,26 +23,7 @@ TEST_F(BrokerSchemaTest, SchemaHash_StoredOnReg)
     ExpectWorkerOk(w);
 }
 
-TEST_F(BrokerSchemaTest, SchemaId_StoredOnReg)
-{
-    auto w = SpawnWorker("broker_schema.schema_id_stored_on_reg");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerSchemaTest, ConsumerSchemaId_Match_Succeeds)
-{
-    auto w = SpawnWorker("broker_schema.consumer_schema_id_match_succeeds");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerSchemaTest, ConsumerSchemaId_Mismatch_Fails)
-{
-    auto w = SpawnWorker("broker_schema.consumer_schema_id_mismatch_fails");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerSchemaTest, ConsumerSchemaId_EmptyProducer_Fails)
-{
-    auto w = SpawnWorker("broker_schema.consumer_schema_id_empty_producer_fails");
-    ExpectWorkerOk(w);
-}
+// SchemaId_StoredOnReg + ConsumerSchemaId_{Match,Mismatch,EmptyProducer}
+// MIGRATED to tests/test_layer3_pattern4/test_pattern4_broker_schema.cpp
+// (task #52 Round 2 — HubHostBrokerHandle antipattern sweep).
+// SchemaHash_StoredOnReg stays: stored schema_hash has no wire ACK.

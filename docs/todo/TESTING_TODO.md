@@ -697,8 +697,23 @@ that legitimately need in-process broker state inspection keep
     `request_broadcast_channel` trigger), and
     `heartbeat_wire_payload_includes_uid_and_role_type` (broker
     DEBUG-log observation — migratable later with a debug-log profile).
-- **Round 2** — remaining 6 wire-only-heavy worker files (~38
-  workers).
+- **Round 2 (in progress)** — remaining wire-only-heavy L3 files.
+  Shared `Pattern4WireTest` base fixture extracted
+  (`tests/test_layer3_pattern4/pattern4_wire_test_base.h`); Round 1's
+  driver refactored to derive from it, and each Round 2 concern gets a
+  thin driver reusing the generic subprocess broker worker.
+  - ✅ `broker_schema` — 4 migrated
+    (`test_pattern4_broker_schema.cpp`: `SchemaIdStoredOnReg` reframed
+    to `CHANNEL_LIST_REQ`; `ConsumerSchemaId{Match,Mismatch,EmptyProducer}`).
+    `schema_hash_stored_on_reg` stays (schema_hash not on any wire ACK).
+    Fidelity note: schema_hash must be the real canonical BLAKE2b of
+    `schema_blds`+packing (broker rejects `FINGERPRINT_INCONSISTENT`) —
+    compute via `hub::compute_canonical_hash_from_wire`, not a stub.
+  - Corrected classification: `broker_admin` is a **Round 3** file
+    (all 14 tests inspect in-process state via `broker.service()`), not
+    Round 2.  Remaining Round 2: `broker_consumer` (15),
+    `datahub_role_state` (11), `zmq_endpoint_registry` (~7),
+    `datahub_metrics` (~16).
 - **Round 3** — author `RATIONALE:` blocks for the legitimate
   in-process exceptions (protocol rows 3, admin row 13, health
   row 21, + 7 metrics-filter tests).
