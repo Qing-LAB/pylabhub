@@ -990,63 +990,10 @@ public:
                         const std::string& corr_id,
                         bool               is_consumer) const;
 
-    /// HEP-CORE-0036 §6.1 / §6.3 Layer-2 identity verification.  Checks
-    /// that `(role_uid, claimed_pubkey)` is a single matching record in
-    /// `cfg.known_roles[]`.  Returns std::nullopt on pass; populated
-    /// error JSON on UNKNOWN_ROLE (uid not registered) or
-    /// PUBKEY_MISMATCH (uid registered but with a different pubkey).
-    /// Unconditional — runs regardless of `RoleIdentityPolicy`.
-    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] std::optional<nlohmann::json>
-    verify_known_role_binding(const std::string& role_uid,
-                              const std::string& claimed_pubkey,
-                              const std::string& corr_id,
-                              const char*        request_kind) const;
-
-    // ── Audit R3.5b (2026-05-19) — wire-boundary grammar + side-aware tag ───
-    /// Validate identifier-field grammar at the gate per HEP-CORE-0033
-    /// §G2.2.0b + enforce per-handler role-tag policy.
-    ///
-    /// Pre-fix, `check_role_identity` only enforced emptiness under
-    /// policy ≥ Required; the default Open policy admitted empty /
-    /// malformed uids that broke downstream presence indexing silently
-    /// (e.g. _on_heartbeat / _on_consumer_joined skip when uid empty).
-    /// Grammar is now REQUIRED unconditionally — RoleIdentityPolicy
-    /// controls known_roles verification ON TOP of valid grammar, not
-    /// in place of.
-    ///
-    /// `expected_tags` constrains the role tag carried inside the uid
-    /// (e.g. {"prod","proc"} on REG_REQ rejects a `cons.x.y` uid).
-    /// Processor roles register on both sides under one `proc.*` uid,
-    /// so the producer-side handlers accept {"prod","proc"} and the
-    /// consumer-side accept {"cons","proc"}.  Side-agnostic handlers
-    /// (ROLE_INFO, BAND_*) pass {"prod","cons","proc"}.
-    ///
-    /// Validates channel_name (Channel kind), role_uid (RoleUid kind,
-    /// empty rejected, tag must be in expected_tags), role_name
-    /// (RoleName kind, only when non-empty — Open policy still permits
-    /// anonymous registration).  Returns INVALID_REQUEST on grammar
-    /// failure or INVALID_ROLE_TAG on tag-set mismatch, with
-    /// LOGGER_ERROR + handler_label context.
-    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] std::optional<nlohmann::json>
-    validate_identity_fields(const std::string& channel_name,
-                             const std::string& role_uid,
-                             const std::string& role_name,
-                             std::initializer_list<std::string_view> expected_tags,
-                             const std::string& corr_id,
-                             const char*        handler_label) const;
-
-    /// Narrower form for handlers that don't carry a channel context
-    /// (ROLE_INFO_REQ, ROLE_PRESENCE_REQ, BAND_*_REQ — band already
-    /// validates the band identifier).  Returns INVALID_REQUEST on
-    /// empty/malformed role_uid or INVALID_ROLE_TAG when the tag is
-    /// not in `expected_tags`.
-    [[nodiscard]] std::optional<nlohmann::json>
-    validate_role_uid_only(const std::string& role_uid,
-                           std::initializer_list<std::string_view> expected_tags,
-                           const std::string& corr_id,
-                           const char*        handler_label) const;
+    // Legacy `verify_known_role_binding`, `validate_identity_fields`,
+    // `validate_role_uid_only` retired (2026-07-14 task #46).  Grammar,
+    // known-role binding, and per-msg-type role-tag policy now live in
+    // the wire_dispatch pipeline (HEP-CORE-0046 §14.5 gates).
 };
 
 // ============================================================================
@@ -2067,19 +2014,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
 
     // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
     // check.  Empty or malformed channel_name / role_uid are rejected
-    // unconditionally before any state-machine entry — downstream
-    // presence indexing (_on_producer_added, _on_heartbeat) is keyed on
-    // these and would silently no-op an empty uid.  Tag policy on
-    // REG_REQ accepts {prod, proc} — `proc.*` registers on the
-    // producer side for its output channel.  Runs before
-    // check_role_identity so policy verification never sees a
-    // malformed input.
-    if (auto err = validate_identity_fields(channel_name, role_uid, role_name,
-                                            {"prod", "proc"},
-                                            corr_id, "REG_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + tag policy for channel_name, role_uid, role_name already
+    // ran at the wire_dispatch pipeline (gate_grammar + gate_role_tag_policy
+    // per HEP-CORE-0046 §14.5; REG_REQ tag set {prod, proc} per HEP-CORE-0033
+    // §G2.2.0b.8) before this handler was called.  Legacy
+    // validate_identity_fields retired (2026-07-14 task #46).
 
     // HEP-CORE-0032 §8 — ABI fingerprint verification.  Runs AFTER
     // wire-shape validation (a malformed identity is a separate
@@ -2147,11 +2086,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // known_roles.json record.  Layer-1 ZAP already proved the
     // connecting socket holds a known_roles pubkey; this binds the
     // REG_REQ to the specific uid claimed in the body.
-    if (auto err = verify_known_role_binding(role_uid, producer_pubkey,
-                                              corr_id, "REG_REQ"))
-    {
-        return *err;
-    }
+    // Known-role (uid, pubkey) binding check already ran at the
+    // wire_dispatch pipeline via gate_known_role_binding per
+    // HEP-CORE-0046 §14.5 gate 5.  Legacy verify_known_role_binding
+    // retired (2026-07-14 task #46).
 
     // Wave M2.5 step 3 — build the new producer entry from the wire
     // payload.  All per-producer attributes (inbox_*, zmq_node_endpoint,
@@ -3084,18 +3022,10 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
 
     // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
     // multi-producer DEREG target resolution.
-    // Audit R3.5b (2026-05-19): grammar + side-aware tag check
-    // (HEP-CORE-0033 §G2.2.0b).  Tag {prod, proc} — producer-side
-    // deregistration only.  Pre-fix, a malformed uid would fall
-    // through to the NOT_REGISTERED branch — typed grammar error is
-    // more diagnostic.
-    if (auto err = validate_identity_fields(channel_name, wire_role_uid,
-                                            /*role_name=*/"",
-                                            {"prod", "proc"},
-                                            corr_id, "DEREG_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + tag policy (DEREG_REQ tag set {prod, proc} per
+    // HEP-CORE-0033 §G2.2.0b.8) already ran at the wire_dispatch
+    // pipeline.  Legacy validate_identity_fields retired
+    // (2026-07-14 task #46).
 
     // Resolve via (pid, role_uid) tuple — both must match the same
     // admitted producer.  HEP-CORE-0023 §2.1.1 + atomic-teardown
@@ -3224,12 +3154,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // role-presence row was created, so subsequent heartbeats / inbox
     // discovery silently no-op'd.  Tag policy {cons, proc} — `proc.*`
     // registers on the consumer side for its input channel.
-    if (auto err = validate_identity_fields(channel_name, role_uid, role_name,
-                                            {"cons", "proc"},
-                                            corr_id, "CONSUMER_REG_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + tag policy (CONSUMER_REG_REQ tag set {cons, proc} per
+    // HEP-CORE-0033 §G2.2.0b.8) already ran at the wire_dispatch
+    // pipeline.  Legacy validate_identity_fields retired
+    // (2026-07-14 task #46).
 
     // HEP-CORE-0032 §8 — ABI fingerprint verification.  Same shape as
     // REG_REQ handler above; strict mode gated on same
@@ -3617,11 +3545,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // with the producer-side REG_REQ check (§6.1).  Binds the
     // CONSUMER_REG_REQ to a specific (role_uid, pubkey) pair within
     // the operator-authorized known_roles allowlist.
-    if (auto err = verify_known_role_binding(role_uid, consumer_pubkey,
-                                              corr_id, "CONSUMER_REG_REQ"))
-    {
-        return *err;
-    }
+    // Known-role (uid, pubkey) binding check already ran at the
+    // wire_dispatch pipeline via gate_known_role_binding.  Legacy
+    // verify_known_role_binding retired (2026-07-14 task #46).
     entry.zmq_pubkey = consumer_pubkey;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
     entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
@@ -3860,15 +3786,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
 
     // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
     // multi-consumer DEREG target resolution.
-    // Audit R3.5b (2026-05-19): grammar + side-aware tag check
-    // (HEP-CORE-0033 §G2.2.0b).  Tag {cons, proc} — consumer-side.
-    if (auto err = validate_identity_fields(channel_name, wire_role_uid,
-                                            /*role_name=*/"",
-                                            {"cons", "proc"},
-                                            corr_id, "CONSUMER_DEREG_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + tag policy (CONSUMER_DEREG_REQ tag set {cons, proc} per
+    // HEP-CORE-0033 §G2.2.0b.8) already ran at the wire_dispatch
+    // pipeline.  Legacy validate_identity_fields retired
+    // (2026-07-14 task #46).
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
     // Resolution by (pid, role_uid) tuple — both must match.
@@ -5741,173 +5662,6 @@ BrokerServiceImpl::check_role_identity(const std::string& channel_name,
     return std::nullopt;
 }
 
-std::optional<nlohmann::json>
-BrokerServiceImpl::verify_known_role_binding(const std::string& role_uid,
-                                              const std::string& claimed_pubkey,
-                                              const std::string& corr_id,
-                                              const char*        request_kind) const
-{
-    auto it = std::find_if(cfg.known_roles.begin(), cfg.known_roles.end(),
-                           [&](const KnownRole& kr) { return kr.uid == role_uid; });
-    if (it == cfg.known_roles.end())
-    {
-        LOGGER_WARN("Broker: {} rejected — role_uid='{}' not in known_roles "
-                    "(HEP-CORE-0036 §6.1/§6.3 Layer-2 verification)",
-                    request_kind, role_uid);
-        return make_error(corr_id, "UNKNOWN_ROLE",
-                          fmt::format("role_uid '{}' is not registered in "
-                                      "known_roles.json",
-                                      role_uid));
-    }
-
-    if (it->pubkey_z85 != claimed_pubkey)
-    {
-        LOGGER_WARN("Broker: {} rejected — role_uid='{}' presented pubkey "
-                    "that does not match known_roles record "
-                    "(HEP-CORE-0036 §6.1/§6.3 Layer-2 verification)",
-                    request_kind, role_uid);
-        return make_error(corr_id, "PUBKEY_MISMATCH",
-                          fmt::format("zmq_pubkey for role_uid '{}' does not "
-                                      "match the configured pubkey in "
-                                      "known_roles.json",
-                                      role_uid));
-    }
-
-    return std::nullopt;
-}
-
-// ============================================================================
-// Audit R3.5b (2026-05-19) — wire-boundary grammar + side-aware tag check
-// ============================================================================
-
-namespace
-{
-
-/// Build a comma-separated list of allowed tags for error/log messages.
-std::string format_expected_tags(std::initializer_list<std::string_view> tags)
-{
-    std::string out;
-    bool first = true;
-    for (auto t : tags)
-    {
-        if (!first) out += ',';
-        out += t;
-        first = false;
-    }
-    return out;
-}
-
-/// Returns true iff the uid's role tag is in `expected_tags`.  Requires
-/// the uid already grammar-valid (caller checks `is_valid_identifier`
-/// with `RoleUid` first; `extract_short_tag` is defined as nullopt on
-/// invalid input).
-bool short_tag_matches(const std::string& role_uid,
-                      std::initializer_list<std::string_view> expected_tags)
-{
-    const auto tag_opt = pylabhub::hub::extract_short_tag(role_uid);
-    if (!tag_opt.has_value()) return false;
-    for (auto t : expected_tags)
-    {
-        if (*tag_opt == t) return true;
-    }
-    return false;
-}
-
-} // anonymous namespace
-
-std::optional<nlohmann::json>
-BrokerServiceImpl::validate_identity_fields(const std::string& channel_name,
-                                            const std::string& role_uid,
-                                            const std::string& role_name,
-                                            std::initializer_list<std::string_view> expected_tags,
-                                            const std::string& corr_id,
-                                            const char*        handler_label) const
-{
-    using pylabhub::hub::is_valid_identifier;
-    using pylabhub::hub::IdentifierKind;
-
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel))
-    {
-        LOGGER_WARN("Broker: {} rejected — invalid channel_name '{}' "
-                     "(HEP-CORE-0033 §G2.2.0b — empty or grammar violation)",
-                     handler_label, channel_name);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "channel_name '" + channel_name +
-                              "' failed grammar validation "
-                              "(HEP-CORE-0033 §G2.2.0b)");
-    }
-    if (!is_valid_identifier(role_uid, IdentifierKind::RoleUid))
-    {
-        LOGGER_WARN("Broker: {} rejected on channel '{}' — invalid "
-                     "role_uid '{}' (HEP-CORE-0033 §G2.2.0b — must be "
-                     "(prod|cons|proc).<name>.<unique>, non-empty)",
-                     handler_label, channel_name, role_uid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "role_uid '" + role_uid +
-                              "' failed grammar validation "
-                              "(HEP-CORE-0033 §G2.2.0b)");
-    }
-    if (!short_tag_matches(role_uid, expected_tags))
-    {
-        const auto tag_opt = pylabhub::hub::extract_short_tag(role_uid);
-        const auto tag = tag_opt.has_value() ? std::string{*tag_opt} : std::string{"?"};
-        const auto allowed = format_expected_tags(expected_tags);
-        LOGGER_WARN("Broker: {} rejected on channel '{}' — role_uid '{}' "
-                     "has tag '{}' but handler expects {{{}}} "
-                     "(HEP-CORE-0033 §G2.2.0b — processor roles use "
-                     "'proc.' on both sides)",
-                     handler_label, channel_name, role_uid, tag, allowed);
-        return make_error(corr_id, "INVALID_ROLE_TAG",
-                          "role_uid tag '" + tag + "' not allowed on this "
-                          "wire message (expected one of: " + allowed + ")");
-    }
-    if (!role_name.empty() &&
-        !is_valid_identifier(role_name, IdentifierKind::RoleName))
-    {
-        LOGGER_WARN("Broker: {} rejected on channel '{}' uid='{}' — "
-                     "invalid role_name '{}' (HEP-CORE-0033 §G2.2.0b)",
-                     handler_label, channel_name, role_uid, role_name);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "role_name '" + role_name +
-                              "' failed grammar validation "
-                              "(HEP-CORE-0033 §G2.2.0b)");
-    }
-    return std::nullopt;
-}
-
-std::optional<nlohmann::json>
-BrokerServiceImpl::validate_role_uid_only(const std::string& role_uid,
-                                          std::initializer_list<std::string_view> expected_tags,
-                                          const std::string& corr_id,
-                                          const char*        handler_label) const
-{
-    if (!pylabhub::hub::is_valid_identifier(
-            role_uid, pylabhub::hub::IdentifierKind::RoleUid))
-    {
-        LOGGER_WARN("Broker: {} rejected — invalid role_uid '{}' "
-                     "(HEP-CORE-0033 §G2.2.0b — must be "
-                     "(prod|cons|proc).<name>.<unique>, non-empty)",
-                     handler_label, role_uid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "role_uid '" + role_uid +
-                              "' failed grammar validation "
-                              "(HEP-CORE-0033 §G2.2.0b)");
-    }
-    if (!short_tag_matches(role_uid, expected_tags))
-    {
-        const auto tag_opt = pylabhub::hub::extract_short_tag(role_uid);
-        const auto tag = tag_opt.has_value() ? std::string{*tag_opt} : std::string{"?"};
-        const auto allowed = format_expected_tags(expected_tags);
-        LOGGER_WARN("Broker: {} rejected — role_uid '{}' has tag '{}' "
-                     "but handler expects {{{}}} "
-                     "(HEP-CORE-0033 §G2.2.0b)",
-                     handler_label, role_uid, tag, allowed);
-        return make_error(corr_id, "INVALID_ROLE_TAG",
-                          "role_uid tag '" + tag + "' not allowed on this "
-                          "wire message (expected one of: " + allowed + ")");
-    }
-    return std::nullopt;
-}
 
 // ============================================================================
 // Heartbeat negotiation block (HEP-CORE-0023 §2.5)
@@ -6623,16 +6377,10 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
         // message, correlation_id}` shape.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
-    // Audit R3.5b (2026-05-19): grammar check (HEP-CORE-0033 §G2.2.0b).
-    // Side-agnostic — any role kind may be queried.  Pre-fix, a
-    // malformed role_uid would scan-miss and return `present:false`,
-    // making "absent" indistinguishable from "malformed query".
-    if (auto err = validate_role_uid_only(uid,
-                                          {"prod", "cons", "proc"},
-                                          corr_id, "ROLE_PRESENCE_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + role-tag policy already ran at the wire_dispatch
+    // pipeline via run_control_gates → gate_role_tag_policy (HEP-CORE-0033
+    // §G2.2.0b.8 universal {prod,cons,proc} set for ROLE_PRESENCE_REQ).
+    // Legacy validate_role_uid_only retired (2026-07-14 task #46).
 
     // Scan all channels: check every producer + each consumer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).
@@ -6691,14 +6439,9 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
         // diverged from the broker-wide error envelope.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
-    // Audit R3.5b (2026-05-19): grammar check (HEP-CORE-0033 §G2.2.0b).
-    // Mirrors ROLE_PRESENCE_REQ — side-agnostic.
-    if (auto err = validate_role_uid_only(uid,
-                                          {"prod", "cons", "proc"},
-                                          corr_id, "ROLE_INFO_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + role-tag policy already ran at the wire_dispatch
+    // pipeline via run_control_gates.  Legacy validate_role_uid_only
+    // retired (2026-07-14 task #46).
 
     // Search for a channel where `uid` is a registered producer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).  Inbox info lives
@@ -7802,13 +7545,10 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     // validator error so the role-side response matcher routes the
     // rejection to the right pending `do_request` (other gates were
     // already doing this; this one was missed).
-    if (auto err = validate_role_uid_only(role_uid,
-                                          {"prod", "cons", "proc"},
-                                          corr_id,
-                                          "BAND_JOIN_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + role-tag policy already ran at the wire_dispatch
+    // pipeline (BAND_JOIN_REQ is EnvelopeOnly tier → run_control_gates
+    // → gate_role_tag_policy universal {prod,cons,proc}).  Legacy
+    // validate_role_uid_only retired (2026-07-14 task #46).
     if (!role_name.empty() &&
         !pylabhub::hub::is_valid_identifier(
             role_name, pylabhub::hub::IdentifierKind::RoleName))
@@ -7903,13 +7643,9 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     // the membership loop and skip the LEAVE log.
     // Audit B1 (2026-05-20): corr_id is now threaded through (was
     // empty, response matcher couldn't route).
-    if (auto err = validate_role_uid_only(role_uid,
-                                          {"prod", "cons", "proc"},
-                                          corr_id,
-                                          "BAND_LEAVE_REQ"))
-    {
-        return *err;
-    }
+    // Grammar + role-tag policy already ran at the wire_dispatch
+    // pipeline (BAND_LEAVE_REQ mirrors BAND_JOIN_REQ tier).  Legacy
+    // validate_role_uid_only retired (2026-07-14 task #46).
 
     // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is
     // handler-driven via `subscribe_band_left` wired in run().  The
