@@ -45,17 +45,27 @@ const std::unordered_map<std::string_view, std::string_view> kExpectedTiers = {
     {"GET_CHANNEL_AUTH_REQ",           "Control_GetChannelAuth"},
     {"DISC_REQ",                       "Control_Disc"},
 
-    // EnvelopeOnly tier (typed body class TBD)
-    {"CHECK_PEER_READY_REQ",           "EnvelopeOnly"},
+    // Control_EnvelopeWithRoleUid — body role_uid = caller's own uid;
+    // identity_match + grammar + role-tag policy.  A row slipping to
+    // plain EnvelopeOnly loses role_uid grammar + identity match —
+    // the 2026-07-14 regression this pin now catches.
+    {"CHECK_PEER_READY_REQ",           "Control_EnvelopeWithRoleUid"},
+    {"BAND_JOIN_REQ",                  "Control_EnvelopeWithRoleUid"},
+    {"BAND_LEAVE_REQ",                 "Control_EnvelopeWithRoleUid"},
+    {"BAND_BROADCAST_SEND_NOTIFY",     "Control_EnvelopeWithRoleUid"},
+
+    // Control_EnvelopeWithQueryRoleUid — body role_uid = queried
+    // subject.  Grammar + role-tag policy only; NO identity_match
+    // (probes legitimately ask about other roles).
+    {"ROLE_PRESENCE_REQ",              "Control_EnvelopeWithQueryRoleUid"},
+    {"ROLE_INFO_REQ",                  "Control_EnvelopeWithQueryRoleUid"},
+
+    // EnvelopeOnly tier — body has no identity fields (or
+    // CHANNEL_BROADCAST_SEND_NOTIFY's legacy `sender_uid` naming).
     {"SCHEMA_REQ",                     "EnvelopeOnly"},
     {"CHANNEL_LIST_REQ",               "EnvelopeOnly"},
     {"METRICS_REQ",                    "EnvelopeOnly"},
     {"SHM_BLOCK_QUERY_REQ",            "EnvelopeOnly"},
-    {"ROLE_PRESENCE_REQ",              "EnvelopeOnly"},
-    {"ROLE_INFO_REQ",                  "EnvelopeOnly"},
-    {"BAND_JOIN_REQ",                  "EnvelopeOnly"},
-    {"BAND_LEAVE_REQ",                 "EnvelopeOnly"},
-    {"BAND_BROADCAST_SEND_NOTIFY",     "EnvelopeOnly"},
     {"BAND_MEMBERS_REQ",               "EnvelopeOnly"},
     {"CHANNEL_BROADCAST_SEND_NOTIFY",  "EnvelopeOnly"},
 };

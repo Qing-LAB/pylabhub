@@ -215,7 +215,7 @@ json raw_req(const std::string& endpoint,
              const json& payload,
              int timeout_ms = 2000,
              const std::string& server_pubkey = "",
-             const std::string& role_identity_name = "")
+             const std::string& role_uid = "")
 {
     constexpr size_t kZ85KeyLen = 40;
     constexpr size_t kZ85BufLen = 41;
@@ -226,17 +226,26 @@ json raw_req(const std::string& endpoint,
     if (server_pubkey.size() == kZ85KeyLen)
     {
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-        if (!role_identity_name.empty())
+        if (!role_uid.empty())
         {
             // Authenticate as a registered role — broker ZAP gate
             // matches `known_roles.json`.  HEP-CORE-0040 §172: the
             // seckey lives only in the callback; ZMQ copies it into
             // its own socket-internal storage during set(), so it
             // survives the callback's sodium_memzero.
+            //
+            // The caller passes the RAW `role_uid` (the wire form,
+            // no `role.` prefix — matches I-DEALER-IDENTITY §8.1).
+            // The KeyStore entry name is the prefixed `role.<uid>`
+            // form seeded by `seed_curve_identities()` (see
+            // `pylabhub::tests::role_keystore_name`), so we
+            // prefix-wrap here for the KeyStore lookup.
             namespace sec = pylabhub::utils::security;
-            const std::string client_pub{sec::secure().keys().pubkey(role_identity_name)};
+            const std::string ks_name =
+                pylabhub::tests::role_keystore_name(role_uid);
+            const std::string client_pub{sec::secure().keys().pubkey(ks_name)};
             sec::secure().keys().with_seckey_z85(
-                role_identity_name,
+                ks_name,
                 [&](std::string_view seckey_z85) {
                     dealer.set(zmq::sockopt::curve_publickey, client_pub);
                     dealer.set(zmq::sockopt::curve_secretkey,
@@ -258,18 +267,21 @@ json raw_req(const std::string& endpoint,
         }
     }
 
-    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.
+    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid (the
+    // RAW wire role_uid; NOT the `role.<uid>` KeyStore key).  Frame 0
+    // as seen by the broker must equal the payload's `role_uid`
+    // field so run_control_gates' identity_match check passes.
     // Pre-Group-6 fell back to `raw-req-anon-protocol` on empty; that
     // let multiple anon test clients share one ROUTER identity and
     // defeated the strict-CURVE ZAP invariant.
-    if (role_identity_name.empty())
+    if (role_uid.empty())
     {
         throw std::logic_error(
-            "raw_req: role_identity_name empty — I-DEALER-IDENTITY "
+            "raw_req: role_uid empty — I-DEALER-IDENTITY "
             "requires every wire call to authenticate as a seeded role "
             "(HEP-CORE-0046 §8.1 + HEP-CORE-0035 §2 strict-CURVE)");
     }
-    dealer.set(zmq::sockopt::routing_id, role_identity_name);
+    dealer.set(zmq::sockopt::routing_id, role_uid);
     dealer.connect(endpoint);
 
     // HEP-CORE-0046 §14 envelope encode.  Respect caller-set
@@ -307,7 +319,7 @@ json raw_req(const std::string& endpoint,
                 system_clock::now().time_since_epoch()).count());
     }
     ::pylabhub::wire::adapter::EncodeContext ectx;
-    ectx.dealer_role_uid = role_identity_name;
+    ectx.dealer_role_uid = role_uid;
     ectx.correlation_id  = correlation_id;
     ectx.client_nonce    = nonce_hex;
     ectx.client_wall_ts  = wall_ts;
@@ -340,7 +352,7 @@ json raw_req(const std::string& endpoint,
         if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
         ::pylabhub::wire::ParseError perr = {};
         auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-            std::move(raw), role_identity_name, &perr);
+            std::move(raw), role_uid, &perr);
         if (!env_opt.has_value()) return {};
         ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
         if (env.is_notify()) continue;
@@ -1725,152 +1737,9 @@ int wire_conformance_band_ack_shapes()
         });
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Audit M1 (2026-05-20): BAND_JOIN_ACK / BAND_LEAVE_ACK + ERROR replies on
-// the BAND paths must echo the request's `correlation_id` (broker_proto 5
-// contract; broker-side fix in commit `d759424`).  BRC's `do_request`
-// doesn't currently inject `correlation_id` into outgoing requests
-// (matches by message-type), so this test bypasses BRC and uses raw
-// ZMQ to drive the explicit-corr_id path that other clients (admin
-// tools, federation peers, future BRC versions) rely on.
-//
-// Pins three echo cases:
-//   1. BAND_JOIN_ACK success — corr_id in body matches request.
-//   2. BAND_LEAVE_ACK success — corr_id in body matches request.
-//   3. BAND_LEAVE error (NOT_A_MEMBER) — corr_id in body matches request.
-//
-// Plus a backward-compat case: when the request omits corr_id, the
-// reply must NOT carry an empty corr_id field (matches `make_error`'s
-// `!correlation_id.empty()` gate at `broker_service.cpp:3662`).
-// ──────────────────────────────────────────────────────────────────────────────
-int wire_conformance_band_corr_id_echo()
-{
-    return run_with_host(
-        "broker_protocol::wire_conformance_band_corr_id_echo",
-        {"prod." + pid_chan("tr1.bandcorr")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &lcf) {
-            using namespace pylabhub::tests::wire;
-            // Case 3 below deliberately drives the broker's
-            // `NOT_A_MEMBER` rejection path, which emits a WARN.
-            // Whitelist it via the LogCaptureFixture allowlist so the
-            // intentional log doesn't fail the test.
-            lcf.ExpectLogWarn("not a member of band");
-
-            const std::string channel = pid_chan("tr1.bandcorr");
-            const std::string uid     = "prod." + channel;
-            const std::string role_nm = channel;
-            const std::string band    = "!" + pid_chan("tr1.bcorr");
-
-            // Register via BRC so the role_uid + role_name are valid
-            // wire-grammar tokens and the broker has admitted the
-            // producer.  BAND_JOIN handler only validates grammar /
-            // side-aware tag, not registration, but registering keeps
-            // the test path symmetric with realistic usage.
-            BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            ASSERT_TRUE(bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000).has_value())
-                << "REG_REQ setup failed";
-
-            // ── Case 1: BAND_JOIN success echoes corr_id ─────────────
-            const std::string join_corr = "test.band.join.corr.001";
-            nlohmann::json join_req;
-            join_req["band"]           = band;
-            join_req["role_uid"]       = uid;
-            join_req["role_name"]      = role_nm;
-            join_req["correlation_id"] = join_corr;
-            auto join_resp = raw_req(
-                broker->endpoint, "BAND_JOIN_REQ", join_req, 3000,
-                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
-            ASSERT_FALSE(join_resp.is_null())
-                << "BAND_JOIN_REQ timed out";
-            ASSERT_EQ(join_resp.value("status", std::string{}), "success")
-                << "BAND_JOIN_REQ failed; body=" << join_resp.dump();
-            ASSERT_TRUE(join_resp.contains("correlation_id"))
-                << "BAND_JOIN_ACK missing correlation_id field "
-                   "(broker_proto 5 contract; broker_service.cpp B1 fix); "
-                   "body=" << join_resp.dump();
-            EXPECT_EQ(join_resp.at("correlation_id").get<std::string>(),
-                      join_corr)
-                << "BAND_JOIN_ACK echoed wrong correlation_id";
-
-            // ── Case 2: BAND_LEAVE success echoes corr_id ────────────
-            const std::string leave_corr = "test.band.leave.corr.002";
-            nlohmann::json leave_req;
-            leave_req["band"]           = band;
-            leave_req["role_uid"]       = uid;
-            leave_req["correlation_id"] = leave_corr;
-            auto leave_resp = raw_req(
-                broker->endpoint, "BAND_LEAVE_REQ", leave_req, 3000,
-                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
-            ASSERT_FALSE(leave_resp.is_null())
-                << "BAND_LEAVE_REQ timed out";
-            ASSERT_EQ(leave_resp.value("status", std::string{}), "success")
-                << "BAND_LEAVE_REQ failed; body=" << leave_resp.dump();
-            ASSERT_TRUE(leave_resp.contains("correlation_id"))
-                << "BAND_LEAVE_ACK missing correlation_id; body="
-                << leave_resp.dump();
-            EXPECT_EQ(leave_resp.at("correlation_id").get<std::string>(),
-                      leave_corr)
-                << "BAND_LEAVE_ACK echoed wrong correlation_id";
-
-            // ── Case 3: BAND_LEAVE NOT_A_MEMBER error echoes corr_id ─
-            // The role left successfully in Case 2; another LEAVE
-            // must produce typed `NOT_A_MEMBER` (HEP-CORE-0030 S4
-            // amendment).  The error path must also carry corr_id.
-            const std::string err_corr = "test.band.leave.err.corr.003";
-            nlohmann::json leave_req_err;
-            leave_req_err["band"]           = band;
-            leave_req_err["role_uid"]       = uid;
-            leave_req_err["correlation_id"] = err_corr;
-            auto err_resp = raw_req(
-                broker->endpoint, "BAND_LEAVE_REQ", leave_req_err, 3000,
-                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
-            ASSERT_FALSE(err_resp.is_null())
-                << "BAND_LEAVE_REQ (error path) timed out";
-            ASSERT_EQ(err_resp.value("status", std::string{}), "error");
-            EXPECT_EQ(err_resp.value("error_code", std::string{}),
-                      "NOT_A_MEMBER");
-            ASSERT_TRUE(err_resp.contains("correlation_id"))
-                << "BAND_LEAVE error reply missing correlation_id; body="
-                << err_resp.dump();
-            EXPECT_EQ(err_resp.at("correlation_id").get<std::string>(),
-                      err_corr)
-                << "BAND_LEAVE error reply echoed wrong correlation_id";
-
-            // ── Case 4: Frame 3 correlation_id is authoritative ────────
-            // HEP-CORE-0046 I-CORRELATION-STABLE: `correlation_id` lives
-            // on Frame 3 of the envelope and MUST be echoed on every
-            // ACK.  When the caller omits `correlation_id` from the
-            // request BODY, `raw_req` still generates a Frame 3 value
-            // (per §14 non-NOTIFY requirement) and the broker's
-            // dispatch injects it into the body so ACK body reflects
-            // the authoritative Frame 3 echo.  A previous iteration of
-            // this test asserted the OPPOSITE ("no body corr_id in
-            // req → none in ACK") pinning a legacy handler-only gate
-            // that dispatch-level injection has superseded.  ACK body
-            // MUST carry `correlation_id` regardless of body-level
-            // presence in the request per the new design.
-            nlohmann::json rejoin_req;
-            rejoin_req["band"]      = band;
-            rejoin_req["role_uid"]  = uid;
-            rejoin_req["role_name"] = role_nm;
-            auto rejoin = raw_req(
-                broker->endpoint, "BAND_JOIN_REQ", rejoin_req, 3000,
-                broker->pubkey, pylabhub::tests::role_keystore_name(uid));
-            ASSERT_FALSE(rejoin.is_null())
-                << "BAND_JOIN_REQ (no body correlation_id) timed out";
-            ASSERT_EQ(rejoin.value("status", std::string{}), "success");
-            ASSERT_TRUE(rejoin.contains("correlation_id"))
-                << "BAND_JOIN_ACK must echo Frame 3 correlation_id per "
-                   "I-CORRELATION-STABLE regardless of request body "
-                   "content; body=" << rejoin.dump();
-            EXPECT_FALSE(rejoin.at("correlation_id").get<std::string>().empty())
-                << "echoed correlation_id must be non-empty per §14";
-
-            bh.stop();
-        });
-}
+// wire_conformance_band_corr_id_echo migrated to
+// tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (task #54 Round 1 — HubHostBrokerHandle antipattern sweep).
 
 } // namespace broker_protocol
 } // namespace pylabhub::tests::worker
@@ -1951,8 +1820,8 @@ struct BrokerProtocolRegistrar
                     return wire_conformance_role_info_ack_shape();
                 if (sc == "wire_conformance_band_ack_shapes")
                     return wire_conformance_band_ack_shapes();
-                if (sc == "wire_conformance_band_corr_id_echo")
-                    return wire_conformance_band_corr_id_echo();
+                // wire_conformance_band_corr_id_echo migrated to Pattern 4
+                // (task #54 Round 1).
                 // R3.6 retired — handler deleted, no test path
                 return -1;
             });

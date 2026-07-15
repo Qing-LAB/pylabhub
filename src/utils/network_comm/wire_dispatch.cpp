@@ -13,6 +13,7 @@
 #include "utils/wire_dispatch.hpp"
 
 #include "utils/admission_gates.hpp"
+#include "utils/naming.hpp"
 #include "utils/wire_bodies.hpp"
 #include "utils/wire_envelope.hpp"
 
@@ -377,6 +378,90 @@ ReceivedMessage envelope_only(::pylabhub::wire::WireEnvelope env,
     return ValidatedRawControl{std::move(env), std::move(body_json)};
 }
 
+// EnvelopeWithRoleUid — msg_type carries `role_uid` (+optionally
+// `channel_name`) in its body but has no typed body class yet.  The
+// body `role_uid` is the CALLER's own uid — this is an assertion by
+// the sender, so Frame 0 identity must match (I-DEALER-IDENTITY).
+// Runs `run_control_gates` for identity match + role_uid grammar +
+// role-tag policy.  Success returns the same ValidatedRawControl
+// variant as EnvelopeOnly so downstream handlers keep their existing
+// body.value(...) reads.
+//
+// role_type is intentionally left empty here — HEARTBEAT_NOTIFY (the
+// only msg_type whose role-tag policy needs role_type) has its own
+// typed body class and lives in Tier::Control_HeartbeatNotify.
+ReceivedMessage envelope_with_role_uid(
+    ::pylabhub::wire::WireEnvelope env,
+    ::nlohmann::json               body_json,
+    const AdmissionContext        &ctx)
+{
+    // Own the storage — ControlBodyView holds string_views into these
+    // locals, so they MUST outlive the run_control_gates call.  Do NOT
+    // read directly from body_json via ptr accessors: the nlohmann
+    // string value is stored in a heap-allocated node whose lifetime
+    // matches body_json, but any temporary std::string returned by
+    // get<std::string>() gets destroyed at the semicolon.
+    std::string role_uid;
+    std::string channel_name;
+    if (auto it = body_json.find("role_uid");
+        it != body_json.end() && it->is_string())
+    {
+        role_uid = it->get<std::string>();
+    }
+    if (auto it = body_json.find("channel_name");
+        it != body_json.end() && it->is_string())
+    {
+        channel_name = it->get<std::string>();
+    }
+    ControlBodyView v;
+    v.role_uid     = role_uid;
+    v.channel_name = channel_name;
+    if (auto r = ::pylabhub::admission::run_control_gates(env, v, ctx))
+    {
+        return rejection_with_envelope(env, std::move(*r));
+    }
+    return ValidatedRawControl{std::move(env), std::move(body_json)};
+}
+
+// EnvelopeWithQueryRoleUid — msg_type carries `role_uid` in its body
+// as the SUBJECT of a query (ROLE_PRESENCE_REQ / ROLE_INFO_REQ), NOT
+// the caller's own uid.  Frame 0 identity_match therefore does NOT
+// apply — a probe may legitimately ask about any uid.  Grammar + the
+// universal role-tag policy still run to reject malformed subjects at
+// the wire boundary.  This matches the retired validate_role_uid_only
+// contract for these two handlers.
+ReceivedMessage envelope_with_query_role_uid(
+    ::pylabhub::wire::WireEnvelope env,
+    ::nlohmann::json               body_json,
+    const AdmissionContext        &/*ctx*/)
+{
+    std::string role_uid;
+    if (auto it = body_json.find("role_uid");
+        it != body_json.end() && it->is_string())
+    {
+        role_uid = it->get<std::string>();
+    }
+    if (!role_uid.empty())
+    {
+        if (!::pylabhub::hub::is_valid_identifier(
+                role_uid, ::pylabhub::hub::IdentifierKind::RoleUid))
+        {
+            RejectDetail d;
+            d.code    = RejectCode::invalid_request;
+            d.field   = "role_uid";
+            d.message = "role_uid fails identifier grammar "
+                        "(HEP-CORE-0033 §G2.2.0b)";
+            return rejection_with_envelope(env, std::move(d));
+        }
+        if (auto r = ::pylabhub::admission::gate_role_tag_policy(
+                env.msg_type(), role_uid, /*role_type_field=*/{}))
+        {
+            return rejection_with_envelope(env, std::move(*r));
+        }
+    }
+    return ValidatedRawControl{std::move(env), std::move(body_json)};
+}
+
 // ── Dispatch table ─────────────────────────────────────────────────────
 //
 // Adding a new msg_type: add a row here + (if REG-family / typed control)
@@ -394,7 +479,11 @@ enum class Tier
     Control_HeartbeatNotify,// HEARTBEAT_NOTIFY (renamed from HEARTBEAT_REQ per C13)
     Control_GetChannelAuth,
     Control_Disc,           // no role_uid — envelope-only in effect
-    EnvelopeOnly,           // msg_type known but no typed body yet
+    Control_EnvelopeWithRoleUid,      // body role_uid = caller's uid
+                                      // (identity_match + grammar + tag)
+    Control_EnvelopeWithQueryRoleUid, // body role_uid = queried subject
+                                      // (grammar + tag; NO identity_match)
+    EnvelopeOnly,           // msg_type known, body has no identity fields
     // (unknown msg_type → EnvelopeOnly variant + broker rejects at handler)
 };
 
@@ -433,17 +522,33 @@ constexpr std::array<DispatchRow, 21> kDispatchTable = {{
     {"GET_CHANNEL_AUTH_REQ",    Tier::Control_GetChannelAuth},
     {"DISC_REQ",                Tier::Control_Disc},
 
-    // EnvelopeOnly — typed body class TBD; envelope hash still validated
-    {"CHECK_PEER_READY_REQ",    Tier::EnvelopeOnly},
-    {"SCHEMA_REQ",              Tier::EnvelopeOnly},
-    {"CHANNEL_LIST_REQ",        Tier::EnvelopeOnly},
-    {"METRICS_REQ",             Tier::EnvelopeOnly},
-    {"SHM_BLOCK_QUERY_REQ",     Tier::EnvelopeOnly},
-    {"ROLE_PRESENCE_REQ",       Tier::EnvelopeOnly},
-    {"ROLE_INFO_REQ",           Tier::EnvelopeOnly},
-    {"BAND_JOIN_REQ",                  Tier::EnvelopeOnly},
-    {"BAND_LEAVE_REQ",                 Tier::EnvelopeOnly},
-    {"BAND_BROADCAST_SEND_NOTIFY",     Tier::EnvelopeOnly},
+    // Control_EnvelopeWithRoleUid — body role_uid = CALLER's own uid.
+    // Runs identity_match (I-DEALER-IDENTITY) + grammar + role-tag
+    // policy via run_control_gates.  Fixes a 2026-07-14 regression
+    // where these msg_types skipped role_uid grammar after
+    // validate_role_uid_only was retired.
+    {"CHECK_PEER_READY_REQ",           Tier::Control_EnvelopeWithRoleUid},
+    {"BAND_JOIN_REQ",                  Tier::Control_EnvelopeWithRoleUid},
+    {"BAND_LEAVE_REQ",                 Tier::Control_EnvelopeWithRoleUid},
+    {"BAND_BROADCAST_SEND_NOTIFY",     Tier::Control_EnvelopeWithRoleUid},
+
+    // Control_EnvelopeWithQueryRoleUid — body role_uid is the QUERIED
+    // subject, not the caller's own uid.  A probe with identity 'X'
+    // legitimately asks about 'prod.foo.bar' — identity_match must
+    // NOT apply.  Grammar + universal role-tag policy still run at
+    // the wire boundary, matching the retired validate_role_uid_only
+    // contract for these two handlers.
+    {"ROLE_PRESENCE_REQ",              Tier::Control_EnvelopeWithQueryRoleUid},
+    {"ROLE_INFO_REQ",                  Tier::Control_EnvelopeWithQueryRoleUid},
+
+    // EnvelopeOnly — body has no identity fields the broker can check
+    // (or, for CHANNEL_BROADCAST_SEND_NOTIFY, the sender field is
+    // still named `sender_uid` under legacy naming — tracked as a
+    // follow-up rename to unify on `role_uid`).
+    {"SCHEMA_REQ",                     Tier::EnvelopeOnly},
+    {"CHANNEL_LIST_REQ",               Tier::EnvelopeOnly},
+    {"METRICS_REQ",                    Tier::EnvelopeOnly},
+    {"SHM_BLOCK_QUERY_REQ",            Tier::EnvelopeOnly},
     {"BAND_MEMBERS_REQ",               Tier::EnvelopeOnly},
     {"CHANNEL_BROADCAST_SEND_NOTIFY",  Tier::EnvelopeOnly},
 }};
@@ -470,7 +575,9 @@ std::string_view tier_name(Tier t) noexcept
         case Tier::Control_HeartbeatNotify:      return "Control_HeartbeatNotify";
         case Tier::Control_GetChannelAuth:       return "Control_GetChannelAuth";
         case Tier::Control_Disc:                 return "Control_Disc";
-        case Tier::EnvelopeOnly:                 return "EnvelopeOnly";
+        case Tier::Control_EnvelopeWithRoleUid:      return "Control_EnvelopeWithRoleUid";
+        case Tier::Control_EnvelopeWithQueryRoleUid: return "Control_EnvelopeWithQueryRoleUid";
+        case Tier::EnvelopeOnly:                     return "EnvelopeOnly";
     }
     return "UNKNOWN";
 }
@@ -559,6 +666,14 @@ receive_and_validate(::zmq::multipart_t                             &&raw,
         case Tier::Control_Disc:
             return validate_disc_req(std::move(env), std::move(body_copy),
                                        admission_ctx);
+        case Tier::Control_EnvelopeWithRoleUid:
+            return envelope_with_role_uid(std::move(env),
+                                            std::move(body_copy),
+                                            admission_ctx);
+        case Tier::Control_EnvelopeWithQueryRoleUid:
+            return envelope_with_query_role_uid(std::move(env),
+                                                  std::move(body_copy),
+                                                  admission_ctx);
         case Tier::EnvelopeOnly:
             return envelope_only(std::move(env), std::move(body_copy));
     }

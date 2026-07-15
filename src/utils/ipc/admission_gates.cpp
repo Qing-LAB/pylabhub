@@ -480,9 +480,17 @@ run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
     {
         if (env.identity() != body.role_uid)
         {
+            // Include both values in the message: the mismatch is
+            // silent-fatal (client sees timeout / ERROR envelope with
+            // no way to see the two strings) and this is often the
+            // symptom of a routing_id ≠ role_uid config drift, which
+            // is only diagnosable by seeing both.
             return make(RejectCode::identity_mismatch, "role_uid",
-                        "ROUTER identity does not equal payload role_uid "
-                        "(I-DEALER-IDENTITY)");
+                        std::string{"ROUTER identity '"} +
+                            std::string(env.identity()) +
+                            "' does not equal payload role_uid '" +
+                            std::string(body.role_uid) +
+                            "' (I-DEALER-IDENTITY)");
         }
         if (!grammar_ok(body.role_uid))
         {

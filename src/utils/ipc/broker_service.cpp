@@ -6377,10 +6377,12 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
         // message, correlation_id}` shape.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
-    // Grammar + role-tag policy already ran at the wire_dispatch
-    // pipeline via run_control_gates → gate_role_tag_policy (HEP-CORE-0033
-    // §G2.2.0b.8 universal {prod,cons,proc} set for ROLE_PRESENCE_REQ).
-    // Legacy validate_role_uid_only retired (2026-07-14 task #46).
+    // role_uid grammar + role-tag policy ran at the wire dispatch
+    // pipeline: ROLE_PRESENCE_REQ is in Tier::
+    // Control_EnvelopeWithQueryRoleUid — the body role_uid here is
+    // the QUERIED subject, not the caller's own uid, so
+    // identity_match is intentionally NOT run.  Universal
+    // {prod,cons,proc} tag policy still applies.
 
     // Scan all channels: check every producer + each consumer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).
@@ -6439,9 +6441,12 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
         // diverged from the broker-wide error envelope.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
-    // Grammar + role-tag policy already ran at the wire_dispatch
-    // pipeline via run_control_gates.  Legacy validate_role_uid_only
-    // retired (2026-07-14 task #46).
+    // role_uid grammar + role-tag policy ran at the wire dispatch
+    // pipeline: ROLE_INFO_REQ is in Tier::
+    // Control_EnvelopeWithQueryRoleUid — the body role_uid here is
+    // the QUERIED subject, not the caller's own uid, so
+    // identity_match is intentionally NOT run.  Universal
+    // {prod,cons,proc} tag policy still applies.
 
     // Search for a channel where `uid` is a registered producer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).  Inbox info lives
@@ -7545,10 +7550,13 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     // validator error so the role-side response matcher routes the
     // rejection to the right pending `do_request` (other gates were
     // already doing this; this one was missed).
-    // Grammar + role-tag policy already ran at the wire_dispatch
-    // pipeline (BAND_JOIN_REQ is EnvelopeOnly tier → run_control_gates
-    // → gate_role_tag_policy universal {prod,cons,proc}).  Legacy
-    // validate_role_uid_only retired (2026-07-14 task #46).
+    // Grammar + identity match + role-tag policy ran at the wire
+    // dispatch pipeline: BAND_JOIN_REQ is in Tier::
+    // Control_EnvelopeWithRoleUid → run_control_gates
+    // → gate_role_tag_policy universal {prod,cons,proc}.  The
+    // band-name grammar check below is still handler-local because
+    // the wire pipeline only checks `role_uid` + `channel_name`, not
+    // `band`.
     if (!role_name.empty() &&
         !pylabhub::hub::is_valid_identifier(
             role_name, pylabhub::hub::IdentifierKind::RoleName))
@@ -7643,9 +7651,9 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     // the membership loop and skip the LEAVE log.
     // Audit B1 (2026-05-20): corr_id is now threaded through (was
     // empty, response matcher couldn't route).
-    // Grammar + role-tag policy already ran at the wire_dispatch
-    // pipeline (BAND_LEAVE_REQ mirrors BAND_JOIN_REQ tier).  Legacy
-    // validate_role_uid_only retired (2026-07-14 task #46).
+    // Grammar + identity match + role-tag policy ran at the wire
+    // dispatch pipeline: BAND_LEAVE_REQ mirrors BAND_JOIN_REQ in
+    // Tier::Control_EnvelopeWithRoleUid → run_control_gates.
 
     // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is
     // handler-driven via `subscribe_band_left` wired in run().  The
