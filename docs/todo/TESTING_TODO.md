@@ -72,6 +72,7 @@ guarantee.
 |---|---|---|---|
 | 2026-06-27 | `test_datahub_hub_host_integration.cpp:HubHost_Shutdown_BreaksClientConnection` | HEP-CORE-0023 §2.5.3 "disconnect is terminal" — cross-process hub-death observability (libzmq shared-context CURVE quirk makes L3 impossible) | task #296 (L4 hub-death observability test) |
 | 2026-06-28 | `test_datahub_broker_protocol.cpp:BrokerProtocolTest.ClosingNotify_DeliveredToProducerAndConsumer` | CHANNEL_CLOSING_NOTIFY fan-out to ALL channel members (both producer-side AND consumer-side BRCs after `broker.request_close_channel`) | task **#225** (Pattern 4 rung 8 `Pattern4ChannelNotifiesTest`) — description extended 2026-06-28 with explicit fan-out cardinality / dual-receipt / trigger-path requirements |
+| 2026-07-15 | `test_datahub_broker_protocol.cpp:BrokerProtocolTest.WireConformance_Band_CorrIdEcho` (worker `wire_conformance_band_corr_id_echo`) | BAND_JOIN/LEAVE success + NOT_A_MEMBER error + Frame-3 authoritative corr-id echo (HEP-CORE-0030 §5.1; I-CORRELATION-STABLE) | **MIGRATED** to `test_layer3_pattern4/test_pattern4_broker_protocol.cpp` (subprocess broker + parent-side `BrokerWireClient`) — first migration of the HubHostBrokerHandle sweep (see sweep block below).  Not a retirement: same contract, moved off the retired in-process co-host pattern (HEP-CORE-0036 §7.4). |
 | 2026-06-29 | `test_datahub_broker.cpp:Sch_ConsumerCitationMatch` (worker `broker_sch_consumer_citation_match`) | Named-citation match: consumer's `expected_schema_id`+`expected_schema_hash` matches channel's stored hash → `CONSUMER_REG_REQ` succeeds (HEP-CORE-0034 §10.3) | **REINSTATED 2026-06-29** (REVIEW_C2 F2).  Earlier "duplicate" claim doesn't hold: `consumer_schema_id_match_succeeds` uses BrcHandle (production BRC client with implicit retry through CHANNEL_NOT_READY) while this test pins the raw_req wire-layer shape with explicit HEP-CORE-0036 §5.2 R6 heartbeat sequencing.  Two abstractions, two contracts; both stay.  **Lesson recorded in `feedback_test_retirement_tracked_handoff`:** when judging whether two tests cover the same contract, the abstraction level matters — wire-layer + high-level-client pairs are SIBLINGS not DUPLICATES. |
 | 2026-06-29 | `test_datahub_role_state_machine.cpp:RoleAPIBase_StartHandlerThreads_DualHub_E2E` (worker `role_api_base_start_handler_threads_dual_hub_e2e`) | M4c multi-connection master/peer ctrl-thread spawn + per-connection `brc_for_channel` routing across 2 brokers (Wave-B M4c review follow-up) | task **#296** (extended scope — L4 hub-death observability now also pins dual-hub master/peer spawn + routing via `expect_log_sequence` markers on each hub's REG_ACK).  **Reason for L3 retirement:** dual `BrokerService` in one process violates HEP-CORE-0036 §7.1 single-pumper invariant (`ZapRouter::pump_one` PANICs on concurrent entry from two broker poll loops sharing one ZapRouter). |
 | 2026-06-29 | `test_datahub_role_state_machine.cpp:RoleAPIBase_HubDead_PeerKeepsRoleAlive` (worker `role_api_base_hub_dead_peer_keeps_role_alive`) | A2: peer broker death must NOT trigger role-wide shutdown; `is_connection_alive(0)==true`, `(1)==false`, role does NOT call `request_stop` (HEP-CORE-0023 §2.5) | task **#296** (extended scope — see absorbed-contracts table in #296 description).  Same single-pumper-invariant reason. |
@@ -649,6 +650,62 @@ Verification floor (mandatory for every rung): four axes
 (sequence + timing + payload + state) + mutation discipline.
 Logging discipline: INFO is one-shot only; hot paths get
 counters or consequence-pinning.
+
+### HubHostBrokerHandle antipattern sweep → Pattern 4 (in progress)
+
+**Why.** `README_testing.md` line 565 + HEP-CORE-0036 §7.4
+single-pumper invariant: a broker and a role cannot co-host one
+process.  The in-process `HubHostBrokerHandle` co-host pattern used
+by ~97 L3 workers across 7 files violates that invariant, and it
+masks real wire bugs (e.g. two DEALERs claiming the same
+`routing_id` in one process collide silently under default
+`ZMQ_ROUTER_HANDOVER=0`).  The `WireConformance_Band_CorrIdEcho`
+migration exposed exactly this: the `raw_req` helper was setting
+`ZMQ_ROUTING_ID` to the KeyStore name, not the raw `role_uid` —
+a latent I-DEALER-IDENTITY violation only visible once the broker
+ran in its own process.
+
+**Scope decision (Path 1).** Migrate wire-only tests to Pattern 4
+(broker subprocess + parent-side `BrokerWireClient`).  Hybrid tests
+that legitimately need in-process broker state inspection keep
+`HubHostBrokerHandle` but MUST carry an explicit adjacent
+`RATIONALE:` block justifying the exception.
+
+**Rounds (open):**
+- **Round 1** — 22 wire-only workers in
+  `datahub_broker_protocol_workers.cpp`.  ✅ 10 done:
+  `WireConformance_Band_CorrIdEcho` (commit `327b3abb`) + the
+  query/shape cluster (`RolePresenceReq_*`, `RoleInfoReq_*`,
+  `WireConformance_{RegAck,ConsumerRegAck,RoleInfoAck,BandAck}_Shape`).
+  Recipe: production REG builders (`hub::build_producer_reg_payload`
+  / `build_consumer_reg_payload`) + `BrokerWireClient`; explicit
+  producer HEARTBEAT_NOTIFY before consumer REG (R6 gate — the old
+  BRC `register_consumer` masked this with a CHANNEL_NOT_READY retry
+  loop).  Dead `raw_req` helper removed on this pass.  Remaining ~12:
+  trivial REG-based (`duplicate_reg_*`, `transport_*`, `reg_ack_*`,
+  `consumer_reg_ack_contains_heartbeat_block`,
+  `heartbeat_transitions_to_ready`, `heartbeat_keying_*`); and
+  NOTIFY-capture (`broadcast_fan_out_*`, `checksum_error_report_*`,
+  `heartbeat_wire_payload_includes_uid_and_role_type`) — need a
+  parent-side unsolicited-NOTIFY drain via `BrokerWireClient::receive`.
+- **Round 2** — remaining 6 wire-only-heavy worker files (~38
+  workers).
+- **Round 3** — author `RATIONALE:` blocks for the legitimate
+  in-process exceptions (protocol rows 3, admin row 13, health
+  row 21, + 7 metrics-filter tests).
+- **Round 4** (deferred, user-approved) — judgment call on 29
+  weak-rationale hybrids.
+- **Round 5** — L1 guard: fail if a `HubHostBrokerHandle` use lacks
+  an adjacent `RATIONALE:` block.
+
+**Recipe (validated Round 1).** Parent writes `setup.json` via
+`make_pattern4_setup`/`write_pattern4_setup`; broker subprocess
+(`pattern4_broker_protocol_workers.cpp`) seeds CURVE identities,
+`apply_curve_to`, binds with EADDRINUSE retry, logs
+`"...: bound endpoint"`, blocks on
+`wait_for_quit_or_safety_timeout`; parent `expect_log`s the bind
+line then drives wire via `BrokerWireClient` with full 5-frame
+`encode_dealer_send`; `signal_quit` at teardown.
 
 ### Test-faithfulness lesson from #270 layer pivot (2026-06-25)
 

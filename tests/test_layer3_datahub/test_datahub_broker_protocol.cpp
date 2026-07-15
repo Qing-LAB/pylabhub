@@ -101,36 +101,9 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 // ============================================================================
 // 5. ROLE_PRESENCE_REQ + ROLE_INFO_REQ
 // ============================================================================
-
-TEST_F(BrokerProtocolTest, RolePresenceReq_UnknownUid_ReturnsFalse)
-{
-    auto w = SpawnWorker("broker_protocol.role_presence_req_unknown_uid");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, RoleInfoReq_UnknownUid_NotFound)
-{
-    auto w = SpawnWorker("broker_protocol.role_info_req_unknown_uid");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, RolePresenceReq_ProducerUid_ReturnsTrue)
-{
-    auto w = SpawnWorker("broker_protocol.role_presence_req_producer_uid");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, RolePresenceReq_ConsumerUid_ReturnsTrue)
-{
-    auto w = SpawnWorker("broker_protocol.role_presence_req_consumer_uid");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
-{
-    auto w = SpawnWorker("broker_protocol.role_info_req_with_inbox");
-    ExpectWorkerOk(w);
-}
+// RolePresenceReq_* / RoleInfoReq_* MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (task #54 Round 1 — HubHostBrokerHandle antipattern sweep).
 
 // ============================================================================
 // 6. Transport arbitration
@@ -228,33 +201,9 @@ TEST_F(BrokerProtocolTest, BroadcastFanOut_HubQueuePath_FansOutSame)
 // diagnostics naming the missing/forbidden key + the HEP § the rule
 // comes from.
 
-TEST_F(BrokerProtocolTest, WireConformance_RegAck_Shape)
-{
-    auto w = SpawnWorker("broker_protocol.wire_conformance_reg_ack_shape");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, WireConformance_ConsumerRegAck_Shape)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.wire_conformance_consumer_reg_ack_shape");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, WireConformance_RoleInfoAck_Shape)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.wire_conformance_role_info_ack_shape");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, WireConformance_BandAck_Shapes)
-{
-    auto w = SpawnWorker("broker_protocol.wire_conformance_band_ack_shapes");
-    ExpectWorkerOk(w);
-}
-
-// WireConformance_Band_CorrIdEcho migrated to
+// WireConformance_RegAck_Shape, WireConformance_ConsumerRegAck_Shape,
+// WireConformance_RoleInfoAck_Shape, WireConformance_BandAck_Shapes, and
+// WireConformance_Band_CorrIdEcho MIGRATED to
 // `tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp`
 // (Round 1 of HubHostBrokerHandle sweep, task #54).
 

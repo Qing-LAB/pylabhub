@@ -82,6 +82,24 @@ consumer path through the pipeline; R6-gate pending-queue).
 **Phase F:** federation follow-on (`I-DEALER-IDENTITY` extended
 to hub-to-hub DEALERs).
 
+**Interim fix ✅ SHIPPED 2026-07-15 (commit `327b3abb`).**
+Wire dispatch now runs `run_control_gates` on role_uid-bearing
+envelope-only tiers — restores role_uid grammar + identity checks
+that a Task #46 regression silently bypassed (envelope hash was
+validated but role_uid grammar was not, for 6 msg_types).
+`wire_dispatch.cpp` splits `Tier::EnvelopeOnly` into three:
+`Control_EnvelopeWithRoleUid` (CHECK_PEER_READY_REQ, BAND_JOIN_REQ,
+BAND_LEAVE_REQ, BAND_BROADCAST_SEND_NOTIFY — full identity_match),
+`Control_EnvelopeWithQueryRoleUid` (ROLE_PRESENCE_REQ,
+ROLE_INFO_REQ — grammar + tag policy only; body role_uid is the
+queried subject, not the caller), and plain `EnvelopeOnly`.
+Fixes a dangling `string_view` in `ControlBodyView` population
+(role_uid/channel_name now copied to locals that outlive
+`run_control_gates`).  Enriched `identity_mismatch` reject
+diagnostic to name both `env.identity()` and `body.role_uid`
+(mismatch is silent-fatal — only diagnosable by seeing both).
+L1 pin `test_wire_dispatch_table.cpp` updated.
+
 ### Queue-owned topology + layer cleanup — P1+P2+P3 SHIPPED (2026-07-11)
 
 **Plan + landing log:** `docs/tech_draft/DRAFT_queue_owned_topology_and_layer_cleanup_2026-07-11.md`

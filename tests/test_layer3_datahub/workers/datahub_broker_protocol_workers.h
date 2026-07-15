@@ -28,12 +28,8 @@ int heartbeat_transitions_to_ready();
 int heartbeat_wire_payload_includes_uid_and_role_type();
 int heartbeat_keying_producer_vs_consumer_distinct_rows();
 
-// Role presence / info queries
-int role_presence_req_unknown_uid();
-int role_info_req_unknown_uid();
-int role_presence_req_producer_uid();
-int role_presence_req_consumer_uid();
-int role_info_req_with_inbox();
+// Role presence / info queries — MIGRATED to
+// tests/test_layer3_pattern4/ (task #54 Round 1).
 
 // Transport arbitration
 int transport_mismatch_shm_producer_zmq_consumer();
@@ -52,12 +48,9 @@ int broadcast_unknown_channel_no_notify_delivered();
 int broadcast_fan_out_hub_queue_path_fans_out_same();
 
 // Audit TR1 — wire-conformance ACK-shape regressions (2026-05-17)
-int wire_conformance_reg_ack_shape();
-int wire_conformance_consumer_reg_ack_shape();
-int wire_conformance_role_info_ack_shape();
-int wire_conformance_band_ack_shapes();
-// wire_conformance_band_corr_id_echo migrated to
-// tests/test_layer3_pattern4/ (task #54 Round 1).
+// reg_ack / consumer_reg_ack / role_info_ack / band_ack shapes +
+// band_corr_id_echo MIGRATED to tests/test_layer3_pattern4/
+// (task #54 Round 1 — HubHostBrokerHandle antipattern sweep).
 // R3.6 retired — CHANNEL_NOTIFY_REQ wire path deleted (no caller anywhere).
 
 } // namespace broker_protocol
