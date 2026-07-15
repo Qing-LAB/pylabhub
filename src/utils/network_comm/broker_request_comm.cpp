@@ -147,6 +147,102 @@ using BrokerCommand = std::variant<SendCmd,
                                     std::shared_ptr<RequestCmd>,
                                     InstallPeriodicTaskCmd>;
 
+// ── Wire-boundary ACK/NOTIFY body-shape validation (task #45) ─────────
+//
+// Every ACK and NOTIFY the broker emits has a documented wire body
+// contract per HEP-CORE-0046 §14.3 catalog (REG-family) and its
+// subsystem HEP (band/inbox/etc.).  The typed body classes in
+// `wire_bodies.hpp` are the executable representation of those
+// contracts.  We validate every known msg_type at BRC recv time —
+// protocol compliance MUST be checked at the moment of communication,
+// not deferred to whoever eventually reads a field with a fallback.
+//
+// A malformed reply that reaches the caller silently produces
+// downstream misbehavior (missing field returns `default_value`,
+// caller keeps going with 0/""/null and later crashes in a confusing
+// place).  Catching at the wire boundary here turns broker-side
+// contract violations into a WARN + timeout — observable, and the
+// caller's next request retries cleanly.
+//
+// Unknown msg_types (not in the switch below) pass through
+// unvalidated — same behavior as before task #45.  Adding a new
+// ACK/NOTIFY to the wire = add a body class in `wire_bodies.hpp` +
+// wire it into this switch.  Missing coverage is a follow-up, not a
+// regression.
+//
+// Returns nullopt on validation pass (or unknown msg_type — pass-through).
+// Returns the WireBodyError message on validation failure.
+[[nodiscard]] std::optional<std::string>
+validate_wire_body_for_msg_type(std::string_view msg_type,
+                                 const nlohmann::json &body) noexcept
+{
+    namespace wb = ::pylabhub::wire;
+    try
+    {
+        // Copy body — body-class ctors take by value and move-in.
+        // We only validate; caller still gets its own JSON copy.
+        if (msg_type == "REG_ACK")
+        {
+            (void) wb::RegAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "CONSUMER_REG_ACK")
+        {
+            // Split from RegAckBody 2026-07-15 (task #45 erratum on
+            // HEP-CORE-0046 §14.3): CONSUMER_REG_ACK carries producers[]
+            // + data_transport per HEP-CORE-0036 §5b/§6.4, not
+            // initial_allowlist.
+            (void) wb::ConsumerRegAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "DEREG_ACK" || msg_type == "CONSUMER_DEREG_ACK")
+        {
+            (void) wb::DeregAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "ENDPOINT_UPDATE_ACK")
+        {
+            (void) wb::EndpointUpdateAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "GET_CHANNEL_AUTH_ACK")
+        {
+            (void) wb::GetChannelAuthAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "CHANNEL_AUTH_APPLIED_ACK")
+        {
+            (void) wb::ChannelAuthAppliedAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "DISC_ACK")
+        {
+            (void) wb::DiscAckBody(nlohmann::json(body));
+        }
+        else if (msg_type == "CHANNEL_AUTH_CHANGED_NOTIFY")
+        {
+            (void) wb::ChannelAuthChangedNotifyBody(nlohmann::json(body));
+        }
+        else if (msg_type == "CHANNEL_CLOSING_NOTIFY")
+        {
+            (void) wb::ChannelClosingNotifyBody(nlohmann::json(body));
+        }
+        else if (msg_type == "CONSUMER_DIED_NOTIFY")
+        {
+            (void) wb::ConsumerDiedNotifyBody(nlohmann::json(body));
+        }
+        else if (msg_type == "BAND_JOIN_NOTIFY")
+        {
+            (void) wb::BandJoinNotifyBody(nlohmann::json(body));
+        }
+        else if (msg_type == "BAND_LEAVE_NOTIFY")
+        {
+            (void) wb::BandLeaveNotifyBody(nlohmann::json(body));
+        }
+        // Unknown msg_type → no contract to check; pass through.
+        // Adding coverage = new body class + new arm here.
+    }
+    catch (const wb::WireBodyError &e)
+    {
+        return std::string{e.what()};
+    }
+    return std::nullopt;
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -310,6 +406,23 @@ struct BrokerRequestComm::Impl
             nlohmann::json body = env.body();
             if (!correlation_id.empty())
                 body["correlation_id"] = correlation_id;
+
+            // Wire-body-shape validation (task #45).  Every known
+            // ACK/NOTIFY msg_type has a documented contract in
+            // wire_bodies.hpp; running the ctor on the incoming JSON
+            // enforces the contract at the moment of communication
+            // per HEP-CORE-0046 §14.3.  A broker-side violation
+            // (missing required field, wrong JSON kind) is dropped
+            // here with a WARN — caller sees timeout instead of
+            // silently reading a default from a missing field.
+            // Unknown msg_types pass through (no contract to check).
+            if (auto verr = validate_wire_body_for_msg_type(msg_type, body))
+            {
+                LOGGER_WARN("BrokerRequestComm[{}]: wire body validation "
+                            "rejected reply type='{}' corr_id='{}' — {}",
+                            role_name, msg_type, correlation_id, *verr);
+                continue;
+            }
 
             // Match this reply to a pending request by correlation_id
             // per I-CORRELATION-STABLE.  ERROR replies carry the same

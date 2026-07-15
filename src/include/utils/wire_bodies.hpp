@@ -504,6 +504,46 @@ PLH_WIRE_BODY_CLASS(RegAckBody)
     }
 };
 
+// **ConsumerRegAckBody** — CONSUMER_REG_ACK per HEP-CORE-0046 §14.3
+// (erratum: split from RegAckBody 2026-07-15 task #45) + HEP-CORE-0036
+// §5b/§6.4.  Consumer-side ACK does NOT carry `initial_allowlist`
+// (that's producer-side per HEP-0046 §14.3); it carries `producers[]`
+// and `data_transport` per §5b's unified transport-discriminator
+// shape (B-4, #289, 2026-06-25).  Success ACK only — broker emits
+// msg_type "ERROR" for the failure case, so ConsumerRegAckBody's
+// required-field set covers the success path.
+PLH_WIRE_BODY_CLASS(ConsumerRegAckBody)
+  public:
+    [[nodiscard]] std::string status() const
+    {
+        return detail::read_string(body_, "status");
+    }
+    [[nodiscard]] std::string channel_name() const
+    {
+        return detail::read_string(body_, "channel_name");
+    }
+    [[nodiscard]] std::string data_transport() const
+    {
+        return detail::read_string(body_, "data_transport");
+    }
+    [[nodiscard]] const nlohmann::json &heartbeat() const
+    {
+        return detail::read_object(body_, "heartbeat");
+    }
+    [[nodiscard]] const nlohmann::json &producers() const
+    {
+        return body_.at("producers");  // array expected
+    }
+    [[nodiscard]] const nlohmann::json &broker_abi_fingerprint() const
+    {
+        return detail::read_object(body_, "broker_abi_fingerprint");
+    }
+    [[nodiscard]] std::string broker_build_id() const
+    {
+        return detail::read_string_or_empty(body_, "broker_build_id");
+    }
+};
+
 PLH_WIRE_BODY_CLASS(EndpointUpdateAckBody)
   public:
     [[nodiscard]] std::string status() const

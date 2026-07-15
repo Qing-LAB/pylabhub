@@ -253,6 +253,24 @@ RegAckBody::RegAckBody(nlohmann::json body)
     d::require_envelope_hash(body_);
 }
 
+// ConsumerRegAckBody — success-path shape per HEP-CORE-0036 §5b/§6.4.
+// Splits from RegAckBody 2026-07-15 (task #45 erratum on §14.3
+// catalog): CONSUMER_REG_ACK does NOT carry `initial_allowlist`; it
+// carries `producers[]` + `data_transport` (unified transport-
+// discriminator shape from B-4 audit).  Broker's ERROR path emits
+// msg_type "ERROR", so this class covers only the success shape.
+ConsumerRegAckBody::ConsumerRegAckBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "status",                d::JsonKind::String);
+    d::require(body_, "channel_name",          d::JsonKind::String);
+    d::require(body_, "data_transport",        d::JsonKind::String);
+    d::require(body_, "heartbeat",             d::JsonKind::Object);
+    d::require(body_, "producers",             d::JsonKind::Array);
+    d::require(body_, "broker_abi_fingerprint",d::JsonKind::Object);
+    d::require_envelope_hash(body_);
+}
+
 EndpointUpdateAckBody::EndpointUpdateAckBody(nlohmann::json body)
 {
     body_ = std::move(body);

@@ -2169,11 +2169,30 @@ brevity the class catalog below notes "+ security triple" or
   > per-auth-message protocol version, distinct from the
   > initial-REG ABI verification.  See C3 in the pending errata
   > batch.
-- **RegAckBody** (`REG_ACK`, `CONSUMER_REG_ACK`): `status`,
-  `error_code`, `message`, `channel_name`, `instance_id`,
+- **RegAckBody** (`REG_ACK` only after 2026-07-15 erratum, task #45):
+  `status`, `error_code`, `message`, `channel_name`, `instance_id`,
   `snapshot_version`, `heartbeat`, `initial_allowlist`,
   `broker_abi_fingerprint`, `broker_build_id`,
   `broker_observer_pubkey_z85` + envelope_hash only.
+
+  > **ERRATUM PENDING 2026-07-15 (task #45):** the original catalog
+  > entry said `RegAckBody` covered both `REG_ACK` and
+  > `CONSUMER_REG_ACK`.  That is inconsistent with HEP-CORE-0036
+  > §5b/§6.4 which defines the consumer-side ACK shape around
+  > `producers[]` (unified transport-discriminator per B-4 / #289,
+  > 2026-06-25) — NOT `initial_allowlist`.  Split into two body
+  > classes, mirroring the ProducerRegReqBody + ConsumerRegReqBody
+  > split from Group 1:
+  >
+  > - `ProducerRegAckBody` (= existing `RegAckBody` above,
+  >   `REG_ACK` only): producer-side, carries `initial_allowlist`.
+  > - `ConsumerRegAckBody` (`CONSUMER_REG_ACK`): `status`,
+  >   `channel_name`, `data_transport`, `heartbeat`, `producers`
+  >   (array of `{role_uid, pubkey_z85, endpoint}` per §5b),
+  >   `broker_abi_fingerprint`, `broker_build_id`,
+  >   optional `correlation_id` (echo) + envelope_hash only.
+  >   Broker's error path emits msg_type `"ERROR"`, so
+  >   `ConsumerRegAckBody` covers only the success shape.
 - **ChannelAuthChangedNotifyBody**: `channel_name`, `role_uid`
   (subject), `role_type` (subject), `phase`, `channel_version`
   + envelope_hash only.
