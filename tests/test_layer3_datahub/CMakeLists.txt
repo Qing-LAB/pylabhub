@@ -113,10 +113,9 @@ add_executable(test_layer3_datahub
     # workers/role_identity_policy_workers.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
-    # Unmasked 2026-06-07 under #154 — migrated to seed_curve_identities +
-    # production build_*_reg_payload helpers.
-    test_datahub_broker_consumer.cpp
-    workers/broker_consumer_workers.cpp
+    # MIGRATED to tests/test_layer3_pattern4/test_pattern4_broker_consumer.cpp
+    # (task #52 Round 2 — all 15 workers were wire-only; HubHostBrokerHandle
+    # co-host harness retired for this concern).
 
     # ── e2e (broker in-thread + producer/consumer subprocesses) RETIRED ──
     # 2026-06-23 (HEP-CORE-0041 1i-cleanup / #275-S2 Batch 1)

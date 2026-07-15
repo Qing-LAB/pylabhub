@@ -709,11 +709,34 @@ that legitimately need in-process broker state inspection keep
     Fidelity note: schema_hash must be the real canonical BLAKE2b of
     `schema_blds`+packing (broker rejects `FINGERPRINT_INCONSISTENT`) —
     compute via `hub::compute_canonical_hash_from_wire`, not a stub.
-  - Corrected classification: `broker_admin` is a **Round 3** file
-    (all 14 tests inspect in-process state via `broker.service()`), not
-    Round 2.  Remaining Round 2: `broker_consumer` (15),
-    `datahub_role_state` (11), `zmq_endpoint_registry` (~7),
-    `datahub_metrics` (~16).
+  - **Full read-based classification (2026-07-15, via per-file audit
+    agents — grep is unreliable here).**  The sweep target is the 7
+    files using `HubHostBrokerHandle` specifically; files using
+    `DirectBrokerHandle` (`datahub_role_state`, `datahub_channel_group`)
+    are OUT of scope — DirectBrokerHandle deliberately exposes
+    `hub_state`/`service` for FSM-state verification with no wire
+    equivalent.  Remaining Round 2 wire-only counts (migrate) vs hybrid
+    (stay in L3, Round 3 disposition):
+    - ✅ `broker_consumer` — **15 wire-only** migrated to
+      `test_pattern4_broker_consumer.cpp` (reg/dereg/disc/get_channel_auth/
+      consumer_attach; identity + pubkey mismatch spoof paths).  L3 file +
+      header + driver deleted (0 hybrid remained).
+    - `datahub_broker_health` — **8 wire-only, 3 hybrid** (NOTIFY-heavy:
+      CLOSING/ERROR/CONSUMER_DIED; 2 hybrids read `query_channel_snapshot`,
+      1 reads the `ZapRouter` denied-count singleton; needs a broker
+      profile with `ready_timeout_override`/`pending_timeout_override`/
+      `consumer_liveness_check_interval`).
+    - `zmq_endpoint_registry` — **7 wire-only, 1 hybrid**
+      (`shm_and_zmq_coexist` reads `query_channel_snapshot`).
+    - `broker_admin` — **4 wire-only** (`reg_validation_*` error paths),
+      **10 hybrid** (list/snapshot/close via `broker.service()`).
+    - `datahub_metrics` — **0 wire-only, 16 hybrid** — every test reads
+      `svc.query_metrics*` in-process (no metrics wire query exists;
+      `METRICS_REPORT_REQ` is retired → UNKNOWN_MSG_TYPE).  Round-3
+      disposition: switch these to `DirectBrokerHandle` (broker-only, no
+      role co-host) rather than Pattern 4.
+    Total remaining wire-only: **34 across 4 files** (broker_admin's 4 +
+    the three above).  `broker_schema` done (4).
 - **Round 3** — author `RATIONALE:` blocks for the legitimate
   in-process exceptions (protocol rows 3, admin row 13, health
   row 21, + 7 metrics-filter tests).
