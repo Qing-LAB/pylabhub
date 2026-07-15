@@ -78,10 +78,12 @@ public:
         /// Set to the role_uid this wire client masquerades as;
         /// broker's envelope parse uses it as Frame 0 identity so
         /// envelope_hash reconstructs against a stable per-connection
-        /// value.  Non-empty; defaults to `pattern4-wire-client` if
-        /// the test does not set one (adequate for smoke tests but
-        /// per-role tests should set distinct values).
-        std::string client_role_uid{"pattern4-wire-client"};
+        /// value.  REQUIRED — construction throws if empty per
+        /// I-DEALER-IDENTITY (the "pattern4-wire-client" default was
+        /// a sentinel that let multiple test clients collide on the
+        /// same ROUTER identity, silently reusing routing state
+        /// across independent tests).
+        std::string client_role_uid;
 
         /// Optional linger override (ms).  Default 0 — matches production
         /// BRC's DEALER teardown (drop in-flight per HEP-CORE-0023

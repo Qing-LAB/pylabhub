@@ -404,12 +404,18 @@ nlohmann::json raw_req(const std::string& endpoint,
 
     // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.  The
     // broker's envelope parse uses Frame 0 (libzmq attaches it from
-    // routing_id) to reconstruct envelope_hash.  Use the caller-owned
-    // wire identity (role_identity_name) or, if empty, a stable fallback.
-    const std::string routing_id = role_identity_name.empty()
-        ? std::string{"raw-req-anon"}
-        : role_identity_name;
-    dealer.set(zmq::sockopt::routing_id, routing_id);
+    // routing_id) to reconstruct envelope_hash.  REQUIRED — pre-Group-6
+    // this fell back to `raw-req-anon` on empty, which let multiple
+    // "anon" test clients collide on the same ROUTER identity + defeated
+    // the strict-CURVE ZAP invariant (no key means no valid identity).
+    if (role_identity_name.empty())
+    {
+        throw std::logic_error(
+            "raw_req: role_identity_name empty — I-DEALER-IDENTITY "
+            "requires every wire call to authenticate as a seeded role "
+            "(HEP-CORE-0046 §8.1 + HEP-CORE-0035 §2 strict-CURVE)");
+    }
+    dealer.set(zmq::sockopt::routing_id, role_identity_name);
     dealer.connect(endpoint);
 
     // HEP-CORE-0046 §14 envelope encode.  Respect caller-set
@@ -450,7 +456,7 @@ nlohmann::json raw_req(const std::string& endpoint,
                 system_clock::now().time_since_epoch()).count());
     }
     ::pylabhub::wire::adapter::EncodeContext enc_ctx;
-    enc_ctx.dealer_role_uid = routing_id;
+    enc_ctx.dealer_role_uid = role_identity_name;
     enc_ctx.correlation_id  = correlation_id;
     enc_ctx.client_nonce    = nonce_hex;
     enc_ctx.client_wall_ts  = wall_ts;
@@ -486,7 +492,7 @@ nlohmann::json raw_req(const std::string& endpoint,
         if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
         ::pylabhub::wire::ParseError perr = {};
         auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-            std::move(raw), routing_id, &perr);
+            std::move(raw), role_identity_name, &perr);
         if (!env_opt.has_value()) return {};
         ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
         // Skip NOTIFYs — the raw_req contract is "return the next reply

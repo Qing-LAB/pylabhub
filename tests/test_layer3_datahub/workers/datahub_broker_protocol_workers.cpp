@@ -259,10 +259,17 @@ json raw_req(const std::string& endpoint,
     }
 
     // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.
-    const std::string routing_id = role_identity_name.empty()
-        ? std::string{"raw-req-anon-protocol"}
-        : role_identity_name;
-    dealer.set(zmq::sockopt::routing_id, routing_id);
+    // Pre-Group-6 fell back to `raw-req-anon-protocol` on empty; that
+    // let multiple anon test clients share one ROUTER identity and
+    // defeated the strict-CURVE ZAP invariant.
+    if (role_identity_name.empty())
+    {
+        throw std::logic_error(
+            "raw_req: role_identity_name empty — I-DEALER-IDENTITY "
+            "requires every wire call to authenticate as a seeded role "
+            "(HEP-CORE-0046 §8.1 + HEP-CORE-0035 §2 strict-CURVE)");
+    }
+    dealer.set(zmq::sockopt::routing_id, role_identity_name);
     dealer.connect(endpoint);
 
     // HEP-CORE-0046 §14 envelope encode.  Respect caller-set
@@ -300,7 +307,7 @@ json raw_req(const std::string& endpoint,
                 system_clock::now().time_since_epoch()).count());
     }
     ::pylabhub::wire::adapter::EncodeContext ectx;
-    ectx.dealer_role_uid = routing_id;
+    ectx.dealer_role_uid = role_identity_name;
     ectx.correlation_id  = correlation_id;
     ectx.client_nonce    = nonce_hex;
     ectx.client_wall_ts  = wall_ts;
@@ -333,7 +340,7 @@ json raw_req(const std::string& endpoint,
         if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
         ::pylabhub::wire::ParseError perr = {};
         auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-            std::move(raw), routing_id, &perr);
+            std::move(raw), role_identity_name, &perr);
         if (!env_opt.has_value()) return {};
         ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
         if (env.is_notify()) continue;
