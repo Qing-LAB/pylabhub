@@ -143,60 +143,8 @@ DirectBrokerHandle start_health_direct_broker(
 
 } // anon
 
-// ============================================================================
-// producer_gets_closing_notify — heartbeat timeout → CHANNEL_CLOSING_NOTIFY
-// ============================================================================
-
-int producer_gets_closing_notify(int /*argc*/, char ** /*argv*/)
-{
-    return run_gtest_worker(
-        []() {
-            const std::string ch_name = make_test_channel_name("health.closing_notify");
-            const std::string uid     = "prod." + ch_name;
-
-            auto curve = pylabhub::tests::make_curve_setup({uid});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            // Fast reclaim: ready+pending ≈ 1s, then NOTIFY.
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
-                curve, "HealthClosingNotifyHub");
-
-            std::atomic<bool> closing_fired{false};
-
-            BrcHandle bh;
-            bh.brc.on_notification([&](const std::string &type, const nlohmann::json &) {
-                if (type == "CHANNEL_CLOSING_NOTIFY")
-                    closing_fired.store(true);
-            });
-            bh.start(broker.endpoint, broker.pubkey, uid, role_keystore_name(uid));
-
-            auto reg = bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_name, uid), 3000);
-            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
-
-            // One heartbeat → Ready; then go silent and wait for the
-            // sweep to demote → terminate → CHANNEL_CLOSING_NOTIFY.
-            bh.brc.send_heartbeat(ch_name, uid, "producer", {});
-
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!closing_fired.load() &&
-                   std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-
-            EXPECT_TRUE(closing_fired.load())
-                << "CHANNEL_CLOSING_NOTIFY was not received within 5s";
-
-            bh.stop();
-            broker.stop_and_join();
-        },
-        "broker_health.producer_gets_closing_notify",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
+// producer_gets_closing_notify MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_broker_health.cpp (task #52 Round 2, "fast_reclaim" profile).
 
 // ============================================================================
 // consumer_auto_deregisters — Consumer::close() → CONSUMER_DEREG_REQ
@@ -269,65 +217,8 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
-// ============================================================================
-// producer_auto_deregisters — DEREG_REQ enables immediate re-registration
-// ============================================================================
-
-int producer_auto_deregisters(int /*argc*/, char ** /*argv*/)
-{
-    return run_gtest_worker(
-        []() {
-            const std::string ch_name      = make_test_channel_name("health.producer_dereg");
-            const std::string prod_a_uid   = "prod.a." + ch_name;
-            const std::string prod_b_uid   = "prod.b." + ch_name;
-
-            auto curve = pylabhub::tests::make_curve_setup({prod_a_uid, prod_b_uid});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            // Long timeouts so the test verifies DEREG actually fired,
-            // not that a sweep evicted the channel from inactivity.
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_with_timeouts(/*ready=*/15000, /*pending=*/15000),
-                curve, "HealthProducerDeregHub");
-
-            // Producer A: register + dereg.
-            {
-                BrcHandle bh;
-                bh.start(broker.endpoint, broker.pubkey, prod_a_uid,
-                         role_keystore_name(prod_a_uid));
-                auto reg = bh.brc.register_channel(
-                    pylabhub::tests::make_reg_opts(ch_name, prod_a_uid), 3000);
-                ASSERT_TRUE(reg.has_value());
-
-                {
-                    auto dereg = bh.brc.deregister_channel(ch_name);
-                    ASSERT_TRUE(dereg.has_value());
-                    EXPECT_EQ(dereg->value("status", std::string{}), "success");
-                }
-                bh.stop();
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            }
-
-            // Producer B: same channel immediately succeeds (no Pending
-            // timeout window because A explicitly DEREG'd).
-            {
-                BrcHandle bh;
-                bh.start(broker.endpoint, broker.pubkey, prod_b_uid,
-                         role_keystore_name(prod_b_uid));
-                auto reg = bh.brc.register_channel(
-                    pylabhub::tests::make_reg_opts(ch_name, prod_b_uid), 3000);
-                EXPECT_TRUE(reg.has_value())
-                    << "Producer B failed to register — DEREG_REQ was not processed";
-                bh.stop();
-            }
-
-            broker.stop_and_join();
-        },
-        "broker_health.producer_auto_deregisters",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
+// producer_auto_deregisters MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_broker_health.cpp (task #52 Round 2, "long_reclaim" profile).
 
 // ============================================================================
 // dead_consumer_orchestrator + dead_consumer_exiter
@@ -501,75 +392,8 @@ int dead_consumer_exiter(int argc, char **argv)
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
-// ============================================================================
-// schema_mismatch_notify — schema-hash conflict → CHANNEL_ERROR_NOTIFY
-// ============================================================================
-
-int schema_mismatch_notify(int /*argc*/, char ** /*argv*/)
-{
-    return run_gtest_worker(
-        []() {
-            const std::string ch_name  = make_test_channel_name("health.schema_mismatch");
-            const std::string uid_a    = "prod.a." + ch_name;
-            const std::string uid_b    = "prod.b." + ch_name;
-            const std::string hash_a   = std::string(64, 'a');
-            const std::string hash_b   = std::string(64, 'b');
-
-            auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_baseline(), curve, "HealthSchemaMismatchHub");
-
-            std::atomic<bool> error_fired{false};
-
-            BrcHandle bh_a;
-            bh_a.brc.on_notification([&](const std::string &type, const nlohmann::json &) {
-                if (type == "CHANNEL_ERROR_NOTIFY")
-                    error_fired.store(true);
-            });
-            bh_a.start(broker.endpoint, broker.pubkey, uid_a,
-                       role_keystore_name(uid_a));
-
-            auto opts_a = pylabhub::tests::make_reg_opts(ch_name, uid_a);
-            opts_a["schema_hash"] = hash_a;
-            auto reg_a = bh_a.brc.register_channel(opts_a, 3000);
-            ASSERT_TRUE(reg_a.has_value());
-
-            // Producer B: same channel, different schema_hash → SCHEMA_MISMATCH.
-            BrcHandle bh_b;
-            bh_b.start(broker.endpoint, broker.pubkey, uid_b,
-                       role_keystore_name(uid_b));
-
-            auto opts_b = pylabhub::tests::make_reg_opts(ch_name, uid_b);
-            opts_b["schema_hash"] = hash_b;
-            auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
-            // Post-Stage-2 contract: broker surfaces ERROR via
-            // optional<json>; nullopt is reserved for transport failure.
-            ASSERT_TRUE(reg_b.has_value())
-                << "Broker should respond with ERROR, not silent timeout";
-            EXPECT_EQ(reg_b->value("status", std::string{}), "error");
-            EXPECT_EQ(reg_b->value("error_code", std::string{}), "SCHEMA_MISMATCH");
-
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!error_fired.load() &&
-                   std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-
-            EXPECT_TRUE(error_fired.load())
-                << "CHANNEL_ERROR_NOTIFY (schema mismatch) was not received within 5s";
-
-            bh_b.stop();
-            bh_a.stop();
-            broker.stop_and_join();
-        },
-        "broker_health.schema_mismatch_notify",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
+// schema_mismatch_notify MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_broker_health.cpp (task #52 Round 2).
 
 // ============================================================================
 // HEP-CORE-0039 P8 prerequisites — heartbeat-timeout sweep invariants
@@ -1073,18 +897,15 @@ struct BrokerHealthWorkerRegistrar
                 }
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_health;
-                if (scenario == "producer_gets_closing_notify")
-                    return producer_gets_closing_notify(argc, argv);
+                // producer_gets_closing_notify / producer_auto_deregisters
+                // / schema_mismatch_notify MIGRATED to Pattern 4
+                // (task #52 Round 2).
                 if (scenario == "consumer_auto_deregisters")
                     return consumer_auto_deregisters(argc, argv);
-                if (scenario == "producer_auto_deregisters")
-                    return producer_auto_deregisters(argc, argv);
                 if (scenario == "dead_consumer_orchestrator")
                     return dead_consumer_orchestrator(argc, argv);
                 if (scenario == "dead_consumer_exiter")
                     return dead_consumer_exiter(argc, argv);
-                if (scenario == "schema_mismatch_notify")
-                    return schema_mismatch_notify(argc, argv);
                 if (scenario == "multi_producer_partial_pending_timeout")
                     return multi_producer_partial_pending_timeout(argc, argv);
                 if (scenario == "consumer_heartbeat_timeout_notify")

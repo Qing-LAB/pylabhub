@@ -25,24 +25,14 @@ class DatahubBrokerHealthTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(DatahubBrokerHealthTest, ProducerGetsClosingNotify)
-{
-    // Cat 1: heartbeat timeout (1s) — producer's on_channel_closing fires.
-    auto proc = SpawnWorker("broker_health.producer_gets_closing_notify", {});
-    ExpectWorkerOk(proc);
-}
+// ProducerGetsClosingNotify / ProducerAutoDeregisters / SchemaMismatchNotify
+// MIGRATED to tests/test_layer3_pattern4/test_pattern4_broker_health.cpp
+// (task #52 Round 2).
 
 TEST_F(DatahubBrokerHealthTest, ConsumerAutoDeregisters)
 {
     // Consumer::close() sends CONSUMER_DEREG_REQ; broker consumer_count drops to 0.
     auto proc = SpawnWorker("broker_health.consumer_auto_deregisters", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubBrokerHealthTest, ProducerAutoDeregisters)
-{
-    // Producer::close() sends DEREG_REQ; same channel re-created immediately (no timeout).
-    auto proc = SpawnWorker("broker_health.producer_auto_deregisters", {});
     ExpectWorkerOk(proc);
 }
 
@@ -82,18 +72,6 @@ TEST_F(DatahubBrokerHealthTest, DeadConsumerDetected)
     // Cleanup temp file.
     std::error_code ec;
     fs::remove(tmp, ec);
-}
-
-TEST_F(DatahubBrokerHealthTest, SchemaMismatchNotify)
-{
-    // Cat 1: Producer B tries to register the same channel as Producer A with a
-    // different schema_hash. Broker rejects B and sends CHANNEL_ERROR_NOTIFY to A.
-    auto proc = SpawnWorker("broker_health.schema_mismatch_notify", {});
-    // Cat 1 mismatch intentionally produces ERROR-level logs:
-    //  - broker: "Cat1 schema mismatch" (sent to existing producer)
-    //  - broker notifies via "CHANNEL_ERROR_NOTIFY"
-    //  - messenger B: "REG_ACK failed: Schema hash differs" (rejected producer gets error back)
-    ExpectWorkerOk(proc, {}, {"Cat1 schema mismatch", "CHANNEL_ERROR_NOTIFY"});
 }
 
 // ── HEP-CORE-0039 P8 migration prerequisites ────────────────────────────────

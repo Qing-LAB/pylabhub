@@ -108,6 +108,22 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                 cfg.checksum_repair_policy =
                     pylabhub::broker::ChecksumRepairPolicy::NotifyOnly;
             }
+            else if (profile == "fast_reclaim")
+            {
+                // producer_gets_closing_notify — short ready+pending
+                // timeouts so a silent producer is demoted → terminated →
+                // CHANNEL_CLOSING_NOTIFY well within the test window.
+                cfg.ready_timeout_override   = std::chrono::milliseconds{500};
+                cfg.pending_timeout_override = std::chrono::milliseconds{500};
+            }
+            else if (profile == "long_reclaim")
+            {
+                // producer_auto_deregisters — long timeouts so the test
+                // verifies an explicit DEREG fired (channel reusable
+                // immediately), not that a sweep evicted the channel.
+                cfg.ready_timeout_override   = std::chrono::milliseconds{15000};
+                cfg.pending_timeout_override = std::chrono::milliseconds{15000};
+            }
             else
             {
                 std::fprintf(stderr,

@@ -6,14 +6,12 @@
 namespace pylabhub::tests::worker::broker_health
 {
 
-/** Broker sends CHANNEL_CLOSING_NOTIFY to producer on heartbeat timeout (Cat 1). */
-int producer_gets_closing_notify(int argc, char **argv);
+// producer_gets_closing_notify / producer_auto_deregisters /
+// schema_mismatch_notify MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_broker_health.cpp (task #52 Round 2).
 
 /** Consumer::close() sends CONSUMER_DEREG_REQ; broker consumer_count drops to 0. */
 int consumer_auto_deregisters(int argc, char **argv);
-
-/** Producer::close() sends DEREG_REQ; same channel re-created immediately (no timeout). */
-int producer_auto_deregisters(int argc, char **argv);
 
 /**
  * Multi-process: orchestrator side.
@@ -30,14 +28,6 @@ int dead_consumer_orchestrator(int argc, char **argv);
  * argv[2] = temp file path.
  */
 int dead_consumer_exiter(int argc, char **argv);
-
-/**
- * Single worker with two Messenger instances.
- * Producer A creates channel with schema_hash A; registers on_channel_error.
- * A second (manual) Messenger tries to create same channel with schema_hash B.
- * Broker rejects the second registration and sends CHANNEL_ERROR_NOTIFY to producer A.
- */
-int schema_mismatch_notify(int argc, char **argv);
 
 /**
  * HEP-CORE-0035 §4.2 Layer-1 ZAP deny-path pin (PeerAdmission D2).

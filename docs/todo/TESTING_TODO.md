@@ -721,11 +721,18 @@ that legitimately need in-process broker state inspection keep
       `test_pattern4_broker_consumer.cpp` (reg/dereg/disc/get_channel_auth/
       consumer_attach; identity + pubkey mismatch spoof paths).  L3 file +
       header + driver deleted (0 hybrid remained).
-    - `datahub_broker_health` — **8 wire-only, 3 hybrid** (NOTIFY-heavy:
-      CLOSING/ERROR/CONSUMER_DIED; 2 hybrids read `query_channel_snapshot`,
-      1 reads the `ZapRouter` denied-count singleton; needs a broker
-      profile with `ready_timeout_override`/`pending_timeout_override`/
-      `consumer_liveness_check_interval`).
+    - ⏳ `datahub_broker_health` — **3 migrated** to
+      `test_pattern4_broker_health.cpp` (`ProducerGetsClosingNotify` via
+      `fast_reclaim` profile; `ProducerAutoDeregisters` via `long_reclaim`;
+      `SchemaMismatchNotify`).  **Deferred (still in L3):**
+      `dead_consumer_orchestrator`+`dead_consumer_exiter` (two-subprocess
+      dying-role scenario — needs a dedicated dying-consumer Pattern 4
+      worker + `consumer_liveness_check_interval` profile),
+      `consumer_heartbeat_timeout_notify` + `two_snapshot_invariant` (tight
+      timing + liveness config).  **Hybrid (Round-3):**
+      `consumer_auto_deregisters`, `multi_producer_partial_pending_timeout`
+      (`query_channel_snapshot`), `ctrl_zap_deny_path` (`ZapRouter`
+      denied-count singleton).
     - `zmq_endpoint_registry` — **7 wire-only, 1 hybrid**
       (`shm_and_zmq_coexist` reads `query_channel_snapshot`).
     - ✅ `broker_admin` — **4 wire-only** (`reg_validation_*` error paths)
