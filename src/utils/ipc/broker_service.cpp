@@ -5225,6 +5225,21 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
                                                 std::chrono::steady_clock::now(),
                                                 metrics_opt);
 
+    // Metrics observability (HEP-CORE-0019 §2.3): when a heartbeat carries
+    // a metrics object, log the stored per-presence metrics so an operator
+    // (and L3 tests that verify wire→storage) can observe them without
+    // reaching into HubState.  Metrics heartbeats are periodic, not
+    // per-tick, so this is bounded.  `producer_pid` is echoed for the
+    // per-presence attribution tests.
+    if (metrics_opt.has_value())
+    {
+        LOGGER_INFO("[broker] event=HeartbeatMetricsStored channel='{}' "
+                    "role_uid='{}' role_type='{}' producer_pid={} metrics={}",
+                    channel_name, wire_uid, wire_role_type,
+                    req.value("producer_pid", std::uint64_t{0}),
+                    metrics_opt->dump());
+    }
+
     // HEP-CORE-0023 §2.5 telemetry — first-heartbeat observability.
     // One-shot per presence per session: gate
     // `!was_first_heartbeat_seen` is true on the SAME tick that

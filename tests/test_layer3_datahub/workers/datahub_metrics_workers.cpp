@@ -115,134 +115,6 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
-/// Raw-wire DEALER helper for test #15 — sends a literal msg_type
-/// (METRICS_REPORT_REQ) to verify the retired wire path returns
-/// UNKNOWN_MSG_TYPE.  Mirrors the pattern in
-/// `datahub_broker_workers.cpp::raw_req`.  Two-frame [type, payload]
-/// over a CURVE-secured DEALER under the same role identity the test
-/// already seeded in the keystore (post-strict-CURVE the broker
-/// refuses anything else — `BrokerRequestComm::connect` won't accept
-/// plain TCP, but this helper opens a raw DEALER, so it dials in with
-/// the role's z85 keys directly from `CurveSetup`).
-///
-/// ⚠ EPHEMERAL TEST KEYS — DO NOT COPY THIS PATTERN TO PRODUCTION.
-/// `CurveKeypair` carries an ephemeral test seckey by design (see
-/// `tests/test_framework/curve_test_setup.h` — generated per-process,
-/// disposable, NOT a `LockedKey`).  The `std::string` temporaries
-/// below leak the z85 seckey bytes onto freed heap; we wipe them with
-/// `sodium_memzero` after libzmq copies them into its CURVE context,
-/// but that's belt-and-suspenders — the real protection is "tests own
-/// the only copy and the process exits seconds later".  A future
-/// production caller MUST use a `LockedKey` view + a libzmq raw API
-/// path that doesn't materialize the seckey as a `std::string`.  See
-/// #309.
-json raw_request(const std::string                  &endpoint,
-                 const std::string                  &server_pubkey,
-                 const pylabhub::tests::CurveKeypair &client_keys,
-                 const std::string                  &role_uid,
-                 const std::string                  &msg_type,
-                 const json                         &payload,
-                 int                                 timeout_ms = 2000)
-{
-    zmq::socket_t dealer(pylabhub::hub::get_zmq_context(),
-                         zmq::socket_type::dealer);
-    dealer.set(zmq::sockopt::linger, 0);
-    dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-
-    // Materialize then wipe — libzmq copies the bytes into its CURVE
-    // state on `set()`, so wiping the test-side temp after the call
-    // closes the seckey-on-freed-heap window for THIS process.  Public
-    // half stays cleartext (it isn't secret).
-    {
-        std::string pub_tmp(client_keys.public_z85.data(), 40);
-        dealer.set(zmq::sockopt::curve_publickey, pub_tmp);
-    }
-    {
-        std::string sec_tmp(client_keys.secret_z85.data(), 40);
-        dealer.set(zmq::sockopt::curve_secretkey, sec_tmp);
-        sodium_memzero(sec_tmp.data(), sec_tmp.size());
-    }
-
-    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid.
-    dealer.set(zmq::sockopt::routing_id, role_uid);
-    dealer.connect(endpoint);
-
-    // Respect caller-set `payload["correlation_id"]` per contract.
-    namespace sec = pylabhub::utils::security;
-    std::string correlation_id;
-    if (payload.is_object())
-    {
-        auto it = payload.find("correlation_id");
-        if (it != payload.end() && it->is_string())
-            correlation_id = it->get<std::string>();
-    }
-    if (correlation_id.empty())
-    {
-        std::array<std::uint8_t, 16> corr_raw{};
-        sec::secure().random_bytes(corr_raw);
-        char corr_hex[33] = {};
-        sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
-                              corr_raw.size());
-        correlation_id.assign(corr_hex, 32);
-    }
-    std::string nonce_hex;
-    std::uint64_t wall_ts = 0;
-    if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
-    {
-        std::array<std::uint8_t, 16> nonce_raw{};
-        sec::secure().random_bytes(nonce_raw);
-        char nh[33] = {};
-        sec::secure().bin2hex(nh, sizeof(nh), nonce_raw.data(), nonce_raw.size());
-        nonce_hex = std::string(nh, 32);
-        using namespace std::chrono;
-        wall_ts = static_cast<std::uint64_t>(
-            duration_cast<milliseconds>(
-                system_clock::now().time_since_epoch()).count());
-    }
-    ::pylabhub::wire::adapter::EncodeContext ectx;
-    ectx.dealer_role_uid = role_uid;
-    ectx.correlation_id  = correlation_id;
-    ectx.client_nonce    = nonce_hex;
-    ectx.client_wall_ts  = wall_ts;
-    try
-    {
-        zmq::multipart_t wire =
-            ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ectx, payload);
-        wire.send(dealer);
-    }
-    catch (const std::exception&)
-    {
-        return {};
-    }
-
-    // Under I-DEALER-IDENTITY, loop past NOTIFYs — see datahub_broker_workers::raw_req.
-    auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (true)
-    {
-        auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) return {};
-        auto ms_left = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           deadline - now)
-                           .count();
-        std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
-        zmq::poll(items, std::chrono::milliseconds(ms_left));
-        if ((items[0].revents & ZMQ_POLLIN) == 0) return {};
-
-        zmq::multipart_t raw;
-        if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
-        ::pylabhub::wire::ParseError perr = {};
-        auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-            std::move(raw), role_uid, &perr);
-        if (!env_opt.has_value()) return {};
-        ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
-        if (env.is_notify()) continue;
-        json body_out = env.body();
-        if (!env.correlation_id().empty())
-            body_out["correlation_id"] = std::string(env.correlation_id());
-        return body_out;
-    }
-}
 
 /// Module list for every worker in this TU.  HubConfig load +
 /// HubHost startup transitively require FileLock + JsonConfig.
@@ -326,136 +198,14 @@ json query_metrics_single(BrokerService &svc, const std::string &channel = {})
 /// returns true or the deadline elapses.  Replaces the pre-2026-05-01
 /// Class B ordering antipattern of `sleep_for(N ms); query; assert`.
 /// Polls every 5 ms (cheap in-process call).
-bool wait_for_metric(BrokerService &svc, const std::string &channel,
-                     std::function<bool(const json &)> pred,
-                     std::chrono::milliseconds timeout =
-                         std::chrono::seconds(2))
-{
-    return poll_until([&] { return pred(query_metrics_single(svc, channel)); },
-                       timeout, std::chrono::milliseconds(5));
-}
 
 } // namespace
 
 // ─── Test #1: HeartbeatMetrics_StoredByBroker ──────────────────────────────
 
-int heartbeat_metrics_stored_by_broker()
-{
-    const std::string channel = pid_chan("metrics.heartbeat.stored");
-    const std::string uid     = "prod." + channel;
-    return run_with_broker(
-        "datahub_metrics::heartbeat_metrics_stored_by_broker",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
-            ASSERT_TRUE(reg.has_value());
-
-            json metrics;
-            metrics["iteration_count"] = 42;
-            metrics["avg_period_us"]   = 1000;
-            bh.brc.send_heartbeat(channel, uid, "producer", metrics);
-
-            // Wave M2.5 G1 — per-uid producer tree.
-            ASSERT_TRUE(wait_for_metric(svc, channel,
-                [&uid](const json &r) {
-                    return r.value("status", "") == "success"
-                        && r.contains("metrics")
-                        && r["metrics"].contains("producers")
-                        && r["metrics"]["producers"].contains(uid)
-                        && r["metrics"]["producers"][uid]
-                               .value("iteration_count", 0) == 42;
-                }))
-                << "broker did not record producer iteration_count=42 "
-                   "within 2s";
-
-            auto result = query_metrics_single(svc, channel);
-            ASSERT_EQ(result.value("status", ""), "success");
-            ASSERT_TRUE(result.contains("metrics"));
-            auto &m = result["metrics"];
-            ASSERT_TRUE(m.contains("producers"));
-            ASSERT_TRUE(m["producers"].contains(uid));
-            EXPECT_EQ(m["producers"][uid].value("iteration_count", 0), 42);
-
-            bh.stop();
-        });
-}
 
 // ─── Test #2: ConsumerHeartbeatMetrics_StoredByBroker ──────────────────────
 
-int consumer_heartbeat_metrics_stored_by_broker()
-{
-    const std::string channel  = pid_chan("metrics.consumer.stored");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-    return run_with_broker(
-        "datahub_metrics::consumer_heartbeat_metrics_stored_by_broker",
-        {prod_uid, cons_uid},
-        [channel, prod_uid, cons_uid](const std::string &ep,
-                                       const std::string &pk,
-                                       BrokerService &svc) {
-            pylabhub::tests::BrcHandle prod_bh;
-            prod_bh.start(ep, pk, prod_uid, pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg = prod_bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            // HEP-CORE-0036 §5.2 R6: CONSUMER_REG_REQ requires producer
-            // kLive (Connected + first_heartbeat_seen).  Send a
-            // producer heartbeat with a marker metric, then poll the
-            // metrics tree to confirm the broker observed it before
-            // registering the consumer.
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer",
-                                        json{{"_ready", 1}});
-            ASSERT_TRUE(poll_until([&] {
-                auto r = query_metrics_single(svc, channel);
-                return r.contains("metrics")
-                    && r["metrics"].contains("producers")
-                    && r["metrics"]["producers"].contains(prod_uid)
-                    && r["metrics"]["producers"][prod_uid]
-                           .value("_ready", 0) == 1;
-            }, std::chrono::seconds(2)))
-                << "producer did not reach kLive within 2s "
-                   "(HEP-CORE-0036 §5.2 R6 pre-consumer-reg gate)";
-
-            pylabhub::tests::BrcHandle cons_bh;
-            cons_bh.start(ep, pk, cons_uid, pylabhub::tests::role_keystore_name(cons_uid));
-            auto cons_reg = cons_bh.brc.register_consumer(
-                pylabhub::tests::make_cons_opts(channel, cons_uid), 3000);
-            ASSERT_TRUE(cons_reg.has_value());
-            ASSERT_EQ(cons_reg->value("status", ""), "success")
-                << "CONSUMER_REG_REQ failed: " << cons_reg->dump();
-
-            // M1.4: metrics piggyback on HEARTBEAT_NOTIFY.
-            json cons_metrics;
-            cons_metrics["read_count"] = 100;
-            cons_bh.brc.send_heartbeat(channel, cons_uid, "consumer",
-                                        cons_metrics);
-
-            ASSERT_TRUE(wait_for_metric(svc, channel,
-                [&](const json &r) {
-                    return r.contains("metrics")
-                        && r["metrics"].contains("consumers")
-                        && r["metrics"]["consumers"].contains(cons_uid)
-                        && r["metrics"]["consumers"][cons_uid]
-                               .value("read_count", 0) == 100;
-                }))
-                << "broker did not record consumer read_count=100 within 2s";
-
-            auto result = query_metrics_single(svc, channel);
-            ASSERT_TRUE(result.contains("metrics"));
-            auto &m = result["metrics"];
-            ASSERT_TRUE(m.contains("consumers"));
-            ASSERT_TRUE(m["consumers"].contains(cons_uid));
-            EXPECT_EQ(m["consumers"][cons_uid].value("read_count", 0), 100);
-
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
 
 // ─── Test #3: QueryMetrics_UnknownChannel_ReturnsEmpty ─────────────────────
 
@@ -511,125 +261,12 @@ int query_metrics_all_channels()
 
 // ─── Test #5: HeartbeatNoMetrics_BackwardCompat ────────────────────────────
 
-int heartbeat_no_metrics_backward_compat()
-{
-    const std::string channel = pid_chan("metrics.no.payload");
-    const std::string uid     = "prod." + channel;
-    return run_with_broker(
-        "datahub_metrics::heartbeat_no_metrics_backward_compat",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
-            ASSERT_TRUE(reg.has_value());
-
-            bh.brc.send_heartbeat(channel, uid, "producer", {});
-
-            auto result = query_metrics_single(svc, channel);
-            EXPECT_EQ(result.value("status", ""), "success");
-
-            bh.stop();
-        });
-}
 
 // ─── Test #6: MetricsUpdate_OverwriteOnHeartbeat ───────────────────────────
 
-int metrics_update_overwrite_on_heartbeat()
-{
-    const std::string channel = pid_chan("metrics.overwrite");
-    const std::string uid     = "prod." + channel;
-    return run_with_broker(
-        "datahub_metrics::metrics_update_overwrite_on_heartbeat",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
-            ASSERT_TRUE(reg.has_value());
-
-            json m1;
-            m1["iteration_count"] = 10;
-            bh.brc.send_heartbeat(channel, uid, "producer", m1);
-            ASSERT_TRUE(wait_for_metric(svc, channel,
-                [&uid](const json &r) {
-                    return r.contains("metrics")
-                        && r["metrics"].contains("producers")
-                        && r["metrics"]["producers"].contains(uid)
-                        && r["metrics"]["producers"][uid]
-                               .value("iteration_count", 0) == 10;
-                }))
-                << "first heartbeat (iteration_count=10) did not propagate "
-                   "within 2s";
-
-            json m2;
-            m2["iteration_count"] = 20;
-            bh.brc.send_heartbeat(channel, uid, "producer", m2);
-            ASSERT_TRUE(wait_for_metric(svc, channel,
-                [&uid](const json &r) {
-                    return r.contains("metrics")
-                        && r["metrics"].contains("producers")
-                        && r["metrics"]["producers"].contains(uid)
-                        && r["metrics"]["producers"][uid]
-                               .value("iteration_count", 0) == 20;
-                }))
-                << "second heartbeat (iteration_count=20) did not overwrite "
-                   "first within 2s";
-
-            auto result = query_metrics_single(svc, channel);
-            auto &m = result["metrics"];
-            ASSERT_TRUE(m.contains("producers"));
-            ASSERT_TRUE(m["producers"].contains(uid));
-            EXPECT_EQ(m["producers"][uid].value("iteration_count", 0), 20);
-
-            bh.stop();
-        });
-}
 
 // ─── Test #7: ProducerPID_InQueryResult ────────────────────────────────────
 
-int producer_pid_in_query_result()
-{
-    const std::string channel = pid_chan("metrics.pid");
-    const std::string uid     = "prod." + channel;
-    return run_with_broker(
-        "datahub_metrics::producer_pid_in_query_result",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
-            ASSERT_TRUE(reg.has_value());
-
-            json metrics;
-            metrics["test"] = 1;
-            bh.brc.send_heartbeat(channel, uid, "producer", metrics);
-
-            ASSERT_TRUE(wait_for_metric(svc, channel,
-                [&uid](const json &r) {
-                    return r.contains("metrics")
-                        && r["metrics"].contains("producers")
-                        && r["metrics"]["producers"].contains(uid)
-                        && r["metrics"]["producers"][uid]
-                               .value("pid", 0) == ::getpid();
-                }))
-                << "producer PID did not appear in metrics within 2s";
-
-            auto result = query_metrics_single(svc, channel);
-            auto &m = result["metrics"];
-            ASSERT_TRUE(m.contains("producers"));
-            ASSERT_TRUE(m["producers"].contains(uid));
-            EXPECT_EQ(m["producers"][uid].value("pid", 0), ::getpid());
-
-            bh.stop();
-        });
-}
 
 // ─── Unified query engine — HEP-CORE-0033 §10.3 ────────────────────────────
 
@@ -817,78 +454,6 @@ int query_engine_channels_have_producer_and_consumer_metrics()
 
 // ─── Wave M2.5 G1 — multi-producer metrics isolation ───────────────────────
 
-int fan_in_two_producers_metrics_do_not_overwrite()
-{
-    const std::string channel = pid_chan("metrics.fanin");
-    // HEP-CORE-0033 §G2.2.0b: each tag.name.unique component
-    // starts with a letter; pidNNN prefix keeps the last
-    // component letter-led.
-    const std::string uid_a   =
-        "prod.fanin.a.pid" + std::to_string(::getpid());
-    const std::string uid_b   =
-        "prod.fanin.b.pid" + std::to_string(::getpid());
-    return run_with_broker(
-        "datahub_metrics::fan_in_two_producers_metrics_do_not_overwrite",
-        {uid_a, uid_b},
-        [channel, uid_a, uid_b](const std::string &ep, const std::string &pk,
-                                 BrokerService &svc) {
-            pylabhub::tests::BrcHandle bh_a, bh_b;
-            bh_a.start(ep, pk, uid_a, pylabhub::tests::role_keystore_name(uid_a));
-            bh_b.start(ep, pk, uid_b, pylabhub::tests::role_keystore_name(uid_b));
-
-            // ZMQ + fan-in — SHM forbids multi-producer per
-            // HEP-CORE-0017 §3.3.0.  Explicit `fan-in` topology
-            // required for multi-producer under the 2026-07-08 topology
-            // migration (default topology is one-to-one).
-            auto opts_a = pylabhub::tests::make_reg_opts(
-                channel, uid_a, std::nullopt, /*channel_topology=*/"fan-in");
-            opts_a["data_transport"] = "zmq";
-            auto reg_a = bh_a.brc.register_channel(opts_a, 3000);
-            ASSERT_TRUE(reg_a.has_value()) << reg_a.value_or(json{}).dump();
-            ASSERT_EQ(reg_a->value("status", ""), "success") << reg_a->dump();
-
-            auto opts_b = pylabhub::tests::make_reg_opts(
-                channel, uid_b, std::nullopt, /*channel_topology=*/"fan-in");
-            opts_b["data_transport"] = "zmq";
-            auto reg_b = bh_b.brc.register_channel(opts_b, 3000);
-            ASSERT_TRUE(reg_b.has_value()) << reg_b.value_or(json{}).dump();
-            ASSERT_EQ(reg_b->value("status", ""), "success") << reg_b->dump();
-
-            json ma, mb;
-            ma["iteration_count"] = 100;
-            mb["iteration_count"] = 200;
-            bh_a.brc.send_heartbeat(channel, uid_a, "producer", ma);
-            bh_b.brc.send_heartbeat(channel, uid_b, "producer", mb);
-
-            // Wait until BOTH producers' slots exist with expected values.
-            ASSERT_TRUE(wait_for_metric(svc, channel,
-                [&](const json &r) {
-                    if (!r.contains("metrics")) return false;
-                    const auto &m = r["metrics"];
-                    if (!m.contains("producers")) return false;
-                    const auto &p = m["producers"];
-                    return p.contains(uid_a)
-                        && p[uid_a].value("iteration_count", 0) == 100
-                        && p.contains(uid_b)
-                        && p[uid_b].value("iteration_count", 0) == 200;
-                }))
-                << "Both producers' metrics must coexist in the per-uid "
-                   "tree (pre-G1 the second report overwrote the first); "
-                   "within 2s";
-
-            auto result = query_metrics_single(svc, channel);
-            const auto &p = result["metrics"]["producers"];
-            EXPECT_EQ(p[uid_a].value("iteration_count", 0), 100)
-                << "Producer A's slot must NOT be overwritten by B's report";
-            EXPECT_EQ(p[uid_b].value("iteration_count", 0), 200)
-                << "Producer B's slot must NOT be overwritten by A's report";
-            EXPECT_EQ(p[uid_a].value("pid", 0), ::getpid());
-            EXPECT_EQ(p[uid_b].value("pid", 0), ::getpid());
-
-            bh_b.stop();
-            bh_a.stop();
-        });
-}
 
 int query_engine_filter_echo()
 {
@@ -913,87 +478,6 @@ int query_engine_filter_echo()
 
 // ─── Wave M1.4 (2026-05-11): wire-protocol retirement ──────────────────────
 
-int old_metrics_report_req_gets_unknown_msg_type()
-{
-    // M1.4 contract: METRICS_REPORT_REQ is RETIRED — broker returns
-    // UNKNOWN_MSG_TYPE.  Sensitivity: a regression that re-adds
-    // METRICS_REPORT_REQ to the dispatch table OR to kFireAndForgetTypes
-    // would fail this test.
-    //
-    // This test inlines the harness setup (rather than using
-    // `run_with_broker`) because it needs direct access to `curve` —
-    // `raw_request` opens a CURVE-secured DEALER bypassing BRC, so it
-    // needs the role uid's CURVE keypair directly.  Post-strict-CURVE
-    // the broker refuses any pubkey that isn't in known_roles, so the
-    // DEALER MUST present the same uid's keys the test seeded into the
-    // KeyStore + KnownRolesStore via the harness.
-    const std::string channel = pid_chan("metrics.retired");
-    const std::string uid     = "prod." + channel;
-    return run_gtest_worker(
-        [channel, uid]() {
-            LogCaptureFixture log_cap;
-            log_cap.Install();
-            log_cap.ExpectLogWarn("unknown msg_type 'METRICS_REPORT_REQ'");
-            // Same baseline noise allow-list as `run_with_broker` (see
-            // comment there) — patterns pin the full message body to
-            // avoid swallowing future regressions.
-            log_cap.ExpectLogError("recovery: Failed to open '");
-            log_cap.ExpectLogError(
-                "' missing or zero producer_pid");
-
-            auto curve = pylabhub::tests::make_curve_setup({uid});
-            pylabhub::tests::seed_curve_identities(curve);
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_baseline(), curve);
-            ASSERT_TRUE(broker.host && broker.host->is_running());
-
-            // Pre-register the channel so the rejection is about
-            // msg_type, not channel-not-found.
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            ASSERT_TRUE(bh.brc.register_channel(
-                            pylabhub::tests::make_reg_opts(channel, uid),
-                            3000)
-                            .has_value());
-
-            // Under I-DEALER-IDENTITY the DEALER routing_id = role_uid.
-            // BRC and raw_request both use `uid`, so leaving BRC's
-            // dealer connected while raw_request opens a second dealer
-            // with the same identity leaves libzmq's ROUTER routing to
-            // whichever socket connected last — the broker's ERROR
-            // reply then misroutes.  Stop BRC before the raw dispatch
-            // fallback probe so raw_request owns the routing_id.
-            bh.stop();
-
-            json payload;
-            payload["channel_name"] = channel;
-            payload["uid"]          = uid;
-            payload["metrics"]      = json{{"legacy_field", 1}};
-
-            // Raw DEALER under the role uid's CURVE keys — bypasses BRC
-            // because the test is about the broker's dispatch table
-            // fallback, not BRC behavior.
-            json reply = raw_request(broker.endpoint, broker.pubkey,
-                                      curve.role(uid), uid,
-                                      "METRICS_REPORT_REQ", payload);
-            ASSERT_FALSE(reply.is_null())
-                << "Expected an UNKNOWN_MSG_TYPE reply within 2 s; got "
-                   "nothing (the broker may be silently dropping the "
-                   "request rather than responding with an error)";
-            EXPECT_EQ(reply.value("status", std::string{}), "error");
-            EXPECT_EQ(reply.value("error_code", std::string{}),
-                      "UNKNOWN_MSG_TYPE")
-                << "Wire-protocol break must surface as UNKNOWN_MSG_TYPE per "
-                   "broker_service.cpp dispatch fallback";
-
-            broker.stop_and_join();
-            log_cap.AssertNoUnexpectedLogWarnError();
-            log_cap.Uninstall();
-        },
-        "datahub_metrics::old_metrics_report_req_gets_unknown_msg_type",
-        PLH_METRICS_MODS);
-}
 
 // ─── M1.4 + M3 H34: end-to-end multi-presence isolation ────────────────────
 
@@ -1197,20 +681,17 @@ struct DatahubMetricsRegistrar
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::datahub_metrics;
 
-                if (sc == "heartbeat_metrics_stored_by_broker")
-                    return heartbeat_metrics_stored_by_broker();
-                if (sc == "consumer_heartbeat_metrics_stored_by_broker")
-                    return consumer_heartbeat_metrics_stored_by_broker();
+                // heartbeat_metrics_stored_by_broker + consumer variant
+                // MIGRATED to Pattern 4 (task #52 Round 3 — broker
+                // HeartbeatMetricsStored trace).
                 if (sc == "query_metrics_unknown_channel_returns_empty")
                     return query_metrics_unknown_channel_returns_empty();
                 if (sc == "query_metrics_all_channels")
                     return query_metrics_all_channels();
-                if (sc == "heartbeat_no_metrics_backward_compat")
-                    return heartbeat_no_metrics_backward_compat();
-                if (sc == "metrics_update_overwrite_on_heartbeat")
-                    return metrics_update_overwrite_on_heartbeat();
-                if (sc == "producer_pid_in_query_result")
-                    return producer_pid_in_query_result();
+                // heartbeat_no_metrics_backward_compat +
+                // metrics_update_overwrite_on_heartbeat +
+                // producer_pid_in_query_result MIGRATED to Pattern 4
+                // (task #52 Round 3).
                 if (sc == "query_engine_empty_filter_all_categories_present")
                     return query_engine_empty_filter_all_categories_present();
                 if (sc == "query_engine_category_filter_only_broker")
@@ -1222,12 +703,11 @@ struct DatahubMetricsRegistrar
                 if (sc == "query_engine_channels_have_producer_and_consumer_"
                           "metrics")
                     return query_engine_channels_have_producer_and_consumer_metrics();
-                if (sc == "fan_in_two_producers_metrics_do_not_overwrite")
-                    return fan_in_two_producers_metrics_do_not_overwrite();
+                // fan_in_two_producers_metrics_do_not_overwrite +
+                // old_metrics_report_req_gets_unknown_msg_type MIGRATED to
+                // Pattern 4 (task #52 Round 3).
                 if (sc == "query_engine_filter_echo")
                     return query_engine_filter_echo();
-                if (sc == "old_metrics_report_req_gets_unknown_msg_type")
-                    return old_metrics_report_req_gets_unknown_msg_type();
                 if (sc == "multi_presence_end_to_end_no_cross_attribution")
                     return multi_presence_end_to_end_no_cross_attribution();
                 if (sc == "all_channels_includes_channels_without_metrics")

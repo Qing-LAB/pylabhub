@@ -22,18 +22,10 @@ class MetricsPlaneTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(MetricsPlaneTest, HeartbeatMetrics_StoredByBroker)
-{
-    auto w = SpawnWorker("datahub_metrics.heartbeat_metrics_stored_by_broker");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(MetricsPlaneTest, ConsumerHeartbeatMetrics_StoredByBroker)
-{
-    auto w = SpawnWorker(
-        "datahub_metrics.consumer_heartbeat_metrics_stored_by_broker");
-    ExpectWorkerOk(w);
-}
+// Storage / wire tests MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_metrics.cpp (task #52 Round 3): HeartbeatMetrics /
+// ConsumerHeartbeatMetrics / HeartbeatNoMetrics / MetricsUpdate_Overwrite /
+// ProducerPID / FanIn_TwoProducers / OldMetricsReportReq.
 
 TEST_F(MetricsPlaneTest, QueryMetrics_UnknownChannel_ReturnsEmpty)
 {
@@ -45,26 +37,6 @@ TEST_F(MetricsPlaneTest, QueryMetrics_UnknownChannel_ReturnsEmpty)
 TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 {
     auto w = SpawnWorker("datahub_metrics.query_metrics_all_channels");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(MetricsPlaneTest, HeartbeatNoMetrics_BackwardCompat)
-{
-    auto w = SpawnWorker(
-        "datahub_metrics.heartbeat_no_metrics_backward_compat");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(MetricsPlaneTest, MetricsUpdate_OverwriteOnHeartbeat)
-{
-    auto w = SpawnWorker(
-        "datahub_metrics.metrics_update_overwrite_on_heartbeat");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(MetricsPlaneTest, ProducerPID_InQueryResult)
-{
-    auto w = SpawnWorker("datahub_metrics.producer_pid_in_query_result");
     ExpectWorkerOk(w);
 }
 
@@ -104,23 +76,9 @@ TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
     ExpectWorkerOk(w);
 }
 
-TEST_F(MetricsPlaneTest, FanIn_TwoProducers_MetricsDoNotOverwrite)
-{
-    auto w = SpawnWorker(
-        "datahub_metrics.fan_in_two_producers_metrics_do_not_overwrite");
-    ExpectWorkerOk(w);
-}
-
 TEST_F(MetricsPlaneTest, QueryEngine_FilterEcho)
 {
     auto w = SpawnWorker("datahub_metrics.query_engine_filter_echo");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(MetricsPlaneTest, OldMetricsReportReq_GetsUnknownMsgType)
-{
-    auto w = SpawnWorker(
-        "datahub_metrics.old_metrics_report_req_gets_unknown_msg_type");
     ExpectWorkerOk(w);
 }
 
