@@ -28,15 +28,9 @@ class BrokerProtocolTest : public IsolatedProcessTest
 // 1. CHECKSUM_ERROR_REPORT — broker forwards as CHANNEL_EVENT_NOTIFY
 // ============================================================================
 
-// ChecksumErrorReport_ForwardedToProducer MIGRATED to
-// tests/test_layer3_pattern4/ (task #54 Round 1).
-
-TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.checksum_error_report_unknown_channel_silent");
-    ExpectWorkerOk(w);
-}
+// ChecksumErrorReport_{ForwardedToProducer,UnknownChannel_Silent} MIGRATED
+// to tests/test_layer3_pattern4/ (forwarded: Round 1; unknown-channel
+// silent: Round 3 via a wire-liveness probe).
 
 // RETIRED 2026-06-28 — `ClosingNotify_DeliveredToProducerAndConsumer`
 // pinned the CHANNEL_CLOSING_NOTIFY fan-out-to-all-members invariant
@@ -63,18 +57,9 @@ TEST_F(BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 // 4. HEARTBEAT_NOTIFY — PendingReady → Ready + wire payload + keying
 // ============================================================================
 
-TEST_F(BrokerProtocolTest, Heartbeat_TransitionsToReady)
-{
-    auto w = SpawnWorker("broker_protocol.heartbeat_transitions_to_ready");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerProtocolTest, Heartbeat_WirePayloadIncludesUidAndRoleType)
-{
-    auto w = SpawnWorker(
-        "broker_protocol.heartbeat_wire_payload_includes_uid_and_role_type");
-    ExpectWorkerOk(w);
-}
+// Heartbeat_TransitionsToReady + Heartbeat_WirePayloadIncludesUidAndRoleType
+// MIGRATED to tests/test_layer3_pattern4/ (task #52 Round 3 — read the
+// broker's first-heartbeat / producer-presence sub-Live INFO traces).
 
 TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 {

@@ -11,10 +11,9 @@ namespace pylabhub::tests::worker
 namespace broker_protocol
 {
 
-// Checksum error forwarding.  forwarded_to_producer MIGRATED to
-// tests/test_layer3_pattern4/ (task #54 Round 1).  unknown_channel_silent
-// stays here (in-process snapshot liveness — Round 3 RATIONALE).
-int checksum_error_report_unknown_channel_silent();
+// Checksum error forwarding — both MIGRATED to tests/test_layer3_pattern4/
+// (forwarded_to_producer: Round 1; unknown_channel_silent: Round 3 via a
+// wire-liveness probe).
 
 // Closing notify fanout — RETIRED 2026-06-28: contract absorbed by
 // task #225 (Pattern 4 rung 8 `Pattern4ChannelNotifiesTest`).  See
@@ -24,11 +23,9 @@ int checksum_error_report_unknown_channel_silent();
 // (task #54 Round 1).
 
 // Heartbeat → Ready transition + keying.  transitions_to_ready +
-// keying_producer_vs_consumer_distinct_rows stay here (in-process
-// HubState inspection — Round 3 RATIONALE).  wire_payload is a
-// Round-1 Batch-D candidate (broker-log observation).
-int heartbeat_transitions_to_ready();
-int heartbeat_wire_payload_includes_uid_and_role_type();
+// wire_payload MIGRATED to Pattern 4 (Round 3 — read the broker's
+// first-heartbeat / producer-presence sub-Live traces).  keying stays
+// here (distinct-row HubState inspection — needs presence-row logging).
 int heartbeat_keying_producer_vs_consumer_distinct_rows();
 
 // Role presence / info queries, Transport arbitration, and REG_ACK /

@@ -1165,3 +1165,116 @@ TEST_F(Pattern4BrokerProtocolTest, BroadcastUnknownChannel_NoNotifyDelivered)
 
     broker.signal_quit();
 }
+
+// ─── Round-1 leftover hybrids, re-migrated via broker log traces ───────────
+// These verified broker-internal state in-process; the broker subprocess
+// already logs the state at the decision point, so the parent reads that.
+
+// heartbeat wire payload carries role_uid + role_type — the broker's
+// "first heartbeat received" INFO trace echoes both (heartbeats are
+// fire-and-forget, so the log is the only observable).
+TEST_F(Pattern4BrokerProtocolTest, HeartbeatWirePayloadIncludesUidAndRoleType)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.hb.wire.uid" + suffix;
+    const std::string uid     = "prod." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("proto_hb_wire");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, uid));
+
+    expect_log(broker,
+                "first heartbeat received from role='" + uid +
+                    "' channel='" + channel + "' role_type='producer'",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    broker.signal_quit();
+}
+
+// heartbeat transitions the producer presence toward Live — the broker
+// logs "pending first heartbeat" on REG (registering) and
+// "producer-presence sub-Live" on the heartbeat (transition observability).
+TEST_F(Pattern4BrokerProtocolTest, HeartbeatTransitionsToReady)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.hb.ready" + suffix;
+    const std::string uid     = "prod." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("proto_hb_ready");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, uid));
+    // Registered but not yet heartbeat: the RegReqAccepted trace marks the
+    // "(pending first heartbeat)" (registering) state for this channel.
+    expect_log(broker,
+                "event=RegReqAccepted role='" + uid + "' channel='" + channel +
+                    "'",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, uid));
+    // The heartbeat drives the presence toward Live.
+    expect_log(broker,
+                "channel '" + channel + "' producer-presence sub-Live",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    broker.signal_quit();
+}
+
+// A CHECKSUM_ERROR_REPORT for an unknown channel is silently dropped and
+// the broker stays operational — observed by a follow-up wire request
+// still getting a reply (replaces the in-process query_channel_snapshot
+// liveness probe).
+TEST_F(Pattern4BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
+{
+    using namespace std::chrono;
+    const std::string suffix       = ".pid" + std::to_string(::getpid());
+    const std::string reporter_uid = "reporter.bogus" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("proto_checksum_unknown");
+    const auto     setup    = make_pattern4_setup({reporter_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           reporter = make_wire_client(ctx, setup, reporter_uid);
+
+    nlohmann::json report;
+    report["channel_name"] = "proto.checksum.bogus" + suffix;  // never registered
+    report["slot_index"]   = 0;
+    report["error"]        = "test";
+    report["reporter_pid"] = pylabhub::platform::get_pid();
+    reporter.send("CHECKSUM_ERROR_REPORT", report);
+
+    // Liveness: a subsequent request still gets a reply.
+    nlohmann::json req;
+    req["role_uid"] = "prod.no.such.role.uid00000000";
+    auto resp = reporter.request("ROLE_PRESENCE_REQ", req, "ROLE_PRESENCE_ACK",
+                                  milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value())
+        << "broker stopped servicing requests after an unknown-channel "
+           "checksum report";
+    EXPECT_FALSE(resp->value("present", true));
+
+    broker.signal_quit();
+}

@@ -262,34 +262,6 @@ int run_with_host(std::string_view worker_name,
 // it inspects the broker's in-process channel snapshot for liveness
 // (Round 3 RATIONALE).
 
-int checksum_error_report_unknown_channel_silent()
-{
-    return run_with_host(
-        "broker_protocol::checksum_error_report_unknown_channel_silent",
-        {"REPORT-bogus"},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            BrcHandle reporter;
-            reporter.start(broker->endpoint, broker->pubkey, "REPORT-bogus", pylabhub::tests::role_keystore_name("REPORT-bogus"));
-
-            json report;
-            report["channel_name"] = pid_chan("proto.checksum.bogus");
-            report["slot_index"]   = 0;
-            report["error"]        = "test";
-            report["reporter_pid"] = ::getpid();
-
-            EXPECT_NO_THROW(reporter.brc.send_checksum_error(report));
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            EXPECT_NO_THROW({
-                auto snap = broker->host->broker().query_channel_snapshot();
-                (void)snap;
-            }) << "broker must remain operational after "
-                  "unknown-channel checksum report";
-
-            reporter.stop();
-        },
-        {"Cat2 checksum error"});
-}
 
 // RETIRED 2026-06-28 — body for `ClosingNotify_DeliveredToProducerAndConsumer`
 // removed.  Contract (CHANNEL_CLOSING_NOTIFY fan-out to ALL channel
@@ -317,110 +289,7 @@ int checksum_error_report_unknown_channel_silent()
 // heartbeat_wire_payload_includes_uid_and_role_type is a Round-1
 // Batch-D candidate (broker-log observation via expect_log).
 
-int heartbeat_transitions_to_ready()
-{
-    return run_with_host(
-        "broker_protocol::heartbeat_transitions_to_ready",
-        {"prod." + pid_chan("proto.heartbeat.ready")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
-            const std::string channel = pid_chan("proto.heartbeat.ready");
-            const std::string uid     = "prod." + channel;
 
-            BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
-                                                3000);
-            ASSERT_TRUE(reg.has_value());
-
-            // Pre-heartbeat: registering (producer registered, no
-            // heartbeat yet).
-            ChannelSnapshot snap = broker->host->broker().query_channel_snapshot();
-            for (const auto &ch : snap.channels)
-            {
-                if (ch.name == channel)
-                {
-                    EXPECT_EQ(ch.observable, "registering");
-                }
-            }
-
-            bh.brc.send_heartbeat(channel, uid, "producer", {});
-
-            auto channel_is_live = [&] {
-                auto s = broker->host->broker().query_channel_snapshot();
-                for (const auto &ch : s.channels)
-                {
-                    if (ch.name == channel)
-                        return ch.observable == "live";
-                }
-                return false;
-            };
-            EXPECT_TRUE(poll_until(channel_is_live, std::chrono::seconds(3)))
-                << "channel did not transition to live within 3s "
-                   "after heartbeat";
-
-            bh.stop();
-        });
-}
-
-int heartbeat_wire_payload_includes_uid_and_role_type()
-{
-    return run_with_host(
-        "broker_protocol::heartbeat_wire_payload_includes_uid_and_role_type",
-        {"prod." + pid_chan("proto.heartbeat.wire.uid")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &log_cap) {
-            const auto prev_level =
-                pylabhub::utils::Logger::instance().level();
-            pylabhub::utils::Logger::instance().set_level(
-                pylabhub::utils::Logger::Level::L_DEBUG);
-            auto restore_level = pylabhub::basics::make_scope_guard([&] {
-                pylabhub::utils::Logger::instance().set_level(prev_level);
-            });
-
-            const std::string channel   =
-                pid_chan("proto.heartbeat.wire.uid");
-            const std::string uid       = "prod." + channel;
-            const std::string role_type = "producer";
-
-            BrcHandle bh;
-            bh.start(broker->endpoint, broker->pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(make_reg_opts(channel, uid),
-                                                3000);
-            ASSERT_TRUE(reg.has_value()) << "REG_REQ should succeed";
-
-            bh.brc.send_heartbeat(channel, uid, role_type, {});
-
-            // broker_proto 4→5 (R3.5b): HEARTBEAT_NOTIFY wire key renamed
-            // `uid` → `role_uid`.  The broker's HEARTBEAT_NOTIFY log line
-            // mirrors the wire field name.
-            const std::string expected =
-                "Broker: HEARTBEAT_NOTIFY channel='" + channel +
-                "' role_uid='" + uid +
-                "' role_type='" + role_type + "'";
-
-            auto read_log = [&]() {
-                std::ifstream f(log_cap.log_path());
-                return std::string(std::istreambuf_iterator<char>(f),
-                                   std::istreambuf_iterator<char>{});
-            };
-
-            EXPECT_TRUE(poll_until(
-                [&] {
-                    return read_log().find(expected) != std::string::npos;
-                },
-                std::chrono::seconds(2)))
-                << "broker did not log the expected wire-payload fields "
-                   "within 2s.\nExpected substring: " << expected
-                << "\nActual log tail:\n"
-                << ([&]() {
-                       auto s = read_log();
-                       return s.size() > 2000
-                                  ? s.substr(s.size() - 2000)
-                                  : s;
-                   })();
-
-            bh.stop();
-        });
-}
 
 int heartbeat_keying_producer_vs_consumer_distinct_rows()
 {
@@ -703,17 +572,16 @@ struct BrokerProtocolRegistrar
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_protocol;
 
-                // checksum_error_report_forwarded_to_producer MIGRATED to
-                // Pattern 4 (task #54 Round 1).
-                if (sc == "checksum_error_report_unknown_channel_silent")
-                    return checksum_error_report_unknown_channel_silent();
+                // checksum_error_report_* MIGRATED to Pattern 4
+                // (forwarded: Round 1; unknown_channel_silent: Round 3
+                // via a wire-liveness probe).
                 // closing_notify_delivered_to_producer_and_consumer
                 // RETIRED 2026-06-28 → task #225 (Pattern 4 rung 8).
                 // duplicate_reg_* MIGRATED to Pattern 4 (task #54 Round 1).
-                if (sc == "heartbeat_transitions_to_ready")
-                    return heartbeat_transitions_to_ready();
-                if (sc == "heartbeat_wire_payload_includes_uid_and_role_type")
-                    return heartbeat_wire_payload_includes_uid_and_role_type();
+                // heartbeat_transitions_to_ready +
+                // heartbeat_wire_payload_includes_uid_and_role_type MIGRATED
+                // to Pattern 4 (Round 3 — read the broker's first-heartbeat /
+                // producer-presence sub-Live INFO traces).
                 if (sc == "heartbeat_keying_producer_vs_consumer_distinct_rows")
                     return heartbeat_keying_producer_vs_consumer_distinct_rows();
                 // role_presence_req_* / role_info_req_* / transport_* /
