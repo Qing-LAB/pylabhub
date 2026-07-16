@@ -145,8 +145,15 @@ TEST_F(Pattern4ChannelGroupTest, JoinNotification_ExistingMemberNotified)
 
     auto notify = drain_for(a, "BAND_JOIN_NOTIFY", kNotifyBudget);
     ASSERT_TRUE(notify.has_value()) << "A never got BAND_JOIN_NOTIFY";
+    // HEP-CORE-0030 §5.3: JOIN_NOTIFY carries {band, role_uid, role_name}.
+    // Pin all three — role_uid alone would pass even if the broker tagged the
+    // notify with the wrong band (a load-bearing routing field for members).
     EXPECT_EQ(notify->value("role_uid", std::string{}), uid_b)
         << "JOIN_NOTIFY must name the newcomer B";
+    EXPECT_EQ(notify->value("band", std::string{}), band)
+        << "JOIN_NOTIFY must carry the joined band";
+    EXPECT_EQ(notify->value("role_name", std::string{}), uid_b)
+        << "JOIN_NOTIFY must carry the newcomer's role_name";
 
     broker.signal_quit();
 }
@@ -239,13 +246,14 @@ TEST_F(Pattern4ChannelGroupTest, MultiChannel_BroadcastStaysInItsBand)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.multi" + suffix;
-    const std::string uid_b  = "prod.other" + suffix;
+    const std::string uid_a  = "prod.alpha_only" + suffix;   // member of alpha ONLY
+    const std::string uid_c  = "prod.beta_only" + suffix;    // member of beta ONLY
+    const std::string uid_b  = "prod.broadcaster" + suffix;  // member of BOTH
     const std::string alpha  = "!ch_alpha" + suffix;
     const std::string beta   = "!ch_beta" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_multi");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    const auto     setup    = make_pattern4_setup({uid_a, uid_b, uid_c});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
@@ -254,32 +262,38 @@ TEST_F(Pattern4ChannelGroupTest, MultiChannel_BroadcastStaysInItsBand)
                 milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
-    auto a = make_wire_client(ctx, setup, uid_a);  // listener on both bands
-    auto b = make_wire_client(ctx, setup, uid_b);  // broadcaster
+    auto a = make_wire_client(ctx, setup, uid_a);  // alpha only
+    auto c = make_wire_client(ctx, setup, uid_c);  // beta only
+    auto b = make_wire_client(ctx, setup, uid_b);  // broadcaster, both bands
 
     ASSERT_TRUE(band_join(a, alpha, uid_a).has_value());
-    ASSERT_TRUE(band_join(a, beta, uid_a).has_value());
+    ASSERT_TRUE(band_join(c, beta, uid_c).has_value());
     ASSERT_TRUE(band_join(b, alpha, uid_b).has_value());
     ASSERT_TRUE(band_join(b, beta, uid_b).has_value());
 
-    // B broadcasts to alpha only → A receives it tagged band=alpha.
+    // B broadcasts to alpha → the alpha member (A) receives it; the beta-only
+    // member (C) must NOT.  The non-member's EXCLUSION is what proves band
+    // isolation (HEP-CORE-0030 §5.1/§5.2 scoping) — the delivered `band` tag
+    // alone is copied from the sender's request and cannot prove routing.
     band_broadcast(b, alpha, uid_b, {{"target", "alpha"}});
-    auto d1 = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
-    ASSERT_TRUE(d1.has_value()) << "A did not receive the alpha broadcast";
-    EXPECT_EQ(d1->value("band", std::string{}), alpha)
-        << "alpha broadcast delivered with wrong band tag";
+    auto at_a = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
+    ASSERT_TRUE(at_a.has_value())
+        << "alpha member A did not receive the alpha broadcast";
+    EXPECT_EQ(at_a->value("band", std::string{}), alpha);
+    auto leak_c = drain_for(c, "BAND_BROADCAST_DELIVER_NOTIFY", kAbsenceBudget);
+    EXPECT_FALSE(leak_c.has_value())
+        << "beta-only member C received an alpha broadcast — band isolation broken";
 
-    // No further delivery until B sends to beta (no cross-band leak).
-    auto leak = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kAbsenceBudget);
-    EXPECT_FALSE(leak.has_value())
-        << "a second delivery leaked before the beta broadcast was sent";
-
-    // B broadcasts to beta → A receives it tagged band=beta.
+    // B broadcasts to beta → the beta member (C) receives it; the alpha-only
+    // member (A) must NOT.
     band_broadcast(b, beta, uid_b, {{"target", "beta"}});
-    auto d2 = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
-    ASSERT_TRUE(d2.has_value()) << "A did not receive the beta broadcast";
-    EXPECT_EQ(d2->value("band", std::string{}), beta)
-        << "beta broadcast delivered with wrong band tag";
+    auto at_c = drain_for(c, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
+    ASSERT_TRUE(at_c.has_value())
+        << "beta member C did not receive the beta broadcast";
+    EXPECT_EQ(at_c->value("band", std::string{}), beta);
+    auto leak_a = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kAbsenceBudget);
+    EXPECT_FALSE(leak_a.has_value())
+        << "alpha-only member A received a beta broadcast — band isolation broken";
 
     broker.signal_quit();
 }

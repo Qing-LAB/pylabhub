@@ -441,11 +441,15 @@ TEST_F(Pattern4BrokerProtocolTest, Band_JoinLeaveMemberQuery)
     ASSERT_TRUE(leave.has_value());
     EXPECT_EQ(leave->value("status", std::string{}), "success");
 
-    // MEMBERS query now shows 1 (B only).
+    // MEMBERS query now shows exactly 1 — and it must be B, not A (identity,
+    // not just cardinality: a broker that dropped the wrong member would keep
+    // size 1 too).
     auto m2 = band_members(b);
     ASSERT_TRUE(m2.has_value() && m2->contains("members"));
-    EXPECT_EQ((*m2)["members"].size(), 1u)
+    ASSERT_EQ((*m2)["members"].size(), 1u)
         << "B should be the sole member after A leaves";
+    EXPECT_EQ((*m2)["members"][0].value("role_uid", std::string{}), uid_b)
+        << "the surviving member must be B (A left)";
 
     broker.signal_quit();
 }

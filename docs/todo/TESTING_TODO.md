@@ -687,16 +687,16 @@ that legitimately need in-process broker state inspection keep
   parent-side unsolicited-NOTIFY drain (`drain_for` → `BrokerWireClient::
   receive`); wire-liveness reframe replacing in-process snapshot probes.
   Dead `raw_req` helper removed.
-  - **5 hybrids stay in L3 → Round 3 RATIONALE blocks** (inspect
-    in-process broker state / trigger the path in-process, no wire
-    equivalent): `heartbeat_transitions_to_ready` +
-    `heartbeat_keying_producer_vs_consumer_distinct_rows` (channel-
-    snapshot observable state; `RolePresence` rows),
-    `checksum_error_report_unknown_channel_silent` (snapshot liveness),
-    `broadcast_fan_out_hub_queue_path_fans_out_same` (in-process
-    `request_broadcast_channel` trigger), and
-    `heartbeat_wire_payload_includes_uid_and_role_type` (broker
-    DEBUG-log observation — migratable later with a debug-log profile).
+  - **5 hybrids flagged here at Round 1 — [SUPERSEDED by the Round 3 ✅
+    block below, 2026-07-16].**  The Round-3 per-test classification found
+    3 of these had since MIGRATED (`heartbeat_transitions_to_ready`,
+    `heartbeat_wire_payload_includes_uid_and_role_type` via broker-log
+    expect_log, `checksum_error_report_unknown_channel_silent` via a
+    wire-liveness probe).  Only `heartbeat_keying_producer_vs_consumer_
+    distinct_rows` (RolePresence rows) is a genuine KEEP;
+    `broadcast_fan_out_hub_queue_path_fans_out_same` is ADMIN-BLOCKED (its
+    `request_broadcast_channel` trigger is the admin RPC's call — re-homes
+    via `AdminWireClient`), not a "no wire equivalent" keep.  See Round 3.
 - **Round 2 (in progress)** — remaining wire-only-heavy L3 files.
   Shared `Pattern4WireTest` base fixture extracted
   (`tests/test_layer3_pattern4/pattern4_wire_test_base.h`); Round 1's
@@ -715,7 +715,11 @@ that legitimately need in-process broker state inspection keep
     `DirectBrokerHandle` (`datahub_role_state`, `datahub_channel_group`)
     are OUT of scope — DirectBrokerHandle deliberately exposes
     `hub_state`/`service` for FSM-state verification with no wire
-    equivalent.  Remaining Round 2 wire-only counts (migrate) vs hybrid
+    equivalent.  **[SUPERSEDED by Round 6, 2026-07-16 — this was too
+    coarse: it labelled whole FILES by harness type, but many tests in
+    those files were pure-wire and DID migrate; `datahub_channel_group`
+    is now deleted, `datahub_role_state` closed out.  See Round 6.]**
+    Remaining Round 2 wire-only counts (migrate) vs hybrid
     (stay in L3, Round 3 disposition):
     - ✅ `broker_consumer` — **15 wire-only** migrated to
       `test_pattern4_broker_consumer.cpp` (reg/dereg/disc/get_channel_auth/
@@ -746,8 +750,10 @@ that legitimately need in-process broker state inspection keep
       `METRICS_REPORT_REQ` is retired → UNKNOWN_MSG_TYPE).  Round-3
       disposition: switch these to `DirectBrokerHandle` (broker-only, no
       role co-host) rather than Pattern 4.
-    Total remaining wire-only: **34 across 4 files** (broker_admin's 4 +
-    the three above).  `broker_schema` done (4).
+    Wire-only counts at time of Round-2 writing (itemized: broker_consumer
+    15 + broker_health 5 + zmq_endpoint_registry 7 + broker_admin 4 = 31 —
+    an earlier "34 across 4 files" total was a miscount and included
+    already-migrated files; **all now migrated**).  `broker_schema` done (4).
 - **Round 3 ✅ (2026-07-16) — RATIONALE blocks authored** for the
   legitimate in-process exceptions, after a per-test classification
   (Explore agent) that corrected the stale counts — most listed hybrids
@@ -755,11 +761,16 @@ that legitimately need in-process broker state inspection keep
   file-header disposition blocks + per-function tags:
   - `datahub_broker_protocol` — **1 keep**
     (`heartbeat_keying_producer_vs_consumer_distinct_rows`: `RolePresence`
-    uid-keying isolation, no wire/log) + **1 keep**
-    (`broadcast_fan_out_hub_queue_path_fans_out_same`: in-process
-    hub-queue broadcast trigger, no wire stimulus).  Stale doc-blocks for
-    the 3 already-migrated funcs (`heartbeat_transitions_to_ready`,
-    `heartbeat_wire_payload_*`, both `checksum_error_report_*`) fixed.
+    uid-keying isolation, no wire/log) + **1 ADMIN-BLOCKED**
+    (`broadcast_fan_out_hub_queue_path_fans_out_same`: the STIMULUS
+    `request_broadcast_channel` is the SAME call the admin RPC makes —
+    `AdminService::handle_broadcast_channel`, admin_service.cpp:582 — so it
+    re-homes to Pattern 4 via a future `AdminWireClient`, the exact
+    broker_admin `close_channel_*` blocker; this is one of the 3
+    admin-triggered tests in AUTH_TODO, NOT a permanent keep).  Stale
+    doc-blocks for the 3 already-migrated funcs
+    (`heartbeat_transitions_to_ready`, `heartbeat_wire_payload_*`, both
+    `checksum_error_report_*`) fixed.
   - `broker_admin` — **2 keeps** (`close_channel_existing`/`_non_existent`:
     in-process `request_close_channel` trigger, admin wire plane disabled).
     Orphaned `make_baseline_{shm,zmq}_reg` builders + their includes + the
@@ -780,6 +791,27 @@ that legitimately need in-process broker state inspection keep
   `consumer_auto_deregisters` (`consumer_count==0` snapshot read is redundant
   with CONSUMER_DEREG_ACK + wire-observable via CHANNEL_LIST_REQ).  Both are
   clean Pattern 4 migrations with no new broker observability needed.
+- **Review audit (2026-07-16) — 3-agent systematic review of the sweep
+  work; findings fixed.**  Corrected a real test defect
+  (`MultiChannel_BroadcastStaysInItsBand` did not prove band isolation — both
+  roles were in both bands + the `band` tag is copied from the sender's
+  request; now uses a 3rd role joined to one band only and asserts the
+  non-member's EXCLUSION).  Corrected a RATIONALE mislabel
+  (`broadcast_fan_out_hub_queue_path` is ADMIN-BLOCKED via the same
+  `request_broadcast_channel` call the admin RPC makes — admin_service.cpp:582
+  — NOT a permanent keep; the doc agent had this backwards, verified against
+  code).  Reconciled HEP-CORE-0030 §5.2/§5.3 broadcast verb names to the wire
+  (`BAND_BROADCAST_SEND_NOTIFY` / `_DELIVER_NOTIFY`).  Hardened
+  `JoinNotification` (pin band+role_name) + `Band_JoinLeaveMemberQuery`
+  (survivor identity).  Fixed 3 stale `broker_consumer_workers.cpp`
+  breadcrumbs + stale Round-1/Round-2 counts here.  Two previously-untracked
+  co-host files DISPOSITIONED as KEEPs: `datahub_broker_request_comm_workers`
+  (integration test of the production `BrokerRequestComm` client class —
+  Pattern 4's raw `BrokerWireClient` cannot cover it) and
+  `hub_host_integration_workers` (co-hosting `HubHost` is intrinsic to what it
+  tests).  Flagged orphaned `datahub_slot_allocation_workers` (masked
+  2026-06-30, coverage migrated #275-S2, deletion tracked #276) with the
+  missing top-of-file + CMake Rule-6 markers — belongs to #275/#276, not #52.
 - **Round 4** (deferred, user-approved) — judgment call on 29
   weak-rationale hybrids.
 - **Round 5** — L1 guard: fail if a `HubHostBrokerHandle` use lacks

@@ -1,5 +1,16 @@
 // tests/test_layer3_datahub/workers/datahub_slot_allocation_workers.cpp
 //
+// ⚠ MASKED FROM THE BUILD (Rule-6, 2026-06-30) — NOT compiled, NOT spawned.
+//   This file is absent from `add_executable(test_layer3_datahub …)` on
+//   purpose.  Its DataBlock slot-allocation / ring-buffer coverage migrated
+//   under #275-S2 to the fd-source workers (`make_fd_backed_pair`) as part of
+//   the ShmQueue retirement strategy; see docs/todo/TESTING_TODO.md
+//   (2026-06-30 retirement-table row for `test_datahub_hub_queue.cpp`,
+//   destination ②).  PHYSICAL DELETION is tracked under REVIEW-C / #276 —
+//   do not resurrect or extend this file; fold any new coverage into the
+//   fd-source workers instead.  (Belongs to the #275/#276 DataBlock
+//   work-stream, not the #52 HubHostBrokerHandle sweep.)
+//
 // DataBlock slot allocation tests — verify that different schema sizes and ring
 // buffer capacities produce correctly-sized shared memory segments, and that
 // data can be written and read back through the allocated slots.

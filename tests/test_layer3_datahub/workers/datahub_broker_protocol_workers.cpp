@@ -427,19 +427,23 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows()
 // broadcast_unknown_channel_no_notify_delivered MIGRATED to
 // tests/test_layer3_pattern4/ (task #54 Round 1, parent-side NOTIFY drain).
 //
-// RATIONALE (task #52 Round 3, KEEP) — broadcast_fan_out_hub_queue_path_fans_
-// out_same:
-//   PURPOSE: pin that the HUB-QUEUE broadcast path fans out identically to
-//     the wire path — both co-hosted clients receive
-//     CHANNEL_BROADCAST_DELIVER_NOTIFY with sender_uid == self hub uid.
-//   WHY IN-PROCESS BROKER: the STIMULUS is the in-process hub API
-//     `broker->host->broker().request_broadcast_channel(...)` — the
-//     hub-queue-originated broadcast, which has NO wire trigger (distinct from
-//     the role-originated BAND_BROADCAST_SEND_NOTIFY path already covered at
-//     Pattern 4).  The observable (the NOTIFY) is wire; only the trigger keeps
-//     it in-process.  `sender_uid` is compared against
-//     `broker->host->config().identity().uid` (the hub's own uid), an
-//     in-process read.
+// RATIONALE (task #52 Round 3, ADMIN-BLOCKED — same class as broker_admin
+// close_channel_*) — broadcast_fan_out_hub_queue_path_fans_out_same:
+//   PURPOSE: pin that the HUB-QUEUE broadcast path fans out to both co-hosted
+//     clients with sender_uid == self hub uid.
+//   WHY STILL IN-PROCESS: the STIMULUS is the hub-originated broadcast
+//     `broker->host->broker().request_broadcast_channel(...)` — the SAME call
+//     the admin RPC makes (`AdminService::handle_broadcast_channel` →
+//     `host.broker().request_broadcast_channel(...)`, admin_service.cpp:582).
+//     The admin REP plane is disabled in this fixture, so there is no wire
+//     trigger *today*.  The observable (the DELIVER NOTIFY) is wire; only the
+//     trigger blocks it.  `sender_uid` is compared against
+//     `broker->host->config().identity().uid` (in-process read).
+//   FUTURE: once the admin plane is CURVE-secured (HEP-CORE-0033 §11) and an
+//     `AdminWireClient` exists, this re-homes to Pattern 4 by sending the
+//     `broadcast_channel` admin RPC over the wire — exactly the broker_admin
+//     `close_channel_*` blocker.  Tracked with the 3 admin-triggered tests in
+//     AUTH_TODO.
 //   WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one broker = one ZAP pump; the two
 //     clients are bare `BrcHandle`s (no ZAP pump).
 

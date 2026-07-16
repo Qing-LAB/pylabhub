@@ -172,7 +172,13 @@ Reply payload (BAND_MEMBERS_ACK):
 
 ### 5.2 Fire-and-Forget Messages
 
-#### BAND_BROADCAST_REQ
+#### BAND_BROADCAST_SEND_NOTIFY
+
+> Wire msg_type is `BAND_BROADCAST_SEND_NOTIFY` — a fire-and-forget NOTIFY
+> (there is no reply), NOT a `*_REQ`.  The broker's per-member delivery is
+> `BAND_BROADCAST_DELIVER_NOTIFY` (§5.3).  (Earlier drafts of this HEP called
+> these `BAND_BROADCAST_REQ` / `BAND_BROADCAST_NOTIFY`; the wire contract in
+> `broker_request_comm.cpp` + `broker_service.cpp` is authoritative.)
 
 ```
 Direction:  Role → Broker (no reply)
@@ -199,7 +205,7 @@ Broker behavior:
      are part of the broker-authority principle (§5.2.1 below).
   3. For each member (excluding sender):
        send_to_identity(socket, member.zmq_identity,
-           "BAND_BROADCAST_NOTIFY", {band, role_uid, body})
+           "BAND_BROADCAST_DELIVER_NOTIFY", {band, role_uid, body})
 ```
 
 #### §5.2.1 Broker-authority principle for band operations (S4 amendment 2026-05-19)
@@ -211,7 +217,7 @@ membership.  Every band wire op enforces two rules:
    - Grammar (HEP-CORE-0033 §G2.2.0b) on every identifier.
    - Sender membership where the op is member-only:
      - `BAND_LEAVE_REQ` from a non-member → typed `NOT_A_MEMBER` error.
-     - `BAND_BROADCAST_REQ` from a non-member → drop + LOGGER_WARN
+     - `BAND_BROADCAST_SEND_NOTIFY` from a non-member → drop + LOGGER_WARN
        (fire-and-forget, no reply path).
    - `BAND_JOIN_REQ` is idempotent: re-joining a band you're
      already in returns `status:success` (matches restart-recovery
@@ -264,11 +270,11 @@ Payload:
   reason                string   "voluntary" | "heartbeat_timeout"
 ```
 
-#### BAND_BROADCAST_NOTIFY
+#### BAND_BROADCAST_DELIVER_NOTIFY
 
 ```
 Direction:  Broker → All band members (except sender)
-Trigger:    BAND_BROADCAST_REQ received from a member
+Trigger:    BAND_BROADCAST_SEND_NOTIFY received from a member
 
 Payload:
   band                  string   "!band_name"
@@ -468,7 +474,7 @@ broadcast plane.  They are complementary along different axes:
 | Message | Audience | Use case | Caller |
 |---|---|---|---|
 | `CHANNEL_BROADCAST_REQ` / `CHANNEL_BROADCAST_NOTIFY` (HEP-CORE-0007 §12.4-12.5) | Producer + ALL consumers of a registered data channel | "Tell everyone working with this data channel that X happened" | `HubAPI::broadcast_channel`, `AdminService::broadcast`, federation relay (`request_broadcast_channel`) — implemented at `broker_service.cpp:3083-handle_channel_broadcast_req` |
-| `BAND_BROADCAST_REQ` / `BAND_BROADCAST_NOTIFY` (this HEP §5) | Members of an explicit pub/sub band | "Tell everyone in the coordination group X that Y happened" | Role scripts via `api.band_broadcast(name, body)` |
+| `BAND_BROADCAST_SEND_NOTIFY` / `BAND_BROADCAST_DELIVER_NOTIFY` (this HEP §5) | Members of an explicit pub/sub band | "Tell everyone in the coordination group X that Y happened" | Role scripts via `api.band_broadcast(name, body)` |
 | `CHANNEL_EVENT_NOTIFY` (HEP-CORE-0007 §12.5) | Same as CHANNEL_BROADCAST_NOTIFY but for typed events (checksum reports, peer-relayed CHANNEL_NOTIFY_REQ) | Broker-initiated channel-bound event delivery | Emitted by broker from `handle_channel_notify_req` + `handle_checksum_error_report` (NotifyOnly policy) |
 
 Channel membership is **registry-derived** (broker tracks who REG'd /

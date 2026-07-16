@@ -8,6 +8,15 @@
  * (spawning a `BrokerService` thread) and a `BrokerRequestComm` client
  * — transitively touches Logger / FileLock / JsonConfig / SecureSubsystem /
  * ZMQContext; Pattern 3 isolation required per README_testing.md.
+ *
+ * ── RATIONALE — HubHostBrokerHandle sweep disposition (task #52) ─────────────
+ * Both workers KEEP the in-process co-host, INTRINSICALLY: the subject under
+ * test IS `HubHost` composing + spawning its `BrokerService` (reachable after
+ * startup; REG_REQ round-trips via the spawned broker).  You cannot test
+ * HubHost integration without instantiating HubHost, so a subprocess-broker
+ * Pattern 4 harness would test a different thing entirely.  One `HubHost`
+ * broker = one ZAP pump; a single `BrokerRequestComm` client (DEALER, no ZAP
+ * pump) — not the HEP-CORE-0036 §7.4 single-pumper antipattern.
  */
 
 #include "hub_host_integration_workers.h"
@@ -48,10 +57,11 @@ namespace hub_host_integration
 namespace
 {
 
-// HEP-CORE-0036 §5b + #281 canonical REG_REQ wire shape — mirror the
-// builder used by sibling L3 tests (`broker_consumer_workers.cpp`).
-// Broker hard-errors on missing `role_type` / `data_transport` / pubkey
-// fields per `apply_*_reg_ack` invariants.
+// HEP-CORE-0036 §5b + #281 canonical REG_REQ wire shape — mirrors the
+// canonical `make_reg_opts` builder in
+// `tests/test_framework/broker_test_harness.h`.  Broker hard-errors on
+// missing `role_type` / `data_transport` / pubkey fields per
+// `apply_*_reg_ack` invariants.
 json make_reg_opts(const std::string &channel,
                    const pylabhub::tests::CurveSetup &curve,
                    const std::string &uid)

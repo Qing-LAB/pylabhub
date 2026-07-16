@@ -4,6 +4,28 @@
  *
  * Each worker runs in a subprocess (IsolatedProcessTest pattern).
  * Tests exercise the full BrokerRequestComm against a real BrokerService.
+ *
+ * ── RATIONALE — HubHostBrokerHandle sweep disposition (task #52) ─────────────
+ * Every worker here KEEPS the in-process `start_hubhost_broker` co-host.
+ * PURPOSE: these are the integration tests for the PRODUCTION role-side client
+ *   `BrokerRequestComm` itself — its `connect()`/`is_connected()`, the
+ *   `run_poll_loop` + `on_notification` dispatch path, and the request/reply
+ *   machinery behind `register_channel`/`discover_channel`/
+ *   `query_role_presence`/`send_heartbeat`.
+ * WHY NOT MIGRATABLE TO PATTERN 4: Pattern 4 drives the wire with the
+ *   test-only raw-DEALER `BrokerWireClient`, which by design does NOT exercise
+ *   `BrokerRequestComm`.  Re-homing these to Pattern 4 would DELETE the only
+ *   coverage of the production client class — the opposite of the sweep's
+ *   intent.  (The broker-side wire contract they touch — REG/DISC/ROLE_PRESENCE
+ *   — is separately covered at Pattern 4; here the client is under test.)
+ * WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one `HubHost` broker = one ZAP pump;
+ *   each test co-hosts exactly ONE `BrokerRequestComm` (a DEALER client, no ZAP
+ *   pump), so HEP-CORE-0036 §7.4 does not apply and there is no
+ *   two-DEALERs-one-routing_id (I-DEALER-IDENTITY) collision.
+ * NOTE: `notification_dispatch` additionally triggers the close via the
+ *   in-process `broker.service().request_close_channel(...)` (the admin RPC's
+ *   call) — but the point under test is the CLIENT receiving the resulting
+ *   CHANNEL_CLOSING_NOTIFY, so it stays regardless of the admin-plane work.
  */
 
 #include "test_entrypoint.h"
@@ -158,7 +180,9 @@ int register_and_discover()
     auto reg_result = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg_result.has_value()) << "REG_REQ timed out";
     if (reg_result)
+    {
         EXPECT_EQ(reg_result->value("status", ""), "success");
+    }
 
     // Send heartbeat so broker marks channel as Ready (required before DISC_REQ).
     // Per HEP-CORE-0019 §4.1 (Phase 6) — wire format requires (channel, uid, role_type).
@@ -173,7 +197,9 @@ int register_and_discover()
     auto disc_result = ch.discover_channel("test_ch", disc_opts, 5000);
     EXPECT_TRUE(disc_result.has_value()) << "DISC_REQ timed out";
     if (disc_result)
+    {
         EXPECT_EQ(disc_result->value("status", ""), "success");
+    }
 
     // List channels — post-Bucket-C contract: returns optional<json>
     // carrying the broker's response body or nullopt on transport failure.
@@ -226,7 +252,9 @@ int role_presence()
     auto presence_resp = ch.query_role_presence("prod.nonexistent.uid00000001", 3000);
     EXPECT_TRUE(presence_resp.has_value());
     if (presence_resp.has_value())
+    {
         EXPECT_FALSE(presence_resp->value("present", false));
+    }
 
     // Register a channel so a role exists.  #281 (2026-06-23):
     // `data_transport` REQUIRED — SHM wire shape (HEP-CORE-0041 §5.1).
@@ -251,7 +279,9 @@ int role_presence()
     presence_resp = ch.query_role_presence("prod.my.uid00000042", 3000);
     EXPECT_TRUE(presence_resp.has_value());
     if (presence_resp.has_value())
+    {
         EXPECT_TRUE(presence_resp->value("present", false));
+    }
 
     running.store(false);
     ch.stop();
@@ -320,7 +350,9 @@ int notification_dispatch()
         std::chrono::seconds{3});
     EXPECT_TRUE(got) << "CHANNEL_CLOSING_NOTIFY never received";
     if (got)
+    {
         EXPECT_EQ(last_notify_type, "CHANNEL_CLOSING_NOTIFY");
+    }
 
     running.store(false);
     ch.stop();

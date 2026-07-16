@@ -112,6 +112,13 @@ add_executable(test_layer3_datahub
     # test_datahub_role_identity_policy.cpp
     # workers/role_identity_policy_workers.cpp
 
+    # ── DataBlock slot-allocation tests ──────────────────────────────────────
+    # MASKED 2026-06-30 (Rule-6) — coverage migrated under #275-S2 to the
+    # fd-source workers (`make_fd_backed_pair`) per the ShmQueue retirement
+    # strategy; physical deletion tracked under REVIEW-C / #276.  See the
+    # top-of-file doc-block in the workers .cpp.
+    # workers/datahub_slot_allocation_workers.cpp
+
     # ── Consumer registration protocol tests ─────────────────────────────────────
     # MIGRATED to tests/test_layer3_pattern4/test_pattern4_broker_consumer.cpp
     # (task #52 Round 2 — all 15 workers were wire-only; HubHostBrokerHandle
@@ -212,7 +219,7 @@ add_executable(test_layer3_datahub
     # ── HubHost ↔ BrokerService integration (HEP-CORE-0033 §4 / Phase 6.1b) ──
     # Unmasked 2026-06-27 under #154 — workers file already uses the
     # seed_curve_identities + `start_hubhost_broker` + `BrcHandle` migration
-    # pattern (cf. broker_consumer_workers.cpp:130-135).  Pre-migration
+    # pattern (cf. tests/test_framework/broker_test_harness.h).  Pre-migration
     # MASK was a stale wrapper; file builds + runs against current lib.
     test_datahub_hub_host_integration.cpp
     workers/hub_host_integration_workers.cpp

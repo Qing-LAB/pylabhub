@@ -118,10 +118,10 @@ namespace
 // direct (non-HubHost) broker (e.g. `ctrl_zap_deny_path`), it builds
 // a `BrokerService::Config` directly and uses `start_direct_broker`.
 
-// Baseline hub.json overrides for the L3 health tests.  Mirrors the
-// shape used by `broker_consumer_workers.cpp::hubhost_overrides()`:
-// disable admin (no vault-side admin_token in this fixture) + disable
-// script (no plh_pyenv setup).  Tests with timing requirements layer
+// Baseline hub.json overrides for the L3 health tests.  Canonical
+// disable-admin + disable-script fixture shape used across the L3 broker
+// workers: disable admin (no vault-side admin_token in this fixture) +
+// disable script (no plh_pyenv setup).  Tests with timing requirements layer
 // `ready_timeout_ms` / `pending_timeout_ms` on top via the helper
 // below.
 nlohmann::json hub_overrides_baseline()
