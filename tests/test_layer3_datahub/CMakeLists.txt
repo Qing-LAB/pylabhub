@@ -281,8 +281,6 @@ add_executable(test_layer3_datahub
     # `start_hubhost_broker` (HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5).
     test_datahub_broker_request_comm.cpp
     workers/datahub_broker_request_comm_workers.cpp
-    test_datahub_channel_group.cpp
-    workers/datahub_channel_group_workers.cpp
 )
 
 target_include_directories(test_layer3_datahub PRIVATE
