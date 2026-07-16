@@ -4,6 +4,15 @@
  * @brief REG-family admission pipeline — orchestrates gates → state mutation
  *        → typed outcome for producer / consumer REG_REQ.
  *
+ * ⚠ STATUS (2026-07-16): the pre-mutation GATES this runs are LIVE in the
+ *   broker (via wire::dispatch::receive_and_validate).  This pipeline's
+ *   COMMIT half (run_reg_admission + BrokerRegHandler) is unit-tested but
+ *   NOT the live REG path — the broker still commits via the handcrafted
+ *   handle_reg_req / handle_consumer_reg_req.  `RegRequest` (below) also
+ *   still drops several fields the live handlers use.  Migration + full
+ *   parity list: task #57 (HEP-0046 Phase B).  Consumer REG has no pipeline
+ *   path here yet (make_request/run_reg_admission take ProducerRegReqBody).
+ *
  * Layer above `admission_gates.hpp`.  Adds:
  *   - Delegation to the state-mutation primitive (via typed callback)
  *   - Typed outcome variant (Accepted / Rejected / Pended)

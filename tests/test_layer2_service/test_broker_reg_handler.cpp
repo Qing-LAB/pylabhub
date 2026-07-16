@@ -4,6 +4,18 @@
  *        admission pipeline runs end-to-end against a real HubState with
  *        realistic known_roles + broker config.
  *
+ * ⚠ PICK-UP POINT for task #57 (HEP-0046 Phase B).  These tests cover the
+ *   BrokerRegHandler SKELETON in isolation — currently the PRODUCER path
+ *   only (non-fan-in), which is all the handler implements today.  As task
+ *   #57 brings the commit to parity with the live handlers, EXTEND coverage
+ *   here to match the parity list on the task: consumer REG (ConsumerRegReqBody
+ *   path), fan-in producer R6 admit+pend (handler rejects it today), full
+ *   ProducerEntry fields, HEP-0034 schema-record paths, the REG_ACK body, and
+ *   the SCHEMA_MISMATCH/TRANSPORT_MISMATCH reject-code split (collapsed to
+ *   invalid_request today).  When the pipeline becomes the LIVE broker path,
+ *   the existing L3/L4 broker suites become its integration regression harness
+ *   — no behavior should change (wire unchanged, no proto bump).
+ *
  * Pins:
  *   - Callback wiring is one-time; per-request paths reuse it
  *   - Gate failures surface as typed RegRejected with proper reject codes

@@ -23,6 +23,16 @@
  * checks.  They see a validated typed body and go straight to the domain
  * logic (HubState mutation, wire response body construction).
  *
+ * ⚠ STATUS (2026-07-16): this receive-side validation IS live in the broker
+ *   — gates run on every message.  BUT the broker's `dispatch_received`
+ *   currently down-converts the REG-family Validated* arms BACK to raw JSON
+ *   (`to_legacy`) and runs the handcrafted `handle_reg_req` /
+ *   `handle_consumer_reg_req`, rather than feeding the typed body to the
+ *   admission pipeline (BrokerRegHandler).  Completing that swap — so REG
+ *   handlers consume the typed body directly and the JSON handlers are
+ *   deleted — is task #57 (HEP-0046 Phase B).  The `to_legacy` bridge is the
+ *   transition scaffold, not a permanent layer.
+ *
  * By construction, no code path can reach a handler without first passing
  * every admission gate the msg_type's tier requires.  Adding a new msg_type
  * is one row in the dispatch table + one Validated<Body> variant.

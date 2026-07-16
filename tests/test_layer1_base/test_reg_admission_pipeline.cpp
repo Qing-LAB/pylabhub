@@ -1,5 +1,13 @@
 // tests/test_layer1_base/test_reg_admission_pipeline.cpp
 //
+// ⚠ PICK-UP POINT for task #57 (HEP-0046 Phase B).  These L1 tests pin the
+//   pipeline ORCHESTRATION (gates → commit → outcome) with stub commits; the
+//   pipeline is not yet the live broker path.  When task #57 widens
+//   `RegRequest` (it currently drops producer_pid / inbox_* /
+//   shm_capability_endpoint / schema_packing / flexzone_* / consumer fields)
+//   and adds the consumer path, add cases here for the new fields + the
+//   ConsumerRegReqBody variant.  Full parity list: task #57.
+//
 // L1 tests for the REG-family admission pipeline.  Exercises the three
 // outcome branches (Accepted / Rejected / Pended) with in-process stub
 // commit callbacks — no HubState, no ZMQ traffic.  Validates that:

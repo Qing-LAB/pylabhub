@@ -4,12 +4,32 @@
  * @brief Broker-side integration adapter — binds the reusable REG admission
  *        pipeline to a specific broker's HubState + known_roles config.
  *
- * Single owner of the callback wiring for REG_REQ / CONSUMER_REG_REQ paths.
- * BrokerServiceImpl constructs one instance at startup; every REG-family
- * handler runs the same `handle()` entry point.  No per-request callback
- * construction; no scatter of admission logic across handlers.
+ * ⚠ STATUS (2026-07-16) — NOT THE LIVE PATH YET.  See task #57 (HEP-0046
+ *   Phase B) for the migration + the full parity list.
+ *   - LIVE + DONE: the wire layer this composes over — WireEnvelope parse,
+ *     typed body classes, and the admission gates (identity/grammar/
+ *     known-role/rotation/replay) — all run in production today via
+ *     `wire::dispatch::receive_and_validate` (broker_proto 7).
+ *   - IN PROGRESS: THIS handler is a SKELETON invoked ONLY from tests.  The
+ *     live broker REG path is still the handcrafted `handle_reg_req` /
+ *     `handle_consumer_reg_req` in broker_service.cpp (reached via the
+ *     `to_legacy` down-convert in `dispatch_received`; see the
+ *     "BrokerRegHandler placeholder" note at broker_service.cpp:6710).
+ *   - What THIS commit still lacks vs the live handlers (task #57 parity
+ *     list): producer path is ~15% (no ABI / schema-record / inbox / full
+ *     ProducerEntry / REG_ACK build; fan-in producers are HARD-REJECTED at
+ *     the R6 pre-check, see the .cpp); CONSUMER path is 0% (handle()
+ *     rejects role_type!=producer); reject codes are collapsed to
+ *     `invalid_request`.  The handcrafted handlers remain the complete,
+ *     tested reference — this is a relocate-and-retire job, no redesign.
  *
- * Architecture layers (top-down):
+ * Single owner of the callback wiring for REG_REQ / CONSUMER_REG_REQ paths.
+ * BrokerServiceImpl constructs one instance at startup.  INTENT (post
+ * task #57): every REG-family handler runs the same `handle()` entry point,
+ * with no per-request callback construction and no scatter of admission
+ * logic across handlers.
+ *
+ * Architecture layers (top-down) — TARGET shape once task #57 wires it in:
  *
  *   BrokerServiceImpl (ROUTER poll loop, wire I/O)
  *      │  parses WireEnvelope, dispatches on msg_type

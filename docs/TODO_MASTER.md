@@ -96,10 +96,18 @@ added to `docs/IMPLEMENTATION_GUIDANCE.md`.
   `reg_admission_pipeline`, `broker_reg_handler`,
   `HubState::nonce_seen`) — SHIPPED as compile-verified
   L1/L2-tested modules (23+5+14+6 tests).
-- Phase B (broker dispatch rewire + BRC envelope migration) —
-  PENDING; next active commit.
+- Phase B (broker dispatch rewire) — **task #57, independent /
+  non-blocking**.  CORRECTED 2026-07-16: the envelope + typed bodies +
+  admission gates + BRC are already LIVE (broker_proto 7); only the typed
+  COMMIT (BrokerRegHandler) is unwired — a SKELETON (~15% producer, 0%
+  consumer).  The live REG path stays the handcrafted handle_reg_req /
+  handle_consumer_reg_req (complete + tested).  Phase B is a relocate-into-
+  typed-form refactor (tech-debt under the wire-discipline rule), NOT a
+  security/functional gap — full parity list on task #57.  Deliberately
+  parked so we pursue the bigger picture (AUTH chain / topology) on the
+  working JSON layer.
 - Phases D (retirements), E (integration tests), F (federation
-  follow-on) — PENDING per §12 sequencing.
+  follow-on) — PENDING per §12 sequencing (after B).
 
 Design authority: `docs/HEP/HEP-CORE-0046-REG-Protocol-Redesign.md`.
 
