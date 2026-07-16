@@ -18,41 +18,8 @@ class BrokerAdminTest : public IsolatedProcessTest
 {
 };
 
-TEST_F(BrokerAdminTest, ListChannels_Empty)
-{
-    auto w = SpawnWorker("broker_admin.list_channels_empty");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, ListChannels_OneChannel)
-{
-    auto w = SpawnWorker("broker_admin.list_channels_one_channel");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, ListChannels_FieldPresence)
-{
-    auto w = SpawnWorker("broker_admin.list_channels_field_presence");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, Snapshot_Empty)
-{
-    auto w = SpawnWorker("broker_admin.snapshot_empty");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, Snapshot_OneChannel)
-{
-    auto w = SpawnWorker("broker_admin.snapshot_one_channel");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, Snapshot_AfterConsumer)
-{
-    auto w = SpawnWorker("broker_admin.snapshot_after_consumer");
-    ExpectWorkerOk(w);
-}
+// ListChannels_* / Snapshot_* MIGRATED to Pattern 4 (task #52 Round 3 —
+// via CHANNEL_LIST_REQ; the broker's producer_pid is now on that ACK).
 
 TEST_F(BrokerAdminTest, CloseChannel_Existing)
 {
@@ -75,20 +42,7 @@ TEST_F(BrokerAdminTest, CloseChannel_NonExistent)
 // and the §5.1 endpoint-required check shipped under #268 had no
 // regression pin either.  These tests close both gaps.
 
-// RegValidation error paths (Missing/Empty/Bogus DataTransport +
-// ShmMissingEndpoint) MIGRATED to
-// tests/test_layer3_pattern4/test_pattern4_broker_admin.cpp
-// (task #52 Round 2).  The *_Success variants below stay — they inspect
-// the in-process channel snapshot.
-
-TEST_F(BrokerAdminTest, RegValidation_ShmSuccess)
-{
-    auto w = SpawnWorker("broker_admin.reg_validation_shm_success");
-    ExpectWorkerOk(w);
-}
-
-TEST_F(BrokerAdminTest, RegValidation_ZmqSuccess)
-{
-    auto w = SpawnWorker("broker_admin.reg_validation_zmq_success");
-    ExpectWorkerOk(w);
-}
+// RegValidation_* MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_admin.cpp — error paths
+// in Round 2; *_Success variants in Round 3 (verified via DISC_REQ
+// data_transport instead of the in-process channel snapshot).

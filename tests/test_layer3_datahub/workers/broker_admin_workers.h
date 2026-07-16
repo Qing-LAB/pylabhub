@@ -11,12 +11,9 @@ namespace pylabhub::tests::worker
 namespace broker_admin
 {
 
-int list_channels_empty();
-int list_channels_one_channel();
-int list_channels_field_presence();
-int snapshot_empty();
-int snapshot_one_channel();
-int snapshot_after_consumer();
+// list_channels_* / snapshot_* MIGRATED to Pattern 4 (task #52 Round 3 —
+// via CHANNEL_LIST_REQ).  close_channel_* stay (in-process admin trigger
+// request_close_channel; no simple wire path without the admin socket).
 int close_channel_existing();
 int close_channel_non_existent();
 
@@ -31,8 +28,8 @@ int close_channel_non_existent();
 // shm_missing_endpoint) MIGRATED to tests/test_layer3_pattern4/
 // test_pattern4_broker_admin.cpp (task #52 Round 2).  The *_success
 // variants stay — they inspect the in-process channel snapshot.
-int reg_validation_shm_success();
-int reg_validation_zmq_success();
+// reg_validation_{shm,zmq}_success MIGRATED to Pattern 4 (task #52
+// Round 3 — verified via DISC_REQ data_transport).
 
 } // namespace broker_admin
 } // namespace pylabhub::tests::worker

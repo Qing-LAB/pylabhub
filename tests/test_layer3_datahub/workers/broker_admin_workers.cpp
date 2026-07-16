@@ -114,181 +114,6 @@ int run_with_host(std::string_view worker_name,
 
 } // namespace
 
-int list_channels_empty()
-{
-    return run_with_host(
-        "broker_admin::list_channels_empty", {},
-        [](pylabhub::tests::HubHostBrokerHandle &broker,
-           pylabhub::tests::CurveSetup &) {
-            std::string result = broker.service().list_channels_json_str();
-            auto j = json::parse(result);
-            ASSERT_TRUE(j.is_array());
-            EXPECT_TRUE(j.empty())
-                << "Expected empty channel list, got: " << result;
-        });
-}
-
-int list_channels_one_channel()
-{
-    const std::string channel = pid_chan("admin.list.one");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::list_channels_one_channel", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
-
-            std::string result = broker.service().list_channels_json_str();
-            auto j = json::parse(result);
-            ASSERT_TRUE(j.is_array());
-            ASSERT_GE(j.size(), 1u);
-
-            bool found = false;
-            for (const auto &entry : j)
-            {
-                if (entry.value("name", "") == channel)
-                {
-                    found = true;
-                    break;
-                }
-            }
-            EXPECT_TRUE(found)
-                << "Channel '" << channel << "' not found in: " << result;
-
-            bh.stop();
-        });
-}
-
-int list_channels_field_presence()
-{
-    const std::string channel = pid_chan("admin.list.fields");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::list_channels_field_presence", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
-
-            std::string result = broker.service().list_channels_json_str();
-            auto j = json::parse(result);
-
-            const json *entry = nullptr;
-            for (const auto &e : j)
-            {
-                if (e.value("name", "") == channel)
-                {
-                    entry = &e;
-                    break;
-                }
-            }
-            ASSERT_NE(entry, nullptr) << "Channel not found in JSON";
-
-            EXPECT_TRUE(entry->contains("name"));
-            EXPECT_TRUE(entry->contains("observable"));
-            EXPECT_TRUE(entry->contains("consumer_count"));
-            EXPECT_TRUE(entry->contains("producer_pid"));
-
-            bh.stop();
-        });
-}
-
-int snapshot_empty()
-{
-    return run_with_host(
-        "broker_admin::snapshot_empty", {},
-        [](pylabhub::tests::HubHostBrokerHandle &broker,
-           pylabhub::tests::CurveSetup &) {
-            ChannelSnapshot snap = broker.service().query_channel_snapshot();
-            EXPECT_TRUE(snap.channels.empty());
-        });
-}
-
-int snapshot_one_channel()
-{
-    const std::string channel = pid_chan("admin.snap.one");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::snapshot_one_channel", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
-
-            ChannelSnapshot snap = broker.service().query_channel_snapshot();
-            ASSERT_GE(snap.channels.size(), 1u);
-
-            const ChannelSnapshotEntry *found = nullptr;
-            for (const auto &ch : snap.channels)
-            {
-                if (ch.name == channel)
-                {
-                    found = &ch;
-                    break;
-                }
-            }
-            ASSERT_NE(found, nullptr) << "Channel not in snapshot";
-            EXPECT_FALSE(found->observable.empty());
-            EXPECT_EQ(found->consumer_count, 0);
-
-            bh.stop();
-        });
-}
-
-int snapshot_after_consumer()
-{
-    const std::string channel  = pid_chan("admin.snap.consumer");
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-    return run_with_host(
-        "broker_admin::snapshot_after_consumer", {prod_uid, cons_uid},
-        [channel, prod_uid, cons_uid](
-            pylabhub::tests::HubHostBrokerHandle &broker,
-            pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle prod_bh;
-            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
-                          pylabhub::tests::role_keystore_name(prod_uid));
-            auto reg = prod_bh.brc.register_channel(
-                make_reg_opts(channel, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
-
-            prod_bh.brc.send_heartbeat(channel, prod_uid, "producer", {});
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-            pylabhub::tests::BrcHandle cons_bh;
-            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          pylabhub::tests::role_keystore_name(cons_uid));
-            auto cons_reg = cons_bh.brc.register_consumer(
-                make_cons_opts(channel, cons_uid), 3000);
-            ASSERT_TRUE(cons_reg.has_value()) << "register_consumer failed";
-
-            ChannelSnapshot snap = broker.service().query_channel_snapshot();
-            const ChannelSnapshotEntry *found = nullptr;
-            for (const auto &ch : snap.channels)
-            {
-                if (ch.name == channel)
-                {
-                    found = &ch;
-                    break;
-                }
-            }
-            ASSERT_NE(found, nullptr) << "Channel not in snapshot";
-            EXPECT_EQ(found->consumer_count, 1);
-
-            cons_bh.stop();
-            prod_bh.stop();
-        });
-}
 
 int close_channel_existing()
 {
@@ -412,77 +237,7 @@ json make_baseline_zmq_reg(const std::string &channel,
 } // anonymous namespace
 
 
-int reg_validation_shm_success()
-{
-    const std::string channel = pid_chan("reg.val.shm_ok");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::reg_validation_shm_success", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            auto reg_opts = make_baseline_shm_reg(
-                channel, uid, curve.role(uid).public_z85);
 
-            auto resp = bh.brc.register_channel(reg_opts, 3000);
-            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
-            EXPECT_EQ(resp->value("status", std::string{}), "success")
-                << "Canonical SHM REG_REQ shape must succeed; got error_code='"
-                << resp->value("error_code", std::string{}) << "' message='"
-                << resp->value("message", std::string{}) << "'";
-
-            // Sanity: the broker recorded the channel.  We don't pin
-            // the per-channel `data_transport` field here — the
-            // existing list/snapshot admin surfaces (`list_channels_json_str`
-            // and `ChannelSnapshotEntry`) don't expose `data_transport`,
-            // and threading a custom view through just to assert it
-            // would over-specify the test.  The negative pins above
-            // confirm the broker classifies the wire correctly; the
-            // status="success" here is the positive end.
-            auto snap = broker.service().query_channel_snapshot();
-            bool seen = false;
-            for (const auto &ch : snap.channels)
-                if (ch.name == channel) { seen = true; break; }
-            EXPECT_TRUE(seen) << "Channel '" << channel
-                              << "' missing from snapshot after success";
-
-            bh.stop();
-        });
-}
-
-int reg_validation_zmq_success()
-{
-    const std::string channel = pid_chan("reg.val.zmq_ok");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::reg_validation_zmq_success", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
-            auto reg_opts = make_baseline_zmq_reg(
-                channel, uid, curve.role(uid).public_z85);
-
-            auto resp = bh.brc.register_channel(reg_opts, 3000);
-            ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
-            EXPECT_EQ(resp->value("status", std::string{}), "success")
-                << "Canonical ZMQ REG_REQ shape must succeed; got error_code='"
-                << resp->value("error_code", std::string{}) << "' message='"
-                << resp->value("message", std::string{}) << "'";
-
-            auto snap = broker.service().query_channel_snapshot();
-            bool seen = false;
-            for (const auto &ch : snap.channels)
-                if (ch.name == channel) { seen = true; break; }
-            EXPECT_TRUE(seen) << "Channel '" << channel
-                              << "' missing from snapshot after success";
-
-            bh.stop();
-        });
-}
 
 } // namespace broker_admin
 } // namespace pylabhub::tests::worker
@@ -508,31 +263,14 @@ struct BrokerAdminRegistrar
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_admin;
 
-                if (sc == "list_channels_empty")
-                    return list_channels_empty();
-                if (sc == "list_channels_one_channel")
-                    return list_channels_one_channel();
-                if (sc == "list_channels_field_presence")
-                    return list_channels_field_presence();
-                if (sc == "snapshot_empty")
-                    return snapshot_empty();
-                if (sc == "snapshot_one_channel")
-                    return snapshot_one_channel();
-                if (sc == "snapshot_after_consumer")
-                    return snapshot_after_consumer();
+                // list_channels_* / snapshot_* / reg_validation_*_success
+                // MIGRATED to Pattern 4 (task #52 Round 3 — read
+                // CHANNEL_LIST_REQ / DISC_REQ over the wire).  All
+                // reg_validation error paths migrated in Round 2.
                 if (sc == "close_channel_existing")
                     return close_channel_existing();
                 if (sc == "close_channel_non_existent")
                     return close_channel_non_existent();
-                // #281 (2026-06-23) REG_REQ wire-contract pins
-                // reg_validation_{missing,empty,bogus}_data_transport +
-                // reg_validation_shm_missing_endpoint MIGRATED to
-                // tests/test_layer3_pattern4/test_pattern4_broker_admin.cpp
-                // (task #52 Round 2 — wire-only error paths).
-                if (sc == "reg_validation_shm_success")
-                    return reg_validation_shm_success();
-                if (sc == "reg_validation_zmq_success")
-                    return reg_validation_zmq_success();
                 return -1;
             });
     }

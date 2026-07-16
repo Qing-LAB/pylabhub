@@ -6342,6 +6342,11 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req(const nlohmann::json &
         ch["producer_uid"]   = entry.producers.empty()
                                    ? std::string{}
                                    : entry.producers.front().role_uid;
+        // producer_pid of the first producer (0 if none) — admin/list
+        // introspection field consumed by broker-admin list tests.
+        ch["producer_pid"]   = entry.producers.empty()
+                                   ? std::uint64_t{0}
+                                   : entry.producers.front().producer_pid;
         ch["schema_id"]      = entry.schema_id;
         ch["consumer_count"] = entry.consumers.size();
         // HEP-CORE-0023 §2.2 — channel state is the protocol-defined
