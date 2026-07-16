@@ -741,15 +741,20 @@ that legitimately need in-process broker state inspection keep
       `ctrl_zap_deny_path` (`ZapRouter` denied-count singleton).
     - `zmq_endpoint_registry` — **7 wire-only, 1 hybrid**
       (`shm_and_zmq_coexist` reads `query_channel_snapshot`).
-    - ✅ `broker_admin` — **4 wire-only** (`reg_validation_*` error paths)
-      migrated to `test_pattern4_broker_admin.cpp`; **10 hybrid** stay in
-      L3 (list/snapshot/close + `reg_validation_*_success` via
-      `broker.service()` — Round-3 disposition).
-    - `datahub_metrics` — **0 wire-only, 16 hybrid** — every test reads
-      `svc.query_metrics*` in-process (no metrics wire query exists;
-      `METRICS_REPORT_REQ` is retired → UNKNOWN_MSG_TYPE).  Round-3
-      disposition: switch these to `DirectBrokerHandle` (broker-only, no
-      role co-host) rather than Pattern 4.
+    - `broker_admin` — Round-2 estimate was "4 wire-only + 10 hybrid".
+      **[SUPERSEDED by Round 3 — the estimate was wrong on two counts:
+      (a) 8 of the "10 hybrid" actually MIGRATED to Pattern 4 over the wire
+      (`list_channels_*` ×3 + `snapshot_*` ×3 read CHANNEL_LIST_REQ/DISC_REQ;
+      `reg_validation_*_success` ×2 are pure wire, never `broker.service()`-
+      based); (b) only `close_channel_*` ×2 stay in L3, and those are
+      ADMIN-BLOCKED (re-home via a future AdminWireClient), not permanent
+      keeps.  See Round 3.]**
+    - `datahub_metrics` — Round-2 estimate "0 wire-only, 16 hybrid; switch to
+      `DirectBrokerHandle` rather than Pattern 4".  **[SUPERSEDED by Round 3 —
+      6 of these MIGRATED to Pattern 4 (`test_pattern4_metrics.cpp`) via a
+      broker HeartbeatMetricsStored log trace + the METRICS_REPORT_REQ
+      retirement check; only the 10 query-engine tests stay (in-process
+      `svc.query_metrics`, no metrics wire query).  See Round 3.]**
     Wire-only counts at time of Round-2 writing (itemized: broker_consumer
     15 + broker_health 5 + zmq_endpoint_registry 7 + broker_admin 4 = 31 —
     an earlier "34 across 4 files" total was a miscount and included
@@ -771,10 +776,13 @@ that legitimately need in-process broker state inspection keep
     doc-blocks for the 3 already-migrated funcs
     (`heartbeat_transitions_to_ready`, `heartbeat_wire_payload_*`, both
     `checksum_error_report_*`) fixed.
-  - `broker_admin` — **2 keeps** (`close_channel_existing`/`_non_existent`:
-    in-process `request_close_channel` trigger, admin wire plane disabled).
-    Orphaned `make_baseline_{shm,zmq}_reg` builders + their includes + the
-    stale `#281` doc-block removed (dead after the reg_validation migration).
+  - `broker_admin` — **2 ADMIN-BLOCKED** (`close_channel_existing`/
+    `_non_existent`: in-process `request_close_channel` trigger, admin wire
+    plane disabled — same class as the broadcast test above; re-home via a
+    future `AdminWireClient`.  These are 2 of the 3 admin-triggered tests in
+    AUTH_TODO, NOT permanent keeps).  Orphaned `make_baseline_{shm,zmq}_reg`
+    builders + their includes + the stale `#281` doc-block removed (dead after
+    the reg_validation migration).
   - `datahub_metrics` — **10 keeps** (query-engine tests: in-process
     `svc.query_metrics*`; no metrics wire query — `METRICS_REPORT_REQ`
     retired + admin disabled).  Single file-header block covers all.
@@ -812,6 +820,27 @@ that legitimately need in-process broker state inspection keep
   tests).  Flagged orphaned `datahub_slot_allocation_workers` (masked
   2026-06-30, coverage migrated #275-S2, deletion tracked #276) with the
   missing top-of-file + CMake Rule-6 markers — belongs to #275/#276, not #52.
+- **Completeness audit (2026-07-16, fresh-eyes review) — 2 co-host files the
+  original symbol-based enumeration MISSED** (they co-host via the older
+  `start_broker_in_thread` / `HubHost::startup()` mechanisms, not the
+  `HubHostBrokerHandle`/`DirectBrokerHandle` symbols the sweep grepped for):
+  - `hub_lua_integration_workers` — **KEEP** (dispositioned): the
+    event-observer tests pin the full production chain wire → BrokerService →
+    HubState → HubScriptRunner → LuaEngine.invoke; co-hosting the real
+    in-process stack is intrinsic (a subprocess broker has no LuaEngine).
+    File-header RATIONALE added.
+  - `datahub_broker_workers` — **ROUND 7 (below)**: ~30 workers, mostly
+    Pattern-4-migratable REG/DISC/DEREG/gate/schema wire tests via BrcHandle.
+  Also a locality nit (not a gap): `role_identity_policy_workers` co-hosts but
+  its disposition lives in the paired test file (MASKED, migrated to Pattern 3,
+  deletion deferred to #152), not next to the worker.  Verified: all 7
+  previously-dispositioned files carry markers; the 3 spot-checked KEEP claims
+  are honest; `datahub_channel_group_workers` confirmed deleted.
+- **Round 7 (NEW, pending) — migrate `datahub_broker_workers.cpp`.**  ~30
+  BrokerService integration workers co-hosting `start_broker_in_thread` +
+  BrcHandle; per-worker classify (most REG/DISC/DEREG/gate/schema-citation are
+  wire-only → Pattern 4; schema record-path / inbox-path may need RATIONALE).
+  File-header marked as the identified gap.
 - **Round 4** (deferred, user-approved) — judgment call on 29
   weak-rationale hybrids.
 - **Round 5** — L1 guard: fail if a `HubHostBrokerHandle` use lacks

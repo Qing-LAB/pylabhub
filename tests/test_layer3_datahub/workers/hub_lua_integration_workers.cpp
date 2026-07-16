@@ -10,6 +10,18 @@
  * across tests), eliminating the in-process re-init fragility that
  * the suite-level guard was working around.
  *
+ * ── RATIONALE — HubHostBrokerHandle sweep disposition (task #52) ─────────────
+ * KEEP the in-process co-host, INTRINSICALLY.  The event-observer tests pin the
+ * FULL production chain wire → BrokerService → HubState → subscriber →
+ * HubScriptRunner queue → worker thread → LuaEngine.invoke.  The subject under
+ * test is that whole in-process stack (HubHost + HubScriptRunner + real
+ * LuaEngine); a Pattern 4 subprocess broker + raw `BrokerWireClient` has no
+ * LuaEngine on the far side, so it would test a different thing entirely.  One
+ * `HubHost` broker = one ZAP pump; a single `BrokerRequestComm` client (DEALER,
+ * no ZAP pump) — not the HEP-CORE-0036 §7.4 single-pumper antipattern.  (The
+ * sweep's symbol enumeration missed this file because it co-hosts via
+ * `HubHost::startup()`, not the `HubHostBrokerHandle` harness symbol.)
+ *
  * Real production wiring per feedback_test_layering_and_no_mocks.md:
  *   - Real `HubConfig::load_from_directory` from a real hub directory
  *     written to a per-worker temp dir.

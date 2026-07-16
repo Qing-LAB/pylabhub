@@ -1,5 +1,18 @@
 // tests/test_layer3_datahub/workers/datahub_broker_workers.cpp
 // Phase C — BrokerService integration tests.
+//
+// ── HubHostBrokerHandle sweep disposition (task #52 — ROUND 7, PENDING) ───────
+// IDENTIFIED CO-HOST GAP (2026-07-16, completeness audit).  This file co-hosts
+// an in-process `BrokerService` (`start_broker_in_thread`) with a `BrcHandle`
+// (production `BrokerRequestComm`) client in the same worker — the sweep's
+// original symbol enumeration missed it because it predates the
+// `HubHostBrokerHandle`/`DirectBrokerHandle` harness names.  Its ~30 workers
+// mostly assert the broker's REG / DISC / DEREG / gate-rejection / schema-
+// citation WIRE contract via BrcHandle, so most are Pattern-4-migratable like
+// broker_consumer/broker_protocol were; a few (schema record-path / inbox-path)
+// may inspect in-process state and need a RATIONALE.  Per-worker classification
+// + migration is tracked as Round 7 in docs/todo/TESTING_TODO.md — do NOT add
+// new co-host workers here; add wire tests under tests/test_layer3_pattern4/.
 #include "datahub_broker_workers.h"
 #include "curve_test_setup.h"
 #include "broker_test_harness.h"

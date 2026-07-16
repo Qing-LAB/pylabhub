@@ -44,7 +44,10 @@ class Pattern4ChannelGroupTest
 {
 protected:
     // Synchronous BAND_JOIN_REQ → returns the ACK body (carries the
-    // member list per broker_service.cpp handle_band_join_req).
+    // member list per broker_service.cpp handle_band_join_req).  Pins
+    // status=="success" here: `request()` also returns the ERROR body, so a
+    // caller gating only on `has_value()` would silently accept a rejected
+    // join — this turns that into a precise failure at the join site.
     std::optional<nlohmann::json> band_join(BrokerWireClient    &c,
                                             const std::string   &band,
                                             const std::string   &uid)
@@ -53,8 +56,15 @@ protected:
         req["band"]      = band;
         req["role_uid"]  = uid;
         req["role_name"] = uid;
-        return c.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
-                         std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
+        auto reply = c.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
+                               std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
+        if (reply)
+        {
+            EXPECT_EQ(reply->value("status", std::string{}), "success")
+                << "BAND_JOIN_REQ for '" << band << "' (" << uid
+                << ") was rejected; body=" << reply->dump();
+        }
+        return reply;
     }
 
     // Fire-and-forget BAND_BROADCAST_SEND_NOTIFY (matches BRC
