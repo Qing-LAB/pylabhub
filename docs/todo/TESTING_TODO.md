@@ -748,13 +748,43 @@ that legitimately need in-process broker state inspection keep
       role co-host) rather than Pattern 4.
     Total remaining wire-only: **34 across 4 files** (broker_admin's 4 +
     the three above).  `broker_schema` done (4).
-- **Round 3** — author `RATIONALE:` blocks for the legitimate
-  in-process exceptions (protocol rows 3, admin row 13, health
-  row 21, + 7 metrics-filter tests).
+- **Round 3 ✅ (2026-07-16) — RATIONALE blocks authored** for the
+  legitimate in-process exceptions, after a per-test classification
+  (Explore agent) that corrected the stale counts — most listed hybrids
+  had ALREADY migrated.  Actual remaining exceptions documented with
+  file-header disposition blocks + per-function tags:
+  - `datahub_broker_protocol` — **1 keep**
+    (`heartbeat_keying_producer_vs_consumer_distinct_rows`: `RolePresence`
+    uid-keying isolation, no wire/log) + **1 keep**
+    (`broadcast_fan_out_hub_queue_path_fans_out_same`: in-process
+    hub-queue broadcast trigger, no wire stimulus).  Stale doc-blocks for
+    the 3 already-migrated funcs (`heartbeat_transitions_to_ready`,
+    `heartbeat_wire_payload_*`, both `checksum_error_report_*`) fixed.
+  - `broker_admin` — **2 keeps** (`close_channel_existing`/`_non_existent`:
+    in-process `request_close_channel` trigger, admin wire plane disabled).
+    Orphaned `make_baseline_{shm,zmq}_reg` builders + their includes + the
+    stale `#281` doc-block removed (dead after the reg_validation migration).
+  - `datahub_metrics` — **10 keeps** (query-engine tests: in-process
+    `svc.query_metrics*`; no metrics wire query — `METRICS_REPORT_REQ`
+    retired + admin disabled).  Single file-header block covers all.
+  - `datahub_broker_health` — **2 keeps** (`ctrl_zap_deny_path`:
+    `ZapRouter::denied_count()` singleton; `multi_producer_partial_pending_
+    timeout`: silent presence-timeout `producer_uids.size()`).
+  - Dead-code sweep: also removed the orphaned `start_local_broker()` helper
+    + unnamed 3 unused `curve` lambda params (warning-clean recompile).
+  67/67 across the 4 affected L3 suites green.
+- **Round 6b (NEW, 2026-07-16) — 2 broker_health MIGRATION CANDIDATES**
+  surfaced by the Round-3 classification (flagged in-file, NOT RATIONALE'd):
+  `two_snapshot_invariant` (observes only CHANNEL_CLOSING_NOTIFY + timing;
+  needs only timeout knobs, which Pattern 4 profiles provide) and
+  `consumer_auto_deregisters` (`consumer_count==0` snapshot read is redundant
+  with CONSUMER_DEREG_ACK + wire-observable via CHANNEL_LIST_REQ).  Both are
+  clean Pattern 4 migrations with no new broker observability needed.
 - **Round 4** (deferred, user-approved) — judgment call on 29
   weak-rationale hybrids.
 - **Round 5** — L1 guard: fail if a `HubHostBrokerHandle` use lacks
-  an adjacent `RATIONALE:` block.
+  an adjacent `RATIONALE:` block.  Round 3 established the concrete
+  `RATIONALE (task #52 ...)` block convention the guard can grep for.
 - **Round 6 (in progress, 2026-07-16) — `DirectBrokerHandle` files,
   user-directed in-scope.**  The Round-2 note above called
   `datahub_role_state` + `datahub_channel_group` OUT of scope because

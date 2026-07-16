@@ -3,6 +3,23 @@
  * @brief Worker bodies for BrokerService admin API tests
  *        (Pattern 3).  Migrated 2026-05-13 from in-process
  *        `SetUpTestSuite`-owned `LifecycleGuard`.
+ *
+ * ── RATIONALE — HubHostBrokerHandle sweep disposition (task #52 Round 3) ─────
+ * The wire-observable admin tests migrated to Pattern 4
+ * (`test_pattern4_broker_admin.cpp`): `reg_validation_*` (REG_REQ field
+ * validation) and `list_channels_*` / `snapshot_*` (read `CHANNEL_LIST_REQ`
+ * over the wire).  What remains KEEPS the in-process broker:
+ *   `close_channel_existing`, `close_channel_non_existent`.
+ *   WHY IN-PROCESS BROKER: the STIMULUS is the direct C++ admin API
+ *     `broker.service().request_close_channel(...)` — an in-process call with
+ *     no wire trigger in this fixture (the admin REP plane is disabled).  The
+ *     resulting channel-gone state IS wire-observable (`CHANNEL_LIST_REQ`),
+ *     but a Pattern 4 test cannot INVOKE the close without the admin wire.
+ *   WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one `HubHost` broker = one ZAP
+ *     pump; the client (when present) is a bare `BrcHandle` (no ZAP pump).
+ *   FUTURE: once the admin plane is CURVE-secured (HEP-CORE-0033 §11) and an
+ *     `AdminWireClient` exists, these re-home to Pattern 4 — the same blocker
+ *     as the 3 admin-triggered tests tracked in AUTH_TODO.
  */
 
 #include "broker_admin_workers.h"
@@ -20,8 +37,6 @@
 #include "utils/hub_host.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
-#include "utils/role_reg_payload.hpp"
-#include "utils/security/shm_capability_channel.hpp" // #281 default_shm_capability_endpoint
 
 #include <atomic>
 #include <chrono>
@@ -115,6 +130,8 @@ int run_with_host(std::string_view worker_name,
 } // namespace
 
 
+// RATIONALE (task #52 Round 3, KEEP): in-process `request_close_channel`
+// stimulus (admin wire plane disabled) — no wire trigger.  See file header.
 int close_channel_existing()
 {
     const std::string channel = pid_chan("admin.close.existing");
@@ -122,7 +139,7 @@ int close_channel_existing()
     return run_with_host(
         "broker_admin::close_channel_existing", {uid},
         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup &curve) {
+                       pylabhub::tests::CurveSetup & /*curve*/) {
             pylabhub::tests::BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
             auto reg = bh.brc.register_channel(
@@ -144,6 +161,8 @@ int close_channel_existing()
         });
 }
 
+// RATIONALE (task #52 Round 3, KEEP): in-process `request_close_channel`
+// no-throw robustness on an unknown channel — no wire trigger.  See file header.
 int close_channel_non_existent()
 {
     return run_with_host(
@@ -162,79 +181,10 @@ int close_channel_non_existent()
         });
 }
 
-// ============================================================================
-// #281 (2026-06-23) — REG_REQ wire-contract pins for `data_transport`.
-// ============================================================================
-//
-// Six wire-level pins that exercise the broker REG_REQ handler directly via
-// `BrokerRequestComm::register_channel` (real CURVE + admission via the
-// `run_with_host` harness):
-//
-//   * Four NEGATIVE pins: REG_REQ payloads that should be REJECTED with
-//     INVALID_REQUEST per HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1.  The
-//     broker emits a LOGGER_WARN naming the violation; the test harness
-//     declares each via `ExpectLogWarn` so the warn is allowlisted (it is
-//     EXPECTED, not collateral noise).  Without `ExpectLogWarn`, the
-//     harness's end-of-test `AssertNoUnexpectedLogWarnError` would fail
-//     even though the response shape is correct.
-//
-//   * Two POSITIVE pins: the canonical SHM and ZMQ wire shapes that
-//     production producers emit (status="success").
-//
-// Why this lives in `broker_admin_workers.cpp`: the file already wires
-// `run_with_host` (CURVE harness + KeyStore fixture) and `make_reg_opts`
-// helper, and BrokerAdminTest is the natural fixture home for "broker
-// rejects malformed wire shape" coverage.  The L3 broker test ladder
-// (rungs 2/3 under Pattern4*) targets handshake / heartbeat / lifecycle
-// flows, not REG_REQ field-level wire validation — so the pins live here
-// rather than expanding the rung set.
-
-namespace {
-
-/// Build a baseline SHM REG_REQ payload (data_transport="shm" + valid
-/// shm_capability_endpoint) that satisfies the broker's strict checks.
-/// Tests then erase / mutate specific fields to exercise each rejection
-/// branch.  Mirrors `make_reg_opts` shape but exposed locally so the
-/// tests don't accidentally depend on a future change to that helper.
-json make_baseline_shm_reg(const std::string &channel,
-                           const std::string &role_uid,
-                           const std::string &zmq_pubkey)
-{
-    return pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "reg_validation_producer",
-            .role_type   = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = zmq_pubkey,
-            .shm_capability_endpoint =
-                pylabhub::utils::security::default_shm_capability_endpoint(channel),
-        });
-}
-
-/// Build a baseline ZMQ REG_REQ payload.
-json make_baseline_zmq_reg(const std::string &channel,
-                           const std::string &role_uid,
-                           const std::string &zmq_pubkey)
-{
-    return pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "reg_validation_producer",
-            .role_type   = "producer",
-            .has_shm    = false,
-            .is_zmq_transport  = true,
-            .zmq_node_endpoint = "tcp://127.0.0.1:0",
-            .zmq_pubkey = zmq_pubkey,
-            .shm_capability_endpoint = {},
-        });
-}
-
-} // anonymous namespace
+// #281 REG_REQ wire-contract pins (reg_validation_*) MIGRATED to Pattern 4
+// (task #52 Round 2, `test_pattern4_broker_admin.cpp` — error paths — and
+// Round 3 success paths).  Their local `make_baseline_{shm,zmq}_reg` builders
+// were removed here with them (dead code after migration).
 
 
 

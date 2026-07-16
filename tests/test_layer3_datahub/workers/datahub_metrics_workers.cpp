@@ -34,6 +34,31 @@
  * @see HEP-CORE-0033 §10.3 (unified query engine)
  * @see HEP-CORE-0033 §G2.2.0b (role_uid format invariant)
  * @see HEP-CORE-0036 §5.2 R6 (producer-kLive gate before consumer reg)
+ *
+ * ── RATIONALE — HubHostBrokerHandle sweep disposition (task #52 Round 3) ─────
+ * Every worker in this file KEEPS the in-process broker.  The storage/wire
+ * metrics tests already migrated to Pattern 4
+ * (`test_pattern4_metrics.cpp` — HeartbeatMetricsStored trace + the
+ * METRICS_REPORT_REQ→UNKNOWN_MSG_TYPE retirement check).  What remains are
+ * the QUERY-ENGINE tests, which call `svc.query_metrics(...)` /
+ * `svc.query_metrics_json_str(...)` directly.
+ *   PURPOSE: pin the unified query engine's output/filter semantics
+ *     (HEP-CORE-0033 §10.3) — category filtering, per-uid producer/consumer
+ *     trees, `_collected_at` stamping, filter echo, multi-presence
+ *     no-cross-attribution, and the all-channels-iterates-HubState-snapshot
+ *     invariant.
+ *   WHY IN-PROCESS BROKER: there is NO metrics wire query — the legacy
+ *     `METRICS_REPORT_REQ` path is retired (UNKNOWN_MSG_TYPE) and this fixture
+ *     disables the admin plane (`{"admin",{"enabled",false}}`).  The only
+ *     readout of the query engine is the in-process `BrokerService` accessor;
+ *     the aggregate query-response JSON maps to no wire ACK field and no log
+ *     line.
+ *   WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one `HubHost` broker = one ZAP
+ *     pump.  The metrics-generating clients are bare `BrcHandle`s (DEALER, no
+ *     ZAP pump), so HEP-CORE-0036 §7.4 does not apply.
+ *   FUTURE: if an admin/metrics wire query is added (or the `METRICS_REQ`
+ *     surface materializes), these re-home to Pattern 4 like the storage
+ *     tests did.  Tracked in TESTING_TODO Round 3.
  */
 
 #include "datahub_metrics_workers.h"

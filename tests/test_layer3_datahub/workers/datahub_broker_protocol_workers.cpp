@@ -135,17 +135,10 @@ json hubhost_overrides_from_cfg(const BrokerService::Config &cfg = {})
     return j;
 }
 
-/// Start a broker via the shared harness with the caller's
-/// `BrokerService::Config` overrides translated to hub.json shape.
-/// `curve` MUST already have been seeded into the KeyStore via
-/// `seed_curve_identities()` (typically by `run_with_host` below).
-HubHostHandle start_local_broker(BrokerService::Config legacy_cfg,
-                                 const pylabhub::tests::CurveSetup &curve)
-{
-    return pylabhub::tests::start_hubhost_broker(
-        hubhost_overrides_from_cfg(std::move(legacy_cfg)),
-        curve);
-}
+// start_local_broker() helper removed 2026-07-16 (dead after the Round 1/2
+// migrations — its only callers migrated to Pattern 4).  Tests that need a
+// custom-config broker call start_hubhost_broker(hubhost_overrides_from_cfg())
+// directly.
 
 // ─── Channel-name + REG opts builders ─────────────────────────────────────────
 
@@ -197,9 +190,10 @@ struct EventCollector
 // `body(broker, curve, log_cap)` receives:
 //   - `broker`: `std::optional<HubHostHandle>` freshly emplaced with
 //     `start_hubhost_broker(hubhost_overrides_from_cfg(), curve)`.
-//     The body may `.reset()` and `.emplace(start_local_broker(cfg, curve))`
-//     to swap to a custom-config broker — same idiom the original
-//     suite used via `broker_.reset() / broker_.emplace(...)`.
+//     The body may `.reset()` and `.emplace(start_hubhost_broker(
+//     hubhost_overrides_from_cfg(cfg), curve))` to swap to a custom-config
+//     broker — same idiom the original suite used via
+//     `broker_.reset() / broker_.emplace(...)`.
 //   - `curve`: the `CurveSetup` whose `role_keys` are seeded into the
 //     process `KeyStore` AND written to `vault/known_roles.json` so the
 //     broker's Layer-1 ZAP gate admits every role uid the body uses.
@@ -256,11 +250,10 @@ int run_with_host(std::string_view worker_name,
 // ============================================================================
 // 1. CHECKSUM_ERROR_REPORT — broker forwards as CHANNEL_EVENT_NOTIFY
 // ============================================================================
-// checksum_error_report_forwarded_to_producer MIGRATED to
-// tests/test_layer3_pattern4/ (task #54 Round 1, broker "checksum_notify"
-// profile).  checksum_error_report_unknown_channel_silent stays here —
-// it inspects the broker's in-process channel snapshot for liveness
-// (Round 3 RATIONALE).
+// BOTH checksum_error_report_* MIGRATED to tests/test_layer3_pattern4/
+// (checksum_error_report_forwarded_to_producer: task #54 Round 1, broker
+// "checksum_notify" profile; checksum_error_report_unknown_channel_silent:
+// Round 3, reframed to a wire-liveness probe).  No body remains here.
 
 
 // RETIRED 2026-06-28 — body for `ClosingNotify_DeliveredToProducerAndConsumer`
@@ -282,12 +275,23 @@ int run_with_host(std::string_view worker_name,
 // ============================================================================
 // 4. HEARTBEAT_NOTIFY — PendingReady → Ready + wire payload + keying
 // ============================================================================
-// heartbeat_transitions_to_ready + heartbeat_keying_producer_vs_consumer_distinct_rows
-// stay here — they inspect in-process broker HubState (channel-snapshot
-// observable state; RolePresence rows) that has no wire equivalent.
-// Round 3 of the sweep adds their RATIONALE blocks per Path 1.
-// heartbeat_wire_payload_includes_uid_and_role_type is a Round-1
-// Batch-D candidate (broker-log observation via expect_log).
+// heartbeat_transitions_to_ready + heartbeat_wire_payload_includes_uid_and_
+// role_type MIGRATED to Pattern 4 (the latter via broker-log expect_log).
+//
+// RATIONALE (task #52 Round 3, KEEP) — heartbeat_keying_producer_vs_consumer_
+// distinct_rows:
+//   PURPOSE: pin the broker's per-presence uid-keying isolation — a producer
+//     and a consumer on the same channel land in DISTINCT `RolePresence` rows
+//     (keyed off the wire-decoded role_uid, not the channel's first
+//     producer), each carrying its own state / first_heartbeat_seen /
+//     latest_metrics; cross-keyed lookups return nullptr.
+//   WHY IN-PROCESS BROKER: reads `broker->host->state().role(uid)` →
+//     `RoleEntry::find_presence(channel, role_type)` → `RolePresence` fields.
+//     The isolation invariant lives entirely in the in-process HubState
+//     presence table — no wire ACK carries per-presence keying, and no single
+//     log line expresses "these two heartbeats keyed to distinct rows."
+//   WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one broker = one ZAP pump; the two
+//     clients are bare `BrcHandle`s (no ZAP pump).
 
 
 
@@ -296,7 +300,7 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows()
     return run_with_host(
         "broker_protocol::heartbeat_keying_producer_vs_consumer_distinct_rows",
         {"prod." + pid_chan("proto.heartbeat.keying"), "cons." + pid_chan("proto.heartbeat.keying")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup & /*curve*/, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.heartbeat.keying");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;
@@ -421,18 +425,30 @@ int heartbeat_keying_producer_vs_consumer_distinct_rows()
 // broadcast_fan_out_delivered_to_producer_and_consumers,
 // broadcast_fan_out_data_payload_round_trip, and
 // broadcast_unknown_channel_no_notify_delivered MIGRATED to
-// tests/test_layer3_pattern4/ (task #54 Round 1, parent-side NOTIFY
-// drain).  broadcast_fan_out_hub_queue_path_fans_out_same stays here —
-// it triggers the broadcast via the in-process hub API
-// (`request_broadcast_channel`), which has no wire equivalent, and
-// asserts sender_uid==self_hub_uid (Round 3 RATIONALE).
+// tests/test_layer3_pattern4/ (task #54 Round 1, parent-side NOTIFY drain).
+//
+// RATIONALE (task #52 Round 3, KEEP) — broadcast_fan_out_hub_queue_path_fans_
+// out_same:
+//   PURPOSE: pin that the HUB-QUEUE broadcast path fans out identically to
+//     the wire path — both co-hosted clients receive
+//     CHANNEL_BROADCAST_DELIVER_NOTIFY with sender_uid == self hub uid.
+//   WHY IN-PROCESS BROKER: the STIMULUS is the in-process hub API
+//     `broker->host->broker().request_broadcast_channel(...)` — the
+//     hub-queue-originated broadcast, which has NO wire trigger (distinct from
+//     the role-originated BAND_BROADCAST_SEND_NOTIFY path already covered at
+//     Pattern 4).  The observable (the NOTIFY) is wire; only the trigger keeps
+//     it in-process.  `sender_uid` is compared against
+//     `broker->host->config().identity().uid` (the hub's own uid), an
+//     in-process read.
+//   WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one broker = one ZAP pump; the two
+//     clients are bare `BrcHandle`s (no ZAP pump).
 
 int broadcast_fan_out_hub_queue_path_fans_out_same()
 {
     return run_with_host(
         "broker_protocol::broadcast_fan_out_hub_queue_path_fans_out_same",
         {"prod." + pid_chan("proto.bcast.hubpath"), "cons." + pid_chan("proto.bcast.hubpath")},
-        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup &curve, LogCaptureFixture &) {
+        [](std::optional<HubHostHandle> &broker, pylabhub::tests::CurveSetup & /*curve*/, LogCaptureFixture &) {
             const std::string channel  = pid_chan("proto.bcast.hubpath");
             const std::string prod_uid = "prod." + channel;
             const std::string cons_uid = "cons." + channel;

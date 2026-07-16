@@ -27,6 +27,36 @@
 //     subprocess can reconstruct its own `seed_curve_identities()` (each
 //     subprocess has its own SecureSubsystem + KeyStore per
 //     HEP-CORE-0040 §4.5 + §5.1).
+//
+// ── HubHostBrokerHandle sweep disposition (task #52 Round 3) ─────────────────
+// Migrated to Pattern 4 (`test_pattern4_broker_health.cpp`):
+// ProducerGetsClosingNotify, ProducerAutoDeregisters, SchemaMismatchNotify,
+// DeadConsumerDetected, ConsumerHeartbeatTimeout_NotifyBodyShape.  Of what
+// remains, two are genuine KEEPs and two are MIGRATION CANDIDATES:
+//
+//   KEEP — RATIONALE (broker-internal state, no wire/log observable):
+//     · ctrl_zap_deny_path — reads the process-singleton
+//       `ZapRouter::instance().denied_count()` (before/after) to prove a REG
+//       failure came through the ZAP deny gate, not another timeout path.  An
+//       aggregate counter with no ACK field; the DirectBrokerHandle here is
+//       broker-only (one ZAP pump) driving a raw BrokerRequestComm.
+//     · multi_producer_partial_pending_timeout — reads
+//       `query_channel_snapshot().channels[].producer_uids.size()` to prove a
+//       SILENT presence-timeout removal (B) leaves the channel alive for the
+//       survivor (A).  A silent timeout emits no ACK; the count lives only in
+//       the in-process snapshot.  (Its paired negative — A gets no
+//       CHANNEL_CLOSING_NOTIFY — is wire and already asserted.)
+//
+//   MIGRATION CANDIDATE (NOT a keep — do not RATIONALE; Round-6b follow-up):
+//     · two_snapshot_invariant — observes ONLY the CHANNEL_CLOSING_NOTIFY wire
+//       message and its timing (fires ≥800ms after last heartbeat, not at
+//       ~500ms).  The sole in-process need is setting ready/pending timeout
+//       knobs — which Pattern 4 already does via named broker-config profiles.
+//     · consumer_auto_deregisters — the `consumer_count==0` snapshot read is
+//       redundant with the already-asserted CONSUMER_DEREG_ACK and is
+//       wire-observable via CHANNEL_LIST_REQ (the path list_channels_* now
+//       use).  Migratable with no new broker observability.
+//   Tracked in docs/todo/TESTING_TODO.md Round 6b.
 
 #include "datahub_broker_health_workers.h"
 #include "broker_test_harness.h"  // HubHostBrokerHandle + DirectBrokerHandle + BrcHandle + make_reg_opts/make_cons_opts
@@ -137,6 +167,9 @@ nlohmann::json hub_overrides_with_timeouts(int ready_timeout_ms,
 // consumer_auto_deregisters — Consumer::close() → CONSUMER_DEREG_REQ
 // ============================================================================
 
+// MIGRATION CANDIDATE (task #52 Round 6b, NOT a keep): consumer_count==0
+// snapshot read is redundant with CONSUMER_DEREG_ACK + wire-observable via
+// CHANNEL_LIST_REQ.  See file-header disposition block.
 int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
@@ -224,6 +257,9 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 // Multi-producer partial pending-timeout: one producer stops heartbeating,
 // the OTHER keeps heartbeating; that producer's presence times out and is
 // removed but the channel SURVIVES (no last-producer atomic teardown).
+// RATIONALE (task #52 Round 3, KEEP): reads query_channel_snapshot()
+// producer_uids.size() to prove a SILENT presence-timeout removal (no ACK).
+// See file-header disposition block.
 int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
@@ -315,6 +351,9 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
 // tick T MUST NOT also be terminated (Pending→Disconnected) in the same
 // tick T.  Timing pin: CHANNEL_CLOSING_NOTIFY must fire AFTER
 // (ready_timeout + pending_timeout - sweep slop) ≈ 800ms.
+// MIGRATION CANDIDATE (task #52 Round 6b, NOT a keep): observes only the
+// CHANNEL_CLOSING_NOTIFY wire message + timing; the sole in-process need is
+// timeout knobs, which Pattern 4 profiles provide.  See file-header block.
 int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
@@ -508,6 +547,10 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
 //     not from another path.
 // ============================================================================
 
+// RATIONALE (task #52 Round 3, KEEP): reads the process-singleton
+// ZapRouter::denied_count() (before/after) to prove the REG failure came
+// through the ZAP deny gate — an aggregate counter with no wire observable.
+// DirectBrokerHandle is broker-only (one ZAP pump).  See file-header block.
 int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
