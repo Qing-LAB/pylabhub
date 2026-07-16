@@ -225,6 +225,12 @@ TEST_F(Pattern4BrokerHealthTest, DeadConsumerDetected)
     EXPECT_EQ(notify->value("reason", std::string{}), "process_dead")
         << "PID-death path must report reason='process_dead'; body="
         << notify->dump();
+    // Path pin: corroborate against the broker's own emission trace that
+    // the PID-death branch fired (not some other path that happened to
+    // produce a notify).  This broker serves one channel, so the
+    // substring is unambiguous.
+    expect_log(broker, "reason=process_dead, target_role=",
+                milliseconds{pylabhub::kMidTimeoutMs});
 
     broker.signal_quit();
 }
@@ -295,6 +301,11 @@ TEST_F(Pattern4BrokerHealthTest, ConsumerHeartbeatTimeout_NotifyBodyShape)
            "(distinct from PID-death 'process_dead'); body=" << died.dump();
     EXPECT_TRUE(died.contains("consumer_pid"));
     EXPECT_TRUE(died.contains("consumer_hostname"));
+    // Path pin: corroborate against the broker's own emission trace that
+    // the heartbeat-timeout branch fired (the PID sweep is OFF in this
+    // profile, so process_dead cannot be the source).
+    expect_log(broker, "reason=heartbeat_timeout target_role=",
+                milliseconds{pylabhub::kMidTimeoutMs});
 
     broker.signal_quit();
 }
