@@ -122,24 +122,11 @@ nlohmann::json hub_overrides_with_timeouts(int ready_timeout_ms,
     return j;
 }
 
-// start_health_direct_broker — for tests that need the
-// `consumer_liveness_check_interval` knob (consumer_heartbeat_timeout
-// requires =0 to disambiguate; dead_consumer requires =1s for fast
-// detection).  Wraps the canonical `start_direct_broker` with the
-// ephemeral-port endpoint set.
-DirectBrokerHandle start_health_direct_broker(
-    std::chrono::seconds        liveness_interval,
-    std::chrono::milliseconds   ready_timeout,
-    std::chrono::milliseconds   pending_timeout,
-    const CurveSetup &          curve)
-{
-    BrokerService::Config cfg;
-    cfg.endpoint                         = "tcp://127.0.0.1:0";
-    cfg.ready_timeout_override           = ready_timeout;
-    cfg.pending_timeout_override         = pending_timeout;
-    cfg.consumer_liveness_check_interval = liveness_interval;
-    return pylabhub::tests::start_direct_broker(std::move(cfg), curve);
-}
+// start_health_direct_broker (consumer_liveness_check_interval wrapper)
+// removed with its only callers — dead_consumer_* + consumer_heartbeat_
+// timeout_notify — when they migrated to Pattern 4 (task #52 Round 2).
+// The surviving direct-broker test (ctrl_zap_deny_path) builds its own
+// BrokerService::Config inline.
 
 } // anon
 
@@ -220,177 +207,12 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 // producer_auto_deregisters MIGRATED to tests/test_layer3_pattern4/
 // test_pattern4_broker_health.cpp (task #52 Round 2, "long_reclaim" profile).
 
-// ============================================================================
-// dead_consumer_orchestrator + dead_consumer_exiter
-//
-// Cross-subprocess test: orchestrator runs broker + producer + waits
-// for CONSUMER_DIED_NOTIFY; exiter connects as consumer then calls
-// `_exit(0)` (skips dtors → broker detects dead PID via liveness
-// sweep).
-//
-// Temp-file handoff format (post-strict-CURVE, 6 lines):
-//   1. endpoint
-//   2. hub_pubkey
-//   3. channel name
-//   4. consumer uid
-//   5. consumer pubkey Z85
-//   6. consumer seckey Z85
-//
-// The exiter rebuilds a single-uid `CurveSetup` from lines 4-6, seeds
-// its own `seed_curve_identities()` (each subprocess has its own
-// SecureSubsystem + KeyStore per HEP-CORE-0040 §4.5).  The
-// broker's `known_roles` (populated by the orchestrator from its
-// `CurveSetup`) admits the consumer's pubkey.
-// ============================================================================
-
-int dead_consumer_orchestrator(int argc, char **argv)
-{
-    if (argc < 3)
-    {
-        fmt::print(stderr, "ERROR: dead_consumer_orchestrator requires argv[2]: temp_file\n");
-        return 1;
-    }
-    const std::string tmp_file = argv[2];
-
-    return run_gtest_worker(
-        [&tmp_file]() {
-            const std::string ch_name  = make_test_channel_name("health.dead_consumer");
-            const std::string prod_uid = "prod." + ch_name;
-            const std::string cons_uid = "cons." + ch_name;
-
-            auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            // Liveness-check ON (1s) so the broker detects the exiter's
-            // dead PID quickly.  Ready/pending timeouts long (15s) so
-            // they don't fire — the test pins ONLY the PID-death path.
-            // `consumer_liveness_check_interval` is not exposed
-            // through hub.json, so we use the direct broker path.
-            auto broker = start_health_direct_broker(
-                /*liveness_interval=*/std::chrono::seconds(1),
-                /*ready_timeout=*/std::chrono::milliseconds(15000),
-                /*pending_timeout=*/std::chrono::milliseconds(15000),
-                curve);
-
-            std::atomic<bool> consumer_died{false};
-
-            BrcHandle bh;
-            bh.brc.on_notification([&](const std::string &type, const nlohmann::json &) {
-                if (type == "CONSUMER_DIED_NOTIFY")
-                    consumer_died.store(true);
-            });
-            bh.start(broker.endpoint, broker.pubkey, prod_uid,
-                     role_keystore_name(prod_uid));
-
-            auto reg = bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-
-            bh.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-            // Hand-off file: endpoint + hub_pubkey + channel + consumer
-            // uid + consumer pub+sec Z85 (so the exiter can seed its
-            // own keystore — each subprocess owns its own).
-            {
-                const auto &cons_kp = curve.role(cons_uid);
-                std::ofstream f(tmp_file);
-                ASSERT_TRUE(f.is_open()) << "Failed to open temp file: " << tmp_file;
-                f << broker.endpoint    << "\n"
-                  << broker.pubkey      << "\n"
-                  << ch_name            << "\n"
-                  << cons_uid           << "\n"
-                  << cons_kp.public_z85 << "\n"
-                  << cons_kp.secret_z85 << "\n";
-            }
-
-            signal_test_ready();
-
-            // Give the exiter time to connect and die.
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-
-            // Wait for CONSUMER_DIED_NOTIFY (PID-death path).
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (!consumer_died.load() &&
-                   std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-
-            EXPECT_TRUE(consumer_died.load())
-                << "CONSUMER_DIED_NOTIFY was not received within 5s after "
-                   "exiter died";
-
-            bh.stop();
-            broker.stop_and_join();
-        },
-        "broker_health.dead_consumer_orchestrator",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
-
-int dead_consumer_exiter(int argc, char **argv)
-{
-    if (argc < 3)
-    {
-        fmt::print(stderr, "ERROR: dead_consumer_exiter requires argv[2]: temp_file\n");
-        return 1;
-    }
-    const std::string tmp_file = argv[2];
-
-    return run_gtest_worker(
-        [&tmp_file]() {
-            std::string endpoint;
-            std::string hub_pubkey;
-            std::string ch_name;
-            std::string cons_uid;
-            std::string cons_pub_z85;
-            std::string cons_sec_z85;
-            {
-                std::ifstream f(tmp_file);
-                ASSERT_TRUE(f.is_open()) << "Exiter: cannot open temp file: " << tmp_file;
-                std::getline(f, endpoint);
-                std::getline(f, hub_pubkey);
-                std::getline(f, ch_name);
-                std::getline(f, cons_uid);
-                std::getline(f, cons_pub_z85);
-                std::getline(f, cons_sec_z85);
-            }
-            ASSERT_FALSE(endpoint.empty());
-            ASSERT_FALSE(ch_name.empty());
-            ASSERT_FALSE(cons_uid.empty());
-            ASSERT_EQ(cons_pub_z85.size(), 40u);
-            ASSERT_EQ(cons_sec_z85.size(), 40u);
-
-            // Rebuild a single-uid CurveSetup from the file.  The
-            // exiter doesn't run a broker; the only KeyStore entry it
-            // needs is `role.<cons_uid>` so the BRC's CURVE handshake
-            // presents the matching client keypair.  `hub_identity` is
-            // also seeded by the fixture (a fresh keypair — unused
-            // here; just lets the fixture invariant hold).
-            CurveSetup curve;
-            curve.hub = pylabhub::tests::gen_curve_keypair();
-            curve.role_keys.emplace(
-                cons_uid, CurveKeypair{cons_pub_z85, cons_sec_z85});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            BrcHandle bh;
-            bh.start(endpoint, hub_pubkey, cons_uid,
-                     role_keystore_name(cons_uid));
-            auto reg = bh.brc.register_consumer(
-                pylabhub::tests::make_cons_opts(ch_name, cons_uid), 5000);
-            ASSERT_TRUE(reg.has_value()) << "Exiter: register_consumer failed";
-
-            // Crash simulation: `_exit(0)` skips all destructors.  No
-            // CONSUMER_DEREG_REQ — broker must detect the dead PID via
-            // its liveness sweep.
-            _exit(0);
-        },
-        "broker_health.dead_consumer_exiter",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
+// dead_consumer_orchestrator + dead_consumer_exiter MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_health.cpp
+// (DeadConsumerDetected: a "pattern4_broker_protocol.dying_consumer"
+// subprocess registers then std::_Exit(0); broker "dead_consumer" profile
+// detects the dead PID).  consumer_heartbeat_timeout_notify MIGRATED
+// likewise (ConsumerHeartbeatTimeout, "consumer_timeout" profile).
 
 // schema_mismatch_notify MIGRATED to tests/test_layer3_pattern4/
 // test_pattern4_broker_health.cpp (task #52 Round 2).
@@ -488,102 +310,6 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
-// Consumer heartbeat-timeout: CONSUMER_DIED_NOTIFY with
-// `reason="heartbeat_timeout"` (NOT "process_dead").
-int consumer_heartbeat_timeout_notify(int /*argc*/, char ** /*argv*/)
-{
-    return run_gtest_worker(
-        []() {
-            const std::string ch_name =
-                make_test_channel_name("health.cons_hb_timeout");
-            const std::string prod_uid = "prod." + ch_name;
-            const std::string cons_uid = "cons." + ch_name;
-
-            auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            // PID liveness sweep OFF: only the heartbeat-timeout path
-            // can fire CONSUMER_DIED_NOTIFY.  The direct broker path
-            // is required because `consumer_liveness_check_interval`
-            // is not exposed through hub.json.
-            auto broker = start_health_direct_broker(
-                /*liveness_interval=*/std::chrono::seconds(0),
-                /*ready_timeout=*/std::chrono::milliseconds(500),
-                /*pending_timeout=*/std::chrono::milliseconds(500),
-                curve);
-
-            std::atomic<bool>     died_fired{false};
-            std::mutex            notify_mu;
-            nlohmann::json        died_body;
-
-            BrcHandle prod;
-            prod.brc.on_notification(
-                [&](const std::string &type, const nlohmann::json &body) {
-                    if (type == "CONSUMER_DIED_NOTIFY") {
-                        std::lock_guard<std::mutex> lk(notify_mu);
-                        died_body = body;
-                        died_fired.store(true);
-                    }
-                });
-            prod.start(broker.endpoint, broker.pubkey, prod_uid,
-                       role_keystore_name(prod_uid));
-            auto reg = prod.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value());
-            prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-            BrcHandle cons;
-            cons.start(broker.endpoint, broker.pubkey, cons_uid,
-                       role_keystore_name(cons_uid));
-            auto creg = cons.brc.register_consumer(
-                pylabhub::tests::make_cons_opts(ch_name, cons_uid), 3000);
-            ASSERT_TRUE(creg.has_value());
-            cons.brc.send_heartbeat(ch_name, cons_uid, "consumer", {});
-
-            // Producer keeps heartbeating; consumer goes silent.
-            std::atomic<bool> prod_stop{false};
-            std::thread prod_thread([&] {
-                while (!prod_stop.load()) {
-                    prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-            });
-
-            const auto deadline = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(5);
-            while (!died_fired.load() &&
-                   std::chrono::steady_clock::now() < deadline)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-
-            ASSERT_TRUE(died_fired.load())
-                << "CONSUMER_DIED_NOTIFY (heartbeat_timeout) not received "
-                   "within 5s";
-
-            // Body shape per HEP-CORE-0023 §2.1.1 + broker_proto 4→5 audit.
-            std::lock_guard<std::mutex> lk(notify_mu);
-            EXPECT_EQ(died_body.value("channel_name", std::string{}), ch_name);
-            EXPECT_EQ(died_body.value("role_uid", std::string{}), cons_uid);
-            EXPECT_EQ(died_body.value("reason", std::string{}), "heartbeat_timeout")
-                << "reason MUST be \"heartbeat_timeout\" — distinguishes "
-                   "from the PID-death path (\"process_dead\")";
-            EXPECT_TRUE(died_body.contains("consumer_pid"))
-                << "consumer_pid field present per broker_proto 5";
-            EXPECT_TRUE(died_body.contains("consumer_hostname"))
-                << "consumer_hostname field present";
-
-            prod_stop.store(true);
-            prod_thread.join();
-            cons.stop();
-            prod.stop();
-            broker.stop_and_join();
-        },
-        "broker_health.consumer_heartbeat_timeout_notify",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
 
 // Two-snapshot invariant: a presence that demotes Connected→Pending in
 // tick T MUST NOT also be terminated (Pending→Disconnected) in the same
@@ -902,14 +628,11 @@ struct BrokerHealthWorkerRegistrar
                 // (task #52 Round 2).
                 if (scenario == "consumer_auto_deregisters")
                     return consumer_auto_deregisters(argc, argv);
-                if (scenario == "dead_consumer_orchestrator")
-                    return dead_consumer_orchestrator(argc, argv);
-                if (scenario == "dead_consumer_exiter")
-                    return dead_consumer_exiter(argc, argv);
+                // dead_consumer_orchestrator / dead_consumer_exiter /
+                // consumer_heartbeat_timeout_notify MIGRATED to Pattern 4
+                // (task #52 Round 2).
                 if (scenario == "multi_producer_partial_pending_timeout")
                     return multi_producer_partial_pending_timeout(argc, argv);
-                if (scenario == "consumer_heartbeat_timeout_notify")
-                    return consumer_heartbeat_timeout_notify(argc, argv);
                 if (scenario == "two_snapshot_invariant")
                     return two_snapshot_invariant(argc, argv);
                 if (scenario == "channel_torn_down_consumer_pass2_skipped")

@@ -14,12 +14,15 @@
  *   - consumer_auto_deregisters / multi_producer_partial_pending_timeout
  *     / ctrl_zap_deny_path — inspect in-process state (channel snapshot,
  *     ZapRouter denied-count singleton).  Round-3 disposition.
- *   - dead_consumer_orchestrator + dead_consumer_exiter — a two-subprocess
- *     dying-role scenario (consumer registers then _exit(0); broker
- *     detects the dead PID).  Needs a dedicated dying-consumer Pattern 4
- *     worker + a consumer_liveness_check_interval profile — deferred.
- *   - consumer_heartbeat_timeout_notify / two_snapshot_invariant — tight
- *     timing windows + liveness-interval config — deferred.
+ *   - two_snapshot_invariant — CHANNEL_CLOSING_NOTIFY timing pin (deferred).
+ *
+ * The CONSUMER_DIED family IS migrated here: DeadConsumerDetected uses a
+ * dedicated dying-consumer subprocess worker
+ * (`pattern4_broker_protocol.dying_consumer`) that registers then
+ * `std::_Exit(0)`, and the broker (dead_consumer profile,
+ * consumer_liveness_check_interval=1s) detects the dead PID;
+ * ConsumerHeartbeatTimeout uses a silent parent-side consumer +
+ * consumer_timeout profile (liveness=0, short ready/pending).
  */
 #include "pattern4_wire_test_base.h"
 
@@ -176,6 +179,122 @@ TEST_F(Pattern4BrokerHealthTest, SchemaMismatchNotify)
     auto notify = drain_for(a, "CHANNEL_ERROR_NOTIFY", milliseconds{5000});
     EXPECT_TRUE(notify.has_value())
         << "CHANNEL_ERROR_NOTIFY (schema mismatch) not received within 5s";
+
+    broker.signal_quit();
+}
+
+// PID-death path: a dying-consumer subprocess registers then hard-exits
+// (no DEREG); the broker's liveness sweep (dead_consumer profile,
+// consumer_liveness_check_interval=1s) detects the dead PID and fires
+// CONSUMER_DIED_NOTIFY(reason="process_dead") to the producer.
+TEST_F(Pattern4BrokerHealthTest, DeadConsumerDetected)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "health.dead_consumer" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("bh_dead_consumer");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "dead_consumer"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    // One heartbeat → kLive (ready timeout is 15 s, so the producer stays
+    // alive through the drain without a heartbeat thread).
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    // Dying consumer: a subprocess that registers then std::_Exit(0).
+    auto exiter = SpawnWorker("pattern4_broker_protocol.dying_consumer",
+                              {temp_dir.string(), channel, cons_uid});
+    exiter.wait_for_exit();
+
+    // Broker's 1 s liveness sweep detects the dead PID → CONSUMER_DIED_NOTIFY.
+    auto notify = drain_for(prod, "CONSUMER_DIED_NOTIFY", milliseconds{8000});
+    ASSERT_TRUE(notify.has_value())
+        << "CONSUMER_DIED_NOTIFY not received within 8s after the consumer "
+           "subprocess exited";
+    EXPECT_EQ(notify->value("channel_name", std::string{}), channel);
+    EXPECT_EQ(notify->value("role_uid", std::string{}), cons_uid);
+    EXPECT_EQ(notify->value("reason", std::string{}), "process_dead")
+        << "PID-death path must report reason='process_dead'; body="
+        << notify->dump();
+
+    broker.signal_quit();
+}
+
+// Heartbeat-timeout path: a registered consumer goes silent while the
+// producer keeps heartbeating; with the PID sweep OFF (consumer_timeout
+// profile, liveness=0, ready/pending=500 ms) the broker fires
+// CONSUMER_DIED_NOTIFY(reason="heartbeat_timeout").
+TEST_F(Pattern4BrokerHealthTest, ConsumerHeartbeatTimeout_NotifyBodyShape)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "health.cons_hb_timeout" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("bh_cons_hb_timeout");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "consumer_timeout"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+    // One consumer heartbeat to establish liveness, then the consumer goes
+    // silent (the parent never touches `cons` again).
+    {
+        nlohmann::json hb;
+        hb["channel_name"] = channel; hb["role_uid"] = cons_uid;
+        hb["role_type"] = "consumer"; hb["producer_pid"] = pylabhub::platform::get_pid();
+        cons.send("HEARTBEAT_NOTIFY", hb);
+    }
+
+    // Interleave producer heartbeats (keep it alive past the 500 ms ready
+    // timeout) with draining for CONSUMER_DIED_NOTIFY — single socket, one
+    // thread, so no concurrent send/recv on the raw client.
+    auto send_prod_hb = [&] {
+        nlohmann::json hb;
+        hb["channel_name"] = channel; hb["role_uid"] = prod_uid;
+        hb["role_type"] = "producer"; hb["producer_pid"] = pylabhub::platform::get_pid();
+        prod.send("HEARTBEAT_NOTIFY", hb);
+    };
+    nlohmann::json died;
+    const auto deadline = steady_clock::now() + milliseconds{8000};
+    while (steady_clock::now() < deadline)
+    {
+        send_prod_hb();
+        auto frame = prod.receive(milliseconds{200});
+        if (frame && frame->first == "CONSUMER_DIED_NOTIFY")
+        {
+            died = frame->second;
+            break;
+        }
+    }
+    ASSERT_FALSE(died.is_null())
+        << "CONSUMER_DIED_NOTIFY (heartbeat_timeout) not received within 8s";
+    EXPECT_EQ(died.value("channel_name", std::string{}), channel);
+    EXPECT_EQ(died.value("role_uid", std::string{}), cons_uid);
+    EXPECT_EQ(died.value("reason", std::string{}), "heartbeat_timeout")
+        << "silent-consumer path must report reason='heartbeat_timeout' "
+           "(distinct from PID-death 'process_dead'); body=" << died.dump();
+    EXPECT_TRUE(died.contains("consumer_pid"));
+    EXPECT_TRUE(died.contains("consumer_hostname"));
 
     broker.signal_quit();
 }

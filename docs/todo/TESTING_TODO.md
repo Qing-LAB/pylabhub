@@ -721,18 +721,20 @@ that legitimately need in-process broker state inspection keep
       `test_pattern4_broker_consumer.cpp` (reg/dereg/disc/get_channel_auth/
       consumer_attach; identity + pubkey mismatch spoof paths).  L3 file +
       header + driver deleted (0 hybrid remained).
-    - ⏳ `datahub_broker_health` — **3 migrated** to
-      `test_pattern4_broker_health.cpp` (`ProducerGetsClosingNotify` via
-      `fast_reclaim` profile; `ProducerAutoDeregisters` via `long_reclaim`;
-      `SchemaMismatchNotify`).  **Deferred (still in L3):**
-      `dead_consumer_orchestrator`+`dead_consumer_exiter` (two-subprocess
-      dying-role scenario — needs a dedicated dying-consumer Pattern 4
-      worker + `consumer_liveness_check_interval` profile),
-      `consumer_heartbeat_timeout_notify` + `two_snapshot_invariant` (tight
-      timing + liveness config).  **Hybrid (Round-3):**
-      `consumer_auto_deregisters`, `multi_producer_partial_pending_timeout`
-      (`query_channel_snapshot`), `ctrl_zap_deny_path` (`ZapRouter`
-      denied-count singleton).
+    - ⏳ `datahub_broker_health` — **5 migrated** to
+      `test_pattern4_broker_health.cpp`: `ProducerGetsClosingNotify`
+      (`fast_reclaim`), `ProducerAutoDeregisters` (`long_reclaim`),
+      `SchemaMismatchNotify`, plus the CONSUMER_DIED family —
+      `DeadConsumerDetected` (a `pattern4_broker_protocol.dying_consumer`
+      subprocess registers then `std::_Exit(0)`; `dead_consumer` profile,
+      liveness=1s, PID-death path) and
+      `ConsumerHeartbeatTimeout_NotifyBodyShape` (silent parent-side
+      consumer; `consumer_timeout` profile, liveness=0).  Dead
+      `start_health_direct_broker` helper removed with its callers.
+      **Deferred (still in L3):** `two_snapshot_invariant` (CHANNEL_CLOSING
+      timing pin).  **Hybrid (Round-3):** `consumer_auto_deregisters`,
+      `multi_producer_partial_pending_timeout` (`query_channel_snapshot`),
+      `ctrl_zap_deny_path` (`ZapRouter` denied-count singleton).
     - `zmq_endpoint_registry` — **7 wire-only, 1 hybrid**
       (`shm_and_zmq_coexist` reads `query_channel_snapshot`).
     - ✅ `broker_admin` — **4 wire-only** (`reg_validation_*` error paths)

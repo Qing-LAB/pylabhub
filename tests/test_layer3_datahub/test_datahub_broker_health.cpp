@@ -36,43 +36,10 @@ TEST_F(DatahubBrokerHealthTest, ConsumerAutoDeregisters)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubBrokerHealthTest, DeadConsumerDetected)
-{
-    // Cat 2: consumer crashes (no clean deregister); broker liveness check (1s) detects
-    // dead PID and sends CONSUMER_DIED_NOTIFY to producer.
-    //
-    // Two worker subprocesses coordinate via a temp file:
-    //   orchestrator: starts broker + producer, writes connection info to temp file,
-    //                 signals ready, then waits for CONSUMER_DIED_NOTIFY.
-    //   exiter:       reads temp file, connects consumer, then calls _exit(0).
-
-    // Create a temp file path for inter-process coordination.
-    fs::path tmp = fs::temp_directory_path() /
-                   ("plh_dead_consumer_" + std::to_string(pylabhub::platform::get_pid()) + ".txt");
-    const std::string tmp_str = tmp.string();
-
-    auto orchestrator = SpawnWorkerWithReadySignal(
-        "broker_health.dead_consumer_orchestrator", {tmp_str});
-
-    // Block until orchestrator has written the temp file and is ready.
-    orchestrator.wait_for_ready();
-
-    // Now spawn the exiter: it reads the temp file, connects, then _exit(0).
-    auto exiter = SpawnWorker("broker_health.dead_consumer_exiter", {tmp_str});
-
-    // Exiter should exit quickly (it calls _exit after connecting).
-    exiter.wait_for_exit();
-    // The exiter calls _exit(0) so the exit code is 0, but it bypasses gtest machinery.
-    // We just verify it exited cleanly (code 0 or the C++ runner may differ — allow any).
-
-    // Orchestrator waits for CONSUMER_DIED_NOTIFY then exits with gtest result.
-    orchestrator.wait_for_exit();
-    ExpectWorkerOk(orchestrator);
-
-    // Cleanup temp file.
-    std::error_code ec;
-    fs::remove(tmp, ec);
-}
+// DeadConsumerDetected MIGRATED to tests/test_layer3_pattern4/
+// test_pattern4_broker_health.cpp (task #52 Round 2 — a
+// "pattern4_broker_protocol.dying_consumer" subprocess registers then
+// std::_Exit(0); the "dead_consumer" broker profile detects the dead PID).
 
 // ── HEP-CORE-0039 P8 migration prerequisites ────────────────────────────────
 // Three behaviors that MUST hold before `check_heartbeat_timeouts` can be
@@ -90,16 +57,10 @@ TEST_F(DatahubBrokerHealthTest, MultiProducer_PartialPendingTimeout_ChannelSurvi
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubBrokerHealthTest, ConsumerHeartbeatTimeout_NotifyBodyShape)
-{
-    // Consumer heartbeat-timeout fires CONSUMER_DIED_NOTIFY with
-    // reason="heartbeat_timeout" (distinguished from "process_dead").
-    // Pins the body shape: channel_name, role_uid, consumer_pid,
-    // consumer_hostname, reason — broker_proto 4→5 audit fields.
-    auto proc = SpawnWorker(
-        "broker_health.consumer_heartbeat_timeout_notify", {});
-    ExpectWorkerOk(proc);
-}
+// ConsumerHeartbeatTimeout_NotifyBodyShape MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_health.cpp
+// (task #52 Round 2 — silent parent-side consumer + "consumer_timeout"
+// broker profile; reason="heartbeat_timeout").
 
 TEST_F(DatahubBrokerHealthTest, TwoSnapshotInvariant_DemotionAndTerminationSeparateTicks)
 {
