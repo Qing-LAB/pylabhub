@@ -177,6 +177,279 @@ TEST_F(Pattern4BrokerProtocolTest, WireConformance_Band_CorrIdEcho)
     broker.signal_quit();
 }
 
+// ─── BAND membership cleanup on producer dereg ─────────────────────────────
+//
+// Two producers on distinct channels join the same band; when producer A
+// voluntarily deregisters its channel, the broker's on_channel_closed hook
+// removes A from the band (`_dispatch_role_disconnected_if_dead` path).
+// Verified entirely over the wire (BAND_MEMBERS count drops 2→1).  Migrated
+// from datahub_role_state.band_membership_cleaned_on_role_close (task #52,
+// DirectBrokerHandle sweep) — the original inspected the same effect but
+// co-hosted the broker in-process.
+TEST_F(Pattern4BrokerProtocolTest, Band_MembershipCleanedOnProducerDereg)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string ch_a   = "tr1.band_a" + suffix;
+    const std::string ch_b   = "tr1.band_b" + suffix;
+    const std::string uid_a  = "prod.band.a" + suffix;
+    const std::string uid_b  = "prod.band.b" + suffix;
+    const std::string band   = "!tr1.band" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_band_cleanup");
+    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto a = make_wire_client(ctx, setup, uid_a);
+    auto b = make_wire_client(ctx, setup, uid_b);
+
+    ASSERT_NO_FATAL_FAILURE(register_producer(a, setup, ch_a, uid_a));
+    ASSERT_NO_FATAL_FAILURE(register_producer(b, setup, ch_b, uid_b));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(a, ch_a, uid_a));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(b, ch_b, uid_b));
+
+    auto band_join = [&](BrokerWireClient &c, const std::string &uid) {
+        nlohmann::json req;
+        req["band"]      = band;
+        req["role_uid"]  = uid;
+        req["role_name"] = uid;
+        return c.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
+                         milliseconds{kLongTimeoutMs});
+    };
+    {
+        auto ja = band_join(a, uid_a);
+        ASSERT_TRUE(ja.has_value() && ja->value("status", std::string{}) ==
+                                          "success")
+            << "producer A band_join failed";
+        auto jb = band_join(b, uid_b);
+        ASSERT_TRUE(jb.has_value() && jb->value("status", std::string{}) ==
+                                          "success")
+            << "producer B band_join failed";
+    }
+
+    auto band_member_count = [&](BrokerWireClient &c) -> std::optional<std::size_t> {
+        nlohmann::json req;
+        req["band"] = band;
+        auto r = c.request("BAND_MEMBERS_REQ", req, "BAND_MEMBERS_ACK",
+                           milliseconds{kLongTimeoutMs});
+        if (!r || !r->contains("members")) return std::nullopt;
+        return (*r)["members"].size();
+    };
+
+    ASSERT_EQ(band_member_count(b), std::optional<std::size_t>{2u})
+        << "Expected 2 band members after both joins";
+
+    // Producer A voluntarily deregisters its channel → on_channel_closed
+    // fires → cleanup hook removes A from the band.
+    {
+        nlohmann::json dr;
+        dr["channel_name"] = ch_a;
+        dr["role_uid"]     = uid_a;
+        dr["producer_pid"] =
+            static_cast<std::uint64_t>(pylabhub::platform::get_pid());
+        auto resp = a.request("DEREG_REQ", dr, "DEREG_ACK",
+                              milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(resp.has_value()) << "DEREG_REQ timed out";
+        EXPECT_EQ(resp->value("status", std::string{}), "success");
+    }
+
+    // Poll BAND_MEMBERS until the async cleanup lands (count drops to 1).
+    bool       cleaned  = false;
+    const auto deadline = steady_clock::now() + seconds{3};
+    while (steady_clock::now() < deadline)
+    {
+        if (band_member_count(b) == std::optional<std::size_t>{1u})
+        {
+            cleaned = true;
+            break;
+        }
+        std::this_thread::sleep_for(milliseconds{100});
+    }
+    ASSERT_TRUE(cleaned)
+        << "Band membership was not cleaned up after producer A dereg";
+
+    // Confirm the survivor is B.
+    nlohmann::json mreq;
+    mreq["band"] = band;
+    auto members = b.request("BAND_MEMBERS_REQ", mreq, "BAND_MEMBERS_ACK",
+                             milliseconds{kLongTimeoutMs});
+    ASSERT_TRUE(members.has_value() && members->contains("members"));
+    bool has_b = false;
+    for (const auto &m : (*members)["members"])
+        if (m.value("role_uid", std::string{}) == uid_b) has_b = true;
+    EXPECT_TRUE(has_b) << "Remaining band member should be uid_b";
+
+    broker.signal_quit();
+}
+
+// ─── BAND invalid-identifier rejection (HEP-CORE-0030 §3) ──────────────────
+//
+// A non-empty band name missing the `!` prefix is invalid.  JOIN / LEAVE /
+// MEMBERS must all return status=error + error_code=INVALID_BAND_NAME (the
+// R3.5 regression: the broker once silently bumped invalid_identifier_total
+// and returned success).  A valid `!`-prefixed name still succeeds.  Migrated
+// from datahub_role_state.broker_band_rejects_invalid_identifier (task #52).
+TEST_F(Pattern4BrokerProtocolTest, Band_RejectsInvalidIdentifier)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid    = "prod.r35" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_band_invalid");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto client = make_wire_client(ctx, setup, uid);
+
+    const std::string invalid = "no_bang_prefix";  // non-empty, missing `!`
+
+    {
+        nlohmann::json req;
+        req["band"]      = invalid;
+        req["role_uid"]  = uid;
+        req["role_name"] = uid;
+        auto resp = client.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
+                                   milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(resp.has_value()) << "broker must respond, not time out";
+        EXPECT_EQ(resp->value("status", std::string{}), "error")
+            << "invalid band JOIN must be rejected; body=" << resp->dump();
+        EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_BAND_NAME");
+    }
+    {
+        nlohmann::json req;
+        req["band"]     = invalid;
+        req["role_uid"] = uid;
+        auto resp = client.request("BAND_LEAVE_REQ", req, "BAND_LEAVE_ACK",
+                                   milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_EQ(resp->value("status", std::string{}), "error");
+        EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_BAND_NAME");
+    }
+    {
+        nlohmann::json req;
+        req["band"] = invalid;
+        auto resp = client.request("BAND_MEMBERS_REQ", req, "BAND_MEMBERS_ACK",
+                                   milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_EQ(resp->value("status", std::string{}), "error");
+        EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_BAND_NAME");
+    }
+    // Sanity: valid `!`-prefixed name still succeeds (happy path intact).
+    {
+        nlohmann::json req;
+        req["band"]      = "!r35.valid" + suffix;
+        req["role_uid"]  = uid;
+        req["role_name"] = uid;
+        auto resp = client.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
+                                   milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(resp.has_value());
+        EXPECT_EQ(resp->value("status", std::string{}), "success")
+            << "valid `!`-prefixed band name must still succeed";
+    }
+
+    broker.signal_quit();
+}
+
+// ─── BAND join / leave / member-query lifecycle ────────────────────────────
+//
+// Two roles join a band: the JOIN ACK carries the growing member list, a
+// MEMBERS query reflects it, and LEAVE shrinks it — all synchronous wire
+// round-trips.  Migrated from datahub_channel_group.channel_join_leave
+// (task #52 DirectBrokerHandle sweep); the original co-hosted the broker
+// with two in-process BrokerRequestComm poll loops (ChannelClient).
+TEST_F(Pattern4BrokerProtocolTest, Band_JoinLeaveMemberQuery)
+{
+    using namespace std::chrono;
+    using pylabhub::kLongTimeoutMs;
+    using pylabhub::kMidTimeoutMs;
+
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid_a  = "prod.role.a" + suffix;
+    const std::string uid_b  = "prod.role.b" + suffix;
+    const std::string band   = "!test_ch" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_band_joinleave");
+    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto a = make_wire_client(ctx, setup, uid_a);
+    auto b = make_wire_client(ctx, setup, uid_b);
+
+    auto band_join = [&](BrokerWireClient &c, const std::string &uid) {
+        nlohmann::json req;
+        req["band"]      = band;
+        req["role_uid"]  = uid;
+        req["role_name"] = uid;
+        return c.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
+                         milliseconds{kLongTimeoutMs});
+    };
+    auto band_members = [&](BrokerWireClient &c) {
+        nlohmann::json req;
+        req["band"] = band;
+        return c.request("BAND_MEMBERS_REQ", req, "BAND_MEMBERS_ACK",
+                         milliseconds{kLongTimeoutMs});
+    };
+
+    // A joins → sole member (JOIN ACK carries the member list).
+    auto j1 = band_join(a, uid_a);
+    ASSERT_TRUE(j1.has_value()) << "A BAND_JOIN timed out";
+    EXPECT_EQ(j1->value("status", std::string{}), "success");
+    ASSERT_TRUE(j1->contains("members"));
+    EXPECT_EQ((*j1)["members"].size(), 1u) << "JOIN ACK should list A only";
+
+    // B joins → both members visible.
+    auto j2 = band_join(b, uid_b);
+    ASSERT_TRUE(j2.has_value());
+    ASSERT_TRUE(j2->contains("members"));
+    EXPECT_EQ((*j2)["members"].size(), 2u) << "JOIN ACK should list A+B";
+
+    // MEMBERS query agrees.
+    auto m1 = band_members(a);
+    ASSERT_TRUE(m1.has_value() && m1->contains("members"));
+    EXPECT_EQ((*m1)["members"].size(), 2u);
+
+    // A leaves.
+    nlohmann::json lreq;
+    lreq["band"]     = band;
+    lreq["role_uid"] = uid_a;
+    auto leave = a.request("BAND_LEAVE_REQ", lreq, "BAND_LEAVE_ACK",
+                           milliseconds{kLongTimeoutMs});
+    ASSERT_TRUE(leave.has_value());
+    EXPECT_EQ(leave->value("status", std::string{}), "success");
+
+    // MEMBERS query now shows 1 (B only).
+    auto m2 = band_members(b);
+    ASSERT_TRUE(m2.has_value() && m2->contains("members"));
+    EXPECT_EQ((*m2)["members"].size(), 1u)
+        << "B should be the sole member after A leaves";
+
+    broker.signal_quit();
+}
+
 // ─── ROLE_PRESENCE_REQ / ROLE_INFO_REQ (HEP-CORE-0007 §"ROLE_*_REQ") ────────
 //
 // These query the broker's presence/info registry.  The wire body's

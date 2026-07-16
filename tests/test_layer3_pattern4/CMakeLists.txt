@@ -30,6 +30,7 @@ add_executable(test_layer3_pattern4
     test_pattern4_zmq_endpoint_registry.cpp
     test_pattern4_broker_admin.cpp
     test_pattern4_broker_health.cpp
+    test_pattern4_channel_group.cpp
     test_pattern4_metrics.cpp
     test_pattern4_attach_coordination.cpp
     test_pattern4_registration.cpp
