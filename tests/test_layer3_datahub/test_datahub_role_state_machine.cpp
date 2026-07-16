@@ -42,13 +42,12 @@ TEST_F(DatahubRoleStateMachineTest, StuckInPending_ReclaimedAfterPendingTimeout)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubRoleStateMachineTest, BandMembership_CleanedOnRoleClose)
-{
-    // Two roles join a band; one deregisters; on_channel_closed hook
-    // must remove it from the band so the other observes only itself.
-    auto proc = SpawnWorker("broker_role_state.band_membership_cleaned_on_role_close", {});
-    ExpectWorkerOk(proc);
-}
+// BandMembership_CleanedOnRoleClose MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (Pattern4BrokerProtocolTest.Band_MembershipCleanedOnProducerDereg) —
+// task #52 DirectBrokerHandle sweep.  The effect (band cleanup on
+// producer dereg via on_channel_closed) is observed entirely over the
+// wire (BAND_MEMBERS count 2→1), so the in-process co-host is retired.
 
 TEST_F(DatahubRoleStateMachineTest, RoleEntry_TerminalCleanup_OnLastPresenceDisconnect)
 {
@@ -157,8 +156,8 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandNotify_WireField_And_Routing
     //  - L2 `test_role_handler.cpp` synthesized `body["band_name"]`
     //    in the test fixture, matching the broken dispatcher rather
     //    than real wire data.
-    //  - L3 `datahub_channel_group_workers.cpp` band tests use raw
-    //    BRC `on_notification` callbacks that bypass
+    //  - the L3 band tests (now `test_pattern4_channel_group.cpp`) use
+    //    raw wire `on_notification`/`drain_for` capture that bypasses
     //    `find_presence_from_notification` entirely.
     //  - No test inspected the wire payload key against the HEP.
     //
@@ -187,21 +186,13 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_RegistrationFSM_Transitions)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubRoleStateMachineTest, Broker_Band_RejectsInvalidIdentifier)
-{
-    // Audit R3.5 (2026-05-17) — broker must explicitly reject
-    // BAND_*_REQ payloads with invalid band names (HEP-CORE-0030 §3
-    // grammar — must start with `!`).  Pre-fix the broker silently
-    // bumped a counter via `_on_band_joined`'s validator but the
-    // handler ignored the validation outcome, returning
-    // `status: success` — phantom-join.  Test verifies that all 3
-    // request-reply BAND messages now return
-    // `{status: error, error_code: INVALID_BAND_NAME}` for invalid
-    // names, while valid names still succeed.
-    auto proc = SpawnWorker(
-        "broker_role_state.broker_band_rejects_invalid_identifier", {});
-    ExpectWorkerOk(proc);
-}
+// Broker_Band_RejectsInvalidIdentifier (Audit R3.5, 2026-05-17) MIGRATED
+// to tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (Pattern4BrokerProtocolTest.Band_RejectsInvalidIdentifier) — task #52
+// DirectBrokerHandle sweep.  Pure wire assertions (JOIN/LEAVE/MEMBERS all
+// return {status:error, error_code:INVALID_BAND_NAME} for a non-`!` band
+// name; valid `!`-prefixed name still succeeds), so the in-process
+// co-host is retired.
 
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandJoin_HandlerMode_Bootstrap)
 {
@@ -215,9 +206,10 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandJoin_HandlerMode_Bootstrap)
     // ever reaching the broker.  Pre-fix this test fails on the
     // join_resp.has_value() assertion; post-fix the full round-trip
     // succeeds + band_index_ is populated for subsequent band_*
-    // calls.  Coverage of api.band_join was lost during M4f when
-    // datahub_channel_group_workers.cpp's tests were migrated to
-    // call bc->band_join directly; this restores it at the public
+    // calls.  Coverage of api.band_join was lost during M4f when the
+    // channel-group band tests (since retired to Pattern 4,
+    // `test_pattern4_channel_group.cpp`) were migrated to call
+    // bc->band_join directly; this restores it at the public
     // RoleAPIBase surface.
     auto proc = SpawnWorker(
         "broker_role_state.role_api_base_band_join_handler_mode", {});

@@ -16,6 +16,42 @@
 //   - `RoleAPIBase` reads its identity from the process KeyStore by
 //     name (HEP-CORE-0040 §172 + #173); the legacy `api.set_auth("","")`
 //     calls were deleted with that method.
+//
+// ── RATIONALE — HubHostBrokerHandle sweep disposition (task #52 Round 6) ─────
+// The pure-wire band/channel tests that once lived here migrated to Pattern 4
+// (`test_pattern4_broker_protocol.cpp` band tests +
+// `test_pattern4_channel_group.cpp`).  What remains stays in L3 by design,
+// in two groups:
+//
+//   (A) BROKER-INTERNAL-STATE tests — KEEP as `DirectBrokerHandle`.
+//       `metrics_reclaim_cycle`, `pending_recovers_to_ready`,
+//       `stuck_in_pending_reclaimed`, `role_entry_terminal_cleanup_on_last_
+//       presence_dereg`, `role_entry_terminal_cleanup_on_consumer_left_last`,
+//       `consumer_heartbeat_timeout_fires_consumer_died_notify`.
+//       PURPOSE: pin broker-side FSM state — `RoleStateMetrics` aggregate
+//         counters (`query_role_state_metrics()`) and `HubState` role-entry
+//         erasure (`hub_state->role()`) — plus, for the last, the
+//         CONSUMER_DIED_NOTIFY wire emission.
+//       WHY IN-PROCESS BROKER: those counters/erasures have NO wire
+//         observable; a subprocess broker's only readout would be log lines,
+//         and an aggregate counter does not map to a log-presence match.
+//       WHY NOT THE ANTIPATTERN: `DirectBrokerHandle` is broker-only — one
+//         `BrokerService`, one ZAP pump.  The client is a bare `BrcHandle`
+//         (DEALER, no ZAP pump).  No role/hub is co-hosted, so the
+//         HEP-CORE-0036 §7.4 single-pumper invariant does not apply.
+//
+//   (B) ROLE-SIDE `RoleAPIBase` tests — DEFERRED (task #55), re-homed with
+//       the RoleAPI unification.  `role_api_base_start_handler_threads_e2e`,
+//       `role_api_base_band_join_handler_mode`,
+//       `role_api_base_band_notify_wire_field_and_routing`,
+//       `role_api_base_registration_fsm_transitions`.  These DO co-host a
+//       real `RoleAPIBase`+`RoleHandler` with the broker (the antipattern),
+//       but they inspect ROLE-side FSM/state (handler lifecycle, band index,
+//       `find_presence_from_notification`, per-Presence registration state) —
+//       a wire client has no RoleAPIBase to inspect.  Proper migration needs
+//       a real-role subprocess; deferred so it rides the unification that
+//       reshapes these surfaces.  Contract audit 2026-07-16: all four still
+//       validly pin their contracts (see task #55).
 
 #include "broker_test_harness.h"  // DirectBrokerHandle + BrcHandle + make_reg_opts / make_cons_opts
 #include "test_entrypoint.h"
@@ -61,6 +97,9 @@ static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 // metrics_reclaim_cycle — full Ready -> Pending -> dereg, verified via metrics
 // ============================================================================
 
+// RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
+// BrcHandle; pins RoleStateMetrics counters (no wire observable, not the
+// single-pumper antipattern).  See file-header disposition block.
 int metrics_reclaim_cycle()
 {
     return run_gtest_worker(
@@ -119,6 +158,8 @@ int metrics_reclaim_cycle()
 // pending_recovers_to_ready — demote, then heartbeat restores Ready
 // ============================================================================
 
+// RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
+// BrcHandle; pins the pending_to_ready recovery counter.  See file header.
 int pending_recovers_to_ready()
 {
     return run_gtest_worker(
@@ -177,6 +218,8 @@ int pending_recovers_to_ready()
 // stuck_in_pending_reclaimed — role never heartbeats, pending_timeout fires
 // ============================================================================
 
+// RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
+// BrcHandle; pins pending-timeout reclaim counters + HubState.  See file header.
 int stuck_in_pending_reclaimed()
 {
     return run_gtest_worker(
@@ -232,78 +275,12 @@ int stuck_in_pending_reclaimed()
         logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
-// ============================================================================
-// band_membership_cleaned_on_role_close — on_channel_closed hook removes role
-// ============================================================================
-
-int band_membership_cleaned_on_role_close()
-{
-    return run_gtest_worker(
-        []() {
-            const std::string ch_a    = make_test_channel_name("role_state.band_a");
-            const std::string ch_b    = make_test_channel_name("role_state.band_b");
-            const std::string uid_a   = "prod.band.a.uid00000001";
-            const std::string uid_b   = "prod.band.b.uid00000002";
-            const std::string band    = "!" + make_test_channel_name("test.band");
-
-            auto curve = pylabhub::tests::make_curve_setup({uid_a, uid_b});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            BrokerService::Config cfg;
-            cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
-            auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
-
-            BrcHandle a, b;
-            a.start(broker.endpoint, broker.pubkey, uid_a, role_keystore_name(uid_a));
-            b.start(broker.endpoint, broker.pubkey, uid_b, role_keystore_name(uid_b));
-
-            ASSERT_TRUE(a.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_a, uid_a), 3000).has_value());
-            ASSERT_TRUE(b.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_b, uid_b), 3000).has_value());
-            a.brc.send_heartbeat(ch_a, uid_a, "producer", {});
-            b.brc.send_heartbeat(ch_b, uid_b, "producer", {});
-
-            ASSERT_TRUE(a.brc.band_join(band, 3000).has_value());
-            ASSERT_TRUE(b.brc.band_join(band, 3000).has_value());
-
-            auto members1 = b.brc.band_members(band, 3000);
-            ASSERT_TRUE(members1.has_value());
-            ASSERT_TRUE(members1->contains("members"));
-            EXPECT_EQ((*members1)["members"].size(), 2u) << "Expected 2 members after join";
-
-            // Voluntarily deregister A's channel — on_channel_closed fires,
-            // cleanup hook removes A from the band.
-            {
-                auto dereg = a.brc.deregister_channel(ch_a);
-                ASSERT_TRUE(dereg.has_value());
-                EXPECT_EQ(dereg->value("status", std::string{}), "success");
-            }
-
-            auto only_b_left = [&]() {
-                auto m = b.brc.band_members(band, 1000);
-                return m.has_value() && m->contains("members") &&
-                       (*m)["members"].size() == 1;
-            };
-            ASSERT_TRUE(poll_until(only_b_left, std::chrono::seconds(2)))
-                << "Band membership was not cleaned up after producer dereg";
-
-            auto members2 = b.brc.band_members(band, 3000);
-            ASSERT_TRUE(members2.has_value());
-            ASSERT_TRUE(members2->contains("members"));
-            bool has_b = false;
-            for (const auto& m : (*members2)["members"])
-                if (m.value("role_uid", "") == uid_b) has_b = true;
-            EXPECT_TRUE(has_b) << "Remaining member should be uid_b";
-
-            a.stop();
-            b.stop();
-            broker.stop_and_join();
-        },
-        "role_state.band_membership_cleaned_on_role_close",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
+// band_membership_cleaned_on_role_close MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (Pattern4BrokerProtocolTest.Band_MembershipCleanedOnProducerDereg) —
+// task #52 DirectBrokerHandle sweep.  The on_channel_closed → band-cleanup
+// effect is observed over the wire (BAND_MEMBERS count 2→1), so the
+// in-process co-host is retired.
 
 // ============================================================================
 // role_entry_terminal_cleanup_on_last_presence_dereg
@@ -314,6 +291,9 @@ int band_membership_cleaned_on_role_close()
 //   "stale residue" failure mode from Wave M2.5 §6.2).
 // ============================================================================
 
+// RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
+// BrcHandle; pins HubState role-entry erasure on last-presence dereg (no wire
+// observable).  See file-header disposition block.
 int role_entry_terminal_cleanup_on_last_presence_dereg()
 {
     return run_gtest_worker(
@@ -372,6 +352,9 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
 //   `_on_consumer_left` → `_dispatch_role_disconnected_if_dead`.
 // ============================================================================
 
+// RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
+// BrcHandle; pins HubState role-entry erasure when the last consumer leaves
+// (no wire observable).  See file-header disposition block.
 int role_entry_terminal_cleanup_on_consumer_left_last()
 {
     return run_gtest_worker(
@@ -452,6 +435,11 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
 //   channel itself must NOT close (HEP-CORE-0023 §2.1.1).
 // ============================================================================
 
+// RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
+// BrcHandle; the CONSUMER_DIED_NOTIFY emission is wire-observable (also
+// covered by Pattern4 broker_health.DeadConsumerDetected), but this test also
+// pins the broker-side HubState erasure + RoleStateMetrics on heartbeat
+// timeout — no wire observable.  See file-header disposition block.
 int consumer_heartbeat_timeout_fires_consumer_died_notify()
 {
     return run_gtest_worker(
@@ -634,6 +622,9 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
 //   teardown sequence with broker_channel cleared post-stop.
 // ============================================================================
 
+// RATIONALE (task #52 group B, DEFERRED task #55): co-hosts a real
+// RoleAPIBase+RoleHandler with the broker; inspects role-side handler
+// lifecycle — no wire equivalent.  Re-homed with the RoleAPI unification.
 int role_api_base_start_handler_threads_e2e()
 {
     return run_gtest_worker(
@@ -757,12 +748,16 @@ int role_api_base_start_handler_threads_e2e()
 //   `broker_channel` fallback let band_join's initial REQ go out on
 //   connections[0]; M4f deleted the fallback without recognizing the
 //   bootstrap case.  This test was missing because all prior band L3
-//   coverage moved to `bc->band_join` direct calls in
-//   datahub_channel_group_workers.cpp during M4f migration.  Mutation
+//   coverage moved to `bc->band_join` direct calls in the channel-group
+//   band tests (since retired to Pattern 4,
+//   test_pattern4_channel_group.cpp) during M4f migration.  Mutation
 //   sweep: revert the fix → `band_join` returns nullopt without
 //   contacting broker → this test fails on the has_value assertion.
 // ============================================================================
 
+// RATIONALE (task #52 group B, DEFERRED task #55): co-hosts a real
+// RoleAPIBase+RoleHandler with the broker; inspects role-side band-index
+// routing state — no wire equivalent.  Re-homed with the RoleAPI unification.
 int role_api_base_band_join_handler_mode()
 {
     return run_gtest_worker(
@@ -840,107 +835,11 @@ int role_api_base_band_join_handler_mode()
         logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
-// ============================================================================
-// broker_band_rejects_invalid_identifier
-//   Audit R3.5 (2026-05-17) — broker must REJECT BAND_JOIN_REQ /
-//   BAND_LEAVE_REQ / BAND_MEMBERS_REQ when the band name fails
-//   HEP-CORE-0030 §3 identifier validation (e.g. missing `!`
-//   prefix).  Pre-fix, the handler called `hub_state_->_on_band_*`
-//   which silently bumped `invalid_identifier_total` and returned;
-//   the handler then proceeded to return `status: success` to the
-//   role, creating a phantom-joined state on the role side with no
-//   broker-side membership.
-//
-//   Trigger: band name "no_bang_prefix" — non-empty (so it passes
-//   the existing `band.empty()` guard) but invalid per HEP-0030 §3
-//   (must start with `!`).
-//
-//   Mutation sweep:
-//     - Remove the `is_valid_identifier` check from
-//       handle_band_join_req → broker returns `success` for invalid
-//       band → test fails on `EXPECT_EQ(status, "error")`.
-//     - Same for BAND_LEAVE_REQ + BAND_MEMBERS_REQ handlers.
-// ============================================================================
-
-int broker_band_rejects_invalid_identifier()
-{
-    return run_gtest_worker(
-        []() {
-            const std::string role_uid = "prod.r35.uid00000001";
-
-            auto curve = pylabhub::tests::make_curve_setup({role_uid});
-            pylabhub::tests::seed_curve_identities(curve);
-
-            BrokerService::Config bcfg;
-            bcfg.endpoint = "tcp://127.0.0.1:0";
-            auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), curve);
-
-            // Connect a raw BRC client; band-name validation is at
-            // the broker handler, not on the role side, so we go
-            // through BRC directly.
-            BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, role_uid,
-                     role_keystore_name(role_uid));
-
-            // Non-empty BUT invalid (no `!` prefix per HEP-0030 §3).
-            const std::string invalid = "no_bang_prefix";
-
-            // ── BAND_JOIN_REQ — broker must reject ──────────────────
-            {
-                auto resp = bh.brc.band_join(invalid, 3000);
-                ASSERT_TRUE(resp.has_value())
-                    << "Broker should respond (error), not time out";
-                EXPECT_EQ(resp->value("status", std::string{}), "error")
-                    << "R3.5 regression: BAND_JOIN_REQ for invalid "
-                       "band name '" << invalid << "' must be "
-                       "rejected with status=error.  Pre-fix the "
-                       "broker silently returned status=success.";
-                EXPECT_EQ(resp->value("error_code", std::string{}),
-                          "INVALID_BAND_NAME")
-                    << "Expected typed error code INVALID_BAND_NAME";
-            }
-
-            // ── BAND_LEAVE_REQ — broker must reject ─────────────────
-            {
-                auto resp = bh.brc.band_leave(invalid, 3000);
-                ASSERT_TRUE(resp.has_value());
-                EXPECT_EQ(resp->value("status", std::string{}), "error")
-                    << "R3.5 regression: BAND_LEAVE_REQ for invalid "
-                       "band name must be rejected";
-                EXPECT_EQ(resp->value("error_code", std::string{}),
-                          "INVALID_BAND_NAME");
-            }
-
-            // ── BAND_MEMBERS_REQ — broker must reject ───────────────
-            {
-                auto resp = bh.brc.band_members(invalid, 3000);
-                ASSERT_TRUE(resp.has_value());
-                EXPECT_EQ(resp->value("status", std::string{}), "error")
-                    << "R3.5 regression: BAND_MEMBERS_REQ for invalid "
-                       "band name must be rejected";
-                EXPECT_EQ(resp->value("error_code", std::string{}),
-                          "INVALID_BAND_NAME");
-            }
-
-            // ── Sanity: valid band name still works ─────────────────
-            {
-                const std::string valid = "!" +
-                    make_test_channel_name("r35.valid");
-                auto resp = bh.brc.band_join(valid, 3000);
-                ASSERT_TRUE(resp.has_value());
-                EXPECT_EQ(resp->value("status", std::string{}),
-                          "success")
-                    << "Sanity check: valid `!`-prefixed band name "
-                       "must still succeed (R3.5 fix should not "
-                       "regress the happy path)";
-            }
-
-            bh.stop();
-            broker.stop_and_join();
-        },
-        "role_state.broker_band_rejects_invalid_identifier",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
-}
+// broker_band_rejects_invalid_identifier MIGRATED to
+// tests/test_layer3_pattern4/test_pattern4_broker_protocol.cpp
+// (Pattern4BrokerProtocolTest.Band_RejectsInvalidIdentifier) — task #52
+// DirectBrokerHandle sweep.  Pure wire assertions, no in-process broker
+// inspection, so it moved cleanly to the subprocess-broker harness.
 
 // ============================================================================
 // role_api_base_band_notify_wire_field_and_routing
@@ -954,8 +853,8 @@ int broker_band_rejects_invalid_identifier()
 //     (leftover from before the 2026-04-11 `8d3ee1e` rename refactor;
 //     the rename touched message types but not payload keys).  No
 //     test inspected the wire key directly — BRC and broker agreed on
-//     the wrong name, so round-trip tests in `datahub_channel_group_
-//     workers.cpp` all passed.
+//     the wrong name, so the channel-group round-trip tests (since
+//     retired to Pattern 4, test_pattern4_channel_group.cpp) all passed.
 //
 //   • B2 — role-side dispatch.  `RoleHandler::find_presence_from_
 //     notification` looked for `body["band_name"]` — an invented key
@@ -975,6 +874,10 @@ int broker_band_rejects_invalid_identifier()
 //     - Revert both → step 7 fails first (wire conformance).
 // ============================================================================
 
+// RATIONALE (task #52 group B, DEFERRED task #55): co-hosts a real
+// RoleAPIBase+RoleHandler with the broker; inspects role-side
+// find_presence_from_notification dispatch — no wire equivalent.  Re-homed
+// with the RoleAPI unification.
 int role_api_base_band_notify_wire_field_and_routing()
 {
     return run_gtest_worker(
@@ -1143,6 +1046,10 @@ int role_api_base_band_notify_wire_field_and_routing()
 //       presence walk).
 // ============================================================================
 
+// RATIONALE (task #52 group B, DEFERRED task #55): co-hosts a real
+// RoleAPIBase+RoleHandler with the broker; inspects role-side per-Presence
+// registration FSM state — no wire equivalent.  Re-homed with the RoleAPI
+// unification.
 int role_api_base_registration_fsm_transitions()
 {
     return run_gtest_worker(
@@ -1286,8 +1193,9 @@ struct BrokerRoleStateWorkerRegistrar
                 if (scenario == "metrics_reclaim_cycle")       return metrics_reclaim_cycle();
                 if (scenario == "pending_recovers_to_ready")   return pending_recovers_to_ready();
                 if (scenario == "stuck_in_pending_reclaimed")  return stuck_in_pending_reclaimed();
-                if (scenario == "band_membership_cleaned_on_role_close")
-                    return band_membership_cleaned_on_role_close();
+                // band_membership_cleaned_on_role_close migrated to
+                // Pattern4BrokerProtocolTest.Band_MembershipCleanedOnProducerDereg
+                // (task #52 DirectBrokerHandle sweep).
                 if (scenario == "role_entry_terminal_cleanup_on_last_presence_dereg")
                     return role_entry_terminal_cleanup_on_last_presence_dereg();
                 if (scenario == "role_entry_terminal_cleanup_on_consumer_left_last")
@@ -1300,8 +1208,9 @@ struct BrokerRoleStateWorkerRegistrar
                     return role_api_base_start_handler_threads_e2e();
                 if (scenario == "role_api_base_band_join_handler_mode")
                     return role_api_base_band_join_handler_mode();
-                if (scenario == "broker_band_rejects_invalid_identifier")
-                    return broker_band_rejects_invalid_identifier();
+                // broker_band_rejects_invalid_identifier migrated to
+                // Pattern4BrokerProtocolTest.Band_RejectsInvalidIdentifier
+                // (task #52 DirectBrokerHandle sweep).
                 if (scenario == "role_api_base_band_notify_wire_field_and_routing")
                     return role_api_base_band_notify_wire_field_and_routing();
                 if (scenario == "role_api_base_registration_fsm_transitions")

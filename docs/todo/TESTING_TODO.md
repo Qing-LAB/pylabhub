@@ -755,6 +755,78 @@ that legitimately need in-process broker state inspection keep
   weak-rationale hybrids.
 - **Round 5** — L1 guard: fail if a `HubHostBrokerHandle` use lacks
   an adjacent `RATIONALE:` block.
+- **Round 6 (in progress, 2026-07-16) — `DirectBrokerHandle` files,
+  user-directed in-scope.**  The Round-2 note above called
+  `datahub_role_state` + `datahub_channel_group` OUT of scope because
+  DirectBrokerHandle exposes `hub_state`/`service`.  That classification
+  was too coarse: it labelled the whole *file* by its harness type, but
+  many tests in these files co-host a real client (`BrokerRequestComm`
+  poll loop via `ChannelClient`, or a `BrcHandle`) with the broker and
+  verify **pure wire results** — no `hub_state`/`service` inspection at
+  all.  Those migrate to Pattern 4 exactly like Round 1/2, and the
+  parent now asserts the **actual broker reply** instead of a worker
+  exit code (`ExpectWorkerOk`).
+  - ✅ **`datahub_channel_group` FULLY migrated → new
+    `test_pattern4_channel_group.cpp` (6 tests) + 2 band tests in
+    `test_pattern4_broker_protocol.cpp`; source file set DELETED**
+    (`test_datahub_channel_group.cpp` + `workers/datahub_channel_group_
+    workers.cpp` + CMake entries; 0 hybrid remained, mirrors the
+    `broker_consumer` full deletion).  All 7 were wire-observable —
+    including `roleapi_channel`, which (per its own comment) drove
+    `BrokerRequestComm` directly and used `RoleHostCore` only as a
+    NOTIFY sink, NOT a role-side FSM under test.  Mapping:
+    - `channel_join_leave` → `Band_JoinLeaveMemberQuery` (JOIN-ACK
+      `members[]` size 1→2, MEMBERS query, LEAVE → 1).
+    - `channel_msg_fanout` → `MessageFanout_BodyDeliveredToPeer`
+      (asserts delivered `body` = `{event:hello, value:42}`).
+    - `channel_join_notify` → `JoinNotification_ExistingMemberNotified`
+      (BAND_JOIN_NOTIFY names the newcomer).
+    - `channel_leave_notify` → `LeaveNotification_RemainingMemberNotified`
+      (BAND_LEAVE_NOTIFY role_uid + reason=voluntary).
+    - `channel_self_excluded` → `Broadcast_SenderExcludedFromOwnMessage`
+      (receiver gets it; sender's DELIVER absent over a bounded window).
+    - `channel_multi_channel` → `MultiChannel_BroadcastStaysInItsBand`
+      (delivery tagged with the correct `band`; no cross-band leak).
+    - `roleapi_channel` → `FullLifecycle_JoinNotifyBroadcastMembersLeave`.
+    NOTIFY tests use the base `drain_for`; absence is proved with a
+    bounded `kAbsenceBudget` drain returning nullopt (factual negative).
+  - ✅ **2 wire-only from `role_state` → `test_pattern4_broker_protocol.cpp`**
+    (retired from source with breadcrumbs, bodies + dispatch removed):
+    - `band_membership_cleaned_on_role_close` →
+      `Band_MembershipCleanedOnProducerDereg` (BAND_MEMBERS count 2→1 +
+      survivor is `uid_b`).
+    - `broker_band_rejects_invalid_identifier` →
+      `Band_RejectsInvalidIdentifier` (`error_code == INVALID_BAND_NAME`
+      on JOIN/LEAVE/MEMBERS; valid `!` name succeeds).
+  - ✅ **`role_state` CLOSED OUT (2026-07-16, user-approved).**  The 10
+    non-wire tests split by whether a role is actually co-hosted:
+    - **Group A — KEEP as `DirectBrokerHandle` + RATIONALE (6):**
+      `metrics_reclaim_cycle`, `pending_recovers_to_ready`,
+      `stuck_in_pending_reclaimed`,
+      `role_entry_terminal_cleanup_on_last_presence_dereg`,
+      `role_entry_terminal_cleanup_on_consumer_left_last`,
+      `consumer_heartbeat_timeout_fires_consumer_died_notify`.  These are
+      broker-only (`DirectBrokerHandle`, one ZAP pump) + a bare `BrcHandle`
+      client (DEALER, no ZAP pump) — **NOT** the single-pumper antipattern.
+      They pin `query_role_state_metrics()` aggregate counters / `HubState`
+      role-entry erasure, which have no wire observable (a counter does not
+      map to a log-presence match).  File-header RATIONALE block +
+      per-function RATIONALE tags authored — this is the first concrete
+      `RATIONALE:` convention for the sweep (Round 3's were never written).
+    - **Group B — DEFERRED to task #55 (4):** `role_api_base_*`.  These DO
+      co-host a real `RoleAPIBase`+`RoleHandler` with the broker (the
+      antipattern) but inspect role-side FSM/state; proper migration needs a
+      real-role subprocess.  Deferred by user decision to ride the RoleAPI
+      unification (which reshapes these surfaces).  **Contract audit
+      2026-07-16 CONFIRMED** all 4 still validly pin their contracts
+      (design-derived, path+state+side-effect, documented mutation sweeps;
+      NOT outcome-only) — `band_notify_wire_field_and_routing` is exemplary
+      "pin design not current behavior" (caught a bug the L2 test masked by
+      synthesizing the wrong wire key).  Per-function DEFERRED tags + task
+      #55 created.
+  - **Round 6 status:** `datahub_channel_group` deleted; `role_state`
+    closed out (6 KEEP + 4 DEFERRED task #55).  Both DirectBrokerHandle
+    files now dispositioned — Round 6 complete pending task #55.
 
 **Recipe (validated Round 1).** Parent writes `setup.json` via
 `make_pattern4_setup`/`write_pattern4_setup`; broker subprocess
