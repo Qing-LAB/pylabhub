@@ -612,9 +612,10 @@ asymmetric sides.
   },
 
   "admin": {
-    "enabled":        true,
-    "endpoint":       "tcp://127.0.0.1:5600",
-    "token_required": true
+    "enabled":  true,
+    "endpoint": "tcp://127.0.0.1:5600"
+    // CURVE-secured + token always required (§11.1 / §11.3); loopback
+    // is the default, a network endpoint is an explicit opt-in.
   },
 
   "broker": {
@@ -683,7 +684,8 @@ asymmetric sides.
 
 - `hub_identity_config.hpp` — `HubIdentityConfig { uid, name, log_level }`.
 - `hub_network_config.hpp` — broker endpoint/bind/io_threads.
-- `hub_admin_config.hpp` — endpoint/enabled/token_required.
+- `hub_admin_config.hpp` — endpoint/enabled (CURVE-secured + token
+  always required per §11.1 / §11.3; no `token_required` toggle).
 - `hub_broker_config.hpp` — heartbeat-multiplier role-liveness timeouts
   (HEP-CORE-0023 §2.5): `heartbeat_interval_ms`,
   `ready_miss_heartbeats`, `pending_miss_heartbeats`, plus two
@@ -709,12 +711,13 @@ composite config here.  Class `HubConfig` →
 
 ### 6.5 Vault + keygen — finalized 2026-05-31
 
-The hub vault stores the broker's stable CURVE keypair plus, when
-`admin.token_required: true`, the admin token (separate slot,
-same KDF domain).  Both items are sealed inside one libsodium
-AEAD blob keyed by an Argon2id derivation of the operator's
-password.  See `src/include/utils/hub_vault.hpp` for the storage
-shape.
+The hub vault stores the broker's stable CURVE keypair plus the admin
+token (separate slot, same KDF domain).  The broker keypair does
+double duty: it secures the control ROUTER *and* `curve_server`s the
+admin socket (§11.1); the admin token is the mandatory admin-request
+authority (§11.3).  Both items are sealed inside one libsodium AEAD
+blob keyed by an Argon2id derivation of the operator's password.  See
+`src/include/utils/hub_vault.hpp` for the storage shape.
 
 #### Vault filename — UID-keyed (revised 2026-05-31)
 
@@ -765,10 +768,10 @@ against the §G2.2.0a grammar before passing.
 
 Reads the vault from the resolved `hub.auth.keyfile` path,
 unlocks it via the same password source chain as `--keygen`,
-loads the broker's stable CURVE keypair for the ROUTER socket.
-When `admin.token_required: true`, the `AdminService` (§11.3)
-compares the inbound `admin_token` field against the token from
-the vault.
+loads the broker's stable CURVE keypair — used both for the control
+ROUTER socket and to `curve_server` the admin socket (§11.1).  The
+`AdminService` (§11.3) compares the inbound `admin_token` field
+against the vault token on every request (mandatory).
 
 #### No in-memory mode
 
@@ -1540,20 +1543,45 @@ Replaces legacy `AdminShell` which only offered `{token, code}` → `exec(code)`
 
 ### 11.1 Transport
 
-- ZMQ REP socket at `admin.endpoint` (default `tcp://127.0.0.1:5600`).
+The admin plane is CURVE-secured, consistent with every other hub
+interface (broker↔role and role↔role); it is not a plaintext exception.
+
+- ZMQ REP socket at `admin.endpoint` (default `tcp://127.0.0.1:5600`),
+  configured as a **`curve_server`** keyed with the hub's **broker CURVE
+  keypair** — the same server identity every role already trusts
+  (`HubVault::broker_curve_secret_key()` / `_public_key()`).  The admin
+  transport reuses the hub's existing keypair; there is no separate admin
+  keypair.
+- The admin client connects with its own (ephemeral) CURVE keypair and
+  pins the hub's broker public key as `curve_serverkey`.  This
+  authenticates the *server* to the operator — an impostor lacking the
+  broker secret key fails the CURVE handshake — and **encrypts the entire
+  exchange**, so the admin token (§11.3) never crosses the wire in
+  cleartext, on loopback or network.
+- The admin socket carries **no ZAP `zap_domain`**: client identity is
+  not gatekept by key (any well-formed CURVE client obtains an encrypted
+  channel; authority is the token, checked per request), and omitting the
+  domain keeps the admin socket off the broker's single inproc ZAP
+  handler — preserving the §7.4 single-pumper invariant.
+- Socket type is **REP** (one operator command → one response;
+  synchronous).  A move to ROUTER/DEALER — for push/streaming admin or to
+  reuse the control-plane `WireEnvelope` tooling — is a future expansion,
+  not part of this surface.
 - Request: `{ "method": "<name>", "token": "<admin_token>", "params": { ... } }`.
 - Response: `{ "status": "ok|error", "result": ..., "error": {"code": ..., "message": ...} }`.
 
 ```mermaid
 sequenceDiagram
-    participant Client as Admin Client
-    participant Admin as AdminService (REP)
+    participant Client as Admin Client<br/>(ephemeral CURVE key)
+    participant Admin as AdminService (REP,<br/>curve_server = broker key)
     participant Host as HubHost
-    participant Engine as ScriptEngine<br/>(dev-only path)
 
-    Client->>Admin: {method, token, params}
+    Client->>Admin: CURVE handshake<br/>(serverkey = broker pubkey)
+    note over Client,Admin: fails silently if serverkey wrong;<br/>channel encrypted once established
 
-    alt invalid token (token_required)
+    Client->>Admin: {method, token, params}  (encrypted)
+
+    alt missing / wrong admin token
         Admin-->>Client: {status:error, code:unauthorized}
     else method = query_*
         Admin->>Host: accessor call
@@ -1585,11 +1613,27 @@ injection" for the policy.
 
 ### 11.3 Authorization
 
-- `admin.token_required: true` → request `"token"` must match vault's
-  admin token (KDF-derived, same-vault different slot). Mismatch →
+The admin token is the sole authority for every admin request, and it is
+**mandatory** — there is no token-less admin path.  The token is a random
+256-bit secret minted at vault creation (`generate_admin_token()`) and
+held in the vault in a slot distinct from the broker CURVE keypair.
+
+- Every request's `"token"` is compared **constant-time** against the
+  vault admin token; missing / wrong-size / mismatched →
   `{"status": "error", "error": {"code": "unauthorized"}}`.
-- `admin.token_required: false` → token ignored; endpoint MUST bind to
-  `127.0.0.1` (enforced at construction).
+- Because the §11.1 transport is CURVE-encrypted, the token travels
+  encrypted end to end; a network eavesdropper cannot capture it.  A
+  non-loopback bind is therefore no longer a security hazard.  **Loopback
+  remains the default** bind (defense-in-depth); a network bind is an
+  explicit operator opt-in.
+
+This is a **shared-secret** authority model: any operator holding the
+admin token is admin, and revocation is token rotation (which invalidates
+all admin clients at once).  Per-operator identity and selective
+revocation are a **future expansion** — a client-pubkey allowlist (a
+`known_admins` analog admitted via a dedicated `zap_domain`) layers on top
+of this design *without* removing the token gate — and are out of scope
+for the current single-operator RPC surface.
 
 ### 11.4 Files
 
@@ -1609,7 +1653,7 @@ NEVER changes meaning across versions.  New codes append-only.
 
 | Code               | When                                                                                            | Per-method                                     |
 |--------------------|-------------------------------------------------------------------------------------------------|------------------------------------------------|
-| `unauthorized`     | `token_required` is on AND `token` is missing / wrong size / mismatched                         | Any method when token gate is active           |
+| `unauthorized`     | `token` is missing / wrong size / mismatched (the token gate is mandatory, §11.3)               | Any method                                     |
 | `unknown_method`   | Method name is not in §11.2                                                                     | Any                                            |
 | `invalid_request`  | Top-level frame is not a JSON object, or `method` field missing/non-string                      | Any                                            |
 | `invalid_params`   | `params` is missing a required field, has the wrong type, or fails validation                   | All `get_*` (missing key); control methods     |

@@ -22,6 +22,21 @@ observer) see HEP-CORE-0045 §10.
 **Status source of truth:** `docs/TODO_MASTER.md` § "Resume point"
 — three-line summary + per-line remaining work (2026-07-08).
 
+**⚠ Admin plane CURVE migration — DESIGN DONE, IMPL PENDING (2026-07-15).**
+The AdminService REP socket is still plaintext + bearer token today; the
+ctor even permits a non-loopback bind that sends the admin token in
+cleartext. The CURVE-secured design (reuse the broker CURVE keypair to
+`curve_server` the admin socket; keep the init-generated admin token as a
+mandatory + now-encrypted gate; loopback default) is **finalized in
+HEP-CORE-0033 §11.1 + §11.3**. Simple version only — per-operator
+`known_admins` allowlist / streaming / ROUTER move are future expansion,
+noted in §11. Implementation checklist:
+`docs/tech_draft/DRAFT_curve_admin_protocol_2026-07-15.md`. Blocks the 3
+admin-triggered tests in the HubHostBrokerHandle sweep
+(`close_channel` ×2, `broadcast_hub_queue`) — they stay in L3 with a
+RATIONALE pointing at §11 until the admin CURVE socket + `AdminWireClient`
+land.
+
 **Completed-work archives (verbatim prose retained for context):**
 
 - `docs/archive/transient-2026-06-05/todo-completions/AUTH_TODO_completions.md`
