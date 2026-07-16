@@ -2676,8 +2676,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // Pin: role_uid + channel + producer_pubkey identify the registration
     // uniquely; channel_opened distinguishes first-producer vs subsequent.
     LOGGER_INFO("[broker] event=RegReqAccepted role='{}' channel='{}' producer_pubkey='{}' "
-                "(pending first heartbeat){}",
-                role_uid, channel_name, producer_pubkey,
+                "schema_hash='{}' (pending first heartbeat){}",
+                role_uid, channel_name, producer_pubkey, attempted_schema,
                 admission.channel_opened ? " - channel opened"
                                          : " - appended to existing");
     nlohmann::json resp;

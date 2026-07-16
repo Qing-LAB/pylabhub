@@ -188,9 +188,9 @@ add_executable(test_layer3_datahub
     workers/datahub_schema_loader_workers.cpp
 
     # ── Broker named schema protocol tests (HEP-CORE-0034 path B / inbox path A) ──
-    # Unmasked 2026-06-07 under #154 — migrated to seed_curve_identities pattern.
-    test_datahub_broker_schema.cpp
-    workers/broker_schema_workers.cpp
+    # MIGRATED to tests/test_layer3_pattern4/test_pattern4_broker_schema.cpp
+    # (task #52 — last hybrid schema_hash_stored reads the broker's
+    # RegReqAccepted schema_hash trace instead of the in-process snapshot).
 
     # NOTE: test_datahub_schema_registry.cpp (HEP-0016 SchemaStore lifecycle)
     # was deleted in HEP-0034 Phase 4a — the SchemaStore singleton was

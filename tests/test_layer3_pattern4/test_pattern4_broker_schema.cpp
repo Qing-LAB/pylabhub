@@ -258,3 +258,44 @@ TEST_F(Pattern4BrokerSchemaTest, ConsumerSchemaIdEmptyProducer_Fails)
 
     broker.signal_quit();
 }
+
+// schema_hash stored on REG — observed via the broker's own trace.  The
+// broker echoes the stored schema_hash on its RegReqAccepted log line
+// (broker_service.cpp), so the parent reads that instead of the retired
+// in-process channel snapshot.  A bare schema_hash (no schema_blds) is
+// stored opaquely — no canonical recomputation — so an arbitrary 64-hex
+// value round-trips.
+TEST_F(Pattern4BrokerSchemaTest, SchemaHashStoredOnReg)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string channel = "schema.hash.stored" + suffix;
+    const std::string uid     = "prod." + channel;
+    const std::string hash(64, 'a');
+
+    const fs::path temp_dir = make_test_temp_dir("broker_schema_hash_stored");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal(
+        "pattern4_broker_protocol.broker", {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, uid);
+    auto body = producer_reg_body(setup, channel, uid, /*shm=*/true);
+    body["schema_hash"] = hash;  // no schema_blds → stored opaque
+    auto reg = prod.request("REG_REQ", body, "REG_ACK",
+                             milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reg.has_value()) << "REG_REQ timed out";
+    ASSERT_EQ(reg->value("status", std::string{}), "success")
+        << "body=" << reg->dump();
+
+    // The broker's RegReqAccepted trace echoes the stored schema_hash.
+    expect_log(broker, "event=RegReqAccepted",
+                milliseconds{pylabhub::kMidTimeoutMs});
+    expect_log(broker, "schema_hash='" + hash + "'",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    broker.signal_quit();
+}
