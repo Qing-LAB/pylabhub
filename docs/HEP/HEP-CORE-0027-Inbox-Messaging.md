@@ -1,6 +1,6 @@
 # HEP-CORE-0027: Inbox Messaging
 
-**Status**: Data path implemented (documenting existing system); CURVE wiring NOT YET implemented — the inbox is the **pilot for the two-tier key model** (per-process session keys, HEP-CORE-0036 Amendment 2026-07-17), see §3.5 below + task #191.  Reachability + multi-hub advertisement section (§4.5) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
+**Status**: Implemented (documenting existing system); CURVE wiring deferred to HEP-CORE-0036 Phase 4+ (see §3.5 below).  Reachability + multi-hub advertisement section (§4.5) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
 **Created**: 2026-03-27
 **Scope**: InboxQueue, InboxClient, peer-to-peer messaging side channel
 **Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK), HEP-CORE-0034 §11.4 (inbox-as-schema-record), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement), HEP-CORE-0036 §9.3 (CURVE wiring on inbox sockets — role identity keypair + per-channel allowlist inheritance)
@@ -126,46 +126,30 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
 ### 3.5 CURVE Wiring (HEP-CORE-0036)
 
 The msgpack frame in §3 is the inbox PAYLOAD; transport-layer
-authentication of the inbox sockets follows the **two-tier key model**
-(HEP-CORE-0036 Amendment 2026-07-17).  **The inbox is the pilot for that
-model** — it is implemented directly on session keys, not on the role's
-identity key.
+authentication of the inbox sockets is specified in HEP-CORE-0036
+§9.3.  Under HEP-0036 (locked 2026-05-28):
 
-> **Supersedes the earlier MVP.**  A prior revision of this section (aligned
-> with T1's symmetric-identity design) specified "inbox ROUTER + DEALER reuse
-> the role's IDENTITY keypair on both sides; inherit the single channel
-> allowlist; no per-inbox keypair."  That is replaced by the two-tier model
-> below.  The change: the inbox now uses a per-process **session** keypair, and
-> the broker distributes the session pubkey rather than the inbox reusing the
-> identity pubkey already in the allowlist.
+- **Inbox ROUTER and DEALER sockets use the role's IDENTITY keypair**
+  on both sides (per HEP-0036 I6 — same keypair the role binds on
+  its data PUSH/PULL; broker mints NO data-plane CURVE keys).
+- **Allowlist inheritance**: the inbox sockets reuse the data
+  channel's ZAP allowlist on the producer side (same channel-scope
+  set of authorized consumer pubkeys; no separate inbox allowlist
+  scope under MVP).  Any consumer authorized to read the data
+  channel is authorized to send to that producer's inbox.
+- **No per-inbox keypair** — see HEP-0036 §9.3 for the rationale
+  (avoids the redundancy that drove T1's symmetric-design lock-in).
+- **Lifetime** — inbox lifetime ⊆ data channel lifetime.  Inbox
+  closes with last-producer DEREG (HEP-0036 §5.7.2 cascade) or BRC
+  death (HEP-0036 I3).
 
-- **Per-process session keypair, both sides.**  Each role mints a session
-  keypair at init (process lifetime; discarded on restart — "new start, new
-  key").  The inbox ROUTER (receiver) and DEALER (sender) use it.  The role's
-  provisioned identity keypair is used ONLY for broker registration/admission
-  and never appears on an inbox socket.
-- **Session pubkey advertised + distributed.**  The role advertises its inbox
-  session pubkey inside its identity-authenticated `REG_REQ` /
-  `CONSUMER_REG_REQ`.  The broker (which authenticated that registration
-  against `known_roles`) distributes the consumers' session pubkeys to the
-  producer's inbox ROUTER over the existing allowlist path
-  (`CONSUMER_REG_ACK` / `CHANNEL_AUTH_CHANGED_NOTIFY` / `GET_CHANNEL_AUTH`).
-  The allowlist entry carries the session pubkey alongside the data-plane
-  entry; admit/revoke updates it.
-- **Authorization unchanged in spirit.**  Any consumer authorized on the data
-  channel may send to that producer's inbox — the check is now against the
-  consumer's *session* pubkey rather than its identity pubkey.
-- **Discovery carries the receiver session pubkey.**  `ROLE_INFO_ACK` returns
-  the producer's inbox endpoint AND its inbox session pubkey; the sender pins
-  `curve_serverkey` to it.
-- **Lifetime** — inbox lifetime ⊆ data channel lifetime; session key lifetime
-  ⊆ process lifetime.  Inbox closes with last-producer DEREG (HEP-0036 §5.7.2
-  cascade) or BRC death (HEP-0036 I3); the session key dies with the process.
-
-`hub_inbox_queue.cpp` has zero CURVE references today; task **#191**
-(P-InboxQueue) implements the two-tier wiring above, reusing the rx-queue
-allowlist add/remove plumbing from task #103.  See `docs/todo/AUTH_TODO.md`
-and HEP-CORE-0036 Amendment 2026-07-17 for the model + staged plan.
+`hub_inbox_queue.cpp` has zero CURVE references today; this is the
+implementation gap that HEP-0036 Phase 4+ closes.  The inbox-specific
+CURVE/allowlist wiring is task **#191** (P-InboxQueue, picked up after
+AUTH-7; see `docs/todo/AUTH_TODO.md`); it reuses the rx-queue
+producer_peers + add/remove plumbing from task #103.  (The code comment
+in `hub_queue.hpp` cites #191; earlier revisions of this section cited
+only #103, the shared plumbing.)
 
 ---
 
