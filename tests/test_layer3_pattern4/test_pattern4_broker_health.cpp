@@ -16,13 +16,12 @@
  *     ZapRouter denied-count singleton).  Round-3 disposition.
  *   - two_snapshot_invariant — CHANNEL_CLOSING_NOTIFY timing pin (deferred).
  *
- * The CONSUMER_DIED family IS migrated here: DeadConsumerDetected uses a
- * dedicated dying-consumer subprocess worker
- * (`pattern4_broker_protocol.dying_consumer`) that registers then
- * `std::_Exit(0)`, and the broker (dead_consumer profile,
- * consumer_liveness_check_interval=1s) detects the dead PID;
- * ConsumerHeartbeatTimeout uses a silent parent-side consumer +
- * consumer_timeout profile (liveness=0, short ready/pending).
+ * The CONSUMER_DIED family: ConsumerHeartbeatTimeout uses a silent
+ * parent-side consumer + consumer_timeout profile (short ready/pending) —
+ * heartbeat timeout (HEP-CORE-0023 §2.1) is the sole consumer-liveness
+ * mechanism, and its reclaim now also revokes channel admission
+ * (HEP-CORE-0036 §6.5).  (DeadConsumerDetected + the PID-liveness sweep it
+ * exercised were removed 2026-07-17 — see the retirement doc-block below.)
  */
 #include "pattern4_wire_test_base.h"
 
@@ -183,57 +182,24 @@ TEST_F(Pattern4BrokerHealthTest, SchemaMismatchNotify)
     broker.signal_quit();
 }
 
-// PID-death path: a dying-consumer subprocess registers then hard-exits
-// (no DEREG); the broker's liveness sweep (dead_consumer profile,
-// consumer_liveness_check_interval=1s) detects the dead PID and fires
-// CONSUMER_DIED_NOTIFY(reason="process_dead") to the producer.
-TEST_F(Pattern4BrokerHealthTest, DeadConsumerDetected)
-{
-    using namespace std::chrono;
-    const std::string suffix   = ".pid" + std::to_string(::getpid());
-    const std::string channel  = "health.dead_consumer" + suffix;
-    const std::string prod_uid = "prod." + channel;
-    const std::string cons_uid = "cons." + channel;
-
-    const fs::path temp_dir = make_test_temp_dir("bh_dead_consumer");
-    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
-    write_pattern4_setup(setup, temp_dir / "setup.json");
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
-                                            {temp_dir.string(), "dead_consumer"});
-    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
-
-    zmq::context_t ctx;
-    auto           prod = make_wire_client(ctx, setup, prod_uid);
-    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
-    // One heartbeat → kLive (ready timeout is 15 s, so the producer stays
-    // alive through the drain without a heartbeat thread).
-    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
-
-    // Dying consumer: a subprocess that registers then std::_Exit(0).
-    auto exiter = SpawnWorker("pattern4_broker_protocol.dying_consumer",
-                              {temp_dir.string(), channel, cons_uid});
-    exiter.wait_for_exit();
-
-    // Broker's 1 s liveness sweep detects the dead PID → CONSUMER_DIED_NOTIFY.
-    auto notify = drain_for(prod, "CONSUMER_DIED_NOTIFY", milliseconds{8000});
-    ASSERT_TRUE(notify.has_value())
-        << "CONSUMER_DIED_NOTIFY not received within 8s after the consumer "
-           "subprocess exited";
-    EXPECT_EQ(notify->value("channel_name", std::string{}), channel);
-    EXPECT_EQ(notify->value("role_uid", std::string{}), cons_uid);
-    EXPECT_EQ(notify->value("reason", std::string{}), "process_dead")
-        << "PID-death path must report reason='process_dead'; body="
-        << notify->dump();
-    // Path pin: corroborate against the broker's own emission trace that
-    // the PID-death branch fired (not some other path that happened to
-    // produce a notify).  This broker serves one channel, so the
-    // substring is unambiguous.
-    expect_log(broker, "reason=process_dead, target_role=",
-                milliseconds{pylabhub::kMidTimeoutMs});
-
-    broker.signal_quit();
-}
+// ── RETIRED 2026-07-17 — DeadConsumerDetected + the broker PID-liveness
+//    sweep it exercised ──────────────────────────────────────────────────
+// The test drove `check_dead_consumers`, which called `is_process_alive(pid)`
+// on every registered consumer's PID.  That is a LOCAL-ONLY OS check with no
+// hostname gate — meaningless (and actively harmful: false-positive reaps) for
+// any consumer not co-located with the broker, i.e. every distributed
+// deployment.  It only appeared to work because this + the L3 tests run
+// broker + consumer on one machine.  The mechanism, the `process_dead` wire
+// reason, and the `consumer_liveness_check_interval` config are deleted; the
+// universal heartbeat FSM (HEP-CORE-0023 §2.1, Connected→Pending→Disconnected)
+// is now the sole consumer-liveness path.
+//
+// Where the coverage lives now: `ConsumerHeartbeatTimeout_NotifyBodyShape`
+// (below) pins the reclaim's CONSUMER_DIED_NOTIFY(reason="heartbeat_timeout"),
+// and the reclaim now ALSO revokes channel admission — the revoke path that
+// used to sit only on this deleted PID branch moved onto the heartbeat reclaim
+// (broker_service.cpp check_heartbeat_timeouts; HEP-CORE-0036 §6.5), covered by
+// the L3 `ConsumerAttach_DeniedAfterDereg` + the ledger unit tests.
 
 // Heartbeat-timeout path: a registered consumer goes silent while the
 // producer keeps heartbeating; with the PID sweep OFF (consumer_timeout
@@ -298,14 +264,30 @@ TEST_F(Pattern4BrokerHealthTest, ConsumerHeartbeatTimeout_NotifyBodyShape)
     EXPECT_EQ(died.value("role_uid", std::string{}), cons_uid);
     EXPECT_EQ(died.value("reason", std::string{}), "heartbeat_timeout")
         << "silent-consumer path must report reason='heartbeat_timeout' "
-           "(distinct from PID-death 'process_dead'); body=" << died.dump();
+           "(heartbeat timeout is the sole liveness path); body=" << died.dump();
     EXPECT_TRUE(died.contains("consumer_pid"));
     EXPECT_TRUE(died.contains("consumer_hostname"));
     // Path pin: corroborate against the broker's own emission trace that
-    // the heartbeat-timeout branch fired (the PID sweep is OFF in this
-    // profile, so process_dead cannot be the source).
+    // the heartbeat-timeout branch fired.
     expect_log(broker, "reason=heartbeat_timeout target_role=",
                 milliseconds{pylabhub::kMidTimeoutMs});
+
+    // REVIEW-D (#277): the reclaim MUST also revoke the consumer's channel
+    // admission — heartbeat timeout is the sole liveness path, so this is the
+    // only automatic revocation trigger for a dead consumer (the deleted PID
+    // sweep used to carry it).  The producer receives CHANNEL_AUTH_CHANGED_
+    // NOTIFY(phase="left") for the revoked consumer right after the DIED
+    // notify (broker_service.cpp check_heartbeat_timeouts; HEP-CORE-0036 §6.5).
+    auto revoked = drain_for(prod, "CHANNEL_AUTH_CHANGED_NOTIFY",
+                              milliseconds{5000});
+    ASSERT_TRUE(revoked.has_value())
+        << "reclaim must revoke admission + fire CHANNEL_AUTH_CHANGED_NOTIFY";
+    EXPECT_EQ(revoked->value("channel_name", std::string{}), channel);
+    EXPECT_EQ(revoked->value("role_uid", std::string{}), cons_uid);
+    EXPECT_EQ(revoked->value("role_type", std::string{}), "consumer");
+    EXPECT_EQ(revoked->value("phase", std::string{}), "left")
+        << "revocation-on-reclaim must fire phase='left'; body="
+        << revoked->dump();
 
     broker.signal_quit();
 }

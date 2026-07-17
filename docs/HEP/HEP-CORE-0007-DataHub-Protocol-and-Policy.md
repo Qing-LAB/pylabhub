@@ -1785,20 +1785,19 @@ former wire message FORCE_SHUTDOWN are both retired; remove from
 hub.json.
 ```
 
-#### CONSUMER_DIED_NOTIFY — Consumer Process Death
+#### CONSUMER_DIED_NOTIFY — Consumer Reclaim
 
 ```
 Direction:  Broker → Producer
-Trigger:    Broker detects a registered consumer is no longer alive.  Two
-            independent triggers, both emit the same wire-frame shape and
-            are distinguished by the `reason` field:
-              - reason="process_dead"        — `check_dead_consumers` sweep
-                                               sees the consumer PID is gone
-                                               (Cat 2 dead consumer).
-              - reason="heartbeat_timeout"   — `check_heartbeat_timeouts`
-                                               consumer-presence Pending →
-                                               Disconnected (HEP-CORE-0023
-                                               §2.1; Wave-B M2 3/3).
+Trigger:    `check_heartbeat_timeouts` reclaims a consumer presence
+            Pending → Disconnected (HEP-CORE-0023 §2.1) — the SOLE
+            consumer-liveness mechanism, and the only trigger for this
+            notify.  reason="heartbeat_timeout".
+            Heartbeat is the only liveness signal that works regardless of
+            where the consumer runs; a broker MUST NOT infer liveness from
+            a consumer's PID (a remote PID is meaningless to the broker).
+            The reclaim also revokes the consumer's channel admission —
+            see HEP-CORE-0036 §6.5.
 Effect:     Producer informed that a consumer has died
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CONSUMER_DIED_NOTIFY"; producer role host queues an event for the script.
@@ -1810,7 +1809,7 @@ Payload:
                                   restarts on the same OS pid)
   consumer_pid          uint64
   consumer_hostname     string   (may be empty if unknown)
-  reason                string   ("process_dead" | "heartbeat_timeout")
+  reason                string   ("heartbeat_timeout")
 
 Script host delivery: Event dict in msgs:
   {"event": "consumer_died", "uid": "<string>", "pid": <uint64>,
@@ -1903,7 +1902,7 @@ Direction:  Broker → every kLive consumer on the channel
 Trigger:    Producer-presence membership change: producer_joined
             (fired on Pending→Ready / first heartbeat received per
             HEP-CORE-0036 §3.5.4 INV2 — NOT on REG_REQ accept),
-            producer_left (DEREG_REQ), heartbeat_timeout, process_dead.
+            producer_left (DEREG_REQ), heartbeat_timeout.
 Effect:     Doorbell — fire-and-forget.  Consumer's framework
             responds by issuing `GET_CHANNEL_PRODUCERS_REQ` to pull
             the fresh producer set (notify-then-pull).
@@ -1911,7 +1910,7 @@ Effect:     Doorbell — fire-and-forget.  Consumer's framework
 Payload:
   channel_name          string
   reason                string   ("producer_joined" | "producer_left" |
-                                  "heartbeat_timeout" | "process_dead")
+                                  "heartbeat_timeout")
 
 Cross-reference: HEP-CORE-0033 §18.2 (message inventory); HEP-CORE-0036
 §6.5.1 (broker→consumer producer-set sync); HEP-CORE-0036 §3.5.4 INV2
@@ -1985,7 +1984,7 @@ Payload:
   role_uid              string
   role_type             string   "producer" | "consumer" | "processor"
   channel               string
-  reason                string   "graceful" | "heartbeat_timeout" | "process_dead"
+  reason                string   "graceful" | "heartbeat_timeout"
   hub_uid               string
 
 Script host delivery:

@@ -86,9 +86,7 @@ TEST_F(DatahubRoleStateMachineTest, ConsumerHeartbeatTimeout_FiresConsumerDiedNo
     // consumer that stops heartbeating must transition Connected →
     // Pending → Disconnected on the broker, and the broker must
     // emit CONSUMER_DIED_NOTIFY (reason="heartbeat_timeout") to
-    // every producer on the channel.  Symmetric with the PID-death
-    // path (CONSUMER_DIED_NOTIFY, reason="process_dead", driven by
-    // check_dead_consumers).  Producer + channel are unaffected:
+    // every producer on the channel.  Producer + channel are unaffected:
     // consumer-presence disconnect never tears down channels per
     // HEP-CORE-0023 §2.1.1.
     auto proc = SpawnWorker(

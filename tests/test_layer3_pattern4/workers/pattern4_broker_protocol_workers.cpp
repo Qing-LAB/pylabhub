@@ -127,23 +127,12 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                 cfg.ready_timeout_override   = std::chrono::milliseconds{15000};
                 cfg.pending_timeout_override = std::chrono::milliseconds{15000};
             }
-            else if (profile == "dead_consumer")
-            {
-                // DeadConsumerDetected — PID-liveness sweep ON (1 s) so
-                // the broker detects the exited consumer's dead PID
-                // quickly; ready/pending long (15 s) so only the
-                // PID-death path fires (reason="process_dead").
-                cfg.consumer_liveness_check_interval = std::chrono::seconds{1};
-                cfg.ready_timeout_override   = std::chrono::milliseconds{15000};
-                cfg.pending_timeout_override = std::chrono::milliseconds{15000};
-            }
             else if (profile == "consumer_timeout")
             {
-                // ConsumerHeartbeatTimeout — PID-liveness sweep OFF so
-                // ONLY the heartbeat-timeout path can fire CONSUMER_DIED
-                // (reason="heartbeat_timeout"); short ready/pending so a
-                // silent consumer is reclaimed within the test window.
-                cfg.consumer_liveness_check_interval = std::chrono::seconds{0};
+                // ConsumerHeartbeatTimeout — heartbeat timeout is the
+                // sole consumer-liveness mechanism; short ready/pending
+                // so a silent consumer is reclaimed within the test
+                // window.
                 cfg.ready_timeout_override   = std::chrono::milliseconds{500};
                 cfg.pending_timeout_override = std::chrono::milliseconds{500};
             }
@@ -241,62 +230,11 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
         pylabhub::hub::GetZMQContextModule());
 }
 
-// Dying-consumer subprocess for DeadConsumerDetected: connects as
-// `cons_uid`, registers a consumer on `channel`, then `std::_Exit(0)` —
-// a hard crash that skips CONSUMER_DEREG so the broker must detect the
-// dead PID via its liveness sweep.  BrokerWireClient is KeyStore-
-// independent, so this worker needs no SMS/KeyStore lifecycle; the
-// consumer_pid the broker monitors is this subprocess's own getpid()
-// (set by build_consumer_reg_payload).
-int pattern4_dying_consumer(const char *temp_dir_arg,
-                            const char *channel_arg,
-                            const char *cons_uid_arg)
-{
-    return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
-            const fs::path    temp_dir = temp_dir_arg;
-            const std::string channel  = channel_arg;
-            const std::string cons_uid = cons_uid_arg;
-            const auto        setup =
-                read_pattern4_setup(temp_dir / "setup.json");
-
-            zmq::context_t ctx;
-            const auto    &kp = setup.curve.role(cons_uid);
-            BrokerWireClient::Config cfg;
-            cfg.broker_endpoint = setup.broker_endpoint;
-            cfg.broker_pubkey   = setup.curve.hub.public_z85;
-            cfg.client_pubkey   = kp.public_z85;
-            cfg.client_seckey   = kp.secret_z85;
-            cfg.client_role_uid = cons_uid;
-            BrokerWireClient client(ctx, cfg);
-
-            pylabhub::hub::ConsumerRegInputs in;
-            in.channel        = channel;
-            in.role_uid       = cons_uid;
-            in.role_name      = "dying_consumer";
-            in.role_type      = "consumer";
-            in.data_transport = "zmq";
-            in.zmq_pubkey     = kp.public_z85;
-            auto reply = client.request(
-                "CONSUMER_REG_REQ",
-                pylabhub::hub::build_consumer_reg_payload(in),
-                "CONSUMER_REG_ACK", std::chrono::milliseconds{5000});
-            if (!reply ||
-                reply->value("status", std::string{}) != "success")
-            {
-                std::fprintf(stderr,
-                             "Pattern4DyingConsumer: CONSUMER_REG_REQ failed\n");
-                std::_Exit(2);
-            }
-            LOGGER_INFO("Pattern4DyingConsumer: registered as '{}' on '{}', "
-                        "exiting hard (no DEREG)",
-                        cons_uid, channel);
-            std::_Exit(0);  // crash simulation — no dtors, no DEREG
-        },
-        "pattern4_broker_protocol.dying_consumer",
-        pylabhub::utils::Logger::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
-}
+// (Removed 2026-07-17: the `dying_consumer` worker + `DeadConsumerDetected`
+// exercised the broker's PID-liveness sweep, deleted along with that
+// mechanism — heartbeat timeout (HEP-CORE-0023 §2.1) is now the sole
+// consumer-liveness path.  See the `consumer_timeout` profile +
+// `ConsumerHeartbeatTimeout_*` for the surviving reclaim coverage.)
 
 int dispatch_pattern4_broker_protocol(int argc, char **argv)
 {
@@ -316,18 +254,6 @@ int dispatch_pattern4_broker_protocol(int argc, char **argv)
         return 1;
     }
     const char *temp_dir = argv[2];
-
-    if (scenario == "dying_consumer")
-    {
-        if (argc < 5)
-        {
-            std::fprintf(stderr,
-                         "pattern4_broker_protocol.dying_consumer: needs "
-                         "<temp_dir> <channel> <cons_uid>\n");
-            return 1;
-        }
-        return pattern4_dying_consumer(temp_dir, argv[3], argv[4]);
-    }
 
     const char *profile = argc >= 4 ? argv[3] : "default";
     if (scenario == "broker")

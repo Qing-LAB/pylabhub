@@ -90,7 +90,7 @@ typedef struct
 {
     const char *channel;        /**< Channel the dead consumer was on. */
     const char *consumer_uid;   /**< UID of the dead consumer presence. */
-    const char *reason;         /**< "heartbeat_timeout" or "process_dead". */
+    const char *reason;         /**< "heartbeat_timeout". */
 } plh_consumer_died_args_t;
 
 /** on_hub_dead args (audit D1/D2, 2026-05-18; HEP-CORE-0011;
@@ -124,7 +124,7 @@ typedef struct
 {
     const char *band;           /**< Band name. */
     const char *role_uid;       /**< Leaving role's UID. */
-    const char *reason;         /**< "voluntary", "heartbeat_timeout", or "process_dead". */
+    const char *reason;         /**< "voluntary" or "heartbeat_timeout". */
 } plh_band_member_left_args_t;
 
 /** on_band_message args (HEP-CORE-0030 §5.3).

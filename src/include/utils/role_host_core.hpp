@@ -91,7 +91,7 @@ enum class NotificationId : std::uint8_t
                             ///< (S4 expansion 2026-05-19.)
     BandMemberLeft   = 5,   ///< BAND_LEAVE_NOTIFY       (HEP-CORE-0030 §5.3)
                             ///< Another role left.  Carries `reason ∈ {voluntary,
-                            ///< heartbeat_timeout, process_dead}`.
+                            ///< heartbeat_timeout}`.
     BandMessage      = 6,   ///< BAND_BROADCAST_DELIVER_NOTIFY (HEP-CORE-0030 §5.3)
                             ///< Broadcast from another band member.
     BandLost         = 7,   ///< Synthetic, enqueued from `on_hub_dead` lambda

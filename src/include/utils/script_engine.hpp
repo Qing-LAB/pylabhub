@@ -578,12 +578,11 @@ class ScriptEngine
      * Implementations log + suppress script exceptions (do not
      * propagate); the data loop continues.
      *
-     * Sent by the broker in two cases (HEP-CORE-0023 §2.1.1):
-     *   - `reason="heartbeat_timeout"` — consumer-presence
-     *     Pending→Disconnected via the broker's heartbeat sweep.
-     *   - `reason="process_dead"` — broker's PID-liveness check
-     *     detected the consumer process exited.
-     * Producer scripts receive both reasons via this callback so
+     * Sent by the broker (HEP-CORE-0023 §2.1) when a consumer
+     * presence transitions Pending→Disconnected on the heartbeat
+     * FSM — `reason="heartbeat_timeout"`, now the sole
+     * consumer-liveness mechanism.  Producer scripts receive this
+     * callback so
      * they can drop per-consumer bookkeeping (open inbox slots,
      * addressed-message state) symmetrically.
      *
@@ -591,7 +590,7 @@ class ScriptEngine
      *                      registered on.
      * @param consumer_uid  UID of the consumer presence that died.
      * @param reason        Reason string from the wire payload
-     *                      ("heartbeat_timeout" or "process_dead").
+     *                      ("heartbeat_timeout").
      */
     virtual void invoke_on_consumer_died(
         const std::string &channel,
@@ -661,10 +660,9 @@ class ScriptEngine
      *
      * @param band       Wire `band` field.
      * @param role_uid   Leaving role's uid.
-     * @param reason     `"voluntary"`, `"heartbeat_timeout"`, or
-     *                   `"process_dead"` (HEP-CORE-0023 §2.1.1
-     *                   reasons; the wire carries the broker's
-     *                   verdict).
+     * @param reason     `"voluntary"` or `"heartbeat_timeout"`
+     *                   (HEP-CORE-0023 §2.1 reasons; the wire
+     *                   carries the broker's verdict).
      */
     virtual void invoke_on_band_member_left(
         const std::string &band,

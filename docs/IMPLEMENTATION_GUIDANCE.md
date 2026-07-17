@@ -1890,7 +1890,6 @@ slot checksums are known to be wrong (user writes raw data without checksum upda
 |---|---|---|
 | Schema mismatch on re-registration | Cat 1 | Log + CHANNEL_ERROR_NOTIFY → shutdown |
 | Heartbeat timeout | Cat 1 | Log + CHANNEL_CLOSING_NOTIFY (producer+consumers) → remove |
-| Consumer PID dead (no BYE) | Cat 2 | Log + CONSUMER_DIED_NOTIFY (`reason="process_dead"`) → producer removes from list |
 | Consumer heartbeat timeout (Wave-B M2 3/3) | Cat 1 | Log + CONSUMER_DIED_NOTIFY (`reason="heartbeat_timeout"`) → producer removes from list; channel survives (consumer disconnect never tears down channels per HEP-CORE-0023 §2.1.1) |
 | Slot data checksum wrong | Cat 2 | Log + ChecksumRepairPolicy applies |
 | SHM header magic/checksum corrupt | Cat 1 | Log + notify all → shutdown |

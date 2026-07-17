@@ -263,7 +263,7 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `invoke_process(rx, tx, msgs)` | worker | Call `on_process(rx, tx, msgs, api)` -- hot path |
 | `invoke_on_inbox(msg)` | worker | Call `on_inbox(msg, api)` |
 | `invoke_on_channel_closing(channel, reason)` | worker | Adapter — pulls `(channel_name, reason)` from the notify and calls `on_channel_closing(channel, reason, api)`.  Invoked by the dispatcher ONLY when the script has defined the override (`has_callback("on_channel_closing") == true`).  When the override is absent, the dispatcher calls the framework's native default (`default_channel_closing` — graceful stop with `StopReason::ChannelClosed`) instead.  Either way, the notify is consumed from `msgs`.  Per design call 2026-05-15T03:29: "this is really just a callback that replaces the default straightforward stop()". |
-| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Adapter for the producer-side `on_consumer_died(channel, consumer_uid, reason, api)` override.  Dispatched under the unified model: override invoked iff the script defines it; otherwise the native default (`default_consumer_died` — no-op, producer survives) runs.  Notify is consumed from `msgs` either way.  `reason` is one of `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1.1) or `"process_dead"` (broker PID-liveness check). |
+| `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Adapter for the producer-side `on_consumer_died(channel, consumer_uid, reason, api)` override.  Dispatched under the unified model: override invoked iff the script defines it; otherwise the native default (`default_consumer_died` — no-op, producer survives) runs.  Notify is consumed from `msgs` either way.  `reason` is `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1). |
 | `invoke_on_hub_dead(source_hub_uid)` | worker | Adapter for the `on_hub_dead(source_hub_uid, api)` override.  Dispatched under the unified model: override invoked iff defined; otherwise the native default (`default_hub_dead`) runs — graceful stop with `StopReason::HubDead` if the dead connection was master, no-op if peer (role keeps running on master per HEP-CORE-0023 §2.5).  Audit D1/D2 (2026-05-18).  Synthetic notification: not a wire frame; enqueued by the role-side ctrl-thread `on_hub_dead` lambda (`role_api_base.cpp` Phase 2) when ZMTP declares a broker connection dead.  **Fires at most ONCE per (role lifetime, connection) pair** — pylabhub policy: disconnect is terminal (HEP-CORE-0023 §2.5.3), `ZMQ_RECONNECT_IVL=-1` on every BRC DEALER socket so a dead connection cannot be silently re-established by libzmq.  If the role wants to talk to a broker again after a disconnect it must do so explicitly at the lifecycle layer (tear down `RoleHandler` / build a fresh one) — not by waiting for the same socket to come back.  Script can check `api.is_connection_alive(i)` / `api.connections_alive_count()` to disambiguate master vs peer if needed, then call `api.stop()` or keep the role alive while it drives an explicit role-restart from outside. |
 | `invoke_on_stop()` | worker | Call `on_stop(api)` |
 | `invoke(name, args)` | any | Generic invocation (e.g., admin shell) |
@@ -347,7 +347,7 @@ Current rows (post-D1/D2 + S4 expansion 2026-05-19):
 Band-callback signatures (defined in `ScriptEngine`):
 
 - `on_band_member_joined(band: str, role_uid: str, role_name: str, api)` — peer joined a band this role is in (mirrors `BAND_JOIN_NOTIFY` per HEP-CORE-0030 §5.3).
-- `on_band_member_left(band: str, role_uid: str, reason: str, api)` — peer left.  `reason` ∈ `{voluntary, heartbeat_timeout, process_dead}` per HEP-CORE-0023 §2.1.1 reason vocabulary.
+- `on_band_member_left(band: str, role_uid: str, reason: str, api)` — peer left.  `reason` ∈ `{voluntary, heartbeat_timeout}` per HEP-CORE-0023 §2.1 reason vocabulary.
 - `on_band_message(band: str, sender_role_uid: str, body: dict/table, api)` — broadcast received from another band member.  Broker enforces sender-must-be-member (HEP-CORE-0030 §5.2), so `sender_role_uid` is guaranteed to be a band member at emission time.
 - `on_band_lost(band: str, reason: str, api)` — synthetic, fired when role-side band routing is invalidated.  Currently `reason="hub_dead"` only (the role's broker connection died, so the BRC for this band is no longer reachable).  NOT a wire frame.
 - `on_channel_ready(channel: str, api)` — consumer-role callback fired once per channel when the pre-attach loop (HEP-CORE-0042 §7.1) completes.  Script queries `api.producers_declared(channel)`, `api.producers_connected(channel)`, `api.producer_attach_status(channel, uid)`, `api.producer_attach_reason(channel, uid)` (HEP-CORE-0042 §8) to inspect per-producer admission and decide policy.  Framework encodes no policy — scripts that require all-N producers must check and decide.  NOT a wire frame; synthesized by the consumer's role host from the attach-loop result.
@@ -1918,7 +1918,7 @@ def on_consumer_died(channel, consumer_uid, reason, api):
     Args:
         channel       (str): Channel the dead consumer was on.
         consumer_uid  (str): UID of the dead consumer presence.
-        reason        (str): 'heartbeat_timeout' or 'process_dead'.
+        reason        (str): 'heartbeat_timeout'.
     """
     pass
 
@@ -2084,7 +2084,7 @@ function on_consumer_died(channel, consumer_uid, reason, api)
     -- and consumes the notify; when not defined, the framework's
     -- default_consumer_died is a no-op (producer survives consumer
     -- death) and the notify is still consumed.  reason is
-    -- "heartbeat_timeout" or "process_dead".  Channel survives;
+    -- "heartbeat_timeout".  Channel survives;
     -- only on_channel_closing indicates the channel itself is gone.
     api.log("warn", "consumer " .. consumer_uid
                   .. " on " .. channel

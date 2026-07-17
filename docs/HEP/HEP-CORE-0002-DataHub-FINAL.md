@@ -1987,7 +1987,7 @@ Frame 3: JSON payload
 | `CHECKSUM_ERROR_REPORT` | Any → Broker | `channel_name`, `slot_index`, `error`, `reporter_pid` |
 | `CHANNEL_NOTIFY_REQ` | Any → Broker | `target_channel`, `sender_uid`, `event`, `payload` (opt) |
 | `CHANNEL_CLOSING_NOTIFY` | Broker → All | `channel_name` |
-| `CONSUMER_DIED_NOTIFY` | Broker → Producer | `channel_name`, `consumer_uid`, `consumer_pid`, `consumer_hostname`, `reason` ∈ {`process_dead`, `heartbeat_timeout`}.  See HEP-CORE-0007 for the authoritative wire spec. |
+| `CONSUMER_DIED_NOTIFY` | Broker → Producer | `channel_name`, `consumer_uid`, `consumer_pid`, `consumer_hostname`, `reason` ∈ {`heartbeat_timeout`}.  See HEP-CORE-0007 for the authoritative wire spec. |
 | `CHANNEL_ERROR_NOTIFY` | Broker → Affected | `channel_name`, `event`, + context |
 | `CHANNEL_EVENT_NOTIFY` | Broker → Participants | `channel_name`, `event`, `sender_uid` (if relay) |
 

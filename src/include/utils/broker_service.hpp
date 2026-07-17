@@ -225,10 +225,6 @@ public:
                        : producer_apply_wait_ms;
         }
 
-        /// How often broker checks whether registered consumer PIDs are still alive.
-        /// Set to 0 to disable liveness checks entirely.
-        std::chrono::seconds consumer_liveness_check_interval{5};
-
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
         ChecksumRepairPolicy checksum_repair_policy{ChecksumRepairPolicy::None};
 

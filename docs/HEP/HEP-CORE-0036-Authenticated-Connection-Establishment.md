@@ -4067,7 +4067,7 @@ consumer.
   fire-and-forget notify identical in shape to
   `CHANNEL_AUTH_CHANGED_NOTIFY`.  Carries `{channel_name, reason}`
   only.  No ACK.  `reason` is one of `producer_joined`,
-  `producer_left`, `heartbeat_timeout`, `process_dead`.
+  `producer_left`, `heartbeat_timeout`.
 
 - **`GET_CHANNEL_PRODUCERS_REQ` / `GET_CHANNEL_PRODUCERS_ACK`
   (consumer → broker → consumer)** — normal request-reply pair

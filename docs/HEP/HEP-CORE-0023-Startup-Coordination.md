@@ -1010,7 +1010,7 @@ Payload:
   role_uid          string
   role_type         string   "producer" | "consumer" | "processor"
   channel           string
-  reason            string   "graceful" | "heartbeat_timeout" | "process_dead"
+  reason            string   "graceful" | "heartbeat_timeout"
   hub_uid           string
 ```
 

@@ -351,7 +351,7 @@ ARE the typed callback's input.
 def on_band_member_joined(band, role_uid, role_name, api):
     print(f"[{band}] {role_name} ({role_uid}) joined")
 
-# Peer left (voluntary, heartbeat_timeout, or process_dead)
+# Peer left (voluntary or heartbeat_timeout)
 def on_band_member_left(band, role_uid, reason, api):
     print(f"[{band}] {role_uid} left ({reason})")
 

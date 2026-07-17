@@ -114,7 +114,6 @@ int metrics_reclaim_cycle()
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.ready_timeout_override           = std::chrono::milliseconds(150);
             cfg.pending_timeout_override         = std::chrono::milliseconds(150);
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
@@ -174,7 +173,6 @@ int pending_recovers_to_ready()
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.ready_timeout_override           = std::chrono::milliseconds(150);
             cfg.pending_timeout_override         = std::chrono::seconds(10); // long -> won't dereg
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
@@ -241,7 +239,6 @@ int stuck_in_pending_reclaimed()
             cfg.endpoint = "tcp://127.0.0.1:0";
             cfg.ready_timeout_override           = std::chrono::milliseconds(50);
             cfg.pending_timeout_override         = std::chrono::milliseconds(100);
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
@@ -306,7 +303,6 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
@@ -368,7 +364,6 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             // Producer creates the channel; we only test the
@@ -430,9 +425,8 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
 //   Wave-B M2 (3/3): a consumer presence that stops heartbeating must
 //   transition Connected → Pending → Disconnected on the broker side,
 //   triggering `CONSUMER_DIED_NOTIFY` with `reason="heartbeat_timeout"`
-//   to every producer on the channel.  Symmetric with the PID-death
-//   path (`check_dead_consumers`, `reason="process_dead"`).  The
-//   channel itself must NOT close (HEP-CORE-0023 §2.1.1).
+//   to every producer on the channel.  The channel itself must NOT
+//   close (HEP-CORE-0023 §2.1.1).
 // ============================================================================
 
 // RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
@@ -460,7 +454,6 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             cfg.pending_timeout_override         = std::chrono::milliseconds(150);
             // Disable the PID-death sweep to keep the notification path
             // unambiguous — only the heartbeat-timeout path can fire.
-            cfg.consumer_liveness_check_interval = std::chrono::seconds(0);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             // ── Producer BRC: needs a notification callback BEFORE the
@@ -534,9 +527,9 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             prod_hb_running.store(false);
             if (prod_hb_thread.joinable()) prod_hb_thread.join();
 
-            // Body shape: reason="heartbeat_timeout" distinguishes this
-            // path from the PID-death path (reason="process_dead").  The
-            // consumer_uid field disambiguates which consumer (across
+            // Body shape: reason="heartbeat_timeout" (heartbeat timeout is
+            // the sole consumer-liveness path).  The consumer_uid field
+            // disambiguates which consumer (across
             // restarts on the same pid) died — producers cannot reliably
             // correlate notifications on pid alone.
             {
@@ -546,8 +539,7 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
                 EXPECT_EQ(body.value("channel_name", std::string{}), ch);
                 EXPECT_EQ(body.value("reason", std::string{}), "heartbeat_timeout")
                     << "CONSUMER_DIED_NOTIFY must carry reason='heartbeat_timeout' "
-                       "for the broker-sweep path; reason='process_dead' is "
-                       "reserved for PID-death (check_dead_consumers).";
+                       "(the sole consumer-liveness path).";
                 EXPECT_EQ(body.value("role_uid", std::string{}), cons_uid)
                     << "CONSUMER_DIED_NOTIFY must carry consumer_uid so "
                        "producers can disambiguate which consumer died "

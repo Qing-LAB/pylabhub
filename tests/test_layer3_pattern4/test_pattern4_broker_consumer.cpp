@@ -562,6 +562,19 @@ TEST_F(Pattern4BrokerConsumerTest, ConsumerAttach_Authorized)
               setup.curve.role(cons_uid).public_z85);
     EXPECT_FALSE(resp->contains("denial_reason"));
 
+    // REVIEW-D (#277): pin broker-side STATE, not just the wire reply — the
+    // admitted consumer must actually appear in the channel's allowlist ledger.
+    auto auth = get_channel_auth(prod, channel, prod_uid);
+    ASSERT_TRUE(auth.has_value());
+    ASSERT_TRUE(auth->contains("allowlist") && auth->at("allowlist").is_array());
+    bool admitted_in_ledger = false;
+    for (const auto &e : auth->at("allowlist"))
+        if (e.is_string() &&
+            e.get<std::string>() == setup.curve.role(cons_uid).public_z85)
+            admitted_in_ledger = true;
+    EXPECT_TRUE(admitted_in_ledger)
+        << "success reply must reflect ledger admission; body=" << auth->dump();
+
     broker.signal_quit();
 }
 
@@ -595,6 +608,73 @@ TEST_F(Pattern4BrokerConsumerTest, ConsumerAttach_Denied)
     EXPECT_EQ(resp->value("channel_name", std::string{}), channel);
     EXPECT_EQ(resp->value("consumer_pubkey", std::string{}), fake_pubkey);
     EXPECT_TRUE(resp->contains("denial_reason"));
+
+    // REVIEW-D (#277): denial reflects ledger state — the unregistered pubkey
+    // is absent from the allowlist (empty, as fake_cons never registered).
+    auto auth = get_channel_auth(prod, channel, prod_uid);
+    ASSERT_TRUE(auth.has_value());
+    ASSERT_TRUE(auth->contains("allowlist") && auth->at("allowlist").is_array());
+    for (const auto &e : auth->at("allowlist"))
+        EXPECT_FALSE(e.is_string() && e.get<std::string>() == fake_pubkey)
+            << "denied pubkey must not appear in allowlist; body=" << auth->dump();
+
+    broker.signal_quit();
+}
+
+// REVIEW-D (#277): the revoke → DENY entry-gate transition.  A consumer that
+// was admitted (attach pre-confirm succeeds) and then deregistered must have
+// its NEXT attach pre-confirm DENIED — `handle_consumer_dereg_req` calls
+// `_on_consumer_revoked` → `ledger.revoke`, and the attach gate reads the same
+// ledger via `admission_version_of`.  `GetChannelAuth_ReturnsAllowlist` proves
+// the allowlist empties on dereg; THIS proves the gate then refuses a fresh
+// attach.  Deterministic, no data plane: REG → attach(success) → dereg →
+// attach(denied).
+TEST_F(Pattern4BrokerConsumerTest, ConsumerAttach_DeniedAfterDereg)
+{
+    using namespace std::chrono;
+    const std::string suffix   = ".pid" + std::to_string(::getpid());
+    const std::string channel  = "attach.denied_after_dereg" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("bc_attach_revoke");
+    const auto     setup    = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+    const std::string cons_pubkey = setup.curve.role(cons_uid).public_z85;
+
+    // Admitted: attach pre-confirm succeeds.
+    auto admitted =
+        consumer_attach(prod, channel, cons_pubkey, cons_uid, prod_uid);
+    ASSERT_TRUE(admitted.has_value());
+    EXPECT_EQ(admitted->value("status", std::string{}), "success")
+        << "registered consumer must attach; body=" << admitted->dump();
+
+    // Revoke: the consumer deregisters.
+    auto dereg = dereg_consumer(cons, channel, cons_uid);
+    ASSERT_TRUE(dereg.has_value());
+    EXPECT_EQ(dereg->value("status", std::string{}), "success");
+
+    // Deny: the SAME attach pre-confirm is now refused — ledger.revoke removed
+    // the pubkey and the gate reads the same ledger.
+    auto denied =
+        consumer_attach(prod, channel, cons_pubkey, cons_uid, prod_uid);
+    ASSERT_TRUE(denied.has_value());
+    EXPECT_EQ(denied->value("status", std::string{}), "denied")
+        << "revoked consumer's fresh attach MUST be denied; body="
+        << denied->dump();
+    EXPECT_EQ(denied->value("consumer_pubkey", std::string{}), cons_pubkey);
+    EXPECT_TRUE(denied->contains("denial_reason"));
 
     broker.signal_quit();
 }

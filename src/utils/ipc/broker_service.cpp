@@ -866,7 +866,6 @@ public:
     void load_hub_globals_();
 
     void check_heartbeat_timeouts(zmq::socket_t& socket);
-    void check_dead_consumers(zmq::socket_t& socket);
 
     // ── Role-close cleanup API (HEP-CORE-0023 §2.5) ───────────────────────
     // Central hooks called at every dereg site so federation/band/future
@@ -946,8 +945,6 @@ public:
                                      const std::string& error_code,
                                      const std::string& message);
 
-    /// Timestamp of last consumer liveness check (for interval gating).
-    std::chrono::steady_clock::time_point m_last_consumer_check{};
 
     // ── Role state-machine metrics (HEP-CORE-0023 §2.5) ─────────────────
     // Owned by HubState (`BrokerCounters`) per HEP-CORE-0033 §8;
@@ -1345,9 +1342,8 @@ void BrokerServiceImpl::run()
                 }
             }
 
-            // Check heartbeat timeouts and consumer liveness every poll cycle (~100ms resolution).
+            // Check heartbeat timeouts every poll cycle (~100ms resolution).
             check_heartbeat_timeouts(router);
-            check_dead_consumers(router);
             prune_relay_dedup();
 
             // --- Handle ROUTER socket (local clients + inbound peer DEALERs) ---
@@ -5952,9 +5948,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             if (!drop.removed) continue;
 
             // Fan out CONSUMER_DIED_NOTIFY with reason="heartbeat_timeout"
-            // to every producer on the channel — symmetric with the
-            // PID-death path at `check_dead_consumers` (which uses
-            // reason="process_dead").  Producers consume the
+            // to every producer on the channel.  Producers consume the
             // notification per HEP-CORE-0023 §2.1.1 to drop their
             // per-consumer bookkeeping.
             // broker_proto 4→5 (audit R3.5b, 2026-05-19): notify body
@@ -5979,95 +5973,31 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                                 "role_uid={} reason=heartbeat_timeout target_role={}",
                                 d.channel, d.role_uid, producer_uid);
                 });
-            // Federation / observer fan-out (mirrors the PID-death path).
+            // Federation / observer fan-out.
             on_consumer_closed(socket, d.channel, pre_drop_consumer,
                                "heartbeat_timeout");
-        }
-    }
-}
 
-void BrokerServiceImpl::check_dead_consumers(zmq::socket_t& socket)
-{
-    if (cfg.consumer_liveness_check_interval.count() <= 0)
-    {
-        return;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now - m_last_consumer_check < cfg.consumer_liveness_check_interval)
-    {
-        return;
-    }
-    m_last_consumer_check = now;
-
-    const auto snap = hub_state_->snapshot();
-    for (const auto& [channel_name, entry] : snap.channels)
-    {
-        std::vector<pylabhub::hub::ConsumerEntry> dead;
-        for (const auto& c : entry.consumers)
-        {
-            if (!pylabhub::platform::is_process_alive(c.consumer_pid))
+            // Revoke admission on reclaim.  The consumer presence has just
+            // gone Pending→Disconnected on the heartbeat FSM (HEP-CORE-0023
+            // §2.1) — now the SOLE consumer-liveness mechanism — so this is
+            // the only place a reaped consumer's key leaves the channel's
+            // admission ledger.  Revoke + refresh the producers' caches via
+            // CHANNEL_AUTH_CHANGED_NOTIFY (HEP-CORE-0036 §6.5).
+            // CONSUMER_REG_REQ hard-rejects a non-40-char pubkey at the wire
+            // (HEP-CORE-0035 §2 unconditional CURVE), so a stored
+            // ConsumerEntry always carries a valid key.
+            if (pre_drop_consumer.zmq_pubkey.size() == 40)
             {
-                dead.push_back(c);
-            }
-        }
-        for (const auto& dead_consumer : dead)
-        {
-            // Cat 2: dead consumer — notify every producer + clean state.
-            // Multi-producer fan-out per HEP-CORE-0023 §2.1.1.
-            LOGGER_WARN(
-                "Broker: Cat2 dead consumer pid={} host='{}' on channel '{}' — removing",
-                dead_consumer.consumer_pid, dead_consumer.consumer_hostname, channel_name);
-            // broker_proto 4→5 (audit R3.5b, 2026-05-19): `consumer_uid`
-            // → `role_uid` for cross-message uniformity.
-            nlohmann::json notify;
-            notify["channel_name"]      = channel_name;
-            notify["role_uid"]          = dead_consumer.role_uid;
-            notify["consumer_pid"]      = dead_consumer.consumer_pid;
-            notify["consumer_hostname"] = dead_consumer.consumer_hostname;
-            notify["reason"]            = "process_dead";
-            for (const auto &prod : entry.producers)
-            {
-                if (prod.zmq_identity.empty()) continue;
-                send_to_identity(socket, prod.zmq_identity, "CONSUMER_DIED_NOTIFY",
-                                 notify);
-                LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
-                            "consumer_pid={}, reason=process_dead, target_role={}",
-                            channel_name, dead_consumer.consumer_pid, prod.role_uid);
-            }
-            hub_state_->_on_consumer_left(channel_name, dead_consumer.role_uid);
-            on_consumer_closed(socket, channel_name, dead_consumer, "process_dead");
-            // HEP-CORE-0036 §6.5: revoke + notify on heartbeat-timeout
-            // path.  CONSUMER_REG_REQ hard-rejects empty / non-40-char
-            // `zmq_pubkey` at the wire (HEP-CORE-0035 §2 unconditional
-            // CURVE), so every stored ConsumerEntry MUST carry a
-            // 40-char Z85 key.  See the matching tripwire in
-            // handle_consumer_dereg_req for rationale.
-            if (dead_consumer.zmq_pubkey.size() != 40)
-            {
-                LOGGER_ERROR(
-                    "Broker: ConsumerEntry on channel='{}' role_uid='{}' "
-                    "has invalid zmq_pubkey (length {}, expected 40 Z85 "
-                    "chars).  This SHOULD NOT happen — CONSUMER_REG_REQ "
-                    "hard-rejects empty / wrong-length pubkey at the wire "
-                    "(HEP-CORE-0035 §2 unconditional CURVE).  System may "
-                    "be compromised; restart the hub ASAP.  Skipping "
-                    "channel-access revocation.",
-                    channel_name, dead_consumer.role_uid,
-                    dead_consumer.zmq_pubkey.size());
-            }
-            else
-            {
-                hub_state_->_on_consumer_revoked(channel_name,
-                                                  dead_consumer.zmq_pubkey);
-                fire_channel_auth_changed_notify(socket, channel_name,
-                                                   /*phase=*/"left",
-                                                   /*role_uid=*/dead_consumer.role_uid,
-                                                   /*role_type=*/"consumer");
+                hub_state_->_on_consumer_revoked(d.channel,
+                                                 pre_drop_consumer.zmq_pubkey);
+                fire_channel_auth_changed_notify(socket, d.channel,
+                                                 /*phase=*/"left",
+                                                 /*role_uid=*/pre_drop_consumer.role_uid,
+                                                 /*role_type=*/"consumer");
             }
         }
     }
 }
-
 void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     socket,
                                              const std::string&                 channel_name,
                                              const pylabhub::hub::ChannelEntry& entry,

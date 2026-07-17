@@ -10,7 +10,8 @@
  *   - CHANNEL_CLOSING_NOTIFY → on_channel_closing(channel, reason, api)
  *   - CONSUMER_DIED_NOTIFY   → on_consumer_died(channel, consumer_uid,
  *                                               reason, api)
- *     reason ∈ {"heartbeat_timeout", "process_dead"} per HEP-CORE-0023 §2.1.1.
+ *     reason "heartbeat_timeout" per HEP-CORE-0023 §2.1 (heartbeat
+ *     timeout is the sole consumer-liveness mechanism).
  *
  * Dispatcher contract (HEP-CORE-0011 callback table):
  *   1. If the script does NOT define the callback → `msgs` is unchanged
@@ -672,7 +673,7 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_consumer_died("ch.a", "cons-1", "heartbeat_timeout"));
     msgs.push_back(make_other("HEARTBEAT_ACK"));
-    msgs.push_back(make_consumer_died("ch.b", "cons-2", "process_dead"));
+    msgs.push_back(make_consumer_died("ch.b", "cons-2", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
         pylabhub::scripting::StopRequestor{core});
@@ -690,10 +691,10 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
     EXPECT_EQ(core.stop_reason_string(), "normal");
 }
 
-// Contract 2: callback present → all notify entries dispatched + removed.
-// Carries both reason variants — heartbeat_timeout (Wave-B M2) and
-// process_dead (PID-liveness path) — through the same dispatcher.
-TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
+// Contract 2: callback present → all notify entries dispatched + removed,
+// with the `reason` string passed through verbatim (the dispatcher is
+// reason-agnostic).
+TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesMultiple)
 {
     RecordingEngine eng;
     RoleHostCore core;
@@ -701,7 +702,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_consumer_died("ch.alpha", "cons-hb",   "heartbeat_timeout"));
-    msgs.push_back(make_consumer_died("ch.beta",  "cons-dead", "process_dead"));
+    msgs.push_back(make_consumer_died("ch.beta",  "cons-dead", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
         pylabhub::scripting::StopRequestor{core});
@@ -712,7 +713,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesBothReasons)
     EXPECT_EQ(std::get<2>(eng.consumer_died_calls[0]), "heartbeat_timeout");
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[1]), "ch.beta");
     EXPECT_EQ(std::get<1>(eng.consumer_died_calls[1]), "cons-dead");
-    EXPECT_EQ(std::get<2>(eng.consumer_died_calls[1]), "process_dead");
+    EXPECT_EQ(std::get<2>(eng.consumer_died_calls[1]), "heartbeat_timeout");
     EXPECT_TRUE(msgs.empty())
         << "CONSUMER_DIED_NOTIFY must be removed from msgs (single delivery)";
 }
@@ -728,7 +729,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_other("HEARTBEAT_ACK"));
     msgs.push_back(make_consumer_died("ch.a", "u1", "heartbeat_timeout"));
     msgs.push_back(make_other("CHANNEL_EVENT_NOTIFY"));
-    msgs.push_back(make_consumer_died("ch.b", "u2", "process_dead"));
+    msgs.push_back(make_consumer_died("ch.b", "u2", "heartbeat_timeout"));
     msgs.push_back(make_other("OTHER"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
@@ -1092,14 +1093,14 @@ TEST_F(DispatchBandTest, MemberLeft_Callback_DispatchesWithReason)
     msgs.push_back(make_band_leave_notify("!ctrl", "cons.lab.uid02",
                                            "voluntary"));
     msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid03",
-                                           "process_dead"));
+                                           "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
         pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.band_member_left_calls.size(), 2u);
     EXPECT_EQ(std::get<2>(eng.band_member_left_calls[0]), "voluntary");
-    EXPECT_EQ(std::get<2>(eng.band_member_left_calls[1]), "process_dead");
+    EXPECT_EQ(std::get<2>(eng.band_member_left_calls[1]), "heartbeat_timeout");
     EXPECT_TRUE(msgs.empty());
 }
 
