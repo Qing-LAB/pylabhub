@@ -186,6 +186,71 @@ trajectory.  Readers implementing SHM auth should treat HEP-0041 as
 the contract and read HEP-0036's SHM passages only for historical
 context.
 
+### Amendment 2026-07-17 — two-tier keys: fixed identity vs. per-process session
+
+**Direction change (design-authority decision).** T1 (2026-05-28) locked a
+*symmetric identity-keypair* design: every role reuses its one long-term,
+provisioned identity keypair on BOTH the broker control plane AND the
+role↔role data plane, and the broker mints/distributes nothing on the data
+plane (see §I6). This amendment establishes the **target** design that
+supersedes that choice: **two tiers of keys per role.**
+
+**The situation (why change).** The symmetric design (T1/§I6) was the right MVP
+— one key, no distribution, minimal machinery. But it couples the role's
+*crown-jewel provisioned identity key* to every high-volume, high-exposure
+role↔role socket (data PUSH/PULL and the inbox). As the project moves toward
+real key management, we want the long-term identity confined to the one place
+it is actually a *record* — proving who the role is to the broker — and the
+noisy, dynamic peer communication run on throwaway keys.
+
+**The two-tier model (target).**
+- **Identity / "record" key** — persistent, provisioned in `known_roles`. Used
+  **only** to authenticate to the broker (CURVE+ZAP on the control plane during
+  registration/admission). It never appears on a role↔role data socket.
+- **Session / communication key** — freshly generated at role init, lives for
+  the process, discarded on restart ("new start → new key"). Used for **all**
+  role↔role CURVE (data channel + inbox). Not provisioned, not persisted.
+- **Binding + distribution.** The role advertises its session pubkey *inside*
+  its identity-authenticated registration (REG_REQ / CONSUMER_REG_REQ). Because
+  that registration is already CURVE+ZAP-authenticated against `known_roles`,
+  the broker knows the session pubkey genuinely belongs to that role. The
+  broker then distributes the session pubkey to authorized peers over the
+  **existing** allowlist path (`REG_ACK.initial_allowlist` +
+  `CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH`). Peers do CURVE with
+  session pubkeys. The broker still **mints nothing** — roles mint their own
+  session keys; the broker only relays the pubkeys, an extension of the
+  allowlist distribution it already performs.
+
+**What this supersedes.** T1's "reuse identity, broker distributes no data-plane
+pubkeys" is superseded *as the target* by "session keys, broker distributes
+session pubkeys." §I6 (identity keys on the data plane) and the T1 single-gate
+framing remain the **current, shipped** behavior for the ZMQ data plane and
+stay authoritative until the migration below reaches it — do not treat §I6 as
+retired code yet.
+
+**Cost (named honestly).** A role restart mints a new session key, so the
+broker re-distributes it to peers on reconnect — more re-key churn than the
+stable-identity model. It rides the existing allowlist path, so it is bounded,
+not a new mechanism.
+
+**Adoption plan (staged; do NOT big-bang).**
+1. **Pilot: the inbox** (HEP-CORE-0027 §3.5). Smallest surface, currently
+   plaintext, lowest risk. The inbox adopts the two-tier model directly:
+   per-process inbox/session keypair on both sides, session pubkey advertised at
+   registration and distributed in the channel allowlist entry. Validate the
+   identity→session-key binding + distribution end-to-end here.
+2. **Evaluate: data-channel migration.** Only after the inbox pilot proves the
+   model, assess migrating the ZMQ data plane off §I6 identity keys onto session
+   keys — a larger, riskier change with its own review. The data plane stays on
+   §I6 until then.
+
+**Why an amendment (not a full rewrite).** §I6 / T1 are load-bearing across
+§3.5 / §4 / §7 / §5b and four diagrams and describe *shipped* behavior. Rewriting
+them before the model is validated on the inbox pilot would break invariant
+cross-links the active data plane still depends on. This block records the
+decision, the situation, and the staged plan; the body is migrated section by
+section as each stage lands.
+
 **§3.5 added 2026-06-12 (symmetric Option-α consolidation).**  The
 new §3.5 ("The AUTH-gate principle and role coordination") states
 the principle "nothing happens behind the auth door before auth"
