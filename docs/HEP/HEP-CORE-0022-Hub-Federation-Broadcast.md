@@ -11,10 +11,22 @@
 
 ---
 
+> **Message-naming note (2026-07-14).**  This HEP was written when the
+> channel-broadcast trigger was `CHANNEL_BROADCAST_REQ` and a separate
+> `CHANNEL_NOTIFY_REQ` carried role-sent channel events.  Two things changed:
+> `CHANNEL_BROADCAST_REQ` was **renamed** to `CHANNEL_BROADCAST_SEND_NOTIFY`
+> (HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY), and `CHANNEL_NOTIFY_REQ` was **retired**
+> (audit R3.6, 2026-05-17 — handler deleted; it now returns `UNKNOWN_MSG_TYPE`).
+> The relay is unchanged in design; its sole role-side trigger is now
+> `CHANNEL_BROADCAST_SEND_NOTIFY`, which the broker relays to peers as
+> `HUB_RELAY_MSG` and each peer delivers locally as `CHANNEL_EVENT_NOTIFY`.
+> Names below have been updated to match; see HEP-CORE-0047 for the registry
+> and HEP-CORE-0030 §9.1 for the channel-vs-band coexistence model.
+
 ## 1. Motivation
 
-The current framework's broadcast mechanism (`CHANNEL_NOTIFY_REQ`,
-`CHANNEL_BROADCAST_REQ` — HEP-CORE-0007 §12) operates within a **single hub**:
+The current framework's broadcast mechanism (`CHANNEL_BROADCAST_SEND_NOTIFY`
+— HEP-CORE-0007 §"Broker Notifications") operates within a **single hub**:
 a producer or consumer sends a notification; the broker relays it to all other
 members of that channel on the same hub. Cross-hub coordination today requires
 either:
@@ -47,8 +59,8 @@ infrastructure, not dynamic service discovery.
 
 ## 2. Design Principles
 
-1. **Ctrl-plane only**: Only broadcast notifications (`CHANNEL_NOTIFY_REQ`,
-   `CHANNEL_BROADCAST_REQ`) are relayed between hubs. The data path (SHM DataBlock,
+1. **Ctrl-plane only**: Only broadcast notifications
+   (`CHANNEL_BROADCAST_SEND_NOTIFY`) are relayed between hubs. The data path (SHM DataBlock,
    ZMQ virtual node) is not affected. Hubs do not relay slot data.
 
 2. **Static topology**: Hub peer relationships are declared in `hub.json` before
@@ -117,7 +129,7 @@ graph TD
         PA["Producer A\n(data writer)"]
         BA["Broker A\n(ctrl plane)"]
         PA -- "SHM slot writes" --> SHM["DataBlock / SHM"]
-        PA -- "CHANNEL_NOTIFY_REQ\nor CHANNEL_BROADCAST_REQ" --> BA
+        PA -- "CHANNEL_BROADCAST_SEND_NOTIFY" --> BA
     end
 
     subgraph "Hub B (federated)"
@@ -248,7 +260,7 @@ Frame: HUB_RELAY_MSG
   channel_name      string
   originator_uid    string   UID of the hub that originated the broadcast
   msg_id            string   "<originator_uid>:<sequence>" — dedup key
-  event             string   Original event string (from CHANNEL_NOTIFY_REQ)
+  event             string   Original event string (from CHANNEL_BROADCAST_SEND_NOTIFY)
   sender_uid        string   Role UID that sent the original notification
   payload           bytes    Original payload (if any)
 ```
@@ -299,7 +311,7 @@ sequenceDiagram
     HB->>HSB: on_hub_connected("HUB-A")
 ```
 
-### 6.2 Relay — CHANNEL_NOTIFY_REQ → HUB_RELAY_MSG
+### 6.2 Relay — CHANNEL_BROADCAST_SEND_NOTIFY → HUB_RELAY_MSG
 
 ```mermaid
 sequenceDiagram
@@ -311,7 +323,7 @@ sequenceDiagram
 
     Note over HA,HB: Hub B has connected to Hub A<br/>channel "lab.bridge.raw" is in relay list
 
-    C->>HA: CHANNEL_NOTIFY_REQ {channel, sender_uid, event, data}
+    C->>HA: CHANNEL_BROADCAST_SEND_NOTIFY {channel, sender_uid, event, data}
     HA->>PA: CHANNEL_EVENT_NOTIFY {event, sender_uid, data}<br/>(local delivery)
     HA->>HA: Is "lab.bridge.raw" in Hub B's relay_channels?  YES
     HA->>HB: HUB_RELAY_MSG {relay=true, msg_id="HUB-A:1",<br/>channel, event, sender_uid, data}
@@ -443,12 +455,14 @@ def on_hub_message(channel: str, payload: str, source_hub_uid: str, api):
 
 ```python
 # Broadcast to local subscribers + all federated hub peers on this channel:
-api.notify_channel("lab.bridge.status", "calibration", '{"value": 1.0}')
-# (uses existing CHANNEL_NOTIFY_REQ — broker adds relay transparently)
+api.broadcast_channel("lab.bridge.status", "calibration", '{"value": 1.0}')
+# (sends CHANNEL_BROADCAST_SEND_NOTIFY — broker adds relay transparently)
 
-# Hub-targeted message to a direct neighbor only:
-api.notify_hub("HUB-DEMOB-00000002", "ctrl.channel", '{"cmd": "ack"}')
-# → delivers to Hub B's on_hub_message() only; NOT to Hub B's local subscribers
+# Hub-targeted message to a direct neighbor only (HUB_TARGETED_MSG):
+# NOTE (2026-07-17): no script-level API currently sends HUB_TARGETED_MSG —
+# only the broker-side augment hook exists. This example is aspirational and
+# is flagged in MESSAGEHUB_TODO pending a decision on the script surface.
+# → would deliver to Hub B's on_hub_message() only; NOT to Hub B's local subscribers
 ```
 
 `api.notify_channel()` behavior is **unchanged for the local case**. The broker
@@ -793,7 +807,7 @@ the payload.
 |-------|-------|--------|-----------|
 | 1 | `hub.json` schema: `peers` array parsing in `HubConfig` | Done | `src/utils/config/hub_config.hpp/cpp` |
 | 2 | Broker outbound DEALER per peer; `HUB_PEER_HELLO` / ACK handshake | Done | `src/utils/ipc/broker_service.cpp` |
-| 3 | Broker relay: on `CHANNEL_NOTIFY_REQ/BROADCAST_REQ` → `HUB_RELAY_MSG` | Done | `src/utils/ipc/broker_service.cpp` |
+| 3 | Broker relay: on `CHANNEL_BROADCAST_SEND_NOTIFY` → `HUB_RELAY_MSG` (via `relay_notify_to_peers`) | Done | `src/utils/ipc/broker_service.cpp` |
 | 4 | Broker receive: accept `HUB_RELAY_MSG`, deliver locally, dedup by `msg_id` | Done | `src/utils/ipc/broker_service.cpp` |
 | 5 | `HUB_TARGETED_MSG` send/receive; `on_hub_message()` dispatch | Done (broker side); script-side awaits HEP-CORE-0033 §15 Phase 7-8 (ScriptEngine + HubAPI on `plh_hub`) | (legacy `src/hub_python/hub_script_api.*` deleted) |
 | 6 | HubScript Python hooks: `on_hub_connected/disconnected/message`, `api.notify_hub()` | Conceptual; script-side awaits HEP-CORE-0033 §15 Phase 7-8 | (legacy `src/hub_python/hub_script.*` deleted) |

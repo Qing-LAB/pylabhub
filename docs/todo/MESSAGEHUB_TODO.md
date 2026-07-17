@@ -207,11 +207,27 @@ Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
   (handler deleted audit R3.6; federation relay now via `HUB_RELAY_MSG` →
   `handle_hub_relay_msg:7377`, outbound `relay_notify_to_peers`).
 
-**Residual old-name occurrences (to be swept by the HEP-0047 rename-ledger +
-drift-test, NOT yet fixed):**
-- `HEP-CORE-0022` (federation) lines 17, 51 — old `CHANNEL_BROADCAST_REQ`.
-- `HEP-CORE-0033` (Hub Character) message catalog lines 1260, 3093, 3112.
-- `HEP-CORE-0015` (Processor) line 524; `HEP-CORE-0023` (Startup) line 713.
+**Residual `CHANNEL_BROADCAST_*` / `CHANNEL_NOTIFY_REQ` sweep — DONE 2026-07-17:**
+- `HEP-0022` (federation): added a message-naming note; swept all ~8 sites
+  (motivation, design principles, both Mermaid diagrams, relay frame, §6.2
+  heading, §8.2 example, impl table).  `CHANNEL_NOTIFY_REQ`→retired,
+  `CHANNEL_BROADCAST_REQ`→`CHANNEL_BROADCAST_SEND_NOTIFY`.
+- `HEP-0033` (Hub Character): F&F list + catalog rows swept
+  (`CHANNEL_NOTIFY_REQ` retired, `CHANNEL_BROADCAST_REQ`→`_SEND_NOTIFY`,
+  `CHANNEL_BROADCAST_NOTIFY`→`_DELIVER_NOTIFY`; also HEARTBEAT/BAND names in
+  the same tables).
+- `HEP-0015` line 524 (`_NOTIFY`→`_DELIVER_NOTIFY`); `HEP-0023` line 713
+  (`_REQ`→`_SEND_NOTIFY`).
+
+**New findings during the sweep (NOT yet fixed):**
+1. **Phantom script APIs in HEP-0022 §8.2** — `api.notify_channel` (real API is
+   `api.broadcast_channel`, fixed inline) and `api.notify_hub` (no script API
+   sends `HUB_TARGETED_MSG` — only a broker augment hook; left flagged in the
+   doc pending a decision on whether to add the script surface).
+2. **Wider rename residuals (separate sweep):** `HEARTBEAT_REQ`→`HEARTBEAT_NOTIFY`
+   still appears as current in ~10 HEPs (0002, 0007, 0017, 0018, 0019, 0021,
+   0023, 0030, 0036, 0046); `BAND_BROADCAST_REQ`→`BAND_BROADCAST_SEND_NOTIFY`
+   in 3 (0007, 0023, 0030).  Out of scope for the CHANNEL broadcast sweep.
 
 ### HEP-CORE-0047 — Messaging & Communication Master Reference
 

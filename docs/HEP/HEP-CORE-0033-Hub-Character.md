@@ -1255,13 +1255,14 @@ Request-reply:
   HUB_PEER_HELLO         (HUB_PEER_HELLO_ACK)
 
 Fire-and-forget:
-  HEARTBEAT_REQ,
+  HEARTBEAT_NOTIFY,
   CHECKSUM_ERROR_REPORT,
-  CHANNEL_NOTIFY_REQ, CHANNEL_BROADCAST_REQ,
-  BAND_BROADCAST_REQ,
+  CHANNEL_BROADCAST_SEND_NOTIFY,
+  BAND_BROADCAST_SEND_NOTIFY,
   HUB_PEER_BYE,
   HUB_RELAY_MSG (peer-DEALER inbound),
   HUB_TARGETED_MSG (peer-DEALER inbound)
+  (CHANNEL_NOTIFY_REQ retired — audit R3.6, 2026-05-17)
 
   Retired (M1.4, 2026-05-11): METRICS_REPORT_REQ — metrics piggyback
   on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
@@ -3089,19 +3090,19 @@ classes are also disjoint — no message dual-classifies.
 | `DISC_REQ` | A | Discover channel's connection info. |
 | `ENDPOINT_UPDATE_REQ` | A | Post-bind endpoint publish per **HEP-CORE-0021 §16** (adopted 2026-07-08; closes task #94).  Producer sends after S3 bind resolves (may involve port 0 → OS-assigned).  Broker transitions `ProducerEntry.zmq_node_endpoint_resolved` to true; consumer admission gated on this per §16.7.  Idempotent for fixed-port producers.  The pre-REG bind variant retired 2026-06-12 stays retired — see HEP-CORE-0021 §16.2. |
 | `SCHEMA_REQ` | A (owner-bound) | Routes via the connection where the owning record lives — see HEP-CORE-0034 §10.3. |
-| `CHANNEL_NOTIFY_REQ` | A | Fire-and-forget channel-targeted event. |
-| `CHANNEL_BROADCAST_REQ` | A | Fan-out broadcast on a channel. |
+| ~~`CHANNEL_NOTIFY_REQ`~~ | — | **RETIRED** (audit R3.6, 2026-05-17).  Was a fire-and-forget channel-targeted event; role-side surface dead, handler deleted → `UNKNOWN_MSG_TYPE`. |
+| `CHANNEL_BROADCAST_SEND_NOTIFY` (was `CHANNEL_BROADCAST_REQ`) | A | Fan-out broadcast on a channel; broker delivers `CHANNEL_BROADCAST_DELIVER_NOTIFY` to members. |
 | `CHECKSUM_ERROR_REPORT` | A | Consumer-detected; routes by channel. |
-| `HEARTBEAT_REQ` (per-presence — HEP-CORE-0019 §2.3) | A | Refreshes the `(uid, role_type)` presence row in `RoleEntry` (§2.1 of HEP-CORE-0023) and writes the matching `MetricsStore` row.  Each heartbeat refreshes only its own presence row — channel observability is derived from the producer-presence's state. |
+| `HEARTBEAT_NOTIFY` (was `HEARTBEAT_REQ`; per-presence — HEP-CORE-0019 §2.3) | A | Refreshes the `(uid, role_type)` presence row in `RoleEntry` (§2.1 of HEP-CORE-0023) and writes the matching `MetricsStore` row.  Each heartbeat refreshes only its own presence row — channel observability is derived from the producer-presence's state. |
 | `GET_CHANNEL_AUTH_REQ` | A | Producer pulls current consumer allowlist for a channel it produces; triggered by CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Broker checks caller is registered producer; reply carries `allowlist[]` (HEP-CORE-0036 §6.5 notify-then-pull). |
 | ~~`GET_CHANNEL_PRODUCERS_REQ`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Under the binding/dialing model (tech draft §5.8), consumers no longer maintain a dial-target producer set: fan-in consumers are BINDING (producers dial in; consumer's ZAP allowlist is synced via `CHANNEL_AUTH_CHANGED_NOTIFY` with the new `phase` field); fan-out and 1-to-1 consumers dial one endpoint from `CONSUMER_REG_ACK.data_endpoint`.  See HEP-CORE-0007 §12.3 (retirement schema) + HEP-CORE-0017 §3.3 (new architecture) + §9.2 code-catalog retirement block below for the full 2026-07-08 topology-migration retirement set. |
-| `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_REQ` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
+| `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` / `BAND_BROADCAST_SEND_NOTIFY` / `BAND_MEMBERS_REQ` | D | Band lives on the hub the role chooses at join time. |
 | `ROLE_PRESENCE_REQ` | B | "Is uid X alive?" — fall-through. |
 | `ROLE_INFO_REQ` | B | Inbox-discovery — fall-through (HEP-CORE-0027 §4.2). |
 | `CHANNEL_LIST_REQ` | C | This-hub-only channel inventory. |
 | `METRICS_REQ` | C | This-hub-only `MetricsStore` query (HEP-CORE-0019 §4.2). |
 | `SHM_BLOCK_QUERY_REQ` | C | This-hub-only diagnostic. |
-| ~~`METRICS_REPORT_REQ`~~ | — | **RETIRED 2026-05-11** (Wave M1.4).  Wire handler + role-side sender deleted; metrics piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.  Old clients emitting this message receive UNKNOWN_MSG_TYPE; `broker_proto_major` bumped 1 → 2. |
+| ~~`METRICS_REPORT_REQ`~~ | — | **RETIRED 2026-05-11** (Wave M1.4).  Wire handler + role-side sender deleted; metrics piggyback on HEARTBEAT_NOTIFY per HEP-CORE-0019 §2.3 Phase 6.  Old clients emitting this message receive UNKNOWN_MSG_TYPE; `broker_proto_major` bumped 1 → 2. |
 
 #### Inbound: hub → role
 
@@ -3109,7 +3110,7 @@ classes are also disjoint — no message dual-classifies.
 |---|---|---|
 | `CHANNEL_CLOSING_NOTIFY` | A | To every member; receiver is the BRC connected to the channel's hub. |
 | `CHANNEL_EVENT_NOTIFY` | A | Producer of channel (or all members for broadcast events). |
-| `CHANNEL_BROADCAST_NOTIFY` | A | Fan-out result of `CHANNEL_BROADCAST_REQ`. |
+| `CHANNEL_BROADCAST_DELIVER_NOTIFY` (was `CHANNEL_BROADCAST_NOTIFY`) | A | Fan-out result of `CHANNEL_BROADCAST_SEND_NOTIFY`. |
 | `CHANNEL_ERROR_NOTIFY` | A | Schema mismatch, etc. |
 | `CONSUMER_DIED_NOTIFY` | A | Producer of channel (when broker detects a consumer process is dead). |
 | `CHANNEL_AUTH_CHANGED_NOTIFY` | A | To the **BINDING side** of the channel (fan-in: consumer; fan-out / 1-to-1: producer).  Direction inverted 2026-07-08 (topology migration); pre-migration was "to every kLive producer."  Gains three REQUIRED payload fields: `role_uid`, `role_type`, `phase` ("admitted" \| "live" \| "left").  Doorbell that triggers `GET_CHANNEL_AUTH_REQ` pull ONLY on `phase=admitted` and `phase=left` (allowlist-changing); `phase=live` is a lightweight local update to the binding side's `live_peers` map that feeds `api.consumer_count()` / `api.producer_count()` per HEP-CORE-0028.  See HEP-CORE-0007 §12.5 for the new payload schema and HEP-CORE-0036 §6.5 for the semantics.  Old `reason` field ({consumer_joined, consumer_left, consumer_timeout, federation_peer_death}) is retired; the semantics collapse into phase + role_type. |
