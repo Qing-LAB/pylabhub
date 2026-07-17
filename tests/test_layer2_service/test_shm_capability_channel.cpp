@@ -53,6 +53,7 @@ namespace fs = std::filesystem;
 using pylabhub::utils::security::IShmCapabilityConsumer;
 using pylabhub::utils::security::IShmCapabilityProducer;
 using pylabhub::utils::security::attach_shm_capability_consumer;
+using pylabhub::utils::security::attach_shm_capability_consumer_from_socket;
 using pylabhub::utils::security::create_shm_capability_producer;
 
 // ── Compile-time interface pins ─────────────────────────────────────────
@@ -425,4 +426,73 @@ TEST_F(ShmCapabilityChannelTest, BindCleansUpStaleSocketFile)
         << "bind_endpoint must unlink + rebind when the path exists "
            "but no listener is there (stale socket from prior crash; "
            "HEP-CORE-0041 1i-prod-hardening H3d ECONNREFUSED branch).";
+}
+
+// MSG_CTRUNC guard (coverage-audit gap, 2026-07-17): the consumer recv path
+// MUST fail closed when the kernel truncates the SCM_RIGHTS ancillary data —
+// e.g. a malicious/misbehaving producer that attaches MORE than one fd.  Linux
+// installs only the first fd, discards the rest, and sets MSG_CTRUNC; the guard
+// (`shm_capability_channel.cpp`, REVIEW-C #276) rejects the anomalous message
+// rather than silently accepting the first fd of it.  Driven directly through
+// the from-socket consumer factory with a hand-crafted 2-fd SCM_RIGHTS message.
+TEST_F(ShmCapabilityChannelTest, RejectsMultiFdTruncatedScmRights)
+{
+    int sv[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0)
+        << std::strerror(errno);
+
+    // Attach FOUR fds.  The consumer's 1-fd control buffer is CMSG_SPACE(int)
+    // = 24 bytes on LP64, which (after the 16-byte cmsghdr) actually fits TWO
+    // fds — so a 2-fd message is caught by the strict cmsg_len check, not
+    // MSG_CTRUNC.  Four fds overflow that capacity: the kernel installs the
+    // first two, discards the rest, and sets MSG_CTRUNC — exercising the guard.
+    constexpr int kNumFds = 4;
+    int           fds[kNumFds];
+    for (int i = 0; i < kNumFds; ++i)
+    {
+        fds[i] = ::dup(STDERR_FILENO);
+        ASSERT_GE(fds[i], 0);
+    }
+
+    char  iov_byte = 0;
+    iovec iov{&iov_byte, 1};
+    union
+    {
+        char    buf[CMSG_SPACE(kNumFds * sizeof(int))];
+        cmsghdr align;
+    } u{};
+    std::memset(u.buf, 0, sizeof(u.buf));
+    msghdr msg{};
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = u.buf;
+    msg.msg_controllen = sizeof(u.buf);
+    cmsghdr *cmsg    = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type  = SCM_RIGHTS;
+    cmsg->cmsg_len   = CMSG_LEN(kNumFds * sizeof(int));
+    std::memcpy(CMSG_DATA(cmsg), fds, kNumFds * sizeof(int));
+    ASSERT_EQ(::sendmsg(sv[0], &msg, 0), 1) << std::strerror(errno);
+    for (int i = 0; i < kNumFds; ++i)
+        ::close(fds[i]);
+
+    // The factory takes ownership of sv[1] (closes it on the throw path via
+    // its RAII SockCloser), runs recvmsg, and must reject on MSG_CTRUNC before
+    // extracting any fd.
+    std::string err;
+    try
+    {
+        (void)attach_shm_capability_consumer_from_socket(
+            sv[1], std::chrono::milliseconds{2000});
+    }
+    catch (const std::exception &e)
+    {
+        err = e.what();
+    }
+    ::close(sv[0]);
+
+    EXPECT_NE(err.find("MSG_CTRUNC"), std::string::npos)
+        << "multi-fd / truncated SCM_RIGHTS must be rejected with the "
+           "MSG_CTRUNC guard; got: "
+        << err;
 }

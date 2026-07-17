@@ -894,3 +894,91 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
     if (connected_fd && *connected_fd >= 0)
         ::close(*connected_fd);
 }
+
+// Frame-3 verification (coverage-audit gap, 2026-07-17): a producer that
+// DECRYPTS Frame 2 correctly but advertises the WRONG pubkey in Frame 3 must
+// be rejected with the `attach_producer_not_authenticated` marker
+// (attach_protocol.cpp Frame-3 producer-pubkey mismatch branch).  The sibling
+// `MutualAuth_RejectsWrongProducerPubkey` deliberately routes AROUND this
+// branch — it fails earlier at Frame 2 (the squatter can't decrypt) and
+// asserts only a non-empty error, never the marker.  This test reaches Frame 3
+// deterministically with a realistic adversary: a misconfigured / lying
+// producer whose KeyStore identity stores real seckey A but advertises a
+// different pubkey B.  It decrypts the consumer's Frame 2 (encrypted to A) so
+// the handshake reaches Frame 3, but its Frame-3 `producer_pubkey_z85` (B) !=
+// the consumer's expectation (A) → rejected.
+TEST_F(AttachProtocolTest, MutualAuth_RejectsFrame3PubkeyMismatch)
+{
+    auto gen = []() {
+        std::array<unsigned char, kRawKeyBytes> pub{}, sec{};
+        ::crypto_box_keypair(pub.data(), sec.data());
+        char pz[41] = {}, sz[41] = {};
+        if (::zmq_z85_encode(pz, pub.data(), kRawKeyBytes) == nullptr ||
+            ::zmq_z85_encode(sz, sec.data(), kRawKeyBytes) == nullptr)
+            throw std::runtime_error("gen: zmq_z85_encode failed");
+        return std::pair<std::string, std::string>(std::string(pz, 40),
+                                                   std::string(sz, 40));
+    };
+    const auto keyA = gen(); // pubA matches secA (the real decrypt key)
+    const auto keyB = gen(); // pubB is the WRONG key advertised in Frame 3
+    const std::string &pubA = keyA.first;
+    const std::string &secA = keyA.second;
+    const std::string &pubB = keyB.first;
+
+    // Malicious producer identity: real seckey A, but advertised pubkey B.
+    const std::string mal_name = "attack.frame3.mismatch";
+    secure().keys().add_identity_from_z85(mal_name, pubB, secA);
+    seeded_names_.push_back(mal_name);
+
+    const auto cons = MakeKeypair("cons");
+    const auto path = unique_socket_path("frame3_mismatch");
+
+    auto transport = create_shm_capability_producer(4096);
+    ASSERT_TRUE(transport->bind_endpoint(path));
+
+    // Acceptor uses the malicious identity: decrypts Frame 2 with secA,
+    // advertises pubB in Frame 3.
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), mal_name};
+
+    ConsumerAuthMaterial cons_auth{"consumer.frame3", cons.pub_z85, cons.name};
+
+    std::string cons_error;
+    std::thread cons_thread{[&] {
+        try
+        {
+            // Consumer EXPECTS pubA → encrypts Frame 2 to pubA (producer
+            // decrypts with secA) → reaches Frame 3 → producer advertises
+            // pubB → mismatch.
+            (void)initiate_consumer_handshake(path, cons_auth, pubA,
+                                               std::chrono::milliseconds{2000},
+                                               /*require_mutual_auth=*/true);
+        }
+        catch (const std::exception &e)
+        {
+            cons_error = e.what();
+        }
+        catch (...)
+        {
+            cons_error = "<non-std::exception>";
+        }
+    }};
+
+    std::exception_ptr acc_exc;
+    try
+    {
+        (void)acceptor.accept_one(std::chrono::milliseconds{2000});
+    }
+    catch (...)
+    {
+        acc_exc = std::current_exception();
+    }
+    cons_thread.join();
+
+    ASSERT_FALSE(cons_error.empty())
+        << "consumer must reject a Frame-3 pubkey mismatch, not succeed";
+    EXPECT_NE(cons_error.find("attach_producer_not_authenticated"),
+              std::string::npos)
+        << "Frame-3 pubkey mismatch MUST surface the "
+           "attach_producer_not_authenticated marker; got: "
+        << cons_error;
+}
