@@ -750,7 +750,7 @@ All ZMQ control plane messages use JSON encoding. User-supplied data follows the
    the receiver decodes it — that's the application's responsibility, not the framework's
 
 This applies to:
-- `api.band_broadcast(band, body)` → `"data"` field in BAND_BROADCAST_REQ
+- `api.band_broadcast(band, body)` → `"data"` field in BAND_BROADCAST_SEND_NOTIFY
 - Band messaging (HEP-CORE-0030) — all band messages use JSON bodies
 
 ### 12.1 Message Framing
@@ -777,9 +777,9 @@ Messages are grouped into four categories based on their flow pattern:
 | Category | Pattern | Examples |
 |----------|---------|---------|
 | **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, GET_CHANNEL_AUTH_REQ/ACK, ~~GET_CHANNEL_PRODUCERS_REQ/ACK~~ (**RETIRED 2026-07-08** per topology migration — REG_REQ path subsumes; see the amendment banner at §12), ENDPOINT_UPDATE_REQ/ACK (post-bind endpoint publish — see HEP-CORE-0021 §16.5) |
-| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_REQ, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_REQ |
-| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
-| **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_REQ, BAND_MEMBERS_REQ/ACK |
+| **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_NOTIFY, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_SEND_NOTIFY |
+| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_DELIVER_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
+| **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_SEND_NOTIFY, BAND_MEMBERS_REQ/ACK |
 
 ### 12.2.1 REQ shape contract — Sync vs Fire-and-Forget (added 2026-05-21)
 
@@ -1095,7 +1095,7 @@ Payload:
   reason                string   One of:
                                    "awaiting_first_heartbeat" — producer-presence
                                        Connected but `first_heartbeat_seen=false`
-                                       (REG_REQ accepted but no HEARTBEAT_REQ yet).
+                                       (REG_REQ accepted but no HEARTBEAT_NOTIFY yet).
                                    "heartbeat_stalled" — producer-presence in
                                        state Pending (heartbeats stopped past the
                                        ready_timeout but recoverable; see
@@ -1431,7 +1431,7 @@ Returns empty channels if no metrics have been reported yet.
 
 These require no response from the broker.
 
-#### HEARTBEAT_REQ — Per-Presence Liveness + Metrics
+#### HEARTBEAT_NOTIFY — Per-Presence Liveness + Metrics
 
 ```
 Direction:  Producer / Consumer / Processor → Broker
@@ -1491,7 +1491,7 @@ Payload:
 
 #### ~~CHANNEL_NOTIFY_REQ~~ — **REMOVED** (superseded by HEP-CORE-0030)
 
-Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
+Replaced by `BAND_BROADCAST_SEND_NOTIFY` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.2 for the replacement.
 
 #### CHANNEL_BROADCAST_REQ → renamed `CHANNEL_BROADCAST_SEND_NOTIFY` (live)
@@ -1516,7 +1516,7 @@ Status:     RETIRED — message type removed from the protocol entirely.
 
 Wave M1.4 (commit see git log Wave M1.4 — 2026-05-11) retired this
 message in full.  Consumers send their own per-presence
-HEARTBEAT_REQ with role_type="consumer"; metrics piggyback on that
+HEARTBEAT_NOTIFY with role_type="consumer"; metrics piggyback on that
 heartbeat per HEP-CORE-0019 §2.3 Phase 6.  No code path inside the
 broker, role hosts, or role API still references METRICS_REPORT_REQ.
 ```
@@ -2147,7 +2147,7 @@ Replacement mechanisms:
      │                    │                    │
      │── REG_REQ ────────>│                    │
      │<── REG_ACK ────────│                    │
-     │── HEARTBEAT_REQ ──>│                    │
+     │── HEARTBEAT_NOTIFY ──>│                    │
      │  (channel: Ready)  │                    │
      │                    │                    │
      │                    │<── DISC_REQ ───────│
@@ -2274,7 +2274,7 @@ through the `msgs` parameter.
 | `channel_closing` | Broker CHANNEL_CLOSING_NOTIFY | All roles | `event`, `channel_name`, `reason`, `source_hub_uid` |
 | `role_registered` | Broker ROLE_REGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
 | `role_deregistered` | Broker ROLE_DEREGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `reason`, `source_hub_uid` |
-| `band_broadcast` | Broker BAND_BROADCAST_NOTIFY | Band members | `event`, `band`, `sender_uid`, `body`, `source_hub_uid` |
+| `band_broadcast` | Broker BAND_BROADCAST_DELIVER_NOTIFY | Band members | `event`, `band`, `sender_uid`, `body`, `source_hub_uid` |
 | `band_join` | Broker BAND_JOIN_NOTIFY | Band members | `event`, `band`, `role_uid`, `source_hub_uid` |
 | `band_leave` | Broker BAND_LEAVE_NOTIFY | Band members | `event`, `band`, `role_uid`, `source_hub_uid` |
 | _(system event)_ | Broker CHANNEL_ERROR_NOTIFY | Affected role | `event`=_error string_, `detail`=_same_, `channel_name`, + context, `source_hub_uid` |
@@ -2300,7 +2300,7 @@ the GIL held.
 
 **Notification dispatch:**
 
-All broker notifications (CHANNEL_ERROR_NOTIFY, BAND_BROADCAST_NOTIFY, BAND_JOIN_NOTIFY,
+All broker notifications (CHANNEL_ERROR_NOTIFY, BAND_BROADCAST_DELIVER_NOTIFY, BAND_JOIN_NOTIFY,
 BAND_LEAVE_NOTIFY, CONSUMER_DIED_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY)
 are received by `BrokerRequestComm`'s notification callback and dispatched to
 `RoleHostCore::enqueue_message()`. The script handler on the loop thread drains the queue

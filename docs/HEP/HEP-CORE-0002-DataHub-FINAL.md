@@ -1916,7 +1916,7 @@ broker is used only for channel registration and consumer discovery.
 | CONSUMER_DEREG_REQ / _ACK | Consumer → Broker | Req/Resp | Deregister consumer from channel |
 | DEREG_REQ / DEREG_ACK | Producer → Broker | Req/Resp | Unregister channel; triggers CLOSING_NOTIFY |
 | SCHEMA_REQ / SCHEMA_ACK | Any → Broker | Req/Resp | Query channel schema info (HEP-0016) |
-| HEARTBEAT_REQ | Per presence (producer / consumer / processor) → Broker | Fire&Forget | Per-presence liveness + optional metrics; refreshes RoleEntry presence row + advances Connected ↔ Pending FSM (HEP-CORE-0019 §2.3 / Phase 6, HEP-CORE-0023 §2.1) |
+| HEARTBEAT_NOTIFY | Per presence (producer / consumer / processor) → Broker | Fire&Forget | Per-presence liveness + optional metrics; refreshes RoleEntry presence row + advances Connected ↔ Pending FSM (HEP-CORE-0019 §2.3 / Phase 6, HEP-CORE-0023 §2.1) |
 | CHECKSUM_ERROR_REPORT | Any → Broker | Fire&Forget | Report slot integrity error (Cat 2) |
 | CHANNEL_NOTIFY_REQ | Any → Broker | Fire&Forget | Relay application signal to target channel producer |
 | CHANNEL_CLOSING_NOTIFY | Broker → All | Push | Channel shutting down (triggers graceful exit) |
@@ -1981,7 +1981,7 @@ Frame 3: JSON payload
 | `CONSUMER_DEREG_REQ` | Consumer → Broker | `channel_name`, `consumer_uid` |
 | `DEREG_REQ` | Producer → Broker | `channel_name`, `producer_pid` |
 | `DEREG_ACK` | Broker → Producer | `status` |
-| `HEARTBEAT_REQ` | Producer → Broker | `channel_name`, `producer_pid` |
+| `HEARTBEAT_NOTIFY` | Producer → Broker | `channel_name`, `producer_pid` |
 | `SCHEMA_REQ` | Any → Broker | `channel_name` |
 | `SCHEMA_ACK` | Broker → Any | `status`, `schema_id`, `blds`, `schema_hash` |
 | `CHECKSUM_ERROR_REPORT` | Any → Broker | `channel_name`, `slot_index`, `error`, `reporter_pid` |
@@ -3159,7 +3159,7 @@ control protocol, or embedding rate policy inside the transport).
 | **Band plane** | JSON coordination messages (pub/sub) | `BrokerRequestComm` → broker fan-out via `BandRegistry` | `band_join` / `band_broadcast` (HEP-CORE-0030) |
 | **Inbox plane** | Schema-enforced P2P messages | `InboxQueue` (ROUTER) + `InboxClient` (DEALER) | `open_inbox` / `send` (HEP-CORE-0027) |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopTimingPolicy` | HEP-CORE-0008 |
-| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT_REQ (every presence — producer + consumer); written to `RolePresence::latest_metrics` per-presence row.  `METRICS_REPORT_REQ` retired in Wave M1.4 (2026-05-11). | HEP-CORE-0019 |
+| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on HEARTBEAT_NOTIFY (every presence — producer + consumer); written to `RolePresence::latest_metrics` per-presence row.  `METRICS_REPORT_REQ` retired in Wave M1.4 (2026-05-11). | HEP-CORE-0019 |
 
 The planes are **orthogonal**: modifying the data transport (SHM → ZMQ) has no
 effect on the control, band, or inbox planes. Changing `LoopTimingPolicy` has

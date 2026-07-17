@@ -1168,7 +1168,7 @@ struct HubState
 | Entry | Updated by | Holds |
 |---|---|---|
 | `ChannelEntry` | REG_REQ / CONSUMER_REG_REQ / CONSUMER_DEREG_REQ / ENDPOINT_UPDATE_REQ / CHANNEL_CLOSING / broker-internal | **Channel-wide invariants only**: name, schema_owner/schema_id/schema_hash/blds/packing (HEP-CORE-0023 §2.1.1 — all producers must agree), data_transport, channel_pattern, has_shared_memory, shm_name, created_at.  **Amendment 2026-07-08 (topology migration)**: gains four new fields — `topology` (ChannelTopology enum: FanIn / FanOut / OneToOne, declared at channel creation and immutable — tech draft §4.1), `data_endpoint` (`std::optional<std::string>` owned by the BINDING side per topology — `has_value()` indicates the binding side has published its endpoint via `ENDPOINT_UPDATE_REQ` per HEP-CORE-0021 §16.4), `channel_version` (uint64, bumped on allowlist changes), and `confirmed_version` (scalar per channel — collapsed from the pre-migration `[K][P]` per-producer map since the binding side is unique per channel).  **Per-party rows**: `producers[]` (vector of `ProducerEntry`; 1..N per HEP-CORE-0023 §2.1.1), `consumers[]` (vector of `ConsumerEntry`).  **Per-producer attributes live on `ProducerEntry`**, NOT at channel scope (Wave M2.5): `metadata`, `inbox_*` (HEP-CORE-0027), plus identity (`role_uid` / `role_name` / `producer_pid` / `producer_hostname` / `zmq_identity`).  The pre-migration `ProducerEntry::zmq_node_endpoint` field retires 2026-07-08 — its role is subsumed by `ChannelEntry::data_endpoint` (single per-channel endpoint owned by whichever side is BINDING under the declared topology).  DISC_REQ_ACK aggregates per-producer metadata into a tree keyed by `role_uid` (HEP-CORE-0007 §12.4); post-migration DISC_REQ_ACK carries the scalar `data_endpoint` instead of per-producer endpoints.  **Does NOT store FSM state** — both channel **observability** (HEP-CORE-0023 §2.2) and channel **existence** (HEP-CORE-0023 §2.1.1) are derived queries over the producer-presences across roles.  Channel teardown is atomic on the BINDING side's transition to Disconnected (generalized from the pre-migration "last producer" rule — see HEP-CORE-0023 §2.1.1); no separate channel FSM.  Fields with non-trivial invariants (idempotent endpoint set; monotonic version writes) are exposed via member functions (`set_data_endpoint`, `bump_channel_version`, `set_confirmed_version`, `add_producer` / `remove_producer` for the vector's cardinality boundary); the struct's own fields are public and mutated by `HubState`'s admission machinery under its writer lock — no compiler-enforced encapsulation, but a single-mutator convention (only `HubState` mutates; the broker calls only the typed capability ops). |
-| `RoleEntry` | REG / per-presence HEARTBEAT_REQ / DISC / role-side timeout | uid, name, role_tag, first_seen, **`presences[]`** — one row per `(channel, role_type)` carrying the FSM `state` (Connected / Pending / Disconnected per HEP-CORE-0023 §2.1), `last_heartbeat`, `state_since`, `latest_metrics`, `metrics_collected_at`.  Each heartbeat refreshes only its matching presence row.  `MetricsStore` is keyed `(channel_name, uid, role_type)` — see §18.4. |
+| `RoleEntry` | REG / per-presence HEARTBEAT_NOTIFY / DISC / role-side timeout | uid, name, role_tag, first_seen, **`presences[]`** — one row per `(channel, role_type)` carrying the FSM `state` (Connected / Pending / Disconnected per HEP-CORE-0023 §2.1), `last_heartbeat`, `state_since`, `latest_metrics`, `metrics_collected_at`.  Each heartbeat refreshes only its matching presence row.  `MetricsStore` is keyed `(channel_name, uid, role_type)` — see §18.4. |
 | `BandEntry` | BAND_JOIN / BAND_LEAVE | name, members[], last_activity |
 | `PeerEntry` | HUB_PEER_HELLO / HUB_PEER_BYE / federation heartbeat | uid, endpoint, state, last_seen |
 | `ShmBlockRef` | channel registration with SHM transport | channel name, block path; metrics collected via `collect_shm_info(channel)` at query time |
@@ -1265,7 +1265,7 @@ Fire-and-forget:
   (CHANNEL_NOTIFY_REQ retired — audit R3.6, 2026-05-17)
 
   Retired (M1.4, 2026-05-11): METRICS_REPORT_REQ — metrics piggyback
-  on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
+  on HEARTBEAT_NOTIFY per HEP-CORE-0019 §2.3 Phase 6.
 
   Un-retired (2026-07-08): ENDPOINT_UPDATE_REQ — post-bind
   endpoint publish per HEP-CORE-0021 §16 (adopted 2026-07-08,
@@ -1454,7 +1454,7 @@ This contract is exercised in:
 
 ### 10.1 Ingress — role→hub push only (post-Wave M1.4)
 
-- `HEARTBEAT_REQ` with optional `metrics` field — the SOLE ingress path.
+- `HEARTBEAT_NOTIFY` with optional `metrics` field — the SOLE ingress path.
   Every presence (producer + consumer) emits its own heartbeat with
   `role_type` distinguishing the row.  Heartbeat tick is iteration-
   gated for producers and processors; consumers use the same tick
@@ -1472,7 +1472,7 @@ sequenceDiagram
     participant State as HubState
 
     loop Heartbeat tick (one per presence, iteration-gated)
-        Role->>Broker: HEARTBEAT_REQ{channel, uid, role_type, metrics}
+        Role->>Broker: HEARTBEAT_NOTIFY{channel, uid, role_type, metrics}
         Broker->>State: _on_heartbeat(channel, uid, role_type, when, metrics)
         Note over State: writes RolePresence.latest_metrics
     end
@@ -2615,9 +2615,9 @@ uniformity.
 
 ## 13. Protocol — additions / unchanged
 
-- **Role→broker protocol**: REG_REQ, DISC_REQ, HEARTBEAT_REQ, notifies,
+- **Role→broker protocol**: REG_REQ, DISC_REQ, HEARTBEAT_NOTIFY, notifies,
   etc.  Wave M1.4 (2026-05-11) retired METRICS_REPORT_REQ; metrics
-  piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.  This
+  piggyback on HEARTBEAT_NOTIFY per HEP-CORE-0019 §2.3 Phase 6.  This
   was a wire-protocol break — `broker_proto_major` bumped 1 → 2.
 - **Role-side headers, config, lifecycle**: unchanged.
 - **New admin RPC on the admin socket**: methods above (§11).
@@ -3116,7 +3116,7 @@ classes are also disjoint — no message dual-classifies.
 | `CHANNEL_AUTH_CHANGED_NOTIFY` | A | To the **BINDING side** of the channel (fan-in: consumer; fan-out / 1-to-1: producer).  Direction inverted 2026-07-08 (topology migration); pre-migration was "to every kLive producer."  Gains three REQUIRED payload fields: `role_uid`, `role_type`, `phase` ("admitted" \| "live" \| "left").  Doorbell that triggers `GET_CHANNEL_AUTH_REQ` pull ONLY on `phase=admitted` and `phase=left` (allowlist-changing); `phase=live` is a lightweight local update to the binding side's `live_peers` map that feeds `api.consumer_count()` / `api.producer_count()` per HEP-CORE-0028.  See HEP-CORE-0007 §12.5 for the new payload schema and HEP-CORE-0036 §6.5 for the semantics.  Old `reason` field ({consumer_joined, consumer_left, consumer_timeout, federation_peer_death}) is retired; the semantics collapse into phase + role_type. |
 | ~~`CHANNEL_PRODUCERS_CHANGED_NOTIFY`~~ | — | **RETIRED 2026-07-08 (topology migration)**.  Symmetric to the retirement of `GET_CHANNEL_PRODUCERS_REQ` above.  Under the binding/dialing model, the producer_joined / producer_left semantics collapse into `CHANNEL_AUTH_CHANGED_NOTIFY(phase=..., role_type="producer")` sent to the fan-in consumer (binding side).  See HEP-CORE-0007 §12.5 (retirement schema) + §9.2 code-catalog retirement block for the full 2026-07-08 topology-migration retirement set.  Historical payload: {channel_name, reason} where reason ∈ {producer_joined, producer_left, heartbeat_timeout, process_dead}. |
 | ~~`FORCE_SHUTDOWN`~~ | — | **Removed 2026-05-07** — the prior design used this to force-close lingering consumers after a `Closing` grace window expired; that whole grace path was removed when the channel-FSM was retired (HEP-CORE-0023 §2.1).  Channel teardown is now atomic on producer-presence Disconnected; consumers learn via `CHANNEL_CLOSING_NOTIFY` (best-effort) and any subsequent `DISC_REQ` returns `CHANNEL_NOT_FOUND`. |
-| `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_NOTIFY` | D | Band members. |
+| `BAND_JOIN_NOTIFY` / `BAND_LEAVE_NOTIFY` / `BAND_BROADCAST_DELIVER_NOTIFY` | D | Band members. |
 
 (`HUB_TARGETED_MSG`, `HUB_RELAY_MSG`, `HUB_PEER_HELLO`, `HUB_PEER_BYE`
 are federation-internal — hub-to-hub only — and not part of the
@@ -3153,7 +3153,7 @@ it.
 ### 18.4 Broker-side handling implications
 
 For Class A messages that carry a `(uid, role_type)` tuple in the
-payload (notably `HEARTBEAT_REQ` per HEP-CORE-0019 Phase 6), the
+payload (notably `HEARTBEAT_NOTIFY` per HEP-CORE-0019 Phase 6), the
 broker handler looks up the matching presence row in
 `RoleEntry(uid)`, refreshes that presence's `last_heartbeat` and
 advances its Connected/Pending/Disconnected FSM, and writes
@@ -3197,7 +3197,7 @@ Three concrete payoffs:
 ### 18.6 Cross-references
 
 - HEP-CORE-0019 §2.3 — Phase 6 per-presence heartbeats: the
-  HEARTBEAT_REQ wire format that makes per-presence keying possible.
+  HEARTBEAT_NOTIFY wire format that makes per-presence keying possible.
 - HEP-CORE-0019 §4.2 — METRICS_REQ / METRICS_ACK: the canonical
   Class C example.
 - HEP-CORE-0023 §2.5.2 — per-presence heartbeat contract from the
@@ -3297,7 +3297,7 @@ At startup, the role's `RoleHandler` walks the presence list and:
    `CONSUMER_REG_REQ` for consumer-kind) — including the inbox
    metadata block (HEP-CORE-0027 §4.1).
 3. **For each presence**: install a periodic heartbeat tick on its
-   connection, emitting `HEARTBEAT_REQ` with `(channel, uid,
+   connection, emitting `HEARTBEAT_NOTIFY` with `(channel, uid,
    role_type)` per HEP-CORE-0019 §2.3.
 
 Heartbeat counts per cycle:
@@ -3434,7 +3434,7 @@ Wave B shipped 2026-05-26 (Wave-B M9, task #72).  Current file map:
 - §18 — Broker message routing classes (the four-class taxonomy this
   section's `RoleHandler` dispatches against).
 - HEP-CORE-0019 §2 + §4.1 — Phase 6 per-presence heartbeats (design
-  principles + `HEARTBEAT_REQ` wire format including
+  principles + `HEARTBEAT_NOTIFY` wire format including
   `(uid, role_type)`).
 - HEP-CORE-0023 §2.1, §2.5.2 — channel-FSM is producer-only;
   per-presence heartbeat contract.
@@ -3628,7 +3628,7 @@ present (self-describing), else falls back to `[tag] name`.
    and `role_name` (when non-empty) at handler entry, BEFORE any
    HubState op.  An empty or malformed identifier returns
    `INVALID_REQUEST` with `LOGGER_WARN`; fire-and-forget messages
-   (HEARTBEAT_REQ, BAND_BROADCAST_REQ) are dropped with WARN log
+   (HEARTBEAT_NOTIFY, BAND_BROADCAST_SEND_NOTIFY) are dropped with WARN log
    instead.  In addition, each gate constrains the role-tag set
    embedded in the uid:
 
@@ -3636,7 +3636,7 @@ present (self-describing), else falls back to `[tag] name`.
    |---|---|
    | `REG_REQ`, `DEREG_REQ` | `{prod, proc}` |
    | `CONSUMER_REG_REQ`, `CONSUMER_DEREG_REQ` | `{cons, proc}` |
-   | `HEARTBEAT_REQ` | derived from `role_type` field |
+   | `HEARTBEAT_NOTIFY` | derived from `role_type` field |
    | `ROLE_PRESENCE_REQ`, `ROLE_INFO_REQ`, `BAND_*_REQ` | `{prod, cons, proc}` |
 
    Wrong-side tags return `INVALID_ROLE_TAG`.  Processor roles

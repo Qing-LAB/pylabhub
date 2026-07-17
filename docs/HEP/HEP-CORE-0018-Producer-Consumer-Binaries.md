@@ -690,7 +690,7 @@ interpreter thread (PythonScriptHost.thread_fn_):
 
 broker_thread_:
   REG_REQ → await REG_ACK (SHM name + broker config)
-  heartbeat loop (sends HEARTBEAT_REQ when iteration_count_ advances)
+  heartbeat loop (sends HEARTBEAT_NOTIFY when iteration_count_ advances)
   handles broker notifications (CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY)
 
 loop_thread_:                                          ← updated 2026-03-13

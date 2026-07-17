@@ -506,7 +506,7 @@ event locally as `CHANNEL_EVENT_NOTIFY` to registered channel producers
 | **Data plane** (QueueReader/QueueWriter, SHM, ZMQ PUSH/PULL) | Independent. Band messaging is for coordination, not data streaming. |
 | **Broker registration** (REG_REQ, DISC_REQ) | Independent. Channel state and band state both live in `HubState` (HEP-CORE-0033 §8) — but they are independent maps; a band name need not correspond to any registered data channel. |
 | **Inbox** (InboxQueue/InboxClient) | Complementary. Inbox is point-to-point. Band is pub/sub. `api.send_to(uid, data)` uses inbox. |
-| **Heartbeat** (HEARTBEAT_REQ) | Reused. Broker heartbeat liveness drives auto-leave from bands. |
+| **Heartbeat** (HEARTBEAT_NOTIFY) | Reused. Broker heartbeat liveness drives auto-leave from bands. |
 | **BrokerRequestComm** | Transport. Band API methods are added to BrokerRequestComm. Messages flow through its DEALER socket. |
 
 ---

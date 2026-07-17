@@ -51,7 +51,7 @@ dead code and the security invariants do not hold in production.
 Any future work that touches a REG-family wire (REG_REQ, REG_ACK,
 CONSUMER_REG_REQ, CONSUMER_REG_ACK, DEREG_REQ, DEREG_ACK,
 ENDPOINT_UPDATE_REQ, GET_CHANNEL_AUTH_REQ, CHANNEL_AUTH_APPLIED_REQ,
-CHANNEL_AUTH_CHANGED_NOTIFY, HEARTBEAT_REQ, DISC_REQ,
+CHANNEL_AUTH_CHANGED_NOTIFY, HEARTBEAT_NOTIFY, DISC_REQ,
 CHECK_PEER_READY_REQ) MUST cite this HEP as the wire authority.  In
 particular:
 
@@ -322,9 +322,9 @@ the REQ is the stale-guard per HEP-CORE-0042 §5.5.3.
 
 ### 2.7 Lifecycle messages
 
-- **HEARTBEAT_REQ / HEARTBEAT_ACK** — presence maintenance
-  (HEP-CORE-0023).  Bodies: `HeartbeatReqBody` /
-  `HeartbeatAckBody` (see §14.3).  Topology-independent.
+- **HEARTBEAT_NOTIFY** — presence maintenance (HEP-CORE-0023);
+  fire-and-forget, **no ACK** (renamed from `HEARTBEAT_REQ` per C13).
+  Body: `HeartbeatNotifyBody` (see §14.3).  Topology-independent.
 - **DEREG_REQ / DEREG_ACK**, **CONSUMER_DEREG_REQ / CONSUMER_DEREG_ACK**
   — voluntary teardown.  Bodies: `DeregReqBody` / `DeregAckBody`.
   Broker fires `CHANNEL_AUTH_CHANGED_NOTIFY(phase=left)` to the
@@ -456,7 +456,7 @@ Consumer (binding)                Broker                  Producer (dialing)
    |    set                         |                          |
    | <==== ENDPOINT_UPDATE_ACK      |                          |
    |                                |                          |
-   | HEARTBEAT_REQ (first) -------->|                          |
+   | HEARTBEAT_NOTIFY (first) -------->|                          |
    |    consumer marked Live         |                          |
    |                                |                          |
    |                                |    REG_REQ (topology=    |
@@ -504,7 +504,7 @@ Consumer (binding)                Broker                  Producer (dialing)
    |    consumer's ZAP admits       |                          |
    |    P1 (already in allowlist)   |                          |
    |                                |                          |
-   |                                |    HEARTBEAT_REQ (first) |
+   |                                |    HEARTBEAT_NOTIFY (first) |
    |                                |<-------------------------|
    |                                |    producer marked Live  |
    | <==== CHANNEL_AUTH_CHANGED_    |                          |
@@ -1253,7 +1253,7 @@ inline as **[F#]** and consolidated in §13.6.
   Broker sender-validates: consumer C1 is in `consumers[]`,
   topology=FanIn ⇒ sender is binding side ⇒ accept.  Broker sets
   `ChannelEntry.data_endpoint = tcp://host:38815`.
-- Consumer sends first HEARTBEAT_REQ.  Broker marks C1 Live.
+- Consumer sends first HEARTBEAT_NOTIFY.  Broker marks C1 Live.
 - Producer P1 REG_REQ arrives.  Broker admits: topology matches,
   cardinality OK (1..N producers), schema matches.  Adds P1 to
   `producers[]`.  R6 gate check:
@@ -1283,7 +1283,7 @@ inline as **[F#]** and consolidated in §13.6.
   Standby → Configured → Active.  PUSH connects `tcp://host:38815`
   with `curve_serverkey=C1_pubkey`.  CURVE handshake fires; C1's
   ZAP has P1 in allowlist ⇒ ALLOW ⇒ handshake succeeds.
-- P1 sends first HEARTBEAT_REQ.  Broker marks P1 Live.  Fires
+- P1 sends first HEARTBEAT_NOTIFY.  Broker marks P1 Live.  Fires
   `CHANNEL_AUTH_CHANGED_NOTIFY(live, producer, P1)` to C1.
 - C1's role host updates `live_peers[K]["producer"].insert(P1)`.
   `api.producer_count()` returns 1.
@@ -2219,9 +2219,10 @@ brevity the class catalog below notes "+ security triple" or
   `applied_version`, `instance_id` + security triple.
 - **ChannelAuthAppliedAckBody**: `status`, `confirmed_version`
   + envelope_hash only.
-- **HeartbeatReqBody**: `channel_name`, `role_uid` + envelope_hash
+- **HeartbeatNotifyBody**: `channel_name`, `role_uid` + envelope_hash
   only (presence maintenance; no state mutation).
-- **HeartbeatAckBody**: `status` + envelope_hash only.
+- ~~**HeartbeatAckBody**~~: archaeological reference only — `HEARTBEAT_NOTIFY`
+  is fire-and-forget, so there is no heartbeat ACK on the wire (`wire_bodies.hpp`).
 - **DeregReqBody**: `channel_name`, `role_uid` + security triple.
   **DeregAckBody**: `status` + envelope_hash only.
 - **DiscReqBody**: `channel_name` + envelope_hash only.
@@ -2244,8 +2245,8 @@ switch_on(env.msg_type()) {
         handle_consumer_reg_req(*env, env->body_as<RegReqBody>()); break;
     case "ENDPOINT_UPDATE_REQ":
         handle_endpoint_update(*env, env->body_as<EndpointUpdateReqBody>()); break;
-    case "HEARTBEAT_REQ":
-        handle_heartbeat(*env, env->body_as<HeartbeatReqBody>()); break;
+    case "HEARTBEAT_NOTIFY":
+        handle_heartbeat(*env, env->body_as<HeartbeatNotifyBody>()); break;
     // ... one case per msg_type; no default fallthrough (unknown
     // msg_types are wire violations, dropped with WARN).
 }

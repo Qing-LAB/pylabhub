@@ -2433,7 +2433,7 @@ sequenceDiagram
         Note over P: == install_heartbeat (S3 step 7) ==
         P->>P: BRC.set_periodic_task(on_heartbeat_tick_, interval)<br/>(interval negotiated with REG_ACK.heartbeat block,<br/>HEP-0023 §2.5)
         Note over P: ... time passes (first tick) ...
-        P->>B: HEARTBEAT_REQ {channel="lab.raw",<br/>role_uid, role_type="producer", metrics}
+        P->>B: HEARTBEAT_NOTIFY {channel="lab.raw",<br/>role_uid, role_type="producer", metrics}
         B->>B: presence.first_heartbeat_seen = true
         B->>OBS: kRegistering → kLive<br/>(channel now admits consumers; §3.5.4 invariant 2:<br/>broker fires CHANNEL_PRODUCERS_CHANGED_NOTIFY<br/>{reason="producer_joined"} to every kLive consumer<br/>of the channel here, NOT earlier)
     end
@@ -2565,7 +2565,7 @@ sequenceDiagram
             Note over C: == install_heartbeat (after Authorized) ==
             C->>C: BRC.set_periodic_task(on_heartbeat_tick_)
             Note over C: first tick fires
-            C->>B: HEARTBEAT_REQ {channel, role_uid, role_type="consumer"}
+            C->>B: HEARTBEAT_NOTIFY {channel, role_uid, role_type="consumer"}
             B->>B: consumer presence.first_heartbeat_seen = true
         end
 
@@ -5564,7 +5564,7 @@ sequenceDiagram
         Note over R: == install_heartbeat (S3 tail; §3.5.4 inv 1) ==
         R->>R: BRC.set_periodic_task(heartbeat_tick,<br/>interval from REG_ACK.heartbeat)
         Note over R: ... first tick ...
-        R->>B: HEARTBEAT_REQ
+        R->>B: HEARTBEAT_NOTIFY
         B->>B: presence.first_heartbeat_seen = true
         Note over B: For producer: kRegistering → kLive<br/>broker NOW fires CHANNEL_PRODUCERS_CHANGED_NOTIFY<br/>{reason="producer_joined"} to consumers (§3.5.4 inv 2);<br/>broker can now admit CONSUMER_REG_REQ (§5.2)
     end

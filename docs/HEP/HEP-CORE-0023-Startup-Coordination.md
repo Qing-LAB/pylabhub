@@ -28,7 +28,7 @@ Two complementary coordination mechanisms:
    The broker maintains a **per-presence** state row (one per
    `(uid, channel, role_type)` registration) with three states —
    Connected / Pending / Disconnected — driven by that presence's
-   own `HEARTBEAT_REQ`.  A consumer's `DISC_REQ` returns one of
+   own `HEARTBEAT_NOTIFY`.  A consumer's `DISC_REQ` returns one of
    three responses derived from the **producer-presence's** state
    for the queried channel; clients retry on `DISC_PENDING` /
    `CHANNEL_NOT_FOUND`.  No broker-side queuing of pending requests.
@@ -77,7 +77,7 @@ Two complementary coordination mechanisms:
 
 The state machine is **per role-presence**, owned by the broker's
 per-`(channel, role_type)` presence row on `RoleEntry.presences` and
-driven by that presence's `HEARTBEAT_REQ` (matched by `(uid,
+driven by that presence's `HEARTBEAT_NOTIFY` (matched by `(uid,
 role_type)` per HEP-CORE-0019 §2.3 / Phase 6).  There is no separate
 channel-side FSM: both **channel observability** ("is this channel
 still serving data?") and **channel existence** ("is this channel
@@ -102,9 +102,9 @@ A role-presence has three states: **Connected** (heartbeats fresh),
 ```mermaid
 stateDiagram-v2
     [*] --> Connected : REG_REQ / CONSUMER_REG_REQ accepted<br/>(presence row created, first heartbeat already in flight)
-    Connected --> Connected : HEARTBEAT_REQ<br/>(refresh last_heartbeat, update metrics)
+    Connected --> Connected : HEARTBEAT_NOTIFY<br/>(refresh last_heartbeat, update metrics)
     Connected --> Pending : ready_timeout<br/>(missed heartbeats)
-    Pending --> Connected : HEARTBEAT_REQ (recovery)<br/>bump pending_to_ready_total
+    Pending --> Connected : HEARTBEAT_NOTIFY (recovery)<br/>bump pending_to_ready_total
     Pending --> [*] : pending_timeout<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer AND<br/>last live producer (§2.1.1)
     Connected --> [*] : DEREG_REQ accepted<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer AND<br/>last live producer (§2.1.1)
     Pending --> [*] : DEREG_REQ accepted (same path)
@@ -117,8 +117,8 @@ per **presence** — a processor with `(uid, "producer")` and
 | Trigger | From | To | Side effect |
 |---|---|---|---|
 | `REG_REQ` / `CONSUMER_REG_REQ` accepted | — | Connected | create `RoleEntry` (or add presence to existing uid); bump `connected_total` |
-| Matching `HEARTBEAT_REQ` received | Connected | Connected | refresh `RoleEntry.last_heartbeat`, write metrics |
-| Matching `HEARTBEAT_REQ` received | Pending | Connected | refresh `RoleEntry.last_heartbeat`, reset `state_since`, bump `pending_to_connected_total` |
+| Matching `HEARTBEAT_NOTIFY` received | Connected | Connected | refresh `RoleEntry.last_heartbeat`, write metrics |
+| Matching `HEARTBEAT_NOTIFY` received | Pending | Connected | refresh `RoleEntry.last_heartbeat`, reset `state_since`, bump `pending_to_connected_total` |
 | Missed heartbeats for `effective_ready_timeout` | Connected | Pending | set `state_since`, bump `connected_to_pending_total` |
 | Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) **to all remaining channel members** and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
 | `DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`voluntary_close`) and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence |
@@ -330,7 +330,7 @@ sequenceDiagram
     B-->>C: DISC_PENDING<br/>(producer registered, no heartbeat yet)
     Note over C: wait retry_interval_ms
 
-    P->>B: HEARTBEAT_REQ {role_type=producer}
+    P->>B: HEARTBEAT_NOTIFY {role_type=producer}
     Note over B: refresh RoleEntry[prod_uid]<br/>(presence stays Connected,<br/>last_heartbeat fresh)
 
     C->>B: DISC_REQ (retry)
@@ -341,9 +341,9 @@ sequenceDiagram
     Note over C: validate cadence vs hub max,<br/>install per-presence<br/>heartbeat task
 
     loop steady state
-        P->>B: HEARTBEAT_REQ {role_type=producer, metrics?}
+        P->>B: HEARTBEAT_NOTIFY {role_type=producer, metrics?}
         Note over B: refresh RoleEntry[prod_uid]<br/>(producer presence)<br/>+ MetricsStore[(channel, prod_uid, "producer")]
-        C->>B: HEARTBEAT_REQ {role_type=consumer, metrics?}
+        C->>B: HEARTBEAT_NOTIFY {role_type=consumer, metrics?}
         Note over B: refresh RoleEntry[cons_uid]<br/>(consumer presence)<br/>+ MetricsStore[(channel, cons_uid, "consumer")]
     end
 ```
@@ -354,7 +354,7 @@ See HEP-CORE-0007 §DISC_REQ for the precise payload of each response variant.
 
 - Both producer-presence and consumer-presence emit per-cycle
   heartbeats with `(channel, uid, role_type)` in the wire payload.
-  See HEP-CORE-0019 §4.1 for the full HEARTBEAT_REQ shape (Phase 6).
+  See HEP-CORE-0019 §4.1 for the full HEARTBEAT_NOTIFY shape (Phase 6).
 - Each heartbeat refreshes its **own** `RoleEntry[uid]` presence
   row and writes its own `MetricsStore[(channel, uid, role_type)]`
   row.  No heartbeat ever touches another presence's bookkeeping.
@@ -554,7 +554,7 @@ block — only the three multiplier fields are.
 
 A role declares a list of **presences** at startup — one per
 `(hub, channel, role_kind)` tuple it registers as.  Each presence
-emits its own `HEARTBEAT_REQ` per cycle, carrying `(channel_name,
+emits its own `HEARTBEAT_NOTIFY` per cycle, carrying `(channel_name,
 role_uid, role_type)` in the wire payload (per HEP-CORE-0019 §4.1).
 Wire-key naming was unified to `role_uid` (was `uid`) in
 broker_proto 4→5 (audit R3.5b, 2026-05-19); see §2.5.4 below.
@@ -723,10 +723,10 @@ from the local role's `role_uid` — and is also preserved.
 | `CONSUMER_REG_REQ` | `role_uid` | `role_name` | tag must be `cons` or `proc` (was `consumer_uid`/`consumer_name`) |
 | `DEREG_REQ` | `role_uid` | — | tag must be `prod` or `proc` |
 | `CONSUMER_DEREG_REQ` | `role_uid` | — | tag must be `cons` or `proc` |
-| `HEARTBEAT_REQ` | `role_uid` | — | tag must match `role_type` (was `uid`) |
+| `HEARTBEAT_NOTIFY` | `role_uid` | — | tag must match `role_type` (was `uid`) |
 | `ROLE_PRESENCE_REQ` / `ROLE_INFO_REQ` | `role_uid` | — | tag in `{prod,cons,proc}` |
 | `BAND_JOIN_REQ` / `BAND_LEAVE_REQ` | `role_uid` | `role_name` | tag in `{prod,cons,proc}` |
-| `BAND_BROADCAST_REQ` | `role_uid` | — | tag in `{prod,cons,proc}` (was `sender_uid`) |
+| `BAND_BROADCAST_SEND_NOTIFY` | `role_uid` | — | tag in `{prod,cons,proc}` (was `sender_uid`) |
 | `CONSUMER_DIED_NOTIFY` (body) | `role_uid` | — | broker → producers fan-out (was `consumer_uid`) |
 
 **Grammar enforcement at every gate.**  Every wire-boundary
@@ -735,7 +735,7 @@ naming.hpp`) on `channel_name`, `role_uid`, and (when non-empty)
 `role_name` BEFORE entering any HubState op.  HEP-CORE-0033
 §G2.2.0b is the authoritative grammar.  An empty or malformed
 identifier is rejected with `INVALID_REQUEST` + LOGGER_WARN; on
-fire-and-forget messages (HEARTBEAT_REQ, BAND_BROADCAST_REQ) the
+fire-and-forget messages (HEARTBEAT_NOTIFY, BAND_BROADCAST_SEND_NOTIFY) the
 request is silently dropped with LOGGER_WARN (no reply path).
 
 **Side-aware tag policy.**  In addition to grammar, each gate
@@ -745,7 +745,7 @@ constrains the tag (`prod`/`cons`/`proc`) the role_uid carries:
 |---|---|---|
 | `REG_REQ`, `DEREG_REQ` | `{prod, proc}` | producer-side; processors register output-channel here |
 | `CONSUMER_REG_REQ`, `CONSUMER_DEREG_REQ` | `{cons, proc}` | consumer-side; processors register input-channel here |
-| `HEARTBEAT_REQ` | derived from `role_type` field — `producer` ⇒ `{prod, proc}`; `consumer` ⇒ `{cons, proc}` | per-presence keying |
+| `HEARTBEAT_NOTIFY` | derived from `role_type` field — `producer` ⇒ `{prod, proc}`; `consumer` ⇒ `{cons, proc}` | per-presence keying |
 | `ROLE_PRESENCE_REQ`, `ROLE_INFO_REQ`, `BAND_*_REQ` | `{prod, cons, proc}` | side-agnostic queries / joins |
 
 Tag mismatches are rejected with `INVALID_ROLE_TAG`.  Processor
@@ -792,7 +792,7 @@ struct RolePresence {
     std::string                            channel;            // channel this presence is on
     std::string                            role_type;          // "producer" | "consumer"
     RoleState                              state;              // §2.1 FSM
-    std::chrono::steady_clock::time_point  last_heartbeat;     // refreshed by matching HEARTBEAT_REQ only
+    std::chrono::steady_clock::time_point  last_heartbeat;     // refreshed by matching HEARTBEAT_NOTIFY only
     std::chrono::steady_clock::time_point  state_since;        // last FSM transition
     nlohmann::json                         latest_metrics;     // Phase 6 — per HEP-0019 §4.1
     std::chrono::system_clock::time_point  metrics_collected_at;

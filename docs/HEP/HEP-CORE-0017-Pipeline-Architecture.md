@@ -51,7 +51,7 @@ These planes are strictly orthogonal: changes to one have no effect on the other
 | **Control plane** | HELLO / BYE / REG / DISC / HEARTBEAT | ZMQ ROUTER–DEALER ctrl sockets + Broker | HEP-CORE-0007 |
 | **Message plane** | Inter-role messaging (broker-coordinated channel events + point-to-point inbox) | ZMQ via `BrokerRequestComm` (channel notifications, role discovery, broadcasts) and `InboxQueue` / `InboxClient` (point-to-point, HEP-CORE-0027) | HEP-CORE-0007 §6, HEP-CORE-0027 |
 | **Timing plane** | Loop pacing — fixed rate, max rate, compensating | `LoopPolicy` on `DataBlockProducer`/`Consumer` | HEP-CORE-0008 |
-| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on per-presence `HEARTBEAT_REQ` (Phase 6 — every presence, including consumers, carries an optional `metrics` field on its own heartbeat); `METRICS_REQ/ACK` (admin query). `METRICS_REPORT_REQ` **RETIRED** in Wave M1.4 (2026-05-11). | HEP-CORE-0019 |
+| **Metrics plane** | Counter snapshots, custom KV pairs | Piggyback on per-presence `HEARTBEAT_NOTIFY` (Phase 6 — every presence, including consumers, carries an optional `metrics` field on its own heartbeat); `METRICS_REQ/ACK` (admin query). `METRICS_REPORT_REQ` **RETIRED** in Wave M1.4 (2026-05-11). | HEP-CORE-0019 |
 
 ```mermaid
 graph LR
@@ -112,7 +112,7 @@ Data bytes never pass through the broker.
 | Data transport | SHM **or** ZMQ (selected via `out_transport` in `producer.json`) |
 | Channel ownership | Creates the channel; registers as producer with broker via `REG_REQ` |
 | SHM-specific facilities (when `out_transport=shm`) | Spinlocks (`api.spinlock(i)`), zero-copy slot writes, flexzone R/W, acquire-timing metrics |
-| Broker protocol | `REG_REQ` → `REG_ACK`; sends `HEARTBEAT_REQ` (per-presence — see HEP-CORE-0019 §2.3); handles consumer `BYE` events |
+| Broker protocol | `REG_REQ` → `REG_ACK`; sends `HEARTBEAT_NOTIFY` (per-presence — see HEP-CORE-0019 §2.3); handles consumer `BYE` events |
 | Lives on | SHM: same host as the SHM segment. ZMQ: any host with TCP connectivity. |
 
 The Producer role is implemented today as `ProducerRoleHost` (in

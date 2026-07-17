@@ -224,10 +224,27 @@ Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
    `api.broadcast_channel`, fixed inline) and `api.notify_hub` (no script API
    sends `HUB_TARGETED_MSG` — only a broker augment hook; left flagged in the
    doc pending a decision on whether to add the script surface).
-2. **Wider rename residuals (separate sweep):** `HEARTBEAT_REQ`→`HEARTBEAT_NOTIFY`
-   still appears as current in ~10 HEPs (0002, 0007, 0017, 0018, 0019, 0021,
-   0023, 0030, 0036, 0046); `BAND_BROADCAST_REQ`→`BAND_BROADCAST_SEND_NOTIFY`
-   in 3 (0007, 0023, 0030).  Out of scope for the CHANNEL broadcast sweep.
+2. **Wider rename residuals — SWEPT 2026-07-17.**
+   `HEARTBEAT_REQ`→`HEARTBEAT_NOTIFY` across 0002, 0007, 0017, 0018, 0019,
+   0021, 0023, 0030, 0033, 0036, 0046 + `IMPLEMENTATION_GUIDANCE.md`
+   (routing-class table + REG wire-discipline list).
+   `BAND_BROADCAST_REQ`→`BAND_BROADCAST_SEND_NOTIFY` /
+   `BAND_BROADCAST_NOTIFY`→`BAND_BROADCAST_DELIVER_NOTIFY` in 0007, 0023,
+   0033 + `IMPLEMENTATION_GUIDANCE.md`.  Protected historical quotes/notes
+   left intact (0007:1500/2057, 0030:23/180, 0047 ledger, 0033:3096 "was").
+   HEP-0046 §2.7/§14.3: dropped the phantom `HEARTBEAT_ACK` and renamed
+   `HeartbeatReqBody`→`HeartbeatNotifyBody` per shipped code (C13);
+   HEP-0021:398 phantom `HEARTBEAT_ACK` reply removed from the diagram.
+   Verified against code: heartbeat is fire-and-forget `HEARTBEAT_NOTIFY`,
+   no ack (send returns void; broker handler emits nothing).
+
+**Code-cruft follow-ups found while verifying (need go-ahead — CODE changes):**
+- Dead `HeartbeatAckBody` struct + its isolated L1 test
+  (`test_wire_envelope.cpp:696`) — never sent/received/dispatched; labeled
+  "archaeological, no wire".  Candidate deletion.
+- `test_dispatch_notifications.cpp` uses the fictional string `"HEARTBEAT_ACK"`
+  (10 sites) as an arbitrary "other message" placeholder — misleading name for
+  a message that does not exist; rename to a clearly-fake token.
 
 ### HEP-CORE-0047 — Messaging & Communication Master Reference
 

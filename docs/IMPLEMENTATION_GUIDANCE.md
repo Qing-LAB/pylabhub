@@ -479,10 +479,10 @@ to dispatch in the role-side handler.
 
 | Class | Bound by | Routing | Examples |
 |---|---|---|---|
-| **A — Channel-bound** | `channel_name` in payload | role-side: `channel_index[channel_name]->connection.brc.send(...)` | `REG_REQ`, `CONSUMER_REG_REQ`, `DEREG_REQ`, `DISC_REQ`, `HEARTBEAT_REQ` (per-presence — Phase 6), `CHANNEL_NOTIFY_REQ`, `CHANNEL_BROADCAST_REQ`, `CHECKSUM_ERROR_REPORT`, `SCHEMA_REQ` (owner-bound), all inbound `CHANNEL_*_NOTIFY` |
+| **A — Channel-bound** | `channel_name` in payload | role-side: `channel_index[channel_name]->connection.brc.send(...)` | `REG_REQ`, `CONSUMER_REG_REQ`, `DEREG_REQ`, `DISC_REQ`, `HEARTBEAT_NOTIFY` (per-presence — Phase 6), `CHANNEL_BROADCAST_SEND_NOTIFY`, `CHECKSUM_ERROR_REPORT`, `SCHEMA_REQ` (owner-bound), all inbound `CHANNEL_*_NOTIFY` |
 | **B — Role-bound** | target `uid` | fall-through over `connections`; first non-empty answer wins | `ROLE_PRESENCE_REQ`, `ROLE_INFO_REQ` (inbox discovery — HEP-CORE-0027 §4.2) |
 | **C — Hub-bound** | which hub the caller asks | caller picks hub explicitly (`api.in_hub.*` / `api.out_hub.*`) | `CHANNEL_LIST_REQ`, `METRICS_REQ` (HEP-CORE-0019 §4.2), `SHM_BLOCK_QUERY_REQ` |
-| **D — Band-bound** | `band_name` in payload | `band_index[band_name]->connection.brc.send(...)` | `BAND_JOIN_REQ`, `BAND_LEAVE_REQ`, `BAND_BROADCAST_REQ`, `BAND_MEMBERS_REQ`, all inbound `BAND_*_NOTIFY` |
+| **D — Band-bound** | `band_name` in payload | `band_index[band_name]->connection.brc.send(...)` | `BAND_JOIN_REQ`, `BAND_LEAVE_REQ`, `BAND_BROADCAST_SEND_NOTIFY`, `BAND_MEMBERS_REQ`, all inbound `BAND_*_NOTIFY` |
 
 The four classes are exhaustive + disjoint.  When designing a new
 broker message, classify it first; if it doesn't fit, the design
@@ -2358,7 +2358,7 @@ usage; auto-memory `feedback_read_log_before_rerun` +
 `REG_ACK`, `CONSUMER_REG_REQ` / `_ACK`, `DEREG_REQ` / `_ACK`,
 `ENDPOINT_UPDATE_REQ` / `_ACK`, `GET_CHANNEL_AUTH_REQ` / `_ACK`,
 `CHANNEL_AUTH_APPLIED_REQ` / `_ACK`, `CHANNEL_AUTH_CHANGED_NOTIFY`,
-`CHECK_PEER_READY_REQ` / `_ACK`, `HEARTBEAT_REQ`, `DISC_REQ`.
+`CHECK_PEER_READY_REQ` / `_ACK`, `HEARTBEAT_NOTIFY`, `DISC_REQ`.
 Authority: **HEP-CORE-0046 REG Protocol Redesign**.
 
 **Mandatory rules.**

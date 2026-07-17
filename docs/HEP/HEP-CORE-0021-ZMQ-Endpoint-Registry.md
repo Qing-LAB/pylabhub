@@ -394,8 +394,7 @@ sequenceDiagram
     Note over P: Bind PUSH socket at :5580<br/>(ZmqQueue.start())
 
     loop heartbeat every 5s
-        P->>B: HEARTBEAT_REQ {channel="lab.raw"}
-        B->>P: HEARTBEAT_ACK
+        P->>B: HEARTBEAT_NOTIFY {channel="lab.raw"}
     end
 
     C->>B: CONSUMER_REG_REQ {channel="lab.raw"}
