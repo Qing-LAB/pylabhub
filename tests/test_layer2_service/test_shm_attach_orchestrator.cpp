@@ -20,6 +20,48 @@
  *   - broker reply has unexpected status  → WARN + DeniedTransportFail
  *   - AttachProtocol handshake fails      → WARN + HandshakeFailed
  *   - timeout (no consumer)               → Timeout (no logs)
+ *
+ * ── RATIONALE — divergence-WARN is a SPECIAL-CASE injection (task #257 / 1j) ──
+ * The divergence-WARN path (the broker's live verdict disagreeing with the
+ * producer's local allowlist cache) is a TRANSIENT RACE: in production it
+ * exists only in the window between the broker mutating a channel's admission
+ * ledger and the producer processing the `CHANNEL_AUTH_CHANGED_NOTIFY` that
+ * refreshes its `allowed_peers` cache.  The framework is designed to make that
+ * window small and self-healing, so real roles cannot be made to yield it
+ * deterministically — an L3/L4 test would either race the NOTIFY (flaky) or
+ * inject the mismatch anyway.  This is the sanctioned exception to "L3/L4 run
+ * real code paths": the divergence + fail-closed table is validated HERE, at
+ * L2, by injecting the two verdict VALUES whose disagreement IS the special
+ * condition.
+ *
+ * This is a MOCK, not a bypass (README_testing.md §1.2 rule 2): ONLY the
+ * `cache_lookup` / `broker_query` VALUES are substituted; the code path is
+ * production — the real `ShmAttachOrchestrator` runs the real cache-vs-broker
+ * comparison, emits the real `[shm_attach] divergence …` WARN, and drives the
+ * real `AttachProtocolAcceptor` + capability transport with a real consumer
+ * thread running the real crypto handshake.  Layer is L2 per §1.2 rule 7
+ * (behavior validated with mocked INPUTS is API-nature regardless of setup
+ * weight).  The sibling success/denied paths ARE validated by the real
+ * framework end-to-end at L4 (`test_plh_hub_role_shm_e2e.cpp`); divergence is
+ * the one cell no real-framework test can produce, which is why it lives here.
+ *
+ * MAINTENANCE COUPLING — this test is a hand-maintained mirror of the contract.
+ * It MUST be updated in lockstep if any of these change in production:
+ *   - the WARN marker strings `[shm_attach] divergence broker=… cache=…`
+ *     (`shm_attach_orchestrator.cpp` Step 3);
+ *   - the cache-vs-broker comparison or the "broker's answer always wins" rule
+ *     (HEP-CORE-0041 §9 D4; `role_host_frame.cpp` CacheLookup / BrokerQuery
+ *     wiring — the real role feeds this orchestrator there);
+ *   - the outcome enum / D4 table (Sent / DeniedByBroker / DeniedTransportFail
+ *     / HandshakeFailed / Timeout).
+ * If the divergence mechanism is ever redesigned away (e.g. the cache becomes
+ * strongly consistent and the window closes), RETIRE these cells per §1.2
+ * rule 6 rather than keep a synthetic mismatch alive.
+ *
+ * @see HEP-CORE-0041 §9 D4 (divergence table; broker-authoritative rule)
+ * @see docs/README/README_testing.md §1.2 (mock vs bypass; layer placement)
+ * @see src/utils/service/role_host_frame.cpp (production cache_lookup /
+ *      broker_query wiring that the real role feeds this orchestrator)
  */
 #include "binary_lifecycle.h"
 #include "log_capture_fixture.h"
@@ -177,9 +219,10 @@ std::thread
 spawn_consumer_thread(const std::string &endpoint, const TestKeypair &cons_kp,
                       const std::string &cons_uid,
                       const std::string &prod_pubkey_z85,
-                      std::exception_ptr &out_exc)
+                      std::exception_ptr &out_exc,
+                      std::atomic<bool> &out_fd_received)
 {
-    return std::thread{[=, &cons_kp, &out_exc] {
+    return std::thread{[=, &cons_kp, &out_exc, &out_fd_received] {
         try
         {
             ConsumerAuthMaterial cons_auth{cons_uid, cons_kp.pub_z85,
@@ -213,10 +256,12 @@ spawn_consumer_thread(const std::string &endpoint, const TestKeypair &cons_kp,
             msg.msg_controllen = sizeof(u.buf);
 
             const ssize_t r = ::recvmsg(*fd, &msg, 0);
-            (void) r; // happy with success, EOF, or timeout — all benign
+            (void) r; // r>0 = capability delivered; 0 = EOF (denied / fail-closed
+                      // → producer closed without sending); <0 = timeout.
 
-            // Close any received fd so the kernel can free the SHM
-            // backing the test capability.
+            // Record + close any received fd.  Whether a valid SCM_RIGHTS fd
+            // arrived IS the consumer-observable side effect the outcome claims
+            // hinge on: Sent ⇒ fd delivered; Denied/FailClosed ⇒ no fd.
             cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
             if (cmsg && cmsg->cmsg_level == SOL_SOCKET &&
                 cmsg->cmsg_type == SCM_RIGHTS &&
@@ -225,7 +270,10 @@ spawn_consumer_thread(const std::string &endpoint, const TestKeypair &cons_kp,
                 int received_fd = -1;
                 std::memcpy(&received_fd, CMSG_DATA(cmsg), sizeof(int));
                 if (received_fd >= 0)
+                {
+                    out_fd_received.store(true, std::memory_order_relaxed);
                     ::close(received_fd);
+                }
             }
             ::close(*fd);
         }
@@ -266,9 +314,10 @@ TEST_F(ShmAttachOrchestratorTest, BothAllowed_SilentAndSent)
     ShmAttachOrchestrator orch{acceptor, *transport, std::move(cfg)};
 
     std::exception_ptr cons_exc;
+    std::atomic<bool>  fd_received{false};
     auto               cons_thread =
         spawn_consumer_thread(path, cons, "consumer.test.uid", prod.pub_z85,
-                              cons_exc);
+                              cons_exc, fd_received);
 
     const auto outcome =
         orch.accept_and_serve_one(std::chrono::milliseconds{2000});
@@ -276,6 +325,8 @@ TEST_F(ShmAttachOrchestratorTest, BothAllowed_SilentAndSent)
 
     ASSERT_FALSE(cons_exc);
     EXPECT_EQ(outcome, ShmAttachOrchestrator::Outcome::Sent);
+    EXPECT_TRUE(fd_received.load())
+        << "Sent \u21d2 consumer must actually receive the capability fd";
     // No WARN must fire — assertion in TearDown via AssertNoUnexpectedLogWarnError.
 }
 
@@ -308,8 +359,9 @@ TEST_F(ShmAttachOrchestratorTest, BothDenied_SilentAndDeniedByBroker)
     ShmAttachOrchestrator orch{acceptor, *transport, std::move(cfg)};
 
     std::exception_ptr cons_exc;
+    std::atomic<bool>  fd_received{false};
     auto cons_thread = spawn_consumer_thread(path, cons, "consumer.test.uid",
-                                             prod.pub_z85, cons_exc);
+                                             prod.pub_z85, cons_exc, fd_received);
 
     const auto outcome =
         orch.accept_and_serve_one(std::chrono::milliseconds{2000});
@@ -317,6 +369,8 @@ TEST_F(ShmAttachOrchestratorTest, BothDenied_SilentAndDeniedByBroker)
 
     ASSERT_FALSE(cons_exc);
     EXPECT_EQ(outcome, ShmAttachOrchestrator::Outcome::DeniedByBroker);
+    EXPECT_FALSE(fd_received.load())
+        << "DeniedByBroker \u21d2 consumer must NOT receive a capability fd";
 }
 
 // ── Divergence: broker allowed + cache denied → WARN + Sent ───────────────
@@ -351,8 +405,9 @@ TEST_F(ShmAttachOrchestratorTest, BrokerAllowedCacheDenied_WarnAndSent)
     ExpectLogWarnMustFire("divergence broker=allowed cache=denied");
 
     std::exception_ptr cons_exc;
+    std::atomic<bool>  fd_received{false};
     auto cons_thread = spawn_consumer_thread(path, cons, "consumer.test.uid",
-                                             prod.pub_z85, cons_exc);
+                                             prod.pub_z85, cons_exc, fd_received);
 
     const auto outcome =
         orch.accept_and_serve_one(std::chrono::milliseconds{2000});
@@ -360,6 +415,8 @@ TEST_F(ShmAttachOrchestratorTest, BrokerAllowedCacheDenied_WarnAndSent)
 
     ASSERT_FALSE(cons_exc);
     EXPECT_EQ(outcome, ShmAttachOrchestrator::Outcome::Sent);
+    EXPECT_TRUE(fd_received.load())
+        << "Sent \u21d2 consumer must actually receive the capability fd";
 }
 
 // ── Divergence: broker denied + cache allowed → WARN + DeniedByBroker ─────
@@ -393,8 +450,9 @@ TEST_F(ShmAttachOrchestratorTest, BrokerDeniedCacheAllowed_WarnAndDenied)
     ExpectLogWarnMustFire("divergence broker=denied cache=allowed");
 
     std::exception_ptr cons_exc;
+    std::atomic<bool>  fd_received{false};
     auto cons_thread = spawn_consumer_thread(path, cons, "consumer.test.uid",
-                                             prod.pub_z85, cons_exc);
+                                             prod.pub_z85, cons_exc, fd_received);
 
     const auto outcome =
         orch.accept_and_serve_one(std::chrono::milliseconds{2000});
@@ -402,6 +460,8 @@ TEST_F(ShmAttachOrchestratorTest, BrokerDeniedCacheAllowed_WarnAndDenied)
 
     ASSERT_FALSE(cons_exc);
     EXPECT_EQ(outcome, ShmAttachOrchestrator::Outcome::DeniedByBroker);
+    EXPECT_FALSE(fd_received.load())
+        << "DeniedByBroker \u21d2 consumer must NOT receive a capability fd";
 }
 
 // ── Broker comm failure (nullopt) → WARN + DeniedTransportFail ────────────
@@ -430,8 +490,9 @@ TEST_F(ShmAttachOrchestratorTest, BrokerNullopt_FailsClosed)
     ExpectLogWarnMustFire("broker_query returned nullopt");
 
     std::exception_ptr cons_exc;
+    std::atomic<bool>  fd_received{false};
     auto cons_thread = spawn_consumer_thread(path, cons, "consumer.test.uid",
-                                             prod.pub_z85, cons_exc);
+                                             prod.pub_z85, cons_exc, fd_received);
 
     const auto outcome =
         orch.accept_and_serve_one(std::chrono::milliseconds{2000});
@@ -439,6 +500,8 @@ TEST_F(ShmAttachOrchestratorTest, BrokerNullopt_FailsClosed)
 
     ASSERT_FALSE(cons_exc);
     EXPECT_EQ(outcome, ShmAttachOrchestrator::Outcome::DeniedTransportFail);
+    EXPECT_FALSE(fd_received.load())
+        << "fail-closed \u21d2 no capability fd may leak to the consumer";
 }
 
 // ── Broker reply with unexpected status → WARN + DeniedTransportFail ──────
@@ -471,8 +534,9 @@ TEST_F(ShmAttachOrchestratorTest, BrokerUnexpectedStatus_FailsClosed)
     ExpectLogWarnMustFire("broker reply has unexpected status='error'");
 
     std::exception_ptr cons_exc;
+    std::atomic<bool>  fd_received{false};
     auto cons_thread = spawn_consumer_thread(path, cons, "consumer.test.uid",
-                                             prod.pub_z85, cons_exc);
+                                             prod.pub_z85, cons_exc, fd_received);
 
     const auto outcome =
         orch.accept_and_serve_one(std::chrono::milliseconds{2000});
@@ -480,6 +544,8 @@ TEST_F(ShmAttachOrchestratorTest, BrokerUnexpectedStatus_FailsClosed)
 
     ASSERT_FALSE(cons_exc);
     EXPECT_EQ(outcome, ShmAttachOrchestrator::Outcome::DeniedTransportFail);
+    EXPECT_FALSE(fd_received.load())
+        << "fail-closed \u21d2 no capability fd may leak to the consumer";
 }
 
 // ── AttachProtocol handshake failure (impersonator) → HandshakeFailed ─────

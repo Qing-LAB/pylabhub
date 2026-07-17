@@ -225,9 +225,11 @@ void write_shm_consumer_script(const fs::path &script_dir,
 
 // ─── Scenario A: authorized producer + consumer over SHM ───────────────────
 
-// DISABLED_ pending #291 (SHM consumer-attach handshake bug exposed
-// after HEP-0036 §5b phase B-1 unblocked the producer's Authorized
-// transition).  Phase D of #286 re-enables once #291 lands.
+// Real-framework validation of the SHM authorized-attach happy path (task
+// #257 / 1j success case): real broker + real producer/consumer role
+// binaries; the role host frame dispatches the ShmAttachOrchestrator
+// internally on producer REG_ACK.  (Enabled since #258/1k + #291 fix,
+// 2026-06-26.)
 TEST_F(PlhHubCliTest, ShmE2E_AuthorizedConsumerReceivesAllSlots)
 {
     using std::chrono::seconds;
