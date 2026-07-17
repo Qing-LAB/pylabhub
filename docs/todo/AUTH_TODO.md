@@ -105,7 +105,7 @@ dispatch, or critical-error escalation around the auth flow, re-read
 | D — Broker glue (gate close) | 🟡 | AUTH-1/2/3 ✅; **AUTH-5/6/7 OPEN** |
 | E — Admin loopback enforcement | ⏸ | unblocked once D ships |
 | F — Federation peer ZAP parity | ⏸ | depends on E + #105 |
-| G — SHM auth migration | 🟡 | HEP-0041 design + Phase 1 substeps 1a-1h/1k ✅; **1i-cleanup S2..S5 + 1j + #262 OPEN** |
+| G — SHM auth migration | 🟡 | HEP-0041 design + Phase 1 substeps 1a-1h/1k ✅; #262 mutual-auth ✅ (default flipped 2026-07-16); **1i-cleanup S2..S5 + 1j OPEN** |
 | H — Demo migration | ⏸ | last; needs D shipped end-to-end |
 | **SEC-Fold — Consolidated Security Module + HEP** | 🔴 **PLANNING** | filed 2026-07-04 — see `SEC-Fold` section below |
 
@@ -408,7 +408,7 @@ See archive §6 for shipped substep narratives + commit hashes.
 | 1i-cleanup S5 | #275 | ✅ | **Shipped 2026-06-30 (commit `<this commit>`).**  Core Structure Change Protocol walked at `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md` — all 9 impact-matrix items verified.  Renamed field in `SharedMemoryHeader` (data_block.hpp:214) + `PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS` macro (data_block.hpp:345); updated the sole consumer in `data_block_recovery.cpp`; refreshed HEP-CORE-0002 §"Security and Schema" layout diagram + sentinel-semantics paragraph + HEP-CORE-0041 S5 status row; ran full ctest -j 2 (2261/2261 green).  Layout preserved (`static_assert(sizeof(SharedMemoryHeader) == 4096)` passes).  Schema hash bumps via macro (field name participates in hash input) — intentional per protocol §"Producer Registration". |
 | 1j | #257 | ⏸ | L3 broker tests (success / denied / divergence-WARN) |
 | **★ REVIEW-C** | **#276** | **⏸** | Gates 1j post-#275 deletion completeness; carries forward 5 medium items from REVIEW-B (HEP §11 row, §6.4 missing factory, MemfdConsumer ctor RAII, SCM_RIGHTS multi-fd defense, D3 retry budget) |
-| Mutual auth | #262 | ⏸ | 3rd handshake frame (producer signs consumer challenge) — Phase 1 production-readiness gate |
+| Mutual auth | #262 | ✅ | **Closed 2026-07-16.** 3-frame handshake shipped; default flipped `shm_require_mutual_auth` false→true (HEP-0044 §8.4).  No version-axis bump — the Frame 2/3 exchange is a producer↔consumer AttachProtocol handshake, not a broker control-plane message; interop is the config knob.  Light attack coverage = L2 `MutualAuth_RejectsWrongProducerPubkey` (an L4 squatter was scrapped — baseline Frame 2 already `box_encrypt`s to `producer_pk`, binding the producer key before Frame 3). |
 | **★ REVIEW-D** | **#277** | **⏸** | After #257 + #258 land; test contract pins reality (not just outcome); allowlist+revocation cycle exercised at L4 |
 | **★ REVIEW-E** | **#278** | **⏸** | Phase 1 production-ready final gate; threat model alignment; mutual auth closes impersonation window |
 

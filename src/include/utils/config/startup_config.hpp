@@ -38,10 +38,12 @@ struct StartupConfig
     /// Producer-side impersonation (a squatter that opens the same
     /// AF_UNIX endpoint after the real producer crashes) fails Frame 3
     /// and the consumer refuses the attach with a
-    /// PRODUCER_NOT_AUTHENTICATED marker.  Default false — same
-    /// backwards-compat 2-frame handshake as pre-#262 role builds.
-    /// Task #262.
-    bool shm_require_mutual_auth{false};
+    /// PRODUCER_NOT_AUTHENTICATED marker.  **Default true (#262 close-out,
+    /// HEP-CORE-0044 §8.4): mutual auth is on by default; consumers
+    /// challenge the producer's identity end-to-end.**  Set false only to
+    /// interoperate with pre-#262 role builds that speak the 2-frame
+    /// handshake.  Task #262.
+    bool shm_require_mutual_auth{true};
 };
 
 /// Parse "startup.wait_for_roles" from a JSON config object.

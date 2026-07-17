@@ -168,15 +168,24 @@ channel auth); HEP-0042 Phases 0-3b (ZMQ pre-attach coordination);
 C0-C6 (L3 test revival); AUTH-7 SHM happy+deny + AUTH-7 ZMQ deny.
 
 **Remaining, in dependency order:**
-1. **★ #246 Phase 3a L4 close-out** — real cycle-driving producer
-   L4 test.  Unblocks AUTH-7 ZMQ happy path (the last AUTH-7 gap).
+1. ~~#246 Phase 3a L4 close-out~~ ✅ **DONE 2026-07-02** — the
+   cycle-driving producer L4 test `ZmqE2E_AuthorizedConsumerReceivesAllSlots`
+   was un-skipped by the #246 Phase 3 close-out (commits `d8884e9f` /
+   `3ea1bc4c` / `7aa831c2` / `e8cebe04`); green in the suite.  AUTH-7 ZMQ
+   happy + deny + multi-producer fan-in all green (AUTH_TODO §AUTH-7).
+   This line was stale (verified 2026-07-16).
 2. #275 S2 remainder — 4-5 datahub worker files still to scan for
    legacy `secret` params.
 3. #257 (1j) — L3 broker tests for HEP-0041 (success / denied /
    divergence-WARN).
 4. REVIEW-C (#276) — gates after 1j + #275 close.
-5. #262 close-out — L4 squatter test + default-flip
-   `shm_require_mutual_auth` to `true`.
+5. #262 close-out — ✅ DONE 2026-07-16.  Default flipped
+   `shm_require_mutual_auth` → `true`.  No version-axis bump: the Frame
+   2/3 exchange is a producer↔consumer AttachProtocol handshake, not a
+   broker control-plane message — interop is the config knob.  Light
+   attack coverage is L2 `MutualAuth_RejectsWrongProducerPubkey` (an L4
+   squatter was scrapped as redundant — the baseline handshake already
+   binds the producer key at Frame 2).  HEP-0044 §8.4 updated.
 6. REVIEW-D (#277) → REVIEW-E (#278) — Phase 1 production-ready.
 7. AUTH-6 bookkeeping — File 10 Suite 2 delete on #152.
 

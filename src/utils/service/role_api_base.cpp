@@ -333,11 +333,13 @@ struct RoleAPIBase::Impl
     /// sites emits `verdict='MAJOR_MISMATCH_REJECTED'` and returns
     /// true to signal the caller to refuse the Registered transition.
     bool strict_abi_mismatch{false};
-    /// HEP-CORE-0041 §D4.5 mutual-auth opt-in (task #262).  Set by
-    /// role host from `config.startup().shm_require_mutual_auth`.
-    /// Passed to `initiate_consumer_handshake(...,require_mutual_auth)`
-    /// in the SHM-dial site of `apply_consumer_reg_ack`.
-    bool shm_require_mutual_auth{false};
+    /// HEP-CORE-0041 §D4.5 mutual auth (task #262).  Set by role host
+    /// from `config.startup().shm_require_mutual_auth`.  Passed to
+    /// `initiate_consumer_handshake(...,require_mutual_auth)` in the
+    /// SHM-dial site of `apply_consumer_reg_ack`.  Default true (#262
+    /// close-out) — matches the config default so a role host that never
+    /// calls set_shm_require_mutual_auth still challenges the producer.
+    bool shm_require_mutual_auth{true};
     /// HEP-CORE-0041 §D1(d) broker observer pubkey (task #317).
     /// Stashed by `apply_producer_reg_ack` from REG_ACK's
     /// `broker_observer_pubkey_z85` field.  Under shared_mutex because

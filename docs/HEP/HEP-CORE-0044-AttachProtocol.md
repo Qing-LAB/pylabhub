@@ -680,9 +680,9 @@ The initiator adds `consumer_nonce_b64` (24 bytes random) + `consumer_challenge_
 
 ### 8.4 Opt-in policy
 
-The initiator's `require_mutual_auth` flag is derived from the role's config knob `startup.shm_require_mutual_auth`.  Default: `false` (backward compatibility with pre-#262 acceptors, plus tests that don't need mutual auth).
+The initiator's `require_mutual_auth` flag is derived from the role's config knob `startup.shm_require_mutual_auth`.  **Default: `true`** (#262 close-out, 2026-07-16) — consumers challenge the producer's identity end-to-end by default.  An operator sets `startup.shm_require_mutual_auth=false` only to interoperate with pre-#262 acceptors that speak the 2-frame handshake.
 
-**Planned default flip.**  Once L4 squatter-attack coverage lands (task #262 remaining), the default becomes `true`.  A `broker_proto` MINOR bump lets old acceptors coexist during rollout.
+**Default flip (landed).**  No version-registry axis moves.  The Frame 2/Frame 3 exchange is a producer↔consumer AttachProtocol handshake over the AF_UNIX `shm_capability_endpoint`, not a broker control-plane message — so `broker_proto` (which versions the BrokerRequestComm↔BrokerService JSON set) is the wrong axis, and no registry axis versions the peer handshake.  Rollout coexistence is the `startup.shm_require_mutual_auth=false` config knob, not a version signal (a MINOR delta only WARNs in the version check — it gates nothing).  Attack coverage is the L2 test `MutualAuth_RejectsWrongProducerPubkey`: a consumer holding the wrong expected `producer_pubkey` must not succeed silently.  The baseline handshake already binds the producer's key — Frame 2 is `box_encrypt`ed to `producer_pk`, so a wrong-key squatter fails at Frame 2 before ever reaching the Frame 3 proof; only a verification-*skipping* malicious acceptor reaches Frame 3, which is exactly what the Frame 3 proof defends against.
 
 ### 8.5 What the marker string means
 

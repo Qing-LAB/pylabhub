@@ -94,9 +94,21 @@ TEST(StartupConfig, StrictAbiMismatch_CoexistsWithWaitForRoles)
 
 // ── task #262: shm_require_mutual_auth ────────────────────────────────────────
 
-TEST(StartupConfig, ShmRequireMutualAuth_DefaultFalse_WhenAbsent)
+TEST(StartupConfig, ShmRequireMutualAuth_DefaultTrue_WhenAbsent)
 {
+    // #262 close-out (HEP-CORE-0044 §8.4): mutual auth is ON by default.
     const auto j = nlohmann::json::object();
+    const auto sc = parse_startup_config(j, "test");
+    EXPECT_TRUE(sc.shm_require_mutual_auth);
+}
+
+TEST(StartupConfig, ShmRequireMutualAuth_ExplicitFalse_HonouredForLegacyInterop)
+{
+    // Operators can still opt out to interoperate with pre-#262 role
+    // builds that speak the 2-frame handshake.
+    const auto j = nlohmann::json::parse(R"({
+        "startup": {"shm_require_mutual_auth": false}
+    })");
     const auto sc = parse_startup_config(j, "test");
     EXPECT_FALSE(sc.shm_require_mutual_auth);
 }
