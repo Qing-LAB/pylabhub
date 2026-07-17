@@ -113,11 +113,11 @@ add_executable(test_layer3_datahub
     # workers/role_identity_policy_workers.cpp
 
     # ── DataBlock slot-allocation tests ──────────────────────────────────────
-    # MASKED 2026-06-30 (Rule-6) — coverage migrated under #275-S2 to the
-    # fd-source workers (`make_fd_backed_pair`) per the ShmQueue retirement
-    # strategy; physical deletion tracked under REVIEW-C / #276.  See the
-    # top-of-file doc-block in the workers .cpp.
-    # workers/datahub_slot_allocation_workers.cpp
+    # fd-source destination ② for the retired ShmQueue slot-allocation coverage
+    # (#275-S2); asserts HEP-CORE-0002 layout invariants (cache-line rounding,
+    # ring_buffer_capacity, total_block_size scaling).
+    test_datahub_slot_allocation.cpp
+    workers/datahub_slot_allocation_workers.cpp
 
     # ── Consumer registration protocol tests ─────────────────────────────────────
     # MIGRATED to tests/test_layer3_pattern4/test_pattern4_broker_consumer.cpp

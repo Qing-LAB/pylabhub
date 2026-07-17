@@ -1,30 +1,27 @@
 // tests/test_layer3_datahub/workers/datahub_slot_allocation_workers.cpp
 //
-// ⚠ MASKED FROM THE BUILD (Rule-6, 2026-06-30) — NOT compiled, NOT spawned.
-//   This file is absent from `add_executable(test_layer3_datahub …)` on
-//   purpose.  Its DataBlock slot-allocation / ring-buffer coverage migrated
-//   under #275-S2 to the fd-source workers (`make_fd_backed_pair`) as part of
-//   the ShmQueue retirement strategy; see docs/todo/TESTING_TODO.md
-//   (2026-06-30 retirement-table row for `test_datahub_hub_queue.cpp`,
-//   destination ②).  PHYSICAL DELETION is tracked under REVIEW-C / #276 —
-//   do not resurrect or extend this file; fold any new coverage into the
-//   fd-source workers instead.  (Belongs to the #275/#276 DataBlock
-//   work-stream, not the #52 HubHostBrokerHandle sweep.)
+// DataBlock slot-allocation tests — verify that different schema sizes and ring
+// buffer capacities produce correctly-sized shared-memory segments, and that
+// data can be written and read back through the allocated slots.  This is the
+// fd-source destination ② for the retired ShmQueue slot-allocation coverage
+// (HEP-CORE-0041 #275-S2; docs/todo/TESTING_TODO.md retirement row for
+// `test_datahub_hub_queue.cpp`).
 //
-// DataBlock slot allocation tests — verify that different schema sizes and ring
-// buffer capacities produce correctly-sized shared memory segments, and that
-// data can be written and read back through the allocated slots.
+// Design authority — HEP-CORE-0002 (DataBlockConfig / Layout):
+//   · logical_unit_size is a non-zero multiple of 64: any requested value is
+//     rounded up to the next 64-byte cache-line boundary before storage.
+//   · ring_buffer_capacity (>= 1) is stored verbatim.
+//   · total_block_size spans header + control tables + the
+//     ring_buffer_capacity × slot-stride data region (so >= cap × stride).
+//   · slot stride == effective logical_unit_size (buffer_span size).
 //
 // Test strategy:
-//   - Use create_datablock_producer_impl with explicit logical_unit_size to
-//     simulate schemas of various sizes (no C++ type needed).
-//   - Use DiagnosticHandle::header() to read the SharedMemoryHeader and verify:
-//       · logical_unit_size is rounded to 64-byte cache-line boundary
-//       · ring_buffer_capacity matches config
-//       · total_block_size is reasonable (>= ring_buffer_capacity * logical_unit_size)
+//   - Build producers/pairs via the fd-source factories
+//     (`make_fd_backed_producer` / `make_fd_backed_pair`) with an explicit
+//     logical_unit_size to simulate schemas of various sizes.
+//   - Read the SharedMemoryHeader via `open_datablock_for_diagnostic_from_fd`
+//     and assert the layout invariants above.
 //   - Verify write/read roundtrip via acquire_write_slot / acquire_consume_slot.
-//
-// Secret numbers: 76001–76099
 
 #include "datahub_slot_allocation_workers.h"
 #include "test_entrypoint.h"
@@ -48,7 +45,7 @@ namespace pylabhub::tests::worker::slot_allocation
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
-static DataBlockConfig make_config(uint64_t secret, size_t logical_size, uint32_t capacity)
+static DataBlockConfig make_config(size_t logical_size, uint32_t capacity)
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -96,14 +93,13 @@ int varied_schema_sizes_allocation()
             };
 
             constexpr uint32_t kCapacity = 8;
-            uint64_t secret_base = 76001;
 
             for (size_t schema_sz : schema_sizes)
             {
                 std::string tag = fmt::format("SlotAlloc_sz{}", schema_sz);
                 std::string channel = make_test_channel_name(tag.c_str());
 
-                auto cfg = make_config(secret_base++, schema_sz, kCapacity);
+                auto cfg = make_config(schema_sz, kCapacity);
                 size_t expected_slot_stride = round_to_cacheline(schema_sz);
 
                 auto prod = make_fd_backed_producer(channel, cfg.policy, cfg);
@@ -163,14 +159,12 @@ int ring_buffer_scaling()
             constexpr size_t kSchemaSize = 4112; // demo-like schema
             const size_t expected_stride = round_to_cacheline(kSchemaSize); // 4160
 
-            uint64_t secret_base = 76030;
-
             for (uint32_t cap : capacities)
             {
                 std::string tag = fmt::format("SlotAlloc_cap{}", cap);
                 std::string channel = make_test_channel_name(tag.c_str());
 
-                auto cfg = make_config(secret_base++, kSchemaSize, cap);
+                auto cfg = make_config(kSchemaSize, cap);
 
                 auto prod = make_fd_backed_producer(channel, cfg.policy, cfg);
                 ASSERT_NE(prod.producer, nullptr)
@@ -226,14 +220,13 @@ int write_read_roundtrip_varied_sizes()
             };
 
             constexpr uint32_t kCapacity = 4;
-            uint64_t secret_base = 76050;
 
             for (size_t schema_sz : schema_sizes)
             {
                 std::string tag = fmt::format("SlotRW_sz{}", schema_sz);
                 std::string channel = make_test_channel_name(tag.c_str());
 
-                auto cfg = make_config(secret_base++, schema_sz, kCapacity);
+                auto cfg = make_config(schema_sz, kCapacity);
                 size_t slot_stride = round_to_cacheline(schema_sz);
 
                 auto pair = make_fd_backed_pair(channel, cfg.policy, cfg);
@@ -260,6 +253,11 @@ int write_read_roundtrip_varied_sizes()
                     for (size_t b = 0; b < fill_len; ++b)
                         ptr[b] = static_cast<uint8_t>((i + b) & 0xFF);
 
+                    // Publish the slot to the consumable sequence before
+                    // releasing the write lock (HEP-CORE-0002 produce path:
+                    // acquire → fill → commit → release).  Without commit the
+                    // data is written but never becomes visible to consumers.
+                    EXPECT_TRUE(wh->commit(fill_len));
                     EXPECT_TRUE(pair.producer->release_write_slot(*wh));
                 }
 
@@ -286,7 +284,7 @@ int write_read_roundtrip_varied_sizes()
                             break; // one failure message is enough
                     }
 
-                    pair.consumer->release_consume_slot(*rh);
+                    (void)pair.consumer->release_consume_slot(*rh);
                 }
 
                 // FdBackedDataBlock dtor releases consumer → producer → transport.
