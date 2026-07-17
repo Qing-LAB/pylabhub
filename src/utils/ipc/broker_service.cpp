@@ -3244,9 +3244,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         {
             LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
                         channel_name);
-            return make_error(corr_id, "CHANNEL_NOT_READY",
+            auto err = make_error(corr_id, "CHANNEL_NOT_READY",
                               "ZMQ endpoint for channel '" + channel_name +
                                   "' has unresolved port 0 (awaiting_endpoint)");
+            err["reason"] = "awaiting_endpoint";
+            return err;
         }
     }
 
@@ -3308,23 +3310,27 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                 LOGGER_INFO(
                     "Broker: CONSUMER_REG_REQ channel '{}' deferred — "
                     "awaiting_first_heartbeat", channel_name);
-                return make_error(
+                auto err = make_error(
                     corr_id, "CHANNEL_NOT_READY",
                     "Channel '" + channel_name +
                         "' is not ready (awaiting_first_heartbeat — "
                         "producer registered but has not yet sent its "
                         "first heartbeat)");
+                err["reason"] = "awaiting_first_heartbeat";
+                return err;
             }
             if (any_kStalled)
             {
                 LOGGER_WARN(
                     "Broker: CONSUMER_REG_REQ channel '{}' deferred — "
                     "heartbeat_stalled", channel_name);
-                return make_error(
+                auto err = make_error(
                     corr_id, "CHANNEL_NOT_READY",
                     "Channel '" + channel_name +
                         "' is not ready (heartbeat_stalled — producer "
                         "missed its heartbeat window; HEP-CORE-0023 §2.6)");
+                err["reason"] = "heartbeat_stalled";
+                return err;
             }
             LOGGER_WARN(
                 "Broker: CONSUMER_REG_REQ channel '{}' rejected — all "

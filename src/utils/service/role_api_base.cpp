@@ -3099,21 +3099,37 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     auto result = bc->register_consumer(opts, timeout_ms);
 
     // HEP-CORE-0036 §5.2 R6 + §6.6 reason catalog: the broker rejects
-    // CONSUMER_REG_REQ with `CHANNEL_NOT_READY` while the channel is
-    // not yet admissible.  The §6.6 reason values that are transient
-    // and worth retrying are `awaiting_first_heartbeat` (kRegistering
-    // — producer registered, no first heartbeat yet) and
-    // `heartbeat_stalled` (kStalled — producer in heartbeat-timeout
-    // window per HEP-CORE-0023 §2.6).  Terminal failures (channel
-    // does not exist, or producer presences all Disconnected) come
-    // back as `CHANNEL_NOT_FOUND` and drop out of this loop on the
-    // error_code check.  A 100 ms cadence covers a typical 1 s
-    // heartbeat tick with ~10 retries; the broker's rejection is a
-    // cheap synchronous reply, so the budget covers many retries.
+    // CONSUMER_REG_REQ with `CHANNEL_NOT_READY` while the channel exists
+    // but is not yet admissible, carrying a structured `reason` field.
+    // The transient reasons worth retrying — each resolves on its own —
+    // are:
+    //   - `awaiting_first_heartbeat` — producer registered, no first
+    //     heartbeat yet (kRegistering);
+    //   - `heartbeat_stalled`        — producer in the heartbeat-timeout
+    //     window (kStalled; HEP-CORE-0023 §2.6);
+    //   - `awaiting_endpoint`        — producer's ZMQ endpoint still has
+    //     an unresolved port 0 (pre-ENDPOINT_UPDATE).
+    // Terminal failures (channel does not exist, or producer presences
+    // all Disconnected) come back as `CHANNEL_NOT_FOUND` and drop out of
+    // this loop on the error_code check.  A 100 ms cadence covers a
+    // typical 1 s heartbeat tick with ~10 retries; the broker's rejection
+    // is a cheap synchronous reply, so the budget covers many retries.
+    //
+    // Match on the STRUCTURED `reason` field, NOT the message text, so a
+    // new transient reason added on the broker side can't silently fall
+    // out of the retry set (the prior message-substring gate had exactly
+    // that bug — it missed `awaiting_endpoint`).  A message-substring
+    // check remains as a fallback for a pre-structured-reason broker.
     const auto is_retryable_reason = [](const nlohmann::json &r) -> bool {
+        static constexpr std::string_view kRetryable[] = {
+            "awaiting_first_heartbeat", "heartbeat_stalled", "awaiting_endpoint"};
+        const auto reason = r.value("reason", std::string{});
+        for (const auto &rr : kRetryable)
+            if (reason == rr) return true;
         const auto msg = r.value("message", std::string{});
-        return msg.find("awaiting_first_heartbeat") != std::string::npos ||
-               msg.find("heartbeat_stalled")        != std::string::npos;
+        for (const auto &rr : kRetryable)
+            if (msg.find(rr) != std::string_view::npos) return true;
+        return false;
     };
     const auto retry_deadline = std::chrono::steady_clock::now() +
                                 std::chrono::milliseconds{timeout_ms};
