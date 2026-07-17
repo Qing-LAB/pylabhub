@@ -186,7 +186,13 @@ C0-C6 (L3 test revival); AUTH-7 SHM happy+deny + AUTH-7 ZMQ deny.
    attack coverage is L2 `MutualAuth_RejectsWrongProducerPubkey` (an L4
    squatter was scrapped as redundant — the baseline handshake already
    binds the producer key at Frame 2).  HEP-0044 §8.4 updated.
-6. REVIEW-D (#277) → REVIEW-E (#278) — Phase 1 production-ready.
+6. ~~REVIEW-D (#277)~~ ✅ **CLOSED 2026-07-17**
+   (`docs/code_review/REVIEW_AUTH_ReviewD_2026-07-17.md`) — PID-liveness
+   sweep removed (`a00a4188`); allowlist+revocation cycle pinned end-to-end
+   at L3 (`ConsumerAttach_DeniedAfterDereg` #2369 + supporting) + L2 gate +
+   ledger unit; passive-revocation contract confirmed; L4 data-plane cycle
+   explicitly deferred.  **→ REVIEW-E (#278) is the sole remaining Phase 1
+   gate.**
 7. AUTH-6 bookkeeping — File 10 Suite 2 delete on #152.
 
 ### Line 2 — Security Module (SMS) consolidation
@@ -291,7 +297,7 @@ verify, strict-mode reject, tests).  Documented in HEP-CORE-0041
 | Phase | Goal | Trackers |
 |---|---|---|
 | **Phase 0** ✅ DONE | TODO/archive hygiene — close shipped-but-mislabeled items, archive 6 closed reviews, refresh sprint focus.  Phase 0a (commit `dfe86a61`) + Phase 0b 2026-06-27 (this commit) — AUTH_TODO compressed 1616→564 lines (archive index at `docs/archive/transient-2026-06-27/todo-completions/AUTH_TODO_completions.md`); Core Structure Change Protocol walk for #275 S5 at `docs/code_review/REVIEW_S5_CoreStructure_2026-06-27.md`. | shipped |
-| **Phase 1** — CURVE chain close | AUTH-5 → AUTH-6 → #257 (1j) → AUTH-7 → #275 S2..S5 (1i-cleanup deletion + Core Structure rename) → REVIEW-C → #262 → REVIEW-D → REVIEW-E (production-readiness final gate) | #104, #154, #257, AUTH-7, #275, #276, #262, #277, #278 |
+| **Phase 1** — CURVE chain close | AUTH-5 ✅ → AUTH-6 ✅ → #257 (1j) ✅ → AUTH-7 ✅ → #275 S2..S5 ✅ → REVIEW-C ✅ → #262 ✅ → REVIEW-D ✅ (closed 2026-07-17) → **REVIEW-E (production-readiness final gate — SOLE REMAINING)** | #104, #154, #257, AUTH-7, #275, #276, #262, #277, #278 |
 | **Phase 2a** — Role-host unification | Collapse `ProducerRoleHost` (549 LOC) + `ConsumerRoleHost` (456 LOC) + `ProcessorRoleHost` (649 LOC) into a single canonical `worker_main_()` skeleton inside `RoleHostFrame`. | #292 (new) |
 | **Phase 2b** — Template RAII Phases 2-5 | `SlotIterator` over QueueWriter/Reader, timing parity with `run_data_loop`, `TypedInboxClient<MsgT>` / `TypedBand<EventT>`, `SimpleRoleHost<SlotT>` template parameterising the unified skeleton. | API_TODO §"Template RAII" Phases 2-5 |
 | **Phase 3** — CLI `--init` one-shot bundling | `do_init()` wiring (`get_required_uid` + password chain + `cfg.create_keypair()`) + `HubDirectory::init_directory()` signature extension + 24+ L4 test-site migration. | #155 (in flight) |
