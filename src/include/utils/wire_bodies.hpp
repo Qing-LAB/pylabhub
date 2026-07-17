@@ -604,18 +604,6 @@ PLH_WIRE_BODY_CLASS(DeregAckBody)
     }
 };
 
-// HeartbeatAckBody retained as archaeological reference — no wire
-// message reads it under the current `HEARTBEAT_NOTIFY` shape (which
-// is fire-and-forget per HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY).  Kept
-// zero-cost until callers are audited for removal in a follow-on.
-PLH_WIRE_BODY_CLASS(HeartbeatAckBody)
-  public:
-    [[nodiscard]] std::string status() const
-    {
-        return detail::read_string(body_, "status");
-    }
-};
-
 PLH_WIRE_BODY_CLASS(DiscReqBody)
   public:
     [[nodiscard]] std::string channel_name() const

@@ -451,7 +451,7 @@ TEST_F(DispatchChannelClosingTest, NoCallback_DefaultStopsAndConsumes)
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_notify("ch.a", "producer_deregistered"));
-    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_other("NON_NOTIFY_MSG"));
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
 
     EXPECT_FALSE(core.is_shutdown_requested())
@@ -467,7 +467,7 @@ TEST_F(DispatchChannelClosingTest, NoCallback_DefaultStopsAndConsumes)
     ASSERT_EQ(msgs.size(), 1u)
         << "all CHANNEL_CLOSING_NOTIFY entries must be consumed by the "
            "default-stop path (audit D1)";
-    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
 
     EXPECT_TRUE(core.is_shutdown_requested())
         << "default action MUST call request_stop() when no callback";
@@ -542,7 +542,7 @@ TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
     eng.has_on_channel_closing = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_other("NON_NOTIFY_MSG"));
     msgs.push_back(make_notify("ch.a", "voluntary"));
     msgs.push_back(make_other("CHANNEL_EVENT_NOTIFY"));
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
@@ -558,7 +558,7 @@ TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
     EXPECT_EQ(eng.calls[1].second, "pending_timeout");
 
     ASSERT_EQ(msgs.size(), 3u);
-    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
     EXPECT_EQ(msgs[1].event, "CHANNEL_EVENT_NOTIFY");
     EXPECT_EQ(msgs[2].event, "OTHER");
 }
@@ -662,7 +662,7 @@ class DispatchConsumerDiedTest : public ::testing::Test
 // "user-override-or-native-default" model, CONSUMER_DIED's default is
 // no-op — but the notify is STILL consumed.  Producers that don't
 // define on_consumer_died never see CONSUMER_DIED_NOTIFY in msgs.
-// Non-notify entries (HEARTBEAT_ACK etc.) are preserved.
+// Non-notify entries (NON_NOTIFY_MSG etc.) are preserved.
 // No default stop fires (the producer survives consumer death).
 TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
 {
@@ -672,7 +672,7 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_consumer_died("ch.a", "cons-1", "heartbeat_timeout"));
-    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_other("NON_NOTIFY_MSG"));
     msgs.push_back(make_consumer_died("ch.b", "cons-2", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
@@ -683,7 +683,7 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
     ASSERT_EQ(msgs.size(), 1u)
         << "CONSUMER_DIED_NOTIFY entries must be consumed by the "
            "default-no-op path (unified dispatch — audit D1/D2)";
-    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
 
     EXPECT_FALSE(core.is_shutdown_requested())
         << "consumer death is not by itself reason to stop the "
@@ -726,7 +726,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
     eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_other("NON_NOTIFY_MSG"));
     msgs.push_back(make_consumer_died("ch.a", "u1", "heartbeat_timeout"));
     msgs.push_back(make_other("CHANNEL_EVENT_NOTIFY"));
     msgs.push_back(make_consumer_died("ch.b", "u2", "heartbeat_timeout"));
@@ -737,7 +737,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     ASSERT_EQ(msgs.size(), 3u);
-    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
     EXPECT_EQ(msgs[1].event, "CHANNEL_EVENT_NOTIFY");
     EXPECT_EQ(msgs[2].event, "OTHER");
 }
@@ -886,7 +886,7 @@ TEST_F(DispatchHubDeadTest, NoCallback_MasterDefaultStopsAndConsumes)
 
     std::vector<IncomingMessage> msgs;
     msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/true));
-    msgs.push_back(make_other("HEARTBEAT_ACK"));
+    msgs.push_back(make_other("NON_NOTIFY_MSG"));
 
     EXPECT_FALSE(core.is_shutdown_requested())
         << "precondition: stop must not yet be requested";
@@ -898,7 +898,7 @@ TEST_F(DispatchHubDeadTest, NoCallback_MasterDefaultStopsAndConsumes)
         << "engine must not be called when has_callback returns false";
     ASSERT_EQ(msgs.size(), 1u)
         << "HUB_DEAD must be consumed by the default-action path";
-    EXPECT_EQ(msgs[0].event, "HEARTBEAT_ACK");
+    EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
 
     EXPECT_TRUE(core.is_shutdown_requested())
         << "master hub-death default MUST call request_stop()";

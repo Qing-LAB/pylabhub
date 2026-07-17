@@ -321,13 +321,6 @@ HeartbeatNotifyBody::HeartbeatNotifyBody(nlohmann::json body)
     d::require_envelope_hash(body_);
 }
 
-HeartbeatAckBody::HeartbeatAckBody(nlohmann::json body)
-{
-    body_ = std::move(body);
-    d::require(body_, "status", d::JsonKind::String);
-    d::require_envelope_hash(body_);
-}
-
 DiscReqBody::DiscReqBody(nlohmann::json body)
 {
     body_ = std::move(body);

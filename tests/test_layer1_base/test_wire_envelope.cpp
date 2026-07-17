@@ -692,16 +692,6 @@ TEST(WireBodies, ChannelAuthAppliedAckBodyValidatesAllFields)
     EXPECT_EQ(b.confirmed_version(), 7ULL);
 }
 
-// ── HeartbeatAckBody: status only.
-TEST(WireBodies, HeartbeatAckBodyValidatesAllFields)
-{
-    nlohmann::json body;
-    body["status"]        = "success";
-    body["envelope_hash"] = "deadbeef";
-    pylabhub::wire::HeartbeatAckBody b(std::move(body));
-    EXPECT_EQ(b.status(), "success");
-}
-
 // ── DeregReqBody: channel_name, role_uid + security triple.
 TEST(WireBodies, DeregReqBodyValidatesAllFields)
 {

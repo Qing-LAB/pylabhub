@@ -238,13 +238,12 @@ Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
    Verified against code: heartbeat is fire-and-forget `HEARTBEAT_NOTIFY`,
    no ack (send returns void; broker handler emits nothing).
 
-**Code-cruft follow-ups found while verifying (need go-ahead — CODE changes):**
-- Dead `HeartbeatAckBody` struct + its isolated L1 test
-  (`test_wire_envelope.cpp:696`) — never sent/received/dispatched; labeled
-  "archaeological, no wire".  Candidate deletion.
-- `test_dispatch_notifications.cpp` uses the fictional string `"HEARTBEAT_ACK"`
-  (10 sites) as an arbitrary "other message" placeholder — misleading name for
-  a message that does not exist; rename to a clearly-fake token.
+**Code-cruft follow-ups — DONE 2026-07-17 (verified, build clean, 98/98 tests pass):**
+- Deleted dead `HeartbeatAckBody` (declaration in `wire_bodies.hpp`, ctor in
+  `wire_bodies.cpp`, isolated L1 test in `test_wire_envelope.cpp`).  The full
+  `pylabhub-utils` lib recompiled cleanly — nothing referenced it.
+- Renamed the misleading `"HEARTBEAT_ACK"` placeholder → `"NON_NOTIFY_MSG"`
+  (10 sites) in `test_dispatch_notifications.cpp`.
 
 ### HEP-CORE-0047 — Messaging & Communication Master Reference
 
