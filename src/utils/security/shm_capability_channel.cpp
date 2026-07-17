@@ -626,6 +626,19 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
             std::strerror(recv_errno));
     }
 
+    // Fail closed on a truncated control message.  MSG_CTRUNC means the
+    // kernel dropped part of the ancillary data — e.g. a sender that
+    // attached more than one SCM_RIGHTS fd (the kernel installs only the
+    // first and discards the rest, so no fd leaks, but an honest producer
+    // sends exactly one).  Reject the anomalous message rather than
+    // silently accept the first fd of it.  REVIEW-C (#276), 2026-07-16.
+    if (msg.msg_flags & MSG_CTRUNC)
+    {
+        throw std::runtime_error(
+            "ShmCapabilityConsumer: truncated ancillary data (MSG_CTRUNC) — "
+            "malformed/multi-fd SCM_RIGHTS message from producer.");
+    }
+
     cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     if (cmsg == nullptr || cmsg->cmsg_level != SOL_SOCKET ||
         cmsg->cmsg_type != SCM_RIGHTS ||

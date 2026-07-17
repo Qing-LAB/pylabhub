@@ -301,6 +301,47 @@ TEST_F(AttachProtocolTest, RoundTrip_HelloAndChallengeResponse)
         ::close(*connected_fd);
 }
 
+// ── D3 consumer-dial retry contract (REVIEW-C #276) ────────────────────────
+// The retry loop in `RoleAPIBase::apply_consumer_reg_ack` (role_api_base.cpp
+// ~1614) depends on this nullopt-vs-throw split: a transport connect failure
+// (ENOENT / ECONNREFUSED) means the producer's L2 listener isn't bound YET —
+// the H3a race where CONSUMER_REG_ACK beats the producer's bind — and MUST be
+// signalled by `std::nullopt` so the loop retries.  A programmer/protocol
+// error MUST throw so the loop bails immediately.  Contract site:
+// attach_protocol.cpp:320-331 (connect) + :280-308 (boundary).
+
+TEST_F(AttachProtocolTest, ConnectToUnboundEndpoint_ReturnsNulloptNotThrow)
+{
+    const auto cons = MakeKeypair("cons");
+    const auto prod = MakeKeypair("prod"); // well-formed pubkey; connect fails first
+    // Path is minted but never bound → AF_UNIX connect() fails with ENOENT.
+    const auto path = unique_socket_path("h3a_race_unbound");
+
+    ConsumerAuthMaterial cons_auth{"consumer.test.h3a", cons.pub_z85, cons.name};
+
+    std::optional<int> result;
+    ASSERT_NO_THROW({
+        result = initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
+                                              std::chrono::milliseconds{200});
+    }) << "ENOENT/ECONNREFUSED is the H3a retry signal — MUST NOT throw";
+    EXPECT_FALSE(result.has_value())
+        << "unbound endpoint must yield nullopt so the dial loop retries";
+}
+
+TEST_F(AttachProtocolTest, EmptyEndpoint_ThrowsNotNullopt)
+{
+    const auto cons = MakeKeypair("cons");
+    const auto prod = MakeKeypair("prod");
+    ConsumerAuthMaterial cons_auth{"consumer.test.empty", cons.pub_z85, cons.name};
+    // A boundary/programmer error must throw (so the dial loop bails), NOT
+    // return nullopt (which would spin the retry loop uselessly).
+    EXPECT_THROW(
+        initiate_consumer_handshake("", cons_auth, prod.pub_z85,
+                                    std::chrono::milliseconds{200}),
+        std::invalid_argument)
+        << "empty endpoint is a programmer error — must throw, not retry";
+}
+
 // ── LOAD-BEARING: cryptographic proof actually rejects impersonator ────────
 
 TEST_F(AttachProtocolTest, RejectsConsumerWithWrongSeckey)
