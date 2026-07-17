@@ -15,6 +15,15 @@
 
 ## 0. Status + scope
 
+> **Wire-name note (2026-07-17).**  Earlier drafts of this HEP called the
+> operator/admin query `BROKER_SHM_INFO_REQ`.  That is **not a separate
+> message** — the shipped wire query is `SHM_BLOCK_QUERY_REQ` / `SHM_BLOCK_QUERY_ACK`
+> (role-side API `BrokerRequestComm::query_shm_info(channel)`; handler
+> `handle_shm_block_query`).  This HEP's observer work **extends the response**
+> of that existing query (adds `metrics_source`, `producer_state`); it does not
+> introduce a new message.  All occurrences below use the real wire name.  See
+> HEP-CORE-0047 registry.
+
 ### 0.1 What this HEP covers
 
 This HEP specifies how the broker attaches to a producer's SHM channel **as a metrics observer** — a distinct role from a data consumer — using the same underlying `AttachProtocol` handshake (HEP-CORE-0044) but with a distinct trust anchor and a distinct downstream capability (a header-page-only memfd, no data-plane access).
@@ -70,7 +79,7 @@ The broker becomes an **observer** — a distinct role type that goes through `A
 
 ### 1.3 Worked example
 
-Concrete scenario: broker starts up, a temperature-sensor producer registers a channel `"lab.temp"`, and later an operator queries `BROKER_SHM_INFO_REQ` to see live metrics.
+Concrete scenario: broker starts up, a temperature-sensor producer registers a channel `"lab.temp"`, and later an operator queries `SHM_BLOCK_QUERY_REQ` to see live metrics.
 
 ```mermaid
 sequenceDiagram
@@ -99,7 +108,7 @@ sequenceDiagram
     Note over B: Wrap in DataBlockObserverHandle;<br/>cache fd in unordered_map<channel_name, ObserverEntry>
 
     Note over B,O: Operator query — real-time metrics read from cached fd
-    O->>B: BROKER_SHM_INFO_REQ (admin plane)
+    O->>B: SHM_BLOCK_QUERY_REQ (admin plane)
     Note over B: datablock_get_metrics_from_fd(cached_fd, &m)<br/>Reads atomic counters directly.<br/>No wire hop, no heartbeat wait.
     B-->>O: { slot_count, commit_index, throughput, ..., metrics_source: "attached" }
 
@@ -111,7 +120,7 @@ sequenceDiagram
 
 ### 1.4 Key property preserved
 
-Real-time observation.  Broker reads `slot_rw_state[i]` atomics directly from the mmap'd memfd — same code path a same-machine dashboard uses under HEP-CORE-0019.  A `BROKER_SHM_INFO_REQ` completes in the same wall-clock as pre-HEP-0041.  No heartbeat interval, no producer round-trip, no serialization through a role process.
+Real-time observation.  Broker reads `slot_rw_state[i]` atomics directly from the mmap'd memfd — same code path a same-machine dashboard uses under HEP-CORE-0019.  A `SHM_BLOCK_QUERY_REQ` completes in the same wall-clock as pre-HEP-0041.  No heartbeat interval, no producer round-trip, no serialization through a role process.
 
 ---
 
@@ -154,7 +163,7 @@ The old model: open by name on demand, per query.  Under the new model this requ
 | Option | Trigger | Cost per query | Cost per channel lifetime |
 |---|---|---|---|
 | **a** ✅ | **Immediately after producer `REG_REQ` succeeds** | **~0 (fd already cached)** | **1 handshake** |
-| b | Lazy — first `BROKER_SHM_INFO_REQ` | Full handshake (10s of ms) | 1 handshake |
+| b | Lazy — first `SHM_BLOCK_QUERY_REQ` | Full handshake (10s of ms) | 1 handshake |
 | c | Per query (mimics old) | Full handshake every query | N queries |
 
 **Decision: (a).**  The pre-HEP-0041 code's INTENT was "broker always able to observe channel metrics."  Its MECHANISM was "open by name."  We preserve the intent using the mechanism the new authenticated model demands (persist the connection).
@@ -462,7 +471,7 @@ Total scope: ~40 LOC across config + role hosts.
 
 ### 8.1 Response field
 
-`BROKER_SHM_INFO_REQ`'s response gains a per-channel `metrics_source` field with a small enum:
+`SHM_BLOCK_QUERY_REQ`'s response gains a per-channel `metrics_source` field with a small enum:
 
 | Value | Meaning |
 |---|---|
@@ -506,9 +515,9 @@ Broker's `collect_shm_info` (currently `broker_service.cpp:5866`) is rewritten t
 
 ### 9.2 L4 end-to-end
 
-- **Happy path:** broker starts, producer registers SHM channel, admin calls `BROKER_SHM_INFO_REQ`, response carries live metrics with `metrics_source="attached"`.
-- **Crash safety:** producer is SIGKILL'd; within `PeerDeathWatcher` latency (Linux: ms; non-Linux: heartbeat interval), broker's observer entry is torn down; subsequent `BROKER_SHM_INFO_REQ` reports `metrics_source="unavailable"` with `producer_state="Dead"`.
-- **Opt-out:** producer starts with `startup.shm_metrics_observer: false`; broker's observer-attach fails cleanly; `BROKER_SHM_INFO_REQ` reports `metrics_source="heartbeat"` with `producer_state="Live"`.
+- **Happy path:** broker starts, producer registers SHM channel, admin calls `SHM_BLOCK_QUERY_REQ`, response carries live metrics with `metrics_source="attached"`.
+- **Crash safety:** producer is SIGKILL'd; within `PeerDeathWatcher` latency (Linux: ms; non-Linux: heartbeat interval), broker's observer entry is torn down; subsequent `SHM_BLOCK_QUERY_REQ` reports `metrics_source="unavailable"` with `producer_state="Dead"`.
+- **Opt-out:** producer starts with `startup.shm_metrics_observer: false`; broker's observer-attach fails cleanly; `SHM_BLOCK_QUERY_REQ` reports `metrics_source="heartbeat"` with `producer_state="Live"`.
 - **Broker restart:** broker restarts mid-session; new observer pubkey published on next REG_ACK; but producer's channel is already registered — needs to handle a fresh REG_REQ path (producer re-REGs after seeing broker come back, per existing HEP-CORE-0023 presence FSM).  New pubkey stashed, new observer connection established.
 - **Multi-producer:** broker observes N producers' SHM channels in parallel; observer_map_ concurrency stress test.
 

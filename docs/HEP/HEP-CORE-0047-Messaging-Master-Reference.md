@@ -88,6 +88,15 @@ notification (`IMPLEMENTATION_GUIDANCE § Error Taxonomy`).
 
 ### 3.1 Registration & channel lifecycle
 
+> **Registration is channel creation.**  There is no dedicated
+> "create channel" wire message (`CREATE_CHANNEL_REQ` never existed — it was a
+> phantom in HEP-CORE-0018).  A channel is created as a side-effect of the
+> **first registration** on a channel name: the first `REG_REQ` (producer-
+> binding topologies — fan-out / one-to-one) or, under fan-in, the binding-side
+> consumer's first `CONSUMER_REG_REQ`.  The broker signals first-vs-subsequent
+> with `admission.channel_opened` (`broker_service.cpp:2666`/`:3649`).  This is
+> the entry point for every channel.
+
 | Message | Dir | Cat | Primary HEP | Code anchor |
 |---|---|---|---|---|
 | `REG_REQ` / `REG_ACK` | →B / B→ | RA | HEP-CORE-0046 (catalog -0007 §12) | `wire_dispatch.cpp` Tier::RegReq; `broker_service.cpp` process_message |
@@ -96,6 +105,8 @@ notification (`IMPLEMENTATION_GUIDANCE § Error Taxonomy`).
 | `CONSUMER_DEREG_REQ` / `CONSUMER_DEREG_ACK` | →B / B→ | RA | HEP-CORE-0007 §12 | Tier::AuthReg_ConsumerDereg |
 | `ENDPOINT_UPDATE_REQ` / `ENDPOINT_UPDATE_ACK` | →B / B→ | RA | HEP-CORE-0021 §16 | Tier::AuthReg_EndpointUpdate |
 | `CHANNEL_CLOSING_NOTIFY` | B→ | FF | HEP-CORE-0007 §12 | `send_closing_notify` (`broker_service.cpp:6009`) |
+| `ROLE_REGISTERED_NOTIFY` — **planned, NOT implemented** | B→ | FF | HEP-CORE-0007 §12 | none (no wire literal in `src`); planned for federation role-presence propagation |
+| `ROLE_DEREGISTERED_NOTIFY` — **planned, NOT implemented** | B→ | FF | HEP-CORE-0007 §12 | none (planned; sibling of `ROLE_REGISTERED_NOTIFY`) |
 
 ### 3.2 Channel admission / auth-changed
 

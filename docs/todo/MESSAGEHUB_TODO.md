@@ -266,6 +266,30 @@ index updated with an -0047 pointer + staleness note.
 3. **Enumerate the Inbox (HEP-0027) wire family** into §3 when #191/#103 land.
 4. **Sweep residual old-names** listed above (0022/0033/0015/0023).
 
+### Doc-vs-code message audit — RESOLVED 2026-07-17
+
+Diffed every message token in the docs against the actual `src` wire literals.
+Four doc-only names were reconciled against code:
+- `ROLE_REGISTERED_NOTIFY` / `ROLE_DEREGISTERED_NOTIFY` — **not implemented**
+  (no `src` literal); kept as **planned** (federation role-presence
+  propagation).  HEP-0007 spec sections + HEP-0007/0015 event tables +
+  HEP-0047 registry now marked "planned, not implemented."
+- `BROKER_SHM_INFO_REQ` (HEP-0045) — same message as shipped
+  `SHM_BLOCK_QUERY_REQ` (`query_shm_info` / `handle_shm_block_query`); HEP-0045
+  renamed to the real wire name + §0 note that the observer extends its response.
+- `CREATE_CHANNEL_REQ` (HEP-0018) — phantom; channel creation is the first
+  `REG_REQ` / (fan-in) `CONSUMER_REG_REQ`, flagged by `admission.channel_opened`.
+  Fixed HEP-0018 §15.3 + added the definition to HEP-0047 §3.1.
+- `KNOWN_ROLES_REQ` (HEP-0040) — never a real message; `known_roles` is
+  file-provisioned (`KnownRolesStore::load_from_file`), and wire pubkeys arrive
+  via `CONSUMER_REG_ACK`/`REG_ACK.initial_allowlist`/`GET_CHANNEL_AUTH_ACK.allowlist`.
+  Fixed HEP-0040:800.
+
+Verified-legit (design-future / never-shipped / historical, left as-is):
+`CHANNEL_KEY_ROTATION_NOTIFY` (0041 Phase 2), `CHANNEL_WARNING_NOTIFY` (0019
+hypothetical), `METRICS_COLLECT_REQ` (0019 "never shipped"),
+`CHANNEL_AUTH_UPDATE_ACK` (0036 retired-design history).
+
 ### #92 (HIGH-leverage) — Audit all `_REQ` frames against HEP-0007 §12.2.1
 
 The REQ shape contract (Sync vs Fire-and-forget) was codified in

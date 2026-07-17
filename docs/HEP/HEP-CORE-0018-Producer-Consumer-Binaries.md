@@ -1181,9 +1181,17 @@ never inspects the transport type, and never calls transport-specific methods. T
 
 **Producer role (channel creator):**
 
+> **Channel creation = first registration.**  There is no dedicated
+> `CREATE_CHANNEL_REQ` message (it never existed on the wire).  A channel is
+> created as a side-effect of the **first `REG_REQ`** on a channel name; the
+> broker signals this with `admission.channel_opened == true` (first-producer
+> vs. subsequent-join).  Under fan-in topology the binding-side consumer's
+> first `CONSUMER_REG_REQ` creates the channel instead.  See HEP-CORE-0047
+> §"registration is channel creation".
+
 1. Role host builds `ProducerOptions` with `item_size`, `flexzone_size`, SHM config
-2. `hub::Producer::create()` → `CREATE_CHANNEL_REQ` to broker (data_transport="shm")
-3. Broker creates channel entry, replies `CREATE_CHANNEL_ACK`
+2. `hub::Producer::create()` → `REG_REQ` to broker (data_transport="shm")
+3. Broker creates the `ChannelEntry` (first registration → `channel_opened=true`), replies `REG_ACK`
 4. `establish_channel()`: allocates `DataBlockProducer` (shared memory segment),
    creates `ShmQueue` wrapper → sets internal `queue_writer_`
 5. Role host: `out_producer_->start_queue()`

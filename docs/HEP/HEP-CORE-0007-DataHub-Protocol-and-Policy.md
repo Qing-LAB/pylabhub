@@ -778,7 +778,7 @@ Messages are grouped into four categories based on their flow pattern:
 |----------|---------|---------|
 | **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, GET_CHANNEL_AUTH_REQ/ACK, ~~GET_CHANNEL_PRODUCERS_REQ/ACK~~ (**RETIRED 2026-07-08** per topology migration — REG_REQ path subsumes; see the amendment banner at §12), ENDPOINT_UPDATE_REQ/ACK (post-bind endpoint publish — see HEP-CORE-0021 §16.5) |
 | **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_NOTIFY, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_SEND_NOTIFY |
-| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_DELIVER_NOTIFY, ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
+| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_DELIVER_NOTIFY, _(planned, not yet implemented:)_ ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
 | **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_SEND_NOTIFY, BAND_MEMBERS_REQ/ACK |
 
 ### 12.2.1 REQ shape contract — Sync vs Fire-and-Forget (added 2026-05-21)
@@ -2083,7 +2083,14 @@ Handler:    handle_channel_broadcast_req (broker_service.cpp:6197), dispatched
 
 See HEP-CORE-0030 §9.1 for the channel-bound vs band-bound coexistence model.
 
-#### ROLE_REGISTERED_NOTIFY — Role Registration Event (added 2026-03-10)
+#### ROLE_REGISTERED_NOTIFY — Role Registration Event
+
+> **Status: NOT YET IMPLEMENTED — planned.**  The broker does not currently
+> emit this message (no wire literal exists in `src`).  It is retained here as
+> a designed message, planned for **federation role-presence propagation** (so
+> a role on one hub can learn when a peer registers on a federated hub).  Until
+> it ships, treat the spec below as the intended contract, not live behavior.
+> Cross-ref: HEP-CORE-0047 registry (marked `planned`).
 
 ```
 Direction:  Broker → ALL connected roles on this hub
@@ -2105,7 +2112,11 @@ Use cases:
   - Dynamic pipeline adaptation: consumer reacts when new processor connects
 ```
 
-#### ROLE_DEREGISTERED_NOTIFY — Role Deregistration Event (added 2026-03-10)
+#### ROLE_DEREGISTERED_NOTIFY — Role Deregistration Event
+
+> **Status: NOT YET IMPLEMENTED — planned** (federation role-presence
+> propagation; sibling of `ROLE_REGISTERED_NOTIFY` above).  The broker does not
+> emit this message today.  Cross-ref: HEP-CORE-0047 registry (`planned`).
 
 ```
 Direction:  Broker → ALL connected roles on this hub
@@ -2272,8 +2283,8 @@ through the `msgs` parameter.
 | ~~`consumer_left`~~ | ~~P2P BYE~~ | — | **REMOVED** — P2C protocol eliminated. Use BAND_LEAVE_NOTIFY (HEP-CORE-0030) |
 | `consumer_died` | Broker CONSUMER_DIED_NOTIFY | Producer, Processor | `event`, `uid`, `pid`, `reason`, `source_hub_uid` |
 | `channel_closing` | Broker CHANNEL_CLOSING_NOTIFY | All roles | `event`, `channel_name`, `reason`, `source_hub_uid` |
-| `role_registered` | Broker ROLE_REGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
-| `role_deregistered` | Broker ROLE_DEREGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `reason`, `source_hub_uid` |
+| `role_registered` _(planned, not impl.)_ | Broker ROLE_REGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
+| `role_deregistered` _(planned, not impl.)_ | Broker ROLE_DEREGISTERED_NOTIFY | All roles | `event`, `role_uid`, `role_type`, `channel`, `reason`, `source_hub_uid` |
 | `band_broadcast` | Broker BAND_BROADCAST_DELIVER_NOTIFY | Band members | `event`, `band`, `sender_uid`, `body`, `source_hub_uid` |
 | `band_join` | Broker BAND_JOIN_NOTIFY | Band members | `event`, `band`, `role_uid`, `source_hub_uid` |
 | `band_leave` | Broker BAND_LEAVE_NOTIFY | Band members | `event`, `band`, `role_uid`, `source_hub_uid` |

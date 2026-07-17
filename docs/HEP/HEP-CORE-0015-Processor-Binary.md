@@ -519,8 +519,8 @@ for m in messages:
 | `consumer_left` | P2P BYE on out-side | `event`, `identity`, `source_hub_uid` |
 | `consumer_died` | Broker CONSUMER_DIED_NOTIFY | `event`, `pid`, `reason`, `source_hub_uid` |
 | `channel_closing` | Broker CHANNEL_CLOSING_NOTIFY | `event`, `channel_name`, `reason`, `source_hub_uid` |
-| `role_registered` | Broker ROLE_REGISTERED_NOTIFY | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
-| `role_deregistered` | Broker ROLE_DEREGISTERED_NOTIFY | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
+| `role_registered` _(planned, not yet implemented)_ | Broker ROLE_REGISTERED_NOTIFY | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
+| `role_deregistered` _(planned, not yet implemented)_ | Broker ROLE_DEREGISTERED_NOTIFY | `event`, `role_uid`, `role_type`, `channel`, `source_hub_uid` |
 | `broadcast` | Broker CHANNEL_BROADCAST_DELIVER_NOTIFY | `event`, `channel_name`, `sender_uid`, `message`, `data`, `source_hub_uid` |
 | _(app event)_ | Broker CHANNEL_EVENT_NOTIFY relay | `event`=_app string_, `sender_uid`, `source_hub_uid` |
 | `producer_message` | P2P ctrl from consumer | `event`, `type`, `data`, `source_hub_uid` |
