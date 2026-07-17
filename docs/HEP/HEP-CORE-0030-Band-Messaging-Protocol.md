@@ -8,7 +8,7 @@
 | **Created**   | 2026-04-10                                           |
 | **Area**      | Control Plane Protocol                               |
 | **Depends on**| HEP-CORE-0007 (Protocol Reference), HEP-CORE-0036 §9.4 (band CURVE wiring inherits hub-wide `known_roles[]` allowlist; bands use the role's identity keypair on band sockets; no per-band CURVE keypair) |
-| **Supersedes**| HEP-CORE-0007 §12 Peer-to-Peer category (HELLO/BYE, ChannelHandle/Pattern P2C sockets).  Note: the `CHANNEL_BROADCAST_REQ` / `CHANNEL_EVENT_NOTIFY` / `CHANNEL_BROADCAST_NOTIFY` channel-bound family is NOT superseded — see §9.1 for the channel-bound vs band-bound coexistence model (corrected 2026-05-17, audit T3). |
+| **Supersedes**| HEP-CORE-0007 §12 Peer-to-Peer category (HELLO/BYE, ChannelHandle/Pattern P2C sockets).  Note: the channel-bound broadcast/event family (`CHANNEL_BROADCAST_SEND_NOTIFY` / `CHANNEL_BROADCAST_DELIVER_NOTIFY` / `CHANNEL_EVENT_NOTIFY` — the first two renamed from `CHANNEL_BROADCAST_REQ`/`_NOTIFY` per HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY) is NOT superseded — see §9.1 for the channel-bound vs band-bound coexistence model (corrected 2026-05-17, audit T3; names 2026-07-14). |
 
 ---
 
@@ -473,28 +473,29 @@ broadcast plane.  They are complementary along different axes:
 
 | Message | Audience | Use case | Caller |
 |---|---|---|---|
-| `CHANNEL_BROADCAST_REQ` / `CHANNEL_BROADCAST_NOTIFY` (HEP-CORE-0007 §12.4-12.5) | Producer + ALL consumers of a registered data channel | "Tell everyone working with this data channel that X happened" | `HubAPI::broadcast_channel`, `AdminService::broadcast`, federation relay (`request_broadcast_channel`) — implemented at `broker_service.cpp:3083-handle_channel_broadcast_req` |
+| `CHANNEL_BROADCAST_SEND_NOTIFY` (sender→broker) / `CHANNEL_BROADCAST_DELIVER_NOTIFY` (broker→recipients) — renamed from `CHANNEL_BROADCAST_REQ`/`_NOTIFY` per HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY (HEP-CORE-0007 §"Broker Notifications") | Producer + ALL consumers of a registered data channel | "Tell everyone working with this data channel that X happened" | `HubAPI::broadcast_channel`, `AdminService::handle_broadcast_channel`, in-process `request_broadcast_channel`, federation relay — `handle_channel_broadcast_req` (`broker_service.cpp:6197`, dispatched at `:1826`) |
 | `BAND_BROADCAST_SEND_NOTIFY` / `BAND_BROADCAST_DELIVER_NOTIFY` (this HEP §5) | Members of an explicit pub/sub band | "Tell everyone in the coordination group X that Y happened" | Role scripts via `api.band_broadcast(name, body)` |
-| `CHANNEL_EVENT_NOTIFY` (HEP-CORE-0007 §12.5) | Same as CHANNEL_BROADCAST_NOTIFY but for typed events (checksum reports, peer-relayed CHANNEL_NOTIFY_REQ) | Broker-initiated channel-bound event delivery | Emitted by broker from `handle_channel_notify_req` + `handle_checksum_error_report` (NotifyOnly policy) |
+| `CHANNEL_EVENT_NOTIFY` (HEP-CORE-0007 §"Broker Notifications") | Producer + consumers of a data channel | Broker-initiated **typed event** delivery (Cat 2 informational) — e.g. slot-checksum reports; distinct from the caller-initiated broadcast above | Emitted by broker from `handle_checksum_error_report` (NotifyOnly policy; `broker_service.cpp:6159`/`:6167`) and the federation-inbound path `handle_hub_relay_msg` (`:7377`) |
 
 Channel membership is **registry-derived** (broker tracks who REG'd /
 CONSUMER_REG'd on a channel).  Band membership is **opt-in** (a role
 must explicitly `band_join` to receive).  They serve different
 coordination needs; both stay in the protocol.
 
-`CHANNEL_NOTIFY_REQ` is a half-deprecated case:
+`CHANNEL_NOTIFY_REQ` has been **fully retired** (audit R3.6, 2026-05-17):
 
-- **Role-side wire surface is dead** as of audit O1 (2026-05-17).
-  `BrokerRequestComm::send_notify` has zero src/tests/ callers and is a
-  cleanup candidate.
-- **Broker-side handler remains** at `handle_channel_notify_req` because
-  HEP-CORE-0022 federation peers may still relay channel events via
-  this wire message (`relay_notify_to_peers` forward path).  The handler
-  forwards as `CHANNEL_EVENT_NOTIFY` to local channel producers.
+- **Role-side wire surface is dead** (audit O1, 2026-05-17).
+  `BrokerRequestComm::send_notify` has zero src/tests/ callers.
+- **Broker-side handler is deleted** — `handle_channel_notify_req` was
+  removed along with its dispatch entry; an incoming `CHANNEL_NOTIFY_REQ`
+  now receives `UNKNOWN_MSG_TYPE` (`broker_service.cpp:6178`).
 
-When the federation relay is itself reworked, `CHANNEL_NOTIFY_REQ` can
-be folded into a federation-internal wire format.  Until then it
-remains a load-bearing intermediate.
+Federation channel-event relay is now carried by `HUB_RELAY_MSG`
+(HEP-CORE-0022), not `CHANNEL_NOTIFY_REQ`: the **outbound** path is
+`relay_notify_to_peers` (called from `handle_channel_broadcast_req`), and
+the **inbound** path is `handle_hub_relay_msg`, which delivers the relayed
+event locally as `CHANNEL_EVENT_NOTIFY` to registered channel producers
+(`broker_service.cpp:7377`).
 
 ---
 

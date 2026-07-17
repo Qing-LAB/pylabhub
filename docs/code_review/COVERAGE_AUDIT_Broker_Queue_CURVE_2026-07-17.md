@@ -118,9 +118,11 @@ inbox CURVE) or defensive / low-severity, plus doc-hygiene divergences.
    a silent drop (`broker_service.cpp:4558`); the test `StaleInstanceGuardOnAppliedReq`
    pins the *current* behavior, i.e. locks in the divergence (interim compromise
    pending "Phase 2.4 timer wiring").
-3. **`CHECKSUM_ERROR_REPORT` emits `CHANNEL_EVENT_NOTIFY`**, not the
-   `CHANNEL_ERROR_NOTIFY` HEP-0007 prose says (`broker_service.cpp:6151`);
-   code+test agree, HEP diverges. `ChecksumRepairPolicy::Repair` is a no-op stub.
+3. **`CHECKSUM_ERROR_REPORT` emits `CHANNEL_EVENT_NOTIFY`** (Cat 2), not the
+   `CHANNEL_ERROR_NOTIFY` HEP-0007 prose said (`broker_service.cpp:6151`).
+   **RESOLVED** (see "Resolved" below): the code is correct — HEP-0007 was
+   stale in two spots and has been unified. `ChecksumRepairPolicy::Repair`
+   remains a no-op stub.
 4. **`DISCOVER_CHANNEL_REQ` is a phantom** — a dangling comment
    (`broker_service.cpp:4282`) references a handler that does not exist;
    discovery is actually `DISC_REQ`.
@@ -176,12 +178,20 @@ full ctest 2555/2555.
 - Inbox CURVE task-id reconciled: #191 is the inbox-specific task, #103 the
   reused rx-queue plumbing (HEP-0027 §3.5 updated to cite both).
 
+**Resolved 2026-07-17:**
+- **`CHANNEL_EVENT_NOTIFY` for checksum errors — CODE IS CORRECT.** Investigation
+  confirmed `CHANNEL_EVENT_NOTIFY` is a live, authoritative message: a slot
+  checksum report under `NotifyOnly` is **Category 2** (informational →
+  `CHANNEL_EVENT_NOTIFY`), *not* Category 1 (invariant violation →
+  `CHANNEL_ERROR_NOTIFY`), per `IMPLEMENTATION_GUIDANCE.md § Error Taxonomy`,
+  HEP-0002, and HEP-0030 §9.1 (which explicitly retains the channel-bound
+  family — only the band-broadcast use moved to `BAND_BROADCAST_NOTIFY`). The
+  only drift was two stale statements in **HEP-0007** (§1471 wrong trigger
+  name, §1945 wrongly "REMOVED") — both fixed, and HEP-0007 now carries a
+  proper `CHANNEL_EVENT_NOTIFY` spec + a Cat-1/Cat-2 clarification table,
+  diagram, and worked example. No code change.
+
 **Flagged — needs a decision, NOT simple doc-hygiene:**
-- **CHECKSUM_ERROR_REPORT emits `CHANNEL_EVENT_NOTIFY`** (`broker_service.cpp:6151`),
-  which HEP-0007:1945 separately marks REMOVED, while HEP-0007:1471 says the
-  checksum flow uses `CHANNEL_ERROR_NOTIFY`. Code + test agree on the "removed"
-  name — a code/HEP contradiction that needs a design call (rename the emission,
-  or un-retire the message), left untouched here.
 - **Dialing-side `CONSUMER_REG` hard-rejects with `CHANNEL_NOT_FOUND`**
   (`broker_service.cpp:3222`) where HEP-0046 §7.2 says a fan-out / one-to-one
   consumer arriving before the channel exists should PEND on

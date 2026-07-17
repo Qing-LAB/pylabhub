@@ -193,6 +193,46 @@ Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
 
 ## Open broker-specific items
 
+### Notify/broadcast message doc-consistency (2026-07-17)
+
+**Authoritative specs cleaned + consistent** (HEP-0007 + HEP-0030):
+- `CHANNEL_ERROR_NOTIFY` (Cat 1) vs `CHANNEL_EVENT_NOTIFY` (Cat 2) unified in
+  HEP-0007 §"Broker Notifications" (table + Mermaid + worked example).
+- Channel-bound broadcast documented as **renamed, not removed**:
+  `CHANNEL_BROADCAST_REQ`→`CHANNEL_BROADCAST_SEND_NOTIFY`,
+  `CHANNEL_BROADCAST_NOTIFY`→`CHANNEL_BROADCAST_DELIVER_NOTIFY` (HEP-0046
+  §I-MSG-TYPE-TAXONOMY).  Live handler `handle_channel_broadcast_req`
+  (`broker_service.cpp:6197`, dispatched `:1826`).
+- HEP-0030 §9.1 coexistence table + `CHANNEL_NOTIFY_REQ` paragraph corrected
+  (handler deleted audit R3.6; federation relay now via `HUB_RELAY_MSG` →
+  `handle_hub_relay_msg:7377`, outbound `relay_notify_to_peers`).
+
+**Residual old-name occurrences (to be swept by the HEP-0047 rename-ledger +
+drift-test, NOT yet fixed):**
+- `HEP-CORE-0022` (federation) lines 17, 51 — old `CHANNEL_BROADCAST_REQ`.
+- `HEP-CORE-0033` (Hub Character) message catalog lines 1260, 3093, 3112.
+- `HEP-CORE-0015` (Processor) line 524; `HEP-CORE-0023` (Startup) line 713.
+
+### HEP-CORE-0047 — Messaging & Communication Master Reference
+
+**DRAFT LANDED 2026-07-17** — `docs/HEP/HEP-CORE-0047-Messaging-Master-Reference.md`.
+Scope: index + canonical wire-message registry (cross-cutting rules referenced,
+not moved).  Sections: plane map, registry (§3, code-verified names/dir/anchor),
+glossary, do-not-confuse pairs, rename ledger, drift-guard spec.  DOC_STRUCTURE
+index updated with an -0047 pointer + staleness note.
+
+**Open follow-ups:**
+1. **Drift test (decided guard — NOT yet written).**  Enumerate broker-dispatched
+   msg_type literals (`wire_dispatch.cpp kDispatchTable` + the direct
+   `process_message` handlers: CHECKSUM_ERROR_REPORT, HUB_PEER_*, HUB_RELAY_MSG,
+   HUB_TARGETED_MSG) and assert §3 registry ⟷ code both ways; plus an outbound
+   assertion over `send_to_identity`/`send_reply` emission sites.
+2. **Resolve owning-HEP ambiguity (⟳ rows in §3).**  Two catalogs exist
+   (HEP-0007 §12 + HEP-0033 message table); decide authoritative owner per
+   message.  Designer decision.
+3. **Enumerate the Inbox (HEP-0027) wire family** into §3 when #191/#103 land.
+4. **Sweep residual old-names** listed above (0022/0033/0015/0023).
+
 ### #92 (HIGH-leverage) — Audit all `_REQ` frames against HEP-0007 §12.2.1
 
 The REQ shape contract (Sync vs Fire-and-forget) was codified in

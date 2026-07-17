@@ -197,6 +197,12 @@ Topic-specific READMEs can summarize and link to IMPLEMENTATION_GUIDANCE and TOD
 | HEP-CORE-0019 | Metrics Plane | Design — 2026-03-02 |
 | HEP-CORE-0020 | Interactive Signal Handler | Implemented — all 4 binaries integrated |
 | HEP-CORE-0040 | Locked Key Memory | Design — 2026-06-05; impl in flight (tasks #169–#174 + #175 vault hardening) |
+| HEP-CORE-0047 | Messaging & Communication Master Reference | Reference — 2026-07-17; index + canonical wire-message registry for the messaging HEP cluster |
+
+> **Note:** this table lags the `docs/HEP/` tree (it stops naming most entries
+> after -0020).  For the messaging/communication cluster specifically, start at
+> **HEP-CORE-0047**, which maps every messaging HEP and every wire message.
+> Refreshing this whole index is a tracked chore (`MESSAGEHUB_TODO.md`).
 
 - Keep style and diagrams clear and logical.
 - Each HEP should have a short **implementation status** section that states what is implemented and what is not, with a pointer: *"For current plan and priorities, see `docs/TODO_MASTER.md`."*

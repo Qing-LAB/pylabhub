@@ -684,11 +684,18 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 
 ## 12. ZMQ Control Plane Protocol
 
-> **Note (2026-04-10):** The Peer-to-Peer message category, CHANNEL_NOTIFY_REQ,
-> CHANNEL_BROADCAST_REQ, CHANNEL_EVENT_NOTIFY, and CHANNEL_BROADCAST_NOTIFY
-> are **superseded** by HEP-CORE-0030 (Band Messaging Protocol).
-> The new protocol replaces asymmetric producer-owned channels with symmetric
-> broker-hosted pub/sub groups (bands). See HEP-CORE-0030 for the replacement protocol.
+> **Note (2026-04-10, corrected 2026-05-17 / 2026-07-14):** The Peer-to-Peer
+> message category and `CHANNEL_NOTIFY_REQ` are **superseded** by HEP-CORE-0030
+> (Band Messaging Protocol), which adds symmetric broker-hosted pub/sub groups
+> (bands).
+> **The channel-bound broadcast family is NOT superseded — it was renamed and
+> is live.**  `CHANNEL_BROADCAST_REQ` → `CHANNEL_BROADCAST_SEND_NOTIFY`, its
+> broker fan-out `CHANNEL_BROADCAST_NOTIFY` → `CHANNEL_BROADCAST_DELIVER_NOTIFY`,
+> and `CHANNEL_EVENT_NOTIFY` is retained.  Channel-bound broadcast ("everyone on
+> this data channel") and band-bound broadcast ("everyone in this band") serve
+> **different membership axes** and coexist — see HEP-CORE-0030 §9.1, the
+> `wire_dispatch.cpp` C11 ERRATUM (2026-07-14), and the specs in
+> §"Broker Notifications" below.
 
 > **Design authority note.**  The full REG_REQ / REG_ACK /
 > CONSUMER_REG_REQ / CONSUMER_REG_ACK redesign — including the
@@ -812,8 +819,10 @@ on the wire.
 - **When to use**: heartbeats, telemetry, periodic state
   re-assertions — anything where the caller can correctly proceed
   regardless of acceptance.
-- **Complete list (audit 2026-05-21):** HEARTBEAT_REQ,
-  CHECKSUM_ERROR_REPORT, CHANNEL_BROADCAST_REQ, BAND_BROADCAST_REQ.
+- **Complete list (audit 2026-05-21, names updated 2026-07-14):**
+  HEARTBEAT_NOTIFY, CHECKSUM_ERROR_REPORT, CHANNEL_BROADCAST_SEND_NOTIFY,
+  BAND_BROADCAST_SEND_NOTIFY.  (These carry the `_NOTIFY` suffix precisely
+  because they are fire-and-forget — HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY.)
 
 **Don't mix.**  A `_REQ` that has a wire `_ACK` MUST have a sync
 client API that observes it.  A `_REQ` whose client API returns
@@ -1468,7 +1477,10 @@ loop is progressing — not just that the ZMQ connection is alive.
 Direction:  Producer/Consumer → Broker
 Trigger:    BrokerRequestComm::report_checksum_error() (fire-and-forget)
 Effect:     Broker logs and, if ChecksumRepairPolicy::NotifyOnly, forwards as
-            CHANNEL_ERROR_NOTIFY to all channel participants
+            CHANNEL_EVENT_NOTIFY (Category 2 — informational, see below)
+            to all channel participants.  A slot checksum error is Cat 2,
+            NOT a Cat 1 invariant violation — it does not use
+            CHANNEL_ERROR_NOTIFY.
 
 Payload:
   channel_name          string
@@ -1482,10 +1494,15 @@ Payload:
 Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
 See HEP-CORE-0030 §5.2 for the replacement.
 
-#### ~~CHANNEL_BROADCAST_REQ~~ — **REMOVED** (superseded by HEP-CORE-0030)
+#### CHANNEL_BROADCAST_REQ → renamed `CHANNEL_BROADCAST_SEND_NOTIFY` (live)
 
-Replaced by `BAND_BROADCAST_REQ` in the new band pub/sub protocol.
-See HEP-CORE-0030 §5.2 for the replacement.
+**Renamed, not removed.**  A prior draft struck this out as "superseded by
+`BAND_BROADCAST_REQ`"; that was **wrong** — channel-bound broadcast is retained
+and serves a different membership axis than band broadcast (HEP-CORE-0030 §9.1;
+`wire_dispatch.cpp` C11 ERRATUM 2026-07-14).  It was renamed to
+`CHANNEL_BROADCAST_SEND_NOTIFY` per HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY.  Full
+spec under §"Broker Notifications" →
+`CHANNEL_BROADCAST_SEND_NOTIFY / CHANNEL_BROADCAST_DELIVER_NOTIFY`.
 
 #### ~~METRICS_REPORT_REQ~~ — **RETIRED** (Wave M1.4, 2026-05-11)
 
@@ -1942,15 +1959,129 @@ Script host delivery: Event dict in msgs:
   {"event": "channel_error", "error": "<event_string>", ...details}
 ```
 
-#### ~~CHANNEL_EVENT_NOTIFY~~ — **REMOVED** (superseded by HEP-CORE-0030)
+#### CHANNEL_EVENT_NOTIFY — Category 2 Informational Event
 
-Replaced by `BAND_BROADCAST_NOTIFY` in the new band pub/sub protocol.
-See HEP-CORE-0030 §5.3 for the replacement.
+**NOT removed.**  An earlier draft of this section struck `CHANNEL_EVENT_NOTIFY`
+out as "superseded by HEP-CORE-0030"; that was **wrong** and was corrected in
+HEP-CORE-0030 (§Supersedes note + §9.1, audit T3, 2026-05-17): the
+*channel-bound* event family is retained and coexists with the band family.
+`CHANNEL_EVENT_NOTIFY` is live in the broker (`broker_service.cpp:6159`/`:6167`
+— checksum-report forward + `:7377` federation relay).
 
-#### ~~CHANNEL_BROADCAST_NOTIFY~~ — **REMOVED** (superseded by HEP-CORE-0030)
+> **Two broadcast axes — do not conflate.**  Broadcast in this framework comes
+> in **two kinds serving different membership axes** (HEP-CORE-0030 §9.1;
+> `wire_dispatch.cpp` C11 ERRATUM 2026-07-14):
+> - **Band-bound** — `BAND_BROADCAST_SEND_NOTIFY`: "tell everyone in this
+>   pub/sub *band*" (HEP-CORE-0030).
+> - **Channel-bound** — `CHANNEL_BROADCAST_SEND_NOTIFY` (sender → broker) →
+>   broker fans out `CHANNEL_BROADCAST_DELIVER_NOTIFY` to the producer + all
+>   consumers of a registered *data channel*.
+>
+> The channel-bound broadcast was **NOT superseded by the band protocol** — it
+> was **renamed**: `CHANNEL_BROADCAST_REQ` → `CHANNEL_BROADCAST_SEND_NOTIFY`
+> (fire-and-forget takes a `_NOTIFY` suffix per HEP-CORE-0046
+> §I-MSG-TYPE-TAXONOMY) and the broker→recipient `CHANNEL_BROADCAST_NOTIFY` →
+> `CHANNEL_BROADCAST_DELIVER_NOTIFY` (to disambiguate send from delivery).  Both
+> are live: `HubAPI::broadcast_channel` / Lua+Python `broadcast_channel` /
+> `AdminService::handle_broadcast_channel` / `request_broadcast_channel` →
+> `handle_channel_broadcast_req` (`broker_service.cpp:6197`, dispatched at
+> `:1826`).  `CHANNEL_EVENT_NOTIFY` (this message) is the broker-initiated
+> typed-event sibling of that channel-bound family.
 
-Replaced by `BAND_BROADCAST_NOTIFY` in the new band pub/sub protocol.
-See HEP-CORE-0030 §5.3 for the replacement.
+```
+Direction:  Broker → channel participants (producers; consumers where the
+            emitter targets them).
+Trigger:    Category 2 (application-dependent) channel events — see the error
+            taxonomy in docs/IMPLEMENTATION_GUIDANCE.md § "Error Taxonomy".
+            Two live emitters:
+              - CHECKSUM_ERROR_REPORT under ChecksumRepairPolicy::NotifyOnly —
+                the broker forwards the slot-checksum report (Cat 2).
+              - Federation relay — HUB_RELAY_MSG delivered locally as a
+                cross-hub channel event (HEP-CORE-0022).
+Effect:     Informs participants of a soft, application-level channel event.
+            Unlike CHANNEL_ERROR_NOTIFY (Cat 1), it does NOT imply shutdown —
+            the channel keeps running.
+Dispatch:   `on_notification(cb)` callback receives msg_type
+            "CHANNEL_EVENT_NOTIFY"; role host queues an event for the script.
+
+Payload:
+  channel_name          string
+  event                 string   checksum-report / relayed-event name
+  sender_uid            string   (present on relayed / federation events)
+  ...                   json     event-specific context
+```
+
+Authority: HEP-CORE-0030 §9.1 (channel-bound vs band-bound coexistence);
+HEP-CORE-0002 §"Notification catalog" (Cat 2, informational);
+docs/IMPLEMENTATION_GUIDANCE.md § "Error Taxonomy" (Cat 1 vs Cat 2).
+
+#### CHANNEL_ERROR_NOTIFY vs CHANNEL_EVENT_NOTIFY — the Cat 1 / Cat 2 split
+
+These two channel-scoped notifications are **distinct by error category** and
+must not be conflated:
+
+| | `CHANNEL_ERROR_NOTIFY` | `CHANNEL_EVENT_NOTIFY` |
+|---|---|---|
+| Category | **1** — serious invariant violation | **2** — application-dependent |
+| Meaning | A channel-wide invariant was broken | A soft, informational event |
+| Consequence | Role is expected to **stop**; broker never repairs | Channel **keeps running** |
+| Emitters (code) | schema-mismatch on re-registration (`broker_service.cpp:2248`) | checksum report under `NotifyOnly` (`:6159`); federation relay (`:7377`) |
+| Also in taxonomy | SHM header magic/checksum corrupt (Cat 1; not yet broker-wired) | slot data checksum wrong (Cat 2) |
+| Script event | `{"event":"channel_error", ...}` | `{"event":"<event>", ...}` |
+
+```mermaid
+flowchart TD
+    E[Channel-scoped event on the broker] --> Q{Which error category?<br/>IMPLEMENTATION_GUIDANCE § Error Taxonomy}
+    Q -->|"Cat 1 — invariant violation<br/>(schema mismatch on re-reg,<br/>SHM magic/checksum corrupt)"| C1[CHANNEL_ERROR_NOTIFY<br/>event=schema_mismatch_attempt]
+    Q -->|"Cat 2 — application-dependent<br/>(slot checksum under NotifyOnly,<br/>federation relay)"| C2[CHANNEL_EVENT_NOTIFY]
+    C1 --> A1[Fan out to all EXISTING producers<br/>on the channel] --> S1["Script: {event:'channel_error'}<br/>→ role is expected to STOP<br/>(broker never repairs — Cat 1)"]
+    C2 --> A2[Deliver to channel participants] --> S2["Script: {event:'&lt;event&gt;'}<br/>→ informational; channel KEEPS RUNNING"]
+```
+
+**Worked example.**
+- *Cat 1:* Producer A owns channel `lab.temps` with `schema_hash=H1`. Producer B
+  tries to `REG_REQ` the same channel with `schema_hash=H2`. The broker rejects
+  B's registration and fans out `CHANNEL_ERROR_NOTIFY{event:"schema_mismatch_attempt",
+  existing_schema_hash:H1, attempted_schema_hash:H2, attempted_pid:<B>}` to A —
+  A's script receives `{"event":"channel_error"}` and is expected to stop
+  (a co-producer with a conflicting schema means the data contract is broken).
+- *Cat 2:* A consumer on `lab.temps` reports a bad slot checksum via
+  `CHECKSUM_ERROR_REPORT`. With `ChecksumRepairPolicy::NotifyOnly`, the broker
+  forwards `CHANNEL_EVENT_NOTIFY{event:"checksum_error", slot_index:…}` to the
+  channel participants — informational; the channel keeps running and the
+  script decides what to do.
+
+#### CHANNEL_BROADCAST_SEND_NOTIFY / CHANNEL_BROADCAST_DELIVER_NOTIFY — Channel-bound broadcast
+
+**Renamed, not removed.**  A prior draft struck this out as "superseded by
+`BAND_BROADCAST_NOTIFY`"; that was **wrong** (see `wire_dispatch.cpp` C11 ERRATUM
+2026-07-14).  Channel-bound broadcast and band-bound broadcast serve **different
+membership axes** and coexist (HEP-CORE-0030 §9.1).  The messages were renamed to
+the HEP-CORE-0046 §I-MSG-TYPE-TAXONOMY convention (fire-and-forget → `_NOTIFY`),
+not retired:
+
+| Old name | New name | Meaning |
+|---|---|---|
+| `CHANNEL_BROADCAST_REQ` | `CHANNEL_BROADCAST_SEND_NOTIFY` | Sender → broker: "broadcast this to my channel" |
+| `CHANNEL_BROADCAST_NOTIFY` | `CHANNEL_BROADCAST_DELIVER_NOTIFY` | Broker → each recipient: fan-out delivery |
+
+```
+Direction:  Sender → broker (SEND); broker → producer + ALL consumers of the
+            channel (DELIVER).
+Trigger:    Application calls HubAPI::broadcast_channel (Lua/Python
+            `broadcast_channel`), AdminService::handle_broadcast_channel, or the
+            in-process BrokerService::request_broadcast_channel; federation
+            relays a peer broadcast.
+Effect:     "Tell everyone working with this data channel that X happened"
+            (e.g. message="start"/"stop" + optional data payload).  Distinct
+            from BAND_BROADCAST_SEND_NOTIFY, which targets band membership.
+Handler:    handle_channel_broadcast_req (broker_service.cpp:6197), dispatched
+            from process_message at :1826; fans out
+            CHANNEL_BROADCAST_DELIVER_NOTIFY at :6234 (consumers) / :6250
+            (producer).
+```
+
+See HEP-CORE-0030 §9.1 for the channel-bound vs band-bound coexistence model.
 
 #### ROLE_REGISTERED_NOTIFY — Role Registration Event (added 2026-03-10)
 
