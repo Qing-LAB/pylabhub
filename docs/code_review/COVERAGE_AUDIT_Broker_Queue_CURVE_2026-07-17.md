@@ -124,8 +124,15 @@ inbox CURVE) or defensive / low-severity, plus doc-hygiene divergences.
 4. **`DISCOVER_CHANNEL_REQ` is a phantom** — a dangling comment
    (`broker_service.cpp:4282`) references a handler that does not exist;
    discovery is actually `DISC_REQ`.
-5. **HEP-0046 §7.1 "CHANNEL_NOT_FOUND retires" is partial/asymmetric** — the REG
-   side no longer emits it, but CONSUMER_REG (`:3222`) and DISC (`:2880`) still do.
+5. **`CHANNEL_NOT_FOUND` retirement is narrow by design, not asymmetric.**
+   Verified 2026-07-17: HEP-0046 §7.1 retires it only for the **dialing-side
+   REG_REQ** admission path; it *correctly survives* for observability +
+   coordination queries (`DISC_REQ`, `GET_CHANNEL_AUTH`, `SCHEMA_REQ`,
+   `CONSUMER_ATTACH_REQ_*`, `CHANNEL_AUTH_APPLIED_REQ`, `CHECK_PEER_READY_REQ`,
+   `ENDPOINT_UPDATE_REQ`), where "channel genuinely absent" is a valid answer.
+   The only real divergence is the dialing-side `CONSUMER_REG` (see Flagged).
+   HEP-0046 §7.2:1770 said the retirement was "entirely" — an overstatement now
+   corrected to match §7.1's scoping.
 6. **Stale phase-status comments** — `broker_service.cpp:4183-4207` marks Phase
    2.3b/2.3c "⏳ pending" though both are implemented and tested.
 
@@ -175,9 +182,14 @@ full ctest 2555/2555.
   checksum flow uses `CHANNEL_ERROR_NOTIFY`. Code + test agree on the "removed"
   name — a code/HEP contradiction that needs a design call (rename the emission,
   or un-retire the message), left untouched here.
-- **CONSUMER_REG still emits `CHANNEL_NOT_FOUND`** (`broker_service.cpp:3222`)
-  where HEP-0046 §7.1/§7.2 says the dialing side should PEND — tracked
-  implementation work (HEP-0046 Phase B, **#57**), not a doc error.
+- **Dialing-side `CONSUMER_REG` hard-rejects with `CHANNEL_NOT_FOUND`**
+  (`broker_service.cpp:3222`) where HEP-0046 §7.2 says a fan-out / one-to-one
+  consumer arriving before the channel exists should PEND on
+  `awaiting_channel_created` (→ `CHANNEL_NOT_READY` on budget expiry, §7.2.3).
+  This is the **only** genuine `CHANNEL_NOT_FOUND` divergence — the other sites
+  are correct. It hard-rejects because the R6 pending mechanism (§7.2) is
+  unbuilt (the reverted Phase D R6 gate), tracked under **#57 / TOPOLOGY_TODO**.
+  Not a doc error; the HEP is accurate.
 
 **Recommended (not blocking):**
 - Add the band non-member-broadcast-sender rejection test; investigate the band

@@ -1767,10 +1767,17 @@ long-window model the design rule is: **the dialing side arriving
 at a missing channel PENDS on `awaiting_channel_created`,
 regardless of topology.**  Under fan-in that's the producer; under
 fan-out and one-to-one that's the consumer.  Both should pend.
-`CHANNEL_NOT_FOUND` retires as an admission-time reject entirely —
-under the topology model it's always either "wait a bit longer"
-(pending) or "impossible under this topology" (cardinality reject
-or transport-topology gate).  Update §7.1 and §7.2 accordingly.
+`CHANNEL_NOT_FOUND` retires as an admission-time reject **for the
+dialing-side REG_REQ only** — under the topology model that path is
+always either "wait a bit longer" (pending → `CHANNEL_NOT_READY` on
+budget expiry, §7.2.3) or "impossible under this topology"
+(cardinality reject or transport-topology gate).  It is NOT retired
+for observability / coordination queries (`DISC_REQ`,
+`GET_CHANNEL_AUTH_REQ`, `SCHEMA_REQ`, `CONSUMER_ATTACH_REQ_*`,
+`CHANNEL_AUTH_APPLIED_REQ`, `CHECK_PEER_READY_REQ`,
+`ENDPOINT_UPDATE_REQ`), where "the channel genuinely does not exist"
+remains a valid answer (§7.1).  This matches §7.1's scoping; the
+earlier "entirely" wording here overstated it.
 
 The mirror consequence: fan-out and one-to-one consumers no
 longer need BRC's retry-on-CHANNEL_NOT_READY loop for this case
