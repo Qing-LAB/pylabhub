@@ -196,9 +196,17 @@ gate_key_rotation(const RegFamilyBodyView &body,
     return std::nullopt;
 }
 
-std::optional<RejectDetail>
-gate_replay_bound(const RegFamilyBodyView &body,
-                   const AdmissionContext  &ctx) noexcept
+// Shared I-REPLAY-BOUND check (wall-clock skew + nonce dedup).  ONE
+// implementation, called by `gate_replay_bound` (REG_REQ / CONSUMER_REG_REQ
+// path) AND by `run_authenticated_reg_family_gates` (DEREG / CONSUMER_DEREG /
+// ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED path).  De-duplicated 2026-07-17 so
+// the two callers cannot drift (was: a verbatim inline copy in the auth-reg
+// runner).  File-local; both callers live in this TU.
+static std::optional<RejectDetail>
+check_replay_bound(std::string_view        role_uid,
+                    std::string_view        client_nonce,
+                    std::uint64_t           client_wall_ts,
+                    const AdmissionContext &ctx) noexcept
 {
     if (!ctx.cb || !ctx.cb->record_and_check_nonce || !ctx.cb->wall_now_ms)
     {
@@ -209,10 +217,9 @@ gate_replay_bound(const RegFamilyBodyView &body,
     // before its nonce enters the dedup map (avoids polluting the map
     // with entries an operator has to interpret).
     const std::uint64_t broker_now = ctx.cb->wall_now_ms();
-    const std::uint64_t client_ts  = body.client_wall_ts;
-    const std::uint64_t delta_ms   = broker_now > client_ts
-                                          ? broker_now - client_ts
-                                          : client_ts - broker_now;
+    const std::uint64_t delta_ms   = broker_now > client_wall_ts
+                                          ? broker_now - client_wall_ts
+                                          : client_wall_ts - broker_now;
     if (delta_ms > ctx.skew_tolerance_ms)
     {
         return make(RejectCode::replay_or_skew, "client_wall_ts",
@@ -222,15 +229,23 @@ gate_replay_bound(const RegFamilyBodyView &body,
     }
     // Nonce dedup — records the (role_uid, nonce) pair with the wall_ts
     // and returns true if fresh, false if a duplicate is already in
-    // the sliding window.
-    if (!ctx.cb->record_and_check_nonce(body.role_uid, body.client_nonce,
-                                          body.client_wall_ts))
+    // the sliding window.  NOTE: `ctx.nonce_window_ms` MUST be >=
+    // `ctx.skew_tolerance_ms` for soundness (see AdmissionContext).
+    if (!ctx.cb->record_and_check_nonce(role_uid, client_nonce, client_wall_ts))
     {
         return make(RejectCode::replay_or_skew, "client_nonce",
                     "client_nonce reused within "
                     "replay window (I-REPLAY-BOUND)");
     }
     return std::nullopt;
+}
+
+std::optional<RejectDetail>
+gate_replay_bound(const RegFamilyBodyView &body,
+                   const AdmissionContext  &ctx) noexcept
+{
+    return check_replay_bound(body.role_uid, body.client_nonce,
+                              body.client_wall_ts, ctx);
 }
 
 // ── Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8) ───────────
@@ -434,34 +449,11 @@ run_authenticated_reg_family_gates(
     if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, {}))
         return r;
 
-    // Replay-bound — nonce dedup + wall-clock skew.  Callback-driven
-    // so tests substitute a stub.  Wall-clock check runs first so a
-    // clock-off client fails fast without polluting the nonce map.
-    if (!ctx.cb || !ctx.cb->record_and_check_nonce || !ctx.cb->wall_now_ms)
-    {
-        return make(RejectCode::broker_internal_error, "",
-                    "internal: replay-check callback not bound");
-    }
-    const std::uint64_t broker_now = ctx.cb->wall_now_ms();
-    const std::uint64_t client_ts  = body.client_wall_ts;
-    const std::uint64_t delta_ms   = broker_now > client_ts
-                                          ? broker_now - client_ts
-                                          : client_ts - broker_now;
-    if (delta_ms > ctx.skew_tolerance_ms)
-    {
-        return make(RejectCode::replay_or_skew, "client_wall_ts",
-                    "wall-clock skew " + std::to_string(delta_ms) +
-                        " ms exceeds tolerance " +
-                        std::to_string(ctx.skew_tolerance_ms) + " ms");
-    }
-    if (!ctx.cb->record_and_check_nonce(body.role_uid, body.client_nonce,
-                                          body.client_wall_ts))
-    {
-        return make(RejectCode::replay_or_skew, "client_nonce",
-                    "client_nonce reused within "
-                    "replay window (I-REPLAY-BOUND)");
-    }
-    return std::nullopt;
+    // Replay-bound — I-REPLAY-BOUND (nonce dedup + wall-clock skew).
+    // Shared with the REG_REQ path via `check_replay_bound`
+    // (de-duplicated 2026-07-17; was a verbatim inline copy).
+    return check_replay_bound(body.role_uid, body.client_nonce,
+                              body.client_wall_ts, ctx);
 }
 
 // ── Control-tier gate runner ──────────────────────────────────────────

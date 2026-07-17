@@ -1373,6 +1373,19 @@ void BrokerServiceImpl::run()
                 }
                 else
                 {
+                    // LIVE admission entry point for EVERY inbound control
+                    // message.  `receive_and_validate` parses the WireEnvelope
+                    // (I-ENVELOPE-BODY-BINDING) and, for REG-family msg_types,
+                    // runs the full gate chain via `run_reg_family_gates`
+                    // (admission_gates.cpp): identity-match, grammar, role-tag,
+                    // known-role/I-PUBKEY-BINDING, key-rotation, and
+                    // I-REPLAY-BOUND (nonce dedup + wall_ts skew).  `context`
+                    // is wired at broker init (see admission_binder_ finalize
+                    // below: record_and_check_nonce → HubState::nonce_seen).
+                    // A gate rejection becomes a RejectedMessage that
+                    // `dispatch_received` turns into an ERROR reply — the
+                    // security invariants are enforced HERE, not in the
+                    // per-msg handlers.  See HEP-CORE-0046 "What is LIVE today".
                     auto received =
                         ::pylabhub::wire::dispatch::receive_and_validate(
                             std::move(raw), admission_binder_.context);
@@ -6678,7 +6691,16 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // verified through `abi_fingerprint` at the REG handler per
         // HEP-CORE-0032 §8, not by this admission pipeline).
         impl->admission_binder_.context.skew_tolerance_ms = 30'000ULL;
-        impl->admission_binder_.context.nonce_window_ms   = 10'000ULL;
+        // I-REPLAY-BOUND soundness invariant: nonce_window_ms MUST be >=
+        // skew_tolerance_ms.  A message is skew-accepted while
+        // |broker_now - client_wall_ts| <= skew.  If the nonce is forgotten
+        // sooner than that (window < skew), a replay sent in the
+        // (window, skew] gap passes the skew check but finds its nonce
+        // already pruned — and is wrongly admitted.  (Pruning is by wall_ts:
+        // an intervening legit message with a newer wall_ts advances the
+        // prune cutoff past the original's nonce.)  Keep window == skew so a
+        // replay is caught for as long as it can be skew-accepted.
+        impl->admission_binder_.context.nonce_window_ms   = 30'000ULL;
         impl->admission_binder_.finalize();
     }
 

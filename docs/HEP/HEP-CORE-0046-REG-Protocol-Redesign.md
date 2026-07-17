@@ -4,7 +4,7 @@
 |---|---|
 | **HEP** | `HEP-CORE-0046` |
 | **Title** | REG/REG_ACK Protocol Redesign — Typed Wire Envelope + Admission-Gate Pipeline |
-| **Status** | 🚧 **DESIGN LOCKED; IMPLEMENTATION IN FLIGHT.**  Phase A (typed envelope + body classes) SHIPPED with L1 coverage (46 tests).  Phase C machinery (admission gates, REG pipeline, broker adapter) SHIPPED as islanded modules with L1/L2 unit coverage (23 + 5 + 14 tests + `HubState::nonce_seen` 6 tests).  **Phase B (dispatch rewire in `broker_service.cpp` + BRC envelope migration) PENDING** — the pipeline is dead code until Phase B lands.  Phases D (retirements), E (integration tests), F (federation follow-on) PENDING.  Promoted from `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md` on 2026-07-12. |
+| **Status** | 🚧 **DESIGN LOCKED; IMPLEMENTATION IN FLIGHT.**  Phase A (typed envelope + body classes) SHIPPED with L1 coverage (46 tests).  **The admission GATES ARE LIVE** — `receive_and_validate` runs `run_reg_family_gates` (identity, grammar, known-role/I-PUBKEY-BINDING, key-rotation, I-REPLAY-BOUND) on every REG-family message at the recv loop (`broker_service.cpp:1377`); the security invariants hold in production today.  What remains **PENDING is Phase B — the HANDLER rewire** (replace `to_legacy → JSON handlers` with the typed `run_reg_admission → typed handlers` path); it is a refactor, NOT a security switch-on.  See the "What is LIVE today vs. what Phase B still does" section below for the exact call chain + code anchors.  Phases D (retirements), E (integration tests), F (federation follow-on) PENDING.  Promoted from `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md` on 2026-07-12. |
 | **Created** | 2026-07-12 (design content dates back to earlier tech-draft revs) |
 | **Depends on** | HEP-CORE-0017 §3.3.0 (topology-parametric queue factory — the abstraction that makes this cleanup possible), HEP-CORE-0036 §I11 (allowlist mutator locality — REG remains the only path that mutates channel membership), HEP-CORE-0035 §4 (Hub-Role Authentication — REG carries the CURVE identity used by ZAP), HEP-CORE-0040 §5 (KeyStore — the source of role identity keys REG proves), HEP-CORE-0023 §2 (Startup Coordination — REG is the first wire a role sends after CURVE handshake) |
 | **Related — REG-family cross-refs** | HEP-CORE-0007 §12 (DataHub protocol catalog — REG_REQ/CONSUMER_REG_REQ/DEREG_REQ live here today; retirements listed in §3 land as amendments to §12), HEP-CORE-0021 (ZMQ Endpoint Registry — `ENDPOINT_UPDATE_REQ` is REG-family under this HEP's envelope), HEP-CORE-0042 §5.5 (Channel Attach Coordination — `CHANNEL_AUTH_APPLIED_REQ` and `CHANNEL_AUTH_CHANGED_NOTIFY` flow through this envelope), HEP-CORE-0033 (Hub Character — `broker_proto` version and REG dispatch site owned by BrokerServiceImpl), HEP-CORE-0018 (Producer/Consumer Binaries — role hosts send REG_REQ / CONSUMER_REG_REQ; `binding_role_type()` naming from HEP-CORE-0036 §I9.1 flows into role_type discriminator) |
@@ -39,12 +39,59 @@ This HEP redesigns the REG-family wire around three principles:
    half-mutates state under a failing gate.  21 named invariants
    (§8.1) ride on this ordering.
 
-Phase A (typed envelope + body classes) and the islanded Phase C
-modules (gates + pipeline + broker adapter) have shipped as compile-
-verified L1/L2-tested modules.  The load-bearing next step is Phase B
-— rewire `broker_service.cpp` dispatch + BRC send/receive onto the
-envelope in one atomic commit.  Until Phase B lands, the pipeline is
-dead code and the security invariants do not hold in production.
+### What is LIVE today vs. what Phase B still does
+
+**The admission GATES — and therefore the security invariants — are LIVE in
+production.**  Do not read past this: an earlier draft of this note claimed the
+gates were "dead code" and the "invariants do not hold in production."  That was
+STALE and wrong — the recv-loop wiring below landed after it was written and
+nobody updated the note.  It cost real debugging time.  The authoritative flow,
+with exact code anchors so the next reader confirms it in seconds:
+
+**LIVE admission pipeline (runs on every REG-family message):**
+
+```mermaid
+flowchart TD
+    RECV["recv loop<br/>broker_service.cpp:1377"]
+      --> RV["receive_and_validate(raw, admission_binder_.context)"]
+    RV --> PARSE["WireEnvelope::parse<br/>I-ENVELOPE-BODY-BINDING (envelope_hash)"]
+    PARSE --> ROUTE{"msg_type → validator"}
+
+    ROUTE -->|"REG_REQ / CONSUMER_REG_REQ<br/>(carry zmq_pubkey)"| RFG["run_reg_family_gates<br/>admission_gates.cpp:372"]
+    ROUTE -->|"DEREG / CONSUMER_DEREG /<br/>ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED<br/>(no zmq_pubkey)"| ARF["run_authenticated_reg_family_gates<br/>admission_gates.cpp:401"]
+
+    RFG --> RFGG["1 identity_match — ROUTER id == role_uid<br/>2 grammar<br/>3 role_tag_policy<br/>4 known_role_binding — I-PUBKEY-BINDING<br/>5 key_rotation<br/>6 replay"]
+    ARF --> ARFG["1 identity_match<br/>2 grammar<br/>3 role_tag_policy<br/>4 replay"]
+
+    RFGG --> CRB["check_replay_bound()<br/>skew → nonce dedup (I-REPLAY-BOUND)<br/><b>ONE shared helper — the two runners cannot drift</b>"]
+    ARFG --> CRB
+
+    CRB --> DR{"any gate rejected?"}
+    DR -->|"no (validated)"| LEG["dispatch_received → to_legacy → current JSON handlers"]
+    DR -->|"yes (rejected)"| ERR["ERROR reply<br/>error_code (e.g. REPLAY_OR_SKEW)"]
+```
+The context (`admission_binder_.context`) is wired once at broker init
+(`broker_service.cpp:6615-6682`): `record_and_check_nonce → HubState::nonce_seen`,
+`wall_now_ms`, `skew_tolerance_ms`, `nonce_window_ms`.  Rejections are enforced
+(client gets an ERROR reply — see `dispatch_received`).  Coverage:
+`test_broker_reg_handler.cpp:228` (duplicate nonce → `replay_or_skew`),
+`test_hub_state_nonce_dedup.cpp`, `test_reg_admission_pipeline.cpp`.
+
+**What Phase B actually does (and does NOT do):** Phase A (typed envelope +
+body classes) shipped and is live.  The remaining Phase B work rewires the
+**handler layer** — replace the `to_legacy → JSON handlers` bridge with the
+typed `run_reg_admission → typed handlers → commit` path (`reg_admission_pipeline`).
+That is a maintainability/consistency refactor.  **It does NOT switch on the
+security invariants — those are already enforced by the LIVE gates above.**  The
+only genuinely islanded module is the typed *handler* path, not the gates.
+
+**Config-soundness invariant (`nonce_window_ms ≥ skew_tolerance_ms`) — FIXED
+2026-07-17.** The live `nonce_window_ms` was 10 s while `skew_tolerance_ms` is
+30 s, so under active traffic a replay sent 10-30 s after the original could
+slip through (skew still accepts it, but an intervening message had already
+pruned its nonce).  Now `nonce_window_ms` is set to 30 s (== skew) at
+`broker_service.cpp` and the `AdmissionContext` default; pinned by
+`HubStateNonceDedup.WindowGeSkew_ReplayCaughtDespiteInterveningTraffic`.
 
 ## Cross-reference obligations for related HEPs
 

@@ -185,7 +185,10 @@ struct AdmissionContext
 {
     const AdmissionCallbacks *cb{nullptr};              ///< non-owning
     std::uint64_t             skew_tolerance_ms{30'000ULL};
-    std::uint64_t             nonce_window_ms{10'000ULL};  ///< I-REPLAY-BOUND: 2 * pending_budget_ms
+    /// I-REPLAY-BOUND soundness: MUST be >= skew_tolerance_ms, else a replay
+    /// sent in the (window, skew] gap passes the skew check but finds its
+    /// nonce already pruned and is wrongly admitted.  Default == skew.
+    std::uint64_t             nonce_window_ms{30'000ULL};
     // Note: no `broker_proto` field.  C3 resolution retired the
     // scalar-`broker_proto` gate for REG-family REQs; wire-version +
     // ABI compatibility is verified via `abi_fingerprint` per

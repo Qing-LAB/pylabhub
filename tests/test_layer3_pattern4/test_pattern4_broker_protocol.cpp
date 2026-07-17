@@ -1555,3 +1555,90 @@ TEST_F(Pattern4BrokerProtocolTest, ChecksumErrorReport_UnknownChannel_Silent)
 
     broker.signal_quit();
 }
+
+// ── I-REPLAY-BOUND: LIVE admission path, end-to-end ──────────────────────────
+//
+// These pin the ACTUAL live wiring that the unit tests (gate_replay_bound in
+// test_admission_gates, HubState::nonce_seen in test_hub_state_nonce_dedup)
+// do NOT cover: recv loop (broker_service.cpp:1377) → receive_and_validate →
+// run_reg_family_gates → check_replay_bound → HubState::nonce_seen →
+// dispatch_received ERROR reply.  Before these, nothing proved a replayed REG
+// is rejected through the real broker.
+
+TEST_F(Pattern4BrokerProtocolTest, RegReq_ReplayedNonce_RejectedReplayOrSkew)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string uid     = "prod.replay.nonce" + suffix;
+    const std::string channel = "replay.nonce.ch" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_replay_nonce");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           client = make_wire_client(ctx, setup, uid);
+
+    // Pin client_nonce so both sends carry the SAME tag (the wire client
+    // preserves a caller-set client_nonce; a fresh client_wall_ts is stamped
+    // each send, so it is the NONCE — not skew — that trips the second one).
+    nlohmann::json body = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body["client_nonce"] = "fixed.replay.nonce.0123456789abcdef";
+
+    auto ack = client.request("REG_REQ", body, "REG_ACK",
+                               milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ack.has_value()) << "first REG_REQ timed out";
+    ASSERT_EQ(ack->value("status", std::string{}), "success")
+        << "first REG must be admitted; body=" << ack->dump();
+
+    client.send("REG_REQ", body);  // replay: same nonce
+    auto reply = client.receive(milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value()) << "no reply to replayed REG_REQ";
+    EXPECT_EQ(reply->first, "ERROR")
+        << "replayed REG must be rejected, not ACKed; got msg_type="
+        << reply->first << " body=" << reply->second.dump();
+    EXPECT_EQ(reply->second.value("error_code", std::string{}), "REPLAY_OR_SKEW")
+        << "replayed REG must reject REPLAY_OR_SKEW; body=" << reply->second.dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, RegReq_StaleTimestamp_RejectedReplayOrSkew)
+{
+    using namespace std::chrono;
+    const std::string suffix  = ".pid" + std::to_string(::getpid());
+    const std::string uid     = "prod.stale.ts" + suffix;
+    const std::string channel = "stale.ts.ch" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_stale_ts");
+    const auto     setup    = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+                milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto           client = make_wire_client(ctx, setup, uid);
+
+    // Stamp a wall_ts far in the past (well beyond the 30 s skew tolerance).
+    // client_nonce is left unset → wire client auto-stamps a fresh one, so it
+    // is the SKEW leg (not nonce reuse) that must trip.
+    nlohmann::json body    = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body["client_wall_ts"] = static_cast<std::uint64_t>(1'000'000ULL);  // ~1970
+
+    client.send("REG_REQ", body);
+    auto reply = client.receive(milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value()) << "no reply to stale-timestamp REG_REQ";
+    EXPECT_EQ(reply->first, "ERROR");
+    EXPECT_EQ(reply->second.value("error_code", std::string{}), "REPLAY_OR_SKEW")
+        << "stale wall_ts must reject REPLAY_OR_SKEW; body=" << reply->second.dump();
+
+    broker.signal_quit();
+}

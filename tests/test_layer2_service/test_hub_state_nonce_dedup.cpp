@@ -52,6 +52,28 @@ TEST(HubStateNonceDedup, NonceOutsideWindowPrunedAndReaccepted)
                                 10'000ULL));
 }
 
+// Soundness invariant (I-REPLAY-BOUND): the dedup window MUST be >= the
+// broker's skew tolerance.  Otherwise an intervening message prunes a nonce
+// while a replay of it is still skew-accepted → wrongly admitted.  With
+// window == skew (30 s, the production config as of 2026-07-17), an
+// intervening message 15 s later does NOT prune the original, so a replay of
+// it is still caught.  Under the prior 10 s window this returned TRUE (the
+// bug this pins).
+TEST(HubStateNonceDedup, WindowGeSkew_ReplayCaughtDespiteInterveningTraffic)
+{
+    HubState hub;
+    constexpr std::uint64_t window = 30'000ULL;  // == skew_tolerance_ms
+    ASSERT_TRUE(hub.nonce_seen("prod.uid1", "orig",  1'000'000ULL, window));
+    // Intervening legit message 15 s later advances the prune cutoff; with a
+    // 30 s window the original (15 s old) survives.
+    ASSERT_TRUE(hub.nonce_seen("prod.uid1", "other", 1'015'000ULL, window));
+    // Replay of the original nonce (same wall_ts) is still within the window
+    // ⇒ CAUGHT.  Under a window < 15 s this would wrongly return true.
+    EXPECT_FALSE(hub.nonce_seen("prod.uid1", "orig", 1'000'000ULL, window))
+        << "window >= skew must keep the original nonce long enough to catch "
+           "a replay that the skew check still accepts";
+}
+
 TEST(HubStateNonceDedup, DifferentRolesIndependentWindows)
 {
     HubState hub;
