@@ -7,8 +7,6 @@
 //   DiagnosticHandle maps the shared memory segment R/W.  The SharedMemoryHeader pointer
 //   returned by diag->header() is writable, so we can directly modify header fields
 //   (reserved_header bytes for layout checksum, magic_number atomic field, etc.).
-//
-// Secrets start at 78001.
 
 #include "datahub_integrity_repair_workers.h"
 #include "test_entrypoint.h"
@@ -28,7 +26,7 @@ namespace pylabhub::tests::worker::integrity_repair
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
-static DataBlockConfig make_integrity_config(uint64_t secret, ChecksumPolicy cp)
+static DataBlockConfig make_integrity_config(ChecksumPolicy cp)
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -64,7 +62,7 @@ int validate_integrity_fresh_checksum_block_passes()
         []()
         {
             std::string channel = make_test_channel_name("IntegrityFresh");
-            DataBlockConfig cfg = make_integrity_config(78001, ChecksumPolicy::Enforced);
+            DataBlockConfig cfg = make_integrity_config(ChecksumPolicy::Enforced);
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
@@ -103,7 +101,7 @@ int validate_integrity_detects_layout_checksum_mismatch()
         []()
         {
             std::string channel = make_test_channel_name("IntegrityLayout");
-            DataBlockConfig cfg = make_integrity_config(78002, ChecksumPolicy::None);
+            DataBlockConfig cfg = make_integrity_config(ChecksumPolicy::None);
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
@@ -172,7 +170,7 @@ int validate_integrity_detects_magic_number_corruption()
         []()
         {
             std::string channel = make_test_channel_name("IntegrityMagic");
-            DataBlockConfig cfg = make_integrity_config(78003, ChecksumPolicy::None);
+            DataBlockConfig cfg = make_integrity_config(ChecksumPolicy::None);
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,

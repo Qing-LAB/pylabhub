@@ -7,8 +7,6 @@
 //   - Each test builds a complete valid config, then invalidates exactly one field.
 //   - EXPECT_THROW verifies the correct exception type.
 //   - The "valid config" test confirms a fully-configured producer succeeds.
-//
-// Secret numbers: 73001–73099
 
 #include "datahub_config_validation_workers.h"
 #include "test_entrypoint.h"
@@ -29,7 +27,7 @@ static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModu
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Returns a fully-valid baseline config. Tests override individual fields to trigger throws.
-static DataBlockConfig make_valid_config(uint64_t secret)
+static DataBlockConfig make_valid_config()
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -83,7 +81,7 @@ int policy_unset_throws()
         {
             std::string channel = make_test_channel_name("CfgPolicyUnset");
 
-            DataBlockConfig cfg = make_valid_config(73001);
+            DataBlockConfig cfg = make_valid_config();
             cfg.policy = DataBlockPolicy::Unset;
 
             expect_invalid_arg(channel, cfg, DataBlockPolicy::Unset,
@@ -103,7 +101,7 @@ int consumer_sync_policy_unset_throws()
         {
             std::string channel = make_test_channel_name("CfgSyncUnset");
 
-            DataBlockConfig cfg = make_valid_config(73002);
+            DataBlockConfig cfg = make_valid_config();
             cfg.consumer_sync_policy = ConsumerSyncPolicy::Unset;
 
             expect_invalid_arg(channel, cfg, cfg.policy,
@@ -123,7 +121,7 @@ int physical_page_size_unset_throws()
         {
             std::string channel = make_test_channel_name("CfgPageUnset");
 
-            DataBlockConfig cfg = make_valid_config(73003);
+            DataBlockConfig cfg = make_valid_config();
             cfg.physical_page_size = DataBlockPageSize::Unset;
 
             expect_invalid_arg(channel, cfg, cfg.policy,
@@ -143,7 +141,7 @@ int ring_buffer_capacity_zero_throws()
         {
             std::string channel = make_test_channel_name("CfgCapZero");
 
-            DataBlockConfig cfg = make_valid_config(73004);
+            DataBlockConfig cfg = make_valid_config();
             cfg.ring_buffer_capacity = 0;
 
             expect_invalid_arg(channel, cfg, cfg.policy,
@@ -163,7 +161,7 @@ int valid_config_creates_successfully()
         {
             std::string channel = make_test_channel_name("CfgValid");
 
-            DataBlockConfig cfg = make_valid_config(73005);
+            DataBlockConfig cfg = make_valid_config();
             auto producer = create_datablock_producer_impl(channel, cfg.policy,
                                                            cfg, nullptr, nullptr);
             EXPECT_NE(producer, nullptr)
@@ -186,7 +184,7 @@ int sub_cache_line_logical_size_rounds_up()
         {
             std::string channel = make_test_channel_name("CfgSubCacheLine");
 
-            DataBlockConfig cfg = make_valid_config(73006);
+            DataBlockConfig cfg = make_valid_config();
             // 48 is not a multiple of 64.  The library silently rounds up to 64.
             cfg.logical_unit_size = 48;
 

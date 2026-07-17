@@ -12,7 +12,6 @@
 // Test strategy:
 // - Each test runs in an isolated process via run_gtest_worker
 // - Tests use implementation functions directly to avoid template/schema complexity
-// - Secret numbers start at 71001 to avoid conflicts with other test suites
 // - Metrics are verified via DataBlockProducer::get_metrics() / DataBlockConsumer::get_metrics()
 //
 // Test list:
@@ -43,7 +42,7 @@ namespace pylabhub::tests::worker::c_api_slot_protocol
 static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
-static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, int capacity, uint64_t secret)
+static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, int capacity)
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -66,7 +65,7 @@ int write_slot_read_slot_roundtrip()
         []()
         {
             std::string channel = make_test_channel_name("CApiRoundtrip");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71001);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2);
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -117,7 +116,7 @@ int commit_advances_metrics()
         []()
         {
             std::string channel = make_test_channel_name("CApiCommitMetrics");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4, 71002);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4);
 
             auto fpp_ = pylabhub::tests::helper::make_fd_backed_producer(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -171,7 +170,7 @@ int abort_does_not_commit()
         []()
         {
             std::string channel = make_test_channel_name("CApiAbort");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71003);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2);
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -218,7 +217,7 @@ int latest_only_reads_latest()
         []()
         {
             std::string channel = make_test_channel_name("CApiLatestOnly");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4, 71004);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 4);
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -267,7 +266,7 @@ int single_reader_reads_sequentially()
         {
             std::string channel = make_test_channel_name("CApiSingleReader");
             // capacity=4 to hold all 3 writes without blocking
-            auto cfg = make_config(ConsumerSyncPolicy::Sequential, 4, 71005);
+            auto cfg = make_config(ConsumerSyncPolicy::Sequential, 4);
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -320,7 +319,7 @@ int write_returns_null_when_ring_full()
         {
             std::string channel = make_test_channel_name("CApiRingFull");
             // capacity=2: fill both slots without consuming → 3rd acquire must fail
-            auto cfg = make_config(ConsumerSyncPolicy::Sequential, 2, 71006);
+            auto cfg = make_config(ConsumerSyncPolicy::Sequential, 2);
 
             auto fpp_ = pylabhub::tests::helper::make_fd_backed_producer(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -368,7 +367,7 @@ int read_returns_null_on_empty_ring()
         []()
         {
             std::string channel = make_test_channel_name("CApiReadEmpty");
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2, 71007);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 2);
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -399,7 +398,7 @@ int metrics_accumulate_across_writes()
         {
             std::string channel = make_test_channel_name("CApiMetricsAccum");
             // Large capacity to avoid ring-full during the 5 writes
-            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 8, 71008);
+            auto cfg = make_config(ConsumerSyncPolicy::Latest_only, 8);
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);

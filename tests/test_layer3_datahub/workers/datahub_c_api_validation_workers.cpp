@@ -7,8 +7,6 @@
 //   - Create datablocks via impl (no templates) to keep dependency on C API surfaces only.
 //   - Verify that raw C API functions return expected codes on fresh datablocks.
 //   - Verify that integrity validation fails gracefully on a non-existent datablock name.
-//
-// Secret numbers: 75001–75099
 
 #include "datahub_c_api_validation_workers.h"
 #include "test_entrypoint.h"
@@ -28,7 +26,7 @@ static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModu
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Returns a fully-valid baseline config.
-static DataBlockConfig make_valid_config(uint64_t secret, uint32_t capacity = 2)
+static DataBlockConfig make_valid_config(uint32_t capacity = 2)
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -51,7 +49,7 @@ int validate_integrity_on_fresh_datablock()
         {
             std::string channel = make_test_channel_name("CApiValIntegrity");
 
-            DataBlockConfig cfg = make_valid_config(75001);
+            DataBlockConfig cfg = make_valid_config();
             auto producer =
                 create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -98,7 +96,7 @@ int get_metrics_fresh_has_zero_commits()
         {
             std::string channel = make_test_channel_name("CApiValMetrics");
 
-            DataBlockConfig cfg = make_valid_config(75003);
+            DataBlockConfig cfg = make_valid_config();
             auto producer =
                 create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -127,7 +125,7 @@ int diagnose_slot_fresh_is_free()
         {
             std::string channel = make_test_channel_name("CApiValDiagSlot");
 
-            DataBlockConfig cfg = make_valid_config(75004);
+            DataBlockConfig cfg = make_valid_config();
             auto producer =
                 create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
@@ -158,7 +156,7 @@ int diagnose_all_slots_returns_capacity()
             std::string channel = make_test_channel_name("CApiValDiagAll");
 
             constexpr uint32_t capacity = 3;
-            DataBlockConfig cfg = make_valid_config(75005, capacity);
+            DataBlockConfig cfg = make_valid_config(capacity);
             auto producer =
                 create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);

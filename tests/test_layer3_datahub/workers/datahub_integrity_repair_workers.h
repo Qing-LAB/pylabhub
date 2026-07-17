@@ -13,7 +13,6 @@
  * unsuitable for in-place repair testing via the standard test fixture.  That path is
  * tracked in TESTING_TODO.md § "Medium Priority".
  *
- * Secrets start at 78001.
  */
 namespace pylabhub::tests::worker::integrity_repair
 {

@@ -10,7 +10,6 @@
 //   kDeadPid = 2147483647 (INT32_MAX).  No Linux process has this PID
 //   (kernel max is 4194304).  kill(INT32_MAX, 0) returns ESRCH → is_process_alive=false.
 //
-// Secrets start at 77001.
 //
 // Scenario list:
 //   1. zombie_writer_detected_and_released  — dead PID in write_lock → release_zombie_writer → FREE
@@ -41,7 +40,7 @@ static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 // INT32_MAX as a dead PID — guaranteed not to be a live process on any Linux system.
 static constexpr uint64_t kDeadPid = 2147483647ULL;
 
-static DataBlockConfig make_recovery_config(uint64_t secret)
+static DataBlockConfig make_recovery_config()
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -69,7 +68,7 @@ int zombie_writer_detected_and_released()
                 << "Test invariant: kDeadPid (" << kDeadPid << ") must not be a live process";
 
             std::string channel = make_test_channel_name("ZombieWriter");
-            DataBlockConfig cfg = make_recovery_config(77001);
+            DataBlockConfig cfg = make_recovery_config();
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
@@ -149,7 +148,7 @@ int zombie_readers_force_cleared()
         []()
         {
             std::string channel = make_test_channel_name("ZombieReaders");
-            DataBlockConfig cfg = make_recovery_config(77002);
+            DataBlockConfig cfg = make_recovery_config();
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
@@ -225,7 +224,7 @@ int force_reset_slot_on_dead_writer()
                 << "Test invariant: kDeadPid must not be a live process";
 
             std::string channel = make_test_channel_name("ForceResetDeadWriter");
-            DataBlockConfig cfg = make_recovery_config(77003);
+            DataBlockConfig cfg = make_recovery_config();
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
@@ -300,7 +299,7 @@ int dead_consumer_cleanup()
                 << "Test invariant: kDeadPid must not be a live process";
 
             std::string channel = make_test_channel_name("DeadConsumerCleanup");
-            DataBlockConfig cfg = make_recovery_config(77004);
+            DataBlockConfig cfg = make_recovery_config();
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,
@@ -382,7 +381,7 @@ int force_reset_unsafe_when_writer_alive()
         []()
         {
             std::string channel = make_test_channel_name("ForceResetUnsafe");
-            DataBlockConfig cfg = make_recovery_config(77006);
+            DataBlockConfig cfg = make_recovery_config();
 
             auto producer = create_datablock_producer_impl(channel,
                                                            DataBlockPolicy::RingBuffer,

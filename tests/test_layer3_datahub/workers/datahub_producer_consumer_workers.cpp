@@ -1,5 +1,5 @@
 // tests/test_layer3_datahub/workers/error_handling_workers.cpp
-// DataBlock/slot error paths: timeout, wrong secret, invalid handle, bounds checks.
+// DataBlock/slot error paths: timeout, invalid handle, bounds checks.
 // Ensures recoverable errors return false/nullptr/empty instead of undefined behavior.
 #include "datahub_producer_consumer_workers.h"
 #include "datahub_fd_test_helper.h"  // #275-S2: fd-source pair + producer-only helpers

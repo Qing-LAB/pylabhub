@@ -8,7 +8,6 @@
  * zombie writer (dead PID in write_lock), zombie readers (stale reader_count), and dead
  * consumer heartbeats.  State is injected via DiagnosticHandle after creation.
  *
- * Secrets start at 77001.
  */
 namespace pylabhub::tests::worker::recovery_scenarios
 {

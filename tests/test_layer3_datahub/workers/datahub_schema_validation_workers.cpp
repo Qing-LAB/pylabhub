@@ -207,7 +207,7 @@ int both_schemas_mismatch_rejected()
 
 // ============================================================================
 // consumer_mismatched_capacity_rejected
-// Producer and consumer have the same secret and schemas but different
+// Producer and consumer have the same schemas but different
 // ring_buffer_capacity. The layout checksum (configs_match) must reject the consumer.
 // ============================================================================
 

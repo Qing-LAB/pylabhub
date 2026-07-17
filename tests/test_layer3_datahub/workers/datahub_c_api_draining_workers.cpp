@@ -12,7 +12,6 @@
 // - Writer thread calls acquire_write_slot(5000) and blocks on drain. Main thread holds or
 //   releases the read slot as needed, then joins the writer thread.
 // - DiagnosticHandle is used to inspect raw SlotRWState during the drain window.
-// - Secret numbers start at 72001 to avoid conflicts with other test suites.
 //
 // Test list:
 //   1. draining_state_entered_on_wraparound   — 1-slot ring; reader held; writer wraps → DRAINING
@@ -44,7 +43,7 @@ static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModu
 static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 
 // Helper: build a 1-slot Latest_only config (forces wraparound on second write)
-static DataBlockConfig make_one_slot_config(uint64_t secret)
+static DataBlockConfig make_one_slot_config()
 {
     DataBlockConfig cfg{};
     cfg.policy = DataBlockPolicy::RingBuffer;
@@ -83,7 +82,7 @@ int draining_state_entered_on_wraparound()
         []()
         {
             std::string channel = make_test_channel_name("DrainState");
-            auto cfg = make_one_slot_config(72001);
+            auto cfg = make_one_slot_config();
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -150,7 +149,7 @@ int draining_rejects_new_readers()
         []()
         {
             std::string channel = make_test_channel_name("DrainReject");
-            auto cfg = make_one_slot_config(72002);
+            auto cfg = make_one_slot_config();
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -220,7 +219,7 @@ int draining_resolves_after_reader_release()
         []()
         {
             std::string channel = make_test_channel_name("DrainResolve");
-            auto cfg = make_one_slot_config(72003);
+            auto cfg = make_one_slot_config();
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -296,7 +295,7 @@ int draining_timeout_restores_committed()
         []()
         {
             std::string channel = make_test_channel_name("DrainTimeout");
-            auto cfg = make_one_slot_config(72004);
+            auto cfg = make_one_slot_config();
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -630,7 +629,7 @@ int drain_hold_true_never_returns_nullptr()
         []()
         {
             std::string channel = make_test_channel_name("DrainHoldNoNull");
-            auto cfg = make_one_slot_config(72008);
+            auto cfg = make_one_slot_config();
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
@@ -714,7 +713,7 @@ int drain_hold_true_metrics_accumulated()
         []()
         {
             std::string channel = make_test_channel_name("DrainHoldMetrics");
-            auto cfg = make_one_slot_config(72009);
+            auto cfg = make_one_slot_config();
 
             auto pair_ = pylabhub::tests::helper::make_fd_backed_pair(
                 channel, DataBlockPolicy::RingBuffer, cfg);
