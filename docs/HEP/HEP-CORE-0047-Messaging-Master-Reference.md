@@ -115,6 +115,8 @@ notification (`IMPLEMENTATION_GUIDANCE § Error Taxonomy`).
 | `CHANNEL_AUTH_APPLIED_REQ` / `CHANNEL_AUTH_APPLIED_ACK` | →B / B→ | RA | HEP-CORE-0042 §5.5 | Tier::AuthReg_ChanAuthApplied |
 | `CHANNEL_AUTH_CHANGED_NOTIFY` | B→ | FF | HEP-CORE-0042 | emitted on admit/revoke (`fire_channel_auth_changed_notify`) |
 | `GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` | →B / B→ | RA | HEP-CORE-0042 / -0036 ⟳ | Tier::Control_GetChannelAuth |
+| `CONSUMER_ATTACH_REQ_SHM` / `CONSUMER_ATTACH_ACK_SHM` | →B / B→ | RA | HEP-CORE-0041 §9 D4 / -0042 §6.1 | **producer**-initiated pre-attach gate (broker_proto 6→7): producer asks whether a consumer is authorized before sending the SHM capability fd; stateless read-only query. `handle_consumer_attach_req_shm` (`broker_service.cpp:4039`, dispatched `:1703`). **Not** in `kDispatchTable` (ungated). |
+| `CONSUMER_ATTACH_REQ_ZMQ` / `CONSUMER_ATTACH_ACK_ZMQ` | →B / B→ | RA | HEP-CORE-0042 §6.2 / §5.4 | **consumer**-initiated pre-attach gate: consumer asks whether producer P's ZAP cache is caught up; fast-path `success` or wait-path (`{status:pending}`, enqueue + fire `CHANNEL_AUTH_CHANGED_NOTIFY`). `handle_consumer_attach_req_zmq` (`broker_service.cpp:4196`, dispatched `:1719`). **Not** in `kDispatchTable` (ungated). |
 
 ### 3.3 Liveness & control
 
@@ -176,7 +178,7 @@ notification (`IMPLEMENTATION_GUIDANCE § Error Taxonomy`).
 
 | Message | Dir | Cat | Primary HEP | Code anchor |
 |---|---|---|---|---|
-| SHM AttachProtocol Frame 1/2/3 + SCM_RIGHTS capability | peer↔peer | binary frames | HEP-CORE-0044 / -0041 | `attach_protocol.cpp`, `shm_capability_channel.cpp` — **not** JSON wire msg_types |
+| SHM AttachProtocol Frame 1/2/3 + SCM_RIGHTS capability | peer↔peer | binary frames | HEP-CORE-0044 / -0041 | `attach_protocol.cpp`, `shm_capability_channel.cpp` — the **binary peer-to-peer handshake**, distinct from the broker-coordination JSON messages `CONSUMER_ATTACH_REQ_SHM`/`_ZMQ` in §3.2 (those ARE JSON wire msg_types) |
 | `UNKNOWN_MSG_TYPE` | B→ | reply | HEP-CORE-0007 | reply to any unrecognized or retired msg_type |
 
 > **Inbox (HEP-CORE-0027).**  The point-to-point inbox family is not yet
@@ -241,28 +243,39 @@ still show pre-rename names as if current): `HEP-CORE-0022` (federation) lines
 ## 7. Keeping the registry honest — drift guard
 
 The registry in §3 is prose and will rot the moment code changes, exactly like
-the strike-throughs that motivated this HEP.  The guard is a **test**, not
-discipline:
+the strike-throughs that motivated this HEP.  The eventual guard is a **test**,
+not discipline.
 
-- **Source of truth for inbound messages:** `wire_dispatch.cpp kDispatchTable`
-  (the gated set) plus the handful of handlers dispatched directly in
-  `process_message` outside the tier table (`CHECKSUM_ERROR_REPORT`,
-  `HUB_PEER_HELLO`/`_BYE`/`_HELLO_ACK`, `HUB_RELAY_MSG`, `HUB_TARGETED_MSG`).
-- **The test** enumerates the msg_type literals the broker dispatches and
-  asserts:
-  1. every dispatched inbound msg_type has a §3 registry row (no undocumented
-     message);
-  2. every §3 inbound row names a msg_type the code actually dispatches (no
-     phantom / stale-name row);
-  3. renamed messages do NOT appear under their old name anywhere in the
-     registry except the §6 ledger.
-- On drift the test fails and points at the offending name, so a rename cannot
-  land without updating this document.
+**The correct anchor is `process_message`, NOT `kDispatchTable` alone.**  An
+earlier draft named `kDispatchTable` (`wire_dispatch.cpp`) as the source of
+truth.  That is wrong: `kDispatchTable` is only the **gated tier-lookup subset**
+(21 entries), while `broker_service.cpp process_message` actually dispatches
+**29** inbound msg_types.  The 8 dispatched-but-ungated handlers are
+`CHECKSUM_ERROR_REPORT`, `CONSUMER_ATTACH_REQ_SHM`, `CONSUMER_ATTACH_REQ_ZMQ`,
+`HUB_PEER_HELLO`/`_BYE`/`_HELLO_ACK`, `HUB_RELAY_MSG`, `HUB_TARGETED_MSG`.  A
+guard anchored only to `kDispatchTable` silently misses those 8 (this is exactly
+how §3.2's `CONSUMER_ATTACH_REQ_*` rows were originally missed).
 
-Outbound (`B→`) and federation (`B↔B`) messages are emitted, not dispatched, so
-they are covered by a companion assertion over the `send_to_identity` /
-`send_reply` emission sites rather than `kDispatchTable`.
+The test, when written, asserts:
+1. `process_message` dispatches exactly the §3 registry's inbound set (no
+   undocumented message; no phantom / stale-name row);
+2. `kDispatchTable` ⊆ that set, with the 8 ungated handlers on an explicit
+   allowlist (so a message can't be dispatched with no tier by accident);
+3. renamed messages never appear under an old name outside the §6 ledger.
+Outbound (`B→`) / federation (`B↔B`) messages are emitted, not dispatched, so a
+companion assertion covers the `send_to_identity` / `send_reply` emission sites.
 
-> **Implementation status:** the drift test is specified here and tracked in
-> `docs/todo/MESSAGEHUB_TODO.md`; it is not yet written.  Until it lands, §3 is
-> maintained by hand and the §2 caveat applies.
+> **Implementation status — DEFERRED, rides with HEP-CORE-0046 Phase B.**
+> The `21-vs-29` split is not a bug to patch; it is the fingerprint of the
+> half-migrated dispatch: `kDispatchTable` + the typed body classes are the
+> **new** framework (HEP-CORE-0046 typed `WireEnvelope` + admission-gate
+> pipeline — Phase A shipped, Phase C islanded), while the 29-branch
+> `process_message` if/else is the **old** hand-parsed JSON dispatch.  When
+> HEP-0046 **Phase B** rewires `process_message` onto the typed pipeline, the
+> old chain disappears, `kDispatchTable` becomes the single complete source of
+> truth, and this drift closes structurally — so the reconciliation test belongs
+> **with Phase B, as its guard**, not as a standalone patch now.  Building it
+> separately today would be parallel plumbing that Phase B reworks.
+> **HEP-0046 Phase B is intentionally deferred behind the AUTH critical path
+> (it is orthogonal work).**  Until then §3 is a hand-maintained mirror and the
+> §2 caveat applies.  Tracked in `docs/todo/MESSAGEHUB_TODO.md`.

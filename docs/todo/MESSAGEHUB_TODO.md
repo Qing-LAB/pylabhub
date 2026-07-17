@@ -253,12 +253,26 @@ not moved).  Sections: plane map, registry (§3, code-verified names/dir/anchor)
 glossary, do-not-confuse pairs, rename ledger, drift-guard spec.  DOC_STRUCTURE
 index updated with an -0047 pointer + staleness note.
 
+**Doc gap fixed 2026-07-17:** added `CONSUMER_ATTACH_REQ_SHM`/`_ACK_SHM`
+(producer-initiated pre-attach gate, HEP-0041 §9 D4) and
+`CONSUMER_ATTACH_REQ_ZMQ`/`_ACK_ZMQ` (consumer-initiated, HEP-0042 §6.2) to
+HEP-0047 §3.2 — real broker-dispatched JSON control messages (proto 6→7) that
+the registry had omitted; corrected §3.9 to distinguish them from the binary
+AttachProtocol frames.  This omission is exactly what the drift test would catch.
+
 **Open follow-ups:**
-1. **Drift test (decided guard — NOT yet written).**  Enumerate broker-dispatched
-   msg_type literals (`wire_dispatch.cpp kDispatchTable` + the direct
-   `process_message` handlers: CHECKSUM_ERROR_REPORT, HUB_PEER_*, HUB_RELAY_MSG,
-   HUB_TARGETED_MSG) and assert §3 registry ⟷ code both ways; plus an outbound
-   assertion over `send_to_identity`/`send_reply` emission sites.
+1. **Drift test — DEFERRED; rides with HEP-0046 Phase B (task #57), which is
+   itself deferred behind the AUTH critical path.**  The `21-vs-29` split
+   (`kDispatchTable` gated subset vs `process_message` full dispatch) is the
+   fingerprint of the half-migrated typed-envelope framework, NOT a bug to
+   patch: `kDispatchTable` + typed body classes = the new HEP-0046 pipeline
+   (Phase A shipped, Phase C islanded); the 29-branch `process_message` if/else
+   = the old hand-parsed JSON dispatch.  Phase B rewires `process_message` onto
+   the typed pipeline → old chain disappears, `kDispatchTable` becomes the
+   single source of truth, drift closes structurally.  So the reconciliation
+   test belongs WITH Phase B as its guard — building it standalone now = parallel
+   plumbing Phase B reworks.  Correct anchor when written: `process_message`
+   (the complete 29), NOT `kDispatchTable` alone.  See HEP-0047 §7.
 2. **Resolve owning-HEP ambiguity (⟳ rows in §3).**  Two catalogs exist
    (HEP-0007 §12 + HEP-0033 message table); decide authoritative owner per
    message.  Designer decision.
