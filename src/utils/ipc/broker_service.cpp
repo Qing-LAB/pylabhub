@@ -4181,9 +4181,11 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 //   Phase 2.3a — wait-path enqueue + targeted §5.4 step 5b NOTIFY to P +
 //                deferred-reply sentinel.  ✅
 //   Phase 2.3b — APPLIED_REQ drain (step d) + producer-disconnect drain +
-//                channel-close drain.  ⏳ pending.
+//                channel-close drain.  ✅ shipped + tested
+//                (WaitPathEnqueueAndDrainOnAppliedReq / WaitPathDrainOn*).
 //   Phase 2.3c — timeout sweep (§5.6 producer_apply_wait_ms) + L2/L3
-//                queue-state tests.  ⏳ pending.
+//                queue-state tests.  ✅ shipped + tested
+//                (WaitPathTimeoutOnMissingAppliedReq).
 
 nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     const nlohmann::json &req,
@@ -4196,7 +4198,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // + returns {status="pending"} as the sentinel the dispatcher special-
     // cases to skip send_reply.
     //
-    // Deferred branches (Phase 2.3b onward):
+    // Wait-path drain branches (Phase 2.3b/c — shipped + tested):
     // - APPLIED_REQ drain (§5.4 step d): pops matching entries + sends the
     //   deferred success replies from handle_channel_auth_applied_req.
     // - Producer-disconnect drain (§5.4 producer-not-live): pops entries +
@@ -4278,8 +4280,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // signal used across the broker (mirrors SHM's
     // handle_consumer_attach_req_shm producer-authorization check).  For
     // presence-state-aware "Connected+first_heartbeat_seen" gating (finer
-    // than reap-based), Phase 2.3 will wire in the snapshot-lookup pattern
-    // used by handle_discover_channel_req.
+    // than reap-based), a future phase may wire in a snapshot-lookup pattern
+    // for finer producer-liveness gating.
     bool        producer_registered = false;
     std::string producer_zmq_identity;
     for (const auto &prod : ch->producers)
@@ -4376,9 +4378,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // partial state), skip the send but keep the enqueued entry: P will
     // still eventually issue APPLIED_REQ when its REG_ACK completes and
     // it pulls the initial_allowlist via the REG_ACK path.  Wire shape
-    // matches HEP-CORE-0036 §6.5 CHANNEL_AUTH_CHANGED_NOTIFY.  Reason
-    // string "attach_wait_path" distinguishes this fire from REG / DEREG
-    // in producer-side logs + tests.
+    // matches HEP-CORE-0036 §6.5 CHANNEL_AUTH_CHANGED_NOTIFY.  This targeted
+    // wait-path fire carries phase="admitted" (same fields as the fan-out
+    // helper) and does NOT add a distinguishing `reason` field.
     if (!producer_zmq_identity.empty())
     {
         // Targeted phase=admitted doorbell to producer P — HEP-CORE-0042

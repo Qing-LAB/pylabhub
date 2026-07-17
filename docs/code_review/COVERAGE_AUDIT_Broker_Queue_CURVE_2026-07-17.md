@@ -161,11 +161,27 @@ inbox CURVE) or defensive / low-severity, plus doc-hygiene divergences.
 (`MutualAuth_RejectsFrame3PubkeyMismatch`, `RejectsMultiFdTruncatedScmRights`);
 full ctest 2555/2555.
 
+**Doc-hygiene divergences — FIXED 2026-07-17:**
+- `reason="attach_wait_path"` comment claim removed (code never emits it) —
+  `broker_service.cpp` + `test_pattern4_attach_coordination.cpp`.
+- Phantom `handle_discover_channel_req` reference removed (`broker_service.cpp:4282`).
+- Stale "Phase 2.3b/2.3c ⏳ pending" header corrected to ✅ shipped+tested.
+- Inbox CURVE task-id reconciled: #191 is the inbox-specific task, #103 the
+  reused rx-queue plumbing (HEP-0027 §3.5 updated to cite both).
+
+**Flagged — needs a decision, NOT simple doc-hygiene:**
+- **CHECKSUM_ERROR_REPORT emits `CHANNEL_EVENT_NOTIFY`** (`broker_service.cpp:6151`),
+  which HEP-0007:1945 separately marks REMOVED, while HEP-0007:1471 says the
+  checksum flow uses `CHANNEL_ERROR_NOTIFY`. Code + test agree on the "removed"
+  name — a code/HEP contradiction that needs a design call (rename the emission,
+  or un-retire the message), left untouched here.
+- **CONSUMER_REG still emits `CHANNEL_NOT_FOUND`** (`broker_service.cpp:3222`)
+  where HEP-0046 §7.1/§7.2 says the dialing side should PEND — tracked
+  implementation work (HEP-0046 Phase B, **#57**), not a doc error.
+
 **Recommended (not blocking):**
-- Doc-hygiene pass on the four ④/surprise divergences (esp. the phantom
-  `reason` field, `DISCOVER_CHANNEL_REQ`, the CHECKSUM notify name).
 - Add the band non-member-broadcast-sender rejection test; investigate the band
   `role_uid`-forgeability question.
-- Federation (#105) and inbox CURVE (#103) are legitimately deferred and tracked.
-- The E2E-positive-path gaps (② ) are timing-sensitive and already noted in
+- Federation (#105) and inbox CURVE (#191) are legitimately deferred and tracked.
+- The E2E-positive-path gaps are timing-sensitive and already noted in
   `TESTING_TODO`; close opportunistically.

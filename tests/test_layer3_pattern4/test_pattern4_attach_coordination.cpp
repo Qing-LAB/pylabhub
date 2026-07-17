@@ -492,8 +492,8 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
 //   - consumer sends CONSUMER_ATTACH_REQ_ZMQ WITHOUT the producer
 //     having sent APPLIED_REQ first.  Broker: fast-path miss
 //     (confirmed_version 0 < channel_version 1) → enqueue in
-//     pending_attach_queue_[K][P] + fire targeted NOTIFY
-//     (reason="attach_wait_path") to producer + return
+//     pending_attach_queue_[K][P] + fire targeted phase="admitted" NOTIFY
+//     to producer + return
 //     {status="pending"} sentinel (dispatcher sends NOTHING to
 //     consumer — the reply is deferred).
 //   - producer sends CHANNEL_AUTH_APPLIED_REQ(v=1, instance=1) →

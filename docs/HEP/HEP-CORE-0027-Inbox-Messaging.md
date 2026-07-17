@@ -144,9 +144,12 @@ authentication of the inbox sockets is specified in HEP-CORE-0036
   death (HEP-0036 I3).
 
 `hub_inbox_queue.cpp` has zero CURVE references today; this is the
-implementation gap that HEP-0036 Phase 4+ closes (task #103
-implements the rx queue producer_peers + add/remove API; the same
-plumbing applies to inbox sockets).
+implementation gap that HEP-0036 Phase 4+ closes.  The inbox-specific
+CURVE/allowlist wiring is task **#191** (P-InboxQueue, picked up after
+AUTH-7; see `docs/todo/AUTH_TODO.md`); it reuses the rx-queue
+producer_peers + add/remove plumbing from task #103.  (The code comment
+in `hub_queue.hpp` cites #191; earlier revisions of this section cited
+only #103, the shared plumbing.)
 
 ---
 
