@@ -193,6 +193,25 @@ Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
 
 ## Open broker-specific items
 
+### Native engine inbox API parity gap (filed 2026-07-17)
+
+**Multi-engine parity is broken for the inbox.**  Lua and Python have the full
+inbox API (receive `on_inbox` via `invoke_on_inbox`; send via `api.open_inbox`
+→ `InboxHandle:send`).  **Native has neither wired:**
+- **Receive:** the native ABI *declares* `bool on_inbox(const plh_inbox_msg_t*)`
+  (`native_engine_api.h:779`) and defines `plh_inbox_msg_t`, but `NativeEngine`
+  does NOT override `invoke_on_inbox` (only Lua/Python do) and `native_engine.cpp`
+  has zero inbox wiring — so a native plugin's `on_inbox` **never fires**.  A
+  declared-but-dead callback is worse than absent (it looks supported).
+- **Send:** there is NO `open_inbox` / send-inbox function in the native ABI at
+  all — native plugins cannot send to an inbox.
+
+**Fix:** override `NativeEngine::invoke_on_inbox` (dispatch to the plugin's
+`on_inbox`) + add a native `open_inbox`/send-inbox ABI function.  Independent of
+the inbox CURVE pilot (#191) but adjacent — a native plugin cannot use the inbox
+at all regardless of security.  Discovered while scoping the inbox L4 tests.
+See `feedback_multi_engine_parity_audit`.
+
 ### Notify/broadcast message doc-consistency (2026-07-17)
 
 **Authoritative specs cleaned + consistent** (HEP-0007 + HEP-0030):

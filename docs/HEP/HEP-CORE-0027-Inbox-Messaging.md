@@ -126,30 +126,40 @@ The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
 ### 3.5 CURVE Wiring (HEP-CORE-0036)
 
 The msgpack frame in §3 is the inbox PAYLOAD; transport-layer
-authentication of the inbox sockets is specified in HEP-CORE-0036
-§9.3.  Under HEP-0036 (locked 2026-05-28):
+authentication of the inbox sockets uses **CURVE with the role's identity
+keypair + HUB-WIDE `known_roles` authorization** (decided 2026-07-17).
 
-- **Inbox ROUTER and DEALER sockets use the role's IDENTITY keypair**
-  on both sides (per HEP-0036 I6 — same keypair the role binds on
-  its data PUSH/PULL; broker mints NO data-plane CURVE keys).
-- **Allowlist inheritance**: the inbox sockets reuse the data
-  channel's ZAP allowlist on the producer side (same channel-scope
-  set of authorized consumer pubkeys; no separate inbox allowlist
-  scope under MVP).  Any consumer authorized to read the data
-  channel is authorized to send to that producer's inbox.
-- **No per-inbox keypair** — see HEP-0036 §9.3 for the rationale
-  (avoids the redundancy that drove T1's symmetric-design lock-in).
-- **Lifetime** — inbox lifetime ⊆ data channel lifetime.  Inbox
-  closes with last-producer DEREG (HEP-0036 §5.7.2 cascade) or BRC
-  death (HEP-0036 I3).
+**Authorization scope: hub-wide, NOT channel-scoped.**  The inbox is a
+hub-wide role↔role messaging facility — any role may message any other role,
+not just channel peers — so its authorization boundary is *"is the sender a
+role this hub knows"* (`known_roles` membership), not *"is the sender on my
+data channel."*  An earlier draft scoped it to the data channel's allowlist;
+that was too narrow for the inbox's purpose.
 
-`hub_inbox_queue.cpp` has zero CURVE references today; this is the
-implementation gap that HEP-0036 Phase 4+ closes.  The inbox-specific
-CURVE/allowlist wiring is task **#191** (P-InboxQueue, picked up after
-AUTH-7; see `docs/todo/AUTH_TODO.md`); it reuses the rx-queue
-producer_peers + add/remove plumbing from task #103.  (The code comment
-in `hub_queue.hpp` cites #191; earlier revisions of this section cited
-only #103, the shared plumbing.)
+- **Inbox ROUTER + DEALER use the role's IDENTITY keypair** on both sides
+  (single-key model, per HEP-0036 I6 — same keypair the role uses on its data
+  PUSH/PULL; broker mints NO data-plane CURVE keys).  No per-inbox keypair.
+- **Hub-wide `known_roles` authorization.**  The role does NOT hold the hub's
+  `known_roles` roster today (its data ZAP is channel-scoped, seeded from
+  `REG_ACK.initial_allowlist`).  So the broker **distributes the roster**: a
+  `known_roles` field on `REG_ACK` / `CONSUMER_REG_ACK` carries the hub's
+  authorized role pubkeys.  The role registers an inbox `zap_domain` whose
+  PeerAdmission is seeded from that roster — the inbox ROUTER admits any
+  authenticated `known_role` and rejects everyone else (no anonymous /
+  self-asserted senders, closing the plaintext gap).
+- **Sender pins the receiver's identity pubkey.**  `ROLE_INFO_ACK` carries the
+  receiver's identity pubkey alongside its inbox endpoint; the DEALER sets
+  `curve_serverkey` to it.
+- **Lifetime** — inbox lifetime ⊆ role lifetime (closes with role DEREG /
+  HEP-0036 §5.7.2 cascade or BRC death, HEP-0036 I3).
+
+**Roster freshness (MVP wrinkle).**  The roster is delivered at registration,
+so a role that registers *after* you is not in your roster until a refresh.
+`known_roles` is static operator config (changes rarely); a change-notify to
+refresh live rosters is a later refinement.
+
+`hub_inbox_queue.cpp` has zero CURVE references today; task **#191**
+(P-InboxQueue) implements the wiring above.  See `docs/todo/AUTH_TODO.md`.
 
 ---
 

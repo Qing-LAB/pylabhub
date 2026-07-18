@@ -2806,6 +2806,19 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     }
     resp["initial_allowlist"] = std::move(allowlist);
 
+    // HEP-CORE-0027 §3.5 — hub-wide known_roles roster for the role's inbox
+    // ZAP.  The inbox is hub-wide role<->role messaging, so it authorizes any
+    // authenticated known_role (not just channel peers); the role has only its
+    // channel allowlist, so the broker distributes the roster here.  The role
+    // seeds its inbox PeerAdmission from this on REG_ACK.
+    {
+        nlohmann::json roster = nlohmann::json::array();
+        for (const auto &kr : cfg.known_roles)
+            if (!kr.pubkey_z85.empty())
+                roster.push_back(kr.pubkey_z85);
+        resp["known_roles"] = std::move(roster);
+    }
+
     // HEP-CORE-0042 §5.5.3: REG_ACK echoes the broker-assigned
     // `instance_id` for this producer identity so the role can quote
     // it on subsequent CHANNEL_AUTH_APPLIED_REQ.  The broker's
@@ -3781,6 +3794,17 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             producers_array.push_back(std::move(entry));
         }
         resp["producers"] = std::move(producers_array);
+    }
+
+    // HEP-CORE-0027 §3.5 — hub-wide known_roles roster for the consumer's
+    // inbox ZAP (consumers have inboxes too; same roster as the producer
+    // REG_ACK path).
+    {
+        nlohmann::json roster = nlohmann::json::array();
+        for (const auto &kr : cfg.known_roles)
+            if (!kr.pubkey_z85.empty())
+                roster.push_back(kr.pubkey_z85);
+        resp["known_roles"] = std::move(roster);
     }
 
     return resp;
