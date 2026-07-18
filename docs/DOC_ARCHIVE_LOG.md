@@ -1447,3 +1447,47 @@ Doc-only cleanup that compresses the active AUTH_TODO from 1616 → 564 lines an
 `docs/todo/AUTH_TODO.md` reduced from 1616 → 564 lines.  Completed-phase narratives (AUTH-1 full sub-deliverables 4(a)-(g) + B1 + producer-S3 + follow-ups 6.1-6.8; AUTH-2/3 detailed; AUTH-4 SUPERSEDED block; HEP-0041 Phase 1 substep 1a-1k narratives + REVIEW-A/B close-outs; HEP-0036 §5b parallel track table; pre-flights #263-#265) extracted to the archive index.  Active AUTH_TODO retains: design principles (verbatim — load-bearing); current PeerAdmission state table; AUTH-5/6/7 active scope; HEP-0041 critical-path table with active rows only; #275 S2..S5 detailed plan; HEP-0041 Phases 2-5 brief; design audit gaps with active anchors; backlog; deferred decisions; parallel tracks; decision log; memory rules.
 
 **Verification correction recorded:** Pre-compression line 1137 claimed `S1+S2a+S2b+S2c-1..6+S3 ✅ shipped`.  Verified against code at HEAD: **S3 is NOT actually shipped** (`hub_shm_queue.cpp:375` still has `set_shm_secret()`; `:134/198/216/253` still has `shared_secret` parameters).  Corrected status carries forward in the compressed AUTH_TODO.
+
+## 2026-07-18: Doc hygiene — code-verified archive of closed reviews + shipped tech-drafts
+
+Every verdict below was verified against **actual `src/` code** (not commit
+logs, not the doc's own status line), following the precedent set by the
+2026-06-27 batch's "S3 not shipped" catch.  Two independent verification
+passes produced file:line evidence for each move.  Nothing deleted — all
+files `git mv`'d to `docs/archive/transient-2026-07-18/`.
+
+### Code reviews → `archive/transient-2026-07-18/code_reviews/` (13)
+
+| Document | Status table | Code evidence for the verdict |
+|----------|-------------|-------------------------------|
+| `REVIEW_AUTH_ReviewD_2026-07-17.md` | 5 met, 1 intentional DEFER, 0 OPEN | PID sweep removed (`check_dead_consumers` = 0 hits); `_on_consumer_revoked` live `hub_state.cpp:2049` wired `broker_service.cpp:3902` |
+| `REVIEW_AUTH_ReviewE_2026-07-17.md` | 8-threat model ✅, 0 OPEN | `zap_router.cpp:521` `is_peer_allowed`; `broker_service.cpp:1026` `curve_server=1` |
+| `REVIEW_HEP0041_ReviewC_2026-07-16.md` | 6 resolved, 0 OPEN | MSG_CTRUNC fail-close `shm_capability_channel.cpp:635`; `reserved_capability_token` `data_block.hpp:227` |
+| `REVIEW_C2_2026-06-29.md` | 15 findings all disposed, 0 OPEN | `KeyStore::with_keypair_z85` `key_store.cpp:461` (F14); `apply_5b_canonical_fields` keyed on wire identity (F7).  (F14 production-caller migration is a separate tracked follow-up.) |
+| `COVERAGE_AUDIT_Broker_Queue_CURVE_2026-07-17.md` | COMPLETE, 0 blocking OPEN | gap-fix tests exist: `MutualAuth_RejectsFrame3PubkeyMismatch` `test_attach_protocol.cpp:910`; `RejectsMultiFdTruncatedScmRights` `test_shm_capability_channel.cpp:438`.  Residuals tracked in TESTING_TODO + #57. |
+| `REVIEW_AUTH6_TestDisposition_2026-06-27.md` | audit delivered + dispositions executed | AUTH-6 (#154) batches 2a/2b shipped 2026-06-27; only tracked "File 10 Suite 2 delete" housekeeping residual remains (in AUTH_TODO). |
+| `REVIEW_HEP_0033_PostP9_2026-05-05.md` | F1–F4 fixed, F5 was OPEN, F6 non-issue | F5 now RESOLVED — L4 hub-role tests exist (`test_plh_hub_role_shm_e2e.cpp`, `test_plh_hub_role_zmq_e2e.cpp`).  **Correction:** the 2026-06-27 log note "F1 BLOCKER open" was inaccurate — F1 was fixed 2026-05-05 (`1439ef4`). |
+| `REVIEW_WaveM3_2026-05-11.md` + `_PostFix` + `_Rigorous` + `_FifthPass` (4) | chain of 6 passes; each pass's opens fixed in the next | mechanism live: `_set_role_disconnected` `hub_state.cpp:749`, `_dispatch_role_disconnected_if_dead` `:795` wired `:1486/:1574`; `subscribe_role_disconnected` broker-wired `hub_state.hpp:1795`.  Two sibling passes (FullChain, SixthPass) already archived 2026-06-27; this completes the Wave-M3 review set. |
+
+### Code reviews archived AS-MOOT (findings superseded by later refactors) (2)
+
+| Document | Why moot | Residual items preserved here (NOT lost) |
+|----------|----------|------------------------------------------|
+| `REVIEW_ScriptEngine_2026-03-20.md` | Code findings moot/fixed: SE-09 legacy `ScriptHost`/`LuaScriptHost` classes gone from `src/`; SE-14 `script.type` now parser-validated (`role_config.cpp:88`).  Subsystem rewritten by role-unification. | **Residual doc-parity items SE-03 / SE-04 / SE-08** (HEP-0011/0018/0015 doc-staleness, March 2026) were NOT re-verified as folded.  They concern the *pre-role-unification* ScriptEngine; re-derive against HEP-0011 if that doc is next revisited rather than treating verbatim.  Archived file retains full text. |
+| `REVIEW_WaveM2.5_2026-05-10.md` | Blockers shipped: F1 `UID_CONFLICT` (`hub_state.hpp:450/493`, `hub_state.cpp:1327`); deferrals resolved — F12 `disconnected_fired` retired (`hub_state.hpp:1171`), F13 `metrics_store_` retired (`broker_service.cpp:655`).  Side-arc labeled "closed" in all label-hygiene tables. | **Residual F2 / F3** were HEP-0007/0021 doc-shape updates said to have "co-landed with step 3"; not independently re-confirmed against current HEP wording.  Archived file retains full text. |
+
+### Tech-drafts → `archive/transient-2026-07-18/tech_drafts/` (2)
+
+| Document | Merged into | Shipped-code evidence |
+|----------|-------------|------------------------|
+| `DRAFT_versioned_admission_ledger_2026-07-13.md` | HEP-CORE-0042 §5.5.2.1 (INVARIANT-BIND-CONFIRM-1..3) | `src/include/utils/versioned_admission_ledger.hpp` exists; used `broker_service.cpp:2792/2807/4062/4355/4748`, `hub_state.cpp:2046/2070/2126/2199`.  Old quartet survives only in doc-comments (the cosmetic residue the draft's §7 predicted). |
+| `abi_check_facility_design.md` | HEP-CORE-0032 §8/§8.5 (references `check_abi()` as already-existing) | Facility fully shipped: `check_abi()` `version_registry.cpp:273`; 7-axis `ComponentVersions` incl. `script_engine`; startup call `plh_role_main.cpp:191`; native-plugin extension `native_engine_api.h`.  The "draft" label was stale — code is *ahead* of the doc.  (Only `test_abi_check.cpp` from §9 absent — non-blocking, tracked.) |
+
+### Doc-hygiene bugs fixed this batch
+- `TODO_MASTER.md` "Active code reviews" listed `REVIEW_TestAudit_2026-05-01.md` as "TOP PRIORITY active" — it was already archived 2026-05-02.  Entry removed; section rewritten to the 4 genuinely-active/KEEP reviews with their reproducing-in-code evidence.
+- Corrected the 2026-06-27 log's inaccurate "REVIEW_HEP_0033_PostP9 (F1 BLOCKER open)" note (see table above).
+
+### KEEP (verified genuinely open — NOT archived)
+- **Reviews:** `REVIEW_Connection_Inbox_Band_2026-05-17.md` (X6/X2 reproduce), `REVIEW_CatchBlocks_2026-05-01.md` (unstarted sweep), `REVIEW_FullModule_2026-04-06.md` (C-1/D-2 reproduce), `LINT_FIXES_PLAN.md` (§2 undecided, partly moot).
+- **Tech-drafts (9):** every "pending/ahead" item verified ABSENT from `src/` — `DRAFT_curve_admin_protocol` (admin CURVE, impl not started = next work), `DRAFT_topology_singular_side` (C7/D-R6 not shipped), `DRAFT_HEP-0036-implementation-guideline` (AUTH-1..7 open), `DRAFT_HEP-0041-pattern4-reform-coverage` (#275 S2 + #285 open), `DRAFT_keystore_ephemeral_and_script_crypto` (script-crypto bindings absent), `DRAFT_HEP-0031-bounded-thread` (`spawn_bounded`/`BoundedThreadRegistry` absent — base `ThreadManager` is a different, shipped thing), `DRAFT_reg_wire_alignment_cleanup` (HEARTBEAT rename half-applied, §7 errata open), `engine_callback_tiers` (Tier-2 `supports_dynamic_callbacks`=false), `raii_layer_redesign` (`TypedInboxClient`/`SimpleRoleHost` absent), `SCRIPT_RELOAD_DESIGN` (only stub `reload_script()=false`).
+- **KEEP-BUT-FIXED-STATUS:** `DRAFT_HEP-0041-test-completeness_2026-06.md` — planned tests all shipped + gaps closed; status line corrected to "SUBSTANTIALLY COMPLETE, archive-pending merge into README_testing".

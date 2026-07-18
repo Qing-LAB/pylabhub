@@ -1,6 +1,13 @@
 # DRAFT: HEP-CORE-0041 Test Completeness Plan (v3.1)
 
-**Status:** Tech draft — designer review (2026-06-23, v3.1 stale-text cleanup).
+**Status:** SUBSTANTIALLY COMPLETE (verified against code 2026-07-18) — every
+planned L2 file shipped and now *exceeds* this plan's snapshot
+(`test_shm_capability_channel.cpp` 12 tests, `test_attach_protocol.cpp` 16,
+`test_shm_attach_orchestrator.cpp` 8, `test_hub_shm_queue_capability.cpp` 13);
+the ❌ GAPs (SO_PEERCRED, MSG_CTRUNC, D3-retry) are CLOSED (REVIEW-C, 2026-07-16).
+**Archive-pending:** fold any lasting test-design insight into
+`docs/README/README_testing.md`, then archive.  (Was: "designer review",
+2026-06-23.)
 **Drives:** #275 (1i-cleanup), #270 (1i-coverage), #257 (1j L3 broker tests),
 #258 (1k L4 e2e), and the test side of #262 (mutual auth).
 **Author intent:** *test completeness goes ahead of coding* — pin the

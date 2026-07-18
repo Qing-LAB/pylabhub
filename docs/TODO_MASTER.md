@@ -547,10 +547,25 @@ production gate).  Batch P1 small cleanups + #93 / #95 in parallel.
 
 ## Active code reviews
 
-- `docs/code_review/REVIEW_TestAudit_2026-05-01.md` — TOP PRIORITY
-  full-codebase test-correctness audit; resume bookmark.
 - `docs/code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` —
   authoritative for D2 + D3 open follow-ups; tracked in API_TODO.
+  Open items reproduce in code (e.g. X6 `ChecksumRepairPolicy::Repair`
+  still a no-op `broker_service.cpp:6219`; X2 dead `query_shm_info`).
+- `docs/code_review/REVIEW_CatchBlocks_2026-05-01.md` — full-codebase
+  silent-failure sweep; §2/§3/§4 finding sections never populated
+  (unstarted, not resolved).
+- `docs/code_review/REVIEW_FullModule_2026-04-06.md` — mostly moot
+  (subsystems refactored away) BUT C-1 (`to_channel_side` duplicated
+  ×3: consumer/producer/processor `_api.cpp`) + D-2 (stale ref
+  `engine_module_params.hpp:10`) still reproduce — trivially closable.
+- `docs/code_review/LINT_FIXES_PLAN.md` — §1 applied; §2.1–2.7 lint
+  dispositions never decided (partly moot — the `hub_config.cpp`
+  singleton it targeted was deleted 2026-04-29).  Needs a NOLINT-or-
+  defer pass, then archive.
+
+`REVIEW_TestAudit_2026-05-01.md` was already archived (2026-05-02,
+`docs/archive/transient-2026-05-02/`) — the prior "TOP PRIORITY active"
+entry here was stale and is removed (2026-07-18 hygiene).
 
 Closed reviews archived per `docs/DOC_ARCHIVE_LOG.md`.
 
