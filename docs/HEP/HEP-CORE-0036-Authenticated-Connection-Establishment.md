@@ -5437,29 +5437,43 @@ Revocation symmetry with ZMQ:
   control-link teardown — the same code path that handles process
   exit, so the SHM detach happens naturally.
 
-### 9.3 Inbox messaging — inherits channel auth
+### 9.3 Inbox messaging — hub-wide known_roles authorization
 
-The inbox messaging path (HEP-CORE-0027) opens between two roles
-that are already connected via a data channel — there is no inbox
-without an underlying data channel.  Therefore:
+The inbox messaging path (HEP-CORE-0027) is a **hub-wide role↔role**
+facility: any role may message any other role the hub knows, whether
+or not they share a data channel.  Its authorization boundary is
+therefore *"is the sender a role this hub knows"* (`known_roles`
+membership), **not** *"is the sender on my data channel."*  (This
+retires the earlier channel-scoped premise — an inbox does NOT require
+an underlying data channel, and does NOT inherit the data channel's
+allowlist.  Authoritative decision: HEP-CORE-0027 §3.5, 2026-07-17.)
 
-- Inbox CURVE wiring uses the role's identity keypair (same one
-  bound on the data socket, per T1 / I6 — there is no separate
-  per-channel or per-inbox keypair).  The inbox socket on the
-  producer side reuses the SAME process-wide ZAP handler that
-  guards the data PUSH; allowlist set defaults to the data
-  channel's allowlist (T4 covers whether inbox should have a
-  distinct allowlist scope; under MVP they're shared).
-- No separate broker-side admission decision for inbox.  If the
-  consumer is in the channel's allowlist, the inbox handshake
-  succeeds.
-- Inbox lifetime ⊆ data channel lifetime.  When the data channel
-  closes (last-producer-DEREG cascade per §5.7.2 or BRC death per
-  I3), the inbox closes with it.
+- Inbox CURVE wiring uses the role's identity keypair (same one bound
+  on the data socket, per T1 / I6 — there is no separate per-channel
+  or per-inbox keypair).  The inbox ROUTER binds as a CURVE server
+  under its OWN `zap_domain` (`uid:inbox`), distinct from the data
+  PUSH's channel-scoped zap_domain, because its allowlist is the hub
+  roster, not the channel allowlist.
+- The inbox ROUTER's ZAP allowlist is the hub-wide `known_roles`
+  roster.  The role does not otherwise hold that roster (its data ZAP
+  is channel-scoped, seeded from `REG_ACK.initial_allowlist`), so the
+  broker distributes it on `REG_ACK` / `CONSUMER_REG_ACK.known_roles`;
+  the role unions it and seeds the inbox allowlist from it (§3.5).  The
+  ROUTER admits any authenticated `known_role` and rejects everyone
+  else — no anonymous / self-asserted senders.
+- Sender pins the receiver's identity pubkey.  `ROLE_INFO_ACK` carries
+  the receiver's identity pubkey; the InboxClient DEALER sets
+  `curve_serverkey` to it.
+- No separate broker-side admission decision at inbox-connect time —
+  the broker's authorization is already expressed in `known_roles`;
+  the inbox ROUTER enforces it locally via ZAP.
+- Inbox lifetime ⊆ **role** lifetime (closes with role DEREG /
+  §5.7.2 cascade or BRC death per I3) — NOT bounded by any single
+  data channel's lifetime.
 
-This collapses inbox into the same single-gate model as data:
-broker decides (at REG time, for the data channel); inbox enforces
-by inheriting that decision.
+This keeps inbox on the same single-gate model as the rest of the
+system: the operator decides (via `known_roles`); the inbox ROUTER
+enforces that decision at the CURVE/ZAP layer.
 
 ### 9.4 Bands — inherit hub-level admission
 

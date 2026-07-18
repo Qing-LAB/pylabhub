@@ -14,6 +14,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/config/inbox_config.hpp"
+#include "utils/security/key_store.hpp"        // kRoleIdentityName
 #include "utils/data_block_policy.hpp"
 #include "utils/schema_utils.hpp"
 #include "plh_datahub.hpp"
@@ -155,13 +156,17 @@ struct InboxSetupResult
  * @param inbox_cfg        Inbox config (endpoint, buffer_depth, overflow_policy).
  * @param checksum_policy  Role-level checksum policy.
  * @param tag              Log tag (e.g. "prod", "cons", "proc").
+ * @param uid              Role uid — used to build the inbox CURVE ZAP
+ *                         domain ("<uid>:inbox", distinct from the data
+ *                         channel's domain per HEP-CORE-0027 §3.5).
  * @return InboxSetupResult on success, nullopt on failure.
  */
 inline std::optional<InboxSetupResult>
 setup_inbox_facility(const hub::SchemaSpec &inbox_spec,
                      config::InboxConfig   &inbox_cfg,
                      hub::ChecksumPolicy    checksum_policy,
-                     const char            *tag)
+                     const char            *tag,
+                     const std::string    &uid)
 {
     auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
@@ -171,6 +176,14 @@ setup_inbox_facility(const hub::SchemaSpec &inbox_spec,
 
     auto queue = hub::InboxQueue::bind_at(
         inbox_cfg.endpoint, std::move(zmq_fields), inbox_spec.packing, rcvhwm);
+    // HEP-CORE-0027 §3.5 — arm CURVE-server auth BEFORE start().  The inbox
+    // ROUTER presents the role identity keypair (single-key model I6) under
+    // a distinct "<uid>:inbox" ZAP domain, hub-wide known_roles roster.
+    // start() binds deny-all; RoleAPIBase seeds the roster at S3 (REG_ACK).
+    if (queue)
+        queue->set_curve_server_identity(
+            std::string(pylabhub::utils::security::kRoleIdentityName),
+            uid + ":inbox");
     if (!queue || !queue->start())
     {
         LOGGER_ERROR("[{}] Failed to start InboxQueue at '{}'", tag, inbox_cfg.endpoint);

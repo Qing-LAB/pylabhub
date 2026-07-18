@@ -1580,6 +1580,14 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
         << "sender never captured the known_roles roster:\n"
         << read_role_log(send_dir);
 
+    // Slice 2 (HEP-CORE-0027 §3.5): the receiver seeds its inbox ROUTER's
+    // CURVE/ZAP allowlist from the roster, lifting it off the S1 deny-all
+    // default.  This is the gate that admits the authorized sender below.
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv,
+        "event=InboxAllowlistSeeded", seconds(10)))
+        << "receiver never seeded its inbox ROUTER ZAP allowlist:\n"
+        << read_role_log(recv_dir);
+
     // Delivery: sender discovers the receiver's inbox and sends value=42; the
     // receiver's on_inbox fires with the correct sender uid.
     ASSERT_TRUE(wait_for_role_marker(send_dir, send, "inbox_send: SENT rc=0",

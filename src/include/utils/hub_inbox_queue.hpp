@@ -43,6 +43,7 @@
  * closed here — it outlives every InboxQueue/InboxClient in the process.
  */
 #include "utils/hub_zmq_queue.hpp"   // ZmqSchemaField
+#include "utils/security/peer_admission.hpp"  // PeerAdmission (inbox ROUTER ZAP)
 
 #include "pylabhub_utils_export.h"
 
@@ -99,6 +100,7 @@ struct PYLABHUB_UTILS_EXPORT InboxItem
  * @endcode
  */
 class PYLABHUB_UTILS_EXPORT InboxQueue
+    : public pylabhub::utils::security::PeerAdmission
 {
 public:
     /**
@@ -193,6 +195,37 @@ public:
                 recv_gap_count(), checksum_error_count()};
     }
 
+    /**
+     * @brief Arm CURVE-server authentication on the inbox ROUTER
+     *        (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3).  MUST be called
+     *        before start().
+     *
+     * The inbox is a hub-wide role↔role facility, so the ROUTER binds
+     * as a CURVE server under its OWN @p zap_domain (distinct from the
+     * data channel's), authorizing against the hub-wide `known_roles`
+     * roster rather than any channel allowlist.  Until
+     * set_peer_allowlist() seeds that roster, start() binds deny-all
+     * (secure default — no peer completes the handshake).
+     *
+     * @param identity_key_name  KeyStore key name for the role's
+     *        identity keypair (security::kRoleIdentityName — the same
+     *        keypair the data sockets present, single-key model I6).
+     * @param zap_domain         Distinct inbox ZAP domain, e.g.
+     *        "<uid>:inbox".  Registered with the process ZapRouter.
+     */
+    void set_curve_server_identity(std::string identity_key_name,
+                                   std::string zap_domain);
+
+    // ── PeerAdmission (HEP-CORE-0036 §7) — inbox ROUTER ZAP gate ──────────
+    // The hub-wide known_roles roster is installed via set_peer_allowlist;
+    // the ZapRouter pump thread consults is_peer_allowed at handshake time.
+    bool set_peer_allowlist(
+        pylabhub::utils::security::PeerAllowlist allowlist) override;
+    [[nodiscard]] std::optional<pylabhub::utils::security::PeerAllowlist>
+    peer_allowlist_snapshot() const override;
+    [[nodiscard]] bool is_peer_allowed(
+        const pylabhub::utils::security::PeerIdentity &peer) const override;
+
 private:
     explicit InboxQueue(std::unique_ptr<InboxQueueImpl> impl);
     std::unique_ptr<InboxQueueImpl> pImpl;
@@ -280,6 +313,24 @@ public:
 
     /** Set checksum policy. Enforced = auto compute on send. None = send zeros. */
     void set_checksum_policy(ChecksumPolicy policy) noexcept;
+
+    /**
+     * @brief Arm CURVE-client authentication on the inbox DEALER
+     *        (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3).  MUST be called
+     *        before start().
+     *
+     * The DEALER presents the sender role's identity keypair and pins
+     * the receiver's identity pubkey as `curve_serverkey`.  The receiver
+     * pubkey is discovered via ROLE_INFO_ACK (the receiver ROUTER admits
+     * this sender iff its pubkey is in the hub-wide known_roles roster).
+     *
+     * @param identity_key_name  KeyStore key name for the sender's
+     *        identity keypair (security::kRoleIdentityName).
+     * @param server_pubkey_z85  The receiver's identity pubkey (Z85),
+     *        set as curve_serverkey.
+     */
+    void set_curve_client_identity(std::string identity_key_name,
+                                   std::string server_pubkey_z85);
 
 private:
     explicit InboxClient(std::unique_ptr<InboxClientImpl> impl);

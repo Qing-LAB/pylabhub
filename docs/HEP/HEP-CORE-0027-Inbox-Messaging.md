@@ -177,11 +177,18 @@ broker has accepted the role onto the channel(s) the inbox will
 serve.
 
 ```
-S1 (setup_infrastructure_) — BUILD ONLY:
+S1 (setup_infrastructure_) — BIND + CURVE-ARM DENY-ALL:
   1. Role host reads inbox config (schema, endpoint, buffer_depth, packing).
-  2. Build InboxQueue in Standby — queue object exists; ROUTER NOT bound;
-     CURVE not configured; ZAP allowlist not installed.  (Parallel to
-     ZmqQueue Standby per HEP-CORE-0036 §6.7.)
+  2. Build InboxQueue, arm CURVE-server auth (role identity keypair via
+     `set_curve_server_identity(kRoleIdentityName, "<uid>:inbox")`), and
+     bind the ROUTER — with an EMPTY (deny-all) ZAP allowlist.  The
+     socket is CURVE-armed the instant it binds, so no unauthenticated
+     peer can complete a handshake before the roster arrives; deny-all
+     means NO peer is admitted yet.  Binding at S1 (rather than deferring
+     to S3) resolves port-0 endpoints before S2 advertises them in
+     REG_REQ.  The inbox `zap_domain` ("<uid>:inbox") is DISTINCT from
+     the data channel's — hub-wide known_roles authorization, not the
+     channel allowlist (§3.5).
 
 S2 (registration) — FATAL on failure:
   3. For EACH presence the role registers (one for producer/consumer
@@ -207,20 +214,24 @@ S2 (registration) — FATAL on failure:
      corresponding `ChannelEntry.producers[*]` (under out_channel) —
      both with identical inbox_endpoint strings.
 
-S3 (apply_*_reg_ack) — ACTIVATE (behind the auth door):
-  5. inbox_queue_->bind_at(endpoint)         — bind ROUTER socket;
-       arm CURVE/ZAP with the role's identity keypair (per
-       HEP-CORE-0036 §I6); seed the inbox allowlist from the HUB-WIDE
-       `known_roles` roster captured off this presence's
-       REG_ACK/CONSUMER_REG_ACK (§3.5) — NOT the data channel's
-       allowlist.  The inbox is a hub-wide role<->role facility, so it
-       admits any authenticated known_role, not just channel peers.
-  6. inbox_queue_->set_checksum_policy(config_.checksum().policy)
-  7. inbox_queue_->start()                   — ROUTER active; transitions
-       Standby → Configured → Active per HEP-CORE-0036 §6.7.
-  8. inbox_thread_ started: loop { recv_one() → invoke_on_inbox() → send_ack() }
-       — under ThreadManager scope per HEP-CORE-0036 §3.5.4 invariant 4.
+S3 (apply_*_reg_ack) — SEED THE ROSTER (lift deny-all):
+  5. `merge_inbox_known_roles(ack)` unions this presence's
+       REG_ACK/CONSUMER_REG_ACK `known_roles` into the role's hub-wide
+       inbox roster, then calls
+       `inbox_queue->set_peer_allowlist(<roster as curve PeerIdentities>)`
+       — lifting the ROUTER off its S1 deny-all default.  The inbox is a
+       hub-wide role<->role facility, so it admits any authenticated
+       known_role (single-key model I6), NOT just channel peers.  Roster
+       and ZAP allowlist move together on every merge.
+       (The ROUTER bind + CURVE arm already happened at S1; S3 only
+       installs the authorization set.)
 ```
+
+The receive thread (`inbox_thread_`: loop { recv_one() → invoke_on_inbox()
+→ send_ack() }, under ThreadManager scope per HEP-CORE-0036 §3.5.4
+invariant 4) runs from S1 — but until S3 seeds the roster the ROUTER is
+deny-all, so no message reaches the handler before authorization is
+installed.
 
 **Port-0 inbox endpoints remain unsupported.**  HEP-CORE-0021 §16
 (adopted 2026-07-08, closes task #94) enables post-bind endpoint

@@ -148,7 +148,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     {
         auto inbox_result = setup_inbox_facility(
             inbox_spec, inbox_cfg_, config_.checksum().policy,
-            frame_cfg_.short_tag.c_str());
+            frame_cfg_.short_tag.c_str(), api_ref.uid());
         if (!inbox_result)
         {
             LOGGER_ERROR("[{}] setup_inbox_facility failed",

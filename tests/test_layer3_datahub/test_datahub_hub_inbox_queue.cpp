@@ -121,3 +121,18 @@ TEST_F(InboxQueueTest, ChecksumNone_Roundtrip)
     auto w = SpawnWorker("hub_inbox_queue.checksum_none_roundtrip");
     ExpectWorkerOk(w);
 }
+
+// Inbox CURVE auth (HEP-CORE-0027 §3.5): the ROUTER admits only pubkeys in
+// its hub-wide known_roles roster.  Authorized sender delivers; a peer with
+// a valid keypair but not in the roster is denied at the ZAP gate.
+TEST_F(InboxQueueTest, CurveAuthorizedDelivers)
+{
+    auto w = SpawnWorker("hub_inbox_queue.inbox_curve_authorized_delivers");
+    ExpectWorkerOk(w);
+}
+
+TEST_F(InboxQueueTest, CurveUnknownSenderDenied)
+{
+    auto w = SpawnWorker("hub_inbox_queue.inbox_curve_unknown_denied");
+    ExpectWorkerOk(w);
+}

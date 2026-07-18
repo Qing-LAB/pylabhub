@@ -44,6 +44,10 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
+#include "utils/security/key_store.hpp"        // add_identity_from_z85, pubkey
+#include "utils/security/peer_admission.hpp"   // PeerAllowlist, PeerIdentity
+#include "utils/security/secure_subsystem.hpp" // secure()
+#include "utils/security/zap_router.hpp"       // ZapPumpThread
 
 #include <gtest/gtest.h>
 #include <zmq.h>
@@ -90,6 +94,17 @@ std::vector<ZmqSchemaField> uint32_schema()
     Logger::GetLifecycleModule(),                                              \
     pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
     pylabhub::hub::GetZMQContextModule()
+
+/// Generate a fresh CURVE keypair (Z85 pub, Z85 sec) for the inbox
+/// CURVE-auth workers.  Mirrors the L2 zmq_queue_auth helper.
+inline std::pair<std::string, std::string> make_keypair()
+{
+    std::array<char, 41> pub{};
+    std::array<char, 41> sec{};
+    if (::zmq_curve_keypair(pub.data(), sec.data()) != 0)
+        throw std::runtime_error("zmq_curve_keypair failed");
+    return {std::string(pub.data(), 40), std::string(sec.data(), 40)};
+}
 
 } // namespace
 
@@ -770,6 +785,127 @@ int checksum_none_roundtrip()
         PLH_INBOX_MODS);
 }
 
+// ─── Inbox CURVE auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ───────────────
+// The inbox ROUTER binds as a CURVE server under a distinct "<uid>:inbox"
+// ZAP domain and admits ONLY pubkeys in its hub-wide known_roles roster
+// (installed via set_peer_allowlist).  These two workers pin both sides of
+// that gate against the real InboxQueue + InboxClient + ZapRouter — no mocks.
+
+int inbox_curve_authorized_delivers()
+{
+    return run_gtest_worker(
+        [] {
+            namespace sec = pylabhub::utils::security;
+            const auto [recv_pub, recv_sec]  = make_keypair();
+            const auto [alice_pub, alice_sec] = make_keypair();
+            sec::secure().keys().add_identity_from_z85("inbox_recv_id", recv_pub, recv_sec);
+            sec::secure().keys().add_identity_from_z85("alice_id", alice_pub, alice_sec);
+
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+            ASSERT_NE(q, nullptr);
+            q->set_curve_server_identity("inbox_recv_id", "test.inbox.curve.pos");
+            ASSERT_TRUE(q->start());
+            // Seed the roster: alice is authorized (mirrors the S3 roster
+            // seed the role does off REG_ACK.known_roles).
+            sec::PeerAllowlist allow;
+            allow.peers.insert(sec::PeerIdentity{"curve", alice_pub});
+            ASSERT_TRUE(q->set_peer_allowlist(allow));
+
+            sec::ZapPumpThread pump;  // authorizes CURVE handshakes via ZapRouter
+
+            auto c = InboxClient::connect_to(
+                q->actual_endpoint(), "alice.uid00000001", uint32_schema());
+            ASSERT_NE(c, nullptr);
+            c->set_curve_client_identity("alice_id", recv_pub);
+            ASSERT_TRUE(c->start());
+
+            void *buf = c->acquire();
+            ASSERT_NE(buf, nullptr);
+            uint32_t val = 0xA11CE;
+            std::memcpy(buf, &val, sizeof(val));
+
+            const InboxItem *item = nullptr;
+            auto fut = std::async(std::launch::async, [&] {
+                item = q->recv_one(ms{2000});
+                if (item) q->send_ack(0);
+                return item != nullptr;
+            });
+            std::this_thread::sleep_for(ms{30});
+            const uint8_t ack = c->send(ms{1500});
+
+            ASSERT_TRUE(fut.get())
+                << "authorized (alice in roster) CURVE inbox send should deliver";
+            ASSERT_NE(item, nullptr);
+            uint32_t received = 0;
+            std::memcpy(&received, item->data, sizeof(received));
+            EXPECT_EQ(received, val);
+            EXPECT_EQ(ack, 0u);
+
+            c->stop();
+            q->stop();
+        },
+        "hub_inbox_queue::inbox_curve_authorized_delivers",
+        PLH_INBOX_MODS);
+}
+
+int inbox_curve_unknown_denied()
+{
+    return run_gtest_worker(
+        [] {
+            namespace sec = pylabhub::utils::security;
+            const auto [recv_pub, recv_sec]   = make_keypair();
+            const auto [alice_pub, alice_sec] = make_keypair();  // authorized (roster)
+            const auto [bob_pub, bob_sec]     = make_keypair();  // NOT in roster
+            (void)alice_sec;  // alice's pubkey seeds the roster; no alice socket here
+            sec::secure().keys().add_identity_from_z85("inbox_recv_id", recv_pub, recv_sec);
+            sec::secure().keys().add_identity_from_z85("bob_id", bob_pub, bob_sec);
+
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+            ASSERT_NE(q, nullptr);
+            q->set_curve_server_identity("inbox_recv_id", "test.inbox.curve.neg");
+            ASSERT_TRUE(q->start());
+            // Roster holds ONLY alice — bob is a known-keypair peer that the
+            // hub does NOT know (its pubkey is not in known_roles).
+            sec::PeerAllowlist allow;
+            allow.peers.insert(sec::PeerIdentity{"curve", alice_pub});
+            ASSERT_TRUE(q->set_peer_allowlist(allow));
+
+            sec::ZapPumpThread pump;
+
+            auto c = InboxClient::connect_to(
+                q->actual_endpoint(), "bob.uid00000001", uint32_schema());
+            ASSERT_NE(c, nullptr);
+            c->set_curve_client_identity("bob_id", recv_pub);
+            ASSERT_TRUE(c->start());  // socket-level connect succeeds; ZAP denies handshake
+
+            void *buf = c->acquire();
+            ASSERT_NE(buf, nullptr);
+            uint32_t val = 0xB0B;
+            std::memcpy(buf, &val, sizeof(val));
+
+            const InboxItem *item = nullptr;
+            auto fut = std::async(std::launch::async, [&] {
+                item = q->recv_one(ms{700});
+                if (item) q->send_ack(0);
+                return item != nullptr;
+            });
+            std::this_thread::sleep_for(ms{30});
+            const uint8_t ack = c->send(ms{500});
+
+            // The ZAP gate denies bob's CURVE handshake, so NO message reaches
+            // the ROUTER and the send gets no ACK.
+            EXPECT_FALSE(fut.get())
+                << "unknown peer (bob not in roster) must NOT reach the inbox";
+            EXPECT_EQ(item, nullptr);
+            EXPECT_NE(ack, 0u) << "denied send must not receive a success ACK";
+
+            c->stop();
+            q->stop();
+        },
+        "hub_inbox_queue::inbox_curve_unknown_denied",
+        PLH_INBOX_MODS);
+}
+
 } // namespace hub_inbox_queue
 } // namespace pylabhub::tests::worker
 
@@ -826,6 +962,10 @@ struct HubInboxQueueRegistrar
                     return checksum_manual_no_stamp_receiver_rejects();
                 if (sc == "checksum_none_roundtrip")
                     return checksum_none_roundtrip();
+                if (sc == "inbox_curve_authorized_delivers")
+                    return inbox_curve_authorized_delivers();
+                if (sc == "inbox_curve_unknown_denied")
+                    return inbox_curve_unknown_denied();
                 return -1;
             });
     }

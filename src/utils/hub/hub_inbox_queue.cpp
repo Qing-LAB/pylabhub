@@ -15,6 +15,9 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
+#include "utils/security/key_store.hpp"       // kRoleIdentityName, secure().keys()
+#include "utils/security/secure_subsystem.hpp" // secure()
+#include "utils/security/zap_router.hpp"      // ZapRouter, ZapDomainHandle
 #include "zmq_wire_helpers.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -77,6 +80,24 @@ struct InboxQueueImpl
     // A single global counter is meaningless with multiple senders; each sender's
     // sequence is independent and wraps independently.
     std::unordered_map<std::string, uint64_t> sender_expected_seq_;
+
+    // ── CURVE-server auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
+    // Set by set_curve_server_identity() before start().  Empty
+    // identity_key_name_ == legacy plaintext inbox (no CURVE arm).
+    std::string identity_key_name_;   ///< KeyStore key (kRoleIdentityName).
+    std::string zap_domain_;          ///< Distinct inbox ZAP domain ("<uid>:inbox").
+
+    // Hub-wide known_roles roster (COW snapshot) consulted by the ZapRouter
+    // pump thread via is_peer_allowed.  nullptr == deny-all (secure default
+    // between the S1 bind and the S3 set_peer_allowlist seed).  Written by
+    // set_peer_allowlist (any thread), read on the pump thread — atomic.
+    std::atomic<std::shared_ptr<const pylabhub::utils::security::PeerAllowlist>>
+        allowlist_{nullptr};
+
+    // RAII registration with the process ZapRouter; destructor unregisters
+    // the domain.  Engaged in start() (register_domain before bind), reset
+    // in stop().
+    std::optional<pylabhub::utils::security::ZapDomainHandle> zap_handle_;
 };
 
 // ============================================================================
@@ -105,6 +126,12 @@ struct InboxClientImpl
     std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
     ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced};
     int last_acktimeo{-2}; ///< Cached ZMQ_RCVTIMEO for ACK receives. -2 = not yet set.
+
+    // ── CURVE-client auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
+    // Set by set_curve_client_identity() before start().  Empty
+    // identity_key_name_ == legacy plaintext (no CURVE arm).
+    std::string identity_key_name_;   ///< KeyStore key (kRoleIdentityName).
+    std::string server_pubkey_z85_;   ///< Receiver identity pubkey (curve_serverkey).
 };
 
 // ============================================================================
@@ -247,14 +274,59 @@ bool InboxQueue::start()
             zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::router);
         pImpl->socket.set(zmq::sockopt::linger, 0);
         pImpl->socket.set(zmq::sockopt::rcvhwm, pImpl->rcvhwm);
+
+        // ── CURVE-server arm (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ──
+        // Mirror of ZmqQueue's bind-side pattern: identity keypair from
+        // secure().keys() (secret never leaves the module — flows into
+        // libzmq inside the with_seckey callback), curve_server=1, a
+        // DISTINCT inbox zap_domain, and register_domain BEFORE bind so
+        // the ZapRouter can gate the first handshake.  Until
+        // set_peer_allowlist seeds the hub roster, `allowlist_` is
+        // nullptr → is_peer_allowed denies all (secure default).
+        if (!pImpl->identity_key_name_.empty())
+        {
+            namespace sec = pylabhub::utils::security;
+            auto &ks = sec::secure().keys();
+            pImpl->socket.set(zmq::sockopt::curve_publickey,
+                              ks.pubkey(pImpl->identity_key_name_));
+            ks.with_seckey(pImpl->identity_key_name_,
+                [&](std::string_view seckey) {
+                    pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey);
+                });
+            pImpl->socket.set(zmq::sockopt::curve_server, 1);
+            pImpl->socket.set(zmq::sockopt::zap_domain, pImpl->zap_domain_);
+
+            // register_domain BEFORE bind (same ordering as ZmqQueue) so
+            // no handshake can slip through un-gated.  `*this` is the
+            // PeerAdmission the pump thread consults.
+            pImpl->zap_handle_.emplace(
+                sec::ZapRouter::instance().register_domain(
+                    pImpl->zap_domain_, *this));
+            LOGGER_INFO(
+                "[hub::InboxQueue] CURVE-server armed endpoint='{}' "
+                "zap_domain='{}' (deny-all until roster seeded; "
+                "HEP-CORE-0027 §3.5)",
+                pImpl->endpoint, pImpl->zap_domain_);
+        }
+
         pImpl->socket.bind(pImpl->endpoint);
         pImpl->actual_ep = pImpl->socket.get(zmq::sockopt::last_endpoint);
     }
     catch (const zmq::error_t &e)
     {
+        pImpl->zap_handle_.reset();
         pImpl->socket.close();
         pImpl->running_.store(false);
         LOGGER_ERROR("[hub::InboxQueue] socket setup failed for '{}': {}",
+                     pImpl->endpoint, e.what());
+        return false;
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->zap_handle_.reset();
+        pImpl->socket.close();
+        pImpl->running_.store(false);
+        LOGGER_ERROR("[hub::InboxQueue] CURVE arm failed for '{}': {}",
                      pImpl->endpoint, e.what());
         return false;
     }
@@ -270,6 +342,11 @@ void InboxQueue::stop()
 
     // Close the socket; shared context is owned by the ZMQContext lifecycle module.
     pImpl->socket.close();
+
+    // Unregister from the ZapRouter (RAII handle destructor); the domain
+    // becomes free for a future re-bind.  After this the pump thread no
+    // longer holds a reference to this InboxQueue's is_peer_allowed.
+    pImpl->zap_handle_.reset();
 }
 
 bool InboxQueue::is_running() const noexcept
@@ -452,6 +529,47 @@ void InboxQueue::set_checksum_policy(ChecksumPolicy policy) noexcept
     if (pImpl) pImpl->checksum_policy_ = policy;
 }
 
+// ── CURVE-server auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────────
+
+void InboxQueue::set_curve_server_identity(std::string identity_key_name,
+                                           std::string zap_domain)
+{
+    if (!pImpl) return;
+    pImpl->identity_key_name_ = std::move(identity_key_name);
+    pImpl->zap_domain_        = std::move(zap_domain);
+}
+
+bool InboxQueue::set_peer_allowlist(
+    pylabhub::utils::security::PeerAllowlist allowlist)
+{
+    if (!pImpl) return false;
+    pImpl->allowlist_.store(
+        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(
+            std::move(allowlist)),
+        std::memory_order_release);
+    return true;
+}
+
+std::optional<pylabhub::utils::security::PeerAllowlist>
+InboxQueue::peer_allowlist_snapshot() const
+{
+    if (!pImpl) return std::nullopt;
+    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
+    if (!snap) return std::nullopt;
+    return *snap;
+}
+
+bool InboxQueue::is_peer_allowed(
+    const pylabhub::utils::security::PeerIdentity &peer) const
+{
+    if (!pImpl) return false;
+    // nullptr roster == deny-all (secure default between the S1 bind and
+    // the S3 set_peer_allowlist seed).
+    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
+    if (!snap) return false;
+    return snap->contains(peer);
+}
+
 // ============================================================================
 // InboxClient — factory
 // ============================================================================
@@ -517,8 +635,30 @@ bool InboxClient::start()
             zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::dealer);
         pImpl->socket.set(zmq::sockopt::linger, 0);
         // ZMQ_ROUTING_ID (modern name for ZMQ_IDENTITY): the peer's ROUTER will
-        // prepend this to every message it receives from us.
+        // prepend this to every message it receives from us.  Note: under
+        // CURVE the ROUTER admits by PUBKEY (ZAP), not by this self-asserted
+        // routing_id — the id is only the ACK-return address, no longer a
+        // trust claim.
         pImpl->socket.set(zmq::sockopt::routing_id, pImpl->sender_uid);
+
+        // ── CURVE-client arm (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ──
+        // Present the sender's identity keypair and pin the receiver's
+        // identity pubkey (from ROLE_INFO_ACK) as curve_serverkey.  Mirror
+        // of ZmqQueue's dialing-side pattern.
+        if (!pImpl->identity_key_name_.empty())
+        {
+            namespace sec = pylabhub::utils::security;
+            auto &ks = sec::secure().keys();
+            pImpl->socket.set(zmq::sockopt::curve_publickey,
+                              ks.pubkey(pImpl->identity_key_name_));
+            ks.with_seckey(pImpl->identity_key_name_,
+                [&](std::string_view seckey) {
+                    pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey);
+                });
+            pImpl->socket.set(zmq::sockopt::curve_serverkey,
+                              pImpl->server_pubkey_z85_);
+        }
+
         pImpl->socket.connect(pImpl->endpoint);
     }
     catch (const zmq::error_t &e)
@@ -526,6 +666,14 @@ bool InboxClient::start()
         pImpl->socket.close();
         pImpl->running_.store(false);
         LOGGER_ERROR("[hub::InboxClient] socket setup failed for '{}': {}",
+                     pImpl->endpoint, e.what());
+        return false;
+    }
+    catch (const std::exception &e)
+    {
+        pImpl->socket.close();
+        pImpl->running_.store(false);
+        LOGGER_ERROR("[hub::InboxClient] CURVE arm failed for '{}': {}",
                      pImpl->endpoint, e.what());
         return false;
     }
@@ -652,6 +800,14 @@ void InboxClient::abort() noexcept
 void InboxClient::set_checksum_policy(ChecksumPolicy policy) noexcept
 {
     if (pImpl) pImpl->checksum_policy_ = policy;
+}
+
+void InboxClient::set_curve_client_identity(std::string identity_key_name,
+                                            std::string server_pubkey_z85)
+{
+    if (!pImpl) return;
+    pImpl->identity_key_name_ = std::move(identity_key_name);
+    pImpl->server_pubkey_z85_ = std::move(server_pubkey_z85);
 }
 
 } // namespace pylabhub::hub

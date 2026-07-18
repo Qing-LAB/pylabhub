@@ -521,7 +521,10 @@ struct RoleAPIBase::Impl
     {
         if (!ack.contains("known_roles") || !ack.at("known_roles").is_array())
             return;
+        namespace sec = pylabhub::utils::security;
         std::size_t added = 0;
+        std::size_t total = 0;
+        sec::PeerAllowlist allowlist;  // built only when a re-seed is due
         {
             std::lock_guard<std::mutex> lk(inbox_known_roles_mu);
             for (const auto &e : ack.at("known_roles"))
@@ -531,16 +534,30 @@ struct RoleAPIBase::Impl
                 if (z85.empty()) continue;
                 if (inbox_known_roles.insert(std::move(z85)).second) ++added;
             }
+            total = inbox_known_roles.size();
+            // Build the ZAP allowlist from the FULL roster only when the
+            // roster grew AND this role owns an inbox ROUTER to gate.
+            if (added > 0 && inbox_queue != nullptr)
+                for (const auto &pk : inbox_known_roles)
+                    allowlist.peers.insert(sec::PeerIdentity{"curve", pk});
         }
-        if (added > 0)
+        if (added == 0)
+            return;
+        LOGGER_INFO(
+            "[{}] event=InboxKnownRolesMerged added={} total={} "
+            "(HEP-CORE-0027 §3.5 hub-wide inbox roster)",
+            short_tag, added, total);
+        // Seed the inbox ROUTER's ZAP allowlist so the roster and the CURVE
+        // gate move together (HEP-CORE-0027 §3.5 S3 — lifts the ROUTER off
+        // its deny-all default).  Inert for roles without an inbox.
+        if (inbox_queue != nullptr)
+        {
+            inbox_queue->set_peer_allowlist(std::move(allowlist));
             LOGGER_INFO(
-                "[{}] event=InboxKnownRolesMerged added={} total={} "
-                "(HEP-CORE-0027 §3.5 hub-wide inbox roster)",
-                short_tag, added,
-                [this] {
-                    std::lock_guard<std::mutex> lk(inbox_known_roles_mu);
-                    return inbox_known_roles.size();
-                }());
+                "[{}] event=InboxAllowlistSeeded size={} "
+                "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP)",
+                short_tag, total);
+        }
     }
 };
 
@@ -4311,6 +4328,20 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             auto inbox_packing  = info.value("inbox_packing", std::string{});
             auto inbox_endpoint = info.value("inbox_endpoint", std::string{});
             auto inbox_checksum = info.value("inbox_checksum", std::string{});
+            // HEP-CORE-0027 §3.5 — the receiver's identity pubkey pins the
+            // DEALER's curve_serverkey.  Mandatory: without it we cannot
+            // establish the CURVE session, and there is no plaintext inbox
+            // fallback (hard-enforce per the hub-wide auth model).
+            auto inbox_receiver_pubkey =
+                info.value("inbox_receiver_pubkey_z85", std::string{});
+            if (inbox_receiver_pubkey.empty())
+            {
+                LOGGER_WARN("[api] open_inbox('{}'): ROLE_INFO_ACK carried no "
+                            "inbox_receiver_pubkey_z85 — cannot arm CURVE "
+                            "(HEP-CORE-0027 §3.5); refusing plaintext inbox",
+                            target_uid);
+                return std::nullopt;
+            }
 
             hub::SchemaSpec spec;
             try
@@ -4336,6 +4367,13 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                 LOGGER_WARN("[api] open_inbox('{}'): connect failed", target_uid);
                 return std::nullopt;
             }
+            // HEP-CORE-0027 §3.5 — arm CURVE-client BEFORE start(): present
+            // this sender's identity keypair, pin the receiver's pubkey as
+            // curve_serverkey.  The receiver ROUTER admits us iff our pubkey
+            // is in its hub-wide known_roles roster.
+            client_ptr->set_curve_client_identity(
+                std::string(pylabhub::utils::security::kRoleIdentityName),
+                std::move(inbox_receiver_pubkey));
             if (!client_ptr->start())
             {
                 LOGGER_WARN("[api] open_inbox('{}'): start failed", target_uid);

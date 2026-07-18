@@ -26,6 +26,8 @@ int schema_mismatch_different_size_drops_frame();
 int checksum_enforced_roundtrip();
 int checksum_manual_no_stamp_receiver_rejects();
 int checksum_none_roundtrip();
+int inbox_curve_authorized_delivers();
+int inbox_curve_unknown_denied();
 
 } // namespace hub_inbox_queue
 } // namespace pylabhub::tests::worker

@@ -6454,6 +6454,18 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     // Search for a channel where `uid` is a registered producer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).  Inbox info lives
     // per-ProducerEntry (HEP-CORE-0027) — read from the matched producer.
+    //
+    // HEP-CORE-0027 §3.5 — the sender's InboxClient DEALER pins the
+    // receiver's identity pubkey as curve_serverkey, so ROLE_INFO_ACK
+    // carries it.  The receiver's identity pubkey is its known_roles
+    // entry (single-key model I6 — same key it presents on data sockets).
+    const auto inbox_receiver_pubkey =
+        [this](const std::string &target_uid) -> std::string {
+            for (const auto &kr : cfg.known_roles)
+                if (kr.uid == target_uid)
+                    return kr.pubkey_z85;
+            return {};
+        };
     const auto snap = hub_state_->snapshot();
     for (const auto& [name, entry] : snap.channels)
     {
@@ -6466,6 +6478,7 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
             resp["inbox_endpoint"]  = prod->inbox_endpoint;
             resp["inbox_packing"]   = prod->inbox_packing;
             resp["inbox_checksum"]  = prod->inbox_checksum;
+            resp["inbox_receiver_pubkey_z85"] = inbox_receiver_pubkey(uid);
             if (!prod->inbox_schema_json.empty())
             {
                 try
@@ -6512,6 +6525,7 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
                 resp["inbox_endpoint"]  = cons.inbox_endpoint;
                 resp["inbox_packing"]   = cons.inbox_packing;
                 resp["inbox_checksum"]  = cons.inbox_checksum;
+                resp["inbox_receiver_pubkey_z85"] = inbox_receiver_pubkey(uid);
                 if (!cons.inbox_schema_json.empty())
                 {
                     try
