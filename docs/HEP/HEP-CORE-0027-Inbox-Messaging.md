@@ -210,9 +210,11 @@ S2 (registration) — FATAL on failure:
 S3 (apply_*_reg_ack) — ACTIVATE (behind the auth door):
   5. inbox_queue_->bind_at(endpoint)         — bind ROUTER socket;
        arm CURVE/ZAP with the role's identity keypair (per
-       HEP-CORE-0036 §I6); seed allowlist by inheriting from the
-       data channel's allowlist (HEP-CORE-0036 §9.3 — the channel-
-       allowlist baseline applies to inbox incoming handshakes too).
+       HEP-CORE-0036 §I6); seed the inbox allowlist from the HUB-WIDE
+       `known_roles` roster captured off this presence's
+       REG_ACK/CONSUMER_REG_ACK (§3.5) — NOT the data channel's
+       allowlist.  The inbox is a hub-wide role<->role facility, so it
+       admits any authenticated known_role, not just channel peers.
   6. inbox_queue_->set_checksum_policy(config_.checksum().policy)
   7. inbox_queue_->start()                   — ROUTER active; transitions
        Standby → Configured → Active per HEP-CORE-0036 §6.7.

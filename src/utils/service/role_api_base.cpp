@@ -295,6 +295,20 @@ struct RoleAPIBase::Impl
     PeerCache allowlist_cache;
     PeerCache producer_peer_cache;
 
+    // HEP-CORE-0027 §3.5 — hub-wide `known_roles` roster for the inbox ZAP.
+    // The inbox is a hub-wide role<->role facility (any role may message any
+    // other role), so its authorization boundary is known_roles membership,
+    // NOT the data channel's allowlist (that lives in `allowlist_cache`
+    // above, channel-scoped).  The role does not hold the hub's roster
+    // otherwise, so the broker distributes it on every
+    // REG_ACK/CONSUMER_REG_ACK as a flat array of Z85 pubkeys; `apply_*_
+    // reg_ack` unions it here.  UNION across presences/hubs — a multi-hub
+    // role admits any known_role from any hub it registered with.  Consumed
+    // by the inbox ROUTER's ZAP arm.  Mutex-guarded: written on the BRC-poll
+    // thread as ACKs arrive, read when the inbox facility is armed.
+    mutable std::mutex              inbox_known_roles_mu;
+    std::unordered_set<std::string> inbox_known_roles;  // Z85 pubkeys
+
     // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
     // binding-side live-peer map maintained by phase=live / phase=left
     // NOTIFY dispatch in `handle_channel_auth_notifies`.  Backs the
@@ -496,6 +510,37 @@ struct RoleAPIBase::Impl
     resolve_bc_for_band(const std::string &band) const noexcept
     {
         return handler_ ? handler_->brc_for_band(band) : nullptr;
+    }
+
+    // HEP-CORE-0027 §3.5 — union REG_ACK/CONSUMER_REG_ACK `known_roles`
+    // (flat array of Z85 pubkeys) into the hub-wide inbox roster.  Called
+    // from both ACK handlers.  A missing/non-array field contributes
+    // nothing (enforcement that an inbox-configured role has a non-empty
+    // roster belongs at the inbox-arm site, not here).
+    void merge_inbox_known_roles(const nlohmann::json &ack)
+    {
+        if (!ack.contains("known_roles") || !ack.at("known_roles").is_array())
+            return;
+        std::size_t added = 0;
+        {
+            std::lock_guard<std::mutex> lk(inbox_known_roles_mu);
+            for (const auto &e : ack.at("known_roles"))
+            {
+                if (!e.is_string()) continue;
+                auto z85 = e.get<std::string>();
+                if (z85.empty()) continue;
+                if (inbox_known_roles.insert(std::move(z85)).second) ++added;
+            }
+        }
+        if (added > 0)
+            LOGGER_INFO(
+                "[{}] event=InboxKnownRolesMerged added={} total={} "
+                "(HEP-CORE-0027 §3.5 hub-wide inbox roster)",
+                short_tag, added,
+                [this] {
+                    std::lock_guard<std::mutex> lk(inbox_known_roles_mu);
+                    return inbox_known_roles.size();
+                }());
     }
 };
 
@@ -976,6 +1021,10 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     ack.value("channel_name", "?"),
                     ack.value("status", "?"),
                     producers_dump);
+
+        // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
+        // presence's CONSUMER_REG_ACK before it seeds the inbox ROUTER ZAP arm.
+        pImpl->merge_inbox_known_roles(ack);
 
         // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
         // on CONSUMER_REG_ACK.  Symmetric with the producer-side path.
@@ -1805,6 +1854,10 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         "[{}] event=ProducerInstanceIdCaptured channel='{}' "
         "instance_id={} (HEP-CORE-0042 §5.5.3)",
         pImpl->short_tag, channel_name, instance_id);
+
+    // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
+    // presence's REG_ACK before it seeds the inbox ROUTER ZAP arm.
+    pImpl->merge_inbox_known_roles(ack);
 
     // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
     // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist

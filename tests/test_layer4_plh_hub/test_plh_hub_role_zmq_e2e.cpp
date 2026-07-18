@@ -1567,6 +1567,19 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
                                      seconds(15)))
         << "sender never registered:\n" << send.get_stderr();
 
+    // Slice 1 (HEP-CORE-0027 §3.5): each role captures the hub-wide inbox
+    // roster from REG_ACK.known_roles.  Both roles are in the hub's
+    // known_roles, so the merge fires with a non-zero total — this is the
+    // seed the inbox ROUTER ZAP arm (slice 2) consumes.
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv,
+        "event=InboxKnownRolesMerged", seconds(10)))
+        << "receiver never captured the known_roles roster:\n"
+        << read_role_log(recv_dir);
+    ASSERT_TRUE(wait_for_role_marker(send_dir, send,
+        "event=InboxKnownRolesMerged", seconds(10)))
+        << "sender never captured the known_roles roster:\n"
+        << read_role_log(send_dir);
+
     // Delivery: sender discovers the receiver's inbox and sends value=42; the
     // receiver's on_inbox fires with the correct sender uid.
     ASSERT_TRUE(wait_for_role_marker(send_dir, send, "inbox_send: SENT rc=0",
