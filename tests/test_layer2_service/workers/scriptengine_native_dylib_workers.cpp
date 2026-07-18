@@ -865,6 +865,48 @@ int api_band_pub_sub_no_broker_graceful_return(const std::string &plugin_dir)
         "native_engine::api_band_pub_sub_no_broker_graceful_return");
 }
 
+// Native inbox SEND API parity (HEP-CORE-0027; ABI v10).  The plugin's
+// on_produce probes the inbox send surface: all five fn ptrs must be wired
+// (parity with Python/Lua), and open_inbox on an unreachable target must
+// return NULL gracefully (no broker attached).  End-to-end delivery over
+// the InboxClient transport is covered by the L3 CURVE inbox tests + the L4
+// Python delivery test — here we pin the native ABI wiring + delegation.
+int api_inbox_send_no_broker_graceful_return(const std::string &plugin_dir)
+{
+    return run_ne_worker(
+        [&]() {
+            RoleHostCore core;
+            NativeEngine engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+
+            auto lib = good_plugin_path(plugin_dir);
+            ASSERT_TRUE(engine.load_script(lib.parent_path(),
+                                           lib.filename().string(),
+                                           "on_produce"));
+            auto spec = pylabhub::tests::simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            core.set_out_slot_spec(SchemaSpec{spec},
+                                   pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+            auto test_api = make_native_api(core);
+            ASSERT_TRUE(engine.build_api(*test_api));
+
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, InvokeResult::Commit);
+
+            auto metrics = core.custom_metrics_snapshot();
+            EXPECT_EQ(static_cast<int>(metrics["test_inbox_ptrs_wired"]), 1)
+                << "native inbox send fn ptrs must all be wired (parity)";
+            EXPECT_EQ(static_cast<int>(metrics["test_inbox_open_null"]), 1)
+                << "open_inbox on an unreachable target must return NULL gracefully";
+
+            engine.finalize();
+        },
+        "native_engine::api_inbox_send_no_broker_graceful_return");
+}
+
 } // namespace native_engine
 } // namespace pylabhub::tests::worker
 
@@ -946,6 +988,8 @@ struct NativeEngineWorkerRegistrar
                     return invoke_on_inbox_typed_data(pdir);
                 if (sc == "api_band_pub_sub_no_broker_graceful_return")
                     return api_band_pub_sub_no_broker_graceful_return(pdir);
+                if (sc == "api_inbox_send_no_broker_graceful_return")
+                    return api_inbox_send_no_broker_graceful_return(pdir);
 
                 fmt::print(stderr,
                            "[native_engine] ERROR: unknown scenario '{}'\n", sc);

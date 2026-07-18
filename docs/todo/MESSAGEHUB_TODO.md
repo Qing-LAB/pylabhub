@@ -258,24 +258,42 @@ Design authority: HEP-CORE-0036 §6.5 + §6.6.1 + §6.6.2 + §6.6.3
 
 ## Open broker-specific items
 
-### Native engine inbox API parity gap (filed 2026-07-17)
+### Native engine inbox API parity gap (filed 2026-07-17; RE-SCOPED 2026-07-18)
 
-**Multi-engine parity is broken for the inbox.**  Lua and Python have the full
-inbox API (receive `on_inbox` via `invoke_on_inbox`; send via `api.open_inbox`
-→ `InboxHandle:send`).  **Native has neither wired:**
-- **Receive:** the native ABI *declares* `bool on_inbox(const plh_inbox_msg_t*)`
-  (`native_engine_api.h:779`) and defines `plh_inbox_msg_t`, but `NativeEngine`
-  does NOT override `invoke_on_inbox` (only Lua/Python do) and `native_engine.cpp`
-  has zero inbox wiring — so a native plugin's `on_inbox` **never fires**.  A
-  declared-but-dead callback is worse than absent (it looks supported).
-- **Send:** there is NO `open_inbox` / send-inbox function in the native ABI at
-  all — native plugins cannot send to an inbox.
+**CORRECTION (2026-07-18, verified against code):** the RECEIVE side is
+already fully wired for Native — the original note was wrong.  `NativeEngine`
+DOES override `invoke_on_inbox` (`native_engine.hpp:112`, impl
+`native_engine.cpp:1906`), resolves the `on_inbox` symbol
+(`native_engine.cpp:1384`), reports `has_callback("on_inbox")` (`:1600`), the
+fixture plugin `good_producer_plugin.cpp:347` exports `on_inbox`, and the L2
+test `native_engine.invoke_on_inbox_typed_data` passes.  A native plugin's
+`on_inbox` DOES fire.
 
-**Fix:** override `NativeEngine::invoke_on_inbox` (dispatch to the plugin's
-`on_inbox`) + add a native `open_inbox`/send-inbox ABI function.  Independent of
-the inbox CURVE pilot (#191) but adjacent — a native plugin cannot use the inbox
-at all regardless of security.  Discovered while scoping the inbox L4 tests.
-See `feedback_multi_engine_parity_audit`.
+**Genuine remaining gap — SEND only.**  There is no `open_inbox` /
+inbox-send host callback in the native ABI (`PlhNativeContext`,
+`native_engine_api.h`), so a native plugin can RECEIVE inbox messages but
+cannot SEND them.  Lua/Python expose `api.open_inbox(target_uid)` →
+`InboxHandle:{acquire,send,discard,close}` (base:
+`RoleAPIBase::open_inbox_client`, `role_api_base.cpp:4282`).
+
+**✅ CLOSED 2026-07-18.**  Added the SEND host callbacks to
+`PlhNativeContext` — `open_inbox` (→ opaque `InboxClient*` handle, cached
+per-uid by RoleHostCore for role lifetime), `inbox_acquire`/`inbox_send`/
+`inbox_discard`/`inbox_close` — with `ctx_*` role-side impls delegating to
+`RoleAPIBase::open_inbox_client` + `InboxClient::{acquire,send,abort}`,
+`hub_stub_*` on the hub context, wired in both `wire()` branches
+(`native_engine.cpp`).  Native plugin ABI bumped v9→v10 (additive; appended
+before the opaque `_core`/`_api` tail; ComponentVersions registry unchanged).
+`good_producer_plugin` probes the surface; L2 test
+`NativeEngineTest.Api_InboxSend_NoBroker_GracefulReturn` pins the wiring
+(all 5 ptrs non-null) + graceful null on an unreachable target.
+
+**Coverage note:** the native SEND delegation is thin over the SHARED
+`InboxClient`, whose end-to-end delivery is proven by the L3 CURVE inbox
+tests + the L4 Python delivery test.  A native-*sender* L4 delivery test
+would need native-L4-role harness infra (the L4 harness is Python-only
+today) — deferred as disproportionate; the transport itself is already
+covered.  See `feedback_multi_engine_parity_audit`.
 
 ### Notify/broadcast message doc-consistency (2026-07-17)
 

@@ -23,6 +23,7 @@
 #include "utils/schema_utils.hpp"        // compute_schema_size
 #include "utils/role_host_core.hpp"
 #include "utils/hub_api.hpp"          // build_api_(HubAPI&) — B13 fix 2026-05-21
+#include "utils/hub_inbox_queue.hpp"  // InboxClient — native inbox send (API v10)
 
 #include <fstream>
 #include <optional>
@@ -330,6 +331,11 @@ uint32_t hub_stub_spinlock_count(const PlhNativeContext *, int) noexcept { retur
 int      hub_stub_spinlock_is_locked(const PlhNativeContext *, int, int) noexcept { return 0; }
 size_t   hub_stub_size_arg2_zero(const PlhNativeContext *, int) noexcept { return 0; }
 int      hub_stub_wait_for_role(const PlhNativeContext *, const char *, int) noexcept { return 0; }
+void    *hub_stub_open_inbox(const PlhNativeContext *, const char *) noexcept { return nullptr; }
+void    *hub_stub_inbox_acquire(const PlhNativeContext *, void *) noexcept { return nullptr; }
+int      hub_stub_inbox_send(const PlhNativeContext *, void *, int) noexcept { return -1; }
+void     hub_stub_inbox_discard(const PlhNativeContext *, void *) noexcept {}
+void     hub_stub_inbox_close(const PlhNativeContext *, void *) noexcept {}
 int      hub_stub_band_int_arg2(const PlhNativeContext *, const char *) noexcept { return -1; }
 void     hub_stub_band_broadcast(const PlhNativeContext *, const char *, const char *) noexcept {}
 int      hub_stub_band_members(const PlhNativeContext *, const char *, plh_band_member_visitor, void *) noexcept { return -1; }
@@ -528,6 +534,45 @@ int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_
 {
     if (!ctx || !ctx->_api || !uid) return 0;
     return static_cast<RoleAPIBase *>(ctx->_api)->wait_for_role(uid, timeout_ms) ? 1 : 0;
+}
+
+// ── Inbox send (HEP-CORE-0027; API v10) ──────────────────────────────────
+// Parity with Python `api.open_inbox(uid).send(...)` / Lua
+// `api:open_inbox(uid)`.  The opaque handle is the cached InboxClient*:
+// RoleAPIBase::open_inbox_client stores the shared_ptr in RoleHostCore's
+// per-uid inbox cache (lifetime == role), so the raw pointer stays valid
+// until teardown — inbox_close is therefore a courtesy no-op.
+void *ctx_open_inbox(const PlhNativeContext *ctx, const char *target_uid)
+{
+    if (!ctx || !ctx->_api || !target_uid) return nullptr;
+    auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+    auto opened = api->open_inbox_client(target_uid);
+    if (!opened) return nullptr;
+    return static_cast<void *>(opened->client.get());
+}
+
+void *ctx_inbox_acquire(const PlhNativeContext * /*ctx*/, void *handle)
+{
+    if (!handle) return nullptr;
+    return static_cast<hub::InboxClient *>(handle)->acquire();
+}
+
+int ctx_inbox_send(const PlhNativeContext * /*ctx*/, void *handle, int timeout_ms)
+{
+    if (!handle) return -1;
+    return static_cast<int>(static_cast<hub::InboxClient *>(handle)->send(
+        std::chrono::milliseconds{timeout_ms}));
+}
+
+void ctx_inbox_discard(const PlhNativeContext * /*ctx*/, void *handle)
+{
+    if (handle) static_cast<hub::InboxClient *>(handle)->abort();
+}
+
+void ctx_inbox_close(const PlhNativeContext * /*ctx*/, void * /*handle*/)
+{
+    // Lifetime owned by RoleHostCore's per-uid inbox cache (role lifetime).
+    // Nothing to release here; the handle must not be used after this call.
 }
 
 // ── Helper: map RoleAPIBase policy_info() string → PLH_QUEUE_POLICY_* macro ─
@@ -1095,6 +1140,13 @@ struct NativeEngine::NativeContextStorage
         ctx.band_member_contains = hub_stub_band_member_contains;
         ctx.band_member_count    = hub_stub_band_int_arg2;
 
+        // ── Inbox send — stubbed (no role inbox on the hub context) ───
+        ctx.open_inbox    = hub_stub_open_inbox;
+        ctx.inbox_acquire = hub_stub_inbox_acquire;
+        ctx.inbox_send    = hub_stub_inbox_send;
+        ctx.inbox_discard = hub_stub_inbox_discard;
+        ctx.inbox_close   = hub_stub_inbox_close;
+
         // ── Channel-auth observability — all stubbed (role concept) ───
         ctx.allowed_peers         = hub_stub_allowed_peers;
         ctx.allowed_peer_contains = hub_stub_allowed_peer_contains;
@@ -1202,6 +1254,13 @@ struct NativeEngine::NativeContextStorage
         ctx.band_members          = ctx_band_members;
         ctx.band_member_contains  = ctx_band_member_contains;
         ctx.band_member_count     = ctx_band_member_count;
+
+        // Inbox send (HEP-CORE-0027) — API v10.
+        ctx.open_inbox    = ctx_open_inbox;
+        ctx.inbox_acquire = ctx_inbox_acquire;
+        ctx.inbox_send    = ctx_inbox_send;
+        ctx.inbox_discard = ctx_inbox_discard;
+        ctx.inbox_close   = ctx_inbox_close;
 
         // Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) — API v6.
         ctx.allowed_peers          = ctx_allowed_peers;

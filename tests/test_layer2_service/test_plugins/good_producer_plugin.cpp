@@ -47,6 +47,8 @@ static int g_test_band_join_failed     = 0;  // 1 if band_join did not succeed
 static int g_test_band_leave_failed    = 0;  // 1 if band_leave did not succeed
 static int g_test_band_send_ok         = 0;  // 1 if band_broadcast returned (no crash)
 static int g_test_band_members_empty   = 0;  // 1 if band_members visited 0 entries or errored
+static int g_test_inbox_ptrs_wired     = 0;  // 1 if all 5 inbox send fn ptrs are non-null
+static int g_test_inbox_open_null      = 0;  // 1 if open_inbox on an unreachable target returned NULL
 
 // ── Required symbols ────────────────────────────────────────────────────
 
@@ -184,6 +186,23 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         }
     }
 
+    // ── Inbox send API (HEP-CORE-0027; API v10): the surface must be
+    //    wired for parity with Python/Lua, and open_inbox must return
+    //    gracefully (NULL) when the target is unreachable (no broker). ──
+    if (g_ctx)
+    {
+        g_test_inbox_ptrs_wired =
+            (g_ctx->open_inbox && g_ctx->inbox_acquire && g_ctx->inbox_send &&
+             g_ctx->inbox_discard && g_ctx->inbox_close) ? 1 : 0;
+        if (g_ctx->open_inbox)
+        {
+            // No broker/handler attached → target unresolvable → NULL
+            // handle (graceful, no crash).
+            void *h = g_ctx->open_inbox(g_ctx, "prod.noexist.uid00000009");
+            g_test_inbox_open_null = (h == nullptr) ? 1 : 0;
+        }
+    }
+
     // ── C++ wrapper: verify plh::Context works ───────────────────
 #ifdef __cplusplus
     if (g_ctx)
@@ -317,6 +336,10 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
                              static_cast<double>(g_test_band_send_ok));
         g_ctx->report_metric(g_ctx, "test_band_members_empty",
                              static_cast<double>(g_test_band_members_empty));
+        g_ctx->report_metric(g_ctx, "test_inbox_ptrs_wired",
+                             static_cast<double>(g_test_inbox_ptrs_wired));
+        g_ctx->report_metric(g_ctx, "test_inbox_open_null",
+                             static_cast<double>(g_test_inbox_open_null));
     }
 
     return true; // commit

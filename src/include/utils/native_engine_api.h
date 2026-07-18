@@ -514,6 +514,53 @@ typedef struct
     void (*hub_set_augment_timeout)(const struct PlhNativeContext *ctx,
                                     int64_t ms);
 
+    /* ── Inbox send (HEP-CORE-0027; API v10, 2026-07-18) ───────────
+     * Point-to-point role→role send, parity with Python
+     * `api.open_inbox(uid).send(...)` and Lua `api:open_inbox(uid)`.
+     * (Receiving is via the `on_inbox` plugin export — already
+     * supported.)  The returned handle is an opaque token owned by the
+     * host (backed by the role's per-uid inbox-client cache); it stays
+     * valid for the role's lifetime.  Typical use:
+     *   void *h = ctx->open_inbox(ctx, "prod.receiver.uid00000001");
+     *   if (h) {
+     *     MySlot *s = (MySlot*)ctx->inbox_acquire(ctx, h);
+     *     s->value = 42;
+     *     int ack = ctx->inbox_send(ctx, h, 5000);   // 0 == delivered
+     *     ctx->inbox_close(ctx, h);
+     *   }
+     */
+
+    /** open_inbox: resolve the target role's inbox (ROLE_INFO_REQ +
+     *  CURVE dial) and return an opaque handle, or NULL if the target
+     *  has no inbox / is unreachable / auth fails.  Idempotent per uid
+     *  — repeated calls return a handle to the same cached client. */
+    void *(*open_inbox)(const struct PlhNativeContext *ctx,
+                        const char *target_uid);
+
+    /** inbox_acquire: obtain the writable slot buffer for the next
+     *  message on `handle` (size == the target's inbox slot size).
+     *  Returns NULL on a null/stale handle.  Fill it, then inbox_send. */
+    void *(*inbox_acquire)(const struct PlhNativeContext *ctx,
+                           void *handle);
+
+    /** inbox_send: encode + send the acquired slot; block up to
+     *  `timeout_ms` for the ACK.  Returns the ACK code (0 = delivered,
+     *  non-zero = queue/schema/handler error or 255 on send/timeout),
+     *  or -1 on a null/stale handle. */
+    int (*inbox_send)(const struct PlhNativeContext *ctx,
+                      void *handle, int timeout_ms);
+
+    /** inbox_discard: drop the currently-acquired buffer without
+     *  sending; the next inbox_acquire starts fresh. */
+    void (*inbox_discard)(const struct PlhNativeContext *ctx,
+                          void *handle);
+
+    /** inbox_close: release the plugin's reference to `handle`.  The
+     *  underlying client is host-cached per uid (lifetime == role), so
+     *  this is a courtesy call; the handle must not be used after. */
+    void (*inbox_close)(const struct PlhNativeContext *ctx,
+                        void *handle);
+
     /* ── Opaque host data (do not dereference) ────────────────────── */
     void *_core;               /**< Internal — RoleHostCore pointer for API implementations. */
     void *_api;                /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -660,7 +707,19 @@ typedef struct PlhAbiInfo
  * actionable error; plugins must rebuild against this header.  A new
  * PLH_STOP_REASON_INIT_TIMEOUT (6) surfaces the "on_init never turned
  * Ready within budget" outcome. */
-#define PLH_NATIVE_API_VERSION 9
+/* v10 (2026-07-18): ADDITIVE — inbox SEND host callbacks appended to
+ * PlhNativeContext (`open_inbox`/`inbox_acquire`/`inbox_send`/
+ * `inbox_discard`/`inbox_close`) per HEP-CORE-0027 §3.5, giving native
+ * plugins parity with Python `api.open_inbox(uid).send(...)` and Lua
+ * `api:open_inbox(uid)`.  (Receiving via the `on_inbox` export already
+ * existed.)  The new pointers sit before the opaque `_core`/`_api` tail,
+ * so a v9 plugin's field offsets for the documented callbacks are
+ * unchanged — but the load-time api_version gate still requires a
+ * rebuild against this header (the check is exact-match, not
+ * range-based).  This is a native-plugin-ABI bump only; the
+ * inter-process ComponentVersions registry is unchanged (a role with
+ * this engine talks to the broker identically). */
+#define PLH_NATIVE_API_VERSION 10
 
 /* =========================================================================
  * C-visible pylabhub ComponentVersions constants

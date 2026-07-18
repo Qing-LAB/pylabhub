@@ -53,6 +53,7 @@ int full_startup_producer_slot_and_flexzone(const std::string &plugin_dir);
 // ── Inbox + channel ─────────────────────────────────────────────────────────
 int invoke_on_inbox_typed_data(const std::string &plugin_dir);
 int api_band_pub_sub_no_broker_graceful_return(const std::string &plugin_dir);
+int api_inbox_send_no_broker_graceful_return(const std::string &plugin_dir);
 
 } // namespace native_engine
 } // namespace pylabhub::tests::worker

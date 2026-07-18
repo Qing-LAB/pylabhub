@@ -215,3 +215,13 @@ TEST_F(NativeEngineTest, Api_BandPubSub_NoBroker_GracefulReturn)
         {plugin_dir()});
     ExpectWorkerOk(w);
 }
+
+// Native inbox SEND API parity (HEP-CORE-0027; ABI v10): the five send fn
+// ptrs are wired and open_inbox returns NULL gracefully with no broker.
+TEST_F(NativeEngineTest, Api_InboxSend_NoBroker_GracefulReturn)
+{
+    auto w = SpawnWorker(
+        "native_engine.api_inbox_send_no_broker_graceful_return",
+        {plugin_dir()});
+    ExpectWorkerOk(w);
+}
