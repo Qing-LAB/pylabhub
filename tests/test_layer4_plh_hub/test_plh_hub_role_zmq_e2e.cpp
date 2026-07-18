@@ -1377,3 +1377,214 @@ TEST_F(PlhHubCliTest, ZmqE2E_Processor_FanInBothChannels_ThreeRoles)
     ::unsetenv("PYLABHUB_HUB_PASSWORD");
     ::unsetenv("PYLABHUB_ROLE_PASSWORD");
 }
+
+// ─── Inbox delivery (role->role inbox over the current plaintext InboxQueue) ──
+//
+// First L4 inbox test (none existed).  End-to-end pin: one role SENDS to
+// another role's inbox and the receiver's on_inbox handler fires with the
+// correct sender + payload.  This is the harness the two-tier-key CURVE pilot
+// (HEP-CORE-0027 §3.5, task #191) will harden + add a deny path to.
+
+// Receiver = producer on `channel` WITH an inbox (OS-assigned endpoint +
+// int32 schema); its on_inbox logs the received message.
+void write_inbox_receiver_config(const fs::path    &cfg_path,
+                                  const fs::path    &hub_dir,
+                                  const std::string &uid,
+                                  const std::string &channel,
+                                  int                prod_port)
+{
+    nlohmann::json j;
+    j["producer"]["uid"]             = uid;
+    j["producer"]["name"]            = "L4InboxReceiver";
+    j["producer"]["log_level"]       = "info";
+    j["producer"]["auth"]["keyfile"] = "vault/" + uid + ".vault";
+    j["out_hub_dir"]      = hub_dir.string();
+    j["out_channel"]      = channel;
+    j["loop_timing"]      = "fixed_rate";
+    j["target_period_ms"] = 50;
+    j["out_transport"]           = "zmq";
+    j["out_zmq_endpoint"]        = "tcp://127.0.0.1:" + std::to_string(prod_port);
+    j["out_zmq_buffer_depth"]    = 256;
+    j["out_zmq_overflow_policy"] = "drop";
+    j["out_slot_schema"]["packing"] = "aligned";
+    j["out_slot_schema"]["fields"]  = nlohmann::json::array({
+        nlohmann::json{{"name", "value"}, {"type", "float32"}}});
+    j["out_flexzone_schema"]  = nullptr;
+    j["checksum"]             = "enforced";
+    j["flexzone_checksum"]    = true;
+    j["stop_on_script_error"] = false;
+    j["script"]["type"]       = "python";
+    j["script"]["path"]       = ".";
+    // Inbox: loopback OS-assigned endpoint + typed schema (one int32 field).
+    j["inbox_endpoint"]          = "tcp://127.0.0.1:0";
+    j["inbox_schema"]["packing"] = "aligned";
+    j["inbox_schema"]["fields"]  = nlohmann::json::array({
+        nlohmann::json{{"name", "value"}, {"type", "int32"}}});
+
+    std::error_code ec;
+    fs::create_directories(cfg_path.parent_path(), ec);
+    std::ofstream f(cfg_path);
+    f << j.dump(2);
+}
+
+void write_inbox_receiver_script(const fs::path &script_dir)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_iter = [0]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'inbox_recv: init')\n"
+         "\n"
+         "def on_produce(tx, msgs, api):\n"
+         "    if tx.slot is None:\n"
+         "        return False\n"
+         "    tx.slot.value = float(_iter[0])\n"
+         "    _iter[0] += 1\n"
+         "    return True\n"
+         "\n"
+         "def on_inbox(msg, api):\n"
+         "    api.log('info', 'inbox_recv: GOT sender=' + str(msg.sender_uid) +\n"
+         "            ' value=' + str(msg.data.value))\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'inbox_recv: stop')\n";
+}
+
+// Sender = producer on its own channel (no inbox); each tick it retries
+// api.open_inbox(receiver_uid) until discoverable, then sends one message.
+void write_inbox_sender_script(const fs::path    &script_dir,
+                               const std::string &receiver_uid)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_iter = [0]\n"
+         "_sent = [False]\n"
+         "_RECV = '" << receiver_uid << "'\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'inbox_send: init')\n"
+         "\n"
+         "def on_produce(tx, msgs, api):\n"
+         "    if not _sent[0]:\n"
+         "        h = api.open_inbox(_RECV)\n"
+         "        if h is not None:\n"
+         "            slot = h.acquire()\n"
+         "            if slot is not None:\n"
+         "                slot.value = 42\n"
+         "                rc = h.send()\n"
+         "                api.log('info', 'inbox_send: SENT rc=' + str(rc))\n"
+         "                _sent[0] = True\n"
+         "    if tx.slot is None:\n"
+         "        return False\n"
+         "    tx.slot.value = float(_iter[0])\n"
+         "    _iter[0] += 1\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'inbox_send: stop')\n";
+}
+
+TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
+{
+    using std::chrono::seconds;
+
+    const std::string recv_channel = "lab.l4.inbox.recv";
+    const std::string send_channel = "lab.l4.inbox.send";
+    const std::string recv_uid     = "prod.l4inbox.recv12345678";
+    const std::string send_uid     = "prod.l4inbox.send12345678";
+    const int         recv_port    = 21000 + (::getpid() % 1000);
+    const int         send_port    = 22000 + (::getpid() % 1000);
+
+    const fs::path hub_dir = tmp("inbox_e2e_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+            {hub_dir.string(), "--name", "L4InboxHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"]           = false;
+        j["script"]["path"]             = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "inbox-e2e-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+            {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    const fs::path recv_dir = tmp("inbox_e2e_recv");
+    const fs::path send_dir = tmp("inbox_e2e_send");
+    std::error_code ec;
+    fs::create_directories(recv_dir / "vault", ec);
+    fs::create_directories(send_dir / "vault", ec);
+
+    write_inbox_receiver_config(recv_dir / "producer.json", hub_dir,
+                                 recv_uid, recv_channel, recv_port);
+    write_inbox_receiver_script(recv_dir / "script" / "python");
+    write_zmq_producer_config(send_dir / "producer.json", hub_dir,
+                               send_uid, send_channel, send_port);
+    write_inbox_sender_script(send_dir / "script" / "python", recv_uid);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "inbox-e2e-role-pw", /*overwrite=*/1);
+    const std::string recv_pubkey =
+        keygen_role_and_read_pubkey(recv_dir, "producer", recv_uid,
+                                     "inbox-e2e-role-pw");
+    const std::string send_pubkey =
+        keygen_role_and_read_pubkey(send_dir, "producer", send_uid,
+                                     "inbox-e2e-role-pw");
+    add_known_role(hub_dir, "inbox_recv", recv_uid, "producer", recv_pubkey);
+    add_known_role(hub_dir, "inbox_send", send_uid, "producer", send_pubkey);
+
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on"))
+        << "hub never bound.  Log:\n" << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    WorkerProcess recv(plh_role_binary(), "--role",
+        {"producer", recv_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv, "event=RegAckReceived",
+                                     seconds(15)))
+        << "receiver never registered:\n" << recv.get_stderr();
+
+    WorkerProcess send(plh_role_binary(), "--role",
+        {"producer", send_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(send_dir, send, "event=RegAckReceived",
+                                     seconds(15)))
+        << "sender never registered:\n" << send.get_stderr();
+
+    // Delivery: sender discovers the receiver's inbox and sends value=42; the
+    // receiver's on_inbox fires with the correct sender uid.
+    ASSERT_TRUE(wait_for_role_marker(send_dir, send, "inbox_send: SENT rc=0",
+                                     seconds(15)))
+        << "sender never sent to the inbox:\n"
+        << read_role_log(send_dir) << send.get_stderr();
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv,
+        "inbox_recv: GOT sender=" + send_uid + " value=42", seconds(15)))
+        << "receiver's on_inbox never fired for the sent message:\n"
+        << read_role_log(recv_dir) << recv.get_stderr();
+
+    send.send_signal(SIGTERM);
+    send.wait_for_exit(10);
+    recv.send_signal(SIGTERM);
+    recv.wait_for_exit(10);
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}

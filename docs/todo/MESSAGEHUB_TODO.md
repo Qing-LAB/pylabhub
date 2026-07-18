@@ -61,6 +61,71 @@ Wire discipline binding rule:
 - Atomic: A + B ship together, no runtime tolerance for mixed
   old/new deployments (HEP-CORE-0046 §14.6 `I-WIRE-VERSION-ATOMIC`).
 
+**Phase B design requirement — guard embedded-JSON shape drift:**
+The typed-envelope work MUST cover *doubly-encoded* fields (a wire
+field that is a `std::string` whose content is itself JSON), not just
+top-level envelope fields.  These are the fields most prone to
+scatter, because each consumer re-parses the inner blob ad hoc and
+the parses silently diverge.
+- **Concrete in-scope case (fixed as a site-patch 2026-07-17):**
+  `inbox_schema_json` on REG_REQ.  The role serializes it as the
+  object `{"fields":[...], ...}` (HEP-CORE-0027 §6, canonical form
+  that `parse_schema_json` / ROLE_INFO discovery consume), but the
+  broker's REG validator hand-parsed it expecting a bare **array** and
+  rejected every inbox-configured producer (`INBOX_SCHEMA_INVALID`).
+  Both divergent readers live on broker↔role comm, so Phase B's reach
+  covers this — BUT only if the field is modeled as a typed
+  sub-structure (parsed once at the envelope boundary), not passed
+  through as a string.  Design target: broker + discovery both consume
+  the same parsed `SchemaSpec`, so a second divergent hand-parse is
+  structurally impossible.
+- **Critical-path nodes for `inbox_schema_json` (trace before
+  refactoring — this is the full serialize→wire→store→re-emit→parse
+  chain the typed field must collapse):**
+  1. Config in: `config::parse_inbox_config` (`inbox_config.hpp:67`) →
+     `InboxConfig::schema_json` (canonical object).
+  2. Role serialize: `serialize_inbox_spec_json`
+     (`role_host_helpers.hpp:105`) — emits the object `{"fields":[...],
+     "packing"?}`; assigned to `inbox_cfg.schema_fields_json` in
+     `setup_inbox_facility` (`role_host_helpers.hpp:186`).
+  3. Role → broker send: `RoleAPIBase` REG_REQ build,
+     `role_api_base.cpp:2916` (`opts["inbox_schema_json"] =
+     inbox_cfg.schema_fields_json`).
+  4. Wire accessors: `RegReqBody::inbox_schema_json` /
+     `ConsumerRegReqBody::inbox_schema_json`
+     (`wire_bodies.hpp:241`, `:361`).
+  5. Broker ingest + validate/fingerprint (producer):
+     `broker_service.cpp:2115` (store on `ProducerEntry`), `:2482`
+     (**the fixed hand-parse site**), `:2512` (`rec.blds`).
+     Consumer path store: `broker_service.cpp:3534`.
+  6. Broker re-emit on ROLE_INFO_ACK: `broker_service.cpp:6461–6465`
+     (producer) / `:6507–6511` (consumer) — `resp["inbox_schema"] =
+     json::parse(inbox_schema_json)` (string → object transcode).
+  7. Discovery consumer parse: `RoleAPIBase::open_inbox_client`
+     (`role_api_base.cpp:4244–4265`) → `hub::parse_schema_json`
+     (**the canonical parser the broker at node 5 bypassed**).
+  The unification: nodes 5 and 7 must consume one shared parsed
+  `SchemaSpec`; today only node 7 uses `parse_schema_json`.
+- **Second divergence in the SAME chain (fixed at source 2026-07-17):**
+  `serialize_inbox_spec_json` (node 2, `role_host_helpers.hpp:120`)
+  OMITTED `packing` when it was `"aligned"`, producing a non-canonical
+  schema object.  Node 7's `parse_schema_json` REQUIRES `packing`
+  (HEP-CORE-0034 §6.2, no silent default) → the sender's `open_inbox`
+  looped forever on a parse error and never sent.  Fixed by always
+  emitting `packing` at node 2.  Note the redundancy the typed field
+  must resolve: packing travels BOTH inside the schema object AND as a
+  separate top-level `inbox_packing` wire field (broker fingerprint at
+  `broker_service.cpp:2503` reads the separate one; discovery reads the
+  in-object one) — two sources of the same value, the classic scatter
+  smell.  Design target: one packing, carried once.
+- **Coverage boundary to record:** a broker↔role envelope framework
+  cannot be the general format-safety net for the *inbox data plane*
+  (role↔role ROUTER/DEALER slot messages never pass through the
+  broker).  It only guards the inbox's schema *negotiation*
+  (REG_REQ / ROLE_INFO_ACK).  The inbox wire itself needs its own
+  schema-fingerprint check — which is why the fingerprint is
+  negotiated through the broker (the only point both roles touch).
+
 **Phase C completion (post-Phase-B):**
 - Add `HubState::binding_side_uid` / `is_binding_side_sender`
   (replaces the roster-walk pattern in

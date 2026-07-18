@@ -117,8 +117,12 @@ inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
         fields_arr.push_back(std::move(fj));
     }
     result["fields"] = std::move(fields_arr);
-    if (spec.packing != "aligned")
-        result["packing"] = spec.packing;
+    // Always emit packing — the canonical inbox schema object is consumed by
+    // parse_schema_json (ROLE_INFO discovery, role_api_base.cpp open_inbox),
+    // which requires it (HEP-CORE-0034 §6.2, no silent default).  Omitting it
+    // for the "aligned" case produces a non-canonical object that fails to
+    // parse downstream.
+    result["packing"] = spec.packing;
     return result;
 }
 

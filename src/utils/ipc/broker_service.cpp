@@ -2479,9 +2479,17 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         std::string canonical;
         try
         {
-            const auto schema_arr = nlohmann::json::parse(p_inbox.inbox_schema_json);
+            const auto schema_parsed = nlohmann::json::parse(p_inbox.inbox_schema_json);
+            // Canonical inbox schema is the object form {"fields":[...], ...}
+            // per HEP-CORE-0027 §6 — the same shape the role's serializer emits
+            // and parse_schema_json / ROLE_INFO discovery consume.  Extract the
+            // fields array for the fingerprint (tolerate a bare array too).
+            const nlohmann::json &schema_arr =
+                (schema_parsed.is_object() && schema_parsed.contains("fields"))
+                    ? schema_parsed.at("fields")
+                    : schema_parsed;
             if (!schema_arr.is_array())
-                throw std::runtime_error("inbox_schema_json is not an array");
+                throw std::runtime_error("inbox_schema_json has no fields array");
             canonical.reserve(schema_arr.size() * 16 + 16);
             for (const auto &f : schema_arr)
             {
