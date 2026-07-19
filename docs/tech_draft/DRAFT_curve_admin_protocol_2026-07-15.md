@@ -1,5 +1,16 @@
 # CURVE-secured Admin Protocol — implementation plan
 
+> **Superseded design note (2026-07-19).** This file was the checklist for the
+> *REP-first* admin surface, which shipped (server CURVE + mandatory token +
+> `zap_enforce_domain=1`, `test_layer2_admin_service` 29/29).  The
+> **design-of-record is now the operator console** — HEP-CORE-0033 **§11.0**
+> (end-to-end admin-path framework) + **§11.1** (ROUTER/DEALER console
+> transport): persistent session, sealed connection-bound session id, reverse
+> notification path, `origin_uid` provenance.  The shipped REP is the
+> transitional implementation.  Remaining work + status live in
+> `docs/todo/AUTH_TODO.md` Line E; this draft is retained only for the shipped
+> REP-first checklist below and will archive when the console lands.
+
 **Design authority:** `docs/HEP/HEP-CORE-0033-Hub-Character.md` §11.1
 (Transport) + §11.3 (Authorization).  The design is finalized there;
 this file is only the code-migration checklist and does not restate or
@@ -12,7 +23,14 @@ today; per-operator identity (a `known_admins` allowlist), streaming
 admin, and any ROUTER/DEALER move are explicitly **future expansion**
 (noted in §11.1 / §11.3) and out of scope here.
 
-**Status:** design documented (HEP-0033 §11); implementation not started.
+**Status:** design documented (HEP-0033 §11).  Checklist items 1–3 + 6
+(server CURVE-arm + `zap_enforce_domain=1`, mandatory-token ctor,
+`HubAdminConfig` `token_required` removal, admin-plane unit suite over
+CURVE) SHIPPED + verified 2026-07-19 (`test_layer2_admin_service`, 29/29;
+real-broker ZAP regression guard proven by neuter test).  REMAINING:
+item 4 test-side `AdminWireClient` helper + item 6's migration of the 3
+admin-triggered sweep tests (`close_channel` ×2, `broadcast_hub_queue`)
+onto it.
 
 ---
 
@@ -26,10 +44,16 @@ code to match it.
 ## Implementation checklist (composes with existing infra)
 
 1. **`AdminService::run()`** — before `bind()`, set `curve_server = 1` +
-   `curve_secretkey = vault.broker_curve_secret_key()`.  No `zap_domain`
-   (encrypted-but-not-key-gated; keeps the admin socket off the broker's
-   single inproc ZAP handler, §7.4).  Reuses the `curve_server` pattern
-   already in `broker_service.cpp`.
+   `curve_secretkey = vault.broker_curve_secret_key()` (via KeyStore
+   `with_seckey(kHubIdentityName, …)`, use-not-export).  Empty `zap_domain`
+   PLUS **`ZMQ_ZAP_ENFORCE_DOMAIN = 1`** — the enforce flag is mandatory,
+   not optional: an empty domain alone still ZAP-routes the handshake
+   (`zap_required() || !zap_enforce_domain` → true), so with the broker's
+   live inproc ZAP handler (§7.4) present the admin handshake is rejected
+   ("no domain registered for `''`") and times out.  Verified 2026-07-19:
+   `HubHost_AdminEnabled_RoundTripWorks` FAILS with the flag neutered,
+   PASSES with it set.  Reuses the `curve_server` pattern already in
+   `broker_service.cpp`.  See HEP-CORE-0033 §11.1 for the full contract.
 2. **Token gate mandatory** — delete the `token_required=false` branch and
    the "loopback-required-when-token-off" enforcement in the
    `AdminService` ctor; keep the existing constant-time token comparison.

@@ -39,6 +39,8 @@
  */
 
 #include "utils/security/secure_subsystem.hpp"
+#include "utils/security/key_store.hpp"      // kHubIdentityName, add_identity_from_z85
+#include "curve_test_setup.h"                // gen_curve_keypair
 #include "utils/admin_service.hpp"
 
 #include "binary_lifecycle.h"
@@ -96,6 +98,24 @@ namespace
 
 constexpr auto kTestToken =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// Seed the hub broker identity keypair (`kHubIdentityName`) into the process
+/// KeyStore exactly once via the designed `curve_test_setup.h` facility, so the
+/// AdminService can arm its `curve_server` (HEP-CORE-0033 §11.1 — the admin
+/// socket reuses the hub's broker keypair; §11.1 use-not-export).  The
+/// production path loads this from the unlocked vault; the L2 test seeds a
+/// fresh one.  Returns the server's Z85 public key for clients to pin as
+/// `curve_serverkey`.
+const std::string &hub_server_pubkey()
+{
+    static const std::string pub = [] {
+        const auto kp = pylabhub::tests::gen_curve_keypair();
+        pylabhub::tests::add_curve_identity(
+            pylabhub::utils::security::kHubIdentityName, kp);
+        return kp.public_z85;
+    }();
+    return pub;
+}
 
 fs::path unique_temp_dir(const char *tag)
 {
@@ -175,12 +195,12 @@ class StandaloneAdmin
 {
 public:
     StandaloneAdmin(HubConfig          cfg,
-                    std::string_view   token,
-                    bool               token_required = true)
+                    std::string_view   token)
         : host_(std::move(cfg))
     {
-        acfg_.endpoint       = "tcp://127.0.0.1:0";
-        acfg_.token_required = token_required;
+        acfg_.endpoint = "tcp://127.0.0.1:0";
+        // Seed kHubIdentityName so the AdminService can arm curve_server (§11.1).
+        (void)hub_server_pubkey();
         svc_.emplace(pylabhub::hub::get_zmq_context(), acfg_, token, host_);
         worker_ = std::thread([this] { svc_->run(); });
         EXPECT_TRUE(poll_until(
@@ -221,6 +241,16 @@ json req_reply(const std::string &endpoint, const json &request,
              static_cast<int>(timeout.count()));
     sock.set(zmq::sockopt::sndtimeo,
              static_cast<int>(timeout.count()));
+    // CURVE-client arm (HEP-CORE-0033 §11.1): ephemeral client keypair + pin
+    // the hub broker pubkey as curve_serverkey.  The admin socket has no ZAP
+    // domain, so any well-formed CURVE client gets an encrypted channel;
+    // authority is the token.
+    {
+        const auto ckp = pylabhub::tests::gen_curve_keypair();
+        sock.set(zmq::sockopt::curve_publickey, ckp.public_z85);
+        sock.set(zmq::sockopt::curve_secretkey, ckp.secret_z85);
+        sock.set(zmq::sockopt::curve_serverkey, hub_server_pubkey());
+    }
     sock.connect(endpoint);
 
     const std::string req_str = request.dump();
@@ -245,6 +275,10 @@ class AdminServiceTest : public ::testing::Test,
 protected:
     void SetUp() override
     {
+        // Seed the hub broker identity (kHubIdentityName) into the process
+        // KeyStore once, before any HubHost/AdminService is built — the admin
+        // socket's curve_server (§11.1) reads it by name at run() time.
+        (void)hub_server_pubkey();
         // Capture logger output for the duration of the test.  Happy
         // paths must not emit WARN/ERROR; tests that drive an error
         // path declare the expected warning via ExpectLogWarn(...).
@@ -267,24 +301,21 @@ protected:
 
     /// Returns a HubConfig + dir; admin is enabled with ephemeral port,
     /// token gate ON, admin_token = kTestToken.
-    std::pair<HubConfig, fs::path> make_config(const char *tag,
-        bool token_required = true)
+    std::pair<HubConfig, fs::path> make_config(const char *tag)
     {
         const fs::path dir = unique_temp_dir(tag);
         paths_to_clean_.push_back(dir);
         auto j = read_hub_json_for_test(dir, "AdminTestHub");
-        j["admin"]["enabled"]        = true;
-        j["admin"]["token_required"] = token_required;
+        j["admin"]["enabled"] = true;
         write_hub_json(dir, j);
 
         auto cfg = HubConfig::load_from_directory(dir.string());
         // Bypass vault unlock: stamp the runtime-only admin_token field
         // directly.  HubConfig::load_keypair() (the production path)
         // reads it from `HubVault::admin_token()`; the test path skips
-        // vault setup entirely.  Token gate behavior under test does
-        // NOT depend on vault provenance.
-        const_cast<HubAdminConfig &>(cfg.admin()).admin_token =
-            token_required ? kTestToken : "";
+        // vault setup entirely.  Token authority under test does NOT
+        // depend on vault provenance.
+        const_cast<HubAdminConfig &>(cfg.admin()).admin_token = kTestToken;
         return {std::move(cfg), dir};
     }
 
@@ -294,41 +325,14 @@ private:
 
 // ─── Construction-time invariants ──────────────────────────────────────────
 
-TEST_F(AdminServiceTest, Construct_TokenOff_NonLoopbackEndpoint_Throws)
+TEST_F(AdminServiceTest, Construct_EmptyToken_Throws)
 {
-    // §11.3 invariant: token_required==false demands a loopback bind.
-    // Both this test and Construct_TokenOn_EmptyToken_Throws below use
-    // the same exception type (std::invalid_argument); pin the message
-    // substring so a regression that throws the OTHER ctor check
-    // doesn't slip through this test.
+    // §11.3 invariant: the admin token is MANDATORY — a non-empty token is
+    // required, otherwise every request silently authenticates.  (The old
+    // token_required==false / loopback-enforcement path is retired: the admin
+    // plane is now always CURVE-encrypted + token-gated, HEP-CORE-0033 §11.)
     HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://0.0.0.0:5600";
-    acfg.token_required = false;
-
-    auto [cfg, dir] = make_config("nonloopback");
-    HubHost host(std::move(cfg)); // not started — backref only
-
-    bool threw = false;
-    std::string msg;
-    try
-    {
-        AdminService(pylabhub::hub::get_zmq_context(),
-                     acfg, /*token=*/"", host);
-    }
-    catch (const std::invalid_argument &e) { threw = true; msg = e.what(); }
-    EXPECT_TRUE(threw);
-    EXPECT_NE(msg.find("loopback"), std::string::npos)
-        << "wrong invalid_argument path; what(): " << msg;
-}
-
-TEST_F(AdminServiceTest, Construct_TokenOn_EmptyToken_Throws)
-{
-    // §11.3 invariant: token gate ON requires a non-empty token,
-    // otherwise every request silently authenticates.  Pin the
-    // message substring (see comment on the loopback test above).
-    HubAdminConfig acfg;
-    acfg.endpoint       = "tcp://127.0.0.1:0";
-    acfg.token_required = true;
+    acfg.endpoint = "tcp://127.0.0.1:0";
 
     auto [cfg, dir] = make_config("emptytoken");
     HubHost host(std::move(cfg));
@@ -366,6 +370,17 @@ TEST_F(AdminServiceTest, Run_PingRoundTrip_TokenGate)
     EXPECT_EQ(reply["result"].value("pong", false), true);
     EXPECT_EQ(reply["result"]["echo"]["hello"], "world");
 }
+
+// The §11.1/§7.4 regression guard — that the admin socket stays OFF the
+// broker's single inproc ZAP handler — lives in the `HubHost_AdminEnabled_*`
+// block below: those tests `startup()` a real HubHost whose BrokerService
+// binds `inproc://zeromq.zap.01` and registers `broker.ctrl.<uid>` (the
+// production path), then ping admin over CURVE.  Without
+// `zap_enforce_domain=1`, the empty-domain admin handshake is routed to that
+// live handler, rejected ("no domain registered for ''"), and the ping times
+// out — see the comment on `HubHost_AdminEnabled_RoundTripWorks`.  A
+// standalone test with a hand-built ZapPumpThread would only *mock* that
+// handler, so it is deliberately NOT used here.
 
 // ─── Token gate — wrong / missing token paths ──────────────────────────────
 
@@ -593,6 +608,17 @@ TEST_F(AdminServiceTest, Control_BroadcastChannel_Unknown_Returns_NotFound)
 
 TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
 {
+    // REGRESSION GUARD for HEP-CORE-0033 §11.1 (admin off the §7.4 single ZAP
+    // handler): `host.startup()` runs the REAL BrokerService, which binds
+    // `inproc://zeromq.zap.01` and `register_domain("broker.ctrl.<uid>")` —
+    // the process ZAP handler is now LIVE.  The admin socket is a curve_server
+    // with an empty `zap_domain`; §11.1 requires `ZMQ_ZAP_ENFORCE_DOMAIN=1` so
+    // its handshake short-circuits past that handler.  Without the enforce flag
+    // libzmq still ZAP-routes the empty-domain handshake, the broker's
+    // ZapRouter rejects it ("no domain registered for ''"), and the ping below
+    // times out — verified 2026-07-19 by neutering the flag (admin REP timed
+    // out, test FAILED).  This is the production path, not a mocked handler.
+    //
     // The teardown-race that previously surfaced here (LifecycleGuard
     // logging a WARN for the documented-normal validator-fail on
     // owner-managed modules) was fixed in production: validator-fail
@@ -779,6 +805,12 @@ TEST_F(AdminServiceTest, Run_MalformedJsonBytes_Returns_InvalidRequest)
     sock.set(zmq::sockopt::linger, 0);
     sock.set(zmq::sockopt::rcvtimeo, 2000);
     sock.set(zmq::sockopt::sndtimeo, 2000);
+    {
+        const auto ckp = pylabhub::tests::gen_curve_keypair();
+        sock.set(zmq::sockopt::curve_publickey, ckp.public_z85);
+        sock.set(zmq::sockopt::curve_secretkey, ckp.secret_z85);
+        sock.set(zmq::sockopt::curve_serverkey, hub_server_pubkey());
+    }
     sock.connect(a.endpoint());
 
     const std::string_view garbage = "{not_valid_json";

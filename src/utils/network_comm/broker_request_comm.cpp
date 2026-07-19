@@ -787,6 +787,18 @@ bool BrokerRequestComm::connect(const Config &cfg)
         pImpl->broker_endpoint = cfg.broker_endpoint;  // cache for log lines
 
         // Socket monitor for ZMQ_EVENT_DISCONNECTED.
+        //
+        // cppzmq exception (intentional raw C-API): we establish the monitor
+        // endpoint with `zmq_socket_monitor` and read it with our OWN inproc
+        // PAIR socket (`monitor_sock`, below) so a DISCONNECTED event is a
+        // pollable item in this comm's main poll loop — the disconnect wakes
+        // the poll IMMEDIATELY (hub-death detection latency = 0).  cppzmq's
+        // `zmq::monitor_t` bundles the establish with an internal reader socket
+        // it does not expose for external polling, so it can only be drained
+        // via `check_event()` per cycle — which would lose the immediate wake.
+        // There is no cppzmq free-function to establish-monitor-for-external-
+        // polling, so the raw call is the correct primitive here.  (Same
+        // reason at the detach call in disconnect().)
         static std::atomic<int> s_monitor_id{0};
         pImpl->monitor_endpoint = fmt::format(
             "inproc://broker-req-monitor-{}",

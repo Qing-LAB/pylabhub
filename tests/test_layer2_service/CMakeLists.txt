@@ -1663,39 +1663,69 @@ gtest_discover_tests(test_layer2_hub_directory
 # )
 
 # ============================================================================
-# Test: AdminService skeleton (HEP-CORE-0033 §11 / Phase 6.2a)
-# Pattern 2 — in-process LifecycleGuard, REP socket round-trip via the
-# shared ZMQ context.  Mirrors test_layer2_hub_host shape.
+# Test: AdminService (HEP-CORE-0033 §11 — CURVE-secured admin plane)
+# Pattern 1+ — in-process LifecycleGuard, CURVE REP round-trip via the shared
+# ZMQ context.  Mirrors test_layer2_hub_host shape.
 # ============================================================================
-# MASKED — AdminService tests construct HubHost which now throws on empty
-# pubkey per HEP-CORE-0035 §2.  Restore via HEP-0035 §4.6.5 step 3-revised-F.
+# RESTORED 2026-07-19 (was MASKED for HEP-0035 §2 empty-pubkey throw): the
+# test now seeds the `hub_identity` KeyStore entry via
+# `curve_test_setup.h::add_curve_identity` in SetUp (HEP-0035 §4.6.5 no-bypass
+# discipline), so HubHost/AdminService find the hub identity the admin
+# curve_server needs.
 
-# add_executable(test_layer2_admin_service
-#     test_admin_service.cpp
-# )
-#
-# target_link_libraries(test_layer2_admin_service
-#     PRIVATE
-#         pylabhub::utils
-#         pylabhub::test_framework
-#         pylabhub::third_party::cppzmq
-#         GTest::gtest
-#         GTest::gtest_main
-# )
+add_executable(test_layer2_admin_service
+    test_admin_service.cpp
+)
 
-# pylabhub_ensure_sanitizer_for_executable(test_layer2_admin_service)
-#
-# pylabhub_register_test_for_staging(
-#     TARGET test_layer2_admin_service
-#     SUITE_NAME "Layer2_AdminService"
-# )
-# layer2_require_staged_utils(test_layer2_admin_service)
-#
-# gtest_discover_tests(test_layer2_admin_service
-#     PROPERTIES
-#         LABELS "layer2;service;admin"
-#         TIMEOUT 30
-# )
+target_link_libraries(test_layer2_admin_service
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        pylabhub::third_party::cppzmq
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_admin_service)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_admin_service
+    SUITE_NAME "Layer2_AdminService"
+)
+layer2_require_staged_utils(test_layer2_admin_service)
+
+gtest_discover_tests(test_layer2_admin_service
+    PROPERTIES
+        LABELS "layer2;service;admin"
+        TIMEOUT 30
+)
+
+# ---- Admin console session identity (HEP-CORE-0033 §11.0.5) ----------------
+add_executable(test_layer2_admin_session
+    test_admin_session.cpp
+)
+
+target_link_libraries(test_layer2_admin_session
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_admin_session)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_admin_session
+    SUITE_NAME "Layer2_AdminSession"
+)
+layer2_require_staged_utils(test_layer2_admin_session)
+
+gtest_discover_tests(test_layer2_admin_session
+    PROPERTIES
+        LABELS "layer2;service;admin"
+        TIMEOUT 30
+)
 
 # ============================================================================
 # Test: role_cli::parse_role_args + ParseResult (in-process, no std::exit)

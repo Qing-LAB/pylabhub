@@ -1542,56 +1542,478 @@ directly on `BrokerService`).
 
 Replaces legacy `AdminShell` which only offered `{token, code}` → `exec(code)`.
 
-### 11.1 Transport
+### 11.0 The admin path — end to end
 
-The admin plane is CURVE-secured, consistent with every other hub
-interface (broker↔role and role↔role); it is not a plaintext exception.
+The role plane (producers, consumers, processors) has a fully specified
+message flow — every request has a defined ingress socket, wire envelope,
+handler, and actuation. The admin plane is the operator's equivalent, and
+this section gives it the same top-down treatment: where a command enters,
+which thread handles each stage, how it is authorized, how it turns into an
+actual change in hub state, and what the caller is promised in return.
 
-- ZMQ REP socket at `admin.endpoint` (default `tcp://127.0.0.1:5600`),
-  configured as a **`curve_server`** keyed with the hub's **broker CURVE
-  keypair** — the same server identity every role already trusts
-  (`HubVault::broker_curve_secret_key()` / `_public_key()`).  The admin
-  transport reuses the hub's existing keypair; there is no separate admin
-  keypair.
-- The admin client connects with its own (ephemeral) CURVE keypair and
-  pins the hub's broker public key as `curve_serverkey`.  This
-  authenticates the *server* to the operator — an impostor lacking the
-  broker secret key fails the CURVE handshake — and **encrypts the entire
-  exchange**, so the admin token (§11.3) never crosses the wire in
-  cleartext, on loopback or network.
-- The admin socket carries **no ZAP `zap_domain`**: client identity is
-  not gatekept by key (any well-formed CURVE client obtains an encrypted
-  channel; authority is the token, checked per request), and omitting the
-  domain keeps the admin socket off the broker's single inproc ZAP
-  handler — preserving the §7.4 single-pumper invariant.
-- Socket type is **REP** (one operator command → one response;
-  synchronous).  A move to ROUTER/DEALER — for push/streaming admin or to
-  reuse the control-plane `WireEnvelope` tooling — is a future expansion,
-  not part of this surface.
-- Request: `{ "method": "<name>", "token": "<admin_token>", "params": { ... } }`.
-- Response: `{ "status": "ok|error", "result": ..., "error": {"code": ..., "message": ...} }`.
+The one idea that ties it together: **two front doors, one engine room.**
+An operator command (over the network) and a hub-side script command
+(in-process) are two *ingress* paths, but they converge on the *same*
+actuation machinery — the broker's request queues, drained by the broker's
+own main loop. The admin socket never mutates hub state directly; it only
+*hands work to the broker thread*.
+
+#### 11.0.1 Logical layers
+
+An admin command passes through five forward layers; a sixth reverse layer
+carries notifications back. Each layer has a single responsibility and a
+defined hand-off to the next.
+
+1. **Ingress** — the command enters the hub.
+   - *Operator (external):* a `DEALER` console holds a persistent CURVE
+     session to the `AdminService` `ROUTER` socket (§11.1) and sends command
+     envelopes over it. This is the only networked admin entry point.
+   - *Hub script (internal):* a script running in the hub process calls a
+     `HubAPI` method directly (no socket, no wire). §12 owns this surface;
+     it is named here only because it feeds the same actuation layer.
+2. **Dispatch + authorization** — the admin worker validates the envelope,
+   verifies the session id against the connection facts (§11.0.5), and
+   routes the method name through a static table to a handler. Malformed or
+   unauthorized requests are rejected here and never reach a handler.
+3. **Query / Control fork** — every method is exactly one of two kinds:
+   - *Query* reads a consistent snapshot of hub state and returns it
+     inline, synchronously, on the admin worker thread.
+   - *Control* does **not** act; it enqueues a request record (stamped with
+     the session's `origin_uid`) onto a broker request queue and returns
+     `{status:ok}` = accepted, immediately.
+4. **Actuation** — the broker's main loop, on its own thread, drains the
+   request queues in its post-poll phase and performs the real state
+   change (close a channel and tear it down; fan out a broadcast).
+5. **Egress to roles** — actuation emits wire `NOTIFY` frames to the
+   affected roles over the broker `ROUTER` — i.e. it re-enters the role
+   plane's downstream.
+6. **Console notification (reverse path)** — actuation completion and hub
+   events are enqueued onto an admin-thread-owned notification queue; the
+   admin worker drains it and pushes `{notify, origin_uid, …}` frames to the
+   operator console. A script may also emit console notifications via
+   `HubAPI`. This is what makes the plane a *console* rather than a
+   request/reply RPC.
+
+```mermaid
+flowchart TB
+    subgraph ing["Layer 1 — Ingress"]
+        OP["Operator console<br/>DEALER + CURVE + session id"]
+        SC["Hub script (§12)<br/>in-process call"]
+    end
+
+    subgraph at["Admin worker thread"]
+        RTR["AdminService ROUTER socket<br/>curve_server, session-gated"]
+        DISP["dispatch()<br/>session-id check → method table"]
+        QRY["Query handler<br/>read state snapshot"]
+        CTL["Control handler<br/>enqueue request record"]
+        NTX["notification drain<br/>→ push to console"]
+    end
+
+    subgraph bt["Broker thread — the hub main loop"]
+        POLL["run() poll loop"]
+        DRAIN["post-poll drain<br/>(under m_query_mu)"]
+        ACT["actuate:<br/>close + teardown / broadcast fan-out"]
+    end
+
+    ROLES["Roles<br/>DEALER peers"]
+
+    OP -->|"{method, session_id, params}"| RTR
+    RTR --> DISP
+    SC -.->|HubAPI| CTL
+    SC -.->|HubAPI| QRY
+    DISP -->|query_*| QRY
+    DISP -->|control_*| CTL
+    QRY -->|"{status:ok, result}"| OP
+    CTL -->|"{status:ok} = accepted"| OP
+    CTL -->|"push record + origin_uid"| DRAIN
+    POLL --> DRAIN --> ACT
+    ACT -->|"CLOSING / BROADCAST NOTIFY"| ROLES
+    ACT -.->|"enqueue notification"| NTX
+    SC -.->|"admin_notify"| NTX
+    NTX -.->|"{notify, origin_uid}"| OP
+```
+
+#### 11.0.2 Why a separate plane — operator console vs role plane
+
+The hub exposes **two** `ROUTER` planes, and they are deliberately separate
+sockets serving different callers. Both are `ROUTER`/`DEALER`, but that
+shared socket *type* is where the similarity ends: the admin plane is not
+"the broker plane with different messages" — it is a different kind of
+channel with a different trust model, session model, and purpose.
+
+| | **Broker `ROUTER`** (role plane) | **Admin `ROUTER`** (operator console) |
+|---|---|---|
+| Peers | Many roles, each a `DEALER`, admitted continuously | One operator `DEALER` console, one persistent session |
+| Who talks | Data-plane roles — producers / consumers / processors | The operator (a human or a CLI tool) |
+| Session model | Stateless per-request admission of many peers | A single stateful session: establish once, stream commands + notifications |
+| Message form | Typed `WireEnvelope` (`REG_REQ`, `ATTACH_REQ`, …) | JSON command / response / notification envelope |
+| Auth model | CURVE **+ ZAP key allowlist** — only known roles are admitted | CURVE crypto-only **+ sealed session id** — token once at establishment, no key gating |
+| Traffic profile | Continuous, high-volume control for the data plane | Rare, low-volume operator commands + event notifications |
+
+Three reasons the hub keeps these as distinct planes rather than one:
+
+1. **Different trust model.** Roles are gatekept by *key*: the broker's ZAP
+   handler admits only pubkeys on the known-role allowlist (§7.4,
+   HEP-CORE-0035). The operator is gatekept by *secret*: any well-formed
+   CURVE client may connect, and authority is the admin token (once, at
+   session establishment) and thereafter the sealed session id (§11.0.5). A
+   single socket cannot cleanly enforce both a key allowlist and a
+   session-secret gate.
+2. **Different session and purpose.** The role plane admits many
+   independent data-plane peers with no per-peer session state. The console
+   is one long-lived operator session with server-minted identity and a
+   bidirectional command+notification stream. Folding operator control onto
+   the role `ROUTER` would entangle operator session identity with role
+   admission and interleave operator commands with the data-plane fan-out.
+3. **Isolation from the single-pumper handler.** The broker owns exactly
+   one inproc ZAP handler (§7.4 single-pumper). Placing the operator surface
+   on its own `ROUTER` socket, authenticated by CURVE crypto alone (§11.1),
+   keeps admin traffic entirely off that handler — an operator command can
+   neither be gated by nor perturb the role data plane's ZAP pump.
+
+The two planes **diverge at ingress and transport but converge at
+actuation** (§11.0.1): a role-driven channel close and an operator-driven
+`close_channel` end up in the same broker request queue, drained by the
+same broker loop. Two front doors, one engine room.
+
+#### 11.0.3 Thread model
+
+Three threads participate; the hand-offs between them are the load-bearing
+part of the contract.
+
+| Thread | Owns | Admin-path responsibility |
+|---|---|---|
+| **Admin worker** (`"admin"`, spawned by `HubHost` via `ThreadManager`) | the `AdminService` `ROUTER` socket | Layers 1–3 + 6: recv, dispatch, session-id check, **query reads**, **control enqueue**, and **drains the reverse notification queue** to push console notifications. Never actuates. |
+| **Broker** (`"broker"`, spawned by `HubHost` via `ThreadManager`) | the broker `ROUTER` + hub registry | Layers 4–5: drains the request queues in its post-poll phase and actuates. The only thread that mutates channel/registry state; enqueues completion notifications back to the admin thread. |
+| **Script worker** (`HubScriptRunner`, present only when a script is loaded, §12) | the script engine | An *alternate* ingress: its `HubAPI` calls enqueue to the same broker queues (control), read snapshots (query augmentation), or enqueue console notifications (`admin_notify`). |
+
+Hand-off rules — the load-bearing invariant is **one thread owns each
+socket; every other thread reaches it only through a queue**:
+
+- **Control is a cross-thread enqueue (forward).** A control handler on the
+  admin thread pushes a record onto a broker-owned queue guarded by that
+  queue's mutex, then returns. The broker thread drains it on its next loop
+  iteration. The admin thread and broker thread never touch each other's
+  sockets.
+- **Notification is a cross-thread enqueue (reverse).** The broker thread
+  (on actuation) and the script worker (`admin_notify`) push notification
+  records onto an **admin-thread-owned** queue; the admin worker drains it
+  and pushes over its `ROUTER`. Symmetric to the forward path — the admin
+  thread owns the console socket, so all notification senders enqueue rather
+  than write the socket directly.
+- **Query is a cross-thread snapshot read.** A query handler on the admin
+  thread takes a consistent snapshot of hub state; the broker serializes
+  registry reads/writes under `m_query_mu` so the snapshot is coherent
+  against concurrent broker mutation.
+- **Actuation latency is bounded by one poll interval.** Enqueue does not
+  wake the broker poll; queued work is actuated on the next tick. This is
+  acceptable for operator-cadence commands and is an explicit property, not
+  an accident.
 
 ```mermaid
 sequenceDiagram
-    participant Client as Admin Client<br/>(ephemeral CURVE key)
-    participant Admin as AdminService (REP,<br/>curve_server = broker key)
-    participant Host as HubHost
+    participant OP as Operator console (DEALER)
+    participant AT as Admin worker thread
+    participant Q as Broker request queue
+    participant NQ as Console notify queue
+    participant BT as Broker thread (main loop)
+    participant R as Roles (DEALER)
 
-    Client->>Admin: CURVE handshake<br/>(serverkey = broker pubkey)
-    note over Client,Admin: fails silently if serverkey wrong;<br/>channel encrypted once established
+    OP->>AT: {method:"close_channel", session_id, params}  (CURVE)
+    AT->>AT: session-id check (facts match)
+    AT->>Q: enqueue {channel, origin_uid = session_id}
+    AT-->>OP: {status:"ok"}  ← ACCEPTED, not yet completed
+    Note over BT: next poll tick — post-poll phase, under m_query_mu
+    BT->>Q: drain records
+    BT->>R: CHANNEL_CLOSING_NOTIFY + teardown  (sender_uid = origin_uid)
+    BT->>NQ: enqueue {notify:"completed", origin_uid}
+    NQ-->>AT: drain
+    AT--)OP: {notify:"completed", origin_uid}  (async push)
+```
 
-    Client->>Admin: {method, token, params}  (encrypted)
+#### 11.0.4 Data-format contract
 
-    alt missing / wrong admin token
-        Admin-->>Client: {status:error, code:unauthorized}
-    else method = query_*
-        Admin->>Host: accessor call
-        Host-->>Admin: snapshot data
-        Admin-->>Client: {status:ok, result}
-    else method = control_*
-        Admin->>Host: control operation
-        Host-->>Admin: Result<void, Error>
-        Admin-->>Client: {status, result/error}
+The admin path uses **two** representations: the typed `WireEnvelope`
+(HEP-CORE-0046 §14) on the wire, and a typed record on the internal queue.
+They are deliberately distinct — the wire form is the operator contract; the
+queue form is the broker's internal work item. Every wire message travels
+CURVE-encrypted (§11.1).
+
+The JSON shown below is the **logical field content** of each message, not a
+raw JSON wire frame: on the wire each is a typed envelope whose `msg_type` is
+the admin verb (e.g. `ADMIN_CLOSE_CHANNEL_REQ`) and whose typed body carries
+these fields, with `correlation_id` matching a response to its command and
+`_NOTIFY`-suffixed types exempt from correlation. Concrete admin `msg_type`s
+and `wire_bodies` bodies are defined during implementation (the first typed
+pathway, §11.1).
+
+**Wire — establish (operator → console, once per session):**
+
+```json
+{ "token": "<64-hex admin token>", "label": "<operator label>" }
+→ { "status": "ok", "session_id": "<opaque sealed id>" }
+```
+
+The raw token appears only here; every later message presents the
+`session_id` instead (§11.0.5).
+
+**Wire — command (operator → console):**
+
+```json
+{ "method": "<name>", "session_id": "<opaque sealed id>", "params": { ... } }
+```
+
+`method` and `session_id` are required; `params` is method-specific and may
+be absent.
+
+**Wire — response (console → operator):**
+
+```json
+{ "status": "ok",    "result": <any> }
+{ "status": "error", "error": { "code": "<catalog code>", "message": "<text>" } }
+```
+
+`error.code` is drawn from the finite, wire-stable catalog in §11.5.
+
+**Wire — notification (console → operator, unsolicited):**
+
+```json
+{ "notify": "<topic>", "origin_uid": "<stamp>", ... }
+```
+
+Pushed by the reverse path (§11.0.1 layer 6): control-command completion and
+hub events. `origin_uid` names what caused it (§11.0.5).
+
+**Internal — queue record (admin/script thread → broker thread):** a
+control method translates its `params` into a minimal typed record and
+enqueues it. Every record carries an `origin_uid` — the provenance stamp of
+the issuing session (§11.0.5) — which the broker uses as the `sender_uid` on
+the resulting `NOTIFY` and as the log tag for the whole actuation cascade.
+
+| Control method | Queue record |
+|---|---|
+| `close_channel` | `{ channel, origin_uid }` |
+| `broadcast_channel` | `{ channel, message, data, origin_uid }` |
+
+**Actuation output (broker → roles, over `ROUTER`):** the drained record
+becomes a role-plane `NOTIFY` — `CHANNEL_CLOSING_NOTIFY` + teardown for a
+close, `CHANNEL_BROADCAST_SEND_NOTIFY` for a broadcast — stamped with
+`sender_uid = origin_uid` (the issuing session for an operator command; the
+`script:` or hub tag otherwise, §11.0.5).
+
+**Response semantics — the key promise.** The two method kinds mean
+different things by `{"status":"ok"}`:
+
+- **Query `ok`** — the `result` is the answer, computed synchronously; the
+  read has already happened.
+- **Control `ok`** — the request was **accepted and enqueued**; it has
+  **not** necessarily completed. There is no completion acknowledgement,
+  and the broker idempotently drops requests it cannot satisfy (e.g.
+  closing an unregistered channel is a silent no-op, not an error). A
+  caller that needs to confirm the effect observes it via a subsequent
+  query or the role-plane `NOTIFY`.
+
+#### 11.0.5 Provenance & session identity
+
+Every admin action carries a provenance stamp — *who caused this* — that
+flows onto the actuation, the resulting `NOTIFY`, and every log line the
+action produces. Provenance is not decorative: it is the audit record of
+who changed the hub, and it is the identity a future privilege model will
+attach permissions to.
+
+**Session identity — minted at the auth gate, bound to the connection.**
+When an operator console establishes its session, the token is verified
+**once** (constant-time, §11.3). On success the hub **mints a session id**
+and returns it to the operator. The session id:
+
+- Embeds a human label (operator-supplied, e.g. `alice-laptop`) plus the
+  hub-observed connection facts: peer address, routing identity, and connect
+  time.
+- Is **sealed — encrypted *and* authenticated in one AEAD operation — with
+  the hub's own per-instance secret key** (held in the security subsystem,
+  HEP-CORE-0043; never leaves the hub). The seal makes the id **fully
+  opaque**: only this hub instance can decode it, no one else can read the
+  embedded facts, and it cannot be forged or tampered with. The key is
+  per-instance, so a session id is meaningless to any other hub and is
+  naturally invalidated when the hub restarts.
+- **Replaces the token on every subsequent message** — the raw admin token
+  crosses the wire exactly once, at establishment; thereafter the operator
+  presents only the opaque sealed session id.
+
+On every message the hub opens the seal (decrypt + authenticate) **and**
+checks that the facts it embeds match the facts the message actually arrived
+with (routing identity + peer address). A tampered or foreign-hub id fails
+to open; a genuine id replayed from a different connection opens but fails
+the fact match. Either way the message is rejected. This is
+defence-in-depth over the transport, which already binds each connection to
+the client's CURVE keypair — the ROUTER rejects a duplicate routing-id
+claim, so cross-connection injection is impossible at the wire level before
+the id check even runs.
+
+The client CURVE public key is deliberately **not** part of the fact set:
+libzmq surfaces it to the application only through a ZAP handler, and the
+admin plane runs crypto-only, off the §7.4 single-pumper (§11.0.2, §11.1).
+Peer address + routing identity are sufficient because the transport already
+guarantees connection-to-keypair binding. Making the pubkey itself an
+admin *identity* means giving admin its own ZAP domain — a coupled future
+step (with the `known_admins` allowlist), not a free addition.
+
+```mermaid
+sequenceDiagram
+    participant OP as Operator (DEALER)
+    participant AG as Auth gate (admin worker)
+    participant SL as AEAD seal (hub per-instance key)
+
+    OP->>AG: connect + {token, label}  (CURVE-encrypted)
+    AG->>AG: verify token (constant-time)
+    AG->>AG: observe facts — peer address, routing id, connect time
+    AG->>SL: seal {label, facts}  (encrypt + authenticate)
+    SL-->>AG: session_id (opaque, connection-bound)
+    AG-->>OP: {status:ok, session_id}
+    Note over OP,AG: every later message carries the opaque session_id, not the token
+    OP->>AG: {method, session_id, params}
+    AG->>AG: open seal AND embedded facts == observed facts
+```
+
+**Provenance stamping — the whole causal cascade is attributed.** A control
+command's queue record (§11.0.4) carries an `origin_uid` field, set to the
+issuing session id on the admin thread. When the broker begins actuating
+that record it sets a scoped "current actuation origin" for the duration, so
+every log line and every `NOTIFY` in the resulting cascade inherits the
+origin automatically — without threading the id through every teardown call.
+When the record is finished, the origin reverts to hub-internal.
+
+Concretely: an operator close of a channel with pending consumers stamps the
+*whole* teardown — the `CHANNEL_CLOSING_NOTIFY`, the producer-disconnect,
+and the denials of every pending attach — with that operator's session id.
+The audit trail reads "operator *alice* closed the channel, which denied
+consumers *X* and *Y*," not an anonymous "channel closed."
+
+**Origin taxonomy.** Every stamp resolves to exactly one of:
+
+| Origin | Stamp | Meaning |
+|---|---|---|
+| Operator | the session id | an external console command (self-identifying, connection-bound) |
+| Hub script | `script:<name>@<hub_uid>` | a §12 script action; the `hub_uid` disambiguates when several hubs share one log stream |
+| Framework | `<hub_uid>` | a hub-internal action with no external cause |
+
+**Authorization is flat today.** Any operator holding the admin token, once
+authenticated, is a full admin — every §11.2 method is permitted. A
+privilege model — *which* operator may perform *which* actions — is future
+work (§11.0.6). It builds directly on the session identity above: the
+per-session operator identity is precisely the subject a capability or role
+check will be evaluated against. Provenance is therefore a prerequisite that
+is being laid now, ahead of the authorization layer that will consume it.
+
+#### 11.0.6 Deferred refinements
+
+These are intentionally out of scope for the current surface and layer on
+top of the framework above without changing it:
+
+- **Per-operator privilege (authorization).** Any authenticated operator is
+  a full admin today (§11.0.5). A capability/role model — *which* operator
+  may invoke *which* method — is future work that evaluates against the
+  per-session operator identity already established by provenance. It layers
+  on without changing the flow.
+- **Pubkey-based operator identity.** Binding operator identity to the
+  client CURVE public key (a `known_admins` allowlist) requires giving admin
+  its own ZAP domain, which re-touches the §7.4 single-pumper (§11.0.5).
+  Coupled future step, not free.
+(The "typed wire envelope" that earlier drafts listed here as deferred is no
+longer deferred — the console is built native on the typed `WireEnvelope`
+from the start (§11.1), making the admin path the first fully-typed pathway
+and the reference for task #57.)
+
+### 11.1 Transport
+
+The admin plane is a **CURVE-secured operator console**: a persistent,
+bidirectional session over which the operator sends commands and the hub
+returns both replies *and* unsolicited notifications. It is CURVE-secured
+like every other hub interface (broker↔role, role↔role); it is not a
+plaintext exception.
+
+- **`ROUTER` socket** at `admin.endpoint` (default `tcp://127.0.0.1:5600`),
+  configured as a **`curve_server`** keyed with the hub's **broker CURVE
+  keypair** — the same server identity every role already trusts
+  (`HubVault::broker_curve_secret_key()` / `_public_key()`). The admin
+  transport reuses the hub's existing keypair; there is no separate admin
+  keypair. The operator connects a **`DEALER`** console that stays connected
+  for the life of the session. `ROUTER`/`DEALER` — not `REQ`/`REP` — because
+  the hub must push notifications to the console at any time, not only in
+  reply to a command (the reverse path, §11.0.1).
+- The operator connects with its own (ephemeral) CURVE keypair and pins the
+  hub's broker public key as `curve_serverkey`. This authenticates the
+  *server* to the operator — an impostor lacking the broker secret key fails
+  the CURVE handshake — and **encrypts the entire exchange**, so the admin
+  token (§11.3) and the session id (§11.0.5) never cross the wire in
+  cleartext, on loopback or network.
+- The admin socket is **not ZAP-gated**: client identity is not gatekept by
+  key (any well-formed CURVE client obtains an encrypted channel; authority
+  is the token at establishment, then the sealed session id per message,
+  §11.0.5). To keep it off the broker's single inproc ZAP handler (§7.4
+  single-pumper), it sets **`ZMQ_ZAP_ENFORCE_DOMAIN = 1`** with an empty
+  `zap_domain`. An empty domain *alone* does not suffice: libzmq's
+  `zap_enforce_domain` defaults to `false`, so `curve_server` still invokes
+  ZAP for an empty domain (`zap_required() || !zap_enforce_domain`), and the
+  in-process ZapRouter would reject the handshake ("no domain registered for
+  `''`"). Setting `zap_enforce_domain=1` short-circuits the ZAP path so the
+  socket authenticates by CURVE crypto alone — preserving the §7.4
+  invariant. This is a socket property, independent of socket type: it holds
+  identically for the `ROUTER` console.
+- **Bidirectional message set**, all over the one console session:
+  - *establish* — `{ "token", "label" }` → `{ "status":"ok", "session_id" }`
+    (§11.0.5). The raw token is sent only here.
+  - *command* — `{ "method", "session_id", "params" }` →
+    `{ "status", "result"|"error" }`.
+  - *notification* (hub → console, unsolicited) —
+    `{ "notify":"<topic>", "origin_uid", ... }`. Completion of a control
+    command and hub events arrive this way (§11.0.3).
+- The console carries the **typed `WireEnvelope`** (HEP-CORE-0046 §14) — the
+  same 5-frame control-plane envelope the role plane uses — with **new admin
+  `msg_type`s and `wire_bodies` bodies**. There is no JSON
+  `{method,token,params}` REP surface. The admin path is deliberately the
+  **first fully-typed pathway** in the hub: it is built native on the typed
+  envelope with no `to_legacy` down-conversion, so it doubles as the
+  reference implementation for the broader JSON→typed migration
+  (**task #57 / HEP-CORE-0046 Phase B**, which converts the broker REG-family
+  handlers). Commands, responses, and notifications are all typed envelopes;
+  the logical field content is as shown in §11.0.4.
+
+> **Implementation status.** The shipped `AdminService` currently binds a
+> `REP` socket with a JSON `{method,token,params}` envelope and per-request
+> token auth — the CURVE transport and token gate are live and tested.
+> Migration to the `ROUTER` **typed** console (persistent session, sealed
+> session id, reverse notification path, typed `WireEnvelope` bodies) is the
+> design of record here and is tracked as admin-console work. The sealed
+> session-identity core (§11.0.5) is implemented in `admin_session.{hpp,cpp}`.
+> The CURVE arming — crypto-only, `zap_enforce_domain=1`, off the
+> single-pumper — carries over to `ROUTER` unchanged, and is factored into a
+> single shared arm helper (the arm sequence is otherwise duplicated between
+> the broker ROUTER and the admin socket).
+
+```mermaid
+sequenceDiagram
+    participant OP as Operator console<br/>(DEALER, ephemeral CURVE key)
+    participant AD as AdminService<br/>(ROUTER, curve_server = broker key)
+    participant HB as Hub (broker / state)
+
+    OP->>AD: CURVE handshake (serverkey = broker pubkey)
+    note over OP,AD: fails silently if serverkey wrong;<br/>channel encrypted once established
+
+    OP->>AD: establish {token, label}  (encrypted)
+    AD-->>OP: {status:ok, session_id}  (sealed, connection-bound)
+
+    OP->>AD: {method, session_id, params}  (encrypted)
+    alt bad session id / facts mismatch
+        AD-->>OP: {status:error, code:unauthorized}
+    else query_*
+        AD->>HB: snapshot read
+        HB-->>AD: data
+        AD-->>OP: {status:ok, result}
+    else control_*
+        AD->>HB: enqueue {…, origin_uid = session_id}
+        AD-->>OP: {status:ok}  (accepted)
+        HB--)OP: {notify:"completed", origin_uid, …}  (async, after actuation)
     end
 ```
 
@@ -1614,27 +2036,31 @@ injection" for the policy.
 
 ### 11.3 Authorization
 
-The admin token is the sole authority for every admin request, and it is
-**mandatory** — there is no token-less admin path.  The token is a random
-256-bit secret minted at vault creation (`generate_admin_token()`) and
-held in the vault in a slot distinct from the broker CURVE keypair.
+The admin token is the sole authority for **establishing** an admin session,
+and it is **mandatory** — there is no token-less admin path.  The token is a
+random 256-bit secret minted at vault creation (`generate_admin_token()`)
+and held in the vault in a slot distinct from the broker CURVE keypair.
 
-- Every request's `"token"` is compared **constant-time** against the
-  vault admin token; missing / wrong-size / mismatched →
-  `{"status": "error", "error": {"code": "unauthorized"}}`.
-- Because the §11.1 transport is CURVE-encrypted, the token travels
-  encrypted end to end; a network eavesdropper cannot capture it.  A
-  non-loopback bind is therefore no longer a security hazard.  **Loopback
-  remains the default** bind (defense-in-depth); a network bind is an
-  explicit operator opt-in.
+- At session establishment the presented `"token"` is compared
+  **constant-time** against the vault admin token; missing / wrong-size /
+  mismatched → `{"status": "error", "error": {"code": "unauthorized"}}`.
+  On success the hub mints the sealed session id (§11.0.5); **every
+  subsequent message authorizes by that session id, not the token**, so the
+  raw token crosses the wire only once.
+- Because the §11.1 transport is CURVE-encrypted, both the token (at
+  establishment) and the session id (thereafter) travel encrypted end to
+  end; a network eavesdropper cannot capture either.  A non-loopback bind is
+  therefore no longer a security hazard.  **Loopback remains the default**
+  bind (defense-in-depth); a network bind is an explicit operator opt-in.
 
-This is a **shared-secret** authority model: any operator holding the
-admin token is admin, and revocation is token rotation (which invalidates
-all admin clients at once).  Per-operator identity and selective
-revocation are a **future expansion** — a client-pubkey allowlist (a
-`known_admins` analog admitted via a dedicated `zap_domain`) layers on top
-of this design *without* removing the token gate — and are out of scope
-for the current single-operator RPC surface.
+This is a **shared-secret** authority model: any operator holding the admin
+token can establish a session, and revocation is token rotation (which
+invalidates all consoles at once).  The session establishes a per-operator
+*identity* (§11.0.5); what that model does **not** yet carry is per-operator
+*privilege* and per-operator *revocation* — a capability model (§11.0.6) and
+a client-pubkey `known_admins` allowlist (admitted via a dedicated
+`zap_domain`, which re-touches the §7.4 single-pumper) are the future
+expansions that layer on top *without* removing the token gate.
 
 ### 11.4 Files
 

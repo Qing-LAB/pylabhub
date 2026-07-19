@@ -33,6 +33,14 @@
  *   deleted — is task #57 (HEP-0046 Phase B).  The `to_legacy` bridge is the
  *   transition scaffold, not a permanent layer.
  *
+ * ➜ FIRST TYPED PATHWAY (2026-07-19): the admin operator console
+ *   (HEP-CORE-0033 §11) is being built natively on this typed envelope from
+ *   the start — greenfield admin msg_types + `wire_bodies` bodies, no JSON
+ *   `{method,token,params}` REP surface, no `to_legacy` bridge.  It is the
+ *   reference implementation of an end-to-end typed path that the #57 broker
+ *   REG migration follows: admin proves the receive→typed-body→handler flow
+ *   with zero down-conversion.  See HEP-CORE-0033 §11.1.
+ *
  * By construction, no code path can reach a handler without first passing
  * every admission gate the msg_type's tier requires.  Adding a new msg_type
  * is one row in the dispatch table + one Validated<Body> variant.

@@ -4,11 +4,11 @@
  * @brief HubAdminConfig — AdminService endpoint configuration.
  *
  * Parsed from the top-level `"admin"` JSON sub-object (HEP-CORE-0033 §6.2 / §11).
- * Controls whether the structured admin RPC endpoint is enabled, where it
- * binds, and whether it requires a token.  When `token_required=false`,
- * AdminService enforces a loopback-only bind (§11.3 invariant) — single-
- * host operator scenarios where the network surface is just the local
- * machine.
+ * Controls whether the structured admin RPC endpoint is enabled and where it
+ * binds.  The admin plane is CURVE-secured (§11.1) and always token-gated
+ * (§11.3) — there is no token-less path.  Loopback is the default bind
+ * (defense-in-depth); a network bind is a safe operator opt-in because the
+ * transport is encrypted.
  */
 
 #include "utils/json_fwd.hpp"
@@ -22,8 +22,7 @@ namespace pylabhub::config
 struct HubAdminConfig
 {
     bool        enabled{true};                                  ///< AdminService on/off
-    std::string endpoint{"tcp://127.0.0.1:5600"};               ///< ZMQ endpoint
-    bool        token_required{true};                           ///< Require admin token (loopback-only when false; §11.3)
+    std::string endpoint{"tcp://127.0.0.1:5600"};               ///< ZMQ endpoint (CURVE-server, §11.1)
 
     /// Runtime-only: 64-char hex admin token.  Populated by
     /// `HubConfig::load_keypair()` from the unlocked `HubVault`; NOT
@@ -45,13 +44,12 @@ inline HubAdminConfig parse_hub_admin_config(const nlohmann::json &j)
     for (auto it = sect.begin(); it != sect.end(); ++it)
     {
         const auto &k = it.key();
-        if (k != "enabled" && k != "endpoint" && k != "token_required")
+        if (k != "enabled" && k != "endpoint")
             throw std::runtime_error("hub: unknown config key 'admin." + k + "'");
     }
 
     ac.enabled        = sect.value("enabled",        ac.enabled);
     ac.endpoint       = sect.value("endpoint",       ac.endpoint);
-    ac.token_required = sect.value("token_required", ac.token_required);
     return ac;
 }
 

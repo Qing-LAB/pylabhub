@@ -22,15 +22,18 @@
  *     polls until `stop()` flips the internal atomic.
  *   - `stop()` is safe from any thread; idempotent.
  *
- * Authorization:
- *   - `admin.token_required: true` → request `"token"` must equal the
- *     vault's admin token (`HubVault::admin_token()`, plumbed in via
- *     `HubAdminConfig::admin_token`).  Mismatch →
- *     `{"status":"error", "error":{"code":"unauthorized"}}`.
- *   - `admin.token_required: false` → token field ignored, BUT the
- *     endpoint MUST resolve to `127.0.0.1` (or `localhost`).  This is
- *     enforced at construction time; non-loopback + token_required==
- *     false throws `std::invalid_argument`.
+ * Transport + authorization (HEP-CORE-0033 §11.1 + §11.3):
+ *   - The REP socket is a `curve_server` keyed with the hub's broker
+ *     identity keypair (`kHubIdentityName`); the exchange is encrypted and
+ *     the server is authenticated to the operator.  No ZAP `zap_domain` —
+ *     client identity is not key-gated; the token is the authority.
+ *   - The admin token is MANDATORY (no token-less path): every request's
+ *     `"token"` must equal the vault admin token (`HubVault::admin_token()`,
+ *     plumbed via `HubAdminConfig::admin_token`), compared constant-time.
+ *     Mismatch/missing → `{"status":"error","error":{"code":"unauthorized"}}`.
+ *   - Because the transport is encrypted, the token never crosses the wire
+ *     in cleartext; loopback is the default bind (defense-in-depth) but a
+ *     network bind is a safe operator opt-in.
  *
  * Lifetime invariant:
  *   - `AdminService` borrows the ZMQ context (caller-owned, typically
@@ -63,11 +66,11 @@ namespace pylabhub::admin
 class PYLABHUB_UTILS_EXPORT AdminService
 {
 public:
-    /// Construct around an already-loaded HubAdminConfig.  Validates
-    /// the localhost-bind invariant when `token_required==false` (§11.3);
-    /// throws `std::invalid_argument` on violation.  Does NOT bind the
-    /// socket — that happens at the head of `run()` so bind failures
-    /// are reported on the admin worker thread (consistent with
+    /// Construct around an already-loaded HubAdminConfig.  Requires a
+    /// non-empty `admin_token` (mandatory per §11.3); throws
+    /// `std::invalid_argument` if empty.  Does NOT bind the socket — the
+    /// CURVE arm + bind happen at the head of `run()` so failures are
+    /// reported on the admin worker thread (consistent with
     /// `BrokerService::run()`).
     ///
     /// @param zmq_ctx       Process-wide ZMQ context (caller-owned;

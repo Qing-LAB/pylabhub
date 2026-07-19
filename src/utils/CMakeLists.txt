@@ -113,6 +113,7 @@ set(UTILS_SOURCES
   ipc/hub_state.cpp
   ipc/hub_state_json.cpp
   ipc/admin_service.cpp
+  ipc/admin_session.cpp
   ipc/admission_gates.cpp
   ipc/reg_admission_pipeline.cpp
   ipc/broker_reg_handler.cpp

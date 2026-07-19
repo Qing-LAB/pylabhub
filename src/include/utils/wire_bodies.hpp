@@ -28,6 +28,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Full JSON header needed for typed accessors that return json subobjects.
@@ -747,6 +748,94 @@ PLH_WIRE_BODY_CLASS(BandLeaveNotifyBody)
     [[nodiscard]] std::string role_name() const
     {
         return detail::read_string(body_, "role_name");
+    }
+};
+
+// === Admin console family (HEP-CORE-0033 §11) ========================
+//
+// The typed operator-console protocol.  Admin messages are NOT part of
+// the REG admission taxonomy (wire_dispatch): they carry no security
+// triple and are gated by the sealed session id (§11.0.5), not by the
+// broker's admission pipeline.  These are the first fully-typed pathway
+// and the reference for the JSON→typed migration (task #57).  Every body
+// carries `envelope_hash` (stamped/validated by WireEnvelope) like the
+// rest of the control plane.
+
+/// msg_type constants for the typed admin console (no central msg_type
+/// registry exists; these named constants keep admin off the string-literal
+/// scatter the broker plane still uses).
+inline constexpr std::string_view kAdminHelloReq        = "ADMIN_HELLO_REQ";
+inline constexpr std::string_view kAdminHelloAck        = "ADMIN_HELLO_ACK";
+inline constexpr std::string_view kAdminPingReq         = "ADMIN_PING_REQ";
+inline constexpr std::string_view kAdminPingAck         = "ADMIN_PING_ACK";
+inline constexpr std::string_view kAdminCloseChannelReq = "ADMIN_CLOSE_CHANNEL_REQ";
+inline constexpr std::string_view kAdminCloseChannelAck = "ADMIN_CLOSE_CHANNEL_ACK";
+
+/// ADMIN_HELLO_REQ — console establishment (§11.0.5 / §11.3).  The admin
+/// token authorizes the session; `label` is the operator-supplied display
+/// name folded into the session id.
+PLH_WIRE_BODY_CLASS(AdminHelloReqBody)
+  public:
+    [[nodiscard]] std::string token() const
+    {
+        return detail::read_string(body_, "token");
+    }
+    [[nodiscard]] std::string label() const
+    {
+        return detail::read_string(body_, "label");
+    }
+};
+
+/// ADMIN_HELLO_ACK — carries the sealed, connection-bound session id the
+/// operator presents on every later command (§11.0.5).
+PLH_WIRE_BODY_CLASS(AdminHelloAckBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+};
+
+/// ADMIN_PING_REQ — liveness / round-trip proof.  Carries only the session
+/// id (verified against the connection facts before dispatch).
+PLH_WIRE_BODY_CLASS(AdminPingReqBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+};
+
+/// ADMIN_PING_ACK — `status` = "ok" (JsonKind has no bool; every ACK uses a
+/// status string, matching the broker ACK bodies).
+PLH_WIRE_BODY_CLASS(AdminPingAckBody)
+  public:
+    [[nodiscard]] std::string status() const
+    {
+        return detail::read_string(body_, "status");
+    }
+};
+
+/// ADMIN_CLOSE_CHANNEL_REQ — control command (§11.2).  Fire-and-forget:
+/// the ACK means accepted, not completed (§11.0.4).
+PLH_WIRE_BODY_CLASS(AdminCloseChannelReqBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+    [[nodiscard]] std::string channel() const
+    {
+        return detail::read_string(body_, "channel");
+    }
+};
+
+/// ADMIN_CLOSE_CHANNEL_ACK — `status` = "ok" (accepted / enqueued).
+PLH_WIRE_BODY_CLASS(AdminCloseChannelAckBody)
+  public:
+    [[nodiscard]] std::string status() const
+    {
+        return detail::read_string(body_, "status");
     }
 };
 

@@ -41,7 +41,7 @@ void zmq_context_startup()
         // messages have already been delivered by the time zmq_ctx_term() runs
         // — LINGER=0 is therefore safe.  In tests that call zmq_context_startup/
         // shutdown() directly, LINGER=0 prevents indefinite hangs in teardown.
-        zmq_ctx_set(ctx->handle(), ZMQ_BLOCKY, 0);
+        ctx->set(zmq::ctxopt::blocky, 0);
         g_context.store(ctx, std::memory_order_release);
         LOGGER_INFO("ZMQContext: ZeroMQ context created.");
     }

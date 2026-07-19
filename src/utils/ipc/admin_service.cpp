@@ -16,12 +16,15 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_admin_config.hpp"
+#include "utils/curve_socket.hpp"          // arm_curve_server (shared CURVE-server arm)
 #include "utils/hub_api.hpp"               // augment_* hooks (HEP-0033 §12.2.2)
 #include "utils/hub_host.hpp"
 #include "utils/hub_metrics_filter.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/hub_state_json.hpp"
 #include "utils/logger.hpp"
+#include "utils/security/key_store.hpp"        // kHubIdentityName, secure().keys()
+#include "utils/security/secure_subsystem.hpp" // secure()
 #include "utils/timeout_constants.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -40,19 +43,6 @@ using nlohmann::json;
 
 namespace
 {
-
-/// Returns true if `endpoint` is a `tcp://` URL whose host portion is
-/// the IPv4 loopback (`127.0.0.1`) or the literal `localhost`.  Used
-/// to enforce the §11.3 invariant that token-skipping configurations
-/// must bind only to loopback.
-bool is_loopback_tcp_endpoint(std::string_view endpoint)
-{
-    constexpr std::string_view kPrefix = "tcp://";
-    if (endpoint.substr(0, kPrefix.size()) != kPrefix)
-        return false;  // non-tcp transports (inproc/ipc) handled separately
-    auto rest = endpoint.substr(kPrefix.size());
-    return rest.starts_with("127.0.0.1:") || rest.starts_with("localhost:");
-}
 
 /// Build an error response in the canonical envelope shape.
 json make_error(std::string_view code, std::string_view message)
@@ -84,7 +74,6 @@ struct AdminService::Impl
     hub_host::HubHost             &host;
     std::string                    endpoint;
     std::string                    admin_token;
-    bool                           token_required;
 
     std::atomic<bool>              stop_requested{false};
     std::string                    bound_endpoint;
@@ -135,27 +124,19 @@ AdminService::AdminService(zmq::context_t          &zmq_ctx,
 {
     impl_->endpoint       = cfg.endpoint;
     impl_->admin_token    = std::string(admin_token);
-    impl_->token_required = cfg.token_required;
 
-    // §11.3 invariant: when token gating is off, bind must be loopback.
-    // Enforced at construction so misconfiguration is caught before
-    // the socket is opened.
-    if (!cfg.token_required && !is_loopback_tcp_endpoint(cfg.endpoint))
+    // §11.3 invariant: the admin token is MANDATORY — there is no
+    // token-less admin path (the CURVE transport in run() encrypts it, so
+    // a non-loopback bind is no longer a hazard, but the token is still
+    // the sole authority).  An empty token would silently authenticate
+    // every request.
+    if (admin_token.empty())
     {
         throw std::invalid_argument(
-            std::string("AdminService: token_required=false requires loopback "
-                        "endpoint (tcp://127.0.0.1:* or tcp://localhost:*); "
-                        "got '") + cfg.endpoint + "'");
-    }
-
-    // §11.3 invariant: when token gating is on, the admin token must
-    // be non-empty (otherwise every request silently authenticates).
-    if (cfg.token_required && admin_token.empty())
-    {
-        throw std::invalid_argument(
-            "AdminService: token_required=true but admin_token is empty "
-            "(vault not unlocked? — HubConfig::load_keypair must run before "
-            "AdminService construction)");
+            "AdminService: admin_token is empty — the admin token is "
+            "mandatory (HEP-CORE-0033 §11.3).  Vault not unlocked? "
+            "HubConfig::load_keypair must run before AdminService "
+            "construction.");
     }
 }
 
@@ -173,11 +154,41 @@ void AdminService::run()
     // after a fast teardown.  Matches the pattern broker_service uses.
     sock.set(zmq::sockopt::linger, 0);
 
+    // ── CURVE-server arm (HEP-CORE-0033 §11.1) ────────────────────────────
+    // The admin REP socket is a curve_server keyed with the hub's EXISTING
+    // broker identity keypair (kHubIdentityName) — the same server identity
+    // every role already trusts; no separate admin key.  This authenticates
+    // the server to the operator and ENCRYPTS the exchange, so the admin
+    // token never crosses the wire in cleartext.  Deliberately NO zap_domain
+    // (§11.1): admin authority is the token, checked per request; omitting
+    // the domain keeps the admin socket off the broker's single inproc ZAP
+    // pumper (§7.4 single-pumper invariant).  Secret flows LockedKey → libzmq
+    // inside the with_seckey callback (use-not-export); mirrors
+    // broker_service.cpp.
+    {
+        // Shared CURVE-server arm (use-not-export) — the same helper the
+        // broker ROUTER and inbox use; keyed with the hub broker identity.
+        pylabhub::utils::arm_curve_server(
+            sock, pylabhub::utils::security::kHubIdentityName);
+        // Genuinely skip ZAP (crypto-only, no key-gating).  An empty
+        // zap_domain is NOT sufficient: libzmq's `zap_enforce_domain`
+        // defaults to false, so `curve_server.cpp` still invokes ZAP for an
+        // empty domain (`zap_required() || !zap_enforce_domain` → true) — and
+        // in-process the broker's ZapRouter would then REJECT the admin
+        // handshake ("no domain registered for ''").  Setting
+        // zap_enforce_domain=1 makes `zap_required()==false` short-circuit the
+        // ZAP path entirely, so the admin socket authenticates by CURVE crypto
+        // alone and never touches the broker's single inproc ZAP pumper
+        // (HEP-CORE-0033 §11.1 intent; §7.4 single-pumper invariant preserved).
+        sock.set(zmq::sockopt::zap_enforce_domain, 1);
+    }
+
     sock.bind(impl_->endpoint);
     impl_->bound_endpoint = sock.get(zmq::sockopt::last_endpoint);
 
-    LOGGER_INFO("[admin] AdminService listening on {} (token_required={})",
-                impl_->bound_endpoint, impl_->token_required);
+    LOGGER_INFO("[admin] AdminService listening on {} (CURVE-server, "
+                "token-gated per HEP-CORE-0033 §11)",
+                impl_->bound_endpoint);
 
     while (!impl_->stop_requested.load(std::memory_order_acquire))
     {
@@ -250,18 +261,15 @@ json AdminService::Impl::dispatch(const json &request)
 
     const std::string method = request["method"].get<std::string>();
 
-    // ── Token gate (§11.3) ──────────────────────────────────────────────────
+    // ── Token gate (§11.3) — MANDATORY, no token-less path ──────────────────
     //
-    // When token_required, every method requires a matching token.
-    // Token comparison uses constant-time-equal-length form: the
-    // admin_token from the vault is fixed-length (64 hex), so the
-    // size check + char-by-char compare is sufficient.  No timing
-    // sensitivity beyond that — the admin endpoint is loopback or
-    // VPN'd in any realistic deployment.  See note L2 in the
-    // AdminService static review (commit ledger): if the admin
-    // endpoint ever goes public, switch to a known-constant-time
-    // memcmp variant the compiler can't optimize away.
-    if (token_required)
+    // Every method requires a matching token; the §11.1 CURVE transport
+    // carries it encrypted.  Comparison uses constant-time-equal-length
+    // form: the vault admin_token is fixed-length (64 hex), so the size
+    // check + char-by-char compare is sufficient.  See note L2 in the
+    // AdminService static review: if the admin endpoint ever needs
+    // stronger side-channel hardening, switch to a memcmp variant the
+    // compiler can't optimize away.
     {
         const auto token_it = request.find("token");
         if (token_it == request.end() || !token_it->is_string())

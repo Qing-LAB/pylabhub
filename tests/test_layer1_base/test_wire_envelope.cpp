@@ -808,3 +808,82 @@ TEST(WireBodies, BandLeaveNotifyBodyValidatesAllFields)
     EXPECT_EQ(b.role_uid(),  "prod.uid1");
     EXPECT_EQ(b.role_name(), "prod-a");
 }
+
+// ── Admin console family (HEP-CORE-0033 §11) — typed body validation ──
+
+TEST(WireBodies, AdminHelloReqBodyValidatesAllFields)
+{
+    nlohmann::json body;
+    body["token"]         = "0123456789abcdef";
+    body["label"]         = "alice-laptop";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminHelloReqBody b(std::move(body));
+    EXPECT_EQ(b.token(), "0123456789abcdef");
+    EXPECT_EQ(b.label(), "alice-laptop");
+    EXPECT_FALSE(b.envelope_hash().empty());
+}
+
+TEST(WireBodies, AdminHelloReqBodyRejectsMissingToken)
+{
+    nlohmann::json body;
+    body["label"]         = "alice-laptop";
+    body["envelope_hash"] = "deadbeef";
+    EXPECT_THROW(pylabhub::wire::AdminHelloReqBody{std::move(body)},
+                 WireBodyError);
+}
+
+TEST(WireBodies, AdminHelloReqBodyRejectsMissingEnvelopeHash)
+{
+    nlohmann::json body;
+    body["token"] = "t";
+    body["label"] = "alice-laptop";
+    EXPECT_THROW(pylabhub::wire::AdminHelloReqBody{std::move(body)},
+                 WireBodyError);
+}
+
+TEST(WireBodies, AdminHelloAckBodyValidatesSessionId)
+{
+    nlohmann::json body;
+    body["session_id"]    = "abcdef0123";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminHelloAckBody b(std::move(body));
+    EXPECT_EQ(b.session_id(), "abcdef0123");
+}
+
+TEST(WireBodies, AdminPingReqBodyValidatesSessionId)
+{
+    nlohmann::json body;
+    body["session_id"]    = "abcdef0123";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminPingReqBody b(std::move(body));
+    EXPECT_EQ(b.session_id(), "abcdef0123");
+}
+
+TEST(WireBodies, AdminCloseChannelReqBodyValidatesAllFields)
+{
+    nlohmann::json body;
+    body["session_id"]    = "abcdef0123";
+    body["channel"]       = "lab.sensor.temp";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminCloseChannelReqBody b(std::move(body));
+    EXPECT_EQ(b.session_id(), "abcdef0123");
+    EXPECT_EQ(b.channel(),    "lab.sensor.temp");
+}
+
+TEST(WireBodies, AdminCloseChannelReqBodyRejectsMissingChannel)
+{
+    nlohmann::json body;
+    body["session_id"]    = "abcdef0123";
+    body["envelope_hash"] = "deadbeef";
+    EXPECT_THROW(pylabhub::wire::AdminCloseChannelReqBody{std::move(body)},
+                 WireBodyError);
+}
+
+TEST(WireBodies, AdminCloseChannelAckBodyValidatesStatus)
+{
+    nlohmann::json body;
+    body["status"]        = "ok";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminCloseChannelAckBody b(std::move(body));
+    EXPECT_EQ(b.status(), "ok");
+}

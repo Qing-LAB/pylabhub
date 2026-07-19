@@ -378,4 +378,50 @@ BandLeaveNotifyBody::BandLeaveNotifyBody(nlohmann::json body)
     d::require_envelope_hash(body_);
 }
 
+// ── Admin console family (HEP-CORE-0033 §11) ─────────────────────────
+
+AdminHelloReqBody::AdminHelloReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "token", d::JsonKind::String);
+    d::require(body_, "label", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminHelloAckBody::AdminHelloAckBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminPingReqBody::AdminPingReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminPingAckBody::AdminPingAckBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "status", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminCloseChannelReqBody::AdminCloseChannelReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require(body_, "channel",    d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminCloseChannelAckBody::AdminCloseChannelAckBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "status", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
 }  // namespace pylabhub::wire
