@@ -770,6 +770,27 @@ inline constexpr std::string_view kAdminPingReq         = "ADMIN_PING_REQ";
 inline constexpr std::string_view kAdminPingAck         = "ADMIN_PING_ACK";
 inline constexpr std::string_view kAdminCloseChannelReq = "ADMIN_CLOSE_CHANNEL_REQ";
 inline constexpr std::string_view kAdminCloseChannelAck = "ADMIN_CLOSE_CHANNEL_ACK";
+inline constexpr std::string_view kAdminBroadcastChannelReq = "ADMIN_BROADCAST_CHANNEL_REQ";
+inline constexpr std::string_view kAdminBroadcastChannelAck = "ADMIN_BROADCAST_CHANNEL_ACK";
+inline constexpr std::string_view kAdminRequestShutdownReq  = "ADMIN_REQUEST_SHUTDOWN_REQ";
+inline constexpr std::string_view kAdminRequestShutdownAck  = "ADMIN_REQUEST_SHUTDOWN_ACK";
+inline constexpr std::string_view kAdminListChannelsReq = "ADMIN_LIST_CHANNELS_REQ";
+inline constexpr std::string_view kAdminListChannelsAck = "ADMIN_LIST_CHANNELS_ACK";
+inline constexpr std::string_view kAdminListRolesReq    = "ADMIN_LIST_ROLES_REQ";
+inline constexpr std::string_view kAdminListRolesAck    = "ADMIN_LIST_ROLES_ACK";
+inline constexpr std::string_view kAdminListBandsReq    = "ADMIN_LIST_BANDS_REQ";
+inline constexpr std::string_view kAdminListBandsAck    = "ADMIN_LIST_BANDS_ACK";
+inline constexpr std::string_view kAdminListPeersReq    = "ADMIN_LIST_PEERS_REQ";
+inline constexpr std::string_view kAdminListPeersAck    = "ADMIN_LIST_PEERS_ACK";
+inline constexpr std::string_view kAdminGetChannelReq   = "ADMIN_GET_CHANNEL_REQ";
+inline constexpr std::string_view kAdminGetChannelAck   = "ADMIN_GET_CHANNEL_ACK";
+inline constexpr std::string_view kAdminGetRoleReq      = "ADMIN_GET_ROLE_REQ";
+inline constexpr std::string_view kAdminGetRoleAck      = "ADMIN_GET_ROLE_ACK";
+inline constexpr std::string_view kAdminQueryMetricsReq = "ADMIN_QUERY_METRICS_REQ";
+inline constexpr std::string_view kAdminQueryMetricsAck = "ADMIN_QUERY_METRICS_ACK";
+/// Typed error reply for any admin failure (unauthorized, invalid session,
+/// bad params, not-found).  Carries the §11.5 error code + message.
+inline constexpr std::string_view kAdminError           = "ADMIN_ERROR";
 
 /// ADMIN_HELLO_REQ — console establishment (§11.0.5 / §11.3).  The admin
 /// token authorizes the session; `label` is the operator-supplied display
@@ -836,6 +857,101 @@ PLH_WIRE_BODY_CLASS(AdminCloseChannelAckBody)
     [[nodiscard]] std::string status() const
     {
         return detail::read_string(body_, "status");
+    }
+};
+
+/// Session-only request — carries just the session id.  Shared by the
+/// list queries (list_channels/roles/bands/peers) and request_shutdown.
+PLH_WIRE_BODY_CLASS(AdminSessionReqBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+};
+
+/// Named request — session id + a target name.  Shared by get_channel /
+/// get_role.
+PLH_WIRE_BODY_CLASS(AdminNamedReqBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+    [[nodiscard]] std::string name() const
+    {
+        return detail::read_string(body_, "name");
+    }
+};
+
+/// ADMIN_BROADCAST_CHANNEL_REQ — hub-originated broadcast (§11.2).
+PLH_WIRE_BODY_CLASS(AdminBroadcastChannelReqBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+    [[nodiscard]] std::string channel() const
+    {
+        return detail::read_string(body_, "channel");
+    }
+    [[nodiscard]] std::string message() const
+    {
+        return detail::read_string(body_, "message");
+    }
+    /// Optional opaque data payload; empty when absent.
+    [[nodiscard]] std::string data() const
+    {
+        return detail::read_string_or_empty(body_, "data");
+    }
+};
+
+/// ADMIN_QUERY_METRICS_REQ — session id + an optional metrics filter object
+/// (empty object = all categories).
+PLH_WIRE_BODY_CLASS(AdminQueryMetricsReqBody)
+  public:
+    [[nodiscard]] std::string session_id() const
+    {
+        return detail::read_string(body_, "session_id");
+    }
+    /// Filter object; empty object when absent.
+    [[nodiscard]] const nlohmann::json &filter() const
+    {
+        return detail::read_object(body_, "filter");
+    }
+};
+
+/// Query result ACK — carries the dynamic snapshot as an object (the
+/// query result has no fixed schema; the object IS the typed field, like
+/// `RegAck.heartbeat`).  Shared by every query ACK.
+PLH_WIRE_BODY_CLASS(AdminResultAckBody)
+  public:
+    [[nodiscard]] const nlohmann::json &result() const
+    {
+        return detail::read_object(body_, "result");
+    }
+};
+
+/// Control ACK — `status` = "ok" (accepted).  Shared by broadcast /
+/// request_shutdown (close has its own for symmetry with the REQ).
+PLH_WIRE_BODY_CLASS(AdminStatusAckBody)
+  public:
+    [[nodiscard]] std::string status() const
+    {
+        return detail::read_string(body_, "status");
+    }
+};
+
+/// ADMIN_ERROR — typed failure reply (§11.5 code + message).
+PLH_WIRE_BODY_CLASS(AdminErrorBody)
+  public:
+    [[nodiscard]] std::string code() const
+    {
+        return detail::read_string(body_, "code");
+    }
+    [[nodiscard]] std::string message() const
+    {
+        return detail::read_string(body_, "message");
     }
 };
 

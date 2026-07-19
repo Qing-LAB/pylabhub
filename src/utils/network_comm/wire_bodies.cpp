@@ -424,4 +424,59 @@ AdminCloseChannelAckBody::AdminCloseChannelAckBody(nlohmann::json body)
     d::require_envelope_hash(body_);
 }
 
+AdminSessionReqBody::AdminSessionReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminNamedReqBody::AdminNamedReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require(body_, "name",       d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminBroadcastChannelReqBody::AdminBroadcastChannelReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require(body_, "channel",    d::JsonKind::String);
+    d::require(body_, "message",    d::JsonKind::String);
+    d::validate_if_present(body_, "data", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminQueryMetricsReqBody::AdminQueryMetricsReqBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "session_id", d::JsonKind::String);
+    d::require(body_, "filter",     d::JsonKind::Object); // {} = all categories
+    d::require_envelope_hash(body_);
+}
+
+AdminResultAckBody::AdminResultAckBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "result", d::JsonKind::Object);
+    d::require_envelope_hash(body_);
+}
+
+AdminStatusAckBody::AdminStatusAckBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "status", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
+AdminErrorBody::AdminErrorBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "code",    d::JsonKind::String);
+    d::require(body_, "message", d::JsonKind::String);
+    d::require_envelope_hash(body_);
+}
+
 }  // namespace pylabhub::wire

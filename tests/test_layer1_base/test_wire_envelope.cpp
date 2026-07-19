@@ -887,3 +887,87 @@ TEST(WireBodies, AdminCloseChannelAckBodyValidatesStatus)
     pylabhub::wire::AdminCloseChannelAckBody b(std::move(body));
     EXPECT_EQ(b.status(), "ok");
 }
+
+TEST(WireBodies, AdminSessionReqBodyValidatesSessionId)
+{
+    nlohmann::json body;
+    body["session_id"]    = "sid-1";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminSessionReqBody b(std::move(body));
+    EXPECT_EQ(b.session_id(), "sid-1");
+}
+
+TEST(WireBodies, AdminNamedReqBodyValidatesAllFields)
+{
+    nlohmann::json body;
+    body["session_id"]    = "sid-1";
+    body["name"]          = "lab.sensor.temp";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminNamedReqBody b(std::move(body));
+    EXPECT_EQ(b.session_id(), "sid-1");
+    EXPECT_EQ(b.name(),       "lab.sensor.temp");
+}
+
+TEST(WireBodies, AdminNamedReqBodyRejectsMissingName)
+{
+    nlohmann::json body;
+    body["session_id"]    = "sid-1";
+    body["envelope_hash"] = "deadbeef";
+    EXPECT_THROW(pylabhub::wire::AdminNamedReqBody{std::move(body)}, WireBodyError);
+}
+
+TEST(WireBodies, AdminBroadcastChannelReqBodyValidatesAllFields)
+{
+    nlohmann::json body;
+    body["session_id"]    = "sid-1";
+    body["channel"]       = "lab.sensor.temp";
+    body["message"]       = "from-operator";
+    body["data"]          = "extra";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminBroadcastChannelReqBody b(std::move(body));
+    EXPECT_EQ(b.channel(), "lab.sensor.temp");
+    EXPECT_EQ(b.message(), "from-operator");
+    EXPECT_EQ(b.data(),    "extra");
+}
+
+TEST(WireBodies, AdminBroadcastChannelReqBodyDataOptional)
+{
+    nlohmann::json body;
+    body["session_id"]    = "sid-1";
+    body["channel"]       = "c";
+    body["message"]       = "m";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminBroadcastChannelReqBody b(std::move(body));
+    EXPECT_EQ(b.data(), ""); // absent → empty
+}
+
+TEST(WireBodies, AdminQueryMetricsReqBodyRequiresFilterObject)
+{
+    nlohmann::json body;
+    body["session_id"]    = "sid-1";
+    body["filter"]        = nlohmann::json::object();
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminQueryMetricsReqBody b(std::move(body));
+    EXPECT_TRUE(b.filter().is_object());
+}
+
+TEST(WireBodies, AdminResultAckBodyValidatesResultObject)
+{
+    nlohmann::json body;
+    body["result"]        = nlohmann::json{{"channels", nlohmann::json::object()}};
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminResultAckBody b(std::move(body));
+    EXPECT_TRUE(b.result().is_object());
+    EXPECT_TRUE(b.result().contains("channels"));
+}
+
+TEST(WireBodies, AdminErrorBodyValidatesCodeAndMessage)
+{
+    nlohmann::json body;
+    body["code"]          = "unauthorized";
+    body["message"]       = "bad session";
+    body["envelope_hash"] = "deadbeef";
+    pylabhub::wire::AdminErrorBody b(std::move(body));
+    EXPECT_EQ(b.code(),    "unauthorized");
+    EXPECT_EQ(b.message(), "bad session");
+}
