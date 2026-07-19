@@ -137,6 +137,19 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (follow-up, 2026-07-18)
+
+`ZmqQueueTest.TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscribe`
+flaked ~1-in-4 in Release from a `sleep_for(200ms) // slow-joiner settle`
+race (fixed → `poll_until`, commit `102d92a7`; root cause: async `send_ring_`
+leaks pre-subscribe frames to a late SUB).  **Sibling PUB/SUB tests carry the
+SAME latent flake** — `sleep_for(200ms)` slow-joiner settles at
+`test_hub_zmq_queue.cpp:~2750/2803/2845` (e.g. `FanOut_TwoSubscribers_BothReceive`).
+Convert each to the `poll_until` publish-until-received idiom (see
+`README_testing.md` § "Concurrent ordering").  The many `sleep_for(50ms) //
+connection setup` calls are the documented TCP-establishment carve-out — leave
+those.
+
 ### L4 test-failure evidence log (all entries currently RESOLVED)
 
 **Status 2026-07-18:** the one logged failure (#2480) is RESOLVED

@@ -1719,8 +1719,54 @@ transitioned), use a **condition-based wait**, NOT `std::this_thread::sleep_for`
   user-visible condition to poll; document it inline at the call site
   so a future reader knows why a `sleep_for` is there. Anywhere else,
   introduce a flag/CV/atomic and `poll_until` against it.
+- **NOT the acceptable use — PUB/SUB "slow-joiner settle".** A
+  `sleep_for(200ms) // slow-joiner settle` before publishing to a late
+  SUB is a race, not a TCP workaround: it orders subscription-propagation
+  vs. publish, and that HAS a pollable condition — the SUB receiving a
+  frame. (This exact pattern flaked ~1-in-4 in Release: the producer
+  buffers writes in an async send-ring, so pre-subscribe frames could
+  flush to the socket *after* the SUB subscribed and leak to it — commit
+  `102d92a7`.) Correct deterministic idiom for a PUB/SUB late joiner:
 
+  ```cpp
+  // Keep publishing the post-subscribe marker until the SUB observably
+  // receives it — no timing assumption, drains any leaked pre-sub frame.
+  EXPECT_TRUE(poll_until([&] {
+      if (void* w = pub->write_acquire(100ms)) {
+          std::memset(w, kMarker, kItemSize); pub->write_commit();
+      }
+      const void* r = sub->read_acquire(50ms);
+      if (!r) return false;
+      bool hit = static_cast<const uint8_t*>(r)[0] == kMarker;
+      sub->read_release();
+      return hit;
+  }, 5000ms)) << "late joiner must receive the post-subscribe frame";
+  ```
 
+### Test framework facilities (catalog)
+
+All live under `tests/test_framework/`; include the header and use the
+helper rather than hand-rolling sleeps, pipes, or subprocess plumbing.
+**Scan this list before writing coordination/subprocess code — most of it
+already exists.**
+
+| Header | Facility | Use it for |
+|---|---|---|
+| `test_sync_utils.h` | `poll_until(pred, timeout=5s, poll_ms=10ms)` | Condition-based wait for ANY async side effect. Replaces every ordering `sleep_for`. Pair with `ASSERT_TRUE`. |
+| `test_patterns.h` | `IsolatedProcessTest` (Pattern 3 base) + `SpawnWorker(scenario,args)` / `SpawnWorkers(...)` / `SpawnWorkerWithQuitSignal` / `SpawnWorkerWithReadySignal`; `PureApiTest` | Re-exec the test binary as worker subprocesses; one real process per role/scenario. |
+| `test_process_utils.h` | `WorkerProcess` — spawn child, `wait_for_exit(timeout_s)`, `has_exited()`, `get_stdout()/get_stderr()`, `exit_code()` | Manage + observe a single worker subprocess. |
+| `shared_test_helpers.h` | `run_gtest_worker(fn, name, mods...)`; `wait_for_string_in_file(path, str, timeout)`; `StringCapture` (fd/pipe stdout-stderr capture); `ThreadBarrier` (synchronized N-thread start); `signal_test_ready()`/`wait_for_ready()` (`PLH_TEST_READY_FD` **pipe/fd parent↔child ready handshake** — deterministic init ordering, no sleep); stress-scale macros (`STRESS_*`, `scaled_value`) | Worker bodies, log-file waits, output capture, thread/proc rendezvous. |
+| `log_capture_fixture.h` | `LogCaptureFixture` — `Install()`, `AssertNoUnexpectedLogWarnError()`, must-fire markers | Assert a test emitted no stray WARN/ERROR + that expected log markers fired. |
+| `broker_test_harness.h` | `DirectBrokerHandle` / `HubHostBrokerHandle` / `BrcHandle` | L3 broker + BRC harness (bring up a real broker/hub in-process or subprocess). |
+| `broker_wire_client.h` | `BrokerWireClient` — raw ZMQ DEALER `send(msg_type, body)` / recv | L3 broker-only wire tests (drive the broker protocol without a full role). |
+| `pattern4_helpers.h` | `Pattern4Setup`; `expect_log(proc, substr)` / `expect_log_sequence(...)` | Pattern-4 multi-process wire tests: setup + log-marker (FSM-transition) assertions. |
+| `curve_test_setup.h` | `CurveKeypair` / `CurveSetup` / `gen_curve_keypair()` | Real CURVE keys for auth tests (no mocks). |
+| `role_api_base_test_access.h`, `hub_state_test_access.h` | friend/test-access shims | Reach private role/hub state from a test without loosening production visibility. |
+| `test_schema_helpers.h`, `wire_conformance.h`, `test_datahub_types.h` | schema builders, wire-shape conformance checks, shared test types | Build schemas / assert wire conformance / share fixtures. |
+
+If you add a new reusable facility here, add a row above so the next
+author finds it (this table is the discoverability contract — a missing
+entry is what let the `sleep_for` slow-joiner race ship).
 
 ### Naming conventions (MANDATORY)
 
