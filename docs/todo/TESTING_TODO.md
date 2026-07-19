@@ -137,18 +137,19 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
-### `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (follow-up, 2026-07-18)
+### ✅ `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (RESOLVED 2026-07-18)
 
 `ZmqQueueTest.TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscribe`
-flaked ~1-in-4 in Release from a `sleep_for(200ms) // slow-joiner settle`
-race (fixed → `poll_until`, commit `102d92a7`; root cause: async `send_ring_`
-leaks pre-subscribe frames to a late SUB).  **Sibling PUB/SUB tests carry the
-SAME latent flake** — `sleep_for(200ms)` slow-joiner settles at
-`test_hub_zmq_queue.cpp:~2750/2803/2845` (e.g. `FanOut_TwoSubscribers_BothReceive`).
-Convert each to the `poll_until` publish-until-received idiom (see
-`README_testing.md` § "Concurrent ordering").  The many `sleep_for(50ms) //
-connection setup` calls are the documented TCP-establishment carve-out — leave
-those.
+flaked ~1-in-4 in Release from a `sleep_for(200ms) // slow-joiner settle` race
+(async `send_ring_` leaks pre-subscribe frames to a late SUB).  Fixed +
+**all 4 fan-out slow-joiner settles converted** to deterministic `poll_until`
+(commits `102d92a7` + follow-up): `FanOut_LateJoiner`, `FanOut_TwoSubscribers`,
+the round-trip `PubSub` test (~L2559), plus the negative/timeout `WrongServerPubkey`
+(settle removed — read-timeout is the check) and `PubStop` (warm-up until the
+CURVE handshake completes, else `pub->stop()` races the ZAP domain unregister →
+"no domain registered" WARN).  0 `sleep_for(200ms)` settles remain; verified
+40/40 under 1-core load.  The `sleep_for(50ms) // connection setup` calls are
+the documented TCP-establishment carve-out — left as-is.
 
 ### L4 test-failure evidence log (all entries currently RESOLVED)
 

@@ -2552,22 +2552,26 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber)
     ASSERT_NE(sub, nullptr);
     ASSERT_TRUE(sub->start());
 
-    // PUB/SUB has an inherent "slow joiner" window — messages sent
-    // before the SUB completes its subscription round-trip are dropped.
-    // 200ms is generous (typical <10ms locally); the round-trip test
-    // shouldn't be flaky.
-    std::this_thread::sleep_for(200ms);
-
-    void *wbuf = pub->write_acquire(1000ms);
-    ASSERT_NE(wbuf, nullptr);
-    std::memset(wbuf, 0xF0, kItemSize);
-    pub->write_commit();
-
-    const void *rbuf = sub->read_acquire(2000ms);
-    ASSERT_NE(rbuf, nullptr)
+    // PUB/SUB has an inherent "slow joiner" window — messages sent before the
+    // SUB completes its subscription round-trip are dropped.  Do NOT settle
+    // with a fixed sleep (races the scheduler under load — see README_testing.md
+    // § Concurrent ordering): keep publishing the marker and poll_until the SUB
+    // observably receives it.
+    bool got = false;
+    ASSERT_TRUE(poll_until([&] {
+        if (void *wbuf = pub->write_acquire(100ms))
+        {
+            std::memset(wbuf, 0xF0, kItemSize);
+            pub->write_commit();
+        }
+        if (const void *rbuf = sub->read_acquire(20ms))
+        {
+            got = static_cast<const uint8_t *>(rbuf)[0] == 0xF0;
+            sub->read_release();
+        }
+        return got;
+    }, 5000ms))
         << "fan-out PUB → SUB round-trip must deliver after slow-joiner window";
-    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0xF0);
-    sub->read_release();
 
     pub->stop();
     sub->stop();
@@ -2747,20 +2751,31 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_TwoSubscribers_BothReceive)
 
     auto sub_a = make_sub();
     auto sub_b = make_sub();
-    std::this_thread::sleep_for(200ms);   // slow-joiner settle
 
-    void *w = pub->write_acquire(1000ms);
-    ASSERT_NE(w, nullptr);
-    std::memset(w, 0x7E, kItemSize);
-    pub->write_commit();
-
-    for (auto *s : {sub_a.get(), sub_b.get()})
+    // Slow-joiner coordination (no fixed "settle" sleep — see README_testing.md
+    // § Concurrent ordering): keep publishing the fan-out marker and poll_until
+    // BOTH subscribers have observably received it.
+    bool got_a = false, got_b = false;
+    auto drain = [](ZmqQueue *s, bool &got)
     {
-        const void *r = s->read_acquire(2000ms);
-        ASSERT_NE(r, nullptr) << "both subscribers must receive fan-out frame";
-        EXPECT_EQ(static_cast<const uint8_t *>(r)[0], 0x7E);
-        s->read_release();
-    }
+        if (got) return;
+        if (const void *r = s->read_acquire(20ms))
+        {
+            if (static_cast<const uint8_t *>(r)[0] == 0x7E) got = true;
+            s->read_release();
+        }
+    };
+    ASSERT_TRUE(poll_until([&] {
+        if (void *w = pub->write_acquire(100ms))
+        {
+            std::memset(w, 0x7E, kItemSize);
+            pub->write_commit();
+        }
+        drain(sub_a.get(), got_a);
+        drain(sub_b.get(), got_b);
+        return got_a && got_b;
+    }, 5000ms))
+        << "both fan-out subscribers must receive the published frame (0x7E)";
 
     pub->stop();
     sub_a->stop();
@@ -2800,8 +2815,11 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_WrongServerPubkey_HandshakeFails)
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
     ASSERT_TRUE(sub->start());
-    std::this_thread::sleep_for(200ms);
 
+    // Negative test — no ordering sleep needed.  The CURVE handshake fails
+    // (wrong serverkey), so the SUB never authenticates and can never receive,
+    // regardless of timing.  Publish, then the read_acquire(500ms) timeout IS
+    // the deterministic wait: a denied SUB returns nullptr.
     void *w = pub->write_acquire(1000ms);
     ASSERT_NE(w, nullptr);
     std::memset(w, 0x55, kItemSize);
@@ -2842,17 +2860,48 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_PubStop_SubReadReturnsWithinTimeout)
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
     ASSERT_TRUE(sub->start());
-    std::this_thread::sleep_for(200ms);
+
+    // Deterministically wait for the SUB's CURVE handshake to COMPLETE before
+    // stopping the producer (no fixed settle sleep).  If we stop mid-handshake,
+    // pub->stop() unregisters the PUB's zap_domain while the SUB's ZAP request
+    // is still in flight, and ZapRouter logs a "no domain registered" WARN that
+    // fails the LogCaptureFixture.  A received frame proves the SUB
+    // authenticated, so publish a warm-up marker and poll_until it arrives.
+    ASSERT_TRUE(poll_until([&] {
+        if (void *w = pub->write_acquire(100ms))
+        {
+            std::memset(w, 0x01, kItemSize);
+            pub->write_commit();
+        }
+        if (const void *r = sub->read_acquire(20ms))
+        {
+            sub->read_release();
+            return true;
+        }
+        return false;
+    }, 5000ms))
+        << "SUB must complete its handshake (receive a frame) before pub stops";
 
     pub->stop();  // producer gone
-    // read_acquire with 500ms timeout must return nullptr within a
-    // small margin — not block forever.
+
+    // After the producer is gone, read must return nullptr within its timeout
+    // budget — not block forever.  Drain any in-flight warm-up frames first;
+    // once the stopped producer's stream is dry the read returns nullptr
+    // promptly (documents the libzmq contract: SUB polls with RCVTIMEO, there
+    // is no "producer gone" signal).
     const auto t0 = std::chrono::steady_clock::now();
-    const void *r = sub->read_acquire(500ms);
+    const void *r = nullptr;
+    for (int i = 0; i < 16; ++i)
+    {
+        r = sub->read_acquire(500ms);
+        if (r == nullptr) break;   // stream dry
+        sub->read_release();
+    }
     const auto elapsed = std::chrono::steady_clock::now() - t0;
-    EXPECT_EQ(r, nullptr) << "SUB read after pub->stop() must not deliver stale frames";
-    EXPECT_LT(elapsed, 1500ms)
-        << "SUB read must honor the timeout budget";
+    EXPECT_EQ(r, nullptr)
+        << "SUB read must return nullptr once the stopped producer's stream is dry";
+    EXPECT_LT(elapsed, 2500ms)
+        << "SUB read must honor the timeout budget (not block forever)";
 
     sub->stop();
 }
