@@ -23,18 +23,24 @@
 #include "utils/hub_state.hpp"
 #include "utils/hub_state_json.hpp"
 #include "utils/logger.hpp"
+#include "utils/admin_session.hpp"          // sealed session identity (§11.0.5)
 #include "utils/security/key_store.hpp"        // kHubIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
 #include "utils/timeout_constants.hpp"
+#include "utils/wire_bodies.hpp"            // typed admin bodies + ADMIN_* msg_types
+#include "utils/wire_envelope.hpp"          // typed ROUTER envelope
 
 #include "cppzmq/zmq.hpp"
+#include "cppzmq/zmq_addon.hpp"             // zmq::multipart_t
 
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace pylabhub::admin
 {
@@ -82,12 +88,18 @@ struct AdminService::Impl
         : ctx(c), host(h)
     {}
 
-    /// Top-level dispatcher.  Validates envelope shape, runs the
-    /// token gate, then routes the method name to one of the
-    /// `handle_*` member functions below.  All §11.2 method names
-    /// (wired or deferred) are explicit; an unknown name surfaces
-    /// as `unknown_method` rather than blending into a catch-all.
-    json dispatch(const json &request);
+    /// Typed dispatcher — routes a parsed admin envelope by msg_type,
+    /// verifies the session (except establishment) against the observed
+    /// connection facts (§11.0.5), runs the (unchanged) `handle_*` member
+    /// with the params it expects, and returns {ack_msg_type, ack_body}.
+    /// Any failure becomes an `ADMIN_ERROR` reply.
+    std::pair<std::string, nlohmann::json>
+    dispatch_typed(const wire::WireEnvelope &env,
+                   std::string_view          peer_address,
+                   std::string_view          routing_id);
+
+    /// Constant-time-equal-length admin token check (§11.3).
+    [[nodiscard]] bool token_ok(std::string_view token) const noexcept;
 
     // ── Per-method handlers (HEP-CORE-0033 §11.2) ──────────────────────────
     // Each handler is invoked AFTER `dispatch` has validated the request
@@ -148,83 +160,99 @@ AdminService::~AdminService() = default;
 
 void AdminService::run()
 {
-    zmq::socket_t sock(impl_->ctx, zmq::socket_type::rep);
+    zmq::socket_t sock(impl_->ctx, zmq::socket_type::router);
 
     // Allow rebind in tests where the same endpoint may be reused
     // after a fast teardown.  Matches the pattern broker_service uses.
     sock.set(zmq::sockopt::linger, 0);
 
     // ── CURVE-server arm (HEP-CORE-0033 §11.1) ────────────────────────────
-    // The admin REP socket is a curve_server keyed with the hub's EXISTING
-    // broker identity keypair (kHubIdentityName) — the same server identity
-    // every role already trusts; no separate admin key.  This authenticates
-    // the server to the operator and ENCRYPTS the exchange, so the admin
-    // token never crosses the wire in cleartext.  Deliberately NO zap_domain
-    // (§11.1): admin authority is the token, checked per request; omitting
-    // the domain keeps the admin socket off the broker's single inproc ZAP
-    // pumper (§7.4 single-pumper invariant).  Secret flows LockedKey → libzmq
-    // inside the with_seckey callback (use-not-export); mirrors
-    // broker_service.cpp.
-    {
-        // Shared CURVE-server arm (use-not-export) — the same helper the
-        // broker ROUTER and inbox use; keyed with the hub broker identity.
-        pylabhub::utils::arm_curve_server(
-            sock, pylabhub::utils::security::kHubIdentityName);
-        // Genuinely skip ZAP (crypto-only, no key-gating).  An empty
-        // zap_domain is NOT sufficient: libzmq's `zap_enforce_domain`
-        // defaults to false, so `curve_server.cpp` still invokes ZAP for an
-        // empty domain (`zap_required() || !zap_enforce_domain` → true) — and
-        // in-process the broker's ZapRouter would then REJECT the admin
-        // handshake ("no domain registered for ''").  Setting
-        // zap_enforce_domain=1 makes `zap_required()==false` short-circuit the
-        // ZAP path entirely, so the admin socket authenticates by CURVE crypto
-        // alone and never touches the broker's single inproc ZAP pumper
-        // (HEP-CORE-0033 §11.1 intent; §7.4 single-pumper invariant preserved).
-        sock.set(zmq::sockopt::zap_enforce_domain, 1);
-    }
+    // The admin ROUTER is a curve_server keyed with the hub's EXISTING broker
+    // identity keypair (kHubIdentityName) — the same server identity every
+    // role already trusts; no separate admin key.  It authenticates the server
+    // to the operator and ENCRYPTS the exchange, so the admin token (once, at
+    // establishment) and the sealed session id (§11.0.5) never cross the wire
+    // in cleartext.  Deliberately NO zap_domain: admin authority is the session
+    // id, not a key allowlist; zap_enforce_domain=1 short-circuits ZAP so the
+    // socket authenticates by CURVE crypto alone and stays off the broker's
+    // single inproc ZAP pumper (§7.4 single-pumper invariant).  The arm is the
+    // shared helper (use-not-export), the same one the broker/inbox use.
+    pylabhub::utils::arm_curve_server(
+        sock, pylabhub::utils::security::kHubIdentityName);
+    sock.set(zmq::sockopt::zap_enforce_domain, 1);
 
     sock.bind(impl_->endpoint);
     impl_->bound_endpoint = sock.get(zmq::sockopt::last_endpoint);
 
-    LOGGER_INFO("[admin] AdminService listening on {} (CURVE-server, "
-                "token-gated per HEP-CORE-0033 §11)",
+    // Per-instance session-sealing key (§11.0.5) — ephemeral to this run;
+    // a restart mints a fresh key, invalidating every outstanding session id.
+    ensure_session_seal_key();
+
+    LOGGER_INFO("[admin] AdminService (typed console, ROUTER) listening on {} "
+                "(CURVE-server, session-gated per HEP-CORE-0033 §11)",
                 impl_->bound_endpoint);
 
     while (!impl_->stop_requested.load(std::memory_order_acquire))
     {
-        zmq::pollitem_t items[] = {{ static_cast<void*>(sock), 0, ZMQ_POLLIN, 0 }};
+        zmq::pollitem_t items[] = {{static_cast<void *>(sock), 0, ZMQ_POLLIN, 0}};
         const int rc = zmq::poll(items, 1, std::chrono::milliseconds(kAdminPollIntervalMs));
         if (rc <= 0)
             continue;
 
-        zmq::message_t req_msg;
-        if (!sock.recv(req_msg, zmq::recv_flags::dontwait))
+        zmq::multipart_t raw;
+        if (!raw.recv(sock))
             continue;
 
-        json reply;
+        // Hub-observed peer address from the routing-id frame, captured
+        // BEFORE parse consumes the multipart (§11.0.5 anti-hijack fact).
+        std::string peer_address;
         try
         {
-            const auto request = json::parse(
-                std::string_view(static_cast<const char *>(req_msg.data()),
-                                 req_msg.size()));
-            reply = impl_->dispatch(request);
+            if (!raw.empty())
+                peer_address = raw.at(0).gets("Peer-Address");
         }
-        catch (const json::parse_error &e)
+        catch (const std::exception &)
         {
-            reply = make_error("invalid_request",
-                               std::string("malformed JSON: ") + e.what());
+            // Non-TCP transport surfaces no Peer-Address; the routing id +
+            // CURVE connection binding still gate the session.
+        }
+
+        wire::ParseError perr{};
+        auto env = wire::WireEnvelope::parse_router_recv(std::move(raw), &perr);
+        if (!env)
+        {
+            LOGGER_WARN("[admin] dropped malformed admin envelope (parse error {})",
+                        static_cast<int>(perr));
+            continue;
+        }
+
+        const std::string routing_id(env->identity());
+        const std::string corr(env->correlation_id());
+
+        std::string    ack_type;
+        json           ack_body;
+        try
+        {
+            std::tie(ack_type, ack_body) =
+                impl_->dispatch_typed(*env, peer_address, routing_id);
+        }
+        catch (const wire::WireBodyError &e)
+        {
+            ack_type = std::string(wire::kAdminError);
+            ack_body = json{{"code", "invalid_request"}, {"message", e.what()}};
         }
         catch (const std::exception &e)
         {
-            // Last-resort safety net.  Specific dispatcher failure
-            // modes should produce typed errors via dispatch() itself;
-            // this catches programmer errors and unknown exceptions.
-            // Code per HEP-0033 §11.5 catalog.
-            reply = make_error("internal", e.what());
+            ack_type = std::string(wire::kAdminError);
+            ack_body = json{{"code", "internal"}, {"message", e.what()}};
         }
 
-        const std::string reply_str = reply.dump();
-        sock.send(zmq::buffer(reply_str), zmq::send_flags::none);
+        // Route the reply back to the sender's DEALER; correlation_id echoes
+        // the request (ACK / ERROR are not _NOTIFY, so it is non-empty —
+        // parse_router_recv already enforced that policy on the request).
+        auto reply = wire::WireEnvelope::build_router_send(
+            routing_id, ack_type, corr, std::move(ack_body));
+        reply.send(sock);
     }
 
     sock.close();
@@ -251,100 +279,176 @@ const std::string &AdminService::bound_endpoint() const noexcept
 // are listed separately so an unknown name is `unknown_method` rather
 // than `not_implemented`.
 
-json AdminService::Impl::dispatch(const json &request)
+bool AdminService::Impl::token_ok(std::string_view token) const noexcept
 {
-    if (!request.is_object())
-        return make_error("invalid_request", "request must be a JSON object");
+    // §11.3 — the admin token authorizes session establishment (checked
+    // once, at HELLO).  Size-gated constant-time-equal-length compare; the
+    // vault token is fixed-length (64 hex).
+    if (token.size() != admin_token.size())
+        return false;
+    bool eq = true;
+    for (std::size_t i = 0; i < token.size(); ++i)
+        eq &= (token[i] == admin_token[i]);
+    return eq;
+}
 
-    if (!request.contains("method") || !request["method"].is_string())
-        return make_error("invalid_request", "missing or non-string 'method'");
+namespace
+{
 
-    const std::string method = request["method"].get<std::string>();
+/// Hub wall clock in ms — folded into the session id (§11.0.5).
+std::uint64_t now_ms()
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
 
-    // ── Token gate (§11.3) — MANDATORY, no token-less path ──────────────────
-    //
-    // Every method requires a matching token; the §11.1 CURVE transport
-    // carries it encrypted.  Comparison uses constant-time-equal-length
-    // form: the vault admin_token is fixed-length (64 hex), so the size
-    // check + char-by-char compare is sufficient.  See note L2 in the
-    // AdminService static review: if the admin endpoint ever needs
-    // stronger side-channel hardening, switch to a memcmp variant the
-    // compiler can't optimize away.
+/// {ADMIN_ERROR, {code, message}} — the typed failure reply (§11.5).
+std::pair<std::string, json> err_reply(std::string_view code,
+                                       std::string_view message)
+{
+    return {std::string(wire::kAdminError),
+            json{{"code", std::string(code)}, {"message", std::string(message)}}};
+}
+
+/// Convert an unchanged handler's `{status, result|error}` envelope into the
+/// typed reply.  `result_ack` = query (wrap `result` object) vs control
+/// (emit `{status:"ok"}`).  A handler error becomes an ADMIN_ERROR reply.
+std::pair<std::string, json> to_reply(std::string_view ack_type,
+                                      const json &handler_out, bool result_ack)
+{
+    if (handler_out.value("status", std::string{}) != "ok")
     {
-        const auto token_it = request.find("token");
-        if (token_it == request.end() || !token_it->is_string())
-            return make_error("unauthorized", "missing 'token' field");
-        const auto &token = token_it->get_ref<const std::string &>();
-        if (token.size() != admin_token.size())
-            return make_error("unauthorized", "invalid token");
-        // size-equal compare (no early exit on first mismatch — tiny
-        // win against side-channel; mostly habit at this string size)
-        bool eq = true;
-        for (size_t i = 0; i < token.size(); ++i)
-            eq &= (token[i] == admin_token[i]);
-        if (!eq)
-            return make_error("unauthorized", "invalid token");
+        const json e = handler_out.value("error", json::object());
+        return err_reply(e.value("code", "internal"), e.value("message", ""));
+    }
+    if (result_ack)
+        return {std::string(ack_type),
+                json{{"result", handler_out.value("result", json::object())}}};
+    return {std::string(ack_type), json{{"status", "ok"}}};
+}
+
+} // namespace
+
+std::pair<std::string, json>
+AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
+                                   std::string_view          peer_address,
+                                   std::string_view          routing_id)
+{
+    namespace w = pylabhub::wire;
+    const std::string     mt(env.msg_type());
+    const nlohmann::json &body = env.body();
+
+    // ── Establishment (§11.0.5) — token authorizes; mint the session id ──
+    if (mt == w::kAdminHelloReq)
+    {
+        w::AdminHelloReqBody b(body);
+        if (!token_ok(b.token()))
+            return err_reply("unauthorized", "invalid admin token");
+        const AdminSessionFacts facts{b.label(), std::string(peer_address),
+                                      std::string(routing_id), now_ms()};
+        return {std::string(w::kAdminHelloAck),
+                json{{"session_id", seal_session_id(facts)}}};
     }
 
-    // ── Method dispatch table ───────────────────────────────────────────────
-    //
-    // Pointer-to-member pairs.  Adding a method = add a row + define
-    // the handler.  No fall-through; first-match wins.  Static so we
-    // construct it once per process.
-    using HandlerPtr = json (Impl::*)(const json &);
-    struct MethodEntry { std::string_view name; HandlerPtr handler; };
-    static constexpr MethodEntry kMethods[] = {
-        // Built-in (Phase 6.2a)
-        {"ping",              &Impl::handle_ping},
-        // Query (Phase 6.2b — HEP-0033 §11.2 query block)
-        {"list_channels",     &Impl::handle_list_channels},
-        {"get_channel",       &Impl::handle_get_channel},
-        {"list_roles",        &Impl::handle_list_roles},
-        {"get_role",          &Impl::handle_get_role},
-        {"list_bands",        &Impl::handle_list_bands},
-        {"list_peers",        &Impl::handle_list_peers},
-        {"query_metrics",     &Impl::handle_query_metrics},
-        // Control (Phase 6.2c — HEP-0033 §11.2 control block)
-        {"close_channel",     &Impl::handle_close_channel},
-        {"broadcast_channel", &Impl::handle_broadcast_channel},
-        {"request_shutdown",  &Impl::handle_request_shutdown},
+    // Every command body carries a session id; verify it against the
+    // observed connection facts (§11.0.5) before running the handler.
+    const auto session_ok = [&](std::string_view sid) {
+        return verify_session_id(sid, peer_address, routing_id).has_value();
     };
-    for (const auto &m : kMethods)
+    constexpr auto kBadSession = "invalid or hijacked session";
+
+    // ── Query methods → AdminResultAck ──
+    if (mt == w::kAdminPingReq)
     {
-        if (method == m.name)
-            return (this->*m.handler)(request);
+        w::AdminPingReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        return to_reply(w::kAdminPingAck, handle_ping(req), false);
+    }
+    if (mt == w::kAdminListChannelsReq)
+    {
+        w::AdminSessionReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        return to_reply(w::kAdminListChannelsAck, handle_list_channels(req), true);
+    }
+    if (mt == w::kAdminListRolesReq)
+    {
+        w::AdminSessionReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        return to_reply(w::kAdminListRolesAck, handle_list_roles(req), true);
+    }
+    if (mt == w::kAdminListBandsReq)
+    {
+        w::AdminSessionReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        return to_reply(w::kAdminListBandsAck, handle_list_bands(req), true);
+    }
+    if (mt == w::kAdminListPeersReq)
+    {
+        w::AdminSessionReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        return to_reply(w::kAdminListPeersAck, handle_list_peers(req), true);
+    }
+    if (mt == w::kAdminGetChannelReq)
+    {
+        w::AdminNamedReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        req["params"]["channel"] = b.name();
+        return to_reply(w::kAdminGetChannelAck, handle_get_channel(req), true);
+    }
+    if (mt == w::kAdminGetRoleReq)
+    {
+        w::AdminNamedReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        req["params"]["uid"] = b.name();
+        return to_reply(w::kAdminGetRoleAck, handle_get_role(req), true);
+    }
+    if (mt == w::kAdminQueryMetricsReq)
+    {
+        w::AdminQueryMetricsReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        req["params"] = b.filter();
+        return to_reply(w::kAdminQueryMetricsAck, handle_query_metrics(req), true);
     }
 
-    // ── Deferred methods (HEP-0035 / §16 #1 / §16 #9) ───────────────────────
-    //
-    // Listed explicitly so a typo lands on `unknown_method` while a
-    // deferred-but-spec'd method lands on `not_implemented`.  Updates
-    // to this list:
-    //   - When HEP-0035 lands → remove the three known_roles entries.
-    //   - When §16 #1 / §16 #9 close → remove revoke_role / reload_config.
-    //
-    // `exec_python` was removed entirely (was previously deferred for
-    // Phase 7 wiring).  See HEP-CORE-0033 §17 "No remote code
-    // injection" — the hub deliberately does not accept arbitrary
-    // executable code over the wire.  Operator scripting access is
-    // routed through the future Python SDK (composes structured
-    // AdminService RPCs locally on the operator's host); see
-    // `docs/todo/API_TODO.md` "pylabhub Python client SDK".
-    static constexpr std::string_view kDeferredMethods[] = {
-        "list_known_roles", "add_known_role", "remove_known_role", // HEP-0035
-        "revoke_role",                                              // §16 #1
-        "reload_config",                                            // §16 #9
-    };
-    for (const auto &m : kDeferredMethods)
+    // ── Control methods → AdminStatusAck (accepted, §11.0.4 fire-and-forget) ──
+    if (mt == w::kAdminCloseChannelReq)
     {
-        if (method == m)
-            return make_error("not_implemented",
-                              std::string("method '") + method +
-                              "' is deferred to a later HEP / phase");
+        w::AdminCloseChannelReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        req["params"]["channel"] = b.channel();
+        return to_reply(w::kAdminCloseChannelAck, handle_close_channel(req), false);
+    }
+    if (mt == w::kAdminBroadcastChannelReq)
+    {
+        w::AdminBroadcastChannelReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        req["params"]["channel"] = b.channel();
+        req["params"]["message"] = b.message();
+        req["params"]["data"]    = b.data();
+        return to_reply(w::kAdminBroadcastChannelAck, handle_broadcast_channel(req), false);
+    }
+    if (mt == w::kAdminRequestShutdownReq)
+    {
+        w::AdminSessionReqBody b(body);
+        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        json req;
+        return to_reply(w::kAdminRequestShutdownAck, handle_request_shutdown(req), false);
     }
 
-    return make_error("unknown_method",
-                      std::string("unrecognised method '") + method + "'");
+    return err_reply("unknown_method",
+                     std::string("unrecognised admin msg_type '") + mt + "'");
 }
 
 // ============================================================================

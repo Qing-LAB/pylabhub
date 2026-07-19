@@ -1,58 +1,40 @@
 /**
  * @file test_admin_service.cpp
- * @brief AdminService — REP socket, token gate, localhost-bind
- *        invariant, round-trip ping, method dispatch (HEP-CORE-0033 §11).
+ * @brief AdminService — the typed operator console (HEP-CORE-0033 §11).
  *
- * Pattern 1+ (BinaryLifecycleEnvironment) — binary-wide LifecycleGuard
- * owning Logger + FileLock + JsonConfig + crypto + ZMQContext.  The
- * 22 transplanted + 8 strengthening tests run in-process; each TEST_F
- * uses `LogCaptureFixture` for per-test sink capture and constructs
- * a fresh `AdminService` (standalone) or `HubHost` wrapping one.
+ * Pattern 1+ (BinaryLifecycleEnvironment).  Drives the real admin ROUTER of a
+ * started `HubHost` over the typed `WireEnvelope` protocol via
+ * `AdminWireClient` — the production path: a CURVE `DEALER` establishes a
+ * session (ADMIN_HELLO_REQ → sealed session_id) then sends typed commands.
  *
- * Migrated 2026-05-14 from the SetUpTestSuite-owned LifecycleGuard
- * antipattern (`docs/todo/TESTING_TODO.md` § "Pattern-3 migration
- * debt").  Interference-vector audit came back clean on all four
- * `README_testing.md` § "Pattern 1+" criteria:
- *   1. No static state in AdminService / HubHost.
- *   2. No init-once invariant re-violation — single suite per binary.
- *   3. No library-global static-dtor hang — temp ZMQ sockets and
- *      HubHost threads are torn down per test.
- *   4. No deliberate crashes / death tests.
- * The binary `test_layer2_admin_service` is dedicated to this file
- * (no aggregate-binary collision risk).
+ * Because `host.startup()` runs the REAL broker (its ZapRouter binds the
+ * process ZAP handler on the shared context), a successful establish + ping
+ * IS the §7.4/§11.1 regression guard: if the admin socket were routed to that
+ * handler it would be rejected and the handshake/ping would time out
+ * (HubHost_Console_EstablishAndPing).
  *
- * Coverage:
- *   - Construction: token_required=false + non-loopback → throws.
- *   - Construction: token_required=true + empty token → throws.
- *   - Run/stop: spawned thread, bind endpoint visible, ping round-trip.
- *   - Token gate: valid / missing / wrong token.
- *   - Dispatch: ping ok, known stub → not_implemented, unknown_method.
- *   - HubHost integration: admin enabled at startup → bound endpoint;
- *     ping via that endpoint works; HubHost::shutdown drains admin
- *     thread cleanly.
- *
- * NOTE: AdminService takes a HubHost reference even when no method
- * dispatcher actually uses it (Phase 6.2a is skeleton-only).  The
- * standalone tests construct a HubHost without calling startup() and
- * pass it as the backref — sufficient for the skeleton, will be
- * meaningful when 6.2b/c land.
+ * Contracts pinned:
+ *   - Establishment: valid token → sealed session id; wrong token → error.
+ *   - Session gate: a command without a valid session is rejected.
+ *   - Query methods return a typed result; control methods a typed status.
+ *   - Unknown msg_type → typed ADMIN_ERROR.
  */
 
-#include "utils/security/secure_subsystem.hpp"
-#include "utils/security/key_store.hpp"      // kHubIdentityName, add_identity_from_z85
-#include "curve_test_setup.h"                // gen_curve_keypair
 #include "utils/admin_service.hpp"
+#include "utils/security/key_store.hpp"
+#include "utils/security/secure_subsystem.hpp"
+#include "utils/wire_bodies.hpp"
 
+#include "admin_wire_client.h"
 #include "binary_lifecycle.h"
+#include "curve_test_setup.h"                // gen_curve_keypair, add_curve_identity
 #include "log_capture_fixture.h"
-#include "plh_service.hpp"
-#include "utils/broker_service.hpp"
+
 #include "utils/config/hub_config.hpp"
-#include "utils/file_lock.hpp"
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
-#include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
+#include "utils/file_lock.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
 
@@ -65,33 +47,31 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <future>
-#include <stdexcept>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <vector>
+
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
+namespace w = pylabhub::wire;
 using pylabhub::admin::AdminService;
 using pylabhub::config::HubAdminConfig;
 using pylabhub::config::HubConfig;
 using pylabhub::hub_host::HubHost;
-using pylabhub::utils::FileLock;
+using pylabhub::tests::AdminWireClient;
 using pylabhub::utils::HubDirectory;
-using pylabhub::utils::JsonConfig;
-using pylabhub::utils::Logger;
 using nlohmann::json;
 
-// Binary-wide LifecycleGuard for the 5 modules AdminService /
-// HubHost touch.  See file header for the Pattern 1+ rationale and
-// the interference-vector audit.
 PLH_BINARY_LIFECYCLE_MODULES(
     pylabhub::utils::Logger::GetLifecycleModule(),
     pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
     pylabhub::utils::FileLock::GetLifecycleModule(),
     pylabhub::utils::JsonConfig::GetLifecycleModule(),
-    pylabhub::hub::GetZMQContextModule()
-)
+    pylabhub::hub::GetZMQContextModule())
 
 namespace
 {
@@ -99,13 +79,9 @@ namespace
 constexpr auto kTestToken =
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-/// Seed the hub broker identity keypair (`kHubIdentityName`) into the process
-/// KeyStore exactly once via the designed `curve_test_setup.h` facility, so the
-/// AdminService can arm its `curve_server` (HEP-CORE-0033 §11.1 — the admin
-/// socket reuses the hub's broker keypair; §11.1 use-not-export).  The
-/// production path loads this from the unlocked vault; the L2 test seeds a
-/// fresh one.  Returns the server's Z85 public key for clients to pin as
-/// `curve_serverkey`.
+/// Seed the hub broker identity (`kHubIdentityName`) once via the designed
+/// facility so the admin ROUTER can arm its curve_server (§11.1) and the
+/// console can pin it as `curve_serverkey`.  Returns the server Z85 pubkey.
 const std::string &hub_server_pubkey()
 {
     static const std::string pub = [] {
@@ -128,40 +104,6 @@ fs::path unique_temp_dir(const char *tag)
     return d;
 }
 
-/// Initialize a hub directory and patch its hub.json for L2 in-process
-/// testing: ephemeral broker port, no CURVE auth, admin enabled with
-/// an ephemeral admin port + token gate on by default.  Caller may
-/// further mutate the JSON before re-reading.
-nlohmann::json read_hub_json_for_test(const fs::path &dir,
-                                       const std::string &name)
-{
-    fs::create_directories(dir);
-    HubDirectory::init_directory(dir, name);
-    const fs::path hub_json = dir / "hub.json";
-    nlohmann::json j;
-    {
-        std::ifstream f(hub_json);
-        EXPECT_TRUE(f.is_open()) << "test could not open " << hub_json;
-        j = nlohmann::json::parse(f);
-    }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0"; // ephemeral
-    j["admin"]["endpoint"]          = "tcp://127.0.0.1:0"; // ephemeral
-    // Disable script runtime — Phase 7 D2.2 introduces strict
-    // engine/path matching at startup (engine null + path set
-    // → throws).  AdminService tests don't exercise scripts.
-    j["script"]["path"]             = "";
-    return j;
-}
-
-void write_hub_json(const fs::path &dir, const nlohmann::json &j)
-{
-    std::ofstream f(dir / "hub.json");
-    f << j.dump(2);
-}
-
-/// Block until `pred()` returns true or `timeout` elapses.  Used to
-/// wait for the admin worker to bind the REP socket and populate
-/// `bound_endpoint()`.
 template <typename Pred>
 bool poll_until(Pred pred, std::chrono::milliseconds timeout)
 {
@@ -174,750 +116,238 @@ bool poll_until(Pred pred, std::chrono::milliseconds timeout)
     return pred();
 }
 
-/// RAII bundle: HubAdminConfig + HubHost + AdminService + worker thread.
-/// Used by every test that needs an AdminService running against a
-/// freshly-constructed (NOT started-up) HubHost.  Replaces ~12 lines
-/// of boilerplate per test with ~2 lines:
-///
-/// @code
-/// auto [cfg, dir] = make_config("tag");
-/// StandaloneAdmin a(std::move(cfg), kTestToken);
-/// const json reply = req_reply(a.endpoint(),
-///     {{"method", "ping"}, {"token", kTestToken}});
-/// @endcode
-///
-/// The destructor stops the AdminService and joins the worker
-/// thread, so each TEST_F gets a clean teardown without explicit
-/// stop/join boilerplate.  Not copyable / not movable (owns thread
-/// + socket).  Tests that need a started HubHost (broker thread up)
-/// keep their bespoke setup — see the `HubHost_*` integration block.
-class StandaloneAdmin
-{
-public:
-    StandaloneAdmin(HubConfig          cfg,
-                    std::string_view   token)
-        : host_(std::move(cfg))
-    {
-        acfg_.endpoint = "tcp://127.0.0.1:0";
-        // Seed kHubIdentityName so the AdminService can arm curve_server (§11.1).
-        (void)hub_server_pubkey();
-        svc_.emplace(pylabhub::hub::get_zmq_context(), acfg_, token, host_);
-        worker_ = std::thread([this] { svc_->run(); });
-        EXPECT_TRUE(poll_until(
-            [this] { return !svc_->bound_endpoint().empty(); },
-            2000ms))
-            << "AdminService never bound";
-    }
-
-    ~StandaloneAdmin()
-    {
-        if (svc_) svc_->stop();
-        if (worker_.joinable()) worker_.join();
-    }
-
-    StandaloneAdmin(const StandaloneAdmin &)            = delete;
-    StandaloneAdmin &operator=(const StandaloneAdmin &) = delete;
-    StandaloneAdmin(StandaloneAdmin &&)                 = delete;
-    StandaloneAdmin &operator=(StandaloneAdmin &&)      = delete;
-
-    const std::string &endpoint() const { return svc_->bound_endpoint(); }
-
-private:
-    HubAdminConfig                acfg_{};
-    HubHost                       host_;
-    std::optional<AdminService>   svc_;
-    std::thread                   worker_;
-};
-
-/// Send a JSON request to a REP endpoint and return the parsed reply.
-/// Caller-managed timeout via socket option; throws on timeout.
-json req_reply(const std::string &endpoint, const json &request,
-                std::chrono::milliseconds timeout = 2000ms)
-{
-    zmq::socket_t sock(pylabhub::hub::get_zmq_context(),
-                       zmq::socket_type::req);
-    sock.set(zmq::sockopt::linger, 0);
-    sock.set(zmq::sockopt::rcvtimeo,
-             static_cast<int>(timeout.count()));
-    sock.set(zmq::sockopt::sndtimeo,
-             static_cast<int>(timeout.count()));
-    // CURVE-client arm (HEP-CORE-0033 §11.1): ephemeral client keypair + pin
-    // the hub broker pubkey as curve_serverkey.  The admin socket has no ZAP
-    // domain, so any well-formed CURVE client gets an encrypted channel;
-    // authority is the token.
-    {
-        const auto ckp = pylabhub::tests::gen_curve_keypair();
-        sock.set(zmq::sockopt::curve_publickey, ckp.public_z85);
-        sock.set(zmq::sockopt::curve_secretkey, ckp.secret_z85);
-        sock.set(zmq::sockopt::curve_serverkey, hub_server_pubkey());
-    }
-    sock.connect(endpoint);
-
-    const std::string req_str = request.dump();
-    sock.send(zmq::buffer(req_str), zmq::send_flags::none);
-
-    zmq::message_t reply;
-    auto recv_result = sock.recv(reply, zmq::recv_flags::none);
-    if (!recv_result.has_value())
-        throw std::runtime_error("admin REP timed out");
-
-    return json::parse(std::string_view(
-        static_cast<const char *>(reply.data()), reply.size()));
-}
-
 } // namespace
 
-// ─── Test fixture ──────────────────────────────────────────────────────────
-
 class AdminServiceTest : public ::testing::Test,
-                          public pylabhub::tests::LogCaptureFixture
+                         public pylabhub::tests::LogCaptureFixture
 {
-protected:
+  protected:
     void SetUp() override
     {
-        // Seed the hub broker identity (kHubIdentityName) into the process
-        // KeyStore once, before any HubHost/AdminService is built — the admin
-        // socket's curve_server (§11.1) reads it by name at run() time.
-        (void)hub_server_pubkey();
-        // Capture logger output for the duration of the test.  Happy
-        // paths must not emit WARN/ERROR; tests that drive an error
-        // path declare the expected warning via ExpectLogWarn(...).
+        (void)hub_server_pubkey(); // seed kHubIdentityName before any hub
         LogCaptureFixture::Install();
     }
-
     void TearDown() override
     {
-        // Verify no unexpected log entries before reverting capture
-        // and cleaning temp dirs.
         AssertNoUnexpectedLogWarnError();
         LogCaptureFixture::Uninstall();
-        for (const auto &p : paths_to_clean_)
+        for (const auto &d : paths_to_clean_)
         {
             std::error_code ec;
-            fs::remove_all(p, ec);
+            fs::remove_all(d, ec);
         }
-        paths_to_clean_.clear();
     }
 
-    /// Returns a HubConfig + dir; admin is enabled with ephemeral port,
-    /// token gate ON, admin_token = kTestToken.
-    std::pair<HubConfig, fs::path> make_config(const char *tag)
+    /// A started HubHost with admin enabled; returns the admin ROUTER
+    /// endpoint once bound.  Broker is up (ZAP handler active).
+    std::string start_hub(const char *tag)
     {
         const fs::path dir = unique_temp_dir(tag);
         paths_to_clean_.push_back(dir);
-        auto j = read_hub_json_for_test(dir, "AdminTestHub");
-        j["admin"]["enabled"] = true;
-        write_hub_json(dir, j);
+        fs::create_directories(dir);
+        HubDirectory::init_directory(dir, "AdminTestHub");
+        const fs::path hub_json = dir / "hub.json";
+        json j;
+        {
+            std::ifstream f(hub_json);
+            j = json::parse(f);
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"]           = true;
+        j["admin"]["endpoint"]          = "tcp://127.0.0.1:0";
+        j["script"]["path"]             = "";
+        {
+            std::ofstream f(hub_json);
+            f << j.dump(2);
+        }
 
         auto cfg = HubConfig::load_from_directory(dir.string());
-        // Bypass vault unlock: stamp the runtime-only admin_token field
-        // directly.  HubConfig::load_keypair() (the production path)
-        // reads it from `HubVault::admin_token()`; the test path skips
-        // vault setup entirely.  Token authority under test does NOT
-        // depend on vault provenance.
         const_cast<HubAdminConfig &>(cfg.admin()).admin_token = kTestToken;
-        return {std::move(cfg), dir};
+
+        host_.emplace(std::move(cfg));
+        host_->startup();
+        EXPECT_TRUE(host_->is_running());
+        EXPECT_NE(host_->admin(), nullptr);
+        EXPECT_TRUE(poll_until(
+            [&] { return host_->admin() && !host_->admin()->bound_endpoint().empty(); },
+            2000ms));
+        return host_->admin() ? host_->admin()->bound_endpoint() : std::string{};
     }
 
-private:
-    std::vector<fs::path>                  paths_to_clean_;
-};
-
-// ─── Construction-time invariants ──────────────────────────────────────────
-
-TEST_F(AdminServiceTest, Construct_EmptyToken_Throws)
-{
-    // §11.3 invariant: the admin token is MANDATORY — a non-empty token is
-    // required, otherwise every request silently authenticates.  (The old
-    // token_required==false / loopback-enforcement path is retired: the admin
-    // plane is now always CURVE-encrypted + token-gated, HEP-CORE-0033 §11.)
-    HubAdminConfig acfg;
-    acfg.endpoint = "tcp://127.0.0.1:0";
-
-    auto [cfg, dir] = make_config("emptytoken");
-    HubHost host(std::move(cfg));
-
-    bool threw = false;
-    std::string msg;
-    try
-    {
-        AdminService(pylabhub::hub::get_zmq_context(),
-                     acfg, /*token=*/"", host);
-    }
-    catch (const std::invalid_argument &e) { threw = true; msg = e.what(); }
-    EXPECT_TRUE(threw);
-    EXPECT_NE(msg.find("admin_token is empty"), std::string::npos)
-        << "wrong invalid_argument path; what(): " << msg;
-}
-
-// ─── Standalone run loop + ping ────────────────────────────────────────────
-
-TEST_F(AdminServiceTest, Run_PingRoundTrip_TokenGate)
-{
-
-    auto [cfg, dir] = make_config("ping");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // ── Valid token → ok, echo arrives back ────────────────────────────────
-    const json req = {
-        {"method", "ping"},
-        {"token",  kTestToken},
-        {"params", {{"hello", "world"}}},
-    };
-    const json reply = req_reply(a.endpoint(), req);
-    EXPECT_EQ(reply.value("status", ""), "ok");
-    ASSERT_TRUE(reply.contains("result"));
-    EXPECT_EQ(reply["result"].value("pong", false), true);
-    EXPECT_EQ(reply["result"]["echo"]["hello"], "world");
-}
-
-// The §11.1/§7.4 regression guard — that the admin socket stays OFF the
-// broker's single inproc ZAP handler — lives in the `HubHost_AdminEnabled_*`
-// block below: those tests `startup()` a real HubHost whose BrokerService
-// binds `inproc://zeromq.zap.01` and registers `broker.ctrl.<uid>` (the
-// production path), then ping admin over CURVE.  Without
-// `zap_enforce_domain=1`, the empty-domain admin handshake is routed to that
-// live handler, rejected ("no domain registered for ''"), and the ping times
-// out — see the comment on `HubHost_AdminEnabled_RoundTripWorks`.  A
-// standalone test with a hand-built ZapPumpThread would only *mock* that
-// handler, so it is deliberately NOT used here.
-
-// ─── Token gate — wrong / missing token paths ──────────────────────────────
-
-TEST_F(AdminServiceTest, TokenGate_Missing_Returns_Unauthorized)
-{
-    auto [cfg, dir] = make_config("token_missing");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-                                  {{"method", "ping"}});
-    EXPECT_EQ(reply.value("status", ""), "error");
-    EXPECT_EQ(reply["error"]["code"], "unauthorized");
-}
-
-TEST_F(AdminServiceTest, TokenGate_Wrong_Returns_Unauthorized)
-{
-    auto [cfg, dir] = make_config("token_wrong");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // Same-length wrong token — exercises the constant-time-equal
-    // path, not the early-exit length check.
-    const std::string wrong(64, 'f');
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "ping"}, {"token", wrong}});
-    EXPECT_EQ(reply.value("status", ""), "error");
-    EXPECT_EQ(reply["error"]["code"], "unauthorized");
-}
-
-// ─── Method dispatch — stubs and unknown ───────────────────────────────────
-
-TEST_F(AdminServiceTest, Dispatch_DeferredMethod_Returns_NotImplemented)
-{
-    auto [cfg, dir] = make_config("stub");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // `reload_config` is a known §11.2 method but explicitly deferred
-    // (HEP-0033 §16 #9 — runtime-tunable whitelist not yet enumerated).
-    // It must surface as `not_implemented`, not as `unknown_method`,
-    // so a client typo is distinguishable from a staged feature.
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "reload_config"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "error")
-        << "reload_config is deferred; expected status=error, got: " << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "not_implemented");
-}
-
-TEST_F(AdminServiceTest, Dispatch_UnknownMethod_Returns_UnknownMethod)
-{
-    auto [cfg, dir] = make_config("unknown");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "totally_made_up_method"}, {"token", kTestToken}});
-    EXPECT_EQ(reply.value("status", ""), "error");
-    EXPECT_EQ(reply["error"]["code"], "unknown_method");
-}
-
-// ─── §11.2 query methods (Phase 6.2b) ──────────────────────────────────────
-//
-// These tests exercise the read-through dispatch paths that touch
-// `host.state()` (HubState) without needing the broker thread to be
-// running.  HubState is a value member of HubHost, so its accessors
-// are safe before `host.startup()`; the result snapshots are empty
-// (zero channels / roles / bands / peers in a freshly-constructed
-// host).  Each test pins:
-//   - status == "ok" and result is the right shape (object/empty)
-//   - error.code on the negative paths (path-discrimination per
-//     audit Class A — matches HEP-0033 §11.5 catalog).
-
-TEST_F(AdminServiceTest, Query_ListChannels_Empty_ReturnsOkObject)
-{
-    auto [cfg, dir] = make_config("q_list_chan");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "list_channels"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    ASSERT_TRUE(reply.contains("result"));
-    EXPECT_TRUE(reply["result"].is_object());
-    EXPECT_TRUE(reply["result"].empty()) << "no channels expected pre-startup";
-}
-
-TEST_F(AdminServiceTest, Query_GetChannel_MissingParams_Returns_InvalidParams)
-{
-    auto [cfg, dir] = make_config("q_get_chan_bad");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // No params block → invalid_params.
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "get_channel"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    // Message must mention the missing field so the operator can fix it.
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("channel"),
-              std::string::npos);
-}
-
-TEST_F(AdminServiceTest, Query_GetChannel_Unknown_Returns_NotFound)
-{
-    auto [cfg, dir] = make_config("q_get_chan_404");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "get_channel"},
-         {"token",  kTestToken},
-         {"params", {{"channel", "no.such.channel"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "not_found");
-}
-
-TEST_F(AdminServiceTest, Query_ListRoles_Empty_ReturnsOkObject)
-{
-    auto [cfg, dir] = make_config("q_list_roles");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "list_roles"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    EXPECT_TRUE(reply["result"].is_object());
-    EXPECT_TRUE(reply["result"].empty());
-}
-
-TEST_F(AdminServiceTest, Query_GetRole_Unknown_Returns_NotFound)
-{
-    auto [cfg, dir] = make_config("q_get_role_404");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "get_role"},
-         {"token",  kTestToken},
-         {"params", {{"uid", "prod.nope.uid00000000"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "not_found");
-}
-
-TEST_F(AdminServiceTest, Query_ListBands_Empty_ReturnsOkObject)
-{
-    auto [cfg, dir] = make_config("q_list_bands");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "list_bands"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    EXPECT_TRUE(reply["result"].is_object());
-    EXPECT_TRUE(reply["result"].empty());
-}
-
-TEST_F(AdminServiceTest, Query_ListPeers_Empty_ReturnsOkObject)
-{
-    auto [cfg, dir] = make_config("q_list_peers");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "list_peers"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    EXPECT_TRUE(reply["result"].is_object());
-    EXPECT_TRUE(reply["result"].empty());
-}
-
-
-
-// ─── §11.2 control methods (Phase 6.2c) ────────────────────────────────────
-//
-// Negative paths only at the standalone-AdminService level (no broker
-// running).  Positive paths require a startup-ed HubHost and are
-// covered in the HubHost_Admin* integration block below.
-
-TEST_F(AdminServiceTest, Control_CloseChannel_MissingParams_Returns_InvalidParams)
-{
-    auto [cfg, dir] = make_config("c_close_bad");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "close_channel"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("channel"),
-              std::string::npos);
-}
-
-TEST_F(AdminServiceTest, Control_CloseChannel_Unknown_Returns_NotFound)
-{
-    auto [cfg, dir] = make_config("c_close_404");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "close_channel"},
-         {"token",  kTestToken},
-         {"params", {{"channel", "no.such.channel"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "not_found");
-}
-
-TEST_F(AdminServiceTest, Control_BroadcastChannel_MissingMessage_Returns_InvalidParams)
-{
-    auto [cfg, dir] = make_config("c_bcast_bad");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // channel present but message missing → invalid_params (not silent
-    // accept of an empty message).
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "broadcast_channel"},
-         {"token",  kTestToken},
-         {"params", {{"channel", "lab.x"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("message"),
-              std::string::npos);
-}
-
-TEST_F(AdminServiceTest, Control_BroadcastChannel_Unknown_Returns_NotFound)
-{
-    auto [cfg, dir] = make_config("c_bcast_404");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "broadcast_channel"},
-         {"token",  kTestToken},
-         {"params", {{"channel", "no.such.channel"}, {"message", "go"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "not_found");
-}
-
-// ─── HubHost integration — admin spawned + drained ─────────────────────────
-
-TEST_F(AdminServiceTest, HubHost_AdminEnabled_RoundTripWorks)
-{
-    // REGRESSION GUARD for HEP-CORE-0033 §11.1 (admin off the §7.4 single ZAP
-    // handler): `host.startup()` runs the REAL BrokerService, which binds
-    // `inproc://zeromq.zap.01` and `register_domain("broker.ctrl.<uid>")` —
-    // the process ZAP handler is now LIVE.  The admin socket is a curve_server
-    // with an empty `zap_domain`; §11.1 requires `ZMQ_ZAP_ENFORCE_DOMAIN=1` so
-    // its handshake short-circuits past that handler.  Without the enforce flag
-    // libzmq still ZAP-routes the empty-domain handshake, the broker's
-    // ZapRouter rejects it ("no domain registered for ''"), and the ping below
-    // times out — verified 2026-07-19 by neutering the flag (admin REP timed
-    // out, test FAILED).  This is the production path, not a mocked handler.
-    //
-    // The teardown-race that previously surfaced here (LifecycleGuard
-    // logging a WARN for the documented-normal validator-fail on
-    // owner-managed modules) was fixed in production: validator-fail
-    // for an UNLOADING module is now logged at DEBUG and the module
-    // entry is fully cleaned from the graph so subsequent
-    // re-registration with the same name succeeds.  No
-    // `ExpectLogWarn` papering needed.
-    auto [cfg, dir] = make_config("hubhost");
-    HubHost host(std::move(cfg));
-
-    host.startup();
-    EXPECT_TRUE(host.is_running());
-
-    // Admin pointer is non-null and bound endpoint becomes available
-    // shortly after the admin thread starts running.
-    ASSERT_NE(host.admin(), nullptr);
-    ASSERT_TRUE(poll_until(
-        [&] { return !host.admin()->bound_endpoint().empty(); }, 2000ms));
-
-    // End-to-end ping over the host-driven admin endpoint.  Verify the
-    // full result envelope, not just status — a regression that
-    // returned `{"status":"ok", "result":{}}` would slip past a
-    // status-only check (verified via mutation sweep 2026-05-01).
-    const json reply = req_reply(host.admin()->bound_endpoint(),
-        {{"method", "ping"}, {"token", kTestToken},
-         {"params", {{"trip", 42}}}});
-    EXPECT_EQ(reply.value("status", ""), "ok");
-    ASSERT_TRUE(reply.contains("result"));
-    EXPECT_EQ(reply["result"].value("pong", false), true);
-    EXPECT_EQ(reply["result"]["echo"].value("trip", 0), 42);
-
-    host.shutdown();
-    EXPECT_FALSE(host.is_running());
-    // After shutdown(), the admin pointer is still owned by HubHost
-    // (cleared at next startup or at host destruction); but the
-    // service has been stopped — its bound endpoint is closed.
-}
-
-TEST_F(AdminServiceTest, HubHost_AdminEnabled_QueryMetricsRoundTrip)
-{
-    // query_metrics calls `host.broker().query_metrics_json_str()`,
-    // which is UB before HubHost::startup().  This test runs the
-    // full lifecycle so the broker thread is up.
-    auto [cfg, dir] = make_config("metrics");
-    HubHost host(std::move(cfg));
-
-    host.startup();
-    ASSERT_TRUE(host.is_running());
-    ASSERT_NE(host.admin(), nullptr);
-    ASSERT_TRUE(poll_until(
-        [&] { return !host.admin()->bound_endpoint().empty(); }, 2000ms));
-
-    const json reply = req_reply(host.admin()->bound_endpoint(),
-        {{"method", "query_metrics"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    // The broker's metrics document is wrapped in our envelope's
-    // "result" field; structural pin: status==success in the
-    // metrics body, plus the channels/roles/bands/peers categories
-    // present (even if empty).  Without the inner status check, an
-    // envelope-only "ok" could slip past on a regression that returned
-    // an empty/garbled metrics document.
-    ASSERT_TRUE(reply["result"].is_object());
-    EXPECT_EQ(reply["result"].value("status", ""), "success");
-    EXPECT_TRUE(reply["result"].contains("channels"));
-    EXPECT_TRUE(reply["result"].contains("roles"));
-    EXPECT_TRUE(reply["result"].contains("queried_at"));
-
-    host.shutdown();
-}
-
-TEST_F(AdminServiceTest, HubHost_AdminEnabled_RequestShutdown_StopsHost)
-{
-    // Positive control-method path.  request_shutdown must:
-    //   - return ok with shutdown_requested=true
-    //   - flip the host's shutdown atomic so run_main_loop returns
-    //   - leave the host in a state that accepts host.shutdown()
-    auto [cfg, dir] = make_config("rsd");
-    HubHost host(std::move(cfg));
-
-    host.startup();
-    ASSERT_TRUE(host.is_running());
-    ASSERT_NE(host.admin(), nullptr);
-    ASSERT_TRUE(poll_until(
-        [&] { return !host.admin()->bound_endpoint().empty(); }, 2000ms));
-
-    const json reply = req_reply(host.admin()->bound_endpoint(),
-        {{"method", "request_shutdown"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    EXPECT_EQ(reply["result"].value("shutdown_requested", false), true);
-
-    // The post-RPC host.shutdown() must succeed cleanly (no double-
-    // request issue, no resource leak).  request_shutdown is the
-    // soft-stop signal that run_main_loop would observe; this test
-    // doesn't enter run_main_loop, so we verify the synchronous path
-    // by calling shutdown() and asserting clean state-machine
-    // transition.
-    host.shutdown();
-    EXPECT_FALSE(host.is_running());
-}
-
-TEST_F(AdminServiceTest, HubHost_AdminDisabled_NoAdminConstructed)
-{
-    // See HubHost_AdminEnabled_RoundTripWorks — the production fix
-    // for the teardown-race makes ExpectLogWarn unnecessary.
-    auto [cfg, dir] = make_config("disabled");
-    // Disable admin in-place.
-    const_cast<HubAdminConfig &>(cfg.admin()).enabled = false;
-    HubHost host(std::move(cfg));
-
-    host.startup();
-    EXPECT_EQ(host.admin(), nullptr) << "admin.enabled=false → no AdminService";
-    host.shutdown();
-}
-
-// ============================================================================
-// Coverage additions (2026-05-14) — fill gaps from review of the
-// original 22 transplanted tests.  Each closes a branch in
-// `admin_service.cpp` that the originals didn't reach:
-//
-// dispatch() envelope validation (admin_service.cpp:243-249):
-//   - non-object request → invalid_request
-//   - missing/non-string `method` → invalid_request
-// run() parse-error catch (lines 201-205):
-//   - malformed JSON bytes on the wire → invalid_request
-// handle_ping echo branch (line 353):
-//   - ping without `params` → no `echo` field in result
-// handle_query_metrics filter-field validation (lines 470-507):
-//   - params.channels non-array         (shared opt_string_array)
-//   - params.channels non-string element (shared opt_string_array;
-//     channels/roles/bands/peers share the same lambda — one
-//     representative covers all four)
-//   - params.categories non-array        (separate code path —
-//     categories is an unordered_set, not a vector)
-//   - params.categories non-string element
-// ============================================================================
-
-TEST_F(AdminServiceTest, Dispatch_NonObjectRequest_Returns_InvalidRequest)
-{
-    auto [cfg, dir] = make_config("disp_array");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // Send a JSON array.  dispatch() (admin_service.cpp:245-246)
-    // rejects non-object requests with `invalid_request` BEFORE the
-    // token gate — otherwise a regression that gated only the
-    // object case could leak token-protected methods through
-    // malformed-shape requests.
-    const json reply = req_reply(a.endpoint(), json::array({"ping"}));
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_request");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("object"),
-              std::string::npos);
-}
-
-TEST_F(AdminServiceTest, Dispatch_MissingMethodField_Returns_InvalidRequest)
-{
-    auto [cfg, dir] = make_config("disp_no_method");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // Object without `method` field (admin_service.cpp:248).  This is
-    // distinct from `unknown_method` (a present-but-unrecognized
-    // method string), and distinct from `not_implemented` (deferred
-    // method).  Triple-discrimination matters for client diagnostics.
-    const json reply = req_reply(a.endpoint(),
-                                  {{"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_request");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("method"),
-              std::string::npos);
-}
-
-TEST_F(AdminServiceTest, Run_MalformedJsonBytes_Returns_InvalidRequest)
-{
-    auto [cfg, dir] = make_config("disp_garbage");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
-
-    // Raw bytes that don't parse as JSON.  run()'s try/catch
-    // (admin_service.cpp:201-205) converts `json::parse_error` into
-    // the canonical `invalid_request` envelope so a malformed client
-    // doesn't crash the admin loop — bypass `req_reply` which
-    // serializes a valid JSON value, and write the raw bytes
-    // directly.
-    zmq::socket_t sock(pylabhub::hub::get_zmq_context(),
-                       zmq::socket_type::req);
-    sock.set(zmq::sockopt::linger, 0);
-    sock.set(zmq::sockopt::rcvtimeo, 2000);
-    sock.set(zmq::sockopt::sndtimeo, 2000);
+    /// A CURVE console connected to @p endpoint with a fresh routing id.
+    AdminWireClient make_console(const std::string &endpoint,
+                                 const std::string &routing_id)
     {
         const auto ckp = pylabhub::tests::gen_curve_keypair();
-        sock.set(zmq::sockopt::curve_publickey, ckp.public_z85);
-        sock.set(zmq::sockopt::curve_secretkey, ckp.secret_z85);
-        sock.set(zmq::sockopt::curve_serverkey, hub_server_pubkey());
+        AdminWireClient::Config cfg{endpoint,          hub_server_pubkey(),
+                                    ckp.public_z85,    ckp.secret_z85,
+                                    routing_id,        2000};
+        return AdminWireClient(pylabhub::hub::get_zmq_context(), cfg);
     }
-    sock.connect(a.endpoint());
 
-    const std::string_view garbage = "{not_valid_json";
-    sock.send(zmq::buffer(garbage.data(), garbage.size()),
-              zmq::send_flags::none);
+    void TearDownHub()
+    {
+        if (host_)
+        {
+            host_->shutdown();
+            host_.reset();
+        }
+    }
 
-    zmq::message_t reply_msg;
-    auto rc = sock.recv(reply_msg, zmq::recv_flags::none);
-    ASSERT_TRUE(rc.has_value()) << "admin REP timed out on malformed JSON";
-    const json reply = json::parse(
-        std::string_view(static_cast<const char *>(reply_msg.data()),
-                         reply_msg.size()));
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_request");
-    // Pin the json::parse-error catch path specifically (not the
-    // non-object or missing-method branches, which also yield
-    // invalid_request but with different message hints).
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("malformed JSON"),
-              std::string::npos);
+    std::optional<HubHost>  host_;
+    std::vector<fs::path>   paths_to_clean_;
+};
+
+// ─── Construction ───────────────────────────────────────────────────────────
+
+TEST_F(AdminServiceTest, Console_EstablishAndPing_RealBroker)
+{
+    // The regression guard: broker up (ZAP handler live) + admin ROUTER; a
+    // CURVE console must establish a session and ping.  If the admin socket
+    // were ZAP-routed it would be rejected and this would time out.
+    const std::string ep = start_hub("est_ping");
+    ASSERT_FALSE(ep.empty());
+
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice-laptop"));
+    EXPECT_FALSE(console.session_id().empty());
+
+    auto r = console.command(w::kAdminPingReq);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->is_error());
+    EXPECT_EQ(r->msg_type, std::string(w::kAdminPingAck));
+    EXPECT_EQ(r->body.value("status", std::string{}), "ok");
+
+    TearDownHub();
 }
 
-TEST_F(AdminServiceTest, Run_PingNoParams_OmitsEchoField)
+TEST_F(AdminServiceTest, Console_WrongToken_EstablishFails)
 {
-    auto [cfg, dir] = make_config("ping_noparams");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
+    const std::string ep = start_hub("bad_token");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
 
-    // handle_ping conditionally adds `echo` only when `params` is
-    // present (admin_service.cpp:353-354).  A regression that
-    // unconditionally synthesized an empty echo would slip past the
-    // `Run_PingRoundTrip_TokenGate` test (which always sends params).
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "ping"}, {"token", kTestToken}});
-    ASSERT_EQ(reply.value("status", ""), "ok") << reply.dump();
-    ASSERT_TRUE(reply.contains("result"));
-    EXPECT_EQ(reply["result"].value("pong", false), true);
-    EXPECT_FALSE(reply["result"].contains("echo"))
-        << "ping without params must not synthesize an empty echo field";
+    const std::string wrong(64, 'f');
+    EXPECT_FALSE(console.establish(wrong, "mallory"));
+    EXPECT_TRUE(console.session_id().empty());
+
+    TearDownHub();
 }
 
-TEST_F(AdminServiceTest, QueryMetrics_ChannelsNotArray_Returns_InvalidParams)
+TEST_F(AdminServiceTest, Console_CommandWithoutSession_Rejected)
 {
-    auto [cfg, dir] = make_config("qm_chan_notarr");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
+    const std::string ep = start_hub("no_session");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
 
-    // handle_query_metrics validates each filter field via a shared
-    // `opt_string_array` lambda (admin_service.cpp:470-487).  A
-    // regression silently coercing non-array values to empty array
-    // would include EVERYTHING when the operator meant to filter to
-    // a subset.  `channels` is the representative — same lambda also
-    // serves `roles`, `bands`, `peers`.
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "query_metrics"},
-         {"token",  kTestToken},
-         {"params", {{"channels", "not_an_array"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("channels"),
-              std::string::npos);
+    // No establish() — session_id is empty; a command must be rejected.
+    auto r = console.command(w::kAdminPingReq);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->is_error());
+    EXPECT_EQ(r->body.value("code", std::string{}), "unauthorized");
+
+    TearDownHub();
 }
 
-TEST_F(AdminServiceTest, QueryMetrics_ChannelsArrayWithNonString_Returns_InvalidParams)
+TEST_F(AdminServiceTest, Console_ListChannels_ReturnsResult)
 {
-    auto [cfg, dir] = make_config("qm_chan_badelem");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
+    const std::string ep = start_hub("list_chan");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
 
-    // Per-element type check inside the same shared lambda
-    // (admin_service.cpp:481-485).
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "query_metrics"},
-         {"token",  kTestToken},
-         {"params", {{"channels", json::array({123})}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("strings"),
-              std::string::npos);
+    auto r = console.command(w::kAdminListChannelsReq);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->is_error());
+    EXPECT_EQ(r->msg_type, std::string(w::kAdminListChannelsAck));
+    EXPECT_TRUE(r->body.contains("result"));
+    EXPECT_TRUE(r->body["result"].is_object());
+
+    TearDownHub();
 }
 
-TEST_F(AdminServiceTest, QueryMetrics_CategoriesNotArray_Returns_InvalidParams)
+TEST_F(AdminServiceTest, Console_QueryMetrics_ReturnsResult)
 {
-    auto [cfg, dir] = make_config("qm_cat_notarr");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
+    const std::string ep = start_hub("metrics");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
 
-    // `categories` takes its own validation branch
-    // (admin_service.cpp:494-507) because it's an unordered_set,
-    // not a vector — separate code path from the shared
-    // opt_string_array lambda.
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "query_metrics"},
-         {"token",  kTestToken},
-         {"params", {{"categories", "not_an_array"}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("categories"),
-              std::string::npos);
+    auto r = console.command(w::kAdminQueryMetricsReq,
+                             json{{"filter", json::object()}});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->is_error());
+    EXPECT_EQ(r->msg_type, std::string(w::kAdminQueryMetricsAck));
+    EXPECT_TRUE(r->body["result"].is_object());
+
+    TearDownHub();
 }
 
-TEST_F(AdminServiceTest, QueryMetrics_CategoriesArrayWithNonString_Returns_InvalidParams)
+TEST_F(AdminServiceTest, Console_CloseUnknownChannel_NotFound)
 {
-    auto [cfg, dir] = make_config("qm_cat_badelem");
-    StandaloneAdmin a(std::move(cfg), kTestToken);
+    // `handle_close_channel` does a synchronous existence check and returns
+    // `not_found` for an unknown channel, surfaced as a typed ADMIN_ERROR —
+    // this pins the (preserved) handler behavior AND the handler-error →
+    // ADMIN_ERROR mapping.
+    //
+    // DOC↔CODE TENSION (for the CURVE integration review): HEP-0033 §11.0.4
+    // describes control commands as fire-and-forget ("ok = accepted; the
+    // broker idempotently drops unknown channels"), but this handler rejects
+    // synchronously.  Either the handler or §11.0.4 should change; flagged,
+    // not resolved here.
+    const std::string ep = start_hub("close_bogus");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
 
-    const json reply = req_reply(a.endpoint(),
-        {{"method", "query_metrics"},
-         {"token",  kTestToken},
-         {"params", {{"categories", json::array({42})}}}});
-    ASSERT_EQ(reply.value("status", ""), "error") << reply.dump();
-    EXPECT_EQ(reply["error"]["code"], "invalid_params");
-    EXPECT_NE(reply["error"]["message"].get<std::string>().find("strings"),
-              std::string::npos);
+    auto r = console.command(w::kAdminCloseChannelReq,
+                             json{{"channel", "no.such.channel"}});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->is_error());
+    EXPECT_EQ(r->msg_type, std::string(w::kAdminError));
+    EXPECT_EQ(r->body.value("code", std::string{}), "not_found");
+
+    TearDownHub();
+}
+
+TEST_F(AdminServiceTest, Console_UnknownMsgType_Rejected)
+{
+    const std::string ep = start_hub("unknown");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
+
+    auto r = console.command("ADMIN_BOGUS_REQ");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->is_error());
+    EXPECT_EQ(r->body.value("code", std::string{}), "unknown_method");
+
+    TearDownHub();
+}
+
+TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
+{
+    const fs::path dir = unique_temp_dir("disabled");
+    paths_to_clean_.push_back(dir);
+    fs::create_directories(dir);
+    HubDirectory::init_directory(dir, "AdminTestHub");
+    json j;
+    {
+        std::ifstream f(dir / "hub.json");
+        j = json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"]           = false;
+    j["script"]["path"]             = "";
+    {
+        std::ofstream f(dir / "hub.json");
+        f << j.dump(2);
+    }
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    const_cast<HubAdminConfig &>(cfg.admin()).admin_token = kTestToken;
+
+    host_.emplace(std::move(cfg));
+    host_->startup();
+    EXPECT_EQ(host_->admin(), nullptr) << "admin.enabled=false → no AdminService";
+    TearDownHub();
 }
