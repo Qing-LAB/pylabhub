@@ -137,7 +137,11 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
-### ⚠ Uninvestigated L4 test failures (evidence discipline log)
+### L4 test-failure evidence log (all entries currently RESOLVED)
+
+**Status 2026-07-18:** the one logged failure (#2480) is RESOLVED
+(VersionedAdmissionLedger, 30/30 under stress — see below); no
+uninvestigated L4 failures open.
 
 **Rule:** every L4 test failure gets an entry here, even if reruns
 subsequently pass.  L4 tests exercise real subprocesses, real
@@ -484,7 +488,9 @@ diagnostics per rung.
 - **Rung 1 — `Pattern4SmokeTest`** ✅ shipped (task #220).
   Broker CURVE bind + role CURVE connect; sabotage-verified.
   Reference impl at `tests/test_layer3_pattern4/`.
-- **Rung 2 — `Pattern4RegistrationTest`** ⏳ task #221.
+- **Rung 2 — `Pattern4RegistrationTest`** ✅ task #221 (verified 2026-07-18:
+  `TEST_F(Pattern4RegistrationTest, ProducerRegistersAndStateAdvances)` live in
+  `test_pattern4_registration.cpp`, wired in CMakeLists).
   Pins `REG_REQ`/`REG_ACK` wire shape + Presence FSM
   `Unregistered → RegRequestPending → Registered`.
 - **Rung 3 — `Pattern4HeartbeatTest`** ✅ task #223.

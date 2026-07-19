@@ -87,10 +87,13 @@ stale.  Only residual: #235 L3 parity regression tests, fold into #232.)
   half-mix audit; H43 federation role-disconnect propagation; Wave-M2 MP4
   residuals; HEP-0039 Hub State Query Layer Phases B+ (Phase A shipped);
   native-engine inbox parity ✅ CLOSED 2026-07-18.
-- **Tests / coverage (`TESTING_TODO.md`)** — Pattern-4 ladder rungs 4/7/8/9/11/12
-  pending (rungs 5/6/10 now unblocked by Phase 1; rung 13 deferred on
-  back-channel-pipe infra); N8/N9 bench variants; N11 cross-engine
-  `on_band_message` parity audit; B8 numpy pin.
+- **Tests / coverage (`TESTING_TODO.md`)** — Pattern-4 ladder rungs 4/5/6/7/8/9/10/12
+  pending (classes absent; rungs 5/6/10 now unblocked by Phase 1; rung 11 partial —
+  band contract covered in `test_pattern4_channel_group`/`_broker_protocol`; rungs
+  2/3 shipped; rung 13 deferred on back-channel-pipe infra); Pattern-4 sweep #52
+  (Round 7 = #56 `datahub_broker_workers`); **#58** audit — confirm every L3/L4
+  test-worker file is actually in a real ctest run; #296 hub-death L4; N8/N9 bench
+  variants; N11 `on_band_message` parity; B8 numpy pin.
 - **Windows / MSVC / cross-platform (`PLATFORM_TODO.md`)** — CI is Linux-only vs
   README support claims; MSVC `/W4 /WX` gate + `/Zc:preprocessor` audit;
   clang-tidy quality pass; #86 native-plugin cmake helper.
