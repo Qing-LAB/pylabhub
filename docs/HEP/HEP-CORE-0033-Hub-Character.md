@@ -1979,17 +1979,29 @@ plaintext exception.
   handlers). Commands, responses, and notifications are all typed envelopes;
   the logical field content is as shown in §11.0.4.
 
-> **Implementation status.** The shipped `AdminService` currently binds a
-> `REP` socket with a JSON `{method,token,params}` envelope and per-request
-> token auth — the CURVE transport and token gate are live and tested.
-> Migration to the `ROUTER` **typed** console (persistent session, sealed
-> session id, reverse notification path, typed `WireEnvelope` bodies) is the
-> design of record here and is tracked as admin-console work. The sealed
-> session-identity core (§11.0.5) is implemented in `admin_session.{hpp,cpp}`.
-> The CURVE arming — crypto-only, `zap_enforce_domain=1`, off the
-> single-pumper — carries over to `ROUTER` unchanged, and is factored into a
-> single shared arm helper (the arm sequence is otherwise duplicated between
-> the broker ROUTER and the admin socket).
+> **Implementation status.** The `ROUTER` typed console is **shipped**:
+> `AdminService::run()` binds a `curve_server` `ROUTER` (`zap_enforce_domain=1`,
+> off the §7.4 single-pumper, armed via the shared `arm_curve_server` helper),
+> receives typed `WireEnvelope`s, dispatches by `msg_type` after
+> `verify_session_id` against the observed connection facts, and replies with
+> `build_router_send`. The sealed session identity (§11.0.5) is in
+> `admin_session.{hpp,cpp}`; the typed bodies for all methods are in
+> `wire_bodies.hpp`; the operator side is exercised by `AdminWireClient`
+> (`test_admin_service`, 8/8 over a real started hub). The old `REP` +
+> `{method,token,params}` surface is retired.
+>
+> **Not yet implemented** (tracked in `docs/todo/AUTH_TODO.md` Line E):
+> the **reverse notification path** (§11.0.1 layer 6 — command-completion and
+> hub-event pushes; the console currently answers commands but does not yet
+> push notifications), and **`origin_uid` provenance** (§11.0.5 — the session
+> id is minted and used for the session gate, but is not yet threaded into the
+> broker request records, so actuations are not yet stamped with it).
+>
+> **Known doc↔code tension** (under CURVE-integration review): §11.0.4
+> describes control commands as fire-and-forget ("`ok` = accepted; the broker
+> idempotently drops unknown channels"), but `handle_close_channel` performs a
+> **synchronous existence check** and returns `not_found` for an unknown
+> channel. Either the handler or §11.0.4 must change; unresolved.
 
 ```mermaid
 sequenceDiagram
