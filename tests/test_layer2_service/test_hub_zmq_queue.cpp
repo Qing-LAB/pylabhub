@@ -2657,8 +2657,17 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscr
     ASSERT_TRUE(seed_self_allowlist(*pub));
     const std::string ep = pub->actual_endpoint();
 
-    // Publish two frames BEFORE any SUB attaches — libzmq PUB drops
-    // these silently (no subscribers exist yet).
+    // Publish two frames BEFORE any SUB attaches.  These are NOT
+    // guaranteed to be dropped: ZmqQueue buffers writes in an async
+    // send-ring flushed on a worker thread (hub_zmq_queue.cpp send_ring_ +
+    // the send loop), so `write_commit` does not send to the socket
+    // synchronously.  On a loaded host the worker can flush 0x11/0x22 to
+    // the PUB socket AFTER a late SUB's subscription has reached the PUB,
+    // in which case libzmq delivers them to that SUB.  (This is what makes
+    // the naive "first frame must be 0x99" assertion flaky ~1-in-4 under
+    // CI load — the SUB reads a leaked 0x11.)  We therefore only pin the
+    // property PUB/SUB actually guarantees: the POST-subscribe frame is
+    // delivered (drained for below).
     for (uint8_t v : {uint8_t{0x11}, uint8_t{0x22}})
     {
         void *w = pub->write_acquire(1000ms);
@@ -2676,19 +2685,31 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscr
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
     ASSERT_TRUE(sub->start());
-    std::this_thread::sleep_for(200ms);   // slow-joiner settle
 
-    // Now publish a post-subscribe frame; SUB must receive THIS one.
-    void *w = pub->write_acquire(1000ms);
-    ASSERT_NE(w, nullptr);
-    std::memset(w, 0x99, kItemSize);
-    pub->write_commit();
-
-    const void *rbuf = sub->read_acquire(2000ms);
-    ASSERT_NE(rbuf, nullptr)
-        << "post-subscribe frame must be delivered";
-    EXPECT_EQ(static_cast<const uint8_t *>(rbuf)[0], 0x99);
-    sub->read_release();
+    // PUB/SUB slow-joiner coordination.  A plain PUB cannot observe when the
+    // SUB's subscription has reached it, and a fixed "settle" sleep RACES the
+    // scheduler — especially in Release, where the SUB can subscribe before
+    // the producer's async send-ring has flushed the pre-subscribe frames, so
+    // those (0x11/0x22, see the note above) leak to the late joiner and a
+    // naive "first frame == 0x99" read intermittently reads 0x11.
+    // (test_sync_utils.h: never sleep_for to ORDER concurrent operations.)
+    // Deterministic instead: keep publishing the post-subscribe marker (0x99)
+    // and poll_until the SUB actually receives it — draining any leaked
+    // pre-subscribe frame along the way.  Pins the real guarantee (a late
+    // joiner DOES receive post-subscribe frames) with no timing assumption.
+    EXPECT_TRUE(poll_until([&] {
+        if (void *w = pub->write_acquire(100ms))
+        {
+            std::memset(w, 0x99, kItemSize);
+            pub->write_commit();
+        }
+        const void *rbuf = sub->read_acquire(50ms);
+        if (rbuf == nullptr) return false;
+        const uint8_t v = static_cast<const uint8_t *>(rbuf)[0];
+        sub->read_release();
+        return v == 0x99;
+    }, 5000ms))
+        << "fan-out late joiner must receive the post-subscribe frame (0x99)";
 
     pub->stop();
     sub->stop();
