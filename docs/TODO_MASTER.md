@@ -51,14 +51,21 @@ to `docs/archive/transient-2026-07-18/todo-completions/TODO_MASTER_completions_2
   (epoll) → C.2.d broker dial worker + fd cache → D5 opt-out → C.3
   `collect_shm_info` → C.4 L4 tests → C.5 pointer refresh.
 
-**Renovation / CLI:**
-- **Phase 2a (#292)** — collapse Producer/Consumer/Processor role hosts (~1650
-  LOC) into one `worker_main_()` in `RoleHostFrame`.
-- **Phase 2b** — Template RAII Phases 2-5 (`SlotIterator` timing parity,
-  `TypedInboxClient<MsgT>`, `TypedBand<EventT>`, `SimpleRoleHost<SlotT>`).
-  Design: `raii_layer_redesign.md`; tracker `API_TODO.md`.
+**Role-binary unification (Phase 2a — the next major structural arc, #292 + #55):**
+- **#292** — collapse the THREE still-separate role-host `.cpp` files
+  (`producer_role_host.cpp` 591 LOC + `consumer_role_host.cpp` 506 +
+  `processor_role_host.cpp` 716, each `final : public RoleHostFrame`) into one
+  canonical `worker_main_()` in `RoleHostFrame`.  (The RoleAPI unification it
+  rides on largely landed — CycleOps already unified into
+  `src/utils/service/cycle_ops.hpp`, RoleAPIBase is Messenger-free — but the
+  host collapse itself is NOT done.)  Design anchor: `raii_layer_redesign.md §2`.
+- **#55** — re-home the 4 `role_api_base_*` L3 tests during that unification
+  (deferred, `TESTING_TODO` Group B; all 4 confirmed still-valid 2026-07-16).
+- **Phase 2b** — Template RAII Phases 2/4/5 (`TypedInboxClient<MsgT>`,
+  `TypedBand<EventT>`, `SimpleRoleHost<SlotT>` — verified absent from `src/`;
+  Phase 3 MaxRate pacing already shipped in `slot_iterator.hpp`).
 - **Phase 3 (#155, in flight)** — CLI `--init` one-shot bundling + 24+ L4
-  test-site migration.
+  test-site migration (`--init` mode flag parses; bundling incomplete).
 
 (Note: #235 Python band-accessor fix and #238 log-format standardization were
 verified SHIPPED 2026-06-27 against code — `consumer_api.cpp:75` anchor;
@@ -114,6 +121,20 @@ membership (replace full-set allowlist copy); **D-3** clang-query build-fail
 rule for §I9.1 layer regressions; native-*sender* inbox L4 delivery test
 (needs native-L4-role harness; transport already proven via L3 CURVE + L4
 Python); AUTH-6 File 10 Suite 2 delete (#152 housekeeping).
+
+**Doc-debt:** **HEP-0011 D1** — HEP-CORE-0011 is fundamentally stale (documents
+the pre-composition inheritance hierarchy + wrong threading model / class
+names).  Rewrite tracked here so it isn't lost (was only in a since-deleted
+review memory).
+
+**Parked git stashes (inventory 2026-07-18):** 5 stashes exist; 4 are MOOT —
+`stash@{1}` (zap_router CMake, landed), `stash@{2}` (phase6.1 AuthContext,
+superseded by the CURVE-admin design), `stash@{3}` (unified CycleOps — landed
+instead into `cycle_ops.hpp`), `stash@{4}` (Gemini, obsolete `cpp/` layout).
+Only **`stash@{0}`** (AUTH-2 #162 producer-side BRC ZAP-pump PeriodicTask) may
+still be wanted: AUTH_TODO marks AUTH-2 shipped, but that producer-side pump is
+NOT on the branch (broker ships a single per-cycle `pump_one`, not the stash's
+drain-loop) — reconcile before dropping.
 
 ---
 

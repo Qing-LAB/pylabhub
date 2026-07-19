@@ -102,10 +102,10 @@ dispatch, or critical-error escalation around the auth flow, re-read
 | HEP-0040 — Locked Key Memory impl chain | ✅ | 2026-06-09 archive |
 | HEP-0040 §8.5.2 — seckey raw-32 contract | ✅ | shipped 2026-06-26 (#291 fix) |
 | HEP-0036 §5b — canonical wire schema unification | ✅ | shipped 2026-06-25/26; archive §1 |
-| D — Broker glue (gate close) | 🟡 | AUTH-1/2/3 ✅; **AUTH-5/6/7 OPEN** |
-| E — Admin loopback enforcement | ⏸ | unblocked once D ships |
-| F — Federation peer ZAP parity | ⏸ | depends on E + #105 |
-| G — SHM auth migration | 🟡 | HEP-0041 design + Phase 1 substeps 1a-1h/1k ✅; #262 mutual-auth ✅ (default flipped 2026-07-16); **1i-cleanup S2..S5 + 1j OPEN** |
+| D — Broker glue (gate close) | ✅ | AUTH-1/2/3 ✅; AUTH-5 ✅ (#104, 2026-06-27); AUTH-7 ✅ (L4 `ZmqE2E_Authorized/Unauthorized/MultiProducer` green).  **Residual OPEN: AUTH-6 File-10-Suite-2 delete (#152)** — verified 2026-07-18 |
+| E — Admin CURVE + loopback enforcement | 🔵 **NEXT** | D shipped → E unblocked; admin socket still plaintext+bearer (`admin_service.cpp:87/138`, no `curve_server`).  Design: HEP-0033 §11 + `DRAFT_curve_admin_protocol` |
+| F — Federation peer ZAP parity | ⏸ | depends on E + #105 (post-MVP) |
+| G — SHM auth migration | ✅ | HEP-0041 Phase 1 ✅; #262 mutual-auth ✅ (default flipped 2026-07-16); 1j ✅; **#275 S3/S4/S5 SHIPPED** (`set_shm_secret` deleted `hub_shm_queue.cpp`); REVIEW-C/D/E ✅ → **🟢 Phase 1 PRODUCTION-READY**.  Residual OPEN: **#275 S2 worker-scan** (datahub_producer_consumer/metrics/schema/query_engine) |
 | H — Demo migration | ⏸ | last; needs D shipped end-to-end |
 | **SEC-Fold — Consolidated Security Module + HEP** | 🔴 **PLANNING** | filed 2026-07-04 — see `SEC-Fold` section below |
 
@@ -367,13 +367,12 @@ See archive §6 for shipped substep narratives + commit hashes.
 | **★ REVIEW-D** | **#277** | **✅** | **CLOSED 2026-07-17** — `docs/code_review/REVIEW_AUTH_ReviewD_2026-07-17.md`.  Surfaced + removed the broken consumer PID-liveness sweep (`a00a4188`; heartbeat now sole liveness, revoke on reclaim → `phase="left"`).  Allowlist+revocation cycle pinned end-to-end at L3 with real components (`ConsumerAttach_DeniedAfterDereg` #2369 = admit→revoke→deny; `GetChannelAuth_ReturnsAllowlist` #2365; `ConsumerHeartbeatTimeout_NotifyBodyShape` #2396) + L2 gate (`Swap_BlocksOldPeer_PinsData`) + ledger unit (#2480 clamp).  Test-pins-reality audit = `COVERAGE_AUDIT_Broker_Queue_CURVE_2026-07-17.md` (2 security-test gaps fixed).  Passive-revocation contract confirmed correct in code — no impersonation risk.  L4 data-plane cycle (`MixedAdmitDeny`) explicitly deferred (logic covered at L3; data-plane timing-fragile).  Full ctest 2555/2555.  → REVIEW-E unblocked. |
 | **★ REVIEW-E** | **#278** | **✅** | **CLOSED 2026-07-17 — 🟢 PHASE 1 PRODUCTION-READY** — `docs/code_review/REVIEW_AUTH_ReviewE_2026-07-17.md`.  8-threat model fact-checked against live code (auth, authz, impersonation, replay, envelope-tamper, revocation, downgrade, data confidentiality) — no Cat-1 gap in the single-hub CURVE chain.  Mutual auth closes the impersonation window.  Replay confirmed LIVE (not islanded — stale HEP-0046 note corrected) + hardened (window≥skew) + E2E-tested (`546bc115`).  Out of Phase 1 scope + tracked: admin plane (Line E, plaintext), inbox (#191), federation (#105).  Full ctest 2557/2557. |
 
-**Verification correction (2026-06-27):** The pre-compression
-AUTH_TODO line 1137 claimed "S1+S2a+S2b+S2c-1..6+S3 ✅ shipped".
-**S3 is NOT actually shipped.**  Verified against code at HEAD:
-`hub_shm_queue.cpp:375` still implements `set_shm_secret()`;
-`:134/198/216/253` still has `shared_secret` parameters in
-`create_writer`/`create_reader` overloads.  The table above reflects
-the corrected status.
+**Historical note (RESOLVED):** on 2026-06-27 S3 was *not* yet shipped
+(`set_shm_secret()` still present).  It shipped 2026-06-30 (row 1i-cleanup
+S3 above).  Re-verified against code 2026-07-18: `set_shm_secret` and the
+`shared_secret` `create_writer`/`create_reader` overloads are **deleted**
+from `hub_shm_queue.cpp` — S3/S4/S5 are DONE; only **#275 S2** (16-worker
+scan) remains.
 
 **#285 ↔ #275 S4+S5 dependency (verified 2026-06-27):** SOFT.  S3+S4+S5
 operate on the C API + SharedMemoryHeader; #285 Pattern 4 reform is
@@ -640,7 +639,7 @@ sequence them into the AUTH-1..7 chain.
 - **#164** — HB-6 broker-side shm_secret (SUPERSEDED by HEP-0041).
 - **#79**  — `plh_role --init` SHM secret (SUPERSEDED by HEP-0041).
 - **#258** — HEP-0041 1k L4 e2e SHM (✅ shipped 2026-06-26).
-- **#275** — HEP-0041 1i-cleanup (in flight; S2..S5 open).
+- **#275** — HEP-0041 1i-cleanup: S3/S4/S5 ✅ shipped; only **S2** (16-worker scan) open.
 - **#262** — HEP-0041 mutual auth (3rd handshake frame).
 - **#291** — SHM consumer-attach handshake failure (✅ closed via
   KeyStore raw 32-byte seckey representation; HEP-0040 §8.5.2

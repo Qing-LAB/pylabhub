@@ -30,10 +30,13 @@ HEP-0021 §16.5 step 8 describes `messenger.update_endpoint()` inside
 `establish_channel` for the port-0 ephemeral-binding case: ZmqQueue
 binds with `tcp://*:0`, OS assigns a real port, then
 `establish_channel` calls the now-sync `send_endpoint_update` to
-inform the broker.  That production caller does NOT exist in the
-tree today (verified 2026-05-21 — only the L3 test calls
-`send_endpoint_update`).  Role configs always specify explicit
-ports, so the ephemeral path was never built.
+inform the broker.  **STATUS CORRECTED 2026-07-18:** a production
+`send_endpoint_update` caller DOES exist now — `role_api_base.cpp:1537`
+(`apply_consumer_reg_ack`, binding-side/fan-in endpoint publish, shipped
+with the fan-in binding arc 2026-07-11).  The remaining #94 gap is
+narrower: the *producer* `establish_channel` `tcp://*:0` ephemeral-bind
+variant HEP-0021 §16.5 literally describes.  (The old "no production
+caller" premise, verified 2026-05-21, is stale.)
 
 The HEP-vs-code drift was surfaced by the ENDPOINT_UPDATE sync
 REQ/REP work this session (commit `8228f1ac`).  Now that the API
