@@ -179,7 +179,7 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_baseline(), curve, "HealthConsumerDeregHub");
@@ -270,7 +270,7 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
             const std::string prod_b_uid = "prod.b." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_a_uid, prod_b_uid});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
@@ -363,7 +363,7 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
             const std::string prod_uid = "prod." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
@@ -448,7 +448,7 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),

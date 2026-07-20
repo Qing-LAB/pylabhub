@@ -8,7 +8,7 @@
  */
 #include "broker_test_harness.h"
 
-#include "hub_vault_test_seed.h" // seed_vault_known_roles (HEP-0035 §4.8)
+#include "hub_vault_test_seed.h" // provision_hub_vault (HEP-0035 §4.8)
 
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
@@ -139,27 +139,14 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
                      const CurveSetup &setup,
                      std::string_view hub_name)
 {
-    // HEP-CORE-0040 §172.  Same contract as `start_direct_broker`:
-    // the caller has a `seed_curve_identities()` in scope which has
-    // already seeded the process KeyStore with `"hub_identity"`
-    // (from `setup.hub`) and one `"role.<uid>"` entry per role uid
-    // in `setup.role_keys`.  This helper only READS — it never
-    // mutates the KeyStore.
-    //
-    // The pre-check is loud and specific so a missing fixture
-    // surfaces at the call site instead of inside HubHost::startup.
-    namespace sec = pylabhub::utils::security;
-    if (!sec::sodium_ready() ||
-        !sec::secure().keys().has(sec::kHubIdentityName))
-    {
-        throw std::logic_error(
-            "start_hubhost_broker: KeyStore entry 'hub_identity' is "
-            "absent.  Construct `pylabhub::tests::seed_curve_identities` "
-            "in scope BEFORE calling — it owns SMS + KeyStore + the "
-            "identity seeding (HEP-CORE-0040 §172).  Same contract "
-            "as start_direct_broker; both helpers only read.");
-    }
-
+    // HEP-CORE-0035 §4.8 + HEP-CORE-0040 §172.  Identity ownership split:
+    //   - the caller seeds the per-role `"role.<uid>"` entries ONCE via
+    //     `seed_role_identities(setup)` (they persist across a re-boot);
+    //   - this helper owns the hub's `"hub_identity"`, which comes from
+    //     the encrypted vault via `cfg.load_keypair()` below — NOT a
+    //     pre-seed.  Callers must NOT call `seed_curve_identities`
+    //     (which seeds `"hub_identity"` from `setup.hub`); that would
+    //     double-seed and throw.
     HubHostBrokerHandle h;
     h.hub_dir = make_unique_hub_dir(hub_name);
 
@@ -195,32 +182,32 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
         }
     }
 
-    // Step 4 — load HubConfig from the prepared directory.  We do NOT
-    // call `cfg.load_keypair(password)` because the KeyStore already
-    // has the identity seeded above.  HubConfig parses `auth.keyfile`
-    // as a string but never reads the vault for the keypair unless
-    // load_keypair is invoked.
+    // Step 3 — load HubConfig from the prepared directory.
     auto cfg =
         pylabhub::config::HubConfig::load_from_directory(h.hub_dir);
 
-    // Step 3′ (HEP-CORE-0035 §4.8) — the known_roles allowlist now lives
-    // INSIDE the encrypted hub vault, not a plaintext sidecar.  Create
-    // the real vault holding the allowlist and decrypt it back into cfg
-    // (`seed_vault_known_roles`), so `HubHost::startup()` reads it from
-    // `cfg.known_roles()` exactly as production does.  No known_roles.json
-    // is written, so the §4.8.7 hard-cutover refuse-to-start check passes.
-    seed_vault_known_roles(cfg, setup);
+    // Step 4 (HEP-CORE-0035 §4.8) — provision the real encrypted vault:
+    // a freshly minted CURVE keypair + the known_roles allowlist built
+    // from `setup`.  This is exactly what `plh_hub --keygen` writes.
+    provision_hub_vault(cfg, setup);
 
-    // Step 5 — construct HubHost and start the broker.  `startup()`
-    // builds the BrokerService (which checks `secure().keys().has(
-    // "hub_identity")`), wires the admin/script subsystems, and
+    // Step 5 — read the vault back through the PRODUCTION `load_keypair`
+    // (seeds `"hub_identity"` from the vault's keypair + extracts the
+    // allowlist into cfg), re-boot-safe.  See `load_hub_keypair_fresh`.
+    load_hub_keypair_fresh(cfg);
+
+    // Step 6 — construct HubHost and start the broker.  `startup()`
+    // builds the BrokerService (which reads `"hub_identity"` seeded by
+    // load_keypair above), wires the admin/script subsystems, and
     // spawns the broker thread.  After startup() returns the broker
     // is listening on `broker_endpoint()`.
     h.host =
         std::make_unique<pylabhub::hub_host::HubHost>(std::move(cfg));
     h.host->startup();
     h.endpoint = h.host->broker_endpoint();
-    h.pubkey   = setup.hub.public_z85;
+    // The hub pubkey is the vault's minted keypair (NOT setup.hub) —
+    // surface it from the running host so role clients pin the right key.
+    h.pubkey   = h.host->broker_pubkey();
     return h;
 }
 

@@ -52,7 +52,7 @@
 #include "hub_lua_integration_workers.h"
 
 #include "curve_test_setup.h"
-#include "hub_vault_test_seed.h" // seed_vault_known_roles (HEP-0035 §4.8)
+#include "hub_vault_test_seed.h" // provision_hub_vault + load_hub_keypair_fresh (HEP-0035 §4.8)
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -801,18 +801,21 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "evt_chan_role", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] AND the producer's identity
-            // before HubHost::startup() constructs BrokerService.  The
-            // BRC instantiated below reads the seckey via
-            // `keystore_name` and the broker's known_roles.json admits
-            // the uid via ZAP.  Per-worker RAII; one fixture per subprocess.
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.8 — seed only the
+            // producer's `role.<uid>` identity; the hub's own
+            // `hub_identity` comes from the vault via the production
+            // `load_keypair` below (not a pre-seed).  The BRC instantiated
+            // below reads the seckey via `keystore_name` and the broker's
+            // vault-held known_roles admits the uid via ZAP.  Per-worker
+            // RAII; one fixture per subprocess.
             const std::string prod_uid = "prod.l3test.uid12345678";
             auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
-            // known_roles now rides the encrypted vault (HEP-0035 §4.8);
-            // seed it into cfg before HubHost startup — no plaintext file.
-            pylabhub::tests::seed_vault_known_roles(cfg, ks_curve_);
+            pylabhub::tests::seed_role_identities(ks_curve_);
+            // The hub keypair AND known_roles ride the encrypted vault
+            // (HEP-0035 §4.8).  Provision it, then read it back through
+            // the production path — no plaintext file, no faked identity.
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -896,17 +899,20 @@ end
             const fs::path dir = make_lua_hub_dir(
                 "evt_cons_add", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass —
-            // seed KeyStore["hub_identity"] AND both BRC identities
-            // before HubHost::startup() constructs BrokerService.
-            // Per-worker RAII; one fixture per subprocess.
+            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.8 — seed only the
+            // two BRC `role.<uid>` identities; the hub's own hub_identity
+            // comes from the vault via the production `load_keypair`
+            // below (not a pre-seed).  Per-worker RAII; one fixture per
+            // subprocess.
             const std::string prod_uid = "prod.evcons.uid";
             const std::string cons_uid = "cons.l3.uid12345678";
             auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
-            // known_roles now rides the encrypted vault (HEP-0035 §4.8);
-            // seed it into cfg before HubHost startup — no plaintext file.
-            pylabhub::tests::seed_vault_known_roles(cfg, ks_curve_);
+            pylabhub::tests::seed_role_identities(ks_curve_);
+            // The hub keypair AND known_roles ride the encrypted vault
+            // (HEP-0035 §4.8).  Provision it, then read it back through
+            // the production path — no plaintext file, no faked identity.
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());

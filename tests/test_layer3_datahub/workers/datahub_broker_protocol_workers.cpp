@@ -225,7 +225,7 @@ int run_with_host(std::string_view worker_name,
             // HEP-CORE-0040 §172: fixture owns SMS + KeyStore + identity
             // seeding under `role.<uid>` names; start_hubhost_broker
             // only reads the KeyStore + writes known_roles.json.
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
 
             std::optional<HubHostHandle> broker;
             broker.emplace(pylabhub::tests::start_hubhost_broker(

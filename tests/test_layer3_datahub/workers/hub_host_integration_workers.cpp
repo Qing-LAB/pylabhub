@@ -111,7 +111,7 @@ int hubhost_brokerreachable_afterstartup()
 
             const std::string uid = "prod.test.uid_reachable";
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_FALSE(broker.endpoint.empty())
@@ -146,7 +146,7 @@ int hubhost_regreq_roundtripsviaspawnedbroker()
             const std::string uid     = "prod.cam.uid_regreq";
             const std::string channel = pid_chan("hubhost.regreq");
             auto curve = pylabhub::tests::make_curve_setup({uid});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
 

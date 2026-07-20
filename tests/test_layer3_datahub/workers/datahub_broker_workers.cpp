@@ -15,7 +15,7 @@
 // new co-host workers here; add wire tests under tests/test_layer3_pattern4/.
 #include "datahub_broker_workers.h"
 #include "curve_test_setup.h"
-#include "hub_vault_test_seed.h" // seed_vault_known_roles (HEP-0035 §4.8)
+#include "hub_vault_test_seed.h" // provision_hub_vault + load_hub_keypair_fresh (HEP-0035 §4.8)
 #include "broker_test_harness.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
@@ -197,25 +197,26 @@ std::filesystem::path make_test_hub_directory(const std::vector<std::string> &sc
 // pulls from `secure().keys()` only works through ZAP if the matching
 // pubkey is also in `known_roles.json`).
 //
-// Callers seed their `CurveSetup` via `seed_curve_identities()` in scope
-// BEFORE calling — that fixture seeds `kHubIdentityName` + `role.<uid>`
-// into `secure().keys()` (HEP-CORE-0040 §172).  HubHost::startup() reads
-// `kHubIdentityName` from the KeyStore to wire its own CURVE identity.
+// The per-role `role.<uid>` identities are seeded by the caller
+// (`setup_broker_test` via `seed_role_identities`); the hub's own
+// `kHubIdentityName` comes from the vault via `load_keypair` below —
+// NOT a pre-seed (HEP-CORE-0035 §4.8 + HEP-CORE-0040 §172).
 BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
                                     const pylabhub::tests::CurveSetup &curve)
 {
     BrokerHandle h;
     h.hub_dir = make_test_hub_directory(cfg.schema_search_dirs);
 
-    // known_roles allowlist (HEP-CORE-0035 §4.8) now lives INSIDE the
-    // encrypted hub vault, not a plaintext sidecar.  Create the real
-    // vault holding the allowlist and decrypt it back into cfg
-    // (`seed_vault_known_roles`), so `startup()` reads it from
-    // `cfg.known_roles()` exactly as production does.  No known_roles.json
-    // is written, so the §4.8.7 hard-cutover check passes.
+    // Provision the real encrypted vault (freshly minted CURVE keypair +
+    // known_roles allowlist), then read it back through the PRODUCTION
+    // `load_keypair` — which ACL-checks the vault, seeds `kHubIdentityName`
+    // from the vault's keypair, and extracts the allowlist into cfg.  This
+    // is exactly a real hub boot; no known_roles.json is written, so the
+    // §4.8.7 hard-cutover check passes.
     auto hub_cfg =
         pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string());
-    pylabhub::tests::seed_vault_known_roles(hub_cfg, curve);
+    pylabhub::tests::provision_hub_vault(hub_cfg, curve);
+    pylabhub::tests::load_hub_keypair_fresh(hub_cfg);
 
     h.host = std::make_unique<pylabhub::hub_host::HubHost>(std::move(hub_cfg));
     h.host->startup();
@@ -243,11 +244,14 @@ BrokerTestEnv setup_broker_test(std::vector<std::string>  uids,
                                 std::string_view          /*tag*/,
                                 std::vector<std::string>  schema_search_dirs = {})
 {
-    // CURVE setup: seed `secure().keys()` + `vault/known_roles.json` so the
+    // CURVE setup: seed the per-role `role.<uid>` identities so the
     // broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits each role
-    // uid we'll register below.
+    // uid we'll register below.  The hub's own identity is NOT seeded
+    // here — `start_broker_in_thread` reads it from the vault via the
+    // production `load_keypair` (seed_role_identities, not
+    // seed_curve_identities, so there's no duplicate hub_identity seed).
     auto curve = pylabhub::tests::make_curve_setup(std::move(uids));
-    pylabhub::tests::seed_curve_identities(curve);
+    pylabhub::tests::seed_role_identities(curve);
     BrokerService::Config cfg;
     cfg.schema_search_dirs = std::move(schema_search_dirs);
     auto broker = start_broker_in_thread(std::move(cfg), curve);

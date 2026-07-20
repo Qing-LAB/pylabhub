@@ -220,4 +220,23 @@ seed_curve_identities(const CurveSetup &setup)
     }
 }
 
+/// Seed ONLY the per-role identities (`"role." + uid`) from a
+/// `CurveSetup` — NOT `"hub_identity"`.
+///
+/// Use this for a vault-backed hub fixture: the hub's CURVE identity
+/// comes from the encrypted vault via the production
+/// `HubConfig::load_keypair()` (which seeds `"hub_identity"` itself),
+/// so the fixture must NOT pre-seed that entry or `KeyStore::add` throws
+/// on the duplicate.  `setup.hub` is unused in that flow — the vault
+/// mints its own keypair and `broker_pubkey()` surfaces it.  Role
+/// clients still need their keystore entries, which this seeds.
+inline void
+seed_role_identities(const CurveSetup &setup)
+{
+    for (const auto &[uid, kp] : setup.role_keys)
+    {
+        add_curve_identity(role_keystore_name(uid), kp);
+    }
+}
+
 } // namespace pylabhub::tests

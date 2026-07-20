@@ -92,18 +92,6 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     /// at rest — NOT a plaintext sidecar in `base_dir`.
     const std::vector<::pylabhub::broker::KnownRole> &known_roles() const;
 
-    /// Refresh ONLY the known_roles allowlist from the encrypted vault,
-    /// leaving the process KeyStore identity untouched (HEP-CORE-0035
-    /// §4.8.5 hot-reload primitive).  Opens the vault with @p password,
-    /// decrypts, and re-populates `known_roles()`.  Distinct from
-    /// `load_keypair()`, which also seeds the CURVE identity into the
-    /// KeyStore — call this when the identity is already loaded (a
-    /// running hub re-reading a freshly-rewritten allowlist; or an
-    /// in-process test that seeded the identity separately but wants
-    /// the allowlist to round-trip through the real vault).
-    /// @returns true on success.  @throws on vault/crypto/parse failure.
-    bool load_known_roles_from_vault(const std::string &password);
-
     // ── Special members (pImpl) ──────────────────────────────────────
 
     ~HubConfig();

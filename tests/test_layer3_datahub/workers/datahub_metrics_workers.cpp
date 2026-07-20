@@ -198,7 +198,7 @@ int run_with_broker(std::string_view              worker_name,
                 log_cap.ExpectLogWarn(w);
 
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hub_overrides_baseline(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());

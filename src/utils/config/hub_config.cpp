@@ -214,9 +214,8 @@ namespace
 {
 /// Shared extraction: turn a vault's opaque `known_roles` document into
 /// the validated in-memory vector (HEP-CORE-0035 §4.8).  An empty object
-/// is the §4.8.4 deny-all bootstrap → empty list.  Used by both
-/// `load_keypair` (identity + allowlist in one vault open) and
-/// `load_known_roles_from_vault` (allowlist only).
+/// is the §4.8.4 deny-all bootstrap → empty list.  Used by `load_keypair`
+/// (identity + allowlist in one vault open).
 std::vector<::pylabhub::broker::KnownRole>
 extract_known_roles(const nlohmann::json &kr)
 {
@@ -352,27 +351,6 @@ bool HubConfig::load_keypair(const std::string &password)
                      vault_path.string().c_str(), pub.data(),
                      impl_->known_roles.size());
     }
-    return true;
-}
-
-bool HubConfig::load_known_roles_from_vault(const std::string &password)
-{
-    assert(impl_);
-    namespace security = pylabhub::utils::security;
-
-    // §4.8.5 reload primitive — open the vault for the allowlist ONLY;
-    // the CURVE identity already in the process KeyStore is left
-    // untouched (no re-seed, so no "already present" collision).
-    if (impl_->auth.keyfile.empty())
-        throw std::runtime_error(
-            "[plh_hub] load_known_roles_from_vault: auth.keyfile is empty "
-            "(no vault to read; HEP-CORE-0035 §4.8)");
-
-    const std::filesystem::path vault_path =
-        security::resolve_keyfile_path(impl_->auth.keyfile, impl_->base_dir);
-    const auto vault =
-        utils::HubVault::open(vault_path, impl_->identity.uid, password);
-    impl_->known_roles = extract_known_roles(vault.known_roles());
     return true;
 }
 

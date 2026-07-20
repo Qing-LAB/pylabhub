@@ -137,32 +137,52 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
-### ⚠ Delete `HubConfig::load_known_roles_from_vault`; redesign L3 hub harnesses onto production `load_keypair` (task #65, opened 2026-07-20)
+### ✅ Delete `HubConfig::load_known_roles_from_vault`; L3 hub harnesses onto production `load_keypair` (task #65, DONE 2026-07-20)
 
-**Smell:** `HubConfig::load_known_roles_from_vault` (added with the known_roles→vault
-work) is a production method with ZERO production callers — used only by the L3
-in-process harness helper `hub_vault_test_seed.h::seed_vault_known_roles`.  It exists
-solely to dodge an identity double-seed: the L3 harnesses fake the hub identity via
-`seed_curve_identities` (KeyStore), so the production `load_keypair` — which loads
-identity AND allowlist from the vault in one call — would re-seed `hub_identity` and
-throw.  Violates §1.2 (no production surface just for tests).
+**Smell (removed):** `HubConfig::load_known_roles_from_vault` was a production method
+with ZERO production callers — used only by the L3 harness helper
+`hub_vault_test_seed.h::seed_vault_known_roles`.  It existed solely to dodge an identity
+double-seed: the harnesses faked the hub identity via `seed_curve_identities`, so the
+production `load_keypair` (which seeds identity AND allowlist from the vault in one call)
+would re-add `hub_identity` and throw.  Violated §1.2 (no production surface just for
+tests).
 
-**Redesign (decided with maintainer 2026-07-20):**
-1. DELETE the function (`hub_config.hpp` + `.cpp`).  known_roles loads only through
-   the production `load_keypair` path.
-2. ONE test-framework helper (replace `seed_vault_known_roles`) using only production
-   APIs — `HubVault::create` → `set_known_roles` → `save` (the `--add-known-role` CLI's
-   own calls) — returning the vault's hub pubkey.  No production test-hook.
-3. The 3 L3 harnesses call the helper, then call the PRODUCTION `cfg.load_keypair(pw)`
-   to seed identity + allowlist from the real vault — exactly like a real hub.
-4. Hub keypair comes FROM the vault (production-faithful keygen), not `setup.hub`.
-   Split `CurveSetup`/`seed_curve_identities` to seed ROLE identities only; reroute the
-   ~20 `setup.hub.public` pins to the handle pubkey.
+**What shipped:**
+1. DELETED `load_known_roles_from_vault` (`hub_config.hpp` decl + `.cpp` def + comment).
+   known_roles now loads ONLY through the production `load_keypair` path.
+2. `hub_vault_test_seed.h`: `seed_vault_known_roles` → `provision_hub_vault`
+   (`HubVault::create` mints the keypair → `set_known_roles` → `save`; writes the vault
+   only, no load-back) + new `load_hub_keypair_fresh` (evicts any stale `hub_identity`,
+   then calls the PRODUCTION `cfg.load_keypair` — seeds identity + allowlist from the
+   real vault, exactly like a hub boot).  The evict makes it **re-boot-safe** for the
+   `run_with_host` `.reset()`/re-emplace idiom (in-process second boot = KeyStore-global
+   `hub_identity` would otherwise collide; mirrors a real restart = fresh process).
+3. Identity ownership split: **caller** seeds role identities once
+   (`seed_curve_identities` → new `seed_role_identities`, roles only); the **harness**
+   owns `hub_identity` via the vault.  The 3 boots (`start_hubhost_broker`,
+   `start_broker_in_thread`, hub_lua Cat-B ×2) call `provision_hub_vault` +
+   `load_hub_keypair_fresh`; hub pubkey via `broker_pubkey()` (1-line reroute — callers
+   already went through the handle, so the feared ~20 `setup.hub.public` reroute was 1).
+4. Hub keypair comes FROM the vault (production-faithful), not `setup.hub`.
 
-**Impact:** prod 2 files; harnesses — `broker_test_harness.cpp` (`start_hubhost_broker`,
-31 call-sites) + `datahub_broker_workers.cpp` (`setup_broker_test`, ~40 internal sites)
-+ `hub_lua_integration_workers.cpp` (2) + `hub_vault_test_seed.h`; ~20 keypair-pins +
-`CurveSetup`/`seed_curve_identities` split.
+**Actual scope:** prod 2 files (`hub_config.hpp/.cpp`); framework 2 (`curve_test_setup.h`,
+`hub_vault_test_seed.h` + `broker_test_harness.cpp`); 13 pure vault-hub caller sites
+(`broker_admin` 1, `hub_host_integration` 2, `datahub_metrics` 1,
+`datahub_broker_protocol` 1, `datahub_broker_request_comm` 4, `datahub_broker_health` 4)
++ `setup_broker_test` + hub_lua Cat-B ×2.  Verified: full build clean + full ctest
+**2596/2596** (2026-07-20).
+
+**Untouched (verified per-file, correctly out of scope):** all direct-broker sites
+(`datahub_role_state` ×10 via `start_direct_broker`, `datahub_broker_health:569`
+`client_setup`, `datahub_broker_workers:2419` `start_broker_in_thread` direct),
+Pattern-4, L2, `role_api_flexzone`, and hub_lua/hub_python **Cat-A** (`HubHost` booted
+with `make_curve_setup({})` and NO vault).
+
+**Follow-up (task #66):** Cat-A HubHost tests still fake `hub_identity` via
+`seed_curve_identities` without a vault (hub_lua ×9, `hub_python:202`) — same
+anti-pattern, larger blast radius (each would need a provisioned vault + `load_keypair`
++ the ACL gate; reuse the #65 helpers `provision_hub_vault` / `load_hub_keypair_fresh` /
+`seed_role_identities`).  Left for a dedicated pass.
 
 ### ✅ `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (RESOLVED 2026-07-18)
 

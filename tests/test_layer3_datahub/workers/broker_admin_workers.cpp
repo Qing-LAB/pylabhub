@@ -107,7 +107,7 @@ int run_with_host(std::string_view worker_name,
             // HEP-CORE-0040 §172: fixture owns SMS + KeyStore + identity
             // seeding (the production-shaped path); start_hubhost_broker
             // only reads from secure().keys().
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::seed_role_identities(curve);
             auto broker = pylabhub::tests::start_hubhost_broker(
                 hubhost_overrides(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());

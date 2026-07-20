@@ -101,7 +101,7 @@ int connect_and_heartbeat()
 
     const std::string uid = "prod.brc.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::seed_curve_identities(curve);
+    pylabhub::tests::seed_role_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
@@ -143,7 +143,7 @@ int register_and_discover()
 
     const std::string uid = "prod.test.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::seed_curve_identities(curve);
+    pylabhub::tests::seed_role_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
@@ -228,7 +228,7 @@ int role_presence()
 
     const std::string uid = "prod.my.uid00000042";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::seed_curve_identities(curve);
+    pylabhub::tests::seed_role_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
@@ -300,7 +300,7 @@ int notification_dispatch()
 
     const std::string uid = "prod.notify.uid00000001";
     auto curve = pylabhub::tests::make_curve_setup({uid});
-    pylabhub::tests::seed_curve_identities(curve);
+    pylabhub::tests::seed_role_identities(curve);
     auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
 
     BrokerRequestComm ch;
