@@ -15,6 +15,7 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
+#include "utils/curve_socket.hpp"             // arm_curve_server (shared CURVE arm)
 #include "utils/security/key_store.hpp"       // kRoleIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
 #include "utils/security/zap_router.hpp"      // ZapRouter, ZapDomainHandle
@@ -286,14 +287,9 @@ bool InboxQueue::start()
         if (!pImpl->identity_key_name_.empty())
         {
             namespace sec = pylabhub::utils::security;
-            auto &ks = sec::secure().keys();
-            pImpl->socket.set(zmq::sockopt::curve_publickey,
-                              ks.pubkey(pImpl->identity_key_name_));
-            ks.with_seckey(pImpl->identity_key_name_,
-                [&](std::string_view seckey) {
-                    pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey);
-                });
-            pImpl->socket.set(zmq::sockopt::curve_server, 1);
+            // Shared CURVE-server arm (use-not-export) — same helper the broker
+            // ROUTER and admin console use; keyed with the role identity.
+            pylabhub::utils::arm_curve_server(pImpl->socket, pImpl->identity_key_name_);
             pImpl->socket.set(zmq::sockopt::zap_domain, pImpl->zap_domain_);
 
             // register_domain BEFORE bind (same ordering as ZmqQueue) so

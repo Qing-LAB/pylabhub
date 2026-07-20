@@ -16,7 +16,8 @@
  *   - broker / inbox ROUTER: `zap_domain = "<domain>"` + `ZapRouter::
  *     register_domain(...)` (key-gated admission).
  *   - admin console: `zap_enforce_domain = 1` with an empty domain
- *     (crypto-only, token/session authority; off the §7.4 single-pumper).
+ *     (crypto-only, token/session authority; off the HEP-CORE-0036 §7.4
+ *     single-pumper).
  */
 
 #include "utils/security/key_store.hpp"

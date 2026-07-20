@@ -290,11 +290,9 @@ TEST_F(AdminServiceTest, Console_CloseUnknownChannel_NotFound)
     // this pins the (preserved) handler behavior AND the handler-error →
     // ADMIN_ERROR mapping.
     //
-    // DOC↔CODE TENSION (for the CURVE integration review): HEP-0033 §11.0.4
-    // describes control commands as fire-and-forget ("ok = accepted; the
-    // broker idempotently drops unknown channels"), but this handler rejects
-    // synchronously.  Either the handler or §11.0.4 should change; flagged,
-    // not resolved here.
+    // Semantics resolved 2026-07-19 (CURVE-integration review): control
+    // commands validate synchronously — an unknown channel is a typed
+    // not_found, never a silent ok — and HEP-0033 §11.0.4 now states this.
     const std::string ep = start_hub("close_bogus");
     ASSERT_FALSE(ep.empty());
     AdminWireClient console = make_console(ep, "op-console-1");

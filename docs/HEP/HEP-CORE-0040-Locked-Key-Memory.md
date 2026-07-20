@@ -396,8 +396,10 @@ public:
     /// raw entry (use `lookup_raw` for HEP-0038 secrets).
     [[nodiscard]] std::string_view pubkey(std::string_view name) const;
 
-    /// Invoke `use` with the Z85 SECRET key (40 chars) for an
-    /// identity entry.  View is valid ONLY inside the callback;
+    /// Invoke `use` with the **RAW 32-byte SECRET key**
+    /// (`crypto_box_SECRETKEYBYTES`) for an identity entry — post-#291 the
+    /// KeyStore hands raw bytes, NOT Z85 (see §8.5.2; the Z85 form is
+    /// `with_seckey_z85`).  View is valid ONLY inside the callback;
     /// storing it past return is undefined.  Bytes live in the
     /// LockedKey region; the security module never materializes a
     /// std::string copy.

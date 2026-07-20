@@ -165,7 +165,7 @@ inline void write_minimal_script(const fs::path &hub_dir)
 ///
 /// What "minimal valid" covers:
 ///   - hub.identity: uid + name + auth.keyfile (placeholder path)
-///   - admin: enabled, ephemeral loopback endpoint, token_required=false
+///   - admin: enabled, ephemeral loopback endpoint (token is mandatory)
 ///   - broker: heartbeat-multiplier defaults
 ///   - federation/state: reasonable defaults
 ///   - script: type=python, path=base_dir
@@ -196,10 +196,9 @@ inline void write_minimal_config(const fs::path &cfg_path,
 
     // admin.admin_token is RUNTIME-ONLY (populated from the vault by
     // HubConfig::load_keypair); never written to hub.json.  Only the
-    // three operator-tunable fields go into the JSON.
+    // two operator-tunable fields go into the JSON.
     j["admin"]["enabled"]        = true;
     j["admin"]["endpoint"]       = "tcp://127.0.0.1:0";
-    j["admin"]["token_required"] = false;
 
     j["broker"]["heartbeat_interval_ms"]    = 500;
     j["broker"]["ready_miss_heartbeats"]    = 10;

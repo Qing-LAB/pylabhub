@@ -1,5 +1,6 @@
 #include "utils/wire_envelope.hpp"
 
+#include "utils/format_tools.hpp"           // bytes_to_hex (canonical hex codec)
 #include "utils/logger.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
@@ -19,22 +20,6 @@ namespace
 
 constexpr std::string_view kEnvelopeHashKey{"envelope_hash"};
 
-// Lowercase hex-encode a byte range.  Kept local; if another site needs
-// hex encoding of BLAKE2 output, promote to utils/hex.hpp per the
-// no-scatter discipline.
-std::string bytes_to_hex(const std::uint8_t *bytes, std::size_t len)
-{
-    static constexpr char kDigits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(len * 2);
-    for (std::size_t i = 0; i < len; ++i)
-    {
-        out.push_back(kDigits[(bytes[i] >> 4) & 0xF]);
-        out.push_back(kDigits[bytes[i] & 0xF]);
-    }
-    return out;
-}
-
 // Concatenate identity + msg_type + correlation_id into a scratch buffer
 // and BLAKE2b-256 hash it.  The concatenation is unambiguous because ALL
 // three inputs have known lengths at the moment we compute the hash (we
@@ -53,7 +38,8 @@ std::string compute_envelope_hash_impl(std::string_view identity,
     scratch.append(correlation_id);
     const auto hash = pylabhub::utils::security::secure().compute_blake2b_array(
         scratch.data(), scratch.size());
-    return bytes_to_hex(hash.data(), hash.size());
+    return format_tools::bytes_to_hex(std::string_view(
+        reinterpret_cast<const char *>(hash.data()), hash.size()));
 }
 
 constexpr std::size_t kMaxMsgTypeLen       = 64;

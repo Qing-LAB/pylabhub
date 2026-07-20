@@ -26,9 +26,9 @@
  *   Class-D ERROR gate.  No "wait long enough and hope" — every
  *   wait_for_log_marker has a watchdog ceiling, and ceiling expiry
  *   = clean failure (broker never bound, role never registered, etc.).
- * - Tests run with CURVE auth ON (token_required=false because
- *   admin is disabled here, so loopback-only enforcement still
- *   holds — see HEP §11.3).  The CURVE pin propagates from
+ * - Tests run with CURVE auth ON (admin is disabled here; the admin
+ *   token is mandatory whenever admin is enabled — see HEP §11.3).
+ *   The CURVE pin propagates from
  *   hub.pubkey through HubRefConfig to BrokerRequestComm; this is
  *   the PATH F1's bug broke before the fix.
  */

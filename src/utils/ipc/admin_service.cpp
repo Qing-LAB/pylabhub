@@ -175,7 +175,7 @@ void AdminService::run()
     // in cleartext.  Deliberately NO zap_domain: admin authority is the session
     // id, not a key allowlist; zap_enforce_domain=1 short-circuits ZAP so the
     // socket authenticates by CURVE crypto alone and stays off the broker's
-    // single inproc ZAP pumper (§7.4 single-pumper invariant).  The arm is the
+    // single inproc ZAP pumper (HEP-CORE-0036 §7.4 single-pumper invariant).  The arm is the
     // shared helper (use-not-export), the same one the broker/inbox use.
     pylabhub::utils::arm_curve_server(
         sock, pylabhub::utils::security::kHubIdentityName);

@@ -20,7 +20,7 @@
 #include "utils/role_host_helpers.hpp"          // setup_inbox_facility
 #include "utils/schema_utils.hpp"               // compute_schema_size
 #include "utils/data_block.hpp"                 // datablock_layout_total_size + DataBlockConfig
-#include "utils/security/attach_protocol.hpp"   // AttachProtocolAcceptor + SeckeyAccessor
+#include "utils/security/attach_protocol.hpp"   // AttachProtocolAcceptor + ObserverPubkeyAccessor
 #include "utils/security/key_store.hpp"         // secure().keys() + kRoleIdentityName
 #include "utils/security/shm_attach_orchestrator.hpp"
 #include "utils/security/shm_capability_channel.hpp"

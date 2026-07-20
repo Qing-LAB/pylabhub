@@ -1646,14 +1646,14 @@ channel with a different trust model, session model, and purpose.
 | Peers | Many roles, each a `DEALER`, admitted continuously | One operator `DEALER` console, one persistent session |
 | Who talks | Data-plane roles — producers / consumers / processors | The operator (a human or a CLI tool) |
 | Session model | Stateless per-request admission of many peers | A single stateful session: establish once, stream commands + notifications |
-| Message form | Typed `WireEnvelope` (`REG_REQ`, `ATTACH_REQ`, …) | JSON command / response / notification envelope |
+| Message form | Typed `WireEnvelope` (`REG_REQ`, `ATTACH_REQ`, …) | Typed `WireEnvelope` (`ADMIN_HELLO_REQ`, `ADMIN_*`, …) — same envelope, admin `msg_type`s (§11.1) |
 | Auth model | CURVE **+ ZAP key allowlist** — only known roles are admitted | CURVE crypto-only **+ sealed session id** — token once at establishment, no key gating |
 | Traffic profile | Continuous, high-volume control for the data plane | Rare, low-volume operator commands + event notifications |
 
 Three reasons the hub keeps these as distinct planes rather than one:
 
 1. **Different trust model.** Roles are gatekept by *key*: the broker's ZAP
-   handler admits only pubkeys on the known-role allowlist (§7.4,
+   handler admits only pubkeys on the known-role allowlist (HEP-CORE-0036 §7.4,
    HEP-CORE-0035). The operator is gatekept by *secret*: any well-formed
    CURVE client may connect, and authority is the admin token (once, at
    session establishment) and thereafter the sealed session id (§11.0.5). A
@@ -1666,7 +1666,7 @@ Three reasons the hub keeps these as distinct planes rather than one:
    the role `ROUTER` would entangle operator session identity with role
    admission and interleave operator commands with the data-plane fan-out.
 3. **Isolation from the single-pumper handler.** The broker owns exactly
-   one inproc ZAP handler (§7.4 single-pumper). Placing the operator surface
+   one inproc ZAP handler (HEP-CORE-0036 §7.4 single-pumper). Placing the operator surface
    on its own `ROUTER` socket, authenticated by CURVE crypto alone (§11.1),
    keeps admin traffic entirely off that handler — an operator command can
    neither be gated by nor perturb the role data plane's ZAP pump.
@@ -1806,12 +1806,15 @@ different things by `{"status":"ok"}`:
 
 - **Query `ok`** — the `result` is the answer, computed synchronously; the
   read has already happened.
-- **Control `ok`** — the request was **accepted and enqueued**; it has
-  **not** necessarily completed. There is no completion acknowledgement,
-  and the broker idempotently drops requests it cannot satisfy (e.g.
-  closing an unregistered channel is a silent no-op, not an error). A
-  caller that needs to confirm the effect observes it via a subsequent
-  query or the role-plane `NOTIFY`.
+- **Control `ok`** — the command **passed synchronous validation** (target
+  exists, params well-formed) and the actuation was **accepted and
+  enqueued**; it has **not** necessarily *completed* (there is no completion
+  acknowledgement — observe the effect via a subsequent query or the
+  role-plane `NOTIFY`). Commands the hub can reject up front do so
+  synchronously with a typed `ADMIN_ERROR`: e.g. `close_channel` on an
+  unregistered channel returns `not_found` (§11.5), never `ok`. So `ok` is
+  a promise of *acceptance*, not completion — but it is never returned for a
+  request the hub already knows it cannot satisfy.
 
 #### 11.0.5 Provenance & session identity
 
@@ -1829,13 +1832,23 @@ and returns it to the operator. The session id:
 - Embeds a human label (operator-supplied, e.g. `alice-laptop`) plus the
   hub-observed connection facts: peer address, routing identity, and connect
   time.
-- Is **sealed — encrypted *and* authenticated in one AEAD operation — with
-  the hub's own per-instance secret key** (held in the security subsystem,
-  HEP-CORE-0043; never leaves the hub). The seal makes the id **fully
-  opaque**: only this hub instance can decode it, no one else can read the
-  embedded facts, and it cannot be forged or tampered with. The key is
-  per-instance, so a session id is meaningless to any other hub and is
-  naturally invalidated when the hub restarts.
+- Is **sealed — encrypted *and* authenticated in one AEAD operation
+  (libsodium `secretbox`) — with the hub's own per-instance secret key**
+  (held in the security subsystem, HEP-CORE-0043; never leaves the hub). The
+  seal makes the id **fully opaque**: only this hub instance can decode it,
+  no one else can read the embedded facts, and it cannot be forged or
+  tampered with. The key is per-instance, so a session id is meaningless to
+  any other hub and is naturally invalidated when the hub restarts.
+  - *Key home + use-not-export.* The sealing key is a 32-byte symmetric
+    secret minted at admin-console startup via `secure().random_bytes` and
+    stored in the KeyStore under the canonical name **`admin.session.seal`**
+    (`add_raw`). Because `secretbox` takes a raw key (unlike the
+    name-citing `box_*_using`), the seal/unseal paths obtain the key with
+    `KeyStore::lookup_raw` and pass the span **directly** into
+    `secretbox_encrypt`/`_decrypt` within the same statement — the bytes are
+    never copied into an owning buffer, logged, or retained past the call, so
+    the use-not-export contract (HEP-CORE-0043 §1.4) holds even for this
+    raw-key path.
 - **Replaces the token on every subsequent message** — the raw admin token
   crosses the wire exactly once, at establishment; thereafter the operator
   presents only the opaque sealed session id.
@@ -1852,7 +1865,7 @@ the id check even runs.
 
 The client CURVE public key is deliberately **not** part of the fact set:
 libzmq surfaces it to the application only through a ZAP handler, and the
-admin plane runs crypto-only, off the §7.4 single-pumper (§11.0.2, §11.1).
+admin plane runs crypto-only, off the HEP-CORE-0036 §7.4 single-pumper (§11.0.2, §11.1).
 Peer address + routing identity are sufficient because the transport already
 guarantees connection-to-keypair binding. Making the pubkey itself an
 admin *identity* means giving admin its own ZAP domain — a coupled future
@@ -1917,7 +1930,7 @@ top of the framework above without changing it:
   on without changing the flow.
 - **Pubkey-based operator identity.** Binding operator identity to the
   client CURVE public key (a `known_admins` allowlist) requires giving admin
-  its own ZAP domain, which re-touches the §7.4 single-pumper (§11.0.5).
+  its own ZAP domain, which re-touches the HEP-CORE-0036 §7.4 single-pumper (§11.0.5).
   Coupled future step, not free.
 (The "typed wire envelope" that earlier drafts listed here as deferred is no
 longer deferred — the console is built native on the typed `WireEnvelope`
@@ -1950,14 +1963,14 @@ plaintext exception.
 - The admin socket is **not ZAP-gated**: client identity is not gatekept by
   key (any well-formed CURVE client obtains an encrypted channel; authority
   is the token at establishment, then the sealed session id per message,
-  §11.0.5). To keep it off the broker's single inproc ZAP handler (§7.4
+  §11.0.5). To keep it off the broker's single inproc ZAP handler (HEP-CORE-0036 §7.4
   single-pumper), it sets **`ZMQ_ZAP_ENFORCE_DOMAIN = 1`** with an empty
   `zap_domain`. An empty domain *alone* does not suffice: libzmq's
   `zap_enforce_domain` defaults to `false`, so `curve_server` still invokes
   ZAP for an empty domain (`zap_required() || !zap_enforce_domain`), and the
   in-process ZapRouter would reject the handshake ("no domain registered for
   `''`"). Setting `zap_enforce_domain=1` short-circuits the ZAP path so the
-  socket authenticates by CURVE crypto alone — preserving the §7.4
+  socket authenticates by CURVE crypto alone — preserving the HEP-CORE-0036 §7.4
   invariant. This is a socket property, independent of socket type: it holds
   identically for the `ROUTER` console.
 - **Bidirectional message set**, all over the one console session:
@@ -1981,7 +1994,7 @@ plaintext exception.
 
 > **Implementation status.** The `ROUTER` typed console is **shipped**:
 > `AdminService::run()` binds a `curve_server` `ROUTER` (`zap_enforce_domain=1`,
-> off the §7.4 single-pumper, armed via the shared `arm_curve_server` helper),
+> off the HEP-CORE-0036 §7.4 single-pumper, armed via the shared `arm_curve_server` helper),
 > receives typed `WireEnvelope`s, dispatches by `msg_type` after
 > `verify_session_id` against the observed connection facts, and replies with
 > `build_router_send`. The sealed session identity (§11.0.5) is in
@@ -1997,11 +2010,11 @@ plaintext exception.
 > id is minted and used for the session gate, but is not yet threaded into the
 > broker request records, so actuations are not yet stamped with it).
 >
-> **Known doc↔code tension** (under CURVE-integration review): §11.0.4
-> describes control commands as fire-and-forget ("`ok` = accepted; the broker
-> idempotently drops unknown channels"), but `handle_close_channel` performs a
-> **synchronous existence check** and returns `not_found` for an unknown
-> channel. Either the handler or §11.0.4 must change; unresolved.
+> **Control-command semantics — resolved 2026-07-19** (CURVE-integration
+> review): control commands **validate synchronously** — `close_channel` on
+> an unregistered channel returns `not_found`, not a silent `ok` — and `ok`
+> means *accepted*, not completed. §11.0.4 now states this; the handler and
+> the console test match it.
 
 ```mermaid
 sequenceDiagram
@@ -2071,7 +2084,7 @@ invalidates all consoles at once).  The session establishes a per-operator
 *identity* (§11.0.5); what that model does **not** yet carry is per-operator
 *privilege* and per-operator *revocation* — a capability model (§11.0.6) and
 a client-pubkey `known_admins` allowlist (admitted via a dedicated
-`zap_domain`, which re-touches the §7.4 single-pumper) are the future
+`zap_domain`, which re-touches the HEP-CORE-0036 §7.4 single-pumper) are the future
 expansions that layer on top *without* removing the token gate.
 
 ### 11.4 Files

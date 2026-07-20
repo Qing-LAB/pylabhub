@@ -17,6 +17,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/security/curve_keypair.hpp"    // HEP-CORE-0035 §2 — shared keygen
+#include "utils/curve_socket.hpp"              // arm_curve_server (shared CURVE arm)
 #include "utils/security/key_store.hpp"        // HEP-CORE-0040 §172 — hub identity
 #include "utils/security/peer_admission.hpp"   // HEP-CORE-0035 Phase D
 #include "utils/security/zap_router.hpp"       // HEP-CORE-0035 Phase D
@@ -1023,14 +1024,9 @@ void BrokerServiceImpl::run()
     // no std::string copy of the seckey lives at broker scope.
     namespace sec = pylabhub::utils::security;
     auto      &ks = sec::secure().keys();
-    router.set(zmq::sockopt::curve_server, 1);
-    router.set(zmq::sockopt::curve_publickey,
-               ks.pubkey(sec::kHubIdentityName));
-    ks.with_seckey(sec::kHubIdentityName,
-        [&](std::string_view seckey)
-        {
-            router.set(zmq::sockopt::curve_secretkey, seckey);
-        });
+    // Shared CURVE-server arm (use-not-export) — the same helper the admin
+    // console and inbox use; keyed with the hub broker identity.
+    pylabhub::utils::arm_curve_server(router, sec::kHubIdentityName);
 
     // Build the initial CTRL allowlist.  Per HEP-CORE-0035 §4.2 the
     // allowlist is the UNION of two operator-managed inputs:

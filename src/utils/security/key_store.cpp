@@ -398,8 +398,8 @@ void KeyStore::with_seckey(std::string_view                          name,
     // RAW 32-byte seckey (sec_raw) from the back half of the 64-byte
     // packed buffer.  This is the single canonical form at the
     // security-module API boundary; libsodium primitives
-    // (crypto_box_*, crypto_sign_*) and AttachProtocol's
-    // SeckeyAccessor callback all consume raw bytes.  Z85 callers
+    // (crypto_box_*, crypto_sign_*) and secure().box_*_using — which
+    // cite the seckey by KeyStore name — all consume raw bytes.  Z85 callers
     // use with_seckey_z85 instead.  Shared lock is held for the
     // callback's duration — concurrent remove(name) waits.  Callback
     // MUST be prompt (HEP-CORE-0040 §5.5 contract).

@@ -1696,6 +1696,7 @@ layer2_require_staged_utils(test_layer2_admin_service)
 
 gtest_discover_tests(test_layer2_admin_service
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;admin"
         TIMEOUT 30
 )
@@ -1723,6 +1724,7 @@ layer2_require_staged_utils(test_layer2_admin_session)
 
 gtest_discover_tests(test_layer2_admin_session
     PROPERTIES
+        FIXTURES_REQUIRED Guardrails
         LABELS "layer2;service;admin"
         TIMEOUT 30
 )

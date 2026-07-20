@@ -5723,18 +5723,19 @@ Standby that `setup_infrastructure_` tried to start before
 registration completed), and the only consistent fix was to
 align the rules across producer, consumer, and processor.
 
-### 11.2 Dev-mode escape hatch
+### 11.2 Dev-mode escape hatch — REMOVED
 
-For local development and unit testing:
-
-- `hub.dev_mode = true` in hub.json disables Layer-1 ZAP authentication
-  (HEP-0035) AND data-plane CURVE wiring (HEP-0036). Sockets fall back
-  to NULL handshake.
-- Dev-mode is rejected at config-load time if the broker endpoint is
-  not loopback (`127.0.0.1` or `localhost`). Production deployments
-  cannot accidentally ship with dev-mode enabled on a routable address.
-- Tests that exercise the auth path must run with `dev_mode = false`
-  and supply CURVE keypairs.
+There is **no** dev-mode CURVE/ZAP bypass, and there must never be one. An
+earlier draft proposed a `hub.dev_mode = true` knob that would disable
+Layer-1 ZAP + data-plane CURVE (NULL handshake); it was **removed
+2026-06-04** (HEP-CORE-0035 §7 Q5) and never shipped. CURVE-server + ZAP
+admission are **unconditional** whenever a socket binds — no config flag, in
+production or test, binds a broker or data socket without `curve_server`.
+(Verified 2026-07-19 against code: zero `dev_mode` / `ZMQ_NULL` / NULL-fallback
+paths in `src/`; `broker_service.cpp` arms `curve_server` with no guard; the
+inbox arms identically; an unset identity means *no socket*, not a NULL
+fallback.) Tests supply real CURVE keypairs (HEP-CORE-0035 §4.6.5). This
+tombstone is retained so the retired, unsafe design is not re-proposed.
 
 ### 11.3 Deployment workflow (MVP — manual pubkey distribution)
 
