@@ -177,9 +177,10 @@ vs. the current implementation.
 
 **Purpose.**  Ask the broker to admit this role on this channel.
 
-**Body class.**  `RegReqBody` — see §14.3 for the field list.
-Same class for producer (`REG_REQ`) and consumer
-(`CONSUMER_REG_REQ`); `body.role_type()` disambiguates.
+**Body class.**  `ProducerRegReqBody` (`REG_REQ`) and
+`ConsumerRegReqBody` (`CONSUMER_REG_REQ`) — see §14.3 for the field
+lists.  The code uses two distinct body classes, one per role side, NOT
+a single shared class with a `role_type()` discriminator.
 
 **Semantics under the clean model.**  Broker runs the admission
 sequence in order:
@@ -2125,14 +2126,15 @@ Every body (REQ / ACK / NOTIFY) carries `envelope_hash`.  For
 brevity the class catalog below notes "+ security triple" or
 "+ envelope_hash only" instead of repeating.
 
-- **RegReqBody** (msg_type = `REG_REQ`, `CONSUMER_REG_REQ`):
-  `channel_name`, `role_uid`, `role_type`, `role_name`,
-  `channel_topology`, `data_transport`, `zmq_pubkey`,
-  `broker_proto`, `schema_hash`, `schema_version`, `schema_id`,
-  `schema_blds`, `schema_owner`, `abi_fingerprint` + security triple.
+- ~~**RegReqBody** (msg_type = `REG_REQ`, `CONSUMER_REG_REQ`)~~
+  **— OBSOLETE.**  No unified `RegReqBody` class exists in code.  The
+  split described in the erratum below is **SHIPPED**: `wire_bodies.hpp`
+  defines `ProducerRegReqBody` (`REG_REQ`) and `ConsumerRegReqBody`
+  (`CONSUMER_REG_REQ`) as two separate classes.  Use those; see the
+  amended entries below for their fields.
 
-  > ⚠ **ERRATUM PENDING — supersede this entry with a split into
-  > two body classes.**
+  > ✅ **ERRATUM RESOLVED (shipped) — this entry is superseded by the
+  > two body classes below, both present in `wire_bodies.hpp`.**
   >
   > HEP-CORE-0034 §10.2 is the authority on consumer-side schema
   > wire fields and explicitly requires the `expected_` prefix
@@ -2229,17 +2231,17 @@ brevity the class catalog below notes "+ security triple" or
   `broker_abi_fingerprint`, `broker_build_id`,
   `broker_observer_pubkey_z85` + envelope_hash only.
 
-  > **ERRATUM PENDING 2026-07-15 (task #45):** the original catalog
-  > entry said `RegAckBody` covered both `REG_ACK` and
+  > ✅ **ERRATUM RESOLVED (shipped) 2026-07-15 (task #45):** the original
+  > catalog entry said `RegAckBody` covered both `REG_ACK` and
   > `CONSUMER_REG_ACK`.  That is inconsistent with HEP-CORE-0036
   > §5b/§6.4 which defines the consumer-side ACK shape around
   > `producers[]` (unified transport-discriminator per B-4 / #289,
-  > 2026-06-25) — NOT `initial_allowlist`.  Split into two body
-  > classes, mirroring the ProducerRegReqBody + ConsumerRegReqBody
-  > split from Group 1:
+  > 2026-06-25) — NOT `initial_allowlist`.  Code split the consumer
+  > ACK into its own class.  As shipped in `wire_bodies.hpp`:
   >
-  > - `ProducerRegAckBody` (= existing `RegAckBody` above,
-  >   `REG_ACK` only): producer-side, carries `initial_allowlist`.
+  > - `RegAckBody` (`REG_ACK` only): producer-side, carries
+  >   `initial_allowlist`.  NOTE: code **kept the name `RegAckBody`**;
+  >   the earlier-proposed `ProducerRegAckBody` rename was NOT applied.
   > - `ConsumerRegAckBody` (`CONSUMER_REG_ACK`): `status`,
   >   `channel_name`, `data_transport`, `heartbeat`, `producers`
   >   (array of `{role_uid, pubkey_z85, endpoint}` per §5b),
@@ -2277,6 +2279,51 @@ brevity the class catalog below notes "+ security triple" or
 - **BandJoinNotifyBody / BandLeaveNotifyBody**: `band`, `role_uid`,
   `role_name` + envelope_hash only.
 
+#### 14.3.1 Admin console family (HEP-CORE-0033 §11)
+
+The typed operator-console bodies (`wire_bodies.hpp`, "Admin console
+family" block; `kAdmin*` msg_type constants).  **Security model:** admin
+messages are NOT part of the REG admission taxonomy — they are gated by
+the sealed, connection-bound session id (§11.0.5), not the broker's
+admission pipeline.  COMMAND requests additionally carry the full
+security **triple** (`client_nonce` + `client_wall_ts` + `envelope_hash`)
+for in-session replay defense (§11.0.5; deduped by the shared
+`ReplayGuard` keyed on the session's origin_uid, HEP-CORE-0027 §3.6).
+`ADMIN_HELLO_REQ` carries the admin token instead of a session id (it is
+what mints the session) with `envelope_hash` only; HELLO and every
+ACK / ERROR body carry `envelope_hash` only.
+
+- **AdminHelloReqBody** (`ADMIN_HELLO_REQ`): `token`, `label`
+  + envelope_hash only.
+- **AdminHelloAckBody** (`ADMIN_HELLO_ACK`): `session_id`
+  + envelope_hash only.
+- **AdminPingReqBody** (`ADMIN_PING_REQ`): `session_id`
+  + security triple.
+- **AdminPingAckBody** (`ADMIN_PING_ACK`): `status`
+  + envelope_hash only.
+- **AdminCloseChannelReqBody** (`ADMIN_CLOSE_CHANNEL_REQ`):
+  `session_id`, `channel` + security triple.
+- **AdminCloseChannelAckBody** (`ADMIN_CLOSE_CHANNEL_ACK`): `status`
+  + envelope_hash only.
+- **AdminSessionReqBody** (shared by `ADMIN_LIST_CHANNELS_REQ`,
+  `ADMIN_LIST_ROLES_REQ`, `ADMIN_LIST_BANDS_REQ`,
+  `ADMIN_LIST_PEERS_REQ`, `ADMIN_REQUEST_SHUTDOWN_REQ`): `session_id`
+  + security triple.
+- **AdminNamedReqBody** (shared by `ADMIN_GET_CHANNEL_REQ`,
+  `ADMIN_GET_ROLE_REQ`): `session_id`, `name` + security triple.
+- **AdminBroadcastChannelReqBody** (`ADMIN_BROADCAST_CHANNEL_REQ`):
+  `session_id`, `channel`, `message`, optional `data`
+  + security triple.
+- **AdminQueryMetricsReqBody** (`ADMIN_QUERY_METRICS_REQ`):
+  `session_id`, `filter` (object; empty = all categories)
+  + security triple.
+- **AdminResultAckBody** (query-result ACKs — list/get/query metrics):
+  `result` (object) + envelope_hash only.
+- **AdminStatusAckBody** (control ACK; broadcast / request_shutdown):
+  `status` + envelope_hash only.
+- **AdminErrorBody** (`ADMIN_ERROR`): `code`, `message`
+  + envelope_hash only.
+
 ### 14.4 Handler dispatch pattern
 
 ```cpp
@@ -2287,9 +2334,9 @@ if (!env) { LOGGER_WARN(...); continue; }
 // Dispatch table maps msg_type string → typed handler:
 switch_on(env.msg_type()) {
     case "REG_REQ":
-        handle_reg_req(*env, env->body_as<RegReqBody>()); break;
+        handle_reg_req(*env, env->body_as<ProducerRegReqBody>()); break;
     case "CONSUMER_REG_REQ":
-        handle_consumer_reg_req(*env, env->body_as<RegReqBody>()); break;
+        handle_consumer_reg_req(*env, env->body_as<ConsumerRegReqBody>()); break;
     case "ENDPOINT_UPDATE_REQ":
         handle_endpoint_update(*env, env->body_as<EndpointUpdateReqBody>()); break;
     case "HEARTBEAT_NOTIFY":
@@ -2302,7 +2349,7 @@ switch_on(env.msg_type()) {
 Every handler is:
 
 ```cpp
-void handle_reg_req(const WireEnvelope& env, const RegReqBody& body,
+void handle_reg_req(const WireEnvelope& env, const ProducerRegReqBody& body,
                      /* broker context */)
 {
     // Skeleton fields via env:

@@ -8,12 +8,16 @@
 >   a member of `SecureSubsystem::Impl`; script-vault entries land
 >   in the same store via `secure().keys().add_raw(name, bytes)`.
 >   Consult HEP-0043 §7 for the storage API.
-> - **STILL AUTHORITATIVE:** vault file format (§4), KDF (§5) and
->   AEAD (§6) parameters, script-facing API shape (§7-§8),
->   reserved-prefix + name-sandboxing rules for scripts (§9).
->   HEP-CORE-0043 §5 (KDF) + §5 (AEAD) + §10 (script API) will
->   absorb these in a follow-on doc migration; until then this HEP
->   is the source of truth for those subsections.
+> - **STILL AUTHORITATIVE (as design intent):** this HEP is a DRAFT
+>   whose detailed vault-format / KDF / AEAD / script-API / name-
+>   sandboxing design was never written out — it is deferred to
+>   task #106.  What is recorded here is the design INTENT and scope
+>   (§1 Motivation, §2 Design intent, §3 Open questions, §4
+>   Implementation scope, §5 Cross-references) for role-side,
+>   script-managed vault entries.  For the SHIPPED KeyStore storage
+>   and access API, HEP-CORE-0043 §2.2 + §7 is authoritative; the
+>   vault-file/KDF/AEAD parameters live in HEP-CORE-0035 §4.6.  There
+>   are no authoritative §6-§9 subsections in this document.
 
 
 | Property        | Value                                                           |

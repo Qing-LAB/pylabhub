@@ -137,6 +137,33 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### ⚠ Delete `HubConfig::load_known_roles_from_vault`; redesign L3 hub harnesses onto production `load_keypair` (task #65, opened 2026-07-20)
+
+**Smell:** `HubConfig::load_known_roles_from_vault` (added with the known_roles→vault
+work) is a production method with ZERO production callers — used only by the L3
+in-process harness helper `hub_vault_test_seed.h::seed_vault_known_roles`.  It exists
+solely to dodge an identity double-seed: the L3 harnesses fake the hub identity via
+`seed_curve_identities` (KeyStore), so the production `load_keypair` — which loads
+identity AND allowlist from the vault in one call — would re-seed `hub_identity` and
+throw.  Violates §1.2 (no production surface just for tests).
+
+**Redesign (decided with maintainer 2026-07-20):**
+1. DELETE the function (`hub_config.hpp` + `.cpp`).  known_roles loads only through
+   the production `load_keypair` path.
+2. ONE test-framework helper (replace `seed_vault_known_roles`) using only production
+   APIs — `HubVault::create` → `set_known_roles` → `save` (the `--add-known-role` CLI's
+   own calls) — returning the vault's hub pubkey.  No production test-hook.
+3. The 3 L3 harnesses call the helper, then call the PRODUCTION `cfg.load_keypair(pw)`
+   to seed identity + allowlist from the real vault — exactly like a real hub.
+4. Hub keypair comes FROM the vault (production-faithful keygen), not `setup.hub`.
+   Split `CurveSetup`/`seed_curve_identities` to seed ROLE identities only; reroute the
+   ~20 `setup.hub.public` pins to the handle pubkey.
+
+**Impact:** prod 2 files; harnesses — `broker_test_harness.cpp` (`start_hubhost_broker`,
+31 call-sites) + `datahub_broker_workers.cpp` (`setup_broker_test`, ~40 internal sites)
++ `hub_lua_integration_workers.cpp` (2) + `hub_vault_test_seed.h`; ~20 keypair-pins +
+`CurveSetup`/`seed_curve_identities` split.
+
 ### ✅ `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (RESOLVED 2026-07-18)
 
 `ZmqQueueTest.TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscribe`

@@ -448,19 +448,34 @@ Authorization happens later, per-attach, via `CONSUMER_ATTACH_REQ_SHM`
 
 ### 5.3 CONSUMER_REG_ACK — what consumer receives
 
+> **Wire shape updated to the shipped unified `producers[]` array
+> (B-4, #289, 2026-06-25).**  The pre-B-4 scalar
+> `shm_capability_endpoint` + `producer_pubkey_z85` fields were
+> retired; both transports now emit the same `producers[]` array
+> (HEP-CORE-0036 §5b / §6.4).  For SHM the array has length 1 (SHM is
+> single-producer per HEP-CORE-0023 §2.1.1), the `endpoint` value is
+> the producer's SHM capability Unix socket, and `pubkey_z85` is the
+> producer's identity pubkey.
+
 ```json
 {
   ...,
   "data_transport": "shm",
-  "shm_capability_endpoint": "unix:///var/run/pylabhub/role-acquisition.daq01.prod/shm-cap.sock",
-  "producer_pubkey_z85": "<40 Z85 chars>"
+  "producers": [
+    {
+      "role_uid":   "prod.sensor01",
+      "endpoint":   "unix:///var/run/pylabhub/role-acquisition.daq01.prod/shm-cap.sock",
+      "pubkey_z85": "<40 Z85 chars>"
+    }
+  ]
 }
 ```
 
-The consumer receives the producer's endpoint + the producer's pubkey
-(needed for the consumer-side `crypto_box_easy` encryption in §5.5
-frame 2).  No bearer token; the broker is consulted live by the
-producer on each attach attempt — see §5.4.
+The consumer receives the producer's endpoint (`producers[0].endpoint`)
++ the producer's pubkey (`producers[0].pubkey_z85`, needed for the
+consumer-side `crypto_box_easy` encryption in §5.5 frame 2).  No
+bearer token; the broker is consulted live by the producer on each
+attach attempt — see §5.4.
 
 ### 5.4 CONSUMER_ATTACH_REQ_SHM — producer pre-confirms
 
@@ -636,13 +651,25 @@ triple; Windows exposes the pipe HANDLE (as `void*` to keep the public
 header free of `<windows.h>` — matches `pylabhub::platform::ShmHandle`
 in `plh_platform.hpp:152`).  `send_capability` similarly per-platform.
 
-### 6.4 L2 interface (verbatim from shipped headers)
+### 6.4 L2 interface
+
+> ⚠ **SUPERSEDED by HEP-CORE-0044 §7.3.**  The `ConsumerAuthMaterial`
+> shape below is stale: the shipped struct no longer carries a
+> `SeckeyAccessor`.  Per HEP-0044 §7.3 (and
+> `src/include/utils/security/attach_protocol.hpp`) the consumer's
+> secret is cited by KeyStore **name** — the field is
+> `own_seckey_name` (a `std::string` KeyStore entry name, NOT raw key
+> bytes), matching the SMS name-based citation contract (HEP-CORE-0043
+> §6 + HEP-CORE-0044 §4.1).  The `use-not-export` guarantee still holds;
+> only the representation changed from an accessor to a name.  Treat
+> HEP-0044 §7.3 as authoritative for the current `ConsumerAuthMaterial`
+> definition.
 
 ```cpp
 struct ConsumerAuthMaterial {
     std::string    role_uid;
     std::string    pubkey_z85;
-    SeckeyAccessor seckey_accessor;   // use-not-export per HEP-0040 §5.2
+    std::string    own_seckey_name;  // KeyStore entry name (use-not-export per HEP-0044 §7.3)
 };
 
 struct AuthenticatedConsumer {
@@ -947,7 +974,7 @@ AttachProtocol primitive.  Coverage in HEP-0044 §8:
 - Wire mechanism — Frame 2's opt-in signaling via `consumer_nonce_b64` +
   `consumer_challenge_b64` + Frame 3 shape.
 - Initiator verification steps.
-- Opt-in policy (`startup.shm_require_mutual_auth` config knob).
+- Policy knob (`startup.shm_require_mutual_auth`; default `true` per §8.4).
 - Failure marker `attach_producer_not_authenticated`.
 
 **SHM-specific status (task #262) — implementation shipped:**
@@ -955,8 +982,11 @@ AttachProtocol primitive.  Coverage in HEP-0044 §8:
 - ✅ Wire mechanism (`b6914077`), consumer call-site opt-in
   (`5c8d04c1`), L2 tests (`6066f6ba`).
 - ⏸ L4 squatter attack coverage — filed under REVIEW-E prep (#278).
-- ⏸ Default flip (`shm_require_mutual_auth = true`) — blocked on L4
-  coverage + `broker_proto` MINOR bump per HEP-CORE-0032 §8.3.2.
+- ✅ Default is `true` — mutual auth is **on by default**
+  (`shm_require_mutual_auth{true}` in `startup_config.hpp`).
+  HEP-CORE-0044 §8.4 is authoritative for this default.  The earlier
+  `broker_proto` MINOR-bump fencing (HEP-CORE-0032 §8.3.2) is
+  superseded by HEP-0044 §8.4.
 - ⏸ `IMPLEMENTATION_GUIDANCE.md` §"SHM Channel Auth attach errors"
   entry — housekeeping.
 

@@ -754,12 +754,19 @@ PLH_WIRE_BODY_CLASS(BandLeaveNotifyBody)
 // === Admin console family (HEP-CORE-0033 §11) ========================
 //
 // The typed operator-console protocol.  Admin messages are NOT part of
-// the REG admission taxonomy (wire_dispatch): they carry no security
-// triple and are gated by the sealed session id (§11.0.5), not by the
-// broker's admission pipeline.  These are the first fully-typed pathway
-// and the reference for the JSON→typed migration (task #57).  Every body
-// carries `envelope_hash` (stamped/validated by WireEnvelope) like the
-// rest of the control plane.
+// the REG admission taxonomy (wire_dispatch); they are gated by the
+// sealed session id (§11.0.5), not by the broker's admission pipeline.
+// These are the first fully-typed pathway and the reference for the
+// JSON→typed migration (task #57).  Security fields:
+//   - COMMAND requests (Ping / CloseChannel / Session / Named /
+//     BroadcastChannel / QueryMetrics) carry the full security TRIPLE —
+//     `client_nonce` + `client_wall_ts` + `envelope_hash` — for
+//     in-session replay defense (§11.0.5; deduped by the shared
+//     `ReplayGuard` keyed on the session's origin_uid, HEP-CORE-0027
+//     §3.6).
+//   - HELLO and every ACK / ERROR body carry `envelope_hash` only
+//     (stamped/validated by WireEnvelope), like the rest of the control
+//     plane.
 
 /// msg_type constants for the typed admin console (no central msg_type
 /// registry exists; these named constants keep admin off the string-literal

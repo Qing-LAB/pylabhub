@@ -12,6 +12,21 @@
 | **Related** | HEP-CORE-0036 (ZMQ CURVE + ZAP — parallel primitive for the ZMQ transport, see §10), HEP-CORE-0042 (Channel Attach Coordination — transport-agnostic broker mediation that composes with AttachProtocol) |
 | **Trackers** | #244 (HEP-0041 umbrella; §5.5 substep 1c shipped `b6e8faa1`, §D4.5 mutual auth shipped `b6914077`), #262 (mutual auth wire mechanism), transport-abstraction seam shipped `5a24b410` (2026-07-07) |
 
+> ⚠ **Correction (verified against shipped code).**  The
+> `data_endpoint` / `data_pubkey` scalar rename described in this
+> amendment was **NOT applied in code**.  The shipped
+> `CONSUMER_REG_ACK` carries the **unified `producers[]` array**
+> (B-4, #289, 2026-06-25) with per-element keys `role_uid`,
+> `pubkey_z85`, and `endpoint` for BOTH transports — see
+> `broker_service.cpp` (emitter) and `role_api_base.cpp::apply_consumer_reg_ack`
+> (reader).  The consumer reads the acceptor's endpoint from
+> `CONSUMER_REG_ACK.producers[i].endpoint` and its pubkey from
+> `CONSUMER_REG_ACK.producers[i].pubkey_z85`; `data_transport`
+> discriminates SHM vs ZMQ.  The scalar `data_endpoint` /
+> `data_pubkey` names below remain a deferred topology-migration
+> target (Phase E; not shipped) — treat the `producers[]` names as
+> current everywhere in this HEP.
+>
 > **Amendment (2026-07-08 evening) — topology migration field-name unification.**
 > The wire fields that this HEP reads from `CONSUMER_REG_ACK` unify
 > under the coordinated topology migration:
@@ -95,7 +110,7 @@ This HEP defines:
 
 ## 2. Worked example
 
-Concrete scenario: a **temperature sensor role** (`prod.sensor01`) is running.  A **data logger role** (`cons.logger01`) has just registered with the broker and received the sensor's `data_endpoint` (post-2026-07-08 field name; historically `shm_capability_endpoint`) via `CONSUMER_REG_ACK`.  The logger now needs to attach to the sensor's SHM channel.
+Concrete scenario: a **temperature sensor role** (`prod.sensor01`) is running.  A **data logger role** (`cons.logger01`) has just registered with the broker and received the sensor's endpoint (shipped field: `CONSUMER_REG_ACK.producers[i].endpoint`) via `CONSUMER_REG_ACK`.  The logger now needs to attach to the sensor's SHM channel.
 
 ### 2.1 High-level flow
 
@@ -221,7 +236,7 @@ Field contract:
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `producer_pubkey_z85` | 40-char Z85 string | YES | Acceptor's own pubkey.  Read from `secure().keys().pubkey(own_seckey_name)`.  Consumer compares against the pubkey the broker told it to expect (`CONSUMER_REG_ACK.data_pubkey` post-2026-07-08; historically `CONSUMER_REG_ACK.producers[i].pubkey_z85`); mismatch → `attach_producer_not_authenticated`. |
+| `producer_pubkey_z85` | 40-char Z85 string | YES | Acceptor's own pubkey.  Read from `secure().keys().pubkey(own_seckey_name)`.  Consumer compares against the pubkey the broker told it to expect (`CONSUMER_REG_ACK.producers[i].pubkey_z85` — the shipped field, matching §8.3; the broker sources this value from the producer's `ProducerEntry::zmq_pubkey`); mismatch → `attach_producer_not_authenticated`. |
 | `proof_response_b64` | base64 string | YES | `crypto_box_easy(consumer_challenge, consumer_nonce, initiator_pk, acceptor_sk)`.  Size: 32 bytes. |
 
 ---
@@ -527,7 +542,7 @@ ac.consumer_pubkey_z85 = phr.consumer_pubkey_z85;
 Consumer-attach case, consumer side.  Composed inside `initiate_consumer_handshake`:
 
 ```cpp
-// SHM-specific: connect to producer's data_endpoint (post-2026-07-08; historically shm_capability_endpoint)
+// SHM-specific: connect to producer's endpoint (CONSUMER_REG_ACK.producers[i].endpoint)
 int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 ::connect(fd, &addr, sizeof(addr));
 
@@ -539,7 +554,7 @@ try {
     run_consumer_handshake(
         channel,
         self,                      // {role_uid, pubkey_z85, own_seckey_name}
-        producer_pubkey_z85,       // from CONSUMER_REG_ACK.data_pubkey (post-2026-07-08; historically producers[i].pubkey_z85)
+        producer_pubkey_z85,       // from CONSUMER_REG_ACK.producers[i].pubkey_z85
         steady_clock::now() + timeout,
         require_mutual_auth);      // opt-in per §8
 }
@@ -556,7 +571,7 @@ catch (const AttachProtocolTimeout &) {
 The broker acts as an initiator (like a consumer), but with `role_type="observer"`.  Composed inside the broker's observer worker (HEP-CORE-0045 §5.2):
 
 ```cpp
-// Broker's worker connects to producer's data_endpoint (post-2026-07-08 field name)
+// Broker's worker connects to producer's endpoint (CONSUMER_REG_ACK.producers[i].endpoint)
 int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 ::connect(fd, &producer_addr, sizeof(producer_addr));
 

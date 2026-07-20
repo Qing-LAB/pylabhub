@@ -280,14 +280,18 @@ The following are deliberately OUT of HEP-0036 scope:
   `GET_CHANNEL_AUTH_ACK` per §6.5), not at every data frame / SHM
   read.
 - **Automated public-key distribution.**  For MVP, hub and role
-  public keys are distributed manually by the operator (copy
-  `*.pub` files to the appropriate config dirs).  Automated
+  public keys are distributed manually by the operator (hub pubkey
+  copied to each role's config dir; each role pubkey handed to the
+  hub operator, who registers it into the encrypted hub vault via
+  `plh_hub --add-known-role` per HEP-CORE-0035 §4.8).  Automated
   distribution (e.g. via a federation control channel) is deferred
   until federation development is further along.
 - **Mid-session identity-key rotation.**  Roles' long-term identity
   keys live for the role's deployment lifetime.  Rotation is an
-  operator workflow: re-run `plh_role --keygen`, redistribute the
-  new `.pub` to every hub's `known_roles/`, restart the role.
+  operator workflow: re-run `plh_role --keygen`, hand the new
+  pubkey to each hub operator who re-registers it into the
+  encrypted hub vault via `plh_hub --add-known-role` (HEP-CORE-0035
+  §4.8), restart the role.
   CURVE's per-session ephemeral keys (Curve25519 ECDH) provide
   forward secrecy automatically — past sessions stay
   un-decryptable even if a long-term key is later compromised.
@@ -890,7 +894,7 @@ and keeps the higher tiers linear.
 
 ### I10 — One pubkey per role uid (separation of duties)
 
-**Every entry in `known_roles.json` MUST have a `pubkey_z85` value unique across all entries in the file.**  Equivalently: the broker's `KnownRolesStore` enforces an injective mapping `uid → pubkey`.  Two distinct role uids that share the same pubkey is a configuration error and must be rejected at load / insert time.
+**Every entry in the hub vault's `known_roles` document (the `KnownRolesStore`) MUST have a `pubkey_z85` value unique across all entries in the document.**  Equivalently: the broker's `KnownRolesStore` enforces an injective mapping `uid → pubkey`.  Two distinct role uids that share the same pubkey is a configuration error and must be rejected at load / insert time.
 
 **Security rationale** — sharing a pubkey across uids breaks four independent guarantees:
 
@@ -905,12 +909,12 @@ and keeps the higher tiers linear.
 
 > ⚠ **WARNING.**  The bypass for this invariant exists ONLY in builds compiled with BOTH `CMAKE_BUILD_TYPE=Debug` AND the CMake option `PYLABHUB_WITH_TEST=ON`.  In RELEASE builds the `NDEBUG` macro is defined and the bypass code is physically absent from the compiled library — no runtime configuration, no environment variable, no admin command can re-enable it.  A binary built with `cmake -DCMAKE_BUILD_TYPE=Release` will reject every shared-pubkey configuration unconditionally.
 >
-> The bypass exists for the narrow purpose of L3 in-process multi-BRC test fixtures (multiple `BrokerRequestComm` instances within one subprocess sharing one CURVE keypair to test broker fan-out behavior without launching real binaries).  Tests built with `PYLABHUB_WITH_TEST=ON` may legitimately seed `known_roles.json` with multiple `(uid_i, shared_pubkey)` entries — the fixture trades fixture-side keypair-per-process production-mirror for fast wire-protocol coverage, while leaving the LIBRARY API identical between test and production builds.
+> The bypass exists for the narrow purpose of L3 in-process multi-BRC test fixtures (multiple `BrokerRequestComm` instances within one subprocess sharing one CURVE keypair to test broker fan-out behavior without launching real binaries).  Tests built with `PYLABHUB_WITH_TEST=ON` may legitimately seed the vault's `known_roles` document with multiple `(uid_i, shared_pubkey)` entries — the fixture trades fixture-side keypair-per-process production-mirror for fast wire-protocol coverage, while leaving the LIBRARY API identical between test and production builds.
 >
 > Operators MUST NOT ship binaries built with `PYLABHUB_WITH_TEST=ON`.  CI is responsible for verifying production builds use RELEASE configuration.  When in doubt: a quick check is that `nm` on the shipped binary should not reveal any symbols related to the bypass code path.
 
 **Cross-references.**
-- HEP-CORE-0035 §4.6 (file ACL discipline) — pubkey file integrity is the prerequisite for this invariant; tampering with `known_roles.json` defeats it regardless of code-level enforcement.
+- HEP-CORE-0035 §4.8 (encrypted hub vault) — vault integrity is the prerequisite for this invariant; the `known_roles` allowlist lives inside the vault payload, so tampering with the vault defeats this invariant regardless of code-level enforcement.
 - HEP-CORE-0040 §5 (KeyStore) — the *process-private* identity store; orthogonal to this invariant.  KeyStore holds at most one entry per role kind (production constraint); KnownRolesStore enforces the symmetric broker-side constraint that no two role entries share a pubkey.
 
 ### I11 — Framework provides protocol; scripts provide coordination
@@ -3380,8 +3384,8 @@ Phase 1 — see §1 Amendment 2026-06-16.
 `role_uid` (HEP-CORE-0023 §2.1.1) and `zmq_pubkey` (HEP-CORE-0021
 §5.2) in the wire body — both are pre-existing producer-declared
 claims, not new HEP-0036 additions.  Per HEP-0035 §4.8 the broker
-loads `known_roles.json` mapping `role_uid ↔ pubkey_z85` (1:1 per
-§I10).  At REG_REQ admission the broker MUST verify the body claims
+loads the encrypted hub vault's `known_roles` document mapping
+`role_uid ↔ pubkey_z85` (1:1 per §I10).  At REG_REQ admission the broker MUST verify the body claims
 against this table:
 
 1. `body.role_uid` is non-empty and present in `cfg.known_roles[]`
@@ -3481,7 +3485,7 @@ wire shape.
 
 | Field | Type | Description |
 |---|---|---|
-| `producers` | array of objects | (transport=zmq only) One entry per registered producer on the channel.  Length 1 for single-producer; length N for fan-in.  Each element: `{role_uid, pubkey, endpoint}` where `pubkey` is the producer's identity pubkey (Z85, 40 chars; read from `ChannelEntry::producers[i].zmq_pubkey` which was populated at the producer's REG time from REG_REQ body `zmq_pubkey` after verification against `known_roles[role_uid].pubkey_z85` per §6.1) and `endpoint` is the producer's resolved data-plane TCP endpoint (from `ChannelEntry::producers[i].zmq_node_endpoint` per HEP-CORE-0033 §8 ProducerEntry).  The `role_uid` is included so the consumer can correlate logs / per-producer metrics. |
+| `producers` | array of objects | (transport=zmq only) One entry per registered producer on the channel.  Length 1 for single-producer; length N for fan-in.  Each element: `{role_uid, pubkey_z85, endpoint}` where `pubkey_z85` is the producer's identity pubkey (Z85, 40 chars; read from `ChannelEntry::producers[i].zmq_pubkey` which was populated at the producer's REG time from REG_REQ body `zmq_pubkey` after verification against `known_roles[role_uid].pubkey_z85` per §6.1) and `endpoint` is the producer's resolved data-plane TCP endpoint (from `ChannelEntry::producers[i].zmq_node_endpoint` per HEP-CORE-0033 §8 ProducerEntry).  The `role_uid` is included so the consumer can correlate logs / per-producer metrics. |
 | `shm_secret` ⚠ **SUPERSEDED** | uint64 | (transport=shm only — SUPERSEDED by HEP-CORE-0041; see §1 Amendment 2026-06-16.  Active CONSUMER_REG_ACK SHM shape now ships `shm_capability_endpoint` + `producer_pubkey_z85` instead — see HEP-CORE-0041 §5.3.)  Pre-HEP-0041 meaning: the per-channel SHM guard secret (single-producer by SHM physical constraint). |
 
 **The legacy single-pubkey `data_server_pubkey` field is NOT
@@ -4137,7 +4141,7 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 
 | Code | When |
 |---|---|
-| `UNKNOWN_ROLE` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` is empty or not present in `cfg.known_roles[]` (§6.1 / §6.3 Layer-2 verification step 1).  Operator-side fix: add the role to `<hub_dir>/vault/known_roles.json` via `plh_hub --add-known-role`. |
+| `UNKNOWN_ROLE` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` is empty or not present in `cfg.known_roles[]` (§6.1 / §6.3 Layer-2 verification step 1).  Operator-side fix: register the role into the encrypted hub vault via `plh_hub --add-known-role` (HEP-CORE-0035 §4.8). |
 | `PUBKEY_MISMATCH` | REG_REQ / CONSUMER_REG_REQ where `body.role_uid` exists in `cfg.known_roles[]` but `body.zmq_pubkey` does not equal the configured `pubkey_z85` for that uid (§6.1 / §6.3 Layer-2 verification step 2).  Indicates either credential drift (role's vault rotated; operator's known_roles entry stale) or a registration attempt under a stolen role uid using the wrong pubkey. |
 | `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field distinguishes the cause: `awaiting_first_heartbeat` (no producer has reached `kLive` — gate per §3.5.4 INV2) or `heartbeat_stalled` (producer presence in `kStalled` per HEP-CORE-0023 §2.6).  HEP-CORE-0021 §16 (adopted 2026-07-08, closes task #94) extends R6 to also require `zmq_node_endpoint_resolved` for ZMQ producers, but this does NOT surface as a distinct `reason` — the REG_REQ is held pending on R6 the same way `awaiting_first_heartbeat` holds it; the pre-2026-06-12 `awaiting_endpoint` reason string stays retired. |
 | `CHANNEL_NOT_FOUND` | `GET_CHANNEL_AUTH_REQ` for a channel that does not exist in `ChannelAccessIndex`. |
@@ -5751,13 +5755,17 @@ key distribution.  A typical deployment workflow:
 2. **Role keygen.**  Each role's operator runs
    `plh_role --keygen <role_uid>`, producing `<role_uid>.pub` /
    `<role_uid>.sec`.
-3. **Distribute role pubkeys to hub config.**  Copy each
-   `<role_uid>.pub` into the hub's `known_roles[]` directory
-   (e.g. `hub_keys/known_roles/`).  This wires condition (2) of I1
-   (role known by hub).  **Multi-hub role:** a role that connects
+3. **Register role pubkeys with the hub.**  Hand each
+   `<role_uid>.pub` to the hub operator, who registers it into the
+   encrypted hub vault via
+   `plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>`
+   (HEP-CORE-0035 §4.8).  This wires condition (2) of I1
+   (role known by hub).  There is no `known_roles/` directory of
+   `.pub` files at runtime — the allowlist lives in the vault's
+   `known_roles` document.  **Multi-hub role:** a role that connects
    to N hubs has ONE identity keypair from `--keygen`; the same
-   `<role_uid>.pub` must be copied into EACH of those N hubs'
-   `known_roles[]` directories independently (no automatic
+   `<role_uid>.pub` must be registered into EACH of those N hubs'
+   vaults independently (no automatic
    propagation between hubs in MVP).  Federation-delegated
    propagation is HEP-CORE-0035 §4.4 territory and is deferred to
    the federation effort (task #105).
@@ -5769,7 +5777,7 @@ key distribution.  A typical deployment workflow:
    succeed using the manually-distributed keys.
 
 **Key-file ACL discipline is mandatory** — all `*.sec`, `*.pub`,
-`known_roles/`, and config-directory permissions are set by
+the encrypted hub vault, and config-directory permissions are set by
 `--keygen` / `--init` and verified at every binary startup per
 **HEP-CORE-0035 §4.6**.  The binary refuses to start on loose ACLs
 with an actionable `chmod` hint in the error message.  The
@@ -5778,9 +5786,10 @@ trust anchors HEP-0035 §4.6 protects.
 
 Per-channel CURVE data keys do not exist under T1 (I6) — both
 sides reuse their identity keypairs on the data plane.  The role's
-identity pubkey is operator-distributed (the `.pub` file copied
-into each hub's `known_roles/`); the seckey stays local to the
-role host.
+identity pubkey is operator-distributed (handed to the hub operator
+and registered into each hub's encrypted vault via
+`plh_hub --add-known-role`, HEP-CORE-0035 §4.8); the seckey stays
+local to the role host.
 
 The ONE broker-generated artifact on the data path is the per-
 channel SHM `shm_secret` (uint64 guard token; SHM transport only;
@@ -5807,7 +5816,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (verified from `REG_REQ.zmq_pubkey` body field against `cfg.known_roles[role_uid]` via `verify_known_role_binding` per §6.1 / §6.3 Layer-2 verification).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
 | 2 | Producer side: `setup_infrastructure_` builds the tx queue in Standby (§6.7) — NO PUSH bind, NO ZAP arm.  `apply_producer_reg_ack` (post-REG, §3.5.5 S3) installs ZAP handler on ZMQ context BEFORE binding PUSH (per §5.1 internal-ordering invariant 4); PUSH configured `curve_server=1` with ROLE'S IDENTITY KEYPAIR (KeyStore-resident per HEP-0035 §4.6 + HEP-CORE-0040).  ZAP cache seeded from `REG_ACK.initial_allowlist` (NOT empty — §I4 + §6.5).  Runtime additions arrive via `CHANNEL_AUTH_CHANGED_NOTIFY` → `GET_CHANNEL_AUTH_REQ` pull (§6.5 notify-then-pull amended 2026-06-04). | No new key distribution needed — producer already has its identity keypair from startup. |
-| 3 | Broker side: on CONSUMER_REG_REQ, verify consumer's claimed `zmq_pubkey` body field against `cfg.known_roles[role_uid]` via `verify_known_role_binding` per §6.1 / §6.3 Layer-2 verification (rejecting UNKNOWN_ROLE / PUBKEY_MISMATCH — no self-claims); on pass, add to the channel's authorized set; fire `CHANNEL_AUTH_CHANGED_NOTIFY {channel, reason="consumer_joined"}` (fire-and-forget per §6.5 amended 2026-06-04) to every `kLive` producer of the channel; return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey, endpoint)` per element.  PRODUCER-SIDE EQUIVALENT (Phase 2 wires): `producer_joined` notify to consumers (`CHANNEL_PRODUCERS_CHANGED_NOTIFY` per §6.5.1) MUST fire on the channel observable's `kRegistering → kLive` transition (driven by `first_heartbeat_seen=true` on the producer presence; HEP-CORE-0023 §2.6), NOT on REG_REQ accept (§3.5.4 invariant 2) — otherwise consumers connect to unbound endpoints. | Closes the loop: consumer can now connect after auth.  Producer's initial ZAP cache comes from REG_ACK.initial_allowlist at S3 inside apply_master_approval per §3.5.3; runtime mutations converge via §6.5 notify→pull within one BRC round-trip.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
+| 3 | Broker side: on CONSUMER_REG_REQ, verify consumer's claimed `zmq_pubkey` body field against `cfg.known_roles[role_uid]` via `verify_known_role_binding` per §6.1 / §6.3 Layer-2 verification (rejecting UNKNOWN_ROLE / PUBKEY_MISMATCH — no self-claims); on pass, add to the channel's authorized set; fire `CHANNEL_AUTH_CHANGED_NOTIFY {channel, reason="consumer_joined"}` (fire-and-forget per §6.5 amended 2026-06-04) to every `kLive` producer of the channel; return CONSUMER_REG_ACK with `producers[]` array per §6.4 — iterate `ChannelEntry::producers[]` to populate `(role_uid, pubkey_z85, endpoint)` per element.  PRODUCER-SIDE EQUIVALENT (Phase 2 wires): `producer_joined` notify to consumers (`CHANNEL_PRODUCERS_CHANGED_NOTIFY` per §6.5.1) MUST fire on the channel observable's `kRegistering → kLive` transition (driven by `first_heartbeat_seen=true` on the producer presence; HEP-CORE-0023 §2.6), NOT on REG_REQ accept (§3.5.4 invariant 2) — otherwise consumers connect to unbound endpoints. | Closes the loop: consumer can now connect after auth.  Producer's initial ZAP cache comes from REG_ACK.initial_allowlist at S3 inside apply_master_approval per §3.5.3; runtime mutations converge via §6.5 notify→pull within one BRC round-trip.  Same wire shape works for single-producer (length 1) and fan-in (length N). |
 | 4 | Consumer side: `setup_infrastructure_` builds the rx queue in Standby (§6.7) — NO PULL connect.  `apply_consumer_reg_ack` (post-REG, §3.5.5 S3) reads `producers[]` array from CONSUMER_REG_ACK; framework feeds the array into `RxQueueOptions::producer_peers` (per HEP-CORE-0017 §3.3); ZmqQueue handles per-peer transport plumbing internally (curve config per peer, ZAP enforcement, fair-queue) per I9.  Authorized fires synchronously at the end of `apply_consumer_reg_ack` — auth was completed at REG (control plane), endpoints in CONSUMER_REG_ACK ARE the auth proof.  Data loop gates on `Authorized` per §8.  A brief re-handshake window may exist while the producer's `GET_CHANNEL_AUTH_REQ` pull catches up (§5.2 property note); ZeroMQ's reconnect-on-handshake-failure bridges it.  Uniform shape for single-producer and fan-in — script sees one rx queue regardless. | End-to-end ZMQ auth working for both topologies.  Ephemeral port binding closed under HEP-CORE-0021 §16 (2026-07-08, closes task #94); coordinates with the sibling DISC_REQ_ACK per-producer array migration (separate follow-up) and task #103 (ZmqQueue dynamic peer API). |
 | 5 | SHM parallel: broker generates `shm_secret` per channel (uint64 guard token; unrelated to CURVE per I6); `CONSUMER_REG_ACK` releases it only on auth.  Retire config-supplied `out_shm_secret`. | SHM secret stays broker-generated because the DataBlock attach mechanism (HEP-0002) is secret-based, not CURVE-based. |
 | 6 | Passive revocation paths: on CONSUMER_DEREG, on heartbeat timeout, on hub-dead cascade — broker mutates the channel's authorized set to remove the failed/leaving consumer, then fires `CHANNEL_AUTH_CHANGED_NOTIFY {reason="consumer_left"\|"consumer_timeout"\|"federation_peer_death"}` to all `kLive` producers (per §6.5 amended 2026-06-04; fire-and-forget; producers pull on receipt to update their caches).  Role-side hub-dead handling: `Authorized → Unregistered` after `hub_dead_grace`; tear down data sockets + clear ZAP cache; await BRC reconnect.  No force-disconnect (per I5). | Closes lifetime-alignment loop; no new socket-level APIs. |
