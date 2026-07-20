@@ -16,6 +16,7 @@ int multiple_messages();
 int double_stop_no_throw();
 int sender_uid_is_preserved();
 int bad_magic_drops();
+int replay_and_skew_dropped();
 int ack_code_3_handler_error();
 int not_started_recv_returns_null();
 int empty_schema_factory_fails();

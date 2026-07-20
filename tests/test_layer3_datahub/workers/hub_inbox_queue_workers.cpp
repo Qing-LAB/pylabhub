@@ -381,6 +381,85 @@ int bad_magic_drops()
         PLH_INBOX_MODS);
 }
 
+// ─── Replay defense: replayed + skewed frames are dropped (§3.6) ────────────
+
+int replay_and_skew_dropped()
+{
+    return run_gtest_worker(
+        [] {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+            // The reject paths log WARNs; frame 1 uses a dummy payload that
+            // fails unpack (also a WARN).  Declare all three up-front.
+            log_cap.ExpectLogWarn("unpack error");
+            log_cap.ExpectLogWarn("dropping replayed frame");
+            log_cap.ExpectLogWarn("wall-clock skew");
+
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+            ASSERT_NE(q, nullptr);
+            ASSERT_TRUE(q->start());
+
+            // Raw DEALER lets us control the replay-metadata frame directly
+            // (the production InboxClient always stamps a FRESH nonce, so a
+            // replay can only be fabricated at the wire level).  Not a mock —
+            // same ZMQ library, real InboxQueue receiver.
+            void *ctx = zmq_ctx_new();
+            ASSERT_NE(ctx, nullptr);
+            void *sock = zmq_socket(ctx, ZMQ_DEALER);
+            ASSERT_NE(sock, nullptr);
+            const std::string id = "REPLAY-SENDER";
+            zmq_setsockopt(sock, ZMQ_IDENTITY, id.c_str(), id.size());
+            int linger = 0;
+            zmq_setsockopt(sock, ZMQ_LINGER, &linger, sizeof(linger));
+            ASSERT_EQ(zmq_connect(sock, q->actual_endpoint().c_str()), 0);
+            std::this_thread::sleep_for(ms{50});
+
+            const uint64_t now = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+            auto put_be64 = [](unsigned char *p, uint64_t v) {
+                for (int i = 0; i < 8; ++i)
+                    p[7 - i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFFu);
+            };
+            // 24-byte meta = nonce(16) + wall_ts(8, big-endian).
+            auto send_frame = [&](unsigned char nonce_byte, uint64_t wall_ts) {
+                unsigned char meta[24];
+                std::memset(meta, nonce_byte, 16);
+                put_be64(meta + 16, wall_ts);
+                zmq_send(sock, "", 0, ZMQ_SNDMORE);   // empty delimiter
+                zmq_send(sock, meta, 24, ZMQ_SNDMORE); // replay metadata
+                zmq_send(sock, "BAAD", 4, 0);          // dummy payload
+            };
+
+            // Frame 1: fresh nonce, current ts.  The replay guard RECORDS the
+            // nonce before the payload unpack, so even though the dummy
+            // payload then fails unpack, the nonce is remembered.
+            send_frame(0xAB, now);
+            (void) q->recv_one(ms{200});
+
+            // Frame 2: SAME nonce -> rejected as a replay.
+            send_frame(0xAB, now);
+            EXPECT_EQ(q->recv_one(ms{200}), nullptr);
+
+            // Frame 3: fresh nonce but a stale wall_ts (60 s old) -> rejected
+            // on skew, before the guard even sees the nonce.
+            send_frame(0xCD, now - 60'000);
+            EXPECT_EQ(q->recv_one(ms{200}), nullptr);
+
+            EXPECT_EQ(q->recv_replay_reject_count(), uint64_t{2})
+                << "one replay + one skew must both be dropped by §3.6";
+
+            zmq_close(sock);
+            zmq_ctx_term(ctx);
+            q->stop();
+
+            log_cap.Uninstall();
+        },
+        "hub_inbox_queue::replay_and_skew_dropped",
+        PLH_INBOX_MODS);
+}
+
 // ─── Test #7: AckCode3_HandlerError ─────────────────────────────────────────
 
 int ack_code_3_handler_error()
@@ -942,6 +1021,8 @@ struct HubInboxQueueRegistrar
                     return sender_uid_is_preserved();
                 if (sc == "bad_magic_drops")
                     return bad_magic_drops();
+                if (sc == "replay_and_skew_dropped")
+                    return replay_and_skew_dropped();
                 if (sc == "ack_code_3_handler_error")
                     return ack_code_3_handler_error();
                 if (sc == "not_started_recv_returns_null")

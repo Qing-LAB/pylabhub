@@ -118,10 +118,46 @@ Inbox uses the same msgpack fixarray[5] wire format as ZmqQueue:
 - `2` = schema error
 - `3` = handler error
 
-The DEALER/ROUTER envelope uses ZMQ's built-in identity routing:
+The DEALER/ROUTER envelope uses ZMQ's built-in identity routing, plus a
+replay-metadata frame (§3.6):
 - DEALER sets `ZMQ_IDENTITY` to the sender's pylabhub UID before connecting
-- ROUTER receives `[identity, empty_delimiter, payload]`
+- DEALER sends `[empty_delimiter, replay_meta, payload]`
+- ROUTER receives `[identity, empty_delimiter, replay_meta, payload]`
 - ROUTER sends ACK as `[identity, empty_delimiter, ack_byte]`
+
+### 3.6 Replay defense (I-REPLAY-BOUND)
+
+Transport-layer CURVE (§3.5) authenticates and encrypts the inbox
+sockets, so an outsider cannot capture or replay a frame.  The residual
+concern is application-level replay — a frame delivered twice (a
+duplicate, or an authenticated peer resending) would run the receiver's
+`on_inbox` handler twice, applying a side effect (e.g. a parameter
+update) more than once.  The per-sender `seq` field (§3) is tracked for
+gap *metrics* only and does NOT defend replay: it resets on a sender
+reconnect, so enforcing monotonicity would wrongly reject a reconnected
+sender's fresh frames.
+
+Instead, each inbox message carries a **replay-metadata frame** — a
+fixed 24-byte frame **separate from the msgpack payload** so the payload
+codec stays byte-identical to the data-plane ZmqQueue frame it shares:
+
+```
+replay_meta = [ client_nonce : 16 bytes ][ client_wall_ts : uint64 big-endian, 8 bytes ]
+```
+
+- **Sender** (`InboxClient`) stamps a fresh random 16-byte `client_nonce`
+  and the current `client_wall_ts` (ms since epoch) on every send.
+- **Receiver** (`InboxQueue`) rejects the frame — dropping it, no handler
+  call, incrementing `recv_replay_reject_count` — when either:
+  1. wall-clock **skew** `|now - client_wall_ts|` exceeds the tolerance
+     (bounds how long a captured frame stays replayable), OR
+  2. the `(sender_identity, client_nonce)` pair was **already seen**
+     within the dedup window.
+- The dedup uses `pylabhub::utils::ReplayGuard` — the SAME sliding-window
+  mechanism the hub REG/admin plane uses via `HubState::nonce_seen`; the
+  inbox owns its own role-side instance (the receiver is a separate
+  process from the hub), but the check-and-record logic is one component,
+  not duplicated.  Skew and window default to 30 s.
 
 ### 3.5 CURVE Wiring (HEP-CORE-0036)
 

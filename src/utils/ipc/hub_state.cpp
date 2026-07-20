@@ -25,6 +25,7 @@
 #include "utils/hub_state.hpp"
 
 #include "utils/naming.hpp"
+#include "utils/replay_guard.hpp" // shared sliding-window nonce dedup
 
 #include <algorithm>
 #include <atomic>
@@ -180,20 +181,11 @@ struct HubState::Impl
     /// the existing `mu`).
     std::unordered_map<std::string, std::uint64_t> producer_instance;
 
-    // I-REPLAY-BOUND (HEP-CORE-0046 §8.1).  Per-role
-    // sliding-window dedup for REG-family client_nonces.  Entries older
-    // than `nonce_seen()`'s `window_ms` argument are pruned on the next
-    // `nonce_seen()` call for the same role_uid.  Prune-on-access is
-    // sufficient because the dispatch thread serializes access under
-    // I-ROUTER-SERIAL; a background sweep would only matter if a role's
-    // uid stopped registering while others kept churning, which is
-    // bounded by the sizeof(client_nonce)==16-bytes footprint.
-    struct NonceEntry
-    {
-        std::string   nonce;
-        std::uint64_t wall_ts;
-    };
-    std::unordered_map<std::string, std::vector<NonceEntry>> nonce_dedup;
+    // I-REPLAY-BOUND (HEP-CORE-0046 §8.1).  Per-role sliding-window
+    // dedup for REG-family client_nonces — the SAME `ReplayGuard`
+    // mechanism the role inbox uses (HEP-CORE-0027 §3); one component,
+    // two callers.  Self-locked, so `nonce_seen` does not take `mu`.
+    pylabhub::utils::ReplayGuard replay_guard;
 
     BrokerCounters                                counters;
 
@@ -2085,41 +2077,14 @@ HubState::nonce_seen(std::string_view role_uid,
                       std::uint64_t     wall_ts,
                       std::uint64_t     window_ms)
 {
-    // I-REPLAY-BOUND: freshness check + record, atomic under the
-    // HubState writer lock.  Returns true when the nonce is fresh
-    // (added to the dedup set); false on collision within the window.
+    // I-REPLAY-BOUND: freshness check + record.  Delegates to the shared
+    // `ReplayGuard` (self-locked, so no `pImpl->mu` here).  Returns true
+    // when the nonce is fresh; false on collision within the window.
     //
-    // Callers upstream (broker admission handlers) have already
-    // rejected wall-clock skew as a distinct reject class; here we
-    // only need to worry about nonce reuse.
-    if (role_uid.empty() || client_nonce.empty()) return false;
-
-    std::unique_lock lk(pImpl->mu);
-    const std::string role_uid_key{role_uid};
-    auto &entries = pImpl->nonce_dedup[role_uid_key];
-
-    // Prune-on-access: drop entries older than (wall_ts - window_ms).
-    // Underflow-safe: if window_ms > wall_ts, cutoff would wrap; use 0
-    // as the effective floor.
-    const std::uint64_t cutoff =
-        (wall_ts > window_ms) ? (wall_ts - window_ms) : 0;
-    entries.erase(std::remove_if(entries.begin(), entries.end(),
-                                  [cutoff](const Impl::NonceEntry &e) {
-                                      return e.wall_ts < cutoff;
-                                  }),
-                   entries.end());
-
-    // Membership check on the pruned window.
-    for (const auto &e : entries)
-    {
-        if (e.nonce == client_nonce) return false;  // duplicate
-    }
-
-    Impl::NonceEntry fresh;
-    fresh.nonce.assign(client_nonce);
-    fresh.wall_ts = wall_ts;
-    entries.push_back(std::move(fresh));
-    return true;
+    // Callers upstream (broker admission handlers) have already rejected
+    // wall-clock skew as a distinct reject class; the guard only dedups.
+    return pImpl->replay_guard.check_and_record(role_uid, client_nonce,
+                                                wall_ts, window_ms);
 }
 
 std::uint64_t

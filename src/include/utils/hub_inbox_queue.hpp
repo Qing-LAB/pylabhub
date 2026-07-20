@@ -177,6 +177,8 @@ public:
     [[nodiscard]] uint64_t recv_gap_count() const noexcept;
     /** BLAKE2b checksum verification failures. */
     [[nodiscard]] uint64_t checksum_error_count() const noexcept;
+    /** Frames dropped by the replay guard (skew or nonce reuse; §3.6). */
+    [[nodiscard]] uint64_t recv_replay_reject_count() const noexcept;
 
     /** Set checksum policy. Enforced = auto verify on recv. None = skip. */
     void set_checksum_policy(ChecksumPolicy policy) noexcept;
@@ -188,11 +190,13 @@ public:
         uint64_t ack_send_error_count{0};
         uint64_t recv_gap_count{0};
         uint64_t checksum_error_count{0};
+        uint64_t recv_replay_reject_count{0};
     };
     [[nodiscard]] InboxMetricsSnapshot inbox_metrics() const noexcept
     {
         return {recv_frame_error_count(), ack_send_error_count(),
-                recv_gap_count(), checksum_error_count()};
+                recv_gap_count(), checksum_error_count(),
+                recv_replay_reject_count()};
     }
 
     /**
@@ -348,5 +352,6 @@ private:
     X(recv_frame_error_count)            \
     X(ack_send_error_count)              \
     X(recv_gap_count)                    \
-    X(checksum_error_count)
+    X(checksum_error_count)              \
+    X(recv_replay_reject_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)

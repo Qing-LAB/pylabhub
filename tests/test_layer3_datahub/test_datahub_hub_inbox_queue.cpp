@@ -59,6 +59,15 @@ TEST_F(InboxQueueTest, BadMagic_Drops)
     ExpectWorkerOk(w);
 }
 
+// Replay defense (HEP-CORE-0027 §3.6): a frame whose (sender, nonce) was
+// already seen, and a frame with stale wall-clock skew, are both dropped
+// before the handler runs.
+TEST_F(InboxQueueTest, ReplayAndSkew_Dropped)
+{
+    auto w = SpawnWorker("hub_inbox_queue.replay_and_skew_dropped");
+    ExpectWorkerOk(w);
+}
+
 TEST_F(InboxQueueTest, AckCode3_HandlerError)
 {
     auto w = SpawnWorker("hub_inbox_queue.ack_code_3_handler_error");

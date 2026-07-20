@@ -19,6 +19,7 @@
 #include "utils/security/key_store.hpp"       // kRoleIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
 #include "utils/security/zap_router.hpp"      // ZapRouter, ZapDomainHandle
+#include "utils/replay_guard.hpp"             // shared sliding-window nonce dedup
 #include "zmq_wire_helpers.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -76,6 +77,13 @@ struct InboxQueueImpl
     std::atomic<uint64_t> ack_send_error_count_{0};
     std::atomic<uint64_t> recv_gap_count_{0};
     std::atomic<uint64_t> checksum_error_count_{0};
+    std::atomic<uint64_t> recv_replay_reject_count_{0};
+
+    // Replay defense (HEP-CORE-0027 §3.6) — sliding-window nonce dedup
+    // keyed by sender identity, the SAME `ReplayGuard` mechanism the hub
+    // REG/admin plane uses via `HubState::nonce_seen`.  Role-side
+    // instance (the inbox receiver is a separate process from the hub).
+    pylabhub::utils::ReplayGuard replay_guard_;
 
     // Sequence tracking — per-sender (keyed by sender_id from ZMQ identity frame)
     // A single global counter is meaningless with multiple senders; each sender's
@@ -138,6 +146,39 @@ struct InboxClientImpl
 // ============================================================================
 // Schema validation helper
 // ============================================================================
+
+// ── Replay-metadata frame (HEP-CORE-0027 §3.6) ──────────────────────────────
+// A fixed 24-byte frame carried between the ROUTER/DEALER delimiter and the
+// msgpack payload: [ client_nonce : 16 ][ client_wall_ts : uint64 big-endian ].
+// Kept OUT of the msgpack payload so the payload codec (`zmq_wire_helpers`)
+// stays byte-identical to the data-plane ZmqQueue frame it shares.
+namespace
+{
+constexpr std::size_t   kInboxNonceLen       = 16;
+constexpr std::size_t   kInboxMetaLen        = kInboxNonceLen + 8;
+constexpr std::uint64_t kInboxReplaySkewMs   = 30'000;
+constexpr std::uint64_t kInboxReplayWindowMs = 30'000;
+
+std::uint64_t inbox_now_ms()
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+void inbox_put_be64(unsigned char *p, std::uint64_t v)
+{
+    for (int i = 0; i < 8; ++i)
+        p[7 - i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFFu);
+}
+std::uint64_t inbox_get_be64(const unsigned char *p)
+{
+    std::uint64_t v = 0;
+    for (int i = 0; i < 8; ++i)
+        v = (v << 8) | static_cast<std::uint64_t>(p[i]);
+    return v;
+}
+} // namespace
 
 static bool validate_inbox_schema(const std::vector<ZmqSchemaField>& schema,
                                    const std::string& endpoint)
@@ -377,8 +418,9 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         pImpl->last_rcvtimeo = timeout_ms;
     }
 
-    // ROUTER delivers the three-frame envelope (identity, empty, payload) as a
-    // single multipart message. multipart_t::recv reads all frames atomically:
+    // ROUTER delivers the four-frame envelope (identity, empty, replay_meta,
+    // payload; HEP-CORE-0027 §3.6) as a single multipart message.
+    // multipart_t::recv reads all frames atomically:
     // either the whole message is available or the call returns false/throws.
     zmq::multipart_t parts;
     try
@@ -393,15 +435,56 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         return nullptr;
     }
 
-    if (parts.size() != 3)
+    if (parts.size() != 4)
     {
         ++pImpl->recv_frame_error_count_;
         return nullptr;
     }
 
     std::string sender_id = parts[0].to_string();
-    // parts[1] is the empty delimiter (size==0, enforced implicitly by ROUTER/DEALER pattern).
-    zmq::message_t &payload = parts[2];
+    // parts[1] is the empty delimiter (size==0, ROUTER/DEALER pattern).
+    // parts[2] is the replay-metadata frame; parts[3] is the msgpack payload.
+
+    // ── Replay defense (HEP-CORE-0027 §3.6) ──────────────────────────────
+    // Skew-check the wall_ts, then dedup the nonce via the shared
+    // ReplayGuard (keyed by sender identity).  A rejected frame is dropped
+    // BEFORE any handler runs, so a replayed side effect never fires.
+    {
+        zmq::message_t &meta = parts[2];
+        if (meta.size() != kInboxMetaLen)
+        {
+            ++pImpl->recv_frame_error_count_;
+            return nullptr;
+        }
+        const auto *m = static_cast<const unsigned char *>(meta.data());
+        const std::uint64_t wall_ts = inbox_get_be64(m + kInboxNonceLen);
+        const std::uint64_t now     = inbox_now_ms();
+        const std::uint64_t skew =
+            now > wall_ts ? now - wall_ts : wall_ts - now;
+        if (skew > kInboxReplaySkewMs)
+        {
+            pImpl->recv_replay_reject_count_.fetch_add(
+                1, std::memory_order_relaxed);
+            LOGGER_WARN("[hub::InboxQueue] dropping frame from '{}': "
+                        "wall-clock skew {}ms exceeds tolerance",
+                        sender_id, skew);
+            return nullptr;
+        }
+        const std::string_view nonce(reinterpret_cast<const char *>(m),
+                                     kInboxNonceLen);
+        if (!pImpl->replay_guard_.check_and_record(sender_id, nonce, wall_ts,
+                                                   kInboxReplayWindowMs))
+        {
+            pImpl->recv_replay_reject_count_.fetch_add(
+                1, std::memory_order_relaxed);
+            LOGGER_WARN("[hub::InboxQueue] dropping replayed frame from '{}' "
+                        "(nonce reused within window)",
+                        sender_id);
+            return nullptr;
+        }
+    }
+
+    zmq::message_t &payload = parts[3];
 
     if (payload.size() >= pImpl->max_frame_sz)
     {
@@ -518,6 +601,12 @@ uint64_t InboxQueue::recv_gap_count() const noexcept
 uint64_t InboxQueue::checksum_error_count() const noexcept
 {
     return pImpl ? pImpl->checksum_error_count_.load(std::memory_order_relaxed) : 0;
+}
+
+uint64_t InboxQueue::recv_replay_reject_count() const noexcept
+{
+    return pImpl ? pImpl->recv_replay_reject_count_.load(std::memory_order_relaxed)
+                 : 0;
 }
 
 void InboxQueue::set_checksum_policy(ChecksumPolicy policy) noexcept
@@ -733,9 +822,17 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     // multipart_t::send is atomic — every frame goes out or none.
     try
     {
+        // Replay metadata (HEP-CORE-0027 §3.6): fresh random nonce +
+        // current wall-clock, stamped per send so the receiver can skew-
+        // and dedup-check before running the handler.
+        unsigned char meta[kInboxMetaLen];
+        pylabhub::utils::security::secure().random_bytes(meta, kInboxNonceLen);
+        inbox_put_be64(meta + kInboxNonceLen, inbox_now_ms());
+
         zmq::multipart_t out;
         out.addstr("");                                                 // empty delimiter
-        out.addmem(pImpl->sbuf_.data(), pImpl->sbuf_.size());            // payload
+        out.addmem(meta, kInboxMetaLen);                                // replay metadata
+        out.addmem(pImpl->sbuf_.data(), pImpl->sbuf_.size());           // payload
         if (!out.send(pImpl->socket))
         {
             LOGGER_WARN("[hub::InboxClient] send to '{}' returned false (HWM?)",
