@@ -1,0 +1,476 @@
+# REVIEW — Full-System HEP-vs-Code Audit (2026-07-20)
+
+**Status:** ❌ OPEN — findings filed, no fixes applied. Awaiting maintainer triage.
+**Scope:** all of `src/` (114k LOC, 282 files) + `tests/` (~319 files) against the
+42-HEP corpus and `docs/README/README_testing.md`. `third_party/` excluded.
+**Method:** multi-agent workflow — 14 subsystem reviewers (each: governing HEP →
+code+headers → tests, across 7 lenses) → per-finding adversarial verification
+(refuted findings dropped) → cross-cutting synthesis. 71 agents, 0 errors,
+4.1M tokens. Every finding below is CONFIRMED (survived an independent verifier
+that read the source/HEP and tried to refute it). The flagship `ReplayGuard`
+finding was additionally re-verified by hand.
+
+**Seven lenses:** HEP-conformance gap · risk/error · duplication · dead residue ·
+overengineering · test-coverage-vs-HEP-contract · test-design-vs-pattern.
+
+## Tally
+
+| Severity | Count |
+|---|---|
+| Critical | 0 |
+| High | 4 individual + 6 cross-cutting |
+| Medium | 25 |
+| Low | 18 |
+| **Total verified** | **47 individual + synthesis** |
+
+By lens: hep-gap 23 · test-coverage-gap 8 · risk-error 7 · dead-residue 7 ·
+duplication 1 · test-design-violation 1 · overengineering 0 (none survived
+verification — the codebase is not over-abstracted; the drift is doc-vs-code).
+
+## Highest-priority (maintainer decisions needed)
+
+1. **`ReplayGuard` clock source (security, high)** — `src/include/utils/replay_guard.hpp:58`
+   prunes its window on the *client-supplied* `wall_ts`. With `window == skew`
+   (inbox + admin + REG, all 30s), an authenticated peer sends a forward-stamped
+   nonce to evict an earlier nonce, then replays it — defeating I-REPLAY-BOUND on
+   **all three planes at once** (they share the one guard). Fix once: prune on a
+   trusted steady/receive clock; keep client `wall_ts` only for the skew gate.
+   *(This is code from task #64; hand-verified.)*
+2. **Dead/no-op authority enforcement (security, high)** — four sanctioned validators
+   are inert: consumer schema-citation validation never called; key-rotation gate is
+   a no-op; `RoleIdentityPolicy::Verified` does string-compare not CURVE-pubkey match;
+   producer_uid stale-SHM cross-check unimplemented. The identity layer reads stronger
+   in the HEPs than it behaves.
+3. **Federation peer-DEALER ingress bypasses the admission gate chain (security, high)** —
+   `broker_service.cpp:1400-1418` dispatches inter-hub relay/targeted messages with no
+   `receive_and_validate` (no identity-match, no replay, no known-role gate).
+4. **Consumer teardown omitted on failure paths (correctness, high)** —
+   `consumer_role_host.cpp` leaks worker-thread ZMQ sockets on four early-returns that
+   producer and processor both clean up.
+5. **Masked HubHost lifecycle FSM suite (coverage, high)** — the entire L2 HubHost
+   lifecycle suite is commented out; HEP-0033 §4 phase FSM + startup/shutdown ordering
+   have zero active coverage.
+6. **Systemic HEP↔code drift (high)** — 8+ governing HEPs describe superseded
+   symbols/wire-shapes; anyone who "refreshes against the HEP" is handed a wrong contract.
+
+---
+
+# Cross-cutting synthesis
+
+## Top systemic themes
+
+1. Documented-but-dead enforcement is the dominant systemic risk: sanctioned validators for schema citation, key rotation, CURVE identity matching, and stale-SHM producer_uid cross-check are each inert/no-op/downgraded, so the codebase's security posture reads stronger in the HEPs and headers than it behaves in production.
+
+2. Shared framework primitives are correctly single-instance (ReplayGuard, the 5-tuple wire codec + ChecksumPolicy, classify_peer_verdict) but their contracts are documented inconsistently across the subsystems that consume them, and a flaw or gap in the one instance (replay clock source, None-mode integrity skip, BUILD_ONLY masking) propagates to every plane at once — the highest-leverage fixes are at the shared primitive, not per-site.
+
+3. Pervasive HEP-vs-code drift undermines the project's own 'refresh against the HEP before working' discipline: 8+ governing HEPs describe superseded keypair/registry/wire/factory/identity models, so every reviewer who trusts the doc as design authority is handed a wrong contract.
+
+4. Failure, timeout, and error paths leak or diverge across subsystems (consumer teardown omitted while producer/processor clean up; pending_requests TTL leak; unbounded Lua error-stack growth), pointing to a missing RAII/scope-guard convention for non-happy-path resource release.
+
+5. Coverage blind spots cluster on exactly the load-bearing, security-relevant areas: the Band and Federation planes (the peer-DEALER ingress bypasses the admission gate chain entirely), the shm-attach-capability subsystem (coverage note was literally 'test'), the HEP-0017 REG admission pipeline, and the lifecycle-module machinery — plus whole FSM suites masked and shared helpers left untested.
+
+
+---
+
+## Cross-cutting defects (visible only across subsystems)
+
+### [high/risk-error] Sanctioned identity/authority enforcement is dead, no-op, or downgraded in four places across three subsystems
+- Subsystems: schema-registry-blds, broker-reg-wire, datahub-slot-policy-pipeline
+- The codebase documents strong CURVE-key-bound authority enforcement but the actual enforcement code is inert in four independent spots: (1) broker_service.cpp:3435 — the consumer-citation path never calls HubState::_validate_schema_citation, so the single-validator owner-authority model is inert for consumers, and consequently hub_state.cpp:2314 schema_citation_rejected_total is permanently zero; (2) broker_service.cpp:6705 — the key-rotation gate is a permanent no-op, making the KEY_ROTATION_REQUIRES_DEREG reject code unreachable; (3) data_block.cpp (HEP-0013 Verified RoleIdentityPolicy at broker_service.cpp check_role_identity) does self-asserted string matching and never consults the socket's CURVE pubkey; (4) data_block.cpp:3021 — the mandated consumer cross-check of SHM producer_uid against the DISC_ACK producer_uid (stale-SHM abort) is not implemented anywhere. Each reviewer saw one dead validator; together they show the identity/authority layer is documented-but-not-wired as a pattern. Under the project's hard-enforce frame this is the single highest-value theme.
+- Fix: Treat 'validator exists but has no production caller / is a no-op / does string-compare instead of pubkey-compare' as a class: wire receive-side citation validation into the consumer REG path, make the key-rotation gate actually gate (or delete the invariant text), bind RoleIdentityPolicy::Verified to the ZAP-verified CURVE pubkey, and implement the producer_uid stale-SHM abort. Add one L2/L3 test per re-armed validator that asserts the reject counter increments.
+
+### [high/risk-error] One shared ReplayGuard with an attacker-controllable clock reference underpins all three admission planes
+- Subsystems: security-curve-vault, broker-reg-wire, hub-character-lifecycle, inbox-band-messaging
+- replay_guard.hpp:58 prunes its sliding window using the caller-supplied, client-stamped wall_ts as the clock reference, so a forward-skewed frame evicts earlier nonces and re-opens them to replay when window==skew. Three independent reviewers confirmed this same ReplayGuard instance is the ONE dedup store shared by the inbox plane (hub_inbox_queue.cpp), the REG plane (hub_state.cpp nonce_seen), and the admin plane (admin_service.cpp / hub_host.cpp nonce_seen) — it is correctly not duplicated, but that also means the single clock-source flaw compromises replay defense on every authenticated plane simultaneously, and no plane supplies its own trusted monotonic clock to compensate.
+- Fix: Prune the window against a broker-local monotonic/steady clock (or a server-stamped receive time), keeping the client wall_ts only for the freshness/skew bound. Fix once in ReplayGuard; all three planes inherit it. Add a replay-after-skew regression test at the ReplayGuard L1 level so every plane is covered by one pin.
+
+### [high/hep-gap] Integrity checksum is a shared None/Manual/Enforced toggle on ONE codec, but three HEP/header contracts describe it inconsistently (and two allow silently skipping it)
+- Subsystems: inbox-band-messaging, network-brc-topology, datahub-slot-policy-pipeline
+- InboxQueue and ZmqQueue serialize through the SAME codec (zmq_wire_helpers.hpp pack_frame/unpack_envelope, a 5-tuple magic|tag|seq|payload|checksum) and share the SAME enum (ChecksumPolicy in data_block_policy.hpp) whose None mode sends zeros / skips verification (hub_zmq_queue.cpp:357, hub_inbox_queue.cpp:532). Yet the contracts diverge three ways: HEP-0027 §3 declares inbox checksum 'mandatory and always-on, no policy toggle' (contradicted by the shared None mode); HEP-0021 §13 documents the zmq frame as 4 elements with checksum 'deferred' (hub_zmq_queue.hpp:14 actually enforces a 5th); and both queue headers (hub_inbox_queue.hpp:11, plus the zmq header) describe a 4-element array omitting the checksum. One primitive, one integrity toggle, three wrong docs — and a security-relevant None path that HEP-0027 says should not exist.
+- Fix: Document the 5-tuple + ChecksumPolicy once at the shared codec (zmq_wire_helpers.hpp / data_block_policy.hpp) and have both queue headers and HEP-0021 §13 / HEP-0027 §3 reference that single description. Then make a policy decision: if inbox integrity is truly mandatory, forbid ChecksumPolicy::None for the inbox plane at construction rather than documenting a toggle away.
+
+### [high/risk-error] Resource cleanup omitted on failure/timeout/error paths, including one intra-role-family divergence
+- Subsystems: roles-producer-consumer-processor, network-brc-topology, scripting-engines
+- The same 'happy-path cleans up, error-path leaks' defect recurs in three subsystems: (1) consumer_role_host.cpp:365 — worker_main_ omits teardown_infrastructure_() on four post-setup early-returns, while producer_role_host.cpp and processor_role_host.cpp BOTH clean up on the identical failure shape — a divergence in parallel plumbing that defers worker-thread ZMQ sockets to destructor cleanup on a different thread; (2) broker_request_comm.cpp:666 — timed-out request-reply entries leak permanently in pending_requests when no reply arrives; (3) lua_engine.cpp:761 — eval() error path never pops the Lua error string, growing the shared owner lua_State stack unbounded across repeated failures. All three are unbounded/leaked resource on the non-success path.
+- Fix: Adopt RAII/scope-guard teardown so the failure path cannot diverge from success: give consumer_role_host the same guard producer/processor use, add a TTL sweep (or move-on-timeout) for pending_requests, and wrap the Lua eval error extraction so the stack is restored on every exit. A clang-query rule 'setup followed by early-return without teardown guard' would catch the class.
+
+### [high/risk-error] Broker↔broker federation ingress bypasses the sanctioned receive_and_validate gate chain
+- Subsystems: broker-reg-wire, inbox-band-messaging, network-brc-topology
+- The ROUTER ingress runs every frame through wire::dispatch::receive_and_validate (broker_service.cpp:1386) which enforces identity-match, replay/nonce, and known-role gates. But the peer DEALER ingress at broker_service.cpp:1400-1418 parses raw JSON and dispatches HUB_RELAY_MSG / HUB_TARGETED_MSG straight into handle_hub_relay_msg / handle_hub_targeted_msg with NO receive_and_validate call — the entire gate chain (including the shared ReplayGuard) is skipped for inter-hub traffic. Two independent reviewers flagged this as out-of-scope-but-suspicious; the code confirms the single-validator contract is applied on one ingress and bypassed on the other. This is a genuine cross-cutting security gap, not merely a blind spot.
+- Fix: Route peer-DEALER federation frames through the same receive_and_validate (or a federation-specific gate chain that still enforces peer identity + replay) before dispatch, or document explicitly why broker-authenticated peer links are exempt. Add a federation-plane admission test.
+
+### [high/hep-gap] Systemic HEP-vs-code drift: governing HEPs describe superseded models across 8+ subsystems
+- Subsystems: hub-character-lifecycle, core-abi-thread-lifecycle, logging-metrics, scripting-engines, datahub-slot-policy-pipeline, network-brc-topology
+- Because this project treats docs as design authority OVER code and every reviewer is instructed to 'refresh against the HEP at the moment of starting work,' stale HEPs mislead the entire team. Confirmed drift spans nearly every subsystem: HEP-0033 §4 (retired auth().client_pubkey keypair model + 3-arg HubHost ctor); HEP-0026 (ComponentVersions/query API stale vs shipped 7-axis registry); HEP-0032 §8.2 (abi_fingerprint wire schema the serializer never produces and the parser rejects); HEP-0019 §5.4 (self-contradicting field counts); HEP-0020 (omits shipped make_lifecycle_module); HEP-0011 (documents make_engine_from_script_config; shipped symbol is create_engine); HEP-0013 (documents CURVE pubkey match never implemented — see the dead-enforcement theme); HEP-0021 §13/§16 (wrong frame element count; unimplemented §16.4 state machine). This is one systemic documentation-integrity failure, not eight isolated typos.
+- Fix: Run a HEP↔symbol reconciliation pass: for each HEP that names a type/function/wire-shape, grep the header tree and correct the HEP to the shipped symbol, or mark the code as the deviation to fix. Prioritize the wire-schema and identity HEPs (0032 §8.2, 0013, 0021) since those mislead interop and security work.
+
+### [high/test-coverage-gap] Whole FSM suites masked and shared cross-role helpers have zero direct tests
+- Subsystems: hub-character-lifecycle, logging-metrics, core-abi-thread-lifecycle, datahub-slot-policy-pipeline
+- Critical-path coverage is absent in a recurring shape — either a whole suite is commented out or a shared helper used by multiple subsystems has no unit pin: (1) tests/test_layer2_service/CMakeLists.txt:1632 — the entire L2 HubHost lifecycle suite is MASKED, leaving the HEP-0033 §4 phase FSM and startup/shutdown ordering with zero active coverage; (2) logger.hpp:475 — the whole synchronous logging path (LOGGER_*_SYNC / write_sync) has no test anywhere; (3) test_abi_check.cpp — classify_peer_verdict, the §8.6 taxonomy helper used by BOTH broker and role, has zero direct unit tests (and version_registry.cpp:342 has a confirmed BUILD_ONLY-masks-MINOR bug in exactly that untested helper); (4) test_loop_timing_policy.cpp:8 — compute_next_deadline/compute_short_timeout have zero tests despite the file's own docstring claiming coverage and a documented past deadline-math regression.
+- Fix: Un-mask the HubHost lifecycle suite (or file the blocking reason as a tracked item), and add L1 unit pins for the shared helpers that multiple subsystems depend on — classify_peer_verdict and the loop-timing math especially, since they are shared surfaces with known past/latent bugs and no net.
+
+### [medium/dead-residue] Post-CURVE/vault hard-cutover left dead code, authoritative-storage doc contradictions, and forbidden test-harness instructions
+- Subsystems: security-curve-vault, test-framework, mains-cli
+- The known_roles/vault hard-cutover (HEP-0035 §4.8) was completed in code but its migration-era residue survives in three subsystems and actively misleads: (1) known_roles.cpp:359 — the empty-pubkey filter in as_peer_allowlist() and its 'legacy entries handled by RoleIdentityPolicy' narrative are dead because validate_entry() now rejects empty/short pubkeys at both insertion points; (2) known_roles.hpp:9 — the file header still presents the mode-0600 plaintext known_roles.json as THE storage medium, contradicting §4.8's decision that the encrypted vault is authoritative and the plaintext file is one-shot migration only; (3) broker_test_harness.h:122 — start_hubhost_broker's docstring still prescribes seed_curve_identities and a plaintext known_roles.json sidecar, both of which now throw / are forbidden; (4) hub_cli.hpp:166 — plh_hub usage text (and HEP-0035 §4.8.3/4.8.4) point operators to `plh_role --print-pubkey` and `<role_dir>/vault/<role_uid>.pub`, neither of which exists.
+- Fix: Sweep the cutover as one unit: delete the dead empty-pubkey filter + narrative, rewrite the known_roles.hpp storage header and the test-harness docstring to name the encrypted vault as authoritative, and fix the CLI/HEP operator instructions to the commands that actually ship. A migration is not done until its old-path docs and dead branches are removed.
+
+### [medium/hep-gap] Typed-envelope wire discipline honored in the REG pipeline but bypassed via raw JSON scatter on the admin plane and the legacy adapter
+- Subsystems: broker-reg-wire, hub-character-lifecycle
+- HEP-0046 §14 (and the project's mandatory 'typed envelope, no JSON scatter' rule) require essential fields at fixed typed positions. The REG pipeline honors this, and wire_bodies.hpp explicitly designates the admin pathway as the reference exemplar — yet admin_service.cpp:372 reads the security triple (client_wall_ts / client_nonce) via raw body.value() JSON scatter, and broker_service.cpp:1473's to_legacy adapter injects only correlation_id while its comment claims it also injects role_uid (a silent-empty trap if a future legacy handler reads body['role_uid']). The contract that is supposed to be uniform is followed in one module and violated in the very pathway held up as the model.
+- Fix: Move the security-triple extraction to typed body accessors on the admin path (matching the REG pipeline), and either make to_legacy inject role_uid as its comment claims or fix the comment — treat the invariant as 'the type expresses the field,' never per-site body[...] extraction.
+
+---
+
+# All verified findings (ranked by severity)
+
+
+## HIGH severity
+
+### `docs/HEP/HEP-CORE-0032-ABI-Compatibility-Design.md:393` — hep-gap [core-abi-thread-lifecycle]
+- **The §8.2 abi_fingerprint wire schema documents a JSON shape that the actual serializer does not produce and the actual parser rejects.**
+- HEP: HEP-CORE-0032 §8.2 Wire envelope  · drift: hep-stale
+- Evidence: §8.2 (lines 389-405) says the wire shape 'mirrors version_info_json()' and lists fields "release", "library":"<major>.<minor>.<rolling>", and "build_id" INSIDE the envelope. But the real wire serializer is to_json_object() (version_registry.cpp:369-388), which emits library_major/library_minor/library_rolling as separate integers and NO release, NO dotted library, NO build_id. from_json_object() (version_registry.cpp:390-459) REQUIRES library_major/library_minor/library_rolling (throws std::invalid_argument if absent) and ignores release/library. Broker (broker_service.cpp:338-343) reads build_id as a top-level SIBLING via req.value("build_id",...), not from inside abi_fingerprint. An external peer implementer coding to §8.2 would send {"release":..,"library":"1.2.3",...,"build_id":..} and from_json_object would throw → verdict='INVALID_ENVELOPE'. §8.2 also internally contradicts §8.3.3 and the to_json_object header docstring (plh_version_registry.hpp:446-449), both of which correctly state build_id is a sibling. The code is self-consistent; the HEP §8.2 schema drifted.
+- Fix: Rewrite §8.2 to match to_json_object(): library_major/library_minor/library_rolling integer fields (no release/dotted-library), and show build_id as a sibling field on the parent message, not a key inside abi_fingerprint.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer2_service/CMakeLists.txt:1632` — test-coverage-gap [hub-character-lifecycle]
+- **The entire L2 HubHost lifecycle test suite is commented out (MASKED), leaving the HEP-0033 §4 phase FSM and startup/shutdown ordering with zero active test coverage.**
+- HEP: HEP-CORE-0033 §4.3 (Phase FSM contract; names HubHostTest.StartupAfterShutdown_Throws / FailedStartupAllowsRetry as the pinning tests)  · drift: code-wrong
+- Evidence: Lines 1632-1663 mask `add_executable(test_layer2_hub_host ...)` with the note 'HubHost::startup() now throws on empty pubkey per HEP-CORE-0035 §2. These tests construct HubHost without providing a keypair.' So test_hub_host.cpp and workers/hub_host_workers.cpp are never built/run. hub_host_workers.cpp confirms this: make_config()/write_test_hub_json() never seed the KeyStore `hub_identity` entry that startup() now mandates (hub_host.cpp:173-183), and every worker (startup_idempotent, broker_hub_state_is_hub_host_hub_state, run_main_loop_blocks..., startup_fails_cleanly_on_busy_port host1, destructor_cleans_up..., startup_after_shutdown_throws, failed_startup_allows_retry) calls host.startup() expecting is_running()==true. Result: the phase-FSM contracts HEP-0033 §4.3 names by test (StartupAfterShutdown_Throws single-use, FailedStartupAllowsRetry rollback, idempotency, busy-port fast-fail path/speed pins) are unverified. Notably the AdminService suite directly below (CMakeLists line 1670) was RESTORED 2026-07-19 by seeding hub_identity via curve_test_setup.h::add_curve_identity in SetUp — the exact fix pattern exists and was applied next door but not to hub_host. Tracked as task #66 but currently a live coverage hole in the primary subsystem.
+- Fix: Restore test_layer2_hub_host with the AdminService pattern: seed `hub_identity` via curve_test_setup.h::add_curve_identity (or a provisioned Argon2id vault + load_keypair) in the worker setup, then un-comment the CMake block. Do not leave the FSM/ordering contracts unpinned.
+- Verdict: CONFIRMED (high)
+
+### `src/consumer/consumer_role_host.cpp:365` — risk-error [roles-producer-consumer-processor]
+- **Consumer worker_main_ omits teardown_infrastructure_() on four post-setup failure early-returns that producer and processor both clean up, deferring worker-thread-created ZMQ sockets/queues to destructor cleanup on a different thread.**
+- HEP: HEP-CORE-0031 §4.1 (ctrl-thread bracket drain); parity with producer_role_host.cpp:410 and processor_role_host.cpp:481  · drift: code-wrong
+- Evidence: After setup_infrastructure_() succeeds (line 220) and start_handler_threads() spawns the BRC ctrl thread(s), consumer_role_host.cpp returns without calling teardown_infrastructure_() on FOUR failure paths: start_handler_threads failure (305-310), register_consumer failure (363-367), apply_consumer_reg_ack failure (378-384), and wait_for_roles failure (418-426). Each just does `promise_ref.set_value(false); return;`. The sibling files call teardown_infrastructure_() on EVERY equivalent path: producer_role_host.cpp at 337/410/426/468, processor_role_host.cpp at 364/454/466/481/554. The consumer DOES call it on the very next path (finalize_channel_connect, line 409), proving the omissions are inconsistent, not intentional. teardown_infrastructure_() (role_host_frame.cpp:276) runs the HEP-CORE-0031 §4.1 bracket-contract drain via api().stop_handler_threads(), api().close_queues(), inbox_queue_->stop(), cleanup_tx_capability_() — and its own comment says it is designed to run while worker_main_ executes (worker thread). EngineHost::shutdown_() (engine_host.cpp:171) does NOT call teardown_infrastructure_(); it drains the ThreadManager then resets api_, so on these paths the BRC DEALER socket and inbox ROUTER socket created/used on the worker+ctrl threads are torn down via ~RoleAPIBase on the destroying (main) thread. libzmq sockets are not thread-safe to close from a foreign thread — the exact hazard the inline call exists to avoid.
+- Fix: Add teardown_infrastructure_() before promise_ref.set_value(false); return; on all four consumer failure paths (~308, ~365, ~383, ~423), matching producer and processor.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/replay_guard.hpp:58` — risk-error [security-curve-vault]
+- **ReplayGuard prunes its sliding window using the caller-supplied (client-stamped, attacker-replayable) wall_ts as the clock reference, so a forward-skewed frame can evict earlier nonces and re-open them to replay when window == skew.**
+- HEP: HEP-CORE-0027 §3.6 (I-REPLAY-BOUND); admission_gates.cpp AdmissionContext soundness note  · drift: code-wrong
+- Evidence: check_and_record uses the passed `wall_ts` both to timestamp the stored Entry AND as the 'now' reference for prune-on-access (cutoff = wall_ts - window_ms). Every caller feeds the CLIENT-supplied timestamp, not a trusted server clock: hub_inbox_queue.cpp:475 passes `wall_ts = inbox_get_be64(...)` (client-stamped, computed at line 460) while the trusted server `now` (line 461) is used ONLY for the skew gate; admission_gates.cpp:234 passes `client_wall_ts`; hub_state.cpp:2086 forwards the same. An entry E(nonce n, wall_ts w) is evicted when a later same-identity frame presents w' with w' > w + window. Skew-gating only bounds |now' - w'| <= skew, so an accepted frame may carry w' up to now'+skew <= w + 2*skew. With the documented soundness rule window >= skew (admission_gates.cpp:232-233 and inbox kInboxReplaySkewMs == kInboxReplayWindowMs == 30000), a frame with w' in (w+window, w+2*skew] both passes skew AND prunes E; a subsequent replay of E's frame (accepted while now_r <= w + skew) then finds n absent and is admitted as fresh — I-REPLAY-BOUND defeated. Realistic trigger: an authenticated client whose wall clock drifts 30-60s ahead prunes its own recent nonces early, letting an on-path attacker (the exact residual threat HEP-0027 §3.6 targets) replay earlier captured frames. The correct invariant with prune-by-client-time is window >= 2*skew, OR — cleaner — prune off the trusted receive clock: store/prune by server `now` and keep the skew check as the only consumer of client wall_ts.
+- Fix: Have callers pass the trusted server/receive time as the record+prune reference to ReplayGuard (dedup is by nonce equality, unaffected), keeping client wall_ts confined to the skew gate; or, if client-time pruning is kept, change the documented/enforced relationship to window_ms >= 2 * skew_tolerance_ms across inbox (kInboxReplayWindowMs) and AdmissionContext and update the note at admission_gates.cpp:232-233.
+- Verdict: CONFIRMED (high)
+
+## MEDIUM severity
+
+### `src/utils/ipc/admin_service.cpp:372` — hep-gap [broker-reg-wire]
+- **Admin plane reads the security triple (client_wall_ts / client_nonce) via raw body.value() JSON scatter instead of typed body accessors, violating the typed-envelope contract on the pathway wire_bodies.hpp itself designates the reference exemplar.**
+- HEP: HEP-CORE-0046 §14.3 + I-WIRE-ENVELOPE (§8.1); repo rule feedback_typed_envelope_no_json_scatter  · drift: code-wrong
+- Evidence: dispatch_typed's replay gate does `const std::uint64_t ts = body.value("client_wall_ts", std::uint64_t{0});` (line 372) and `const std::string nonce = body.value("client_nonce", std::string{});` (line 379), reaching into the raw nlohmann::json rather than a typed accessor. HEP-0046 §14.3 states 'No `body.value("field", ...)` scatter anywhere; the class is the schema' and I-WIRE-ENVELOPE requires 'every wire field is exposed as a typed accessor.' The admin COMMAND body classes (AdminPingReqBody, AdminSessionReqBody, AdminNamedReqBody, AdminCloseChannelReqBody, AdminBroadcastChannelReqBody, AdminQueryMetricsReqBody in wire_bodies.hpp:829-929) DO require the triple at construction (require_security_triple, wire_bodies.cpp:402/417/431/439/449/457) but expose ONLY session_id()/channel()/name()/etc. — no client_nonce()/client_wall_ts() accessor exists, forcing the scatter. This is exactly the pattern wire_bodies.hpp:759 calls out as 'the first fully-typed pathway and the reference for the JSON→typed migration.' Runtime impact is benign (the ctor guarantees presence+type before the gate runs, so the .value defaults never fire and replay defense still fails closed), so this is a design/consistency defect, not a live security hole — but it is a clean contract violation in freshly-written admin-CURVE code (task #62) and, unfixed, invites a future field to be read this way where the default WOULD matter.
+- Fix: Add client_nonce() and client_wall_ts() accessors to the admin COMMAND body classes (or a shared mix-in matching the REG-family triple accessors), and have dispatch_typed's gate take them from the already-constructed typed body `b` instead of the raw json. The gate lambda currently runs before/independently of `b`; pass the accessor values in.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/core/version_registry.cpp:342` — risk-error [core-abi-thread-lifecycle]
+- **classify_peer_verdict labels a peer BUILD_ONLY whenever build_id differs even if a minor axis also drifts, masking the MINOR_MISMATCH WARN and its axis list.**
+- HEP: HEP-CORE-0032 §8.5/§8.6 verdict taxonomy  · drift: code-wrong
+- Evidence: The only_build_id predicate (lines 342-350) requires build_id major flag set and NO major axis flag, but does NOT check that minor_axes is empty. Because build_id is a per-build git hash, ANY genuine minor-version drift between two peers necessarily coincides with a different build_id. So when build_id is exchanged (Debug or PYLABHUB_STRICT_ABI_CHECK — build_id sent iff PYLABHUB_HAVE_BUILD_ID), a real minor drift makes v.compatible=false via build_id AND only_build_id=true → kind=BuildOnly. §8.6 defines BUILD_ONLY as 'only build_id differs'; §8.5 requires WARN + MINOR_MISMATCH on a minor drift. Result: the §8.6 log emits verdict='BUILD_ONLY' with empty mismatched_axes (INFO) instead of verdict='MINOR_MISMATCH' with the drifted axis (WARN) — the MinorMismatch branch at line 354 is effectively dead whenever build_id is present. Concrete: peer with broker_proto_minor=1 vs local 0, both with distinct build_ids → logged BUILD_ONLY, drift hidden. Both broker_service.cpp:346 and role_api_base.cpp:147 rely on this shared classifier.
+- Fix: In the !v.compatible branch, treat as BuildOnly only when build_id is the sole major flag AND out.minor_axes.empty(); otherwise if minor axes are present classify as MinorMismatch (or a combined verdict) so the WARN + axis list survive.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer0_platform/test_abi_check.cpp:1` — test-coverage-gap [core-abi-thread-lifecycle]
+- **classify_peer_verdict — the shared §8.6 taxonomy helper used by both broker and role — has zero direct unit tests.**
+- HEP: HEP-CORE-0032 §8.6 verdict classification
+- Evidence: classify_peer_verdict (version_registry.cpp:312) is the single source of §8.6 verdict truth (Ok / BuildOnly / MinorMismatch / MajorMismatch + comma-joined major_axes/minor_axes lists) consumed by broker_service.cpp:346 and role_api_base.cpp:147. test_abi_check.cpp exercises check_abi, verify_peer_versions, and the JSON round-trip, but never calls classify_peer_verdict — no test pins BuildOnly vs MinorMismatch precedence, the axis-list string building, or the Ok/Major boundaries. This is exactly the untested surface that lets the BuildOnly-masks-MinorMismatch bug above pass review. The §8.6 log templates are said to be pinned by L3 tests (task #326) but the classifier's own branch logic is not unit-pinned at L0.
+- Fix: Add L0 cases covering each Kind including the mixed minor+build_id and multi-axis-major inputs, asserting kind and the exact major_axes/minor_axes comma-joined strings.
+- Verdict: CONFIRMED (high)
+
+### `docs/HEP/HEP-CORE-0026-Version-Registry.md:42` — hep-gap [core-abi-thread-lifecycle]
+- **HEP-0026's ComponentVersions struct and query API are badly out of date versus the shipped 7-axis registry.**
+- HEP: HEP-CORE-0026 §2.1/§2.4  · drift: hep-stale
+- Evidence: §2.1 defines ComponentVersions with shm_/wire_/script_api_ major+minor plus facade_producer_size/facade_consumer_size (a 5-field-plus-facade aggregate). The real struct (plh_version_registry.hpp:73-135) has SEVEN axes — library, shm, broker_proto (the renamed 'wire'), zmq_frame, script_api, script_engine, config — and NO facade size fields. §2.4 lists only current()/version_info_string()/version_info_json(), omitting the entire runtime-check surface that ships: check_abi, verify_peer_versions, classify_peer_verdict, to_json_object/from_json_object, build_id(), release_version(), python_runtime_version(). HEP status is still 'Implementing'. Per the project's core-doc authoring rule (design authority must lead code), this HEP no longer describes the subsystem it governs; a reader treating it as authority gets the wrong struct shape and misses the ABI-check facility entirely (HEP-0032 §8 leans on it).
+- Fix: Update §2.1 to the 7-axis struct (drop facade sizes, add broker_proto/zmq_frame/script_engine/config/library), and expand §2.4 to enumerate check_abi/verify_peer_versions/classify_peer_verdict/to_json_object/from_json_object; flip status to Implemented.
+- Verdict: CONFIRMED (high)
+
+### `docs/HEP/HEP-CORE-0013-Channel-Identity-and-Provenance.md:226` — hep-gap [datahub-slot-policy-pipeline]
+- **HEP-0013 documents Verified RoleIdentityPolicy as enforcing a CurveZMQ public-key match, but the code does self-asserted string matching only and never consults the socket's CURVE pubkey.**
+- HEP: HEP-CORE-0013 §4.1 + §5 (Verified policy); contrast HEP-CORE-0009 §(banner ~line 277)  · drift: hep-stale
+- Evidence: HEP-0013 §4.1 states 'Verified: producer_uid in KnownProducers AND CurveZMQ key matches; else DISC_NACK' and §5 says the broker 'validates both' the uid presence AND 'that the producer's CurveZMQ public key matches the registered public key entry.' The actual enforcement, BrokerServiceImpl::check_role_identity() (src/utils/ipc/broker_service.cpp:5692-5714), only does std::any_of over cfg.known_roles comparing ka.name/ka.uid/ka.role as plain strings taken from the REG_REQ body — no pubkey field is read or compared. role_identity_policy.hpp's own header (lines ~8-20) declares the whole enum a superseded placeholder that 'never consults the connecting socket's CURVE pubkey,' and HEP-0009 has already been amended with a supersession banner saying exactly this and pointing to HEP-0035's ZAP model. HEP-0013 was NOT updated in the same pass: it still carries Status 'Implemented (2026-02-28)' with no banner, so a reader trusting it believes Verified provides cryptographic producer authentication that does not exist. Security-relevant documentation drift in an integrity-critical, CURVE-authenticated framework.
+- Fix: Add the same supersession banner HEP-0009 received to HEP-0013 §4-§5 (and the Status field): state that RoleIdentityPolicy is a self-asserted-string placeholder pending HEP-0035, that Verified does NOT check CURVE keys today, and cross-link the HEP-0035 ZAP allowlist model.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/shm/data_block.cpp:3021` — hep-gap [datahub-slot-policy-pipeline]
+- **HEP-0013's mandated consumer cross-check of SHM producer_uid against the broker DISC_ACK producer_uid (stale-SHM abort) is not implemented anywhere in the consumer attach path.**
+- HEP: HEP-CORE-0013 §4.2 (Identity mismatch detection) + §3 Provenance-Flow VERIFY node  · drift: both
+- Evidence: HEP-0013 §4.2 requires: 'If a consumer attaches to a channel and finds that the SharedMemoryHeader.producer_uid does not match the producer_uid in the DISC_ACK from the broker, the consumer logs a LOGGER_ERROR and aborts the connection. This detects stale SHM segments reused by a different producer.' The §3 provenance flowchart shows the same VERIFY{SHM uid == broker uid?} → ABORT gate. The consumer side (DataBlockConsumer::producer_uid() at data_block.cpp:3021 merely reads the SHM field; the DISC_ACK handler at broker_request_comm.cpp:212 parses the reply) performs no comparison of the two uids — grep for the cross-check across src/ finds nothing. The producer's SHM identity is read for logging but never validated against the broker's registry answer. The mechanism also drifted: the discovery protocol was reworked (HEP-0042 channel-attach / capability-fd, HEP-0046 REG) and OS-credential checking moved to attach_protocol.cpp SO_PEERCRED, so the DISC_ACK-vs-SHM comparison HEP-0013 specifies may be intentionally obsolete — but neither the code implements it nor the HEP records its retirement.
+- Fix: Either implement the §4.2 cross-check on the consumer attach path (compare header->producer_uid to the broker-returned producer_uid, LOGGER_ERROR + abort on mismatch), or mark §4.2/§3-VERIFY as superseded by the capability-fd attach model and state what replaces the stale-SHM guard.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer2_service/test_loop_timing_policy.cpp:8` — test-coverage-gap [datahub-slot-policy-pipeline]
+- **compute_next_deadline() and compute_short_timeout() have zero unit tests despite the test file's own docstring claiming to cover them and a documented past regression in the deadline math.**
+- HEP: HEP-CORE-0008 §(LoopTimingPolicy timing); loop_timing_policy.hpp compute_next_deadline / compute_short_timeout
+- Evidence: test_loop_timing_policy.cpp's header comment (lines 6-9) lists 'compute_short_timeout(): short timeout calculation' and 'compute_next_deadline(): deadline computation for all three policies' as covered, but the file contains only four parse_loop_timing_policy string-parsing tests and no test of either timing function. compute_next_deadline (loop_timing_policy.hpp:320-356) is the load-bearing three-branch timing core: MaxRate → time_point::max, FixedRate on-time vs overrun reset-from-now, and FixedRateWithCompensation catch-up advance-from-prev-deadline. The header itself flags this code 'DO NOT REINVENT' and records a real 2026-05-03 regression where hand-rolled deadline math 'silently downgrades FixedRateWithCompensation to FixedRate (no catch-up after overrun)' — exactly the branch that has no test pinning it. The only references to these functions under tests/ are a lua integration worker and this file's stale docstring; the FixedRate-overrun-reset and Compensation-catch-up behaviors are unverified at unit level, so a future edit re-introducing the 2026-05-03 bug would pass CI.
+- Fix: Add unit tests for compute_next_deadline covering: MaxRate returns time_point::max; first-cycle (prev==max) returns cycle_start+period for both fixed policies; FixedRate on-time advances by exactly one period; FixedRate overrun resets to now+period (no catch-up); FixedRateWithCompensation advances prev_deadline+period even on overrun (catch-up). Add compute_short_timeout tests for the MaxRate=0 floor and the ratio*period case. Remove the stale docstring claims if not.
+- Verdict: CONFIRMED (high)
+
+### `docs/HEP/HEP-CORE-0033-Hub-Character.md:220` — hep-gap [hub-character-lifecycle]
+- **HEP-0033 §4 still describes the retired auth().client_pubkey/seckey keypair model and a 3-arg HubHost constructor, both superseded by the KeyStore identity model in code.**
+- HEP: HEP-CORE-0033 §4 / §4.1 step 2-3 vs HEP-CORE-0040 §171-172 + HEP-CORE-0011 Engine Construction Lifecycle  · drift: hep-stale
+- Evidence: §4.1 step 2 (line 220) states `cfg.load_keypair(password)` 'populates cfg.auth().client_pubkey/seckey' and line 230 references 'empty auth().client_pubkey'. But AuthConfig now carries ONLY `keyfile` (auth_config.hpp:34, per HEP-0040 §171) and load_keypair seeds the process KeyStore under kHubIdentityName via add_identity_from_z85 (hub_config.cpp:306); startup() checks `secure().keys().has(kHubIdentityName)` (hub_host.cpp:173-183), never auth().client_pubkey. Separately, the §4 code block (lines 147-149) shows `HubHost(config::HubConfig cfg, std::unique_ptr<ScriptEngine> engine, std::atomic<bool>* shutdown_flag)` — a 3-arg ctor with injected engine + shutdown_flag — but the shipped ctor is single-arg `HubHost(config::HubConfig)` (hub_host.hpp:119), the engine having moved into HubScriptRunner::worker_main_ per HEP-0011 (2026-05-07). A reader implementing to §4 would wire the wrong ctor and reach for retired auth fields.
+- Fix: Update §4 code block to the single-arg ctor and §4.1 step 2 to describe seeding secure().keys()['hub_identity'] via add_identity_from_z85; replace all auth().client_pubkey/seckey references with the KeyStore has(kHubIdentityName) precondition the code actually enforces.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/hub/hub_inbox_queue.cpp:532` — hep-gap [inbox-band-messaging]
+- **HEP-0027 §3 declares inbox checksum 'mandatory and always-on ... no policy toggle', but the code (and §4.2) implement a full None/Manual/Enforced toggle where None silently skips integrity verification.**
+- HEP: HEP-CORE-0027 §3 (Checksum verification) vs §4.2 step 8  · drift: hep-stale
+- Evidence: HEP-CORE-0027 §3 (lines 108-114) states: 'Checksum verification is mandatory and always-on ... Unlike SHM's ChecksumPolicy (None/Manual/Enforced), inbox has no policy toggle — checksum is always computed and verified.' The code contradicts this on BOTH ends: InboxQueue::set_checksum_policy / InboxClient::set_checksum_policy expose the full ChecksumPolicy enum; recv_one() line 532 wraps verification in `if (checksum_policy_ != ChecksumPolicy::None)` so a None policy accepts any payload without a BLAKE2b check, and send() line 811 only stamps a checksum when Enforced (Manual/None send zeros). The same HEP is internally inconsistent: §4.2 step 8 says 'The inbox OWNER dictates the checksum policy. The sender adopts it,' and the wire/config carries an `inbox_checksum` field — directly contradicting §3's no-toggle claim. Tests checksum_none_roundtrip and checksum_manual_no_stamp_receiver_rejects pin the toggle as real. So §3 is the stale statement; an integrity control the HEP advertises as un-disableable is in fact operator-disableable (inbox_checksum:"none").
+- Fix: Rewrite HEP-0027 §3 to document the real None/Manual/Enforced policy and its owner-dictated semantics (consistent with §4.2 and the ZmqQueue model), and state the security rationale that transport CURVE provides the baseline integrity so the app-level checksum is a policy, not a mandate — OR, if always-on is the intended contract, remove set_checksum_policy from the inbox classes and delete the None/Manual paths.
+- Verdict: CONFIRMED (high)
+
+### `docs/HEP/HEP-CORE-0027-Inbox-Messaging.md:206` — hep-gap [inbox-band-messaging]
+- **HEP-0027 §4.1 intro says inbox ROUTER bind + CURVE/ZAP arm MUST happen post-REG inside apply_*_reg_ack (S3), but the same section's S1 block and the production code both bind at S1 (pre-REG, during role-host setup).**
+- HEP: HEP-CORE-0027 §4.1 intro (post-REG S3 bind) vs §4.1 S1 block  · drift: hep-stale
+- Evidence: The §4.1 intro paragraph (lines 205-213) asserts: 'inbox ROUTER bind and CURVE/ZAP arm are data-plane footprint that MUST happen post-REG, inside apply_*_reg_ack (S3 of §3.5.5) ... The bind itself defers to S3 once the broker has accepted the role.' The very next block (the S1/S2/S3 listing, lines 216-227) contradicts this: 'S1 (setup_infrastructure_) — BIND + CURVE-ARM DENY-ALL ... Binding at S1 (rather than deferring to S3) resolves port-0 endpoints before S2 advertises them in REG_REQ.' Production matches S1, not the intro: setup_inbox_facility (role_host_helpers.hpp:177-191) calls InboxQueue::bind_at then queue->start() (which binds + arms CURVE deny-all), and it is invoked from role_host_frame.cpp:149 during frame setup BEFORE registration (the resolved actual_endpoint must go into REG_REQ). apply_master_approval only seeds the roster via set_peer_allowlist at S3; it never binds. The intro paragraph is stale and directly contradicts both the S1 block and the code.
+- Fix: Delete/rewrite the §4.1 intro paragraph (lines 205-213) so it agrees with the S1 block: bind + CURVE-arm deny-all happen at S1 to resolve port-0 before REG_REQ advertisement; only the roster/allowlist seed (lifting deny-all) happens at S3 in apply_*_reg_ack.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/logger.hpp:475` — test-coverage-gap [logging-metrics]
+- **The entire synchronous logging path (LOGGER_*_SYNC / log_fmt_sync / write_sync) has no test anywhere.**
+- HEP: HEP-CORE-0004 § "Synchronous Logging (LOGGER_*_SYNC)" + § Sink Write Modes
+- Evidence: HEP-0004 devotes a full normative section ("Synchronous Logging (LOGGER_*_SYNC)") to the blocking sync path: it must bypass the queue, acquire m_sink_mutex on the calling thread, write directly, and emit a distinct `[LOGGER_SYNC]` prefix (implemented at src/utils/logging/logger_sinks/sink.cpp:46) vs `[LOGGER]` for the async path. A grep of the entire tests/ tree for LOGGER_INFO_SYNC / LOGGER_ERROR_SYNC / LOGGER_SYSTEM_SYNC / log_fmt_sync / write_sync / `[LOGGER_SYNC]` returns zero hits. logger_workers.cpp exercises async, drop, flush, rotation, flock, and error-callback paths but never the sync path. So the sync-vs-async prefix distinction, the ordering guarantee relative to enqueued async logs, and the level-filter behavior of write_sync (logger.cpp:1236) are all unpinned — a regression that broke the sync prefix or silently routed sync writes through the queue would pass CI.
+- Fix: Add a worker (Pattern 3, like the other logger workers) that switches to a file sink, emits async + sync messages interleaved, and asserts (a) the sync line carries `[LOGGER_SYNC]`, (b) the async line carries `[LOGGER]`, and (c) a sync ERROR emitted after several async INFOs is present on disk immediately after the call returns (before flush).
+- Verdict: CONFIRMED (high)
+
+### `src/utils/ipc/hub_state.cpp:355` — hep-gap [logging-metrics]
+- **channel_metrics_snapshot omits the per-row _collected_at that HEP-0019 §4.2 mandates for producer/consumer metrics rows.**
+- HEP: HEP-CORE-0019 §4.2 (METRICS_ACK per-row _collected_at) + §3.2  · drift: both
+- Evidence: HEP-0019 §4.2 states: "Each row has its own `_collected_at` timestamp (when the broker last received an update for that (channel, uid, role_type) tuple)." _on_heartbeat DOES store this per presence (hub_state.cpp:1701, p->metrics_collected_at = now()). But channel_metrics_snapshot (lines 348-369) builds each producer row as `one = p->latest_metrics` + only injects `pid`, and each consumer row as bare `p->latest_metrics` — it never reads p->metrics_collected_at. Consequently the admin query's channels.<ch>.producer_metrics[uid] / consumer_metrics[uid] rows carry NO metrics timestamp. The channel-level `_collected_at` that channel_to_json does emit is `c.created_at` (channel creation), not the metrics collection time. The stored metrics_collected_at is surfaced only via the roles category (hub_state_json.cpp:152), so on the channels path the field is written-but-never-read. Both the code and the HEP have drifted: HEP §4.2's wire example still uses `producer` (singular) + `consumers[]` (array) with per-row `_collected_at`, whereas the shipped shape is `producer_metrics`/`consumer_metrics` keyed-by-uid trees without `_collected_at`.
+- Fix: In channel_metrics_snapshot, set one["_collected_at"] = fmt_time(p->metrics_collected_at) for each producer and consumer row; and reconcile HEP §4.2's wire example with the shipped keyed-by-uid producer_metrics/consumer_metrics shape.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer3_datahub/workers/datahub_metrics_workers.cpp:474` — test-coverage-gap [logging-metrics]
+- **No test pins per-row _collected_at on channel metrics rows; the one assertion checks channel-creation time, masking the §4.2 gap.**
+- HEP: HEP-CORE-0019 §4.2
+- Evidence: query_engine_channels_have_producer_and_consumer_metrics asserts `c.contains("_collected_at")` at line 474, but that key is the channel's created_at (channel_to_json / hub_state_json.cpp:88), NOT the metrics timestamp. No test asserts producer_metrics[uid] or consumer_metrics[uid] carries a metrics-collection `_collected_at`. This is why the §4.2 gap above ships green: the assertion pins a coincidentally-present field rather than the design's per-row timestamp contract. Per the 'tests pin design, not current behavior' rule, the assertion should derive from §4.2 (per-row timestamp) instead of confirming that some `_collected_at` exists at the channel level.
+- Fix: After fixing channel_metrics_snapshot, assert r["channels"][ch]["producer_metrics"][uid].contains("_collected_at") with a non-empty value; keep the channel-level check separate and named for created_at.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/hub_cli.hpp:166` — hep-gap [mains-cli]
+- **plh_hub usage text and HEP-0035 §4.8.3/§4.8.4 both point operators to `plh_role --print-pubkey` and a `<role_dir>/vault/<role_uid>.pub` file, neither of which exists.**
+- HEP: HEP-CORE-0035 §4.8.3 (add-known-role pubkey source) + §4.8.4 (bootstrap: role writes <role_uid>.pub on keygen)  · drift: code-wrong
+- Evidence: hub_cli.hpp:166 prints `(obtain via `plh_role --print-pubkey`)` in the live --add-known-role help. But role_cli.hpp has no --print-pubkey flag — an operator running it falls through to the unknown-option branch and gets exit 1. Separately, HEP-0035 §4.8.4 states the role writes `<role_dir>/vault/<role_uid>.pub` `alongside its vault on first keygen`, but RoleConfig::create_keypair (role_config.cpp:446-476) only calls RoleVault::create and returns public_key() — it publishes NO .pub file (contrast HubConfig::create_keypair:396 which does `vault.publish_public_key(hub_dir)` writing hub.pubkey). RoleVault has no publish_public_key method at all. So two of the three documented ways to obtain a role's CURVE pubkey are absent; the only working path is scraping `plh_role --keygen` stdout. This blocks the §4.8.4 bootstrap runbook.
+- Fix: Either implement `plh_role --print-pubkey` (opens the role vault, prints public_key()) and have RoleConfig::create_keypair publish `<role_dir>/vault/<role_uid>.pub` (mirror HubConfig's publish_public_key), OR correct hub_cli.hpp:166 and HEP-0035 §4.8.3/§4.8.4 to reference only `plh_role --keygen` stdout as the pubkey source.
+- Verdict: CONFIRMED (high)
+
+### `src/plh_role/plh_role_main.cpp:382` — risk-error [mains-cli]
+- **Role Python-interpreter eager-load guard omits the empty-path check that the parallel hub guard has, so a script-disabled role still runs Py_InitializeFromConfig.**
+- HEP: HEP-CORE-0011 §Engine Construction Lifecycle (Option E conditional load); mirrors plh_hub_main.cpp:564
+- Evidence: plh_hub_main.cpp:564 guards the interpreter load with `!cfg.script().path.empty() && (type=="python" || type.empty())`. plh_role_main.cpp:382 drops the path predicate: `if (c.script().type == "python" || c.script().type.empty())`. ScriptConfig defaults type="python" (script_config.hpp:21), so a role with an empty/disabled script path but default type unconditionally pays the full CPython Py_InitializeFromConfig cost and parks a GIL release — directly contradicting the in-code contract two lines up ("Native and Lua deployments skip this entirely; Py_Initialize cost is paid only when actually needed", line 381) and the hub's own parallel guard. The hub pins the script-disabled path with test NoScriptPasses (script.path=""); the role side has no such coverage, so the divergence is invisible to tests.
+- Fix: Add `!c.script().path.empty() &&` to the role guard so both mains gate the interpreter load identically on (path non-empty AND python/empty type).
+- Verdict: CONFIRMED (high)
+
+### `src/utils/network_comm/broker_request_comm.cpp:666` — risk-error [network-brc-topology]
+- **Timed-out request-reply entries leak permanently in pending_requests when no reply ever arrives.**
+- HEP: HEP-CORE-0023 §2.5.3; HEP-CORE-0007 §12.2.1
+- Evidence: pending_requests[corr_id] is inserted in handle_command (line 579) and erased in exactly ONE place: recv_and_dispatch when a reply with the matching correlation_id arrives (line 437). do_request_multi timeout path (653-668) only sets abandoned=true and returns nullopt; it never erases the entry, and disconnect() (861-878) does not clear the map. On a true timeout (broker slow/dead, or send suppressed because connected==false after the entry was registered) no reply ever comes, so the shared_ptr RequestCmd (mutex+cv+payload) stays forever and every later timed-out request adds another orphan. On a flaky/dead broker the map grows unbounded for the life of the role process.
+- Fix: Erase the entry on the timeout path (on the ctrl thread) and clear the map in disconnect(); the abandoned flag only guards the late-reply race, not the no-reply case.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/ipc/broker_service.cpp:5465` — hep-gap [network-brc-topology]
+- **ENDPOINT_UPDATE mid-life change rejects unconditionally with a non-catalog error code, contradicting HEP-0021 §16.8.**
+- HEP: HEP-CORE-0021 §16.8 + §16.5  · drift: code-wrong
+- Evidence: The handler treats any resolved (port not 0) endpoint as immutable: a second ENDPOINT_UPDATE_REQ with a different endpoint returns error_code ENDPOINT_ALREADY_SET regardless of consumer state (5451-5468). HEP-0021 §16.8 requires the opposite: resolved(X) to resolved(Y) with Y not X is ACCEPTED when zero consumers are admitted, rejected only when consumers are attached, with canonical error_code ENDPOINT_CHANGE_FORBIDDEN (§16.5 catalog). grep confirms ENDPOINT_CHANGE_FORBIDDEN exists nowhere in the tree and ENDPOINT_ALREADY_SET is not in the §16.5 catalog, so a client matching the documented code never recognizes this rejection. BRC send_endpoint_update (broker_request_comm.hpp:175-203) is the client and documents the §16.8 contract it does not receive.
+- Fix: Implement the §16.8 branch (accept when no consumer admitted, reject with ENDPOINT_CHANGE_FORBIDDEN when attached, keep idempotent Y==X ACK), or amend HEP §16.8 if never-change is the new intent and rename the code to the catalog term.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/hub_state.hpp:295` — hep-gap [network-brc-topology]
+- **The §16.4 zmq_node_endpoint_resolved state machine is unimplemented and endpoint storage is doubly-scoped; HEP §16 is internally inconsistent.**
+- HEP: HEP-CORE-0021 §16.3 / §16.4 / §16.7  · drift: both
+- Evidence: HEP-0021 §16.4/§16.7 prescribe a ProducerEntry.zmq_node_endpoint_resolved boolean plus an R6-extended gate Live AND (SHM OR resolved). grep shows no such field in src/. The broker approximates readiness by string-parsing the endpoint for port 0 on only the FIRST producer (broker_service.cpp:2989-3005, 3265-3285; comment 2991-2992 admits the shortcut, so a fan-in channel whose first producer resolved but a later one still holds port 0 passes). Separately §16.3 amendment says ProducerEntry.zmq_node_endpoint retires for a single ChannelEntry.data_endpoint scalar, yet both are live (hub_state.hpp:295 with mutators 880/947; ChannelEntry.data_endpoint at 671) and the handler writes one or the other by side (5446-5480). §16.3 contradicts §16.4/§16.6; code drifted from both.
+- Fix: Reconcile HEP §16 onto one model (per-channel data_endpoint scalar), delete/re-scope the §16.4 per-producer flag prose, fix the R6 gate to an any-ready scan in wording and code, and schedule the ProducerEntry.zmq_node_endpoint retirement.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer3_pattern4/test_pattern4_zmq_endpoint_registry.cpp:243` — test-coverage-gap [network-brc-topology]
+- **The ENDPOINT_UPDATE mid-life change / idempotent-fixed-port contract (HEP §16.8/§16.11) has no test.**
+- HEP: HEP-CORE-0021 §16.8 + §16.11
+- Evidence: The suite covers DefaultTransportIsShm, ZmqTransportRoundTrip, MultipleConsumersDiscoverSameEndpoint, ShmAndZmqCoexist, EndpointUpdateReflectedInDiscovery (initial port0-to-resolved), EndpointUpdateNonProducerReturnsError, EndpointUpdatePortZeroReturnsError. HEP-0021 §16.11 names EndpointUpdate_RejectedWhenConsumerAttached and EndpointUpdate_Idempotent_FixedPortProducer; neither exists (grep for both names / ENDPOINT_CHANGE_FORBIDDEN returns nothing in tests). The change-of-already-resolved-endpoint branch (5459-5468) is unpinned, which is why finding 2 slipped through. Assertions must derive from the §16.8 table, not current behavior.
+- Fix: Add an L3 test that resolves an endpoint, admits a consumer, attempts a change and asserts status=error + error_code=ENDPOINT_CHANGE_FORBIDDEN plus stored endpoint unchanged (side-effect check), plus a zero-consumer change-accepted case and a fixed-port idempotent case.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/ipc/broker_service.cpp:3435` — hep-gap [schema-registry-blds]
+- **The broker's consumer-citation path never calls HubState::_validate_schema_citation and never reads a cited owner; the sanctioned single-validator and the whole owner-authority citation model are inert for consumers.**
+- HEP: HEP-CORE-0034 §2.4 I4 (single validator); §9.1/§9.3 (citation is owner-authority claim, not hash lookup)  · drift: both
+- Evidence: §2.4 I4 is stated as a binding contract: 'citation validation goes through HubState::_validate_schema_citation(...). The broker's only job is to extract wire fields and forward them to this method.' In reality handle_consumer_reg_req (broker_service.cpp:3416-3519) validates inline: it reads expected_schema_id / expected_schema_hash / expected_schema_blds / expected_schema_packing, compares expected_schema_id to channel_entry.schema_id and expected_hash to channel_entry.schema_hash (the denormalized channel cache, §4.3), and never reads an expected_schema_owner. apply_consumer_schema_fields (schema_utils.hpp:461) likewise never emits schema_owner. _validate_schema_citation (hub_state.cpp:2245) has ZERO production callers (only tests/test_framework/hub_state_test_access.h + test_hub_state.cpp). Consequence: the §9.1 rule 'cited owner must be hub or a producer of the channel' and the §9.3 rule 'hash equality is NOT sufficient for citation' are unenforced — a consumer that matches the channel's id+hash is admitted regardless of which owner it intended to cite, exactly the owner-authority discrimination HEP-0034 was written to add. §15 Phase 3/5 admit consumer cross-citation is deferred, so the code and the emphatic §2.4 I4 wording have drifted; either I4 must be softened to 'planned' or the broker must route through the validator.
+- Fix: Either wire handle_consumer_reg_req to build the (cited_owner, cited_id, expected_hash, expected_packing) tuple from the wire (adding expected_schema_owner to apply_consumer_schema_fields) and call hub_state_->_validate_schema_citation against HubState.schemas, or downgrade §2.4 I4 and §9 to 'Phase 5-pending' so the doc stops asserting a validator path that production bypasses.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/ipc/hub_state.cpp:2314` — dead-residue [schema-registry-blds]
+- **The schema_citation_rejected_total counter can only be incremented inside the dead _validate_schema_citation, so it is permanently zero in production.**
+- HEP: HEP-CORE-0034 §11.3 (schema_citation_rejected_total bumped when _validate_schema_citation returns non-ok)  · drift: code-wrong
+- Evidence: grep shows the sole ++pImpl->counters.schema_citation_rejected_total lives at hub_state.cpp:2314 inside _validate_schema_citation, which has no production caller (see prior finding). The real consumer-rejection path (broker_service.cpp:3448/3454/3477/3516 returning SCHEMA_ID_MISMATCH / SCHEMA_CITATION_REJECTED / FINGERPRINT_INCONSISTENT) never touches the counter. HEP §11.3 promises this counter tracks citation rejections; operators reading BrokerCounters (surfaced via hub_state_json.cpp:213) will always see 0 even under a flood of rejected consumer citations, giving a false 'no schema problems' signal.
+- Fix: Bump schema_citation_rejected_total from the broker's actual rejection returns (or, better, fold via the fix in the prior finding so the counter and the validator live on the real path).
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/schema_utils.hpp:239` — duplication [schema-registry-blds]
+- **compute_schema_hash(SchemaSpec,SchemaSpec) and compute_canonical_hash_from_wire(strings) independently re-encode the same §6.3 canonical grammar and can diverge on the empty-fields boundary.**
+- HEP: HEP-CORE-0034 §6.3 (canonical form); subsystem contract: 'Schema hash canonicalization must be one function'
+- Evidence: compute_schema_hash (schema_utils.hpp:239-262) assembles 'slot:'+fields+'|pack:'+packing[+'|fz:'/'fz:'...] gated on spec.has_schema; compute_canonical_hash_from_wire (schema_utils.hpp:273-296) assembles the byte-identical grammar gated on !blds.empty(). Two hand-maintained copies of one wire fingerprint format that MUST stay bytewise equal (a test at test_schema_validation.cpp:363-400 pins equality today). The predicates already disagree: a SchemaSpec with has_schema=true but an empty fields vector hashes as 'slot:|pack:aligned' via compute_schema_hash but is skipped entirely by compute_canonical_hash_from_wire (empty slot_blds) — different fingerprints for the same logical input. compute_schema_hash (used by role_api_base.cpp:714/844) should delegate to compute_canonical_hash_from_wire(canonical_fields_str(slot), slot.packing, ...) so exactly one function owns the grammar.
+- Fix: Make compute_schema_hash a thin wrapper over compute_canonical_hash_from_wire(canonical_fields_str(slot_spec), slot_spec.packing, canonical_fields_str(fz_spec), fz_spec.packing) with a single has_schema/empty predicate, deleting the duplicated 'slot:'/'|fz:' assembly.
+- Verdict: CONFIRMED (high)
+
+### `src/scripting/lua_engine.cpp:761` — risk-error [scripting-engines]
+- **LuaEngine::eval() error path leaves the Lua error string on the persistent owner state without popping, so repeated eval failures grow the shared lua_State stack unbounded.**
+- HEP: HEP-CORE-0011 §ScriptEngine eval() (admin/debug surface); Lua C-API stack-balance discipline
+- Evidence: On the owner-thread path, `if (luaL_dostring(L, code.c_str()) != 0) { on_pcall_error_("eval"); return {InvokeStatus::ScriptError, {}}; }` returns WITHOUT popping the error message that luaL_dostring (= luaL_loadstring + lua_pcall) leaves on the stack. The success path self-heals via `lua_settop(L, 0)` (line 772), but two or more CONSECUTIVE failed evals each leave one string behind on the primary lua_State. On the hub side this same primary state is shared between admin eval/invoke_returning drains and the hot-path on_tick/on_produce callbacks, so the leaked slots persist across cycles until the next successful eval clears them. A long-lived hub taking repeated failing admin evals accumulates stack slots and can eventually hit Lua's stack-overflow limit; it also means hot-path callbacks run atop a non-empty base stack. Fix: `lua_settop(L, 0)` (or pop the error) on the failure branch, symmetric with the success branch.
+- Fix: Add `lua_settop(L, 0);` before returning on the luaL_dostring!=0 branch (and capture the error text for logging first if desired).
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/security/known_roles.hpp:9` — hep-gap [security-curve-vault]
+- **The file-header @brief/Storage block presents `<hub_dir>/vault/known_roles.json` (mode 0600 plaintext) as THE storage medium, contradicting HEP-0035 §4.8's decision that the encrypted vault is the authoritative home and the plaintext file exists only for one-shot migration.**
+- HEP: HEP-CORE-0035 §4.8.1 / §4.8.2 / §4.8.7  · drift: code-wrong
+- Evidence: Lines 9-15 state 'Storage. Persisted at <hub_dir>/vault/known_roles.json, file mode 0600 (operator-tamper-resistant)' as the primary contract, and §8 S5 decision (b) text argues 'encryption adds no value vs the file-ACL floor'. Per HEP-0035 §4.8/§4.8.1/§4.8.7 (and the store's own save_to_file doc at :130-134), the authoritative allowlist now lives INSIDE the encrypted hub vault precisely BECAUSE file-ACL alone does not defend against a local write-capable attacker, and the plaintext file is retained for `--migrate-known-roles` only. The header thus documents the superseded model as current. CLAUDE.md treats docs-in-code as code that must track the design; a reader wiring new callers off this header would target the wrong (retired) storage path.
+- Fix: Rewrite the header Storage section to state the vault (HEP-0035 §4.8) as authoritative, with from_json/to_json against the decrypted payload as the production path, and demote the file codec to migration/test-only (as save_to_file's own doc already correctly says).
+- Verdict: CONFIRMED (high)
+
+### `tests/test_framework/broker_test_harness.h:122` — hep-gap [test-framework]
+- **start_hubhost_broker's header docstring is stale and contradicts its own implementation: it prescribes seed_curve_identities and a plaintext known_roles.json sidecar, both of which now throw / are forbidden.**
+- HEP: HEP-CORE-0035 §4.8 / §4.8.7 (allowlist in encrypted vault, no plaintext sidecar); HEP-CORE-0040 §172  · drift: hep-stale
+- Evidence: Header CALLER CONTRACT (lines 122-129) states 'the caller MUST have a seed_curve_identities in scope BEFORE calling' — but seed_curve_identities seeds "hub_identity" from setup.hub, and the current .cpp (lines 142-149) explicitly says 'Callers must NOT call seed_curve_identities ... that would double-seed and throw' because start_hubhost_broker now owns hub_identity via provision_hub_vault + load_hub_keypair_fresh (cpp lines 189-197). Header BYPASS PATTERN (lines 131-158) further claims 'SKIPPED: the on-disk vault round-trip ... The fixture goes setup.hub -> secure().keys().add_identity_from_z85() directly' and 'setup.role_keys is written to vault/known_roles.json via KnownRolesStore::save_to_file'. Both are now false: the .cpp provisions a REAL encrypted vault (Argon2id) and reads it back through the production load_keypair, and per HEP-0035 §4.8.7 (documented in hub_vault_test_seed.h lines 8-12) a plaintext known_roles.json sidecar makes the hub REFUSE to start. A maintainer following the header contract would call seed_curve_identities, double-seed hub_identity, and hit a KeyStore duplicate throw. The header was not updated when tasks #63/#65 moved the allowlist into the encrypted vault.
+- Fix: Rewrite the start_hubhost_broker docstring to match the .cpp: caller seeds only per-role identities via seed_role_identities (NOT seed_curve_identities); the helper owns hub_identity through provision_hub_vault + load_hub_keypair_fresh; the allowlist lives inside the encrypted vault, not a known_roles.json sidecar.
+- Verdict: CONFIRMED (high)
+
+## LOW severity
+
+### `src/utils/ipc/broker_service.cpp:6705` — hep-gap [broker-reg-wire]
+- **The key-rotation gate is a permanent no-op, so the KEY_ROTATION_REQUIRES_DEREG reject code the invariant specifies is unreachable; a post-DEREG re-REG under a different pubkey is rejected with the wrong error code (PUBKEY_MISMATCH / UNKNOWN_ROLE).**
+- HEP: HEP-CORE-0046 §8.1 I-KEY-ROTATION-VIA-DEREG + §14.5 gate 6  · drift: code-wrong
+- Evidence: The check_key_rotation callback bound at broker init unconditionally returns KeyRotationCheck::not_yet_registered (broker_service.cpp:6705-6711), so gate_key_rotation (admission_gates.cpp:174-197) can never emit RejectCode::key_rotation_required. HEP §8.1 I-KEY-ROTATION-VIA-DEREG requires 'Any REG-family request whose zmq_pubkey differs from the role's currently-registered pubkey is rejected with UID_CONFLICT ... or KEY_ROTATION_REQUIRES_DEREG'. In the shipped code the security OUTCOME is still fail-closed — gate_known_role_binding rejects any pubkey not matching the immutable known_roles vault entry (PUBKEY_MISMATCH) and UID_CONFLICT fires at _on_producer_added for an already-registered uid — but the §8.1/§14.5-gate-6 KEY_ROTATION_REQUIRES_DEREG path is dead, and the operator-facing reject code diverges from the invariant. Either the HEP is stale (rotation detection subsumed by the immutable-known_roles model, gate 6 should be retired) or the code owes the per-role pubkey index the comment at 6698-6704 defers. Direction is code-wrong against the current HEP text; a doc reconciliation may instead retire the gate.
+- Fix: Decide and reconcile: if the immutable-vault known_roles model makes rotation-at-gate structurally impossible, retire gate 6 / gate_key_rotation and the key_rotation_required RejectCode from HEP §14.5 + admission_gates. Otherwise implement the deferred role_uid→current-pubkey index so the KEY_ROTATION_REQUIRES_DEREG code is actually produced. Do not leave a permanently-passing gate advertising an unenforced invariant.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/ipc/broker_service.cpp:1473` — dead-residue [broker-reg-wire]
+- **The to_legacy adapter comment claims it injects role_uid into the body, but the code only injects correlation_id — a misleading comment that would mask a silent-empty bug if a future legacy handler read body["role_uid"] for a msg_type whose typed body lacks it.**
+- HEP: HEP-CORE-0046 §14.4 handler dispatch (adapter bridge)
+- Evidence: The doc comment at broker_service.cpp:1473-1480 says 'Injects correlation_id + role_uid into the body so handlers that read them via body.value("correlation_id","") / body.value("role_uid","") keep working.' The implementation to_legacy() (1488-1499) injects only correlation_id; role_uid is never written. Today this is harmless because REG/DEREG/ChannelAuthApplied bodies already carry role_uid, and the one msg_type whose typed body omits role_uid (ENDPOINT_UPDATE_REQ, EndpointUpdateReqBody) uses the Frame-0 identity for role resolution (verified at handle_endpoint_update_req, broker_service.cpp:5374). The comment is simply stale/inaccurate, but it advertises a guarantee the bridge does not provide — a later handler added on this bridge that trusts the comment and reads body.value("role_uid","") would silently get an empty uid.
+- Fix: Correct the comment to state only correlation_id is injected (role_uid is expected to already be present in the typed REG-family body, or resolved from Frame-0 identity for bodies that omit it), so no future handler assumes an injection that doesn't happen.
+- Verdict: CONFIRMED (high)
+
+### `docs/HEP/HEP-CORE-0020-Interactive-Signal-Handler.md:316` — hep-gap [core-abi-thread-lifecycle]
+- **HEP-0020's public API omits the shipped make_lifecycle_module() lifecycle-integration mechanism.**
+- HEP: HEP-CORE-0020 §6.1 API Design  · drift: hep-stale
+- Evidence: The class provides make_lifecycle_module() (interactive_signal_handler.hpp:99; impl interactive_signal_handler.cpp:586-596) which registers a persistent 'SignalHandler' lifecycle module with a 7000ms shutdown thunk that auto-calls uninstall() during LifecycleGuard teardown, plus a process-global s_lifecycle_instance pointer. HEP-0020 §6.1's header listing and §4 architecture describe only install()/uninstall()/set_status_callback()/is_installed() and an explicit uninstall() in the main-loop exit path — the lifecycle-module route (the mechanism binaries actually use for teardown) is undocumented. §4 Principle 4 even says 'The handler doesn't own the shutdown path', which the persistent-module shutdown thunk now partially does.
+- Fix: Add make_lifecycle_module() to §6.1 and document the persistent-module registration + auto-uninstall teardown path and the one-instance-per-process s_lifecycle_instance invariant.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/config/hub_config.hpp:72` — dead-residue [hub-character-lifecycle]
+- **HubConfig::load_keypair doc contract promises a false 'return false if no keyfile configured' branch that is unreachable because empty auth.keyfile is rejected at config-load.**
+- HEP: HEP-CORE-0033 §7.1 (no in-memory CURVE mode; empty keyfile is a hard error)  · drift: code-wrong
+- Evidence: The header comment (lines 70-74) says '@return true if keys were loaded; false if no keyfile configured'. But parse_auth_config (auth_config.hpp:97-103) hard-throws on empty/absent keyfile, so by the time load_keypair runs auth.keyfile is guaranteed non-empty (hub_config.cpp:248-249 asserts exactly that), and the implementation unconditionally `return true;` (hub_config.cpp:354) — throwing on any failure instead. The 'false' return contract is dead: no caller can ever observe it, and it invites callers to write an unreachable no-keyfile branch. The same stale 'false if no keyfile' shape appears in the doc of load_keypair.
+- Fix: Change the doc to state load_keypair always returns true (throwing on any failure); drop the impossible 'false if no keyfile' branch from the contract, or make the return type void.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/hub_inbox_queue.hpp:113` — dead-residue [inbox-band-messaging]
+- **InboxQueue::bind_at doxygen claims the ROUTER is bound by apply_master_approval at S3 with a pending 'behavior fix ... under task #103' — a stale forward-reference; production binds in start() at S1 and that IS the shipped design.**
+- HEP: HEP-CORE-0027 §4.1 S1 (bind at setup)  · drift: code-wrong
+- Evidence: The bind_at doc comment (lines 107-117) says: 'create an InboxQueue that RECORDS @p endpoint as the future bind target; the ROUTER socket is bound by `apply_master_approval` (or `start()` under test stubs) at S3 per HEP-CORE-0036 §3.5.1 + HEP-CORE-0027 §4.1. Behavior fix lands under task #103.' This describes a superseded design. In reality bind_at only records the endpoint and start() performs the bind (lines 305-372), and start() is called directly by production setup_inbox_facility at S1 (role_host_helpers.hpp:187, invoked from role_host_frame.cpp:149) — not 'under test stubs' and not by apply_master_approval at S3. apply_master_approval never binds the inbox ROUTER (grep confirms no inbox bind at any apply_master_approval site). The comment misleads a reader into thinking the current behavior is provisional and the real bind is deferred to admission, which is false.
+- Fix: Rewrite the bind_at doc to state that start() binds the ROUTER (and arms CURVE deny-all) at S1 during role-host setup, that this is the shipped behavior, and drop the stale 'apply_master_approval at S3 / task #103' forward-reference.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer3_datahub/workers/hub_inbox_queue_workers.cpp:366` — test-coverage-gap [inbox-band-messaging]
+- **The 'bad_magic_drops' worker sends a 2-frame message that trips the parts.size()!=4 envelope guard, never reaching the msgpack magic check; frame magic validation and the recv_gap_count contract have no direct pinning test.**
+- HEP: HEP-CORE-0027 §3 (magic frame validation) + §8 (recv_gap_count) + §3.6 (seq resets on reconnect)
+- Evidence: bad_magic_drops (line 337) uses a raw DEALER to zmq_send a single 'BAAD' frame. The ROUTER then sees [identity, 'BAAD'] = 2 parts, so recv_one() rejects at the `parts.size() != 4` check (hub_inbox_queue.cpp:438) and never calls unpack_envelope, whose magic check (`if (magic != kFrameMagic)`, zmq_wire_helpers.hpp:194) is the thing the test name claims to exercise. So a well-formed 4-frame envelope carrying a WRONG magic (env.valid==false path at hub_inbox_queue.cpp:501) is never tested. Separately, recv_gap_count (per-sender seq-gap accounting, hub_inbox_queue.cpp:508-523; HEP-0027 §8) has no test — multiple_messages pins item->seq but never asserts recv_gap_count, and the HEP §3.6 contract that a reconnected sender's reset seq must NOT be falsely counted/rejected is unpinned.
+- Fix: Add a worker that sends a full 4-frame envelope (empty, valid 24-byte meta, msgpack payload with a corrupted magic word) and asserts recv_frame_error_count increments; add a worker that induces a seq gap and asserts recv_gap_count, plus one that reconnects a sender (seq back to 0, fresh nonces) and asserts the frames are accepted, not replay-rejected.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/hub_inbox_queue.hpp:11` — hep-gap [inbox-band-messaging]
+- **The InboxQueue header wire-format comment describes a 4-element array omitting the checksum, but the actual frame (and the .cpp file header + HEP §3) is a 5-tuple including bin32 checksum.**
+- HEP: HEP-CORE-0027 §3 (wire protocol 5-tuple)  · drift: code-wrong
+- Evidence: hub_inbox_queue.hpp lines 11-12 document: 'Wire format (MessagePack array, 4 elements — same as ZmqQueue): [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N fields)]' — no checksum element. The real frame packed by wire_detail::pack_frame is the 5-tuple [magic, schema_tag, seq, payload, checksum:bin32] (zmq_wire_helpers.hpp line 6 and hub_inbox_queue.cpp line 6 both correctly say fixarray[5] with checksum; HEP-0027 §3 also specifies 5 elements). The class-header comment is a stale/incorrect wire spec in the primary public header for this subsystem.
+- Fix: Fix the hub_inbox_queue.hpp header comment to '5 elements' and append ', checksum:bin32' so it matches pack_frame, the .cpp file header, and HEP-0027 §3.
+- Verdict: CONFIRMED (high)
+
+### `docs/HEP/HEP-CORE-0019-Metrics-Plane.md:599` — hep-gap [logging-metrics]
+- **HEP-0019 §5.4 field counts are stale: QueueMetrics is 12 fields (says 13) and LoopMetricsSnapshot is 5 fields (says 3), self-contradicting §5.4.1.**
+- HEP: HEP-CORE-0019 §5.4 (X-macro table) vs §5.4.1 (canonical field tables)  · drift: hep-stale
+- Evidence: §5.4's macro table claims 'QueueMetrics (13 fields)' and 'LoopMetricsSnapshot (3 fields)'. The actual X-macros are PYLABHUB_QUEUE_METRICS_FIELDS = 12 entries (hub_queue.hpp:189-201) and PYLABHUB_LOOP_METRICS_FIELDS = 5 entries (role_host_core.hpp:701-706: iteration_count, loop_overrun_count, last_cycle_work_us, configured_period_us, acquire_retry_count). §5.4.1's own loop table lists all 5 fields, directly contradicting §5.4's '3 fields' in the same document. Docs-are-code: the counts drifted while the field list stayed correct.
+- Fix: Update §5.4 to 'QueueMetrics (12 fields)' and 'LoopMetricsSnapshot (5 fields)', or drop the parenthetical counts entirely so the X-macro remains the single source of truth.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer2_service/test_logger.cpp:220` — test-design-violation [logging-metrics]
+- **Broken diagnostic in StressLog: fmt::print format string has no placeholder so the line count is silently dropped, and the substring differs from the assertion.**
+- HEP: README_testing (diagnostic hygiene)
+- Evidence: Line 220-221: `fmt::print(stderr, "Final log lines that contain [INFO  ]", count_lines(log_contents, "[INFO]"));` — the format string contains no `{}`, so the computed count argument is discarded (fmt tolerates extra args), and the diagnostic never prints the number it computed. It also searches for "[INFO]" (no padding) while the actual assertion on line 222 correctly searches "[INFO  ]" (two trailing spaces, the real sink format from sink.cpp:42). Harmless to the pass/fail outcome but a broken forensic line that would mislead anyone debugging a StressLog count mismatch.
+- Fix: Change to `fmt::print(stderr, "Final [INFO  ] line count: {}\n", count_lines(log_contents, "[INFO  ]"));`.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/hub_zmq_queue.hpp:14` — hep-gap [network-brc-topology]
+- **ZmqQueue wire frame is a 5-element msgpack array with an enforced checksum; HEP-0021 §13 documents 4 elements and lists checksum as deferred.**
+- HEP: HEP-CORE-0021 §13 + §4.2  · drift: hep-stale
+- Evidence: hub_zmq_queue.hpp:14-26 and hub_zmq_queue.cpp:9 define fixarray of 5 = [magic, schema_tag, seq, payload, checksum bin32] with ChecksumPolicy Enforced by default (hub_zmq_queue.cpp:249,431-439 auto-stamp BLAKE2b-256). HEP-0021 §13 (lines 648-654), the design authority for the ZmqQueue wire format, documents fixarray of 4 = [magic, schema_tag, seq, payload] with no checksum, and §4.2 (line 199) still lists Checksum support Deferred (HEP-CORE-0023). Under the byte-identical-codec constraint a doc-driven reimplementation built to the HEP would emit a 4-element frame the code rejects as a frame error.
+- Fix: Update HEP-0021 §13 to the 5-element frame with the checksum element and default ChecksumPolicy, and flip the §4.2 checksum-deferred row to reflect the shipped BLAKE2b-256 slot checksum.
+- Verdict: CONFIRMED (high)
+
+### `src/utils/network_comm/broker_request_comm.cpp:1288` — dead-residue [network-brc-topology]
+- **Defensive reply-echo checks carry stale rationale claiming msg_type-only pending-request keying that no longer exists.**
+- HEP: HEP-CORE-0046 §14 I-CORRELATION-STABLE
+- Evidence: consumer_attach_zmq (1266-1296) and channel_auth_applied (1188-1209) add reply-echo verification whose comments cite BRC pending_requests keying by msg_type only and serialization through the same pending_requests slot. That scheme is gone: pending_requests is keyed by a fresh per-request correlation_id (declaration 279, insert 579 uses cmd correlation_id, match 433 uses find(correlation_id)), and do_request_multi mints a unique random 32-hex correlation_id per call. A late reply for iteration N carries correlation_id A and can only match iteration N (then be dropped via abandoned), never cross-wiring into iteration N+1 under correlation_id B. The comments are factually wrong about the current mechanism; the checks are residue from the pre-correlation-id design and a maintainer trusting them would mis-model the reply-matching invariant.
+- Fix: Delete the reply-echo checks and their rationale, or rewrite the comments to state the real invariant (per-request correlation_id keying makes cross-wire impossible). Drop the follow-up per-request-correlation_id-keying note since that is already the mechanism.
+- Verdict: CONFIRMED (high)
+
+### `src/consumer/consumer_api.hpp:56` — hep-gap [roles-producer-consumer-processor]
+- **HEP-CORE-0018 §6.3 documents api.send(), api.broadcast(), api.notify_channel() as the common role messaging surface, but none of the three role APIs define them — superseded by the Band (band_*) and Inbox (open_inbox) planes per the HEP's own §15.**
+- HEP: HEP-CORE-0018 §6.3 (lines 510-512) vs §15.1/§15.6  · drift: hep-stale
+- Evidence: HEP-CORE-0018 §6.3 lines 510-512 list api.send(target,data), api.broadcast(data), and api.notify_channel(target,event,data) under 'Messaging (Messenger)'. Grepping the role API headers/impls shows these methods do not exist on ProducerAPI/ConsumerAPI/ProcessorAPI: the only send is InboxHandle::send (producer_api.cpp:314, consumer_api.cpp:284, processor_api.cpp:278) and the only broadcast is band_broadcast (consumer_api.hpp:56). §15.1/§15.6 of the same HEP state P2P messaging now uses Inbox (HEP-CORE-0027) and channel messaging uses Bands (HEP-CORE-0030), and the P2C/Messenger relay was removed 2026-04-11. §6.3 was never reconciled with §15, so a script author reading the API reference is directed to three methods that raise AttributeError at runtime.
+- Fix: Update HEP-CORE-0018 §6.3 to replace the api.send/broadcast/notify_channel block with the live Band + Inbox surface (band_join/band_broadcast/band_members, open_inbox/wait_for_role), cross-referencing §15.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/schema_utils.hpp:331` — risk-error [schema-registry-blds]
+- **SchemaRecord.blds stores only the slot canonical form while SchemaRecord.hash folds in the flexzone, so any schema with a flexzone cannot be reconstructed or hash-verified from its record's blds+packing.**
+- HEP: HEP-CORE-0034 §10.3/§11.4 (blds carried for reconstruction) and §6.3 (fingerprint folds flexzone)
+- Evidence: to_hub_schema_record (schema_utils.hpp:331-341) sets rec.blds = canonical_fields_str(slot_spec) but rec.hash = compute_canonical_hash_from_wire(slot, packing, fz_blds, fz_packing); the broker path-B record (broker_service.cpp:2408) similarly stores rec.blds = schema_blds_in (slot only). SchemaRecord has no flexzone field. A SCHEMA_REQ/SCHEMA_ACK client (§10.3) that fetches {blds, packing, schema_hash} for a hub-global or producer schema declaring a flexzone (a) cannot reconstruct the flexzone ctypes at all, and (b) if it recomputes BLAKE2b(canonical(blds||pack)) to self-verify, it gets the slot-only hash, which never equals the stored slot+flexzone hash. Path-C adoption still works because the producer supplies its own flexzone_blds, so this is latent rather than a live handshake break, but SCHEMA_REQ discovery of flexzone schemas is silently lossy.
+- Fix: Either add flexzone_blds/flexzone_packing to SchemaRecord and include them in SCHEMA_ACK, or document in schema_record.hpp that blds is slot-only and SCHEMA_REQ cannot reconstruct flexzones (and that recomputing hash from blds alone is invalid whenever a flexzone is present).
+- Verdict: CONFIRMED (medium)
+
+### `src/include/utils/script_engine_factory.hpp:85` — hep-gap [scripting-engines]
+- **HEP-CORE-0011 documents the engine factory as make_engine_from_script_config, but the shipped symbol is create_engine / create_engine_impl.**
+- HEP: HEP-CORE-0011 §Engine factory contract / §Engine Construction Lifecycle  · drift: hep-stale
+- Evidence: HEP-CORE-0011 §'Engine factory contract' (around line 1254) specifies `unique_ptr<ScriptEngine> make_engine_from_script_config(const config::ScriptConfig &sc);` as THE factory, and §'Engine Construction Lifecycle' references it by that name. No such symbol exists: the public dispatcher is `create_engine(const config::ScriptConfig&)` (script_engine_factory.hpp:85), backed by TU-private `create_engine_impl` (engine_factory.cpp:56) registered through `register_engine_factory`. Docs are treated as code in this repo; the HEP names a nonexistent function for the central construction entry point, which will misdirect readers and any new-engine author following the HEP. This is stale doc, not wrong code.
+- Fix: Update HEP-CORE-0011 to name `create_engine` (utils-side dispatcher) + `create_engine_impl` (scripting-side registered impl), matching script_engine_factory.hpp and engine_factory.cpp.
+- Verdict: CONFIRMED (high)
+
+### `src/include/utils/security/key_store.hpp:214` — dead-residue [scripting-engines]
+- **KeyStore::add_raw / lookup_raw doc-comments attribute them to the HEP-0038 script vault_save/vault_load API, which is unimplemented; the sole real consumer is the admin-session seal key.**
+- HEP: HEP-CORE-0038 §4 (deferred to #106); HEP-CORE-0043 §7 KeyStore storage
+- Evidence: add_raw is documented 'Insert raw secret bytes (HEP-0038 script vault_save)' (line 214) and lookup_raw 'HEP-0038 raw-secret access (`api.vault_load`)' (line 295). HEP-CORE-0038 is a DRAFT explicitly deferred to task #106 — there is no api.vault_save/api.vault_load binding in any engine (grep of src/scripting finds none) and RoleVault has never been extended with the `scripts` map §4/§147 call for. The actual and only callers are admin_session.cpp:85/128 for the per-instance admin-session seal key (a different feature entirely). The provenance comments therefore point at a mechanism that does not exist and hide the real consumer, which will mislead a future implementer of task #106 into thinking the storage layer is already wired to the script API. Re-attribute the comments to the admin-session use (HEP-0043/admin-session) and note the script-vault binding is still pending #106.
+- Fix: Reword the add_raw/lookup_raw doc-comments to cite the admin-session seal-key consumer as the live use and mark the vault_save/vault_load script binding as not-yet-implemented (task #106).
+- Verdict: CONFIRMED (high)
+
+### `src/utils/security/known_roles.cpp:359` — dead-residue [security-curve-vault]
+- **The empty-pubkey filter in as_peer_allowlist() and the surrounding 'legacy entries with empty pubkey are handled by RoleIdentityPolicy' narrative are dead: validate_entry() now rejects every empty/short pubkey at the only two insertion points.**
+- HEP: HEP-CORE-0035 §5 (known_roles[].pubkey REQUIRED, empty not allowed)  · drift: code-wrong
+- Evidence: validate_entry (known_roles.cpp:76-91) throws on empty pubkey_z85 and on any length != 40, and it is the mandatory gate on BOTH paths that can push into roles_ (from_json at :234 and add() at :278). No KnownRole with an empty pubkey can therefore exist in the store. That makes the guard `if (!e.pubkey_z85.empty())` at :359 permanently true and the header contract stale: known_roles.hpp:44-52 and :188-197 describe 'Legacy entries (pre-Phase-B vault contents with empty pubkey) are EXCLUDED ... still handled at the application layer by the legacy RoleIdentityPolicy string check until HEP-0035 §8 Phase 6 retires it', a case the validation now makes unreachable. This is migration residue that misleads a reader into thinking empty-pubkey entries are a live, handled case.
+- Fix: Drop the unreachable empty-pubkey filter (or convert it to an assert), and delete the header paragraphs claiming empty-pubkey entries are carried and handled by the legacy RoleIdentityPolicy path.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_layer2_service/test_hub_vault.cpp:316` — test-coverage-gap [security-curve-vault]
+- **HubVault's known_roles opaque round-trip (set_known_roles -> save -> open -> known_roles) has no L2 pin; test_hub_vault only round-trips the keypair/admin-token secrets, leaving the §4.8.2 opaque-document persistence covered only indirectly by the L4 CLI test.**
+- HEP: HEP-CORE-0035 §4.8.2 (opaque known_roles storage) / §4.8.4 (deny-all bootstrap)
+- Evidence: test_hub_vault.cpp:316-333 asserts the broker pubkey/secret/admin token survive encrypt/decrypt, but there is no assertion that a populated known_roles document set via set_known_roles() re-encrypts and reloads byte-identically, nor that a freshly created vault returns the empty-object deny-all bootstrap (§4.8.4), nor that a pre-known_roles vault (field absent) loads as {} rather than throwing. HubVault is an L2 value type and this is exactly the opaque-persistence contract HEP-0035 §4.8.2 pins to it; the only coverage today is the L4 --migrate/--list CLI round-trip, which cannot isolate a HubVault::save regression from a CLI/config regression.
+- Fix: Add an L2 test that create()s a vault (asserts known_roles()=={}), set_known_roles(a populated doc), save(), re-open(), and asserts known_roles() matches byte-for-byte; plus a case loading a payload lacking the key to assert the {} default.
+- Verdict: CONFIRMED (high)
+
+### `tests/test_framework/pattern4_helpers.h:188` — hep-gap [test-framework]
+- **Docstrings (and README) claim expect_log_sequence pins cross-process order 'without parsing timestamps' via O_APPEND file position, but the implementation explicitly parses and sorts by timestamp — the doc's premise is refuted by its own code comment.**
+- HEP: README_testing.md Pattern 4 § 'Verification — log-driven sequence assertion' / § 'Shared-log verification'  · drift: hep-stale
+- Evidence: pattern4_helpers.h line 172-187 documents expect_log_sequence as: 'the file's natural append-order under O_APPEND *is* time-order, so this enforces cross-process ordering without parsing timestamps.' The Pattern4Setup::shared_log_path docstring (lines 87-93) repeats 'pin cross-process ordering without timestamp parsing (file-position IS time-order under O_APPEND).' But pattern4_helpers.cpp sort_log_by_timestamp (lines 295-353) parses the bracketed '[YYYY-MM-DD HH:MM:SS.uuuuuu]' timestamp out of every LOGGER line and stable_sorts by it before the in-order substring search (line 387), and the .cpp's own comment (lines 362-370) explains WHY a byte-offset/append-order cursor is UNSAFE ('a late-arriving line with an earlier timestamp gets sorted before already-matched content'). The docs describe the pre-fix append-order design that was deliberately replaced; they were never updated. This misleads a maintainer about how ordering is actually enforced (and about the cost — it is O(N*M) re-sort per poll, not a cheap file-position walk).
+- Fix: Update the expect_log_sequence and Pattern4Setup docstrings (and the corresponding README Pattern-4 shared-log paragraph) to state that ordering is enforced by parsing and stable-sorting the embedded microsecond timestamps, not by O_APPEND file position — and note why append position was rejected.
+- Verdict: CONFIRMED (high)
+
+---
+
+## Provenance & caveats
+
+- Findings are model-generated and adversarially verified in-workflow; the flagship
+  `ReplayGuard` finding was additionally hand-verified against source. The rest are
+  CONFIRMED-by-verifier but not each independently re-checked by a human — triage
+  before acting, especially on the `hep-stale` items (the fix may be to correct the
+  HEP, not the code).
+- Coverage was not uniform. Per the reviewers' own notes, under-read areas include:
+  `shm_capability_channel.cpp`, the Band/Federation planes, the HEP-0017 REG admission
+  pipeline internals, and several L2 fixtures grepped-not-read. Treat absence of a
+  finding in those areas as "not reached", not "clean".
+- No code was changed by this review. Fixes require maintainer approval per project
+  discipline (findings → discuss → approve → implement).

@@ -149,8 +149,16 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (4 — verified genuinely open 2026-07-18)
+## Active code reviews (5 — updated 2026-07-20)
 
+- `code_review/REVIEW_FullSystem_2026-07-20.md` — **NEW, full-system HEP-vs-code
+  audit** (multi-agent, 47 verified findings + cross-cutting synthesis). ❌ OPEN.
+  Load-bearing: (1) `ReplayGuard` prunes on client `wall_ts` — replay defeatable on
+  all 3 planes when window==skew (`replay_guard.hpp:58`, hand-verified, from #64);
+  (2) four dead/no-op identity validators; (3) federation peer-DEALER ingress skips
+  the admission gate chain; (4) consumer teardown leaks on failure paths;
+  (5) masked HubHost lifecycle FSM suite; (6) systemic HEP↔code drift across 8+ HEPs.
+  Tasks #67–#72 filed for the highest-severity items. No fixes applied yet.
 - `code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — D2+D3 follow-ups
   (X6 `ChecksumRepairPolicy::Repair` no-op `broker_service.cpp:6219`; X2 dead
   `query_shm_info`); tracked in API_TODO.
