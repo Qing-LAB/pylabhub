@@ -37,6 +37,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -352,53 +353,76 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
                 json{{"session_id", seal_session_id(facts)}}};
     }
 
-    // Every command body carries a session id; verify it against the
-    // observed connection facts (§11.0.5) before running the handler.
-    const auto session_ok = [&](std::string_view sid) {
-        return verify_session_id(sid, peer_address, routing_id).has_value();
+    // Session + in-session-replay gate (§11.0.5).  Every command body carries
+    // the session id AND the replay pair (client_nonce, client_wall_ts,
+    // required by `require_security_triple`).  The gate: (1) verifies the
+    // session id against the observed connection facts; (2) rejects wall-clock
+    // skew; (3) rejects a reused nonce within the window — the per-session
+    // nonce dedup reuses the SAME hub-wide store the REG plane uses, reached
+    // here through `HubHost::nonce_seen` (the admin plane holds no mutable
+    // HubState), keyed by the session's `origin_uid`.  Returns the typed
+    // error reply on any failure, or nullopt to proceed.
+    constexpr std::uint64_t kReplaySkewMs   = 30'000; // I-REPLAY-BOUND parity
+    constexpr std::uint64_t kReplayWindowMs = 30'000; // MUST be >= skew
+    const auto gate =
+        [&](std::string_view sid) -> std::optional<std::pair<std::string, json>> {
+        auto facts = verify_session_id(sid, peer_address, routing_id);
+        if (!facts)
+            return err_reply("unauthorized", "invalid or hijacked session");
+        const std::uint64_t ts   = body.value("client_wall_ts", std::uint64_t{0});
+        const std::uint64_t now  = now_ms();
+        const std::uint64_t skew = now > ts ? now - ts : ts - now;
+        if (skew > kReplaySkewMs)
+            return err_reply("replay_or_skew", "admin command wall-clock skew "
+                                               "exceeds tolerance");
+        const std::string origin = origin_uid(*facts);
+        const std::string nonce  = body.value("client_nonce", std::string{});
+        if (!host.nonce_seen(origin, nonce, ts, kReplayWindowMs))
+            return err_reply("replay_or_skew",
+                             "client_nonce reused (in-session replay)");
+        return std::nullopt;
     };
-    constexpr auto kBadSession = "invalid or hijacked session";
 
     // ── Query methods → AdminResultAck ──
     if (mt == w::kAdminPingReq)
     {
         w::AdminPingReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         return to_reply(w::kAdminPingAck, handle_ping(req), false);
     }
     if (mt == w::kAdminListChannelsReq)
     {
         w::AdminSessionReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         return to_reply(w::kAdminListChannelsAck, handle_list_channels(req), true);
     }
     if (mt == w::kAdminListRolesReq)
     {
         w::AdminSessionReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         return to_reply(w::kAdminListRolesAck, handle_list_roles(req), true);
     }
     if (mt == w::kAdminListBandsReq)
     {
         w::AdminSessionReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         return to_reply(w::kAdminListBandsAck, handle_list_bands(req), true);
     }
     if (mt == w::kAdminListPeersReq)
     {
         w::AdminSessionReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         return to_reply(w::kAdminListPeersAck, handle_list_peers(req), true);
     }
     if (mt == w::kAdminGetChannelReq)
     {
         w::AdminNamedReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         req["params"]["channel"] = b.name();
         return to_reply(w::kAdminGetChannelAck, handle_get_channel(req), true);
@@ -406,7 +430,7 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminGetRoleReq)
     {
         w::AdminNamedReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         req["params"]["uid"] = b.name();
         return to_reply(w::kAdminGetRoleAck, handle_get_role(req), true);
@@ -414,7 +438,7 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminQueryMetricsReq)
     {
         w::AdminQueryMetricsReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         req["params"] = b.filter();
         return to_reply(w::kAdminQueryMetricsAck, handle_query_metrics(req), true);
@@ -424,7 +448,7 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminCloseChannelReq)
     {
         w::AdminCloseChannelReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         req["params"]["channel"] = b.channel();
         return to_reply(w::kAdminCloseChannelAck, handle_close_channel(req), false);
@@ -432,7 +456,7 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminBroadcastChannelReq)
     {
         w::AdminBroadcastChannelReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         req["params"]["channel"] = b.channel();
         req["params"]["message"] = b.message();
@@ -442,7 +466,7 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminRequestShutdownReq)
     {
         w::AdminSessionReqBody b(body);
-        if (!session_ok(b.session_id())) return err_reply("unauthorized", kBadSession);
+        if (auto rej = gate(b.session_id())) return *rej;
         json req;
         return to_reply(w::kAdminRequestShutdownAck, handle_request_shutdown(req), false);
     }

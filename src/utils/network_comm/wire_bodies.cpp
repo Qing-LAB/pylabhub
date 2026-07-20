@@ -399,7 +399,7 @@ AdminPingReqBody::AdminPingReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
-    d::require_envelope_hash(body_);
+    d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay, §11.0.5)
 }
 
 AdminPingAckBody::AdminPingAckBody(nlohmann::json body)
@@ -414,7 +414,7 @@ AdminCloseChannelReqBody::AdminCloseChannelReqBody(nlohmann::json body)
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
     d::require(body_, "channel",    d::JsonKind::String);
-    d::require_envelope_hash(body_);
+    d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
 AdminCloseChannelAckBody::AdminCloseChannelAckBody(nlohmann::json body)
@@ -428,7 +428,7 @@ AdminSessionReqBody::AdminSessionReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
-    d::require_envelope_hash(body_);
+    d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
 AdminNamedReqBody::AdminNamedReqBody(nlohmann::json body)
@@ -436,7 +436,7 @@ AdminNamedReqBody::AdminNamedReqBody(nlohmann::json body)
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
     d::require(body_, "name",       d::JsonKind::String);
-    d::require_envelope_hash(body_);
+    d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
 AdminBroadcastChannelReqBody::AdminBroadcastChannelReqBody(nlohmann::json body)
@@ -446,7 +446,7 @@ AdminBroadcastChannelReqBody::AdminBroadcastChannelReqBody(nlohmann::json body)
     d::require(body_, "channel",    d::JsonKind::String);
     d::require(body_, "message",    d::JsonKind::String);
     d::validate_if_present(body_, "data", d::JsonKind::String);
-    d::require_envelope_hash(body_);
+    d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
 AdminQueryMetricsReqBody::AdminQueryMetricsReqBody(nlohmann::json body)
@@ -454,7 +454,7 @@ AdminQueryMetricsReqBody::AdminQueryMetricsReqBody(nlohmann::json body)
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
     d::require(body_, "filter",     d::JsonKind::Object); // {} = all categories
-    d::require_envelope_hash(body_);
+    d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
 AdminResultAckBody::AdminResultAckBody(nlohmann::json body)

@@ -853,8 +853,10 @@ TEST(WireBodies, AdminHelloAckBodyValidatesSessionId)
 TEST(WireBodies, AdminPingReqBodyValidatesSessionId)
 {
     nlohmann::json body;
-    body["session_id"]    = "abcdef0123";
-    body["envelope_hash"] = "deadbeef";
+    body["session_id"]     = "abcdef0123";
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminPingReqBody b(std::move(body));
     EXPECT_EQ(b.session_id(), "abcdef0123");
 }
@@ -862,9 +864,11 @@ TEST(WireBodies, AdminPingReqBodyValidatesSessionId)
 TEST(WireBodies, AdminCloseChannelReqBodyValidatesAllFields)
 {
     nlohmann::json body;
-    body["session_id"]    = "abcdef0123";
-    body["channel"]       = "lab.sensor.temp";
-    body["envelope_hash"] = "deadbeef";
+    body["session_id"]     = "abcdef0123";
+    body["channel"]        = "lab.sensor.temp";
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminCloseChannelReqBody b(std::move(body));
     EXPECT_EQ(b.session_id(), "abcdef0123");
     EXPECT_EQ(b.channel(),    "lab.sensor.temp");
@@ -891,8 +895,10 @@ TEST(WireBodies, AdminCloseChannelAckBodyValidatesStatus)
 TEST(WireBodies, AdminSessionReqBodyValidatesSessionId)
 {
     nlohmann::json body;
-    body["session_id"]    = "sid-1";
-    body["envelope_hash"] = "deadbeef";
+    body["session_id"]     = "sid-1";
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminSessionReqBody b(std::move(body));
     EXPECT_EQ(b.session_id(), "sid-1");
 }
@@ -900,9 +906,11 @@ TEST(WireBodies, AdminSessionReqBodyValidatesSessionId)
 TEST(WireBodies, AdminNamedReqBodyValidatesAllFields)
 {
     nlohmann::json body;
-    body["session_id"]    = "sid-1";
-    body["name"]          = "lab.sensor.temp";
-    body["envelope_hash"] = "deadbeef";
+    body["session_id"]     = "sid-1";
+    body["name"]           = "lab.sensor.temp";
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminNamedReqBody b(std::move(body));
     EXPECT_EQ(b.session_id(), "sid-1");
     EXPECT_EQ(b.name(),       "lab.sensor.temp");
@@ -922,8 +930,10 @@ TEST(WireBodies, AdminBroadcastChannelReqBodyValidatesAllFields)
     body["session_id"]    = "sid-1";
     body["channel"]       = "lab.sensor.temp";
     body["message"]       = "from-operator";
-    body["data"]          = "extra";
-    body["envelope_hash"] = "deadbeef";
+    body["data"]           = "extra";
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminBroadcastChannelReqBody b(std::move(body));
     EXPECT_EQ(b.channel(), "lab.sensor.temp");
     EXPECT_EQ(b.message(), "from-operator");
@@ -935,8 +945,10 @@ TEST(WireBodies, AdminBroadcastChannelReqBodyDataOptional)
     nlohmann::json body;
     body["session_id"]    = "sid-1";
     body["channel"]       = "c";
-    body["message"]       = "m";
-    body["envelope_hash"] = "deadbeef";
+    body["message"]        = "m";
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminBroadcastChannelReqBody b(std::move(body));
     EXPECT_EQ(b.data(), ""); // absent → empty
 }
@@ -945,8 +957,10 @@ TEST(WireBodies, AdminQueryMetricsReqBodyRequiresFilterObject)
 {
     nlohmann::json body;
     body["session_id"]    = "sid-1";
-    body["filter"]        = nlohmann::json::object();
-    body["envelope_hash"] = "deadbeef";
+    body["filter"]         = nlohmann::json::object();
+    body["client_nonce"]   = "n1";
+    body["client_wall_ts"] = 1721000000000ULL;
+    body["envelope_hash"]  = "deadbeef";
     pylabhub::wire::AdminQueryMetricsReqBody b(std::move(body));
     EXPECT_TRUE(b.filter().is_object());
 }

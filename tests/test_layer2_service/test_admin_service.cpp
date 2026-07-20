@@ -323,6 +323,32 @@ TEST_F(AdminServiceTest, Console_UnknownMsgType_Rejected)
     TearDownHub();
 }
 
+TEST_F(AdminServiceTest, Console_ReplayedCommand_Rejected)
+{
+    // In-session replay guard (§11.0.5): a command frame replayed verbatim
+    // (same client_nonce) within the window is rejected replay_or_skew.
+    const std::string ep = start_hub("replay");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
+
+    // Fixed nonce → sending the same body twice is a replay.
+    const json body{{"session_id", console.session_id()},
+                    {"client_nonce", "fixed-nonce-1"},
+                    {"client_wall_ts", AdminWireClient::now_ms()}};
+
+    auto r1 = console.request(w::kAdminPingReq, body);
+    ASSERT_TRUE(r1.has_value());
+    EXPECT_FALSE(r1->is_error()) << "first command must be accepted";
+
+    auto r2 = console.request(w::kAdminPingReq, body); // same nonce = replay
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_TRUE(r2->is_error());
+    EXPECT_EQ(r2->body.value("code", std::string{}), "replay_or_skew");
+
+    TearDownHub();
+}
+
 TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
 {
     const fs::path dir = unique_temp_dir("disabled");

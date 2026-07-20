@@ -22,6 +22,8 @@
 #include <cppzmq/zmq_addon.hpp>
 #include <nlohmann/json.hpp>
 
+#include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -100,12 +102,26 @@ class AdminWireClient
         return !session_id_.empty();
     }
 
-    /// Send a command with the current session id injected into the body.
+    /// Send a command with the session id + a fresh replay triple
+    /// (client_nonce, client_wall_ts) injected — the in-session replay guard
+    /// (HEP-CORE-0033 §11.0.5).  Each call uses a unique nonce; to test replay
+    /// rejection, build the body yourself and call request() twice.
     std::optional<Reply> command(std::string_view msg_type,
                                  nlohmann::json    body = nlohmann::json::object())
     {
-        body["session_id"] = session_id_;
+        body["session_id"]     = session_id_;
+        body["client_nonce"]   = "n" + std::to_string(++nonce_ctr_);
+        body["client_wall_ts"] = now_ms();
         return request(msg_type, std::move(body));
+    }
+
+    /// Current wall clock in ms — for building explicit command bodies.
+    static std::uint64_t now_ms()
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
     }
 
     [[nodiscard]] const std::string &session_id() const { return session_id_; }
@@ -114,7 +130,8 @@ class AdminWireClient
     zmq::socket_t dealer_;
     std::string   routing_id_;
     std::string   session_id_;
-    int           corr_ctr_ = 0;
+    int           corr_ctr_  = 0;
+    std::uint64_t nonce_ctr_ = 0;
 };
 
 } // namespace pylabhub::tests

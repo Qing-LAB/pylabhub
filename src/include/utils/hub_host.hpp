@@ -177,6 +177,23 @@ public:
     /// at compile time.
     [[nodiscard]] const hub::HubState &state() const noexcept;
 
+    /// Hub-wide replay-dedup — the single in-window nonce store shared
+    /// by every authenticated plane (I-REPLAY-BOUND).  This is a
+    /// check-and-record *security-gate mutation*, not a state read, so
+    /// it lives here on the owner's interface rather than behind the
+    /// read-only `state()` accessor: the broker reaches the same store
+    /// through its mutable `HubState&` (it is the primary mutator by
+    /// HEP-CORE-0033 §4 ownership); child planes that hold no mutable
+    /// state — the admin console (HEP-CORE-0033 §11.0.5) — reach it
+    /// here.  `identity` scopes the window (role_uid on the REG plane,
+    /// origin_uid on the admin plane); wall-clock skew is a distinct
+    /// reject the caller must clear *before* calling.  Returns true
+    /// when the nonce is fresh, false on reuse within `window_ms`.
+    [[nodiscard]] bool nonce_seen(std::string_view identity,
+                                  std::string_view client_nonce,
+                                  std::uint64_t    wall_ts,
+                                  std::uint64_t    window_ms) noexcept;
+
     /// Bound broker endpoint (e.g. `tcp://127.0.0.1:5570`).  Empty
     /// before `startup()` returns.  After successful startup, this
     /// reflects the actual bound address — useful when the configured
