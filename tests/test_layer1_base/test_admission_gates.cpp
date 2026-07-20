@@ -74,8 +74,7 @@ struct StubCallbacks
             return ag::KeyRotationCheck::rotation_attempted;
         };
         cb.record_and_check_nonce = [this](std::string_view uid,
-                                            std::string_view nonce,
-                                            std::uint64_t /*ts*/) {
+                                            std::string_view nonce) {
             std::string key{uid};
             key.push_back('|');
             key.append(nonce);
@@ -453,6 +452,12 @@ TEST(AdmissionGate_Replay, ClockSkewRejects)
     EXPECT_EQ(r->code, ag::RejectCode::replay_or_skew);
     EXPECT_EQ(r->field, "client_wall_ts");
 }
+
+// The pre-#67 "gate must pass broker time, not client_wall_ts" regression is
+// obsolete BY CONSTRUCTION: record_and_check_nonce no longer takes a timestamp
+// (the ReplayGuard owns its trusted monotonic clock), so there is no client
+// stamp for the dedup path to mis-handle.  The window/clock behavior is pinned
+// directly on the primitive in test_replay_guard.cpp.
 
 // ── Full pipeline: happy path + first-failing-gate short-circuit ──────
 

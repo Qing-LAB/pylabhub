@@ -363,7 +363,9 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     // HubState), keyed by the session's `origin_uid`.  Returns the typed
     // error reply on any failure, or nullopt to proceed.
     constexpr std::uint64_t kReplaySkewMs   = 30'000; // I-REPLAY-BOUND parity
-    constexpr std::uint64_t kReplayWindowMs = 30'000; // MUST be >= skew
+    // MUST be >= 2 * skew: dedup prunes against the trusted `now` clock,
+    // but a replay stays skew-valid for up to 2*skew after the original.
+    constexpr std::uint64_t kReplayWindowMs = 2 * kReplaySkewMs;
     const auto gate =
         [&](std::string_view sid) -> std::optional<std::pair<std::string, json>> {
         auto facts = verify_session_id(sid, peer_address, routing_id);
@@ -377,7 +379,11 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
                                                "exceeds tolerance");
         const std::string origin = origin_uid(*facts);
         const std::string nonce  = body.value("client_nonce", std::string{});
-        if (!host.nonce_seen(origin, nonce, ts, kReplayWindowMs))
+        // Dedup: the ReplayGuard prunes against its OWN trusted monotonic
+        // clock — no timestamp is passed, so the client `ts` (confined to
+        // the skew gate above) cannot reach the dedup window (see
+        // ReplayGuard header).
+        if (!host.nonce_seen(origin, nonce, kReplayWindowMs))
             return err_reply("replay_or_skew",
                              "client_nonce reused (in-session replay)");
         return std::nullopt;

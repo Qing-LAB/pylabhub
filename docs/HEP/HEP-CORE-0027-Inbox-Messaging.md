@@ -157,7 +157,23 @@ replay_meta = [ client_nonce : 16 bytes ][ client_wall_ts : uint64 big-endian, 8
   mechanism the hub REG/admin plane uses via `HubState::nonce_seen`; the
   inbox owns its own role-side instance (the receiver is a separate
   process from the hub), but the check-and-record logic is one component,
-  not duplicated.  Skew and window default to 30 s.
+  not duplicated.
+
+**Clock source (security-critical).**  `ReplayGuard` prunes the dedup window
+against a **monotonic clock it owns** — there is deliberately no per-call
+timestamp argument, so the client-supplied `client_wall_ts` can never reach
+the dedup window.  Pruning against a client stamp would let an authenticated
+peer forward-stamp a frame to evict an earlier nonce and then replay it,
+defeating this invariant; making the guard own its clock removes that footgun
+structurally rather than by convention.  The client stamp is consumed ONLY by
+the skew gate (check 1), which compares it to the receiver's wall clock.
+
+**Window sizing.**  The dedup window MUST be **≥ 2 × the skew tolerance**.  A
+captured frame stays skew-acceptable for up to `2 × skew` after the original
+(the tolerance bounds both the original's acceptance and the replay's), so
+the nonce must be remembered at least that long or a late-but-skew-valid
+replay finds its nonce already pruned.  Skew tolerance defaults to 30 s and
+the window to 60 s (`= 2 × skew`), on the inbox, REG, and admin planes alike.
 
 ### 3.5 CURVE Wiring (HEP-CORE-0036)
 

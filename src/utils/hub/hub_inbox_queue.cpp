@@ -157,7 +157,11 @@ namespace
 constexpr std::size_t   kInboxNonceLen       = 16;
 constexpr std::size_t   kInboxMetaLen        = kInboxNonceLen + 8;
 constexpr std::uint64_t kInboxReplaySkewMs   = 30'000;
-constexpr std::uint64_t kInboxReplayWindowMs = 30'000;
+// I-REPLAY-BOUND soundness: window MUST be >= 2 * skew.  A replay stays
+// skew-acceptable for up to 2*skew after the original (skew tolerance
+// applies to both the original acceptance and the replay), so the nonce
+// must be remembered at least that long.  See ReplayGuard header.
+constexpr std::uint64_t kInboxReplayWindowMs = 2 * kInboxReplaySkewMs;
 
 std::uint64_t inbox_now_ms()
 {
@@ -472,7 +476,11 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         }
         const std::string_view nonce(reinterpret_cast<const char *>(m),
                                      kInboxNonceLen);
-        if (!pImpl->replay_guard_.check_and_record(sender_id, nonce, wall_ts,
+        // Dedup: the ReplayGuard prunes against its OWN trusted monotonic
+        // clock — no timestamp is passed, so the client `wall_ts` (confined
+        // to the skew gate above) cannot reach the dedup window (see
+        // ReplayGuard header).
+        if (!pImpl->replay_guard_.check_and_record(sender_id, nonce,
                                                    kInboxReplayWindowMs))
         {
             pImpl->recv_replay_reject_count_.fetch_add(

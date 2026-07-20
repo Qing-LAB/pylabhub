@@ -6713,10 +6713,11 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // I-REPLAY-BOUND: nonce dedup delegated to HubState's per-role
         // sliding-window map (`nonce_seen` returns true = fresh).
         impl->admission_binder_.callbacks.record_and_check_nonce =
-            [impl](std::string_view uid, std::string_view nonce,
-                    std::uint64_t wall_ts) {
+            [impl](std::string_view uid, std::string_view nonce) {
+                // No timestamp crosses here — the ReplayGuard owns its
+                // trusted monotonic clock (see ReplayGuard header).
                 return impl->hub_state_->nonce_seen(
-                    uid, nonce, wall_ts,
+                    uid, nonce,
                     impl->admission_binder_.context.nonce_window_ms);
             };
 
@@ -6734,15 +6735,14 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // HEP-CORE-0032 §8, not by this admission pipeline).
         impl->admission_binder_.context.skew_tolerance_ms = 30'000ULL;
         // I-REPLAY-BOUND soundness invariant: nonce_window_ms MUST be >=
-        // skew_tolerance_ms.  A message is skew-accepted while
-        // |broker_now - client_wall_ts| <= skew.  If the nonce is forgotten
-        // sooner than that (window < skew), a replay sent in the
-        // (window, skew] gap passes the skew check but finds its nonce
-        // already pruned — and is wrongly admitted.  (Pruning is by wall_ts:
-        // an intervening legit message with a newer wall_ts advances the
-        // prune cutoff past the original's nonce.)  Keep window == skew so a
-        // replay is caught for as long as it can be skew-accepted.
-        impl->admission_binder_.context.nonce_window_ms   = 30'000ULL;
+        // 2 * skew_tolerance_ms.  Dedup is pruned against the TRUSTED broker
+        // clock (record_and_check_nonce receives wall_now_ms(), not the
+        // client stamp), so a peer cannot force early eviction.  But a
+        // replay is skew-acceptable for up to 2*skew after the original
+        // (the tolerance bounds both the original acceptance and the
+        // replay), so the nonce must be remembered that long or a late-but-
+        // skew-valid replay finds its nonce pruned and is wrongly admitted.
+        impl->admission_binder_.context.nonce_window_ms   = 60'000ULL;
         impl->admission_binder_.finalize();
     }
 

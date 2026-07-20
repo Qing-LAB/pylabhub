@@ -111,8 +111,7 @@ ag::AdmissionCallbacks make_permissive_gate_callbacks(
         return ag::KeyRotationCheck::not_yet_registered;
     };
     cb.record_and_check_nonce = [&nonce_dedup_out](std::string_view uid,
-                                                    std::string_view nonce,
-                                                    std::uint64_t) {
+                                                    std::string_view nonce) {
         std::string key{uid};
         key.push_back('|');
         key.append(nonce);

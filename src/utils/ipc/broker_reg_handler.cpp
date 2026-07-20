@@ -230,11 +230,10 @@ BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
     };
 
     gate_callbacks_.record_and_check_nonce =
-        [this](std::string_view uid,
-                std::string_view nonce,
-                std::uint64_t     wall_ts) {
-        return hub_state_.nonce_seen(uid, nonce, wall_ts,
-                                       config_.nonce_window_ms);
+        [this](std::string_view uid, std::string_view nonce) {
+        // No timestamp crosses here — the ReplayGuard owns its trusted
+        // monotonic clock (see ReplayGuard header).
+        return hub_state_.nonce_seen(uid, nonce, config_.nonce_window_ms);
     };
 
     gate_callbacks_.wall_now_ms = &system_now_ms;

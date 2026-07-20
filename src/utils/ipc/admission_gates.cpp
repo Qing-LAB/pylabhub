@@ -227,11 +227,14 @@ check_replay_bound(std::string_view        role_uid,
                         " ms exceeds tolerance " +
                         std::to_string(ctx.skew_tolerance_ms) + " ms");
     }
-    // Nonce dedup — records the (role_uid, nonce) pair with the wall_ts
-    // and returns true if fresh, false if a duplicate is already in
-    // the sliding window.  NOTE: `ctx.nonce_window_ms` MUST be >=
-    // `ctx.skew_tolerance_ms` for soundness (see AdmissionContext).
-    if (!ctx.cb->record_and_check_nonce(role_uid, client_nonce, client_wall_ts))
+    // Nonce dedup — the underlying ReplayGuard prunes against its OWN
+    // trusted monotonic clock; no timestamp is passed, so the client stamp
+    // (confined to the skew gate above) cannot reach the dedup window (see
+    // ReplayGuard header).  Returns true if fresh, false if a duplicate is
+    // already in the window.  `ctx.nonce_window_ms` MUST be >= 2 *
+    // `ctx.skew_tolerance_ms` (see AdmissionContext) so every skew-
+    // acceptable replay is still caught.
+    if (!ctx.cb->record_and_check_nonce(role_uid, client_nonce))
     {
         return make(RejectCode::replay_or_skew, "client_nonce",
                     "client_nonce reused within "

@@ -29,13 +29,17 @@ verification — the codebase is not over-abstracted; the drift is doc-vs-code).
 
 ## Highest-priority (maintainer decisions needed)
 
-1. **`ReplayGuard` clock source (security, high)** — `src/include/utils/replay_guard.hpp:58`
-   prunes its window on the *client-supplied* `wall_ts`. With `window == skew`
-   (inbox + admin + REG, all 30s), an authenticated peer sends a forward-stamped
-   nonce to evict an earlier nonce, then replays it — defeating I-REPLAY-BOUND on
-   **all three planes at once** (they share the one guard). Fix once: prune on a
-   trusted steady/receive clock; keep client `wall_ts` only for the skew gate.
-   *(This is code from task #64; hand-verified.)*
+1. **`ReplayGuard` clock source (security, high) — ✅ FIXED 2026-07-20 (task #67).**
+   Was: `replay_guard.hpp` pruned its window on the *client-supplied* `wall_ts`;
+   with `window == skew` (inbox + admin + REG, all 30s) an authenticated peer could
+   forward-stamp a nonce to evict an earlier one and replay it, on all three planes
+   at once. Fixed via Option C — the guard now **owns a monotonic clock** (injected,
+   default `steady_clock`); `check_and_record`/`nonce_seen`/`record_and_check_nonce`
+   dropped the timestamp arg entirely, so client time cannot reach the dedup window
+   *structurally*, not by convention. Windows raised to `2×skew` (60s; the true
+   soundness bound). New L1 `test_replay_guard.cpp` + `AdmissionGate_Replay` /
+   `HubStateNonceDedup` reworked. Full build + full ctest 2604/2604. HEP-0027 §3.6
+   updated. *(Regression originated in task #64; hand-verified before + after.)*
 2. **Dead/no-op authority enforcement (security, high)** — four sanctioned validators
    are inert: consumer schema-citation validation never called; key-rotation gate is
    a no-op; `RoleIdentityPolicy::Verified` does string-compare not CURVE-pubkey match;

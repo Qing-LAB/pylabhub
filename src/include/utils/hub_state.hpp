@@ -1626,32 +1626,28 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///   - false = nonce collision within the window (caller rejects
     ///             the REQ with error_code=REPLAY_OR_SKEW)
     ///
-    /// Prune-on-access: on every call, entries for `role_uid` with
-    /// `wall_ts < (incoming wall_ts) - window_ms` are dropped before
-    /// the membership check.  Under I-ROUTER-SERIAL the dispatch
-    /// thread is the sole caller; the writer lock inside guards
-    /// against a hypothetical future federation-relay thread.
+    /// Prune-on-access: on every call, entries for `role_uid` older than
+    /// `window_ms` are dropped before the membership check.  Under
+    /// I-ROUTER-SERIAL the dispatch thread is the sole caller; the writer
+    /// lock inside guards against a hypothetical future federation-relay
+    /// thread.
     ///
-    /// Reference-clock choice: the prune cutoff uses the incoming
-    /// `wall_ts` (client-supplied) rather than a separate `broker_now`
-    /// argument.  Rationale: gate 7 (I-REPLAY-BOUND skew check)
-    /// already bounds `|broker_now - wall_ts|` to `skew_tolerance_ms`
-    /// (30 s) BEFORE this method is called.  With `window_ms >>
-    /// skew_tolerance_ms` in every realistic configuration
-    /// (window = 2 * pending_budget_ms ≥ 10 s), using `wall_ts` as
-    /// reference tightens the effective window by at most 30 s — the
-    /// dedup remains correct (fewer false-fresh, no false-collision).
-    /// Callers who need strict broker-clock semantics for a specific
-    /// deployment can pre-pass `broker_now` as the `wall_ts` argument
-    /// after the skew check has cleared.
+    /// Reference-clock choice (SECURITY-CRITICAL): the underlying
+    /// `ReplayGuard` prunes against its OWN trusted monotonic clock.  There
+    /// is deliberately no timestamp argument, so the client-supplied wall
+    /// stamp cannot reach the dedup window — pruning against a client stamp
+    /// would let an authenticated peer forward-stamp a frame to evict an
+    /// earlier nonce and then replay it, defeating I-REPLAY-BOUND.  The
+    /// client stamp is consumed ONLY by the caller's separate skew gate.
+    /// `window_ms` MUST be >= 2 * the skew tolerance (a replay stays
+    /// skew-valid for up to 2*skew after the original), else a late-but-
+    /// skew-valid replay finds its nonce pruned.
     ///
-    /// Wall-clock skew (|broker_now - wall_ts| beyond broker
-    /// tolerance) is caller-checked BEFORE calling this method — skew
+    /// Wall-clock skew is caller-checked BEFORE calling this method — skew
     /// is a distinct wire-level reject, not a dedup event.
     [[nodiscard]] bool
     nonce_seen(std::string_view role_uid,
                 std::string_view client_nonce,
-                std::uint64_t     wall_ts,
                 std::uint64_t     window_ms);
 
     /// HEP-CORE-0042 §5.4 + §5.5.2 (unified 2026-07-13) — advance

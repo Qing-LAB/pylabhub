@@ -651,12 +651,13 @@ const hub::HubState &HubHost::state() const noexcept
 
 bool HubHost::nonce_seen(std::string_view identity,
                          std::string_view client_nonce,
-                         std::uint64_t    wall_ts,
                          std::uint64_t    window_ms) noexcept
 {
     // Forward to the one hub-wide dedup store on the owned HubState —
-    // the same store the broker mutates through its HubState& (§4).
-    return impl_->state.nonce_seen(identity, client_nonce, wall_ts, window_ms);
+    // the same store the broker mutates through its HubState& (§4).  The
+    // guard owns its trusted clock; no timestamp crosses this boundary
+    // (see ReplayGuard header).
+    return impl_->state.nonce_seen(identity, client_nonce, window_ms);
 }
 
 const std::string &HubHost::broker_endpoint() const noexcept

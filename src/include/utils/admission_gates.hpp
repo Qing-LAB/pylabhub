@@ -158,11 +158,12 @@ struct AdmissionCallbacks
 
     /// Record the nonce for anti-replay dedup.  Returns true if the
     /// nonce is fresh (accepted) or false if it collided within the
-    /// sliding window.  Implementation prunes entries older than
-    /// `ctx.nonce_window_ms`.
+    /// sliding window.  The underlying `ReplayGuard` prunes entries older
+    /// than `ctx.nonce_window_ms` against its OWN trusted monotonic clock;
+    /// there is deliberately NO timestamp argument, so the client stamp
+    /// can never be wired into the dedup window (see ReplayGuard header).
     std::function<bool(std::string_view role_uid,
-                        std::string_view client_nonce,
-                        std::uint64_t     client_wall_ts)>
+                        std::string_view client_nonce)>
         record_and_check_nonce;
 
     /// Return the broker's wall-clock time in milliseconds since epoch.
@@ -185,10 +186,15 @@ struct AdmissionContext
 {
     const AdmissionCallbacks *cb{nullptr};              ///< non-owning
     std::uint64_t             skew_tolerance_ms{30'000ULL};
-    /// I-REPLAY-BOUND soundness: MUST be >= skew_tolerance_ms, else a replay
-    /// sent in the (window, skew] gap passes the skew check but finds its
-    /// nonce already pruned and is wrongly admitted.  Default == skew.
-    std::uint64_t             nonce_window_ms{30'000ULL};
+    /// I-REPLAY-BOUND soundness: MUST be >= 2 * skew_tolerance_ms.  Dedup is
+    /// pruned against the TRUSTED broker clock (record_and_check_nonce gets
+    /// wall_now_ms(), not the client stamp), so an attacker cannot force
+    /// early eviction — but a replay stays skew-acceptable for up to 2*skew
+    /// after the original (the tolerance applies to both the original
+    /// acceptance and the replay), so the nonce must be remembered that long
+    /// or a late-but-skew-valid replay finds its nonce pruned and is wrongly
+    /// admitted.  Default = 2 * skew.
+    std::uint64_t             nonce_window_ms{60'000ULL};
     // Note: no `broker_proto` field.  C3 resolution retired the
     // scalar-`broker_proto` gate for REG-family REQs; wire-version +
     // ABI compatibility is verified via `abi_fingerprint` per

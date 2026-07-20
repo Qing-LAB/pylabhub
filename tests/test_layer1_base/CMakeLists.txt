@@ -408,6 +408,39 @@ gtest_discover_tests(test_layer1_admission_gates
 )
 
 # ============================================================================
+# Test: ReplayGuard (header-only I-REPLAY-BOUND dedup primitive) — the ONE
+# sliding-window nonce store shared by the inbox, REG, and admin planes.
+# Pins the trusted-clock + window>=2*skew contract behind task #67.
+# ============================================================================
+
+add_executable(test_layer1_replay_guard
+    test_replay_guard.cpp
+)
+
+target_link_libraries(test_layer1_replay_guard
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_replay_guard)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_replay_guard
+    SUITE_NAME "Layer1_ReplayGuard"
+)
+layer1_require_staged_utils(test_layer1_replay_guard)
+
+gtest_discover_tests(test_layer1_replay_guard
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer1;replay;security"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: wire_dispatch::kDispatchTable regression pin (Group 5 gap 3)
 # ============================================================================
 

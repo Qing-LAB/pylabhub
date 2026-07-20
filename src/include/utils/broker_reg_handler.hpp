@@ -96,7 +96,11 @@ struct KnownRolesConfig
 struct BrokerAdmissionConfig
 {
     std::uint64_t skew_tolerance_ms{30'000ULL}; ///< I-REPLAY-BOUND
-    std::uint64_t nonce_window_ms{10'000ULL};   ///< I-REPLAY-BOUND
+    /// I-REPLAY-BOUND soundness: MUST be >= 2 * skew_tolerance_ms (dedup is
+    /// pruned against the trusted broker clock; a replay stays skew-valid
+    /// for up to 2*skew after the original).  Was 10'000 — below even 1*skew,
+    /// so a skew-valid replay could find its nonce already pruned.
+    std::uint64_t nonce_window_ms{60'000ULL};   ///< I-REPLAY-BOUND
 };
 
 /// Adapter that binds the REG admission pipeline to a specific broker

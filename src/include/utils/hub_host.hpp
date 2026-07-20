@@ -189,9 +189,12 @@ public:
     /// origin_uid on the admin plane); wall-clock skew is a distinct
     /// reject the caller must clear *before* calling.  Returns true
     /// when the nonce is fresh, false on reuse within `window_ms`.
+    /// Dedup is pruned against the guard's OWN trusted monotonic clock —
+    /// there is no timestamp argument, so client wall time can never reach
+    /// the dedup window (see ReplayGuard header).  `window_ms` MUST be
+    /// >= 2 * the caller's skew tolerance.
     [[nodiscard]] bool nonce_seen(std::string_view identity,
                                   std::string_view client_nonce,
-                                  std::uint64_t    wall_ts,
                                   std::uint64_t    window_ms) noexcept;
 
     /// Bound broker endpoint (e.g. `tcp://127.0.0.1:5570`).  Empty

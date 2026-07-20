@@ -2074,17 +2074,18 @@ HubState::producer_instance(const std::string &producer_role_uid) const
 bool
 HubState::nonce_seen(std::string_view role_uid,
                       std::string_view client_nonce,
-                      std::uint64_t     wall_ts,
                       std::uint64_t     window_ms)
 {
     // I-REPLAY-BOUND: freshness check + record.  Delegates to the shared
     // `ReplayGuard` (self-locked, so no `pImpl->mu` here).  Returns true
     // when the nonce is fresh; false on collision within the window.
     //
-    // Callers upstream (broker admission handlers) have already rejected
-    // wall-clock skew as a distinct reject class; the guard only dedups.
+    // The guard prunes against its OWN trusted monotonic clock — there is
+    // no caller-supplied timestamp, so client wall time cannot reach the
+    // dedup window (see ReplayGuard header).  The caller's separate skew
+    // gate consumes the client stamp.
     return pImpl->replay_guard.check_and_record(role_uid, client_nonce,
-                                                wall_ts, window_ms);
+                                                window_ms);
 }
 
 std::uint64_t
