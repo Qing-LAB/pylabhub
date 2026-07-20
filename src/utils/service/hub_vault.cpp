@@ -64,6 +64,14 @@ struct HubVault::Impl
     static constexpr std::size_t kPublicLen = 40;
     static constexpr std::size_t kAdminLen  = 64;
 
+    /// The `known_roles` allowlist document (HEP-CORE-0035 §4.8).
+    /// PUBLIC-key data — not secret — so it is a plain json member with
+    /// no zero-on-destruct treatment (unlike the secrets above).  Held
+    /// OPAQUELY: the vault never interprets its `{version, roles:[…]}`
+    /// schema (that is `KnownRolesStore`'s job).  Defaults to an empty
+    /// object = §4.8.4 deny-all bootstrap.
+    json known_roles = json::object();
+
     ~Impl() noexcept
     {
         // Wipe via SMS (HEP-CORE-0043 §2.1 category 1) — the security
@@ -139,9 +147,13 @@ HubVault HubVault::create(const fs::path    &vault_path,
     // Ensure the parent directory exists; --init creates the
     // canonical `vault/` dir but direct callers (tests, custom
     // deployment locations) may not have.
+    // §4.8.4: a freshly created vault has an EMPTY known_roles map —
+    // deny-all bootstrap (every REG_REQ rejected until the operator
+    // runs `--add-known-role`).  Stored opaquely as an empty object.
     const json payload = {
         {"broker", {{"curve_secret_key", broker_secret}, {"curve_public_key", broker_public}}},
-        {"admin",  {{"token", admin_tok}}}
+        {"admin",  {{"token", admin_tok}}},
+        {"known_roles", json::object()}
     };
     if (vault_path.has_parent_path())
     {
@@ -236,6 +248,13 @@ HubVault HubVault::open(const fs::path    &vault_path,
         copy_into(v.pImpl->admin_token_hex,   HubVault::Impl::kAdminLen,
                   j.at("admin").at("token").get<std::string>(),
                   "admin.token");
+
+        // known_roles (HEP-CORE-0035 §4.8) — PUBLIC data, extracted as
+        // an opaque document.  Absent in vaults created before this
+        // field existed → empty object (§4.8.4 deny-all bootstrap).
+        // Not zeroed: pubkeys are not secret.
+        v.pImpl->known_roles =
+            j.contains("known_roles") ? j.at("known_roles") : json::object();
     }
     catch (const json::exception &e)
     {
@@ -264,6 +283,65 @@ std::string_view HubVault::admin_token() const noexcept
 {
     return std::string_view(pImpl->admin_token_hex.data(),
                             Impl::kAdminLen);
+}
+
+// ============================================================================
+// known_roles (HEP-CORE-0035 §4.8)
+// ============================================================================
+
+const json &HubVault::known_roles() const noexcept
+{
+    return pImpl->known_roles;
+}
+
+void HubVault::set_known_roles(json roles)
+{
+    pImpl->known_roles = std::move(roles);
+}
+
+void HubVault::save(const fs::path    &vault_path,
+                    const std::string &hub_uid,
+                    const std::string &password) const
+{
+    // Reconstruct the full payload from the in-memory state.  The
+    // keypair + token round-trip unchanged from open(); only
+    // known_roles reflects any set_known_roles() call.  The secrets
+    // sit briefly inside the payload string during dump()/encrypt —
+    // the same bounded exposure create() already has.
+    const json payload = {
+        {"broker",
+         {{"curve_secret_key",
+           std::string(pImpl->broker_secret_z85.data(), Impl::kSecretLen)},
+          {"curve_public_key",
+           std::string(pImpl->broker_public_z85.data(), Impl::kPublicLen)}}},
+        {"admin",
+         {{"token",
+           std::string(pImpl->admin_token_hex.data(), Impl::kAdminLen)}}},
+        {"known_roles", pImpl->known_roles}};
+
+    // ATOMIC OVERWRITE: `vault_write` (via write_secure_file) is
+    // create-only — O_CREAT|O_EXCL refuses to clobber, which is correct
+    // for `create()` but wrong for re-encrypting an existing vault.
+    // Write the fresh ciphertext to a sibling temp (O_EXCL, fresh) then
+    // rename(2) over the target.  rename is atomic on POSIX: a crash
+    // leaves either the old vault or the new one intact — never a
+    // truncated file.  Temp name is pid-scoped to avoid collisions.
+    const fs::path tmp =
+        vault_path.parent_path() /
+        (vault_path.filename().string() + ".tmp." +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::error_code ec;
+    fs::remove(tmp, ec); // clear any stale temp from a prior crash
+    detail::vault_write(tmp, payload.dump(), password, hub_uid);
+    fs::rename(tmp, vault_path, ec);
+    if (ec)
+    {
+        std::error_code rmec;
+        fs::remove(tmp, rmec);
+        throw std::runtime_error(
+            "HubVault::save: atomic rename failed for '" +
+            vault_path.string() + "': " + ec.message());
+    }
 }
 
 // ============================================================================

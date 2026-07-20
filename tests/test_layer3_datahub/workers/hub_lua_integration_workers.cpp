@@ -52,6 +52,7 @@
 #include "hub_lua_integration_workers.h"
 
 #include "curve_test_setup.h"
+#include "hub_vault_test_seed.h" // seed_vault_known_roles (HEP-0035 §4.8)
 #include "log_capture_fixture.h"
 #include "plh_datahub.hpp"
 #include "plh_service.hpp"
@@ -257,18 +258,6 @@ void remove_tree(const fs::path &p)
 ///        HEP-CORE-0036 §5b canonical shape (the broker hard-errors
 ///        on missing role_type / data_transport / zmq_pubkey).
 ///
-/// `write_known_roles` writes via the production `KnownRolesStore` so
-/// the file format (version + roles + atomic-write + 0600 perms) is
-/// defined in exactly one place — same as `start_hubhost_broker`.
-void write_known_roles(const fs::path &dir,
-                       const pylabhub::tests::CurveSetup &setup)
-{
-    pylabhub::utils::security::KnownRolesStore store;
-    for (const auto &[uid, kp] : setup.role_keys)
-        store.add(pylabhub::tests::make_known_role(uid, kp.public_z85));
-    store.save_to_file(dir / "vault" / "known_roles.json");
-}
-
 /// Module list every worker installs: Logger + FileLock + JsonConfig
 /// + Crypto + ZMQContext.  HubConfig::load needs FileLock/JsonConfig;
 /// the broker thread needs Logger/Crypto/ZMQContext.  HubScriptRunner
@@ -821,7 +810,9 @@ end
             const std::string prod_uid = "prod.l3test.uid12345678";
             auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid});
             pylabhub::tests::seed_curve_identities(ks_curve_);
-            write_known_roles(dir, ks_curve_);
+            // known_roles now rides the encrypted vault (HEP-0035 §4.8);
+            // seed it into cfg before HubHost startup — no plaintext file.
+            pylabhub::tests::seed_vault_known_roles(cfg, ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -913,7 +904,9 @@ end
             const std::string cons_uid = "cons.l3.uid12345678";
             auto ks_curve_ = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
             pylabhub::tests::seed_curve_identities(ks_curve_);
-            write_known_roles(dir, ks_curve_);
+            // known_roles now rides the encrypted vault (HEP-0035 §4.8);
+            // seed it into cfg before HubHost startup — no plaintext file.
+            pylabhub::tests::seed_vault_known_roles(cfg, ks_curve_);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());

@@ -18,6 +18,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
+#include "utils/role_identity_policy.hpp" // ::pylabhub::broker::KnownRole
 
 #include "utils/config/auth_config.hpp"
 #include "utils/config/hub_admin_config.hpp"
@@ -33,6 +34,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace pylabhub::config
 {
@@ -81,6 +83,26 @@ class PYLABHUB_UTILS_EXPORT HubConfig
     const nlohmann::json         &raw() const;
     bool                          reload_if_changed();
     const std::filesystem::path  &base_dir() const;
+
+    /// The operator-managed known_roles allowlist (HEP-CORE-0035 §4.8),
+    /// extracted from the encrypted hub vault by `load_keypair()`.
+    /// Empty until `load_keypair()` runs (or if the vault carries the
+    /// §4.8.4 deny-all bootstrap `{}`).  The allowlist rides the single
+    /// system-level vault file — isolated from script access, encrypted
+    /// at rest — NOT a plaintext sidecar in `base_dir`.
+    const std::vector<::pylabhub::broker::KnownRole> &known_roles() const;
+
+    /// Refresh ONLY the known_roles allowlist from the encrypted vault,
+    /// leaving the process KeyStore identity untouched (HEP-CORE-0035
+    /// §4.8.5 hot-reload primitive).  Opens the vault with @p password,
+    /// decrypts, and re-populates `known_roles()`.  Distinct from
+    /// `load_keypair()`, which also seeds the CURVE identity into the
+    /// KeyStore — call this when the identity is already loaded (a
+    /// running hub re-reading a freshly-rewritten allowlist; or an
+    /// in-process test that seeded the identity separately but wants
+    /// the allowlist to round-trip through the real vault).
+    /// @returns true on success.  @throws on vault/crypto/parse failure.
+    bool load_known_roles_from_vault(const std::string &password);
 
     // ── Special members (pImpl) ──────────────────────────────────────
 

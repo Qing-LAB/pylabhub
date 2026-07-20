@@ -57,12 +57,14 @@
 
 #include "pylabhub_utils_export.h"
 
+#include "utils/json_fwd.hpp"                // nlohmann::json (fwd)
 #include "utils/role_identity_policy.hpp"   // ::pylabhub::broker::KnownRole
 #include "utils/security/peer_admission.hpp" // PeerAllowlist
 
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace pylabhub::utils::security
@@ -124,7 +126,28 @@ public:
     /// `atomic_write_owner_only_file`.  Throws on I/O failure.  The
     /// pre-call file content survives any failure mode (atomic
     /// rename either completes or doesn't happen at all).
+    ///
+    /// NOTE: file storage is retained for one-shot migration
+    /// (`--migrate-known-roles`) and tests only.  The authoritative
+    /// allowlist home is the encrypted hub vault (HEP-CORE-0035 §4.8);
+    /// production load/mutate goes through `from_json`/`to_json` against
+    /// the decrypted vault payload, NOT a standalone file.
     void save_to_file(const std::filesystem::path &path) const;
+
+    /// Medium-agnostic JSON codec (HEP-CORE-0035 §4.8).  `to_json`
+    /// emits the `{version, roles:[…]}` document; `from_json` parses
+    /// and validates it with the SAME strict rules as `load_from_file`
+    /// (unknown `version` rejected, per-entry validation, duplicate-uid
+    /// and shared-pubkey rejection).  These are the primitives the
+    /// hub vault (`HubVault::known_roles` / `set_known_roles`) and the
+    /// file I/O both build on — one model, two storage media.
+    ///
+    /// @param context  Human-readable source label woven into error
+    ///                 messages (e.g. a vault path or `"hub vault"`).
+    /// @throws std::runtime_error on malformed/invalid input.
+    [[nodiscard]] ::nlohmann::json to_json() const;
+    [[nodiscard]] static KnownRolesStore
+    from_json(const ::nlohmann::json &j, std::string_view context);
 
     /// Insert or replace an entry keyed on `uid`.  Returns true iff
     /// the entry was newly inserted (false → replaced an existing

@@ -8,6 +8,8 @@
  */
 #include "broker_test_harness.h"
 
+#include "hub_vault_test_seed.h" // seed_vault_known_roles (HEP-0035 §4.8)
+
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
@@ -193,26 +195,21 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
         }
     }
 
-    // Step 3 — write known_roles.json (HEP-CORE-0035 §4.8) via the
-    // production `KnownRolesStore::save_to_file` so the file format
-    // (version + roles array + atomic-write + 0600 perms) is defined
-    // in exactly one place.  No parallel JSON-shape logic in tests.
-    {
-        pylabhub::utils::security::KnownRolesStore store;
-        for (const auto &[uid, kp] : setup.role_keys)
-        {
-            store.add(make_known_role(uid, kp.public_z85));
-        }
-        store.save_to_file(h.hub_dir / "vault" / "known_roles.json");
-    }
-
     // Step 4 — load HubConfig from the prepared directory.  We do NOT
     // call `cfg.load_keypair(password)` because the KeyStore already
     // has the identity seeded above.  HubConfig parses `auth.keyfile`
-    // as a string but never reads the vault file unless load_keypair
-    // is invoked.
+    // as a string but never reads the vault for the keypair unless
+    // load_keypair is invoked.
     auto cfg =
         pylabhub::config::HubConfig::load_from_directory(h.hub_dir);
+
+    // Step 3′ (HEP-CORE-0035 §4.8) — the known_roles allowlist now lives
+    // INSIDE the encrypted hub vault, not a plaintext sidecar.  Create
+    // the real vault holding the allowlist and decrypt it back into cfg
+    // (`seed_vault_known_roles`), so `HubHost::startup()` reads it from
+    // `cfg.known_roles()` exactly as production does.  No known_roles.json
+    // is written, so the §4.8.7 hard-cutover refuse-to-start check passes.
+    seed_vault_known_roles(cfg, setup);
 
     // Step 5 — construct HubHost and start the broker.  `startup()`
     // builds the BrokerService (which checks `secure().keys().has(

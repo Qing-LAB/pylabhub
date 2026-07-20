@@ -15,6 +15,7 @@
 // new co-host workers here; add wire tests under tests/test_layer3_pattern4/.
 #include "datahub_broker_workers.h"
 #include "curve_test_setup.h"
+#include "hub_vault_test_seed.h" // seed_vault_known_roles (HEP-0035 §4.8)
 #include "broker_test_harness.h"
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
@@ -206,19 +207,17 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
     BrokerHandle h;
     h.hub_dir = make_test_hub_directory(cfg.schema_search_dirs);
 
-    // Write known_roles.json via production `KnownRolesStore::save_to_file`
-    // so the file format (version + roles array + atomic-write + 0600
-    // perms) is defined in exactly one place.  Mirrors the production
-    // path used by `start_hubhost_broker` in `broker_test_harness.cpp`.
-    {
-        pylabhub::utils::security::KnownRolesStore store;
-        for (const auto &[uid, kp] : curve.role_keys)
-            store.add(pylabhub::tests::make_known_role(uid, kp.public_z85));
-        store.save_to_file(h.hub_dir / "vault" / "known_roles.json");
-    }
+    // known_roles allowlist (HEP-CORE-0035 §4.8) now lives INSIDE the
+    // encrypted hub vault, not a plaintext sidecar.  Create the real
+    // vault holding the allowlist and decrypt it back into cfg
+    // (`seed_vault_known_roles`), so `startup()` reads it from
+    // `cfg.known_roles()` exactly as production does.  No known_roles.json
+    // is written, so the §4.8.7 hard-cutover check passes.
+    auto hub_cfg =
+        pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string());
+    pylabhub::tests::seed_vault_known_roles(hub_cfg, curve);
 
-    h.host    = std::make_unique<pylabhub::hub_host::HubHost>(
-        pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string()));
+    h.host = std::make_unique<pylabhub::hub_host::HubHost>(std::move(hub_cfg));
     h.host->startup();
     h.endpoint = h.host->broker_endpoint();
     h.pubkey   = h.host->broker_pubkey();

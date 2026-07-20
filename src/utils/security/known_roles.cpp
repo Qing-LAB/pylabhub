@@ -200,16 +200,25 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
             "': " + ex.what());
     }
 
+    // File I/O done; strict parse + validation is medium-agnostic.
+    return from_json(j, path.string());
+}
+
+// ── JSON codec (HEP-CORE-0035 §4.8) — one model, two storage media ──────────
+
+KnownRolesStore
+KnownRolesStore::from_json(const nlohmann::json &j, std::string_view context)
+{
+    const std::string ctx(context);
+
     if (!j.contains("version") || !j["version"].is_number_integer())
         throw std::runtime_error(
-            "KnownRolesStore: '" + path.string() +
-            "' missing integer 'version' field");
+            "KnownRolesStore: '" + ctx + "' missing integer 'version' field");
     const int version = j["version"].get<int>();
     if (version != kKnownRolesSchemaVersion)
         throw std::runtime_error(
-            "KnownRolesStore: '" + path.string() + "' has unknown "
-            "schema version " + std::to_string(version) +
-            " (this build understands version " +
+            "KnownRolesStore: '" + ctx + "' has unknown schema version " +
+            std::to_string(version) + " (this build understands version " +
             std::to_string(kKnownRolesSchemaVersion) + ")");
 
     KnownRolesStore store;
@@ -217,48 +226,50 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
     {
         if (!j["roles"].is_array())
             throw std::runtime_error(
-                "KnownRolesStore: '" + path.string() +
+                "KnownRolesStore: '" + ctx +
                 "' has 'roles' that is not an array");
         for (const auto &je : j["roles"])
         {
             auto e = entry_from_json(je);
             validate_entry(e);
-            // Reject duplicate uid in the on-disk file — operator
-            // ambiguity should surface, not silently dedupe.
+            // Reject duplicate uid — operator ambiguity should surface,
+            // not silently dedupe.
             for (const auto &existing : store.roles_)
             {
                 if (existing.uid == e.uid)
                     throw std::runtime_error(
-                        "KnownRolesStore: '" + path.string() +
-                        "' has duplicate uid '" + e.uid + "'");
+                        "KnownRolesStore: '" + ctx + "' has duplicate uid '" +
+                        e.uid + "'");
             }
             // HEP-CORE-0036 §I10: reject shared pubkey across distinct
-            // uids in the on-disk file.  Same error semantics as
-            // duplicate-uid above — strict, file-level rejection so
-            // operator intent is never silently downgraded.  In DEBUG
-            // + PYLABHUB_WITH_TEST builds the check is a no-op (fixture
-            // bypass).
+            // uids.  Strict rejection so operator intent is never
+            // silently downgraded.  In DEBUG + PYLABHUB_WITH_TEST builds
+            // the check is a no-op (fixture bypass).
             enforce_unique_pubkey_invariant(
                 store.roles_, e.uid, e.pubkey_z85,
-                ("load_from_file('" + path.string() + "')").c_str());
+                ("from_json('" + ctx + "')").c_str());
             store.roles_.push_back(std::move(e));
         }
     }
     return store;
 }
 
-void KnownRolesStore::save_to_file(const std::filesystem::path &path) const
+nlohmann::json KnownRolesStore::to_json() const
 {
     nlohmann::json j;
     j["version"] = kKnownRolesSchemaVersion;
     j["roles"]   = nlohmann::json::array();
     for (const auto &e : roles_)
         j["roles"].push_back(entry_to_json(e));
+    return j;
+}
 
+void KnownRolesStore::save_to_file(const std::filesystem::path &path) const
+{
     // Pretty-print for operator-readable diffs.  Compact JSON would
     // save bytes but operators occasionally `cat`/`git diff` this
     // file when auditing.
-    const std::string serialized = j.dump(/*indent=*/2);
+    const std::string serialized = to_json().dump(/*indent=*/2);
     atomic_write_owner_only_file(path, serialized);
 }
 

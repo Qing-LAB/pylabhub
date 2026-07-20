@@ -668,6 +668,65 @@ in-process HTTP ecosystem in LuaJIT.
 
 ---
 
+### 4.5 Managing the role allowlist (`known_roles`)
+
+A role may only register with the hub if its CURVE public key is on the
+hub's `known_roles` allowlist (Layer-1 ZAP gate; HEP-CORE-0035 §4.1,
+§4.8).  A freshly keygen'd hub admits **no** roles — every `REG_REQ` is
+denied until you add one.
+
+The allowlist is stored **inside the encrypted hub vault**, not as a
+plaintext file.  Editing it therefore requires the hub's master
+password, and the allowlist inherits the vault's isolation: it lives in
+the single system-level vault file (relocatable to a root-owned
+location via `hub.auth.keyfile`), out of reach of any hub script.  All
+commands below prompt for the master password, or read it from
+`PYLABHUB_HUB_PASSWORD`.
+
+```bash
+# Add (or rotate the pubkey of) an authorized role.
+#   <role> ∈ {producer, consumer, processor, any}
+#   <pubkey_z85> — the role's 40-char Z85 CURVE pubkey; get it from the
+#                  role operator (plh_role --print-pubkey) or the role's
+#                  <role_dir>/vault/<role_uid>.pub file.
+plh_hub --config <hub-dir>/hub.json \
+        --add-known-role lab.daq.sensor1 prod.sensor1.uid3a7f2b1c producer zP4x...39
+
+# List the current allowlist (uid, name, role, pubkey).
+plh_hub --config <hub-dir>/hub.json --list-known-roles
+
+# Revoke a role by uid (exit 0 even if it was not present).
+plh_hub --config <hub-dir>/hub.json --revoke-known-role prod.sensor1.uid3a7f2b1c
+```
+
+Re-adding an existing `uid` rotates its pubkey (no error) — the
+pubkey-rotation path.  A revoke of an absent uid is a no-op and leaves
+the vault untouched (its audit timestamp is preserved).
+
+Changes take effect at the **next hub start**; a running hub keeps the
+allowlist it loaded at startup (hot-reload is a deferred feature —
+HEP-CORE-0035 §4.8.5).  Stop and restart the hub to apply edits.
+
+#### Migrating an older hub (plaintext `known_roles.json` → vault)
+
+Hubs provisioned before the allowlist moved into the vault carry a
+plaintext `<hub-dir>/vault/known_roles.json`.  That file is **no longer
+read**, and the hub will **refuse to start** while it exists — this is
+a deliberate hard cutover, so you never run on a stale allowlist you
+think is authoritative.  Import it once, which also deletes the file:
+
+```bash
+plh_hub --config <hub-dir>/hub.json --migrate-known-roles
+#   ⇒ imports the plaintext entries into the vault, then removes the file.
+#   Refuses if the vault already holds entries (reconcile by hand, then
+#   delete the stale file yourself once the vault is authoritative).
+```
+
+After migration the hub starts normally and the three commands above
+manage the allowlist inside the vault.
+
+---
+
 ## 5. Producer Setup
 
 ### 5.1 producer.json — field reference

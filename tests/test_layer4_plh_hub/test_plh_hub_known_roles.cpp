@@ -1,38 +1,39 @@
 /**
  * @file test_plh_hub_known_roles.cpp
  * @brief plh_hub --add-known-role / --revoke-known-role / --list-known-roles
- *        CLI behavior tests (PeerAdmission Phase C close-out, commit 4/5).
+ *        / --migrate-known-roles CLI behavior tests (HEP-CORE-0035 §4.8).
  *
- * These tests pin the file-state side effects of the operator-facing
- * known-role CLI ops — what file appears on disk, what content is in
- * it, what doesn't change when nothing should change.  Pre-fix code had
- * two foot-guns flagged by the fresh-eye review:
+ * The known_roles allowlist lives INSIDE the encrypted hub vault, not a
+ * plaintext `known_roles.json` sidecar.  Every mutating/reading command
+ * unlocks the vault with the master password (`PYLABHUB_HUB_PASSWORD`) and
+ * re-encrypts on change.  These tests pin the operator-visible behavior of
+ * the installed binary against the vault:
  *
- *   - H-K3: `--revoke-known-role <uid>` wrote `known_roles.json`
- *     unconditionally.  An operator typo on a fresh hub_dir would
- *     materialize an empty deny-all file, silently flipping intent
- *     from "no allowlist" to "deny everyone."  Even on an existing
- *     file, a typo'd revoke advanced the file's mtime without any
- *     content change, corrupting forensic audit timelines.
+ *   - add/revoke/list round-trip through the encrypted vault (assertions
+ *     read the vault back via `--list-known-roles`, never a plaintext file).
+ *   - H-K3 (preserved): a no-op revoke of an absent uid does NOT re-encrypt
+ *     the vault (its mtime is unchanged), avoiding audit-timeline noise.
+ *   - H-K4 (preserved): a typo'd <role> is rejected at parse time, exit 1.
+ *   - §4.8.7 hard cutover: `--migrate-known-roles` imports a legacy
+ *     plaintext file into the vault and deletes it; and the run/validate
+ *     path REFUSES to start while a plaintext `known_roles.json` exists.
  *
- *   - H-K4: `--add-known-role <name> <uid> <role> <pubkey_z85>`
- *     accepted arbitrary strings in <role>.  A typo persisted into
- *     the allowlist where the broker's case-sensitive role check
- *     silently never matched — leading to denied handshakes the
- *     operator could not diagnose.  (H-K4 parse-time validation is
- *     covered by L2 test_hub_cli.cpp; this file pins binary-level
- *     exit + stderr behavior.)
- *
- * Pattern: each test spawns the staged plh_hub binary as a subprocess
- * with a fresh tmp hub_dir, runs the CLI op, and inspects exit code,
- * stdout, stderr, and the resulting filesystem state.
+ * Pattern: each test spawns the staged plh_hub binary against a fresh
+ * keygen'd hub (hub.json + encrypted vault) and inspects exit code, stdout,
+ * stderr, and vault state.
  */
 
 #include "plh_hub_fixture.h"
 
+#include "utils/role_identity_policy.hpp"   // pylabhub::broker::KnownRole
+#include "utils/security/known_roles.hpp"   // KnownRolesStore (legacy-file author)
+
 #include <sys/stat.h>
 #include <chrono>
+#include <fstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 using namespace pylabhub::tests::plh_hub_l4;
 using pylabhub::tests::helper::WorkerProcess;
@@ -44,182 +45,242 @@ constexpr const char *kValidPubkey1 =
     "0123456789012345678901234567890123456789";
 constexpr const char *kValidPubkey2 =
     "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ";
+constexpr const char *kHubPass = "l4-known-roles-pw";
 
-/// Check whether <hub_dir>/vault/known_roles.json exists.
-bool known_roles_exists(const fs::path &hub_dir)
+/// Path of the encrypted vault for a hub built by `write_minimal_config`
+/// (which sets `auth.keyfile = "vault/placeholder.vault"`).
+fs::path vault_path_of(const fs::path &hub_dir)
 {
-    std::error_code ec;
-    return fs::exists(hub_dir / "vault" / "known_roles.json", ec);
+    return hub_dir / "vault" / "placeholder.vault";
+}
+
+/// Provision a keygen'd hub (hub.json + encrypted vault) and return its
+/// config path.  Caller MUST hold a live `ScopedHubPassword`.
+fs::path prepare_keygened_hub(const fs::path &hub_dir)
+{
+    const fs::path cfg = hub_dir / "hub.json";
+    write_minimal_config(cfg, hub_dir);
+    keygen_minimal_hub(cfg); // mints the encrypted vault (Argon2id)
+    return cfg;
+}
+
+/// Run a plh_hub known-role op against @p cfg (via `--config`).
+WorkerProcess run_op(const fs::path &cfg, const std::vector<std::string> &op)
+{
+    std::vector<std::string> rest{cfg.string()};
+    rest.insert(rest.end(), op.begin(), op.end());
+    return WorkerProcess(plh_hub_binary(), "--config", rest);
 }
 
 } // namespace
 
-// ── H-K3 — revoke side effects ─────────────────────────────────────────────
+// ── H-K3 — revoke side effects (vault edition) ─────────────────────────────
 
-/// **H-K3 fix proof — fresh hub_dir.**  Revoking a non-existent uid on
-/// a hub_dir with no known_roles.json must NOT create the file.  The
-/// pre-fix code unconditionally saved (creating an empty deny-all
-/// file from a typo) — flipping operator intent silently.
-TEST_F(PlhHubCliTest, RevokeUnknownUid_OnFreshHubDir_DoesNotCreateFile)
+/// Revoking an absent uid on an empty (bootstrap) vault exits 0, signals the
+/// no-op, and leaves the vault untouched.
+TEST_F(PlhHubCliTest, RevokeUnknownUid_OnEmptyVault_ExitsZeroNotPresent)
 {
-    const auto hub_dir = tmp("revoke_fresh");
+    ScopedHubPassword pw(kHubPass);
+    const auto         hub_dir = tmp("revoke_empty");
+    const auto         cfg     = prepare_keygened_hub(hub_dir);
 
-    WorkerProcess p(plh_hub_binary(), hub_dir.string(),
-                    {"--revoke-known-role", "uid.never.existed"});
-    EXPECT_EQ(p.wait_for_exit(), 0)
-        << "stderr:\n" << p.get_stderr();
-    EXPECT_FALSE(known_roles_exists(hub_dir))
-        << "known_roles.json must NOT exist after revoking on a fresh "
-           "hub_dir — that would silently flip operator intent from "
-           "'no allowlist' to 'deny-all'.  stderr:\n"
-        << p.get_stderr();
+    auto p = run_op(cfg, {"--revoke-known-role", "uid.never.existed"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     EXPECT_NE(p.get_stdout().find("not present"), std::string::npos)
-        << "stdout must explicitly signal the no-op; got:\n"
-        << p.get_stdout();
-    EXPECT_NE(p.get_stdout().find("file untouched"), std::string::npos)
-        << "stdout must signal that the file was not modified so the "
-           "operator knows their typo had no effect; got:\n"
+        << "stdout must signal the no-op; got:\n" << p.get_stdout();
+    EXPECT_NE(p.get_stdout().find("vault untouched"), std::string::npos)
+        << "stdout must signal the vault was not rewritten; got:\n"
         << p.get_stdout();
 }
 
-/// **H-K3 fix proof — existing file untouched.**  Revoking a uid that
-/// is NOT in an existing known_roles.json must leave the file
-/// content-AND-mtime unchanged.  Pre-fix code rewrote the file (same
-/// content, new mtime), polluting forensic audit timelines.
-TEST_F(PlhHubCliTest, RevokeUnknownUid_OnExistingFile_LeavesFileUntouched)
+/// H-K3 preserved: revoking a uid that isn't present must NOT re-encrypt the
+/// vault — its mtime is unchanged (no audit-timeline pollution).
+TEST_F(PlhHubCliTest, RevokeUnknownUid_AfterAdd_LeavesVaultMtimeUnchanged)
 {
-    const auto hub_dir = tmp("revoke_existing_unknown");
+    ScopedHubPassword pw(kHubPass);
+    const auto         hub_dir = tmp("revoke_unknown_mtime");
+    const auto         cfg     = prepare_keygened_hub(hub_dir);
+    const auto         vault   = vault_path_of(hub_dir);
 
-    // Seed: add alice via the binary itself (so file is well-formed).
     {
-        WorkerProcess seed(plh_hub_binary(), hub_dir.string(),
-                           {"--add-known-role", "alice", "uid.alice",
-                            "producer", kValidPubkey1});
-        ASSERT_EQ(seed.wait_for_exit(), 0)
-            << "seed failed:\n" << seed.get_stderr();
+        auto a = run_op(cfg, {"--add-known-role", "alice", "uid.alice",
+                              "producer", kValidPubkey1});
+        ASSERT_EQ(a.wait_for_exit(), 0) << "seed failed:\n" << a.get_stderr();
     }
-    const auto known_roles = hub_dir / "vault" / "known_roles.json";
-    ASSERT_TRUE(fs::exists(known_roles));
+    ASSERT_TRUE(fs::exists(vault));
 
-    // Capture pre-revoke state.
-    struct ::stat st_before{};
-    ASSERT_EQ(::stat(known_roles.c_str(), &st_before), 0);
-    const std::string content_before =
-        [&]{ std::ifstream f(known_roles); std::ostringstream s; s << f.rdbuf(); return s.str(); }();
+    struct ::stat before{};
+    ASSERT_EQ(::stat(vault.c_str(), &before), 0);
 
-    // Sleep beyond mtime resolution so an unconditional write would
-    // produce a detectable mtime delta on this filesystem.
+    // Sleep beyond mtime resolution so an unconditional re-encrypt would
+    // produce a detectable mtime delta.
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
 
-    // Revoke a uid that ISN'T present.
-    WorkerProcess p(plh_hub_binary(), hub_dir.string(),
-                    {"--revoke-known-role", "uid.does.not.exist"});
+    auto p = run_op(cfg, {"--revoke-known-role", "uid.does.not.exist"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     EXPECT_NE(p.get_stdout().find("not present"), std::string::npos);
-    EXPECT_NE(p.get_stdout().find("file untouched"), std::string::npos);
 
-    // Pin: mtime unchanged AND content unchanged.
-    struct ::stat st_after{};
-    ASSERT_EQ(::stat(known_roles.c_str(), &st_after), 0);
-    EXPECT_EQ(st_before.st_mtime, st_after.st_mtime)
-        << "Revoking a non-existent uid must not advance mtime "
+    struct ::stat after{};
+    ASSERT_EQ(::stat(vault.c_str(), &after), 0);
+    EXPECT_EQ(before.st_mtime, after.st_mtime)
+        << "Revoking a non-existent uid must not re-encrypt the vault "
            "(forensic timeline corruption risk).";
-    const std::string content_after =
-        [&]{ std::ifstream f(known_roles); std::ostringstream s; s << f.rdbuf(); return s.str(); }();
-    EXPECT_EQ(content_before, content_after);
+
+    // alice still admitted.
+    auto l = run_op(cfg, {"--list-known-roles"});
+    ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
+    EXPECT_NE(l.get_stdout().find("uid.alice"), std::string::npos)
+        << l.get_stdout();
 }
 
-/// Control: revoking a KNOWN uid does remove it and rewrite the file.
-/// Pin both the content change AND that the remaining entry survives.
-TEST_F(PlhHubCliTest, RevokeKnownUid_RemovesEntryAndRewritesFile)
+/// Control: revoking a KNOWN uid removes it; the other entry survives.
+TEST_F(PlhHubCliTest, RevokeKnownUid_RemovesEntry_KeepsOthers)
 {
-    const auto hub_dir = tmp("revoke_known");
+    ScopedHubPassword pw(kHubPass);
+    const auto         hub_dir = tmp("revoke_known");
+    const auto         cfg     = prepare_keygened_hub(hub_dir);
 
-    // Seed two entries so we can verify the second survives.
     {
-        WorkerProcess seedA(plh_hub_binary(), hub_dir.string(),
-                            {"--add-known-role", "alice", "uid.alice",
-                             "producer", kValidPubkey1});
-        ASSERT_EQ(seedA.wait_for_exit(), 0);
-        WorkerProcess seedB(plh_hub_binary(), hub_dir.string(),
-                            {"--add-known-role", "bob", "uid.bob",
-                             "consumer", kValidPubkey2});
-        ASSERT_EQ(seedB.wait_for_exit(), 0);
+        auto a = run_op(cfg, {"--add-known-role", "alice", "uid.alice",
+                              "producer", kValidPubkey1});
+        ASSERT_EQ(a.wait_for_exit(), 0) << a.get_stderr();
+        auto b = run_op(cfg, {"--add-known-role", "bob", "uid.bob",
+                              "consumer", kValidPubkey2});
+        ASSERT_EQ(b.wait_for_exit(), 0) << b.get_stderr();
     }
-    const auto known_roles = hub_dir / "vault" / "known_roles.json";
-    ASSERT_TRUE(fs::exists(known_roles));
 
-    // Revoke alice.
-    WorkerProcess p(plh_hub_binary(), hub_dir.string(),
-                    {"--revoke-known-role", "uid.alice"});
+    auto p = run_op(cfg, {"--revoke-known-role", "uid.alice"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     EXPECT_NE(p.get_stdout().find("revoked"), std::string::npos);
     EXPECT_NE(p.get_stdout().find("uid.alice"), std::string::npos);
 
-    // File still exists; alice gone; bob present.
-    ASSERT_TRUE(fs::exists(known_roles));
-    const auto j = read_json(known_roles);
-    ASSERT_TRUE(j.contains("roles") && j["roles"].is_array());
-    ASSERT_EQ(j["roles"].size(), 1u);
-    EXPECT_EQ(j["roles"][0].value("uid", ""), "uid.bob");
-    EXPECT_EQ(j["roles"][0].value("pubkey_z85", ""), kValidPubkey2);
+    auto l = run_op(cfg, {"--list-known-roles"});
+    ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
+    const std::string out = l.get_stdout();
+    EXPECT_EQ(out.find("uid.alice"), std::string::npos)
+        << "alice must be gone:\n" << out;
+    EXPECT_NE(out.find("uid.bob"), std::string::npos)
+        << "bob must survive:\n" << out;
+    EXPECT_NE(out.find(kValidPubkey2), std::string::npos) << out;
 }
 
 // ── H-K4 — role enum at binary level ───────────────────────────────────────
 
-/// **H-K4 fix proof — binary tier.**  L2 test_hub_cli pins the parser
-/// in isolation; this test pins the operator-visible behavior of the
-/// installed binary on a typo'd role.  The binary must exit 1 and
-/// emit a diagnostic naming the bad value AND the allowed set.  No
-/// file is created.
-TEST_F(PlhHubCliTest, AddKnownRole_TypoRole_ExitsOneAndCreatesNoFile)
+/// H-K4 preserved: a typo'd <role> is rejected at parse time (before any
+/// vault access) — exit 1 with a diagnostic naming the bad value + allowed
+/// set.  No keygen needed: the parser rejects before dispatch.
+TEST_F(PlhHubCliTest, AddKnownRole_TypoRole_ExitsOne)
 {
     const auto hub_dir = tmp("add_typo");
 
     WorkerProcess p(plh_hub_binary(), hub_dir.string(),
                     {"--add-known-role", "alice", "uid.alice",
-                     "prodcer",   // typo
+                     "prodcer", // typo
                      kValidPubkey1});
     EXPECT_EQ(p.wait_for_exit(), 1)
         << "Typo'd role must produce non-zero exit; stderr:\n"
         << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("'prodcer'"), std::string::npos)
-        << "diagnostic must quote the bad value; got:\n"
-        << p.get_stderr();
+        << "diagnostic must quote the bad value; got:\n" << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("producer"), std::string::npos)
         << "diagnostic must enumerate the allowed roles; got:\n"
         << p.get_stderr();
-    EXPECT_FALSE(known_roles_exists(hub_dir))
-        << "Failed add must not leave a partially-written file behind.";
 }
 
-/// Control: each valid role string is accepted AND produces a
-/// well-formed known_roles.json containing the entry.
-TEST_F(PlhHubCliTest, AddKnownRole_EachValidRole_AcceptedAndPersisted)
+/// Control: each valid role string is accepted and appears in the vault
+/// allowlist (read back via --list-known-roles).
+TEST_F(PlhHubCliTest, AddKnownRole_EachValidRole_AcceptedAndListed)
 {
-    struct Case { const char *role; const char *pubkey; };
+    struct Case
+    {
+        const char *role;
+        const char *pubkey;
+    };
     const std::vector<Case> cases{
-        {"producer",  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
-        {"consumer",  "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"},
+        {"producer", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+        {"consumer", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"},
         {"processor", "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"},
-        {"any",       "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"},
+        {"any", "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"},
     };
 
     for (const auto &c : cases)
     {
-        const auto hub_dir =
-            tmp(std::string("add_valid_") + c.role);
-        WorkerProcess p(plh_hub_binary(), hub_dir.string(),
-                        {"--add-known-role", "n",
-                         std::string("uid.") + c.role,
-                         c.role, c.pubkey});
+        ScopedHubPassword pw(kHubPass);
+        const auto        hub_dir = tmp(std::string("add_valid_") + c.role);
+        const auto        cfg     = prepare_keygened_hub(hub_dir);
+
+        auto p = run_op(cfg, {"--add-known-role", "n",
+                              std::string("uid.") + c.role, c.role, c.pubkey});
         EXPECT_EQ(p.wait_for_exit(), 0)
             << "role='" << c.role << "'; stderr:\n" << p.get_stderr();
-        ASSERT_TRUE(known_roles_exists(hub_dir));
-        const auto j = read_json(hub_dir / "vault" / "known_roles.json");
-        ASSERT_TRUE(j.contains("roles"));
-        ASSERT_EQ(j["roles"].size(), 1u);
-        EXPECT_EQ(j["roles"][0].value("role", ""), c.role);
-        EXPECT_EQ(j["roles"][0].value("pubkey_z85", ""), c.pubkey);
+
+        auto l = run_op(cfg, {"--list-known-roles"});
+        ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
+        const std::string out = l.get_stdout();
+        EXPECT_NE(out.find(std::string("role='") + c.role + "'"),
+                  std::string::npos)
+            << "role='" << c.role << "' not listed:\n" << out;
+        EXPECT_NE(out.find(c.pubkey), std::string::npos) << out;
     }
+}
+
+// ── §4.8.7 hard cutover ────────────────────────────────────────────────────
+
+/// `--migrate-known-roles` imports a legacy plaintext allowlist into the
+/// vault and deletes the file.
+TEST_F(PlhHubCliTest, MigrateKnownRoles_ImportsPlaintextIntoVaultAndDeletesFile)
+{
+    ScopedHubPassword pw(kHubPass);
+    const auto         hub_dir = tmp("migrate");
+    const auto         cfg     = prepare_keygened_hub(hub_dir);
+
+    // Author a legacy plaintext known_roles.json via the store's file codec.
+    const fs::path legacy = hub_dir / "vault" / "known_roles.json";
+    {
+        pylabhub::utils::security::KnownRolesStore store;
+        pylabhub::broker::KnownRole                e;
+        e.name       = "legacy";
+        e.uid        = "uid.legacy";
+        e.role       = "producer";
+        e.pubkey_z85 = kValidPubkey1;
+        store.add(std::move(e));
+        store.save_to_file(legacy);
+    }
+    ASSERT_TRUE(fs::exists(legacy));
+
+    auto m = run_op(cfg, {"--migrate-known-roles"});
+    EXPECT_EQ(m.wait_for_exit(), 0) << "stderr:\n" << m.get_stderr();
+    EXPECT_FALSE(fs::exists(legacy))
+        << "migrate must delete the plaintext file after importing it";
+
+    auto l = run_op(cfg, {"--list-known-roles"});
+    ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
+    EXPECT_NE(l.get_stdout().find("uid.legacy"), std::string::npos)
+        << "migrated role must be in the vault:\n" << l.get_stdout();
+}
+
+/// The run/validate path REFUSES to start while a plaintext known_roles.json
+/// exists (hard cutover), naming the file and the migrate command.
+TEST_F(PlhHubCliTest, Validate_RefusesWhenPlaintextKnownRolesPresent)
+{
+    ScopedHubPassword pw(kHubPass);
+    const auto         hub_dir = tmp("cutover");
+    const auto         cfg     = prepare_keygened_hub(hub_dir);
+
+    // Drop a stray plaintext allowlist.
+    const fs::path legacy = hub_dir / "vault" / "known_roles.json";
+    {
+        std::ofstream out(legacy);
+        out << R"({"version":1,"roles":[]})";
+    }
+    ASSERT_TRUE(fs::exists(legacy));
+
+    WorkerProcess v(plh_hub_binary(), "--config", {cfg.string(), "--validate"});
+    EXPECT_NE(v.wait_for_exit(), 0)
+        << "hub must refuse to start with a plaintext allowlist present";
+    EXPECT_NE(v.get_stderr().find("known_roles.json"), std::string::npos)
+        << "diagnostic must name the offending file; got:\n" << v.get_stderr();
+    EXPECT_NE(v.get_stderr().find("migrate-known-roles"), std::string::npos)
+        << "diagnostic must point at the migration command; got:\n"
+        << v.get_stderr();
 }

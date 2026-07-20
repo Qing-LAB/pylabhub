@@ -17,6 +17,7 @@
 #include "utils/json_config.hpp"
 #include "utils/security/key_file_acl.hpp"
 #include "utils/security/key_store.hpp"
+#include "utils/security/known_roles.hpp"
 #include "utils/security/secure_buffer.hpp"
 
 #include <cassert>
@@ -48,6 +49,10 @@ struct HubConfig::Impl
     HubBrokerConfig     broker;
     HubFederationConfig federation;
     HubStateConfig      state;
+
+    /// Operator-managed allowlist extracted from the encrypted vault by
+    /// load_keypair() (HEP-CORE-0035 §4.8).  Empty = deny-all bootstrap.
+    std::vector<::pylabhub::broker::KnownRole> known_roles;
 
     void load_all(const nlohmann::json &j);
 };
@@ -198,10 +203,30 @@ const HubAdminConfig      &HubConfig::admin()      const { assert(impl_); return
 const HubBrokerConfig     &HubConfig::broker()     const { assert(impl_); return impl_->broker; }
 const HubFederationConfig &HubConfig::federation() const { assert(impl_); return impl_->federation; }
 const HubStateConfig      &HubConfig::state()      const { assert(impl_); return impl_->state; }
+const std::vector<::pylabhub::broker::KnownRole> &
+HubConfig::known_roles() const { assert(impl_); return impl_->known_roles; }
 
 // ============================================================================
 // Vault operations
 // ============================================================================
+
+namespace
+{
+/// Shared extraction: turn a vault's opaque `known_roles` document into
+/// the validated in-memory vector (HEP-CORE-0035 §4.8).  An empty object
+/// is the §4.8.4 deny-all bootstrap → empty list.  Used by both
+/// `load_keypair` (identity + allowlist in one vault open) and
+/// `load_known_roles_from_vault` (allowlist only).
+std::vector<::pylabhub::broker::KnownRole>
+extract_known_roles(const nlohmann::json &kr)
+{
+    namespace security = pylabhub::utils::security;
+    if (kr.is_object() && !kr.empty())
+        return security::KnownRolesStore::from_json(kr, "hub vault known_roles")
+            .list();
+    return {};
+}
+} // namespace
 
 // `hub.auth.keyfile` is the source of truth for the vault file
 // location at runtime per HEP-CORE-0033 §7.1 (finalized 2026-05-31):
@@ -287,10 +312,67 @@ bool HubConfig::load_keypair(const std::string &password)
         // admin-token hardening tracked as a follow-on).
         impl_->admin.admin_token = std::string(adm);
 
+        // known_roles allowlist (HEP-CORE-0035 §4.8) rides the SAME
+        // encrypted vault — extracted here from the already-decrypted
+        // payload (no second open, no second password prompt).  An
+        // empty object is the §4.8.4 deny-all bootstrap; a populated
+        // document is parsed + validated by the SAME strict codec the
+        // legacy file path used (KnownRolesStore::from_json).  This is
+        // the isolation contract: the allowlist lives inside the single
+        // system-level vault file, never a script-reachable sidecar.
+        impl_->known_roles = extract_known_roles(vault.known_roles());
+
+        // §4.8.7 hard cutover — refuse to run with a stale plaintext
+        // allowlist present.  It is no longer read; running would admit
+        // roles from the vault while an operator who believes the file is
+        // authoritative sees a divergent set.  Only the run/validate path
+        // reaches load_keypair; the known-role CLI ops open the vault
+        // directly (not here), so `--migrate-known-roles` can still read
+        // and remove the file.
+        {
+            const std::filesystem::path legacy =
+                impl_->base_dir / "vault" / "known_roles.json";
+            std::error_code ec;
+            if (std::filesystem::exists(legacy, ec))
+                throw std::runtime_error(
+                    "[plh_hub] Refusing to start: a plaintext allowlist still "
+                    "exists at '" +
+                    legacy.string() +
+                    "'.  known_roles now lives inside the encrypted vault "
+                    "(HEP-CORE-0035 §4.8) and this file is no longer read.  "
+                    "Import it once (it is then removed):\n    plh_hub --config "
+                    "<hub.json> --migrate-known-roles\n(or, if already "
+                    "migrated, delete it: rm '" +
+                    legacy.string() + "').");
+        }
+
         std::fprintf(stderr,
-                     "[plh_hub] Loaded vault from '%s' (pubkey: %.8s...)\n",
-                     vault_path.string().c_str(), pub.data());
+                     "[plh_hub] Loaded vault from '%s' (pubkey: %.8s..., "
+                     "%zu known_role(s))\n",
+                     vault_path.string().c_str(), pub.data(),
+                     impl_->known_roles.size());
     }
+    return true;
+}
+
+bool HubConfig::load_known_roles_from_vault(const std::string &password)
+{
+    assert(impl_);
+    namespace security = pylabhub::utils::security;
+
+    // §4.8.5 reload primitive — open the vault for the allowlist ONLY;
+    // the CURVE identity already in the process KeyStore is left
+    // untouched (no re-seed, so no "already present" collision).
+    if (impl_->auth.keyfile.empty())
+        throw std::runtime_error(
+            "[plh_hub] load_known_roles_from_vault: auth.keyfile is empty "
+            "(no vault to read; HEP-CORE-0035 §4.8)");
+
+    const std::filesystem::path vault_path =
+        security::resolve_keyfile_path(impl_->auth.keyfile, impl_->base_dir);
+    const auto vault =
+        utils::HubVault::open(vault_path, impl_->identity.uid, password);
+    impl_->known_roles = extract_known_roles(vault.known_roles());
     return true;
 }
 

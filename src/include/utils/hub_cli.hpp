@@ -93,6 +93,8 @@ struct HubArgs
     bool revoke_known_role_only{false};
     /// --list-known-roles
     bool list_known_roles_only{false};
+    /// --migrate-known-roles (one-shot: plaintext known_roles.json → vault)
+    bool migrate_known_roles_only{false};
 
     /// Populated positional args for the three known-role ops above.
     /// Order is invariant per op:
@@ -153,9 +155,12 @@ inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
         << "  --validate         Validate config + script; exit 0 on success\n"
         << "  --keygen           Generate hub vault (broker keypair + admin token); exit 0\n"
         << "\n"
-        << "Known-roles allowlist (PeerAdmission Phase B; HEP-CORE-0035 §4.5):\n"
+        << "Known-roles allowlist (PeerAdmission Phase B; HEP-CORE-0035 §4.8):\n"
+        << "  The allowlist lives INSIDE the encrypted hub vault; every command\n"
+        << "  below unlocks it with the master password (PYLABHUB_HUB_PASSWORD or\n"
+        << "  interactive prompt) and re-encrypts on change.\n"
         << "  --add-known-role <name> <uid> <role> <pubkey_z85>\n"
-        << "                     Add a role to <hub_dir>/vault/known_roles.json; exit 0.\n"
+        << "                     Add a role to the vault allowlist; exit 0.\n"
         << "                     <role> ∈ {producer, consumer, processor, any}.\n"
         << "                     <pubkey_z85> is the 40-char Z85-encoded CURVE pubkey\n"
         << "                     (obtain via `plh_role --print-pubkey`).\n"
@@ -163,6 +168,10 @@ inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
         << "  --revoke-known-role <uid>\n"
         << "                     Remove the entry matching <uid>; exit 0 even if absent.\n"
         << "  --list-known-roles Print the allowlist in tabular form; exit 0.\n"
+        << "  --migrate-known-roles\n"
+        << "                     One-shot: import a legacy plaintext\n"
+        << "                     <hub_dir>/vault/known_roles.json into the vault and\n"
+        << "                     delete it (the hub refuses to start while it exists).\n"
         << "\n"
         << "Common options:\n"
         << "  <hub_dir>          Hub directory containing hub.json\n"
@@ -328,6 +337,10 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         else if (arg == "--list-known-roles")
         {
             args.list_known_roles_only = true;
+        }
+        else if (arg == "--migrate-known-roles")
+        {
+            args.migrate_known_roles_only = true;
         }
         else if (arg[0] != '-')
         {

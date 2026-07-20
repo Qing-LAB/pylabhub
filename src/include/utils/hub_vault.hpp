@@ -27,6 +27,8 @@
 
 #include "pylabhub_utils_export.h"
 
+#include "utils/json_fwd.hpp" // nlohmann::json (fwd)
+
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -105,6 +107,37 @@ public:
     /// Admin authentication token (64-char hex string).  Same
     /// view-lifetime contract as `broker_curve_secret_key()`.
     std::string_view admin_token() const noexcept;
+
+    /// The `known_roles` allowlist document held inside the encrypted
+    /// payload (HEP-CORE-0035 §4.8).  This is PUBLIC-key data — CURVE
+    /// pubkeys keyed by role_uid — NOT secret material, so unlike the
+    /// keypair/token it is returned as a plain reference with no
+    /// zero-on-destruct contract.  The vault treats the document as
+    /// OPAQUE: its schema (`{version, roles:[…]}`) is owned by
+    /// `KnownRolesStore` (`from_json`/`to_json`), keeping this crypto
+    /// store free of any dependency on the role model.  A freshly
+    /// created vault returns an empty object `{}` — the §4.8.4
+    /// deny-all bootstrap (no role admitted until the operator runs
+    /// `--add-known-role`).
+    [[nodiscard]] const nlohmann::json &known_roles() const noexcept;
+
+    /// Replace the in-memory `known_roles` document (HEP-CORE-0035
+    /// §4.8.3).  Does NOT touch disk — pair with `save()` to persist.
+    /// The operator CLI flow is: `open()` → `set_known_roles()` →
+    /// `save()`.  The argument is stored opaquely; validation is the
+    /// caller's job via `KnownRolesStore::from_json`.
+    void set_known_roles(nlohmann::json roles);
+
+    /// Re-encrypt and atomically rewrite the vault file with the
+    /// current in-memory payload (broker keypair + admin token +
+    /// `known_roles`).  Used by the allowlist-mutating CLI commands
+    /// (§4.8.3) after `set_known_roles()`.  The keypair and token are
+    /// round-tripped unchanged from what `open()` decrypted; only the
+    /// `known_roles` document reflects any `set_known_roles()` call.
+    /// @param password  Master password (same one that `open()` used).
+    /// @throws std::runtime_error on crypto or I/O failure.
+    void save(const std::filesystem::path &vault_path,
+              const std::string &hub_uid, const std::string &password) const;
 
     /**
      * @brief Write the broker public key to <hub_dir>/hub.pubkey.

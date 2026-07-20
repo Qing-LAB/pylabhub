@@ -201,25 +201,15 @@ void HubHost::startup()
         bcfg.schema_search_dirs.push_back(schemas_dir.string());
     }
 
-    // HEP-CORE-0035 §4.8 + PeerAdmission Phase B — load the operator-
-    // managed known_roles allowlist from `<hub_dir>/vault/known_roles.json`
-    // (mode 0600, parent dir 0700, ACL-verified by the loader).  Absent
-    // file → empty allowlist (deny-all per §4.8.4: every REG_REQ is
-    // rejected by Layer-1 ZAP until the operator runs `--add-known-role`).
-    // Throws on parse / ACL errors so a tampered allowlist surfaces at
-    // startup instead of silently degrading.
-    {
-        const std::filesystem::path known_roles_path =
-            impl_->cfg.base_dir() / "vault" / "known_roles.json";
-        auto store_opt =
-            pylabhub::utils::security::KnownRolesStore::load_from_file(
-                known_roles_path);
-        if (store_opt.has_value())
-        {
-            for (const auto &kr : store_opt->list())
-                bcfg.known_roles.push_back(kr);
-        }
-    }
+    // HEP-CORE-0035 §4.8 + PeerAdmission Phase B — the operator-managed
+    // known_roles allowlist lives INSIDE the encrypted hub vault
+    // (extracted by HubConfig::load_keypair, which also enforces the
+    // §4.8.7 hard cutover against a stale plaintext sidecar).  Feed the
+    // broker's Layer-1 ZAP allowlist from it; empty = §4.8.4 deny-all
+    // bootstrap (every REG_REQ rejected until the operator runs
+    // `--add-known-role`).
+    for (const auto &kr : impl_->cfg.known_roles())
+        bcfg.known_roles.push_back(kr);
 
     // Heartbeat-multiplier timeouts (HEP-CORE-0023 §2.5; HEP-0033 §6.4).
     const auto &hb = impl_->cfg.broker();

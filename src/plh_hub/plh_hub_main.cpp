@@ -43,6 +43,7 @@
 #include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
+#include "utils/hub_vault.hpp" // HEP-CORE-0035 §4.8 — vault-backed known_roles
 #include "utils/security/key_file_acl.hpp"
 #include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
 #include "utils/security/known_roles.hpp"
@@ -148,45 +149,99 @@ int do_init(const hub_cli::HubArgs &args)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Known-roles allowlist flows (PeerAdmission Phase B).
-// HEP-CORE-0035 §4.5 / docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §6.2
+// Known-roles allowlist flows (PeerAdmission Phase B; HEP-CORE-0035 §4.8).
 //
-// Lives at <hub_dir>/vault/known_roles.json (file mode 0600 via the atomic
-// helper from #101).  No vault password required — pubkeys aren't secret;
-// integrity is enforced at the filesystem ACL floor.
+// The allowlist lives INSIDE the encrypted hub vault — isolated from script
+// access (the single system-level vault file, relocatable to a root-owned
+// location per HEP-CORE-0033 §7.1), master-password-gated, integrity-bound by
+// the Poly1305 MAC.  These ops load the config, unlock the vault, mutate the
+// `known_roles` document, and (for add/revoke/migrate) re-encrypt it in place.
+// Mutating the allowlist therefore requires the master password even with full
+// filesystem access (§4.8.1).
 // ─────────────────────────────────────────────────────────────────────────────
 int do_known_role_ops(const hub_cli::HubArgs &args)
 {
     namespace fs       = std::filesystem;
     namespace security = pylabhub::utils::security;
 
-    // Resolve hub_dir from either positional or --config <path>.
-    const fs::path hub_dir =
-        !args.hub_dir.empty()
-            ? fs::path(args.hub_dir)
-            : fs::path(args.config_path).parent_path();
-    if (hub_dir.empty())
-    {
-        std::cerr << "Error: cannot resolve hub directory from args\n";
-        return 1;
-    }
-
-    const fs::path known_roles_path = hub_dir / "vault" / "known_roles.json";
-
-    // Load existing store, or start from empty if absent.
-    security::KnownRolesStore store;
+    // Load config (source of truth for auth.keyfile + hub_uid).
+    std::optional<pylabhub::config::HubConfig> cfg_opt;
     try
     {
-        auto loaded = security::KnownRolesStore::load_from_file(known_roles_path);
-        if (loaded.has_value())
-            store = std::move(*loaded);
+        if (!args.hub_dir.empty())
+            cfg_opt.emplace(
+                pylabhub::config::HubConfig::load_from_directory(args.hub_dir));
+        else
+            cfg_opt.emplace(
+                pylabhub::config::HubConfig::load(args.config_path));
     }
     catch (const std::exception &e)
     {
-        std::cerr << "Error loading '" << known_roles_path.string()
-                  << "': " << e.what() << "\n";
+        std::cerr << "Config error: " << e.what() << "\n";
         return 1;
     }
+    auto &cfg = *cfg_opt;
+
+    if (cfg.auth().keyfile.empty())
+    {
+        std::cerr << "Error: hub has no vault (auth.keyfile is empty); the "
+                     "known_roles allowlist requires an encrypted vault "
+                     "(HEP-CORE-0035 §4.8).\n";
+        return 1;
+    }
+
+    const fs::path vault_path =
+        security::resolve_keyfile_path(cfg.auth().keyfile, cfg.base_dir());
+    const std::string &uid = cfg.identity().uid;
+
+    // Unlock the vault (list is read-only but still needs the payload).
+    const auto password = cli::get_password(
+        "hub", "PYLABHUB_HUB_PASSWORD", "Hub vault password: ");
+    if (!password)
+        return 1;
+
+    std::optional<HubVault> vault_opt;
+    try
+    {
+        vault_opt.emplace(HubVault::open(vault_path, uid, *password));
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Vault unlock failed: " << e.what() << "\n";
+        return 1;
+    }
+    auto &vault = *vault_opt;
+
+    // Build the in-memory store from the decrypted payload (empty object =
+    // §4.8.4 deny-all bootstrap).
+    security::KnownRolesStore store;
+    try
+    {
+        const auto &kr = vault.known_roles();
+        if (kr.is_object() && !kr.empty())
+            store =
+                security::KnownRolesStore::from_json(kr, vault_path.string());
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error: vault known_roles invalid: " << e.what() << "\n";
+        return 1;
+    }
+
+    // Persist the mutated store back into the vault (re-encrypt in place).
+    const auto persist = [&](const security::KnownRolesStore &s) -> bool {
+        try
+        {
+            vault.set_known_roles(s.to_json());
+            vault.save(vault_path, uid, *password);
+            return true;
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error: vault write failed: " << e.what() << "\n";
+            return false;
+        }
+    };
 
     if (args.add_known_role_only)
     {
@@ -203,24 +258,9 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         entry.pubkey_z85 = args.known_role_args[3];
         try
         {
-            // Ensure parent dir exists with mode 0700 before save —
-            // matches the vault create contract from #101.
-            std::error_code ec;
-            fs::create_directories(known_roles_path.parent_path(), ec);
-            if (ec)
-            {
-                std::cerr << "Error: cannot create vault dir '"
-                          << known_roles_path.parent_path().string()
-                          << "': " << ec.message() << "\n";
-                return 1;
-            }
-            int chmod_err = 0;
-            (void) security::set_keyfile_mode(
-                known_roles_path.parent_path(),
-                security::KeyFileRole::VaultDir, &chmod_err);
-
             const bool inserted = store.add(std::move(entry));
-            store.save_to_file(known_roles_path);
+            if (!persist(store))
+                return 1;
             std::cout << (inserted ? "added" : "updated")
                       << " known-role uid='" << args.known_role_args[1]
                       << "' pubkey=" << args.known_role_args[3] << "\n";
@@ -240,39 +280,22 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
             std::cerr << "Internal error: --revoke-known-role expects 1 arg\n";
             return 1;
         }
-        const std::string &uid = args.known_role_args[0];
-        const bool removed = store.remove(uid);
+        const std::string &target_uid = args.known_role_args[0];
+        const bool         removed     = store.remove(target_uid);
 
-        // **H-K3 fix.**  Only persist when state actually changed.
-        // Pre-fix code wrote unconditionally, which had two bad
-        // effects:
-        //   (a) When the file did NOT exist before AND uid is not
-        //       present (e.g., operator typo on a fresh hub_dir),
-        //       the unconditional save MATERIALIZED an empty
-        //       known_roles.json — silently flipping intent from
-        //       "no allowlist" to "deny-all" at next hub start.
-        //   (b) When the file existed but uid is not present, the
-        //       unconditional save advanced the file mtime without
-        //       any content change — corrupting forensic timelines
-        //       and creating noise in audit diffs.
-        // Skipping the save when removed==false fixes both.
+        // H-K3: only persist when state actually changed — never
+        // re-encrypt the vault (advancing its mtime / audit timeline)
+        // for a no-op revoke of an absent uid.
         if (removed)
         {
-            try
-            {
-                store.save_to_file(known_roles_path);
-            }
-            catch (const std::exception &e)
-            {
-                std::cerr << "Error: " << e.what() << "\n";
+            if (!persist(store))
                 return 1;
-            }
-            std::cout << "revoked known-role uid='" << uid << "'\n";
+            std::cout << "revoked known-role uid='" << target_uid << "'\n";
         }
         else
         {
-            std::cout << "not present known-role uid='" << uid
-                      << "' (file untouched)\n";
+            std::cout << "not present known-role uid='" << target_uid
+                      << "' (vault untouched)\n";
         }
         return 0;
     }
@@ -280,7 +303,7 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
     if (args.list_known_roles_only)
     {
         const auto &entries = store.list();
-        std::cout << "known_roles.json: " << known_roles_path.string() << "\n";
+        std::cout << "known_roles (vault: " << vault_path.string() << "):\n";
         std::cout << "entries: " << entries.size() << "\n";
         for (const auto &e : entries)
         {
@@ -289,6 +312,63 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
                       << " role='" << e.role << "'"
                       << " pubkey=" << e.pubkey_z85 << "\n";
         }
+        return 0;
+    }
+
+    if (args.migrate_known_roles_only)
+    {
+        // One-shot hard-cutover migration (HEP-CORE-0035 §4.8): import a
+        // legacy plaintext `<hub_dir>/vault/known_roles.json` into the
+        // vault, then delete it.  The hub refuses to start while that
+        // file exists, so this is the sanctioned path off the old format.
+        const fs::path legacy = cfg.base_dir() / "vault" / "known_roles.json";
+        std::error_code ec;
+        if (!fs::exists(legacy, ec))
+        {
+            std::cerr << "Nothing to migrate: no plaintext allowlist at '"
+                      << legacy.string() << "'.\n";
+            return 1;
+        }
+        // Refuse to overwrite a non-empty vault allowlist — the operator
+        // must reconcile deliberately, never silently clobber.
+        if (!store.empty())
+        {
+            std::cerr << "Refusing to migrate: the vault already holds "
+                      << store.size()
+                      << " known-role(s).  Reconcile manually, then remove '"
+                      << legacy.string()
+                      << "' once the vault is confirmed authoritative.\n";
+            return 1;
+        }
+        security::KnownRolesStore migrated;
+        try
+        {
+            auto loaded = security::KnownRolesStore::load_from_file(legacy);
+            if (loaded.has_value())
+                migrated = std::move(*loaded);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Error reading '" << legacy.string()
+                      << "': " << e.what() << "\n";
+            return 1;
+        }
+        if (!persist(migrated))
+            return 1;
+        // Remove the plaintext file now that it is safely in the vault.
+        fs::remove(legacy, ec);
+        if (ec)
+        {
+            std::cerr << "Migrated " << migrated.size()
+                      << " role(s) into the vault, but FAILED to remove '"
+                      << legacy.string() << "': " << ec.message()
+                      << " — remove it manually (the hub refuses to start "
+                         "until it is gone).\n";
+            return 1;
+        }
+        std::cout << "migrated " << migrated.size()
+                  << " known-role(s) into the vault and removed '"
+                  << legacy.string() << "'\n";
         return 0;
     }
 
@@ -397,12 +477,12 @@ int main(int argc, char *argv[])
     if (args.init_only || args.skeleton_only)
         return do_init(args);
 
-    // 5b. Known-roles allowlist CLI (PeerAdmission Phase B).  Pure file
-    //     ops; no config load + no vault unlock required because
-    //     pubkeys aren't secret material (file ACL is the integrity
-    //     floor — same 0600 + parent 0700 contract as the vault file).
+    // 5b. Known-roles allowlist CLI (PeerAdmission Phase B; HEP-CORE-0035
+    //     §4.8).  The allowlist lives inside the encrypted vault, so these
+    //     ops load the config, unlock the vault with the master password,
+    //     mutate the payload, and re-encrypt — see do_known_role_ops().
     if (args.add_known_role_only || args.revoke_known_role_only ||
-        args.list_known_roles_only)
+        args.list_known_roles_only || args.migrate_known_roles_only)
         return do_known_role_ops(args);
 
     // 6. Load config.  HubConfig::load throws on any parse / validation error;

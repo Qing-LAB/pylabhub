@@ -290,29 +290,28 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
              "l4round", role_uid, "producer", role_pubkey_z85});
         ASSERT_EQ(add_known.wait_for_exit(), 0)
             << "plh_hub --add-known-role failed:\n" << add_known.get_stderr();
-        // CONTENT PIN (H2): a `--add-known-role` that wrote empty or
-        // garbled JSON would still pass the existence check, but the
-        // running broker would silently see an empty allowlist and
-        // deny our role.  Parse and assert the pubkey field.
-        const fs::path known_roles_path =
-            hub_dir / "vault" / "known_roles.json";
-        ASSERT_TRUE(fs::exists(known_roles_path))
-            << "--add-known-role did not create known_roles.json";
-        nlohmann::json kr_json;
-        {
-            std::ifstream f(known_roles_path);
-            f >> kr_json;
-        }
-        ASSERT_TRUE(kr_json.contains("roles") && kr_json["roles"].is_array());
-        ASSERT_EQ(kr_json["roles"].size(), 1u);
-        EXPECT_EQ(kr_json["roles"][0].value("uid", ""), role_uid);
-        EXPECT_EQ(kr_json["roles"][0].value("pubkey_z85", ""), role_pubkey_z85)
-            << "known_roles.json pubkey does not match the one we read from "
-               "RoleVault — the operator workflow is broken end-to-end.";
+        // CONTENT PIN (H2): the allowlist now lives INSIDE the encrypted
+        // vault (HEP-CORE-0035 §4.8).  An --add that wrote garbage would
+        // still exit 0, but the running broker would deny our role.  Read
+        // the vault back via --list-known-roles and assert the uid +
+        // pubkey landed (PYLABHUB_HUB_PASSWORD is set above so the CLI can
+        // unlock the vault).
+        WorkerProcess list(plh_hub_binary(), "--config",
+                           {(hub_dir / "hub.json").string(),
+                            "--list-known-roles"});
+        ASSERT_EQ(list.wait_for_exit(), 0)
+            << "--list-known-roles failed:\n" << list.get_stderr();
+        const std::string listed = list.get_stdout();
+        EXPECT_NE(listed.find(role_uid), std::string::npos)
+            << "role uid missing from the vault allowlist:\n" << listed;
+        EXPECT_NE(listed.find(role_pubkey_z85), std::string::npos)
+            << "vault allowlist pubkey does not match the one we read from "
+               "RoleVault — the operator workflow is broken end-to-end:\n"
+            << listed;
     }
 
-    // Spawn the hub run-mode process — broker loads known_roles.json
-    // here, picking up the role entry we just added.
+    // Spawn the hub run-mode process — the broker loads known_roles from
+    // the encrypted vault here, picking up the role entry we just added.
     WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
     ASSERT_TRUE(wait_for_log_marker(hub_dir, "Broker: listening on"))
         << "hub never reached run-mode.  Log:\n" << read_hub_log(hub_dir);

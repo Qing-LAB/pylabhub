@@ -1060,39 +1060,77 @@ password, even with full filesystem access.  The two protections
 compose; neither alone is sufficient against a determined local
 attacker.
 
+A second reason is **script isolation**, the same principle that keeps
+the role's secret material out of script reach.  The vault is the
+single system-level secrets file; its location is operator-controlled
+via `auth.keyfile` (§4.6, HEP-CORE-0033 §7.1) and may be relocated to
+a root-owned directory (`/etc/pylabhub/vault/<hub_uid>.vault`)
+completely separate from the `hub_dir` the script engine reads and
+writes (`base_dir/logs/script/run/schemas`).  A plaintext
+`known_roles.json` sidecar in `hub_dir` would leave the authorization
+allowlist inside the script's reach and behind at its old location
+when the vault is relocated.  Carrying the allowlist **inside the one
+vault file** makes it inherit that isolation automatically: the script
+engine has no path to it, and there is a single artifact to protect,
+relocate, and back up.  This is why the allowlist rides the existing
+`HubVault` payload rather than a second file — the crypto is the
+shared `vault_crypto` engine either way; co-locating avoids
+fragmenting the isolation boundary across two files.
+
 ### 4.8.2 Storage layout
 
 The hub vault payload (`HubVault` JSON; HEP-CORE-0035 §4.6 + the file
 header at `src/include/utils/hub_vault.hpp`) gains a new top-level
-key `known_roles`:
+key `known_roles`.  Its value is the `KnownRolesStore` document —
+`{version, roles:[…]}`, the same schema the store's `from_json` /
+`to_json` codec produces — so the allowlist keeps its full per-entry
+shape (`name`, `uid`, `role`, `pubkey_z85`), not just a pubkey map.
+`HubVault` holds the document **opaquely**: it never interprets the
+`{version, roles}` schema (that is `KnownRolesStore`'s concern),
+keeping the crypto store free of any dependency on the role model —
+one model, one storage medium.
 
 ```json
 {
   "broker":      { "curve_secret_key": "...", "curve_public_key": "..." },
   "admin":       { "token": "..." },
   "known_roles": {
-    "prod.sensor1.uid3a7f2b1c": "<Z85 40-char pubkey>",
-    "cons.logger.uid8c4e1f9a":  "<Z85 40-char pubkey>"
+    "version": 1,
+    "roles": [
+      { "name": "lab.daq.sensor1", "uid": "prod.sensor1.uid3a7f2b1c",
+        "role": "producer", "pubkey_z85": "<Z85 40-char pubkey>" },
+      { "name": "lab.logger",      "uid": "cons.logger.uid8c4e1f9a",
+        "role": "consumer", "pubkey_z85": "<Z85 40-char pubkey>" }
+    ]
   }
 }
 ```
 
-At broker startup, `BrokerService` reads `known_roles` from the
-decrypted vault payload and populates its in-memory Layer-1 ZAP
-allowlist (§4.1).
+**Load path.**  The hub already opens the vault once at startup to
+load the broker keypair, so the allowlist rides that same decrypted
+payload — no second open, no second password prompt.  Concretely:
+`HubConfig::load_keypair` extracts `known_roles` from the opened
+vault and validates it through `KnownRolesStore::from_json`, exposing
+it as `HubConfig::known_roles()`; `HubHost` copies it into
+`BrokerConfig::known_roles`, from which the broker populates its
+in-memory Layer-1 ZAP allowlist (§4.1).  An empty object (`{}`) is
+the §4.8.4 deny-all bootstrap.
 
 ### 4.8.3 Operator CLI
 
-Three new `plh_hub` CLI commands manage allowlist contents.  All
-three first run the §4.6.2 file-ACL discipline check, then prompt for
-the master password (or read `PYLABHUB_HUB_PASSWORD` env var), open
-the vault, mutate the payload, and re-encrypt.
+Four `plh_hub` CLI commands manage allowlist contents.  Each loads the
+hub config, unlocks the vault (prompts for the master password, or
+reads `PYLABHUB_HUB_PASSWORD`), and reads the `known_roles` document
+from the decrypted payload; the mutating commands then change it and
+re-encrypt the vault in place (`HubVault::set_known_roles` +
+`HubVault::save`).
 
 | Command | Action |
 |---|---|
-| `plh_hub --config <hub.json> --add-known-role <role.pub>` | Read CURVE pubkey from `<role.pub>` (40-char Z85).  role_uid is parsed from the `.pub` filename stem (e.g. `prod.sensor1.uid3a7f2b1c.pub` → `prod.sensor1.uid3a7f2b1c`), or supplied via `--role-uid <uid>`.  Vault gains an entry; if `role_uid` already exists, the command refuses unless `--force` is also passed (prevents accidental rotation). |
-| `plh_hub --config <hub.json> --revoke-known-role <role_uid>` | Remove the entry by `role_uid`.  Refuses if uid not present (warns rather than errors). |
-| `plh_hub --config <hub.json> --list-known-roles` | Print `(role_uid, pubkey_fingerprint)` table to stdout.  Fingerprint is `BLAKE2b-128(pubkey)` rendered as Z85 (24 chars), not the raw pubkey — keeps stdout from leaking sensitive material if redirected.  Exit code 0 = at least one entry; 1 = empty allowlist. |
+| `plh_hub --config <hub.json> --add-known-role <name> <uid> <role> <pubkey_z85>` | Add — or, for an existing `uid`, rotate the pubkey of — an allowlist entry.  `<role>` ∈ {producer, consumer, processor, any}, enum-validated at the input boundary.  `<pubkey_z85>` is the role's 40-char Z85 CURVE pubkey (the operator obtains it from the role's distributed `.pub`, or `plh_role --print-pubkey`). |
+| `plh_hub --config <hub.json> --revoke-known-role <uid>` | Remove the entry by `uid`.  Exit 0 even if absent; on a no-op the vault is left untouched (not re-encrypted), preserving its audit mtime. |
+| `plh_hub --config <hub.json> --list-known-roles` | Print the allowlist (`uid`, `name`, `role`, `pubkey`) to stdout.  Pubkeys are not secret (§4.8.1), so the raw Z85 is shown. |
+| `plh_hub --config <hub.json> --migrate-known-roles` | One-shot hard-cutover import (§4.8.7): read a legacy plaintext `<hub_dir>/vault/known_roles.json`, write it into the vault, and delete the file.  Refuses if the vault already holds entries (the operator reconciles manually). |
 
 ### 4.8.4 Bootstrap
 
@@ -1109,15 +1147,21 @@ the vault, mutate the payload, and re-encrypt.
   vault on first keygen) to the hub operator via the operator's
   existing channel (manual, signed messaging, etc.).
 
-### 4.8.5 Hot reload (running hub)
+### 4.8.5 Hot reload (running hub) — DEFERRED
 
-A running `plh_hub` holds the allowlist in memory.  CLI commands that
-mutate the vault MUST signal the running hub (admin RPC reload
-command, HEP-CORE-0033 §11.2) to re-read its allowlist from the
-freshly-rewritten vault.  Detection: the CLI command checks for the
-hub PID file (`<hub_dir>/run/plh_hub.pid` per HEP-CORE-0033 §7) and,
-if present, sends the reload RPC.  If absent, the next hub startup
-picks up the new contents.
+> **Status: not yet implemented (deferred follow-up).**  The current
+> behaviour is that a running `plh_hub` holds the allowlist in memory
+> from startup; a CLI mutation re-encrypts the vault file but does NOT
+> reach the running process, so the change takes effect on the next
+> hub restart.  This is no regression from the pre-vault plaintext
+> flow, which also required a restart.
+
+The intended design: CLI commands that mutate the vault signal the
+running hub (admin RPC reload command, HEP-CORE-0033 §11.2) to re-read
+its allowlist from the freshly-rewritten vault.  Detection: the CLI
+command checks for the hub PID file (`<hub_dir>/run/plh_hub.pid` per
+HEP-CORE-0033 §7) and, if present, sends the reload RPC.  If absent,
+the next hub startup picks up the new contents.
 
 ### 4.8.6 Out of scope
 
@@ -1132,7 +1176,30 @@ picks up the new contents.
 - Audit logging of allowlist mutations is covered separately under
   §7 audit-log scope (when that question resolves).
 
----
+### 4.8.7 Hard cutover from the plaintext file
+
+The move into the vault is a **hard cutover**: the plaintext
+`<hub_dir>/vault/known_roles.json` is no longer read at startup, and
+the hub **refuses to start** if that file still exists.  This is
+deliberate — a silent "read the vault, else fall back to the file"
+would let an operator who believes the plaintext file is authoritative
+run with a stale or empty allowlist, and would defeat the isolation
+and tamper-resistance §4.8.1 buys.  There is no fallback and no grace
+period.
+
+- **Refuse-to-start** (`HubConfig::load_keypair`, the run/validate
+  path): if the legacy file exists, vault load throws with a diagnostic
+  naming the file and the one-shot migration command.  The allowlist
+  CLI ops open the vault directly (not via `load_keypair`), so they are
+  exempt — `--migrate-known-roles` can still read and remove the file.
+- **`--migrate-known-roles`** (§4.8.3): reads the legacy file, imports
+  it into the vault (re-encrypting the payload), and deletes the file.
+  It refuses to overwrite a vault that already holds entries, so an
+  operator who has already populated the vault cannot silently clobber
+  it — they reconcile and remove the stale file by hand.
+
+The operator runbook for this migration lives in
+`docs/README/README_Deployment.md`.
 
 ## 5. hub.json fields when HEP-0035 lands
 
