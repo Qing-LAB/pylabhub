@@ -372,6 +372,24 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         << read_hub_log(hub_dir)
         << "\n--- Role stderr ---\n" << role.get_stderr();
 
+    // The hub-side RegReqAccepted marker above fires BEFORE the role
+    // reaches is_running() (the role still has REG_ACK processing +
+    // channel-attach + loop-ready ahead of it).  SIGTERM-ing on that
+    // marker alone races the role's final startup on slow CI, where the
+    // signal lands mid-startup and the role exits 1 ("loop did not
+    // start").  Wait instead for the role's OWN production log to show it
+    // fully started — event=ChannelAuthApplied is the last startup marker
+    // (REG_ACK processed, instance_id captured, allowlist applied +
+    // APPLIED_REQ round-trip closed).  This reads production telemetry
+    // only (README_testing §1.1.1 / Pattern 4), no test hook.
+    EXPECT_TRUE(wait_for_log_marker(
+        prod_dir, "event=ChannelAuthApplied channel='lab.l4.roundtrip'",
+        std::chrono::seconds(15)))
+        << "producer never reached a fully-started state "
+           "(event=ChannelAuthApplied).  Role log:\n"
+        << read_hub_log(prod_dir) << "\n--- Role stderr ---\n"
+        << role.get_stderr();
+
     // ── Shutdown both ──────────────────────────────────────────────────────
     role.send_signal(SIGTERM);
     EXPECT_EQ(role.wait_for_exit(10), 0)
