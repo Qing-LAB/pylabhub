@@ -73,8 +73,6 @@ std::string_view to_wire_string(RejectCode code) noexcept
         case RejectCode::unknown_role:            return "UNKNOWN_ROLE";
         case RejectCode::pubkey_mismatch:         return "PUBKEY_MISMATCH";
         case RejectCode::uid_conflict:            return "UID_CONFLICT";
-        case RejectCode::key_rotation_required:
-            return "KEY_ROTATION_REQUIRES_DEREG";
         case RejectCode::replay_or_skew:          return "REPLAY_OR_SKEW";
         case RejectCode::invalid_role_tag:        return "INVALID_ROLE_TAG";
         case RejectCode::broker_internal_error:   return "BROKER_INTERNAL_ERROR";
@@ -169,31 +167,6 @@ gate_known_role_binding(const RegFamilyBodyView &body,
                         "for this role_uid");
     }
     return std::nullopt;  // unreachable
-}
-
-std::optional<RejectDetail>
-gate_key_rotation(const RegFamilyBodyView &body,
-                   const AdmissionContext  &ctx) noexcept
-{
-    if (!ctx.cb || !ctx.cb->check_key_rotation)
-    {
-        return make(RejectCode::invalid_request, "",
-                    "internal: key_rotation callback not bound");
-    }
-    const auto result = ctx.cb->check_key_rotation(body.role_uid,
-                                                    body.zmq_pubkey);
-    switch (result)
-    {
-        case KeyRotationCheck::not_yet_registered:
-        case KeyRotationCheck::matches_current:
-            return std::nullopt;
-        case KeyRotationCheck::rotation_attempted:
-            return make(RejectCode::key_rotation_required, "zmq_pubkey",
-                        "in-band key rotation not supported "
-                        "(I-KEY-ROTATION-VIA-DEREG); DEREG the role, "
-                        "update known_roles config, then re-REG");
-    }
-    return std::nullopt;
 }
 
 // Shared I-REPLAY-BOUND check (wall-clock skew + nonce dedup).  ONE
@@ -403,7 +376,6 @@ run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
     if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, {}))
         return r;
     if (auto r = gate_known_role_binding(body, ctx))       return r;
-    if (auto r = gate_key_rotation(body, ctx))             return r;
     if (auto r = gate_replay_bound(body, ctx))             return r;
     return std::nullopt;  // Admitted; caller runs topology/cardinality/schema.
 }

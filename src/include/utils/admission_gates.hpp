@@ -31,14 +31,10 @@
  *            ▼
  *     ┌─────────────┐   gate 5: verify_known_role_binding(role_uid, zmq_pubkey)
  *     │  BoundOk    │           else UNKNOWN_ROLE / PUBKEY_MISMATCH
- *     └──────┬──────┘
- *            │
- *            ▼
- *     ┌─────────────┐   gate 6: pubkey == currently-registered pubkey
- *     │ RotationOk  │           else KEY_ROTATION_REQUIRES_DEREG
- *     └──────┬──────┘
- *            │
- *            ▼
+ *     └──────┬──────┘         (PUBKEY_MISMATCH also enforces I-KEY-ROTATION-
+ *            │                 VIA-DEREG: a running hub only accepts a role's
+ *            │                 pinned known_roles pubkey; rotation = edit
+ *            ▼                 config + hard reload — HEP-CORE-0046)
  *     ┌─────────────┐   gate 7: nonce dedup + wall_ts skew
  *     │  ReplayOk   │           else REPLAY_OR_SKEW
  *     └──────┬──────┘
@@ -82,8 +78,7 @@ enum class RejectCode
     invalid_request,     ///< Wire-shape violation: grammar / unknown enum / etc.
     unknown_role,        ///< I-PUBKEY-BINDING: (uid, pubkey) not in known_roles
     pubkey_mismatch,     ///< I-PUBKEY-BINDING: uid known, pubkey does not match
-    uid_conflict,        ///< I-KEY-ROTATION: uid already registered w/ diff pubkey
-    key_rotation_required,  ///< I-KEY-ROTATION-VIA-DEREG
+    uid_conflict,        ///< uid already registered (duplicate REG)
 
     // Anti-replay (gate 7)
     replay_or_skew,      ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
@@ -120,23 +115,15 @@ struct PYLABHUB_UTILS_EXPORT RejectDetail
 };
 
 /// Outcome of a known-roles lookup.  Distinguishes "role_uid absent" from
-/// "role_uid present but pubkey differs" so gate 5 and gate 6 can report
-/// the correct wire error code.
+/// "role_uid present but pubkey differs" so gate 5 (known_role_binding)
+/// can report the correct wire error code.  The pubkey_mismatch result
+/// is also what enforces I-KEY-ROTATION-VIA-DEREG (an on-the-fly re-REG
+/// with a rotated pubkey) — there is no separate key-rotation gate.
 enum class KnownRoleLookup
 {
     binding_matches,       ///< (uid, pubkey) matches known_roles exactly
     uid_unknown,           ///< role_uid not present in known_roles
     pubkey_mismatch,       ///< role_uid present, pubkey differs from known
-};
-
-/// Outcome of the key-rotation check against currently-registered role
-/// state.  Distinguishes "no registration yet" (rotation not applicable)
-/// from "already registered with different pubkey" (rotation attempt).
-enum class KeyRotationCheck
-{
-    not_yet_registered,    ///< No live registration — this REG is the first
-    matches_current,       ///< Pubkey matches the currently-registered value
-    rotation_attempted,    ///< Live registration exists with a different pubkey
 };
 
 /// Callbacks the gates invoke against broker state.  Handler binds these
@@ -149,12 +136,6 @@ struct AdmissionCallbacks
     std::function<KnownRoleLookup(std::string_view role_uid,
                                     std::string_view zmq_pubkey)>
         lookup_known_role;
-
-    /// Compare (role_uid, zmq_pubkey) against the role's currently-
-    /// registered pubkey (if any).
-    std::function<KeyRotationCheck(std::string_view role_uid,
-                                     std::string_view zmq_pubkey)>
-        check_key_rotation;
 
     /// Record the nonce for anti-replay dedup.  Returns true if the
     /// nonce is fresh (accepted) or false if it collided within the
@@ -265,10 +246,6 @@ gate_known_role_binding(const RegFamilyBodyView &body,
                          const AdmissionContext  &ctx) noexcept;
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_key_rotation(const RegFamilyBodyView &body,
-                   const AdmissionContext  &ctx) noexcept;
-
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_replay_bound(const RegFamilyBodyView &body,
                    const AdmissionContext  &ctx) noexcept;
 
@@ -300,9 +277,9 @@ gate_role_tag_policy(std::string_view msg_type,
 //   - role_tag_policy (HEP-CORE-0033 §G2.2.0b.8)
 //   - replay_bound (I-REPLAY-BOUND): nonce dedup + wall_ts skew
 //
-// gate_known_role_binding and gate_key_rotation don't apply — the
-// role's pubkey was already established by the successful REG_REQ that
-// preceded this message.
+// gate_known_role_binding doesn't apply — the role's pubkey was
+// already established by the successful REG_REQ that preceded this
+// message.
 struct AuthenticatedRegFamilyView
 {
     std::string_view role_uid;

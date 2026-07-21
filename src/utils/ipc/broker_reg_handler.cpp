@@ -207,27 +207,11 @@ BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
         return KnownRoleLookup::binding_matches;
     };
 
-    gate_callbacks_.check_key_rotation =
-        [](std::string_view /*uid*/,
-            std::string_view /*pubkey*/) -> KeyRotationCheck {
-        // I-KEY-ROTATION-VIA-DEREG defense-in-depth.  Full impl needs a
-        // role_uid → currently-registered-pubkey index on HubState;
-        // today HubState carries pubkeys only per-channel on
-        // ProducerEntry / ConsumerEntry, so a proper lookup is
-        // O(channels × roles-per-channel).  Deferred to a follow-on
-        // that adds a small pubkey-by-uid map maintained on
-        // _on_producer_added / _on_consumer_joined / DEREG paths.
-        //
-        // Meanwhile, gate 5 (gate_known_role_binding) already rejects
-        // any REG whose pubkey does not match known_roles, so the
-        // rotation-attempt window is only reachable when the operator
-        // updates known_roles WITHOUT first DEREG'ing the role.
-        // HubState's own UID_CONFLICT logic in _on_producer_added
-        // catches that at the state-mutation layer as a fallback.
-        // Returning not_yet_registered here keeps the pipeline shape
-        // correct without silently rejecting good REGs.
-        return KeyRotationCheck::not_yet_registered;
-    };
+    // I-KEY-ROTATION-VIA-DEREG (HEP-0046): a role's CURVE pubkey is
+    // immutable for the broker's lifetime — rotation is edit-config +
+    // hard-reload + re-REG.  gate_known_role_binding already rejects any
+    // on-the-fly re-REG with a mismatched pubkey (PUBKEY_MISMATCH), so
+    // there is no separate key-rotation gate.
 
     gate_callbacks_.record_and_check_nonce =
         [this](std::string_view uid, std::string_view nonce) {

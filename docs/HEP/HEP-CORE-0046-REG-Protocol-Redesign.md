@@ -60,7 +60,7 @@ flowchart TD
     ROUTE -->|"REG_REQ / CONSUMER_REG_REQ<br/>(carry zmq_pubkey)"| RFG["run_reg_family_gates<br/>admission_gates.cpp:372"]
     ROUTE -->|"DEREG / CONSUMER_DEREG /<br/>ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED<br/>(no zmq_pubkey)"| ARF["run_authenticated_reg_family_gates<br/>admission_gates.cpp:401"]
 
-    RFG --> RFGG["1 identity_match — ROUTER id == role_uid<br/>2 grammar<br/>3 role_tag_policy<br/>4 known_role_binding — I-PUBKEY-BINDING<br/>5 key_rotation<br/>6 replay"]
+    RFG --> RFGG["1 identity_match — ROUTER id == role_uid<br/>2 grammar<br/>3 role_tag_policy<br/>4 known_role_binding — I-PUBKEY-BINDING (also enforces I-KEY-ROTATION-VIA-DEREG)<br/>5 replay"]
     ARF --> ARFG["1 identity_match<br/>2 grammar<br/>3 role_tag_policy<br/>4 replay"]
 
     RFGG --> CRB["check_replay_bound()<br/>skew → nonce dedup (I-REPLAY-BOUND)<br/><b>ONE shared helper — the two runners cannot drift</b>"]
@@ -968,14 +968,24 @@ message X onto Frame 3 correlation_id / Frame 2 msg_type from
 message Y.  Hash binding refuses spliced bodies.
 
 **I-KEY-ROTATION-VIA-DEREG.**  A role's CURVE pubkey is immutable
-for a given `(role_uid, broker_lifetime)` pair.  Any REG-family
-request whose `zmq_pubkey` differs from the role's currently-
-registered pubkey is rejected with `error_code=UID_CONFLICT`
-(already-registered role reregistering under new pubkey) or
-`KEY_ROTATION_REQUIRES_DEREG` (post-DEREG re-REG with pubkey
-different from known_roles).  Key rotation is an operator action:
-(1) DEREG the role, (2) update `known_roles` config, (3) role
-re-REG with new key.  No in-band rotation, no dual-pubkey window.
+for a given `(role_uid, broker_lifetime)` pair — that is, until the
+broker is hard-reloaded.  The `known_roles` allowlist is loaded once
+from the encrypted vault at broker start (HEP-0035 §4.8) and is the
+sole source of truth for the pubkey a `role_uid` may present.  Any
+REG-family request whose `zmq_pubkey` differs from that role's
+allowlisted pubkey is rejected with `error_code=PUBKEY_MISMATCH`
+(`gate_known_role_binding` → `KnownRoleLookup::pubkey_mismatch`).
+
+Key rotation is an operator action performed off-line, never in-band:
+(1) edit the `known_roles` config / vault with the new pubkey,
+(2) hard-reload the broker (which drops every registration, so the
+old `(role_uid, pubkey)` binding no longer exists), (3) the role
+re-REGs with its new key against the reloaded allowlist.  There is no
+on-the-fly rotation, no dual-pubkey window, and **no dedicated
+key-rotation gate** — `gate_known_role_binding`'s pubkey check already
+enforces this invariant on every REG, so a separate gate would be a
+redundant no-op.  A producer/consumer cannot begin using a rotated
+pubkey until after the hard reload.
 
 #### Wire envelope
 
@@ -1257,8 +1267,9 @@ before topology admission, atomic wire cut for the whole chain.
     (`ENVELOPE_TAMPERED`).
 22. L2: broker rejects replay (nonce reuse) and skew (clock)
     (`REPLAY_OR_SKEW`).
-23. L2: broker rejects in-band key rotation
-    (`KEY_ROTATION_REQUIRES_DEREG`).
+23. L2: broker rejects an on-the-fly re-REG with a mismatched pubkey
+    (`PUBKEY_MISMATCH`) — this is how I-KEY-ROTATION-VIA-DEREG is
+    enforced; there is no dedicated key-rotation gate.
 24. L3: broker startup rejects duplicate-pubkey `known_roles`.
 25. L4: fan-in end-to-end passes without any identity workaround
     (task #95 falls out here).
@@ -2384,17 +2395,18 @@ mutation, in this order:
 4. Grammar validation on role_uid / role_name / channel_name
    (HEP-CORE-0033).
 5. `verify_known_role_binding(body.role_uid(), body.zmq_pubkey())`
-   else known-roles-mismatch (I-PUBKEY-BINDING).
-6. Key-rotation gate: pubkey ≠ role's currently-registered pubkey
-   → `UID_CONFLICT` or `KEY_ROTATION_REQUIRES_DEREG`
-   (I-KEY-ROTATION-VIA-DEREG).
-7. Anti-replay: `HubState::nonce_seen(body.role_uid(),
+   else `PUBKEY_MISMATCH` (I-PUBKEY-BINDING).  This same check
+   enforces I-KEY-ROTATION-VIA-DEREG: a role's pubkey is immutable
+   for the broker's lifetime, so an on-the-fly re-REG with a
+   different pubkey fails here.  There is no separate key-rotation
+   gate — it would be a redundant no-op.
+6. Anti-replay: `HubState::nonce_seen(body.role_uid(),
    body.client_nonce(), body.client_wall_ts())` OR wall-clock skew
    > 30 s → `REPLAY_OR_SKEW` (I-REPLAY-BOUND).
-8. Topology / cardinality / schema / transport gates per §2.1
+7. Topology / cardinality / schema / transport gates per §2.1
    admission sequence.
 
-Gates 1-7 are wire-level integrity + identity; gate 8 is protocol
+Gates 1-6 are wire-level integrity + identity; gate 7 is protocol
 admission.  Failure at any gate stops processing and replies with
 the named error code before touching HubState.
 

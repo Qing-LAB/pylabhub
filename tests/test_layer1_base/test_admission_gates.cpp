@@ -48,7 +48,6 @@ struct StubCallbacks
 {
     std::string known_uid;
     std::string known_pubkey;
-    std::string current_pubkey;    // "" if not currently registered
     std::unordered_set<std::string> seen_nonces;
     std::uint64_t                    now_ms{1'000'000ULL};
 
@@ -62,16 +61,6 @@ struct StubCallbacks
             if (pubkey != known_pubkey)
                 return ag::KnownRoleLookup::pubkey_mismatch;
             return ag::KnownRoleLookup::binding_matches;
-        };
-        cb.check_key_rotation = [this](std::string_view uid,
-                                         std::string_view pubkey)
-                                     -> ag::KeyRotationCheck {
-            (void)uid;
-            if (current_pubkey.empty())
-                return ag::KeyRotationCheck::not_yet_registered;
-            if (pubkey == current_pubkey)
-                return ag::KeyRotationCheck::matches_current;
-            return ag::KeyRotationCheck::rotation_attempted;
         };
         cb.record_and_check_nonce = [this](std::string_view uid,
                                             std::string_view nonce) {
@@ -154,8 +143,6 @@ TEST(AdmissionGates, RejectCodeWireStrings)
               "PUBKEY_MISMATCH");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::uid_conflict),
               "UID_CONFLICT");
-    EXPECT_EQ(ag::to_wire_string(ag::RejectCode::key_rotation_required),
-              "KEY_ROTATION_REQUIRES_DEREG");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::replay_or_skew),
               "REPLAY_OR_SKEW");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::invalid_role_tag),
@@ -385,32 +372,11 @@ TEST(AdmissionGate_KnownRole, PubkeyMismatchRejects)
     EXPECT_EQ(r->code, ag::RejectCode::pubkey_mismatch);
 }
 
-// ── Gate 6: key rotation ──────────────────────────────────────────────
-
-TEST(AdmissionGate_KeyRotation, FreshRegistrationPasses)
-{
-    Fixture f;
-    // stub.current_pubkey is empty → not_yet_registered path
-    EXPECT_EQ(ag::gate_key_rotation(f.body(), f.ctx()), std::nullopt);
-}
-
-TEST(AdmissionGate_KeyRotation, SamePubkeyPasses)
-{
-    Fixture f;
-    f.stub.current_pubkey = f.stub.known_pubkey;
-    f.cb = f.stub.make();
-    EXPECT_EQ(ag::gate_key_rotation(f.body(), f.ctx()), std::nullopt);
-}
-
-TEST(AdmissionGate_KeyRotation, DifferentPubkeyRejects)
-{
-    Fixture f;
-    f.stub.current_pubkey = "old0old0old0old0old0old0old0old0old0old0";
-    f.cb = f.stub.make();
-    auto r = ag::gate_key_rotation(f.body(), f.ctx());
-    ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->code, ag::RejectCode::key_rotation_required);
-}
+// Key rotation (HEP-0046 I-KEY-ROTATION-VIA-DEREG): there is no
+// separate key-rotation gate.  A role's CURVE pubkey is immutable for
+// the broker's lifetime; an on-the-fly re-REG with a mismatched pubkey
+// is rejected by gate_known_role_binding as PUBKEY_MISMATCH (covered by
+// AdmissionGate_KnownRole.PubkeyMismatchRejects above).
 
 // ── Gate 7: anti-replay ───────────────────────────────────────────────
 

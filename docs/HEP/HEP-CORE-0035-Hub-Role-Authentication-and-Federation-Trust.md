@@ -174,8 +174,11 @@ addressable, plus:
 - **Audit log model.**  Which Layer-1 + Layer-2 decisions get logged
   at what level?  Where do the logs live (per-hub stdout, central
   syslog, structured admin event stream)?
-- **Operator workflow for key rotation.**  §7 open question #1
-  (grace window vs hard-cut) needs an operator-facing answer.
+- **Operator workflow for key rotation.**  Resolved 2026-07-20 —
+  hard-cut, no grace window (§7 open question #1).  Edit the
+  `known_roles` vault, hard-reload the broker, role re-REGs with its
+  new key; enforced by `PUBKEY_MISMATCH` (HEP-CORE-0046
+  I-KEY-ROTATION-VIA-DEREG).
 
 None of these are blockers for *this HEP's design* — they are
 prerequisites for *implementation* of Phase 1.  Until they're
@@ -1256,10 +1259,17 @@ When HEP-0035 ships:
 
 ## 7. Open questions (resolve before implementation)
 
-1. **Pubkey rotation semantics.** When an operator rotates a role's
+1. **Pubkey rotation semantics.** ~~When an operator rotates a role's
    keypair, hub.json is hot-reloaded (HEP-0033 §6.5 vault). What's the
    transition period? Allow both old + new pubkey for a grace window,
-   or hard-cut?
+   or hard-cut?~~ **Closed 2026-07-20 — hard-cut, no grace window.**
+   A role's pubkey is immutable for the broker's lifetime
+   (HEP-CORE-0046 I-KEY-ROTATION-VIA-DEREG).  Rotation is an off-line
+   operator action: edit the `known_roles` vault, hard-reload the
+   broker (which drops all registrations), and the role re-REGs with
+   its new key.  There is no dual-pubkey window and no in-band
+   rotation; an on-the-fly re-REG with a mismatched pubkey is rejected
+   as `PUBKEY_MISMATCH` by `gate_known_role_binding`.
 2. **ZAP handler lifetime + threading.** ZAP handlers run on a separate
    inproc socket bound to `inproc://zeromq.zap.01`. Decide: hub-owned
    thread, or share with broker poll loop?

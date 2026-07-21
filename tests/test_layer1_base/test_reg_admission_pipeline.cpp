@@ -106,10 +106,6 @@ ag::AdmissionCallbacks make_permissive_gate_callbacks(
             return ag::KnownRoleLookup::binding_matches;
         return ag::KnownRoleLookup::uid_unknown;
     };
-    cb.check_key_rotation = [](std::string_view, std::string_view)
-                                 -> ag::KeyRotationCheck {
-        return ag::KeyRotationCheck::not_yet_registered;
-    };
     cb.record_and_check_nonce = [&nonce_dedup_out](std::string_view uid,
                                                     std::string_view nonce) {
         std::string key{uid};

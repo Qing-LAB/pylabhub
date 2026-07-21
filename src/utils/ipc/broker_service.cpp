@@ -6709,20 +6709,12 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
             return ::pylabhub::admission::KnownRoleLookup::uid_unknown;
         };
 
-        // I-KEY-ROTATION-VIA-DEREG: HubState does not currently expose
-        // a role_uid → current-pubkey index (per-channel pubkeys only).
-        // Return not_yet_registered as the safe default; UID_CONFLICT
-        // catches the actual rotation attempt at the state-mutation
-        // layer (`_on_producer_added`).  This matches the
-        // BrokerRegHandler placeholder pending the per-role pubkey
-        // index HEP addendum.
-        impl->admission_binder_.callbacks.check_key_rotation =
-            [](std::string_view /*uid*/,
-                std::string_view /*pubkey*/)
-                -> ::pylabhub::admission::KeyRotationCheck {
-            return ::pylabhub::admission::KeyRotationCheck::
-                not_yet_registered;
-        };
+        // I-KEY-ROTATION-VIA-DEREG (HEP-0046): a role's CURVE pubkey is
+        // immutable for the broker's lifetime.  Rotation is edit-config
+        // + hard-reload + re-REG; an on-the-fly re-REG with a different
+        // pubkey is rejected as PUBKEY_MISMATCH by
+        // `check_known_role_binding` (KnownRoleLookup::pubkey_mismatch).
+        // There is no separate key-rotation gate.
 
         // I-REPLAY-BOUND: nonce dedup delegated to HubState's per-role
         // sliding-window map (`nonce_seen` returns true = fresh).
