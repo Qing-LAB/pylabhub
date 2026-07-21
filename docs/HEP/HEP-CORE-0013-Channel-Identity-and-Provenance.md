@@ -27,9 +27,19 @@
 > whose pubkey is not allowlisted never completes the handshake.  The
 > identity data-block (§1–§3, `SharedMemoryHeader` provenance fields) is
 > unchanged and remains accurate; only the §4/§5 enforcement narrative
-> is superseded.  (The §4.2 stale-SHM `producer_uid` cross-check is a
-> separate open item — audit #68 item 4 — not implemented; do not treat
-> it as live.)
+> is superseded.
+>
+> 🚧 **Supersession banner (2026-07-21) — §4.2 stale-SHM check retired.**
+> §4.2's "compare `SharedMemoryHeader.producer_uid` against the DISC_ACK
+> `producer_uid` and abort" was never implemented and is unimplementable
+> as written — DISC_ACK carries no `producer_uid` (the reply is
+> status / schema_hash / metadata / consumer_count / zmq_pubkey /
+> data_transport / zmq_node_endpoint).  The stale-SHM threat is now
+> handled structurally by the HEP-CORE-0041 capability-fd attach model
+> (per-channel capability endpoint, SO_PEERCRED + CURVE mutual auth —
+> HEP-CORE-0036 §I8) plus the on-attach `schema_hash` verification
+> (`data_block.cpp`, "schema hash mismatch" → `LOGGER_ERROR`).  §4.2 is
+> retired; see the rewritten §4.2 below.
 
 ### Source file reference
 
@@ -42,8 +52,13 @@
 | `src/include/utils/role_identity_policy.hpp` | L3 (public) | `KnownRole` (vault allowlist entry). *(Formerly `RoleIdentityPolicy` enum — deleted 2026-07-20, HEP-0035 §4.5.)* |
 | `src/include/utils/actor_vault.hpp` | L3 (public) | Encrypted keypair vault (generic, legacy name) |
 | `src/utils/security/zap_router.cpp` | impl | ZAP CURVE-pubkey enforcement (HEP-0035 §4.1) — the actual role-identity gate |
+| `src/utils/security/attach_protocol.cpp` | impl | SHM capability-fd attach: SO_PEERCRED + CURVE mutual auth (HEP-0036 §I8 / HEP-0041) — replaces the retired §4.2 producer_uid cross-check |
+| `src/utils/shm/data_block.cpp` | impl | writes the identity block (single producer_uid) at `create_channel()`; verifies `schema_hash` on attach |
 | `tests/test_layer2_service/test_uid_utils.cpp` | test | UID format validation, uniqueness, generation |
 | `tests/test_layer2_service/test_actor_vault.cpp` | test | Vault create/open, keypair storage |
+| `tests/test_layer2_service/test_attach_protocol.cpp` | test | capability-fd handshake (SO_PEERCRED uid check + CURVE mutual auth) |
+| `tests/test_layer3_datahub/test_datahub_schema_validation.cpp` | test | on-attach schema-hash mismatch → `LOGGER_ERROR` (stale/wrong-segment guard) |
+| `tests/test_layer2_service/test_hub_state.cpp` | test | SHM single-producer: `ONE_TO_ONE_CARDINALITY_VIOLATED` (fan-in / 2nd-producer rejection) |
 
 ---
 
@@ -85,8 +100,32 @@ needed for reads: consumers attach after the channel is registered (`REG_ACK`), 
 identity fields are fully written before any consumer can read them.
 
 **Empty fields**: in `--dev` mode or when the producer runs outside a hub context, `hub_uid`
-and `hub_name` are empty strings. Policy enforcement is disabled for channels with empty
-`hub_uid` (treated as unmanaged channels).
+and `hub_name` are empty strings. Channels with empty `hub_uid` are unmanaged; no ZAP
+allowlist applies (dev-mode loopback, HEP-CORE-0035 §7 open-question 5).
+
+**Scope and level — a transport-layer provenance stamp, not the identity model.**
+The authoritative producer model is **always a list**, symmetric across every
+transport and topology: the broker holds `ChannelEntry.producers[]`
+(`std::vector<ProducerEntry>`, 1..N — HEP-CORE-0023 §2.1.1) and surfaces it
+uniformly as `CONSUMER_REG_ACK.producers[] = [{role_uid, pubkey_z85, endpoint}, …]`
+for **both** SHM and ZMQ (HEP-CORE-0036 §6.4 — the B-4 unification, #289, that
+removed the old "SHM emits flat fields, ZMQ emits an array" asymmetry). The
+`QueueReader`/`QueueWriter` abstraction (`hub_queue.hpp`) isolates the user from
+whether a channel is backed by SHM or ZMQ; producer identity is the same list
+either way, of size 1 for a single-producer channel.
+
+This `SharedMemoryHeader` identity block is **not** a second identity model — it
+is a physical provenance stamp co-located with the data at the **SHM transport
+layer**, below the queue abstraction (inside the ShmQueue backend). It stamps a
+single `producer_uid`/`producer_name` because an SHM segment is physically
+single-writer: SHM channels are always single-producer (only `FanOut` 1→N and
+`OneToOne` 1→1; `FanIn` N→1 is ZMQ-only — `hub_shm_queue.hpp` `LOGGER_ERROR`s on
+an SHM fan-in request, and the broker rejects a second SHM producer with
+`ONE_TO_ONE_CARDINALITY_VIOLATED` / fan-out cardinality at REG_REQ). So for an
+SHM channel the stamped `producer_uid` is exactly `producers[0].role_uid` — the
+one entry in that channel's list, not a different representation. ZMQ channels
+have no SHM header; their producers are read from the same `producers[]` list,
+never from a transport-specific field.
 
 ---
 
@@ -150,12 +189,20 @@ flowchart TB
     PC["ProducerConfig\nproducer.json"] --> PO
     PO -->|"create_channel()"| SHM["SharedMemoryHeader\n(208-byte identity block)"]
     PO -->|"REG_REQ"| BR["BrokerService\nchannel registry"]
-    SHM -->|"read on attach"| CONS["Consumer\n(no broker query needed)"]
-    BR -->|"DISC_ACK"| CONS
-    CONS -->|"cross-check"| VERIFY{"SHM uid == broker uid?"}
-    VERIFY -->|Yes| OK["Attach succeeds"]
-    VERIFY -->|No| ABORT["Stale SHM — abort"]
+    BR -->|"CONSUMER_REG_ACK\nproducers[]{role_uid,pubkey_z85,endpoint}"| CONS["Consumer"]
+    CONS -->|"capability handshake\n(SO_PEERCRED + CURVE mutual auth)"| PROD["Producer\n(HEP-0041/0036 §I8)"]
+    PROD -->|"SCM_RIGHTS: live SHM fd"| CONS
+    CONS -->|"read on attach"| SHM
+    CONS -->|"verify schema_hash"| VERIFY{"header schema == expected?"}
+    VERIFY -->|Yes| OK["Attach succeeds\n(provenance read for logging)"]
+    VERIFY -->|No| ABORT["schema mismatch — LOGGER_ERROR"]
 ```
+
+The consumer does **not** open a named segment that could be stale: it receives
+the live SHM fd directly from the CURVE-authenticated producer over the
+per-channel capability handshake (HEP-CORE-0041 §5.3), so a wrong/stale
+producer's segment cannot reach it. The identity fields are then read for
+provenance/logging, and `schema_hash` is verified on attach.
 
 ```
 HubConfig (hub.json)             ProducerConfig (producer.json)
@@ -238,12 +285,49 @@ federation `peers[].pubkey_z85` (HEP-0035 §4.2); an empty union is the
 legal deny-all state.  There is no per-`RoleIdentityPolicy` mode and no
 `DISC`-time string check — the ZAP gate is unconditional.
 
-### 4.2 Identity mismatch detection
+### 4.2 Stale / wrong-segment detection (retired mandate — see how it is handled today)
 
-If a consumer attaches to a channel and finds that the `SharedMemoryHeader.producer_uid`
-does not match the `producer_uid` in the `DISC_ACK` from the broker, the consumer logs a
-`LOGGER_ERROR` and aborts the connection. This detects stale SHM segments reused by a
-different producer.
+> **Retired 2026-07-21.**  The original mandate — "compare
+> `SharedMemoryHeader.producer_uid` against the `producer_uid` in the DISC_ACK
+> and abort on mismatch" — was **never implemented** and is unimplementable as
+> written: **DISC_ACK carries no `producer_uid`** (its reply is status /
+> schema_hash / metadata / consumer_count / zmq_pubkey / data_transport /
+> zmq_node_endpoint, `broker_service.cpp`).  Producer identity moved to
+> `CONSUMER_REG_ACK.producers[]{role_uid, pubkey_z85, endpoint}` when the wire
+> protocol was reworked (HEP-CORE-0036 §6.4 / HEP-CORE-0041).
+
+The "stale SHM segment reused by a different producer" threat this section
+targeted is now handled **structurally**, so no producer_uid cross-check is
+required:
+
+1. **The consumer never opens a named segment that could be stale.** It receives
+   the live SHM fd directly from the producer via `SCM_RIGHTS`, over a
+   **per-channel capability endpoint** (`default_shm_capability_endpoint(channel)`,
+   HEP-CORE-0041 §5.3).  The fd therefore comes from the specific, live producer
+   for that channel — a different/stale producer's segment cannot be substituted.
+   (The name-based `shm_attach` path exists only for `ReadAttach` diagnostic
+   tools and `WriteAttach` source processes, not the consumer data path.)
+2. **The producer handing the fd is cryptographically authenticated.**
+   SO_PEERCRED verifies the peer's OS uid (HEP-CORE-0036 §I8) and a CURVE mutual
+   handshake verifies the producer's pubkey against the one the broker
+   authorized (`CONSUMER_REG_ACK.producers[].pubkey_z85`, ZAP-gated per
+   HEP-CORE-0035).
+3. **A wrong-schema segment is caught on attach.** The consumer verifies the
+   header `schema_hash` against the expected schema; a mismatch is a
+   `LOGGER_ERROR` (`data_block.cpp`, "DataBlock/FlexZone schema hash mismatch";
+   pinned by `test_datahub_schema_validation.cpp`).
+
+Enforcement summary: ZAP pubkey allowlist (HEP-0035 §4.1) + SO_PEERCRED + CURVE
+capability handshake (HEP-0036 §I8 / HEP-0041) + on-attach schema verification
+replace the never-built producer_uid cross-check.  `producer_uid` in the header
+remains a **provenance/diagnostic** field (§3.2), not an enforcement input.
+
+**Level.** All of the above — the capability endpoint, the fd handoff, the SHM
+header — is the **ShmQueue backend's** transport concern, below the
+`QueueReader`/`QueueWriter` abstraction (`hub_queue.hpp`). A role reading or
+writing a channel sees only the uniform queue interface and the authoritative
+`producers[]` list; it never touches the fd handshake or the header directly,
+and the same code path serves a ZMQ-backed channel with no SHM segment at all.
 
 ---
 
@@ -288,15 +372,19 @@ std::strncpy(hdr->producer_name,opts.producer_name.c_str(),63); hdr->producer_na
 
 ### 6.3 Diagnostics access
 
-The identity fields are accessible from the CLI diagnostic tool:
+The identity fields are read-only after `create_channel()`, so a diagnostic tool
+can `ReadAttach` the segment by name (the non-capability path reserved for
+diagnostics; §4.2) and print the provenance block:
 
-```bash
-# Show channel identity for a running channel
-pylabhub-admin diagnose <shm_name>
-# Output includes:
-#   Hub:      TestLab (HUB-TestLab-3F2A1B0E)
-#   Producer: Sensor  (PROD-Sensor-A1B2C3D4)
 ```
+Hub:      TestLab (HUB-TestLab-3F2A1B0E)
+Producer: Sensor  (PROD-Sensor-A1B2C3D4)
+```
+
+(Attaching by name for *data* consumption is not the consumer path — consumers
+receive the fd via the capability handshake, §4.2. A read-only diagnostic
+attach cannot forge provenance: the fields were written once by the producer at
+channel creation.)
 
 ---
 
