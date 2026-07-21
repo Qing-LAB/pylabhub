@@ -107,10 +107,8 @@ add_executable(test_layer3_datahub
     test_datahub_broker.cpp
     workers/datahub_broker_workers.cpp
 
-    # ── Role identity policy enforcement tests (placeholder — HEP-0035) ───────
-    # MASKED — slated for HEP-CORE-0035 §8 Phase 6 deletion (legacy machinery).
-    # test_datahub_role_identity_policy.cpp
-    # workers/role_identity_policy_workers.cpp
+    # Role identity policy enforcement tests deleted 2026-07-20 with the
+    # RoleIdentityPolicy placeholder (HEP-CORE-0035 §4.5 / §8 Phase 6).
 
     # ── DataBlock slot-allocation tests ──────────────────────────────────────
     # fd-source destination ② for the retired ShmQueue slot-allocation coverage

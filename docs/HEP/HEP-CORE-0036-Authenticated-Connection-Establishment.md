@@ -325,16 +325,14 @@ config, SHM attach) is a CACHE of the broker's decision — it
 enforces by refusing to act on artifacts it never received, not by
 performing an independent authorization check.
 
-> **Note on existing code + HEP-0035 alignment.**  Today's codebase
-> has a string-based placeholder for condition (2) at
-> `broker_service.cpp:2674` (`BrokerServiceImpl::check_role_identity`
-> with `RoleIdentityPolicy::Verified` mode + `KnownRole` allowlist),
-> but HubHost deliberately does NOT wire `known_roles` from hub.json
-> into `BrokerService::Config` (per `hub_broker_config.hpp:13-14`
-> comment).  Per **HEP-CORE-0035 §4.5**, that string-name machinery
-> is being **dropped, not wired** — once HEP-0035 lands, condition (2)
-> is enforced at the SOCKET LAYER via the ZAP-pubkey allowlist
-> (HEP-0035 §4.1 Layer 1), not by `check_role_identity()`.  HEP-0036
+> **Note on existing code + HEP-0035 alignment.**  The codebase once
+> had a string-based placeholder for condition (2)
+> (`BrokerServiceImpl::check_role_identity` with `RoleIdentityPolicy`),
+> but it never consulted a pubkey and was **deleted 2026-07-20** per
+> **HEP-CORE-0035 §4.5 / §8 Phase 6** — dropped, not wired.  Condition
+> (2) is enforced at the SOCKET LAYER via the ZAP-pubkey allowlist built
+> from the vault-backed `known_roles[].pubkey_z85` (HEP-0035 §4.1
+> Layer 1).  HEP-0036
 > therefore inherits condition (2) from HEP-0035's Layer-1
 > implementation; HEP-0036 itself does NOT add new role-admission
 > code — it adds the per-channel data-plane CURVE + allowlist
@@ -3393,8 +3391,9 @@ against this table:
 2. `cfg.known_roles[body.role_uid].pubkey_z85 == body.zmq_pubkey`
    (otherwise reject with `PUBKEY_MISMATCH`).
 
-Both checks run unconditionally — no `RoleIdentityPolicy::Open`
-escape hatch and no WITH_TEST bypass at the verification layer.
+Both checks run unconditionally — there is no policy-mode escape hatch
+(the legacy `RoleIdentityPolicy` was deleted, HEP-0035 §4.5) and no
+WITH_TEST bypass at the verification layer.
 Layer-1 ZAP (HEP-0035 §4.1) ensures the connecting socket's CURVE
 key is in the operator-authorized set; this Layer-2 verification
 binds the REG_REQ to a specific `(role_uid, pubkey)` pair within
@@ -5811,7 +5810,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 
 | Phase | Scope | Notes |
 |---|---|---|
-| 0 | **Prerequisites — HEP-0035 §4.1 Layer-1 ZAP + §4.6 file ACLs + §4.7 runtime hardening.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED (HEP-0035 §4.5).  Both binaries verify key-file ACLs (§4.6, task #101) and apply runtime hardening (§4.7, task #102).  Tracked under tasks #74 + #101 + #102; HEP-0036 phases below depend on these being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
+| 0 | **Prerequisites — HEP-0035 §4.1 Layer-1 ZAP + §4.6 file ACLs + §4.7 runtime hardening.**  Broker ROUTER installs a ZAP handler; `hub.known_roles[]` from hub.json populates the pubkey allowlist; ZAP rejects unknown pubkeys at handshake.  Legacy `check_role_identity()` + `RoleIdentityPolicy` enum REMOVED ✅ 2026-07-20 (HEP-0035 §4.5 / §8 Phase 6).  Both binaries verify key-file ACLs (§4.6, task #101) and apply runtime hardening (§4.7, task #102).  Tracked under tasks #74 + #101 + #102; HEP-0036 phases below depend on these being live. | Not HEP-0036 work proper, but listed here as the prerequisite that closes I1 condition (2).  HEP-0036's data-plane wiring is meaningless without it. |
 | 0.7 | **Add `RegistrationState::Authorized`** (T2).  5th enum value between `Registered` and `Deregistered`.  Under §3.5 symmetric Option-α, BOTH producer and consumer presences transition Registered → Authorized SYNCHRONOUSLY at the end of their respective `apply_*_reg_ack` (§3.5.5 S3) — producer's after ZAP install + PUSH bind + allowlist seed from REG_ACK.initial_allowlist; consumer's after CONSUMER_REG_ACK + per-producer PULL connect with producers[] from the ACK.  Both sides bind/connect POST-REG, behind the auth door (§3.5.1).  Producer's PUSH bind at S3 may be to `tcp://host:0` (ephemeral) and is followed by `ENDPOINT_UPDATE_REQ` per HEP-CORE-0021 §16 (adopted 2026-07-08, closes task #94) — heartbeat starts only after the update ACK lands, so R6 gates consumers on both `Live` and `endpoint_resolved` per §16.7.  No socket monitor needed — data-plane CURVE handshakes are transport-internal per I9.  Data loop's outer guard adds `any_presence_authorized()` (HEP-0036 §8.2). | Per-presence FSM is independent across multi-presence roles (processor). |
 | 0.8 | **Broker CONSUMER_REG_REQ gates on `first_heartbeat_seen`** (~5 LOC).  Match DISC_REQ's existing check at `broker_service.cpp:1720`.  Return `CHANNEL_NOT_READY{reason="awaiting_first_heartbeat"}` if producer presence hasn't been observed as `kLive`. | Pre-existing inconsistency between DISC_REQ and CONSUMER_REG_REQ becomes symmetric.  Standalone fix; doesn't depend on later phases. |
 | 1 | `ChannelAccessIndex` skeleton in HubState.  Broker creates entries on REG_REQ; stores allowlist + producer's identity pubkey (verified from `REG_REQ.zmq_pubkey` body field against `cfg.known_roles[role_uid]` via `verify_known_role_binding` per §6.1 / §6.3 Layer-2 verification).  **No data-plane keypair minting** — per T1 / I6, broker holds no data-plane secrets. | Replaces the earlier draft's "broker mints keypair on REG_REQ" with allowlist-only management. |
@@ -5824,7 +5823,7 @@ eviction work from earlier draft scope per I5 (revocation is passive).
 | 8 | Inbox + bands: inbox inherits the data channel's allowlist (no new wiring on top of §7); bands inherit the hub's `known_roles[]` allowlist (already enforced by HEP-0035 §4.1 Layer-1 ZAP on the broker ROUTER for any CURVE handshake — control plane and data plane alike per T1 / I6).  Verification only — no new code. | Sanity-check §9.3 + §9.4 hold at runtime. |
 | 9 | Dev-mode escape hatch + loopback-enforcement; manual key-distribution workflow doc per §11.3. | Operator-facing surface. |
 | 10 | Test coverage: L2 unit tests for ZAP handler cache, broker allowlist updates; L3 for end-to-end auth on dual-hub-processor scenarios; demo framework verification (the regression in the 2026-05-26 demo run becomes the regression test). | Sign-off gate. |
-| 11 | HEP-0021 + HEP-0035 + HEP-0023 cross-reference updates; retire legacy `RoleIdentityPolicy` placeholder docs. | Doc closeout. |
+| 11 | HEP-0021 + HEP-0035 + HEP-0023 cross-reference updates; ~~retire legacy `RoleIdentityPolicy` placeholder docs~~ ✅ 2026-07-20 (code + docs deleted, HEP-0035 §8 Phase 6). | Doc closeout. |
 
 ---
 

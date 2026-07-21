@@ -4,7 +4,7 @@
 |-----------------|----------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0035`                                                                                    |
 | **Title**       | Hub-Role Authentication and Federation Trust                                                       |
-| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-06-04): §4.6 (file-ACL discipline) ✅; §4.6.5 (test-only bypass discipline — production has no CURVE/admission knob) ⏳ landing phase; §4.7 (runtime key handling) ⏳ task #102; §4.8 (vault + CLI + bootstrap) ✅; §4.1 Layer-1 ZAP on CTRL ROUTER ✅ (PeerAdmission Phase D step D2; broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 Layer-2 federation-trust gate ⏳; legacy placeholder retirement ⏳ (still live on `check_role_identity` path).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
+| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-06-04): §4.6 (file-ACL discipline) ✅; §4.6.5 (test-only bypass discipline — production has no CURVE/admission knob) ⏳ landing phase; §4.7 (runtime key handling) ⏳ task #102; §4.8 (vault + CLI + bootstrap) ✅; §4.1 Layer-1 ZAP on CTRL ROUTER ✅ (PeerAdmission Phase D step D2; broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 Layer-2 federation-trust gate ⏳; legacy placeholder retirement ✅ (2026-07-20 — `RoleIdentityPolicy` enum + `check_role_identity` + `channel_policy_overrides` + L2/L3 tests deleted; `broker::KnownRole` retained as the ZAP pubkey carrier).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
@@ -29,33 +29,40 @@ step-by-step.
 The legacy placeholder code
 (`role_identity_policy.hpp::RoleIdentityPolicy`,
 `BrokerServiceImpl::check_role_identity`,
-`BrokerService::Config::{role_identity_policy, known_roles,
-channel_policy_overrides}`) pre-dates the CURVE-required model and
-the HEP-CORE-0022 federation model.  It currently does string-matching
-on JSON identity fields without consulting any pubkey, and is NOT
-load-bearing for the security story this HEP describes.  The
-`known_roles` member of `BrokerService::Config` is reused as the
-input for the §4.1 Layer-1 ZAP allowlist (D2) — the data structure
-is shared even though the placeholder gate is still live and the
-new gate is what enforces production admission.
+`BrokerService::Config::{role_identity_policy, channel_policy_overrides}`,
+and its L2/L3 tests) pre-dated the CURVE-required model and the
+HEP-CORE-0022 federation model.  It did string-matching on JSON
+identity fields without consulting any pubkey, and was never
+load-bearing for the security story this HEP describes.
 
-When HEP-0035 fully lands, the legacy machinery is retired:
-the placeholder enum, the placeholder gate, and the legacy hub.json
-fields all go.  Until then, the legacy machinery remains live (L3 test
-`test_datahub_role_identity_policy.cpp` still exercises it) but is not
-the authentication story.
+**Retired 2026-07-20 (§8 Phase 6).**  The enum, the gate, the
+`role_identity_policy` / `channel_policy_overrides` config fields, and
+the tests are deleted.  What remains — and is load-bearing — is
+`BrokerService::Config::known_roles` (a `std::vector<broker::KnownRole>`
+loaded from the encrypted vault): it is the input for the §4.1 Layer-1
+ZAP allowlist (D2), `KnownRolesStore::as_peer_allowlist()`.  The ZAP
+handler keyed on `known_roles[].pubkey_z85` is the sole role-identity
+gate.  `broker::KnownRole` therefore stays (contrary to the original §8
+Phase 6 line that listed it for deletion — that predated the §4.8 vault
+migration that made it the pubkey carrier).
 
 ---
 
 ## 1.5. What the placeholder really is (addendum, 2026-05-13)
 
+> ⚠ **Historical (retired 2026-07-20).**  The placeholder described in
+> this section — `RoleIdentityPolicy`, `check_role_identity`,
+> `ChannelPolicyOverride` — was **deleted** per §8 Phase 6.  Present-tense
+> descriptions below refer to the code as it stood before deletion; they
+> are retained to explain *why* it was retired.  Live enforcement is the
+> ZAP pubkey allowlist (§4.1).
+>
 > Added 2026-05-13 in response to "what is this *channel access*
 > policy really doing?"  The placeholder code was named for its
 > historical role at REG_REQ time and for the per-channel glob
 > override list, but neither label captures the subject of
-> verification.  This section grounds the placeholder in current
-> code, so a future reader / implementer knows precisely what is
-> being retired when this HEP lands.
+> verification.  This section grounds the placeholder in the code as it
+> was, so a reader knows precisely what was retired.
 
 ### 1.5.1. Subject, action, and selector
 
@@ -1302,7 +1309,7 @@ When HEP-0035 ships:
 | 3     | Re-add `broker.known_roles[]` to `HubBrokerConfig` with `pubkey` required    |
 | 4     | Layer-2 federation-trust gate; `federation_trust_mode` field                 |
 | 5     | HEP-0022 HUB_PEER_HELLO `roles[]` augmentation; `peer_delegated` support     |
-| 6     | Cleanup: delete `RoleIdentityPolicy` enum, `check_role_identity`, `KnownRole`, `ChannelPolicyOverride`, L3 test that exercises them |
+| 6 ✅ 2026-07-20 | Cleanup: deleted `RoleIdentityPolicy` enum, `check_role_identity`, `effective_role_identity_policy`, `ChannelPolicyOverride`, the `role_identity_policy` / `channel_policy_overrides` config fields, and the L2/L3 tests.  **`broker::KnownRole` is RETAINED** — it is the vault-backed ZAP pubkey carrier (`as_peer_allowlist`), not legacy (this corrects the original line, which predated the §4.8 vault migration). |
 | 7     | HEP-0009 §2.7 retraction; HEP-0022 §6.1 update; HEP-0033 §6.2/§6.4/§15 cleanup |
 
 ---

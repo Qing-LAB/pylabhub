@@ -4,11 +4,32 @@
 |---------------|-----------------------------------------------------------------|
 | **HEP**       | `HEP-CORE-0013`                                                 |
 | **Title**     | Channel Identity and Provenance                                 |
-| **Status**    | Implemented (2026-02-28)                                        |
+| **Status**    | Implemented (2026-02-28). **PARTIALLY SUPERSEDED — see banner below.** |
 | **Created**   | 2026-02-28                                                      |
 | **Area**      | DataHub Security / Identity                                     |
 | **Depends on**| HEP-CORE-0002 (DataHub), HEP-CORE-0009 (Policy Reference)      |
 | **Related**   | HEP-CORE-0011 (ScriptHost Framework)                            |
+
+> 🚧 **Supersession banner (2026-07-20) — role-identity enforcement.**
+> §4 and §5 below describe role-identity enforcement via the
+> `RoleIdentityPolicy` enum + `BrokerServiceImpl::check_role_identity`,
+> including a `Verified` mode that "validates the producer's CurveZMQ
+> public key matches the registered entry."  **That enforcement never
+> existed in code** — `check_role_identity` only string-matched the
+> role's self-asserted `role_name`/`role_uid` and never read any pubkey.
+> The whole placeholder was **deleted 2026-07-20** (HEP-CORE-0035 §4.5 /
+> §8 Phase 6) as redundant with the real gate.
+>
+> **Authoritative today:** a role's CURVE pubkey is enforced by the CTRL
+> ROUTER's **ZAP handler** at the socket layer (HEP-CORE-0035 §4.1),
+> keyed on the vault-backed `known_roles[].pubkey_z85` allowlist
+> (`KnownRolesStore::as_peer_allowlist` → `zap_router.cpp`).  A role
+> whose pubkey is not allowlisted never completes the handshake.  The
+> identity data-block (§1–§3, `SharedMemoryHeader` provenance fields) is
+> unchanged and remains accurate; only the §4/§5 enforcement narrative
+> is superseded.  (The §4.2 stale-SHM `producer_uid` cross-check is a
+> separate open item — audit #68 item 4 — not implemented; do not treat
+> it as live.)
 
 ### Source file reference
 
@@ -18,9 +39,9 @@
 | `src/include/plh_datahub.hpp` | L3 (public) | `SharedMemoryHeader` with identity block (char arrays) |
 | `src/include/utils/hub_producer.hpp` | L3 (public) | `ProducerOptions::producer_uid`, `producer_name` |
 | `src/include/utils/hub_consumer.hpp` | L3 (public) | `ConsumerOptions` |
-| `src/include/utils/role_identity_policy.hpp` | L3 (public) | `RoleIdentityPolicy` enum |
+| `src/include/utils/role_identity_policy.hpp` | L3 (public) | `KnownRole` (vault allowlist entry). *(Formerly `RoleIdentityPolicy` enum — deleted 2026-07-20, HEP-0035 §4.5.)* |
 | `src/include/utils/actor_vault.hpp` | L3 (public) | Encrypted keypair vault (generic, legacy name) |
-| `src/utils/ipc/broker_service.cpp` | impl | `check_role_identity()`, identity enforcement |
+| `src/utils/security/zap_router.cpp` | impl | ZAP CURVE-pubkey enforcement (HEP-0035 §4.1) — the actual role-identity gate |
 | `tests/test_layer2_service/test_uid_utils.cpp` | test | UID format validation, uniqueness, generation |
 | `tests/test_layer2_service/test_actor_vault.cpp` | test | Vault create/open, keypair storage |
 
@@ -55,7 +76,7 @@ char producer_name[64]; // Producer display name, null-terminated
 |---|---|---|---|
 | `hub_uid` | `HubConfig::hub_uid()` | `DataBlockProducer` at `create_channel()` | Verify identity; logging |
 | `hub_name` | `HubConfig::hub_name()` | `DataBlockProducer` at `create_channel()` | Logging and diagnostics |
-| `producer_uid` | `ProducerOptions::producer_uid` | `DataBlockProducer` at `create_channel()` | `RoleIdentityPolicy` enforcement |
+| `producer_uid` | `ProducerOptions::producer_uid` | `DataBlockProducer` at `create_channel()` | provenance/logging (pubkey enforced by ZAP, HEP-0035 §4.1) |
 | `producer_name` | `ProducerOptions::producer_name` | `DataBlockProducer` at `create_channel()` | Logging and diagnostics |
 
 **Write contract**: all four fields are written atomically relative to producer startup —
@@ -110,18 +131,15 @@ classDiagram
         +proc_uid string
         +proc_name string
     }
-    class RoleIdentityPolicy {
-        <<enumeration>>
-        Open
-        Tracked
-        Required
-        Verified
+    class ZapAllowlist {
+        known_roles[].pubkey_z85
+        peers[].pubkey_z85
     }
 
     HubConfig --> ProducerOptions : hub identity
     ProducerConfig --> ProducerOptions : producer identity
     ProducerOptions --> SharedMemoryHeader : create_channel()
-    SharedMemoryHeader --> RoleIdentityPolicy : enforced by broker
+    SharedMemoryHeader --> ZapAllowlist : pubkey enforced by ZAP (HEP-0035 §4.1)
 ```
 
 ### Provenance Flow
@@ -167,8 +185,8 @@ BrokerService Registry         Consumer on attach
   channel.hub_uid                 (no broker query needed)
            │
            ▼
-RoleIdentityPolicy enforcement
-  (see HEP-CORE-0009 §3)
+(role pubkey already enforced by ZAP at the
+ CURVE handshake — HEP-CORE-0035 §4.1)
 ```
 
 ### 3.1 Hub context injection
@@ -179,7 +197,8 @@ the hub's `HubConfig::hub_uid()` and `HubConfig::hub_name()` are injected into t
 standalone binaries when `hub_dir` is specified in the config.
 
 When running outside a hub (standalone dev mode), `hub_uid` and `hub_name` remain
-empty; `RoleIdentityPolicy` treats these as unmanaged channels and skips identity checks.
+empty; such channels are unmanaged and no ZAP allowlist applies (dev-mode
+loopback, HEP-CORE-0035 §7 open-question 5).
 
 ### 3.2 Consumer provenance read
 
@@ -198,34 +217,26 @@ LOGGER_INFO("[consumer] Channel '{}' — producer: {} ({}), hub: {} ({})",
 
 ---
 
-## 4. Connection Policy Integration
+## 4. Role-identity enforcement (superseded — see banner)
 
-The `RoleIdentityPolicy` system (HEP-CORE-0009) uses producer identity from the broker registry
-(populated during `REG_REQ` handling) and from the `SharedMemoryHeader` identity block to
-enforce access rules.
+> **Superseded 2026-07-20.**  The `RoleIdentityPolicy` enum +
+> `check_role_identity` string gate described in the original §4.1/§5
+> was **deleted** (HEP-CORE-0035 §4.5 / §8 Phase 6).  It only
+> string-matched the role's self-asserted `role_name`/`role_uid` and
+> never verified a CURVE pubkey, so its `Verified` "CurveZMQ key matches"
+> claim was never true in code.  This section is retained for historical
+> context; the paragraphs below record what actually enforces identity.
 
-> **Multi-producer note (HEP-CORE-0023 §2.1.1).**  ChannelEntry now
-> tracks producers as a list (`ChannelEntry.producers[]`).  For SHM
-> channels the list always has exactly one element (the SHM ring is
-> physically single-producer), so the diagram below remains accurate.
-> For ZMQ Fan-In channels (HEP-CORE-0017 §4.6) policy enforcement
-> applies per-producer at REG_REQ admission time — each producer's
-> RoleIdentityPolicy gate is independent.
-
-### 4.1 Policy enforcement flow
-
-```
-Consumer → DISC_REQ → BrokerService
-  BrokerService looks up the channel's admitted producer(s) and
-  applies RoleIdentityPolicy per producer (single-producer for SHM;
-  per ProducerEntry for ZMQ Fan-In):
-    Open:     any producer allowed
-    Tracked:  log producer_uid; allow all
-    Required: producer_uid must be in KnownProducers; else DISC_NACK
-    Verified: producer_uid in KnownProducers AND CurveZMQ key matches; else DISC_NACK
-```
-
-See **HEP-CORE-0009** for the full `RoleIdentityPolicy` enum and enforcement logic.
+Role-identity is enforced cryptographically by the CTRL ROUTER's **ZAP
+handler** at the CURVE handshake (HEP-CORE-0035 §4.1), *before* any
+`REG_REQ`/`DISC_REQ` reaches the broker logic.  The gate is keyed on the
+vault-backed `known_roles[].pubkey_z85` allowlist
+(`KnownRolesStore::as_peer_allowlist` → `zap_router.cpp`): a role whose
+pubkey is not allowlisted is rejected at the handshake and never
+registers.  The allowlist is the UNION of `known_roles[].pubkey_z85` and
+federation `peers[].pubkey_z85` (HEP-0035 §4.2); an empty union is the
+legal deny-all state.  There is no per-`RoleIdentityPolicy` mode and no
+`DISC`-time string check — the ZAP gate is unconditional.
 
 ### 4.2 Identity mismatch detection
 
@@ -244,11 +255,14 @@ in the vault. The `producer_uid` and CurveZMQ public key are permanently
 associated — both are stored together and derived from the same password.
 
 This means the `producer_uid` in the `SharedMemoryHeader` corresponds to a specific keypair.
-When `RoleIdentityPolicy = Verified`, the broker validates both:
-1. That `producer_uid` appears in the hub's `KnownProducers` table.
-2. That the producer's CurveZMQ public key matches the registered public key entry.
+The producer's CurveZMQ public key is validated by the CTRL ROUTER's ZAP
+handler against the vault-backed `known_roles[].pubkey_z85` allowlist at
+the CURVE handshake (HEP-CORE-0035 §4.1) — a role whose pubkey is not
+allowlisted never registers.  (The legacy `RoleIdentityPolicy = Verified`
+string check that this section originally described was deleted
+2026-07-20; it never actually compared pubkeys — see the banner.)
 
-See **HEP-CORE-0009 §3** (RoleIdentityPolicy and Verified policy) for full details.
+See **HEP-CORE-0035 §4.1–§4.2** for the ZAP allowlist enforcement model.
 
 ---
 

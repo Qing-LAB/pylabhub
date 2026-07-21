@@ -69,44 +69,6 @@ std::array<uint8_t, 32> hex_to_hash_array(const std::string& hex) noexcept
     return result;
 }
 
-/// Returns true if channel_name matches the glob pattern ('*' wildcard only).
-/// Dots are treated as literal characters, not anchors.
-bool channel_name_matches_glob(const std::string& name, const std::string& glob) noexcept
-{
-    const char* n       = name.c_str();
-    const char* g       = glob.c_str();
-    const char* star_g  = nullptr; ///< Position of the last '*' in glob
-    const char* star_n  = nullptr; ///< Saved name position after last '*' mismatch
-
-    while (*n != '\0')
-    {
-        if (*g == '*')
-        {
-            star_g = g++;
-            star_n = n;
-        }
-        else if (*g == *n)
-        {
-            ++g;
-            ++n;
-        }
-        else if (star_g != nullptr)
-        {
-            g = star_g + 1;
-            n = ++star_n;
-        }
-        else
-        {
-            return false;
-        }
-    }
-    while (*g == '*')
-    {
-        ++g;
-    }
-    return *g == '\0';
-}
-
 // ─── HEP-CORE-0033 §9.2 reply-shape classification ──────────────────────────
 //
 // Single source of truth for which msg_types are request-reply (ACK/ERROR
@@ -970,23 +932,6 @@ public:
 
     /// Prune expired entries from relay_dedup_.
     void prune_relay_dedup();
-
-    // ── Role identity policy (placeholder — pending HEP-CORE-0035) ─────────────
-    /// Resolve effective policy for a channel: per-channel override > hub-wide default.
-    [[nodiscard]] RoleIdentityPolicy
-        effective_role_identity_policy(const std::string& channel_name) const noexcept;
-
-    /// Check whether the connecting role's self-asserted identity (role_name +
-    /// role_uid) is allowed by the effective policy.  Returns a non-empty
-    /// error JSON if the registration should be rejected; std::nullopt if
-    /// allowed.
-    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] std::optional<nlohmann::json>
-    check_role_identity(const std::string& channel_name,
-                        const std::string& role_name,
-                        const std::string& role_uid,
-                        const std::string& corr_id,
-                        bool               is_consumer) const;
 
     // Legacy `verify_known_role_binding`, `validate_identity_fields`,
     // `validate_role_uid_only` retired (2026-07-14 task #46).  Grammar,
@@ -2043,12 +1988,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     const std::string attempted_schema = req.value("schema_hash", "");
     const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
 
-    // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
-    if (auto err = check_role_identity(channel_name, role_name, role_uid, corr_id,
-                                       /*is_consumer=*/false))
-    {
-        return *err;
-    }
+    // Role identity is enforced by the CTRL ROUTER's ZAP handler at the
+    // CURVE handshake (HEP-CORE-0035 §4.1): a role whose pubkey is not in
+    // the known_roles allowlist never reaches this handler.  The legacy
+    // self-asserted string gate was deleted per §4.5 / §8 Phase 6.
 
     // HEP-CORE-0036 §4.1 + §5.1 + §6.4 — producer's CURVE identity
     // pubkey is REQUIRED on REG_REQ.  Broker stores it on
@@ -3199,8 +3142,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     const std::string role_uid     = req.value("role_uid",  "");
 
     // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
-    // check before any state-machine entry.  Pre-fix, empty uid sailed
-    // through check_role_identity under default Open policy, was stored
+    // check before any state-machine entry.  Pre-fix, an empty uid sailed
+    // through unchecked, was stored
     // on ConsumerEntry, then `_on_consumer_joined` silently skipped
     // `upsert_role_locked` (gated on `!role_uid.empty()`) — no
     // role-presence row was created, so subsequent heartbeats / inbox
@@ -3534,14 +3477,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     }
     // else: opening the channel, or all expected_* empty (opt-out).
 
-    // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
-    // Grammar check already ran at handler entry (audit R3.5b); this
-    // is the policy / known_roles verification layer on top.
-    if (auto err = check_role_identity(channel_name, role_name, role_uid, corr_id,
-                                       /*is_consumer=*/true))
-    {
-        return *err;
-    }
+    // Role identity is enforced by the CTRL ROUTER's ZAP handler at the
+    // CURVE handshake (HEP-CORE-0035 §4.1); grammar already ran at handler
+    // entry (audit R3.5b).  The legacy self-asserted string gate was
+    // deleted per §4.5 / §8 Phase 6.
 
     pylabhub::hub::ConsumerEntry entry;
     entry.consumer_pid      = req.value("consumer_pid", uint64_t{0});
@@ -5663,79 +5602,6 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
     }
     return resp;
 }
-
-// ============================================================================
-// Role identity policy helpers (placeholder — pending HEP-CORE-0035)
-// ============================================================================
-
-RoleIdentityPolicy
-BrokerServiceImpl::effective_role_identity_policy(const std::string& channel_name) const noexcept
-{
-    for (const auto& cp : cfg.channel_policy_overrides)
-    {
-        if (channel_name_matches_glob(channel_name, cp.channel_glob))
-        {
-            return cp.policy;
-        }
-    }
-    return cfg.role_identity_policy;
-}
-
-std::optional<nlohmann::json>
-BrokerServiceImpl::check_role_identity(const std::string& channel_name,
-                                       const std::string& role_name,
-                                       const std::string& role_uid,
-                                       const std::string& corr_id,
-                                       bool               is_consumer) const
-{
-    const RoleIdentityPolicy policy   = effective_role_identity_policy(channel_name);
-    const std::string        role_str = is_consumer ? "consumer" : "producer";
-
-    if (policy == RoleIdentityPolicy::Required || policy == RoleIdentityPolicy::Verified)
-    {
-        if (role_name.empty() || role_uid.empty())
-        {
-            LOGGER_WARN("Broker: policy={} rejected {} for '{}': missing role_name/uid",
-                        role_identity_policy_to_str(policy), role_str, channel_name);
-            return make_error(corr_id, "IDENTITY_REQUIRED",
-                              fmt::format("Role identity policy '{}' requires role_name and role_uid",
-                                          role_identity_policy_to_str(policy)));
-        }
-    }
-
-    if (policy == RoleIdentityPolicy::Verified)
-    {
-        const bool found = std::any_of(
-            cfg.known_roles.begin(), cfg.known_roles.end(),
-            [&](const KnownRole& ka)
-            {
-                if (ka.name != role_name || ka.uid != role_uid)
-                {
-                    return false;
-                }
-                const bool role_ok = ka.role.empty() || ka.role == "any" || ka.role == role_str;
-                return role_ok;
-            });
-        if (!found)
-        {
-            LOGGER_WARN("Broker: Verified policy rejected {} '{}' uid='{}' for '{}': "
-                        "not in known_roles",
-                        role_str, role_name, role_uid, channel_name);
-            return make_error(corr_id, "NOT_IN_KNOWN_ROLES",
-                              fmt::format("Role '{}' (uid={}) is not in the hub's known_roles list",
-                                          role_name, role_uid));
-        }
-    }
-
-    if (policy != RoleIdentityPolicy::Open && (!role_name.empty() || !role_uid.empty()))
-    {
-        LOGGER_INFO("Broker: {} identity recorded for '{}': name='{}' uid='{}'",
-                    role_str, channel_name, role_name, role_uid);
-    }
-
-    return std::nullopt;
-}
-
 
 // ============================================================================
 // Heartbeat negotiation block (HEP-CORE-0023 §2.5)

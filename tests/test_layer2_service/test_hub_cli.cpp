@@ -446,9 +446,9 @@ TEST(HubCliTest, AddKnownRole_CaseSensitive_RejectsCapitalized)
                   "0123456789012345678901234567890123456789"},
                   out, err);
     EXPECT_EQ(r.exit_code, 1)
-        << "broker check_role_identity is case-sensitive (per "
-           "role_identity_policy.hpp); parser must match — otherwise "
-           "a capitalized typo persists and silently never matches.";
+        << "the role kind is stored verbatim on the KnownRole entry and "
+           "is case-sensitive; the parser rejects a capitalized typo at "
+           "add time rather than letting it persist into the allowlist.";
     EXPECT_NE(err.str().find("'Producer'"), std::string::npos);
 }
 

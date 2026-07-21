@@ -42,14 +42,14 @@
  * is wholly on disk, or the prior state survives unmodified.
  *
  * **Bridge to PeerAdmission (Phase A).** `as_peer_allowlist()`
- * projects the store onto a `PeerAllowlist` containing exactly the
- * entries whose `pubkey_z85` is non-empty.  This is what the broker
- * ROUTER's `PeerAdmission::set_peer_allowlist` receives.  Legacy
- * entries (pre-Phase-B vault contents with empty pubkey) are
- * EXCLUDED from the allowlist — the legacy `RoleIdentityPolicy`
- * string-match check (`broker_service.cpp::check_role_identity`)
- * still handles them at the application layer until HEP-0035 §8
- * Phase 6 retires it.
+ * projects the store onto a `PeerAllowlist` of each entry's
+ * `pubkey_z85`.  This is what the broker ROUTER's
+ * `PeerAdmission::set_peer_allowlist` receives, and — since the legacy
+ * `RoleIdentityPolicy` string gate was deleted (HEP-0035 §4.5 / §8
+ * Phase 6) — it is the *sole* role-identity enforcement.  `pubkey_z85`
+ * cannot be empty: `validate_entry` rejects empty/short pubkeys at both
+ * insertion points (`from_json`, `add`), so no empty-pubkey entry can
+ * reach the store.
  *
  * **Thread-safety.** The class itself is NOT thread-safe.  Callers
  * serialize access (broker single-threaded; CLI ops run pre-startup).
@@ -186,10 +186,11 @@ public:
     [[nodiscard]] bool empty() const noexcept;
 
     /// Project the store onto a `PeerAllowlist` of {"curve", pubkey}
-    /// identities.  Entries with empty `pubkey_z85` (legacy migration
-    /// remnants) are EXCLUDED — they're handled at the application
-    /// layer by the legacy `RoleIdentityPolicy` string check until
-    /// HEP-0035 §8 Phase 6 retires it.
+    /// identities.  `validate_entry` guarantees every stored entry has a
+    /// valid 40-char `pubkey_z85`, so there are no empty-pubkey entries
+    /// to exclude.  This allowlist is the sole role-identity gate now
+    /// that the legacy `RoleIdentityPolicy` string check is deleted
+    /// (HEP-0035 §4.5 / §8 Phase 6).
     ///
     /// The returned allowlist's `unrestricted` is always false; only
     /// the explicit `--allow-anonymous-data` operator flag (Phase H)

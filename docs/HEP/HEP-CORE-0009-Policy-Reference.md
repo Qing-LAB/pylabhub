@@ -292,10 +292,13 @@ at parse time. Prevents typos, obsolete keys, and ambiguous configuration.
 > - What is removed: `RoleIdentityPolicy::{Required,Verified,Tracked,Open}`,
 >   `ChannelPolicyOverride` per-channel overrides.
 >
-> The legacy `RoleIdentityPolicy` enum, `BrokerServiceImpl::check_role_identity`,
-> `KnownRole`, and `ChannelPolicyOverride` types remain in the source tree (and in L3
-> test `test_datahub_role_identity_policy.cpp`) until HEP-CORE-0035 Phase 6
-> deletes them in one sweep. Do **not** treat them as the design.
+> **Deleted 2026-07-20 (HEP-CORE-0035 §8 Phase 6).** The legacy
+> `RoleIdentityPolicy` enum, `BrokerServiceImpl::check_role_identity`,
+> `ChannelPolicyOverride`, the `role_identity_policy` / `channel_policy_overrides`
+> config fields, and their L2/L3 tests are gone.  `broker::KnownRole`
+> is **retained** — it is the vault-backed ZAP pubkey allowlist entry
+> (`KnownRolesStore::as_peer_allowlist`), the real enforcement, not part
+> of the deleted string gate.
 >
 > See HEP-CORE-0035 §1 (status), §2 (invariants), §3 (gap analysis of the
 > placeholder), §4 (design), §5 (hub.json fields).
@@ -386,7 +389,7 @@ For **safety-critical** applications, set:
 | `QueueType` | `consumer_config.hpp` | `queue_type` | `ConsumerScriptHost` — selects SHM vs ZMQ as backing queue for the data plane |
 | `LoopTimingPolicy` | `producer_config.hpp`, `consumer_config.hpp` | `loop_timing` | `ProducerScriptHost` / `ConsumerScriptHost` when `target_period_ms > 0` |
 | `LoopPolicy` *(RAII Pass 2)* | `data_block_policy.hpp` | auto-set from `target_period_ms` | Sleep: `SlotIterator::operator++()`; overrun: `acquire_write_slot()` |
-| `RoleIdentityPolicy` *(legacy placeholder — see §2.7)* | `role_identity_policy.hpp` | **not parsed from hub.json** (HEP-0035 supersedes; auth fields deferred) | `BrokerServiceImpl::check_role_identity()` (live for tests until HEP-0035 Phase 6) |
+| ~~`RoleIdentityPolicy`~~ *(deleted 2026-07-20 — see §2.7)* | — | — | Removed (HEP-0035 §4.5 / §8 Phase 6); role identity is enforced by ZAP on `known_roles[].pubkey_z85` |
 
 ---
 
@@ -435,10 +438,10 @@ flowchart TB
 | File | Layer | Description |
 |------|-------|-------------|
 | `src/include/utils/data_block_policy.hpp` | L3 (public) | `DataBlockPolicy`, `ConsumerSyncPolicy`, `ChecksumPolicy`, `LoopPolicy` |
-| `src/include/utils/role_identity_policy.hpp` | L3 (public) | `RoleIdentityPolicy` enum *(legacy placeholder — superseded by HEP-CORE-0035)* |
-| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`; carries `RoleIdentityPolicy` field, settable only by tests pending HEP-CORE-0035 |
+| `src/include/utils/role_identity_policy.hpp` | L3 (public) | `KnownRole` (vault allowlist entry). *(Formerly the `RoleIdentityPolicy` enum — deleted 2026-07-20, HEP-CORE-0035 §4.5.)* |
+| `src/include/utils/broker_service.hpp` | L3 (public) | `BrokerService::Config` — `ChecksumRepairPolicy`; carries the `known_roles` vault allowlist (ZAP input) |
 | `src/producer/producer_config.hpp` | L4 | `ValidationPolicy` struct, `LoopTimingPolicy` |
 | `src/consumer/consumer_config.hpp` | L4 | Same policy config fields for consumer |
 | `src/processor/processor_config.hpp` | L4 | `overflow_policy`, validation policy for processor |
-| `src/utils/ipc/broker_service.cpp` | impl | `check_role_identity()`, `effective_role_identity_policy()` |
+| `src/utils/security/zap_router.cpp` | impl | ZAP CURVE-pubkey enforcement against the `known_roles` allowlist (HEP-CORE-0035 §4.1) |
 | `src/utils/shm/data_block.cpp` | impl | Policy enforcement in slot acquire/release |

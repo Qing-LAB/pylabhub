@@ -10,9 +10,11 @@
  * heartbeat block (HEP-CORE-0023 §2.5) — Phase 9 wiring is a literal copy,
  * no translation layer.
  *
- * **Auth/access fields deliberately omitted** (`role_identity_policy`,
- * `known_roles`, `channel_policy_overrides`).  See HEP-CORE-0035 for
- * the design that must land before they return.
+ * **Auth/access fields deliberately omitted.**  `known_roles` is not
+ * parsed from hub.json — it is loaded from the encrypted hub vault
+ * (HEP-CORE-0035 §4.8) and feeds the ZAP pubkey allowlist.  The legacy
+ * `role_identity_policy` / `channel_policy_overrides` string-gate fields
+ * were deleted per §4.5 / §8 Phase 6 (redundant with ZAP).
  *
  * Strict key whitelist per HEP-CORE-0033 §6.3.
  */

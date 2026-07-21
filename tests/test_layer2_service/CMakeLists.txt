@@ -416,40 +416,9 @@ gtest_discover_tests(test_layer2_curve_keypair
         TIMEOUT 10
 )
 
-# ============================================================================
-# role_identity_policy enum↔string helpers (Pattern 1, pure value tests)
-# RE-LAYERED 2026-06-30 from tests/test_layer3_datahub/ (#154 AUTH-6
-# batch-2a C6 — audit REVIEW_AUTH6_TestDisposition_2026-06-27.md File 10
-# Suite 1).  Helpers still consumed by production WARN logs + error
-# responses in broker_service.cpp::check_role_identity; tests survive
-# the placeholder mechanism's retirement under #152.
-# ============================================================================
-
-add_executable(test_layer2_role_identity_policy
-    test_role_identity_policy.cpp
-)
-
-target_link_libraries(test_layer2_role_identity_policy
-    PRIVATE
-        pylabhub::utils
-        GTest::gtest
-        GTest::gtest_main
-)
-
-pylabhub_ensure_sanitizer_for_executable(test_layer2_role_identity_policy)
-
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_identity_policy
-    SUITE_NAME "Layer2_RoleIdentityPolicy"
-)
-layer2_require_staged_utils(test_layer2_role_identity_policy)
-
-gtest_discover_tests(test_layer2_role_identity_policy
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;role_identity_policy"
-        TIMEOUT 10
-)
+# role_identity_policy enum↔string helpers test deleted 2026-07-20 with the
+# RoleIdentityPolicy placeholder (HEP-CORE-0035 §4.5 / §8 Phase 6 — the
+# self-asserted string gate was redundant with the ZAP pubkey allowlist).
 
 # ============================================================================
 # Test: ShmCapabilityChannel skeleton (HEP-CORE-0041 §6)

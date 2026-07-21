@@ -129,11 +129,10 @@ namespace detail
 {
 
 /// Allowed values for `<role>` in `--add-known-role`.  The role kind
-/// is operator-facing metadata that flows through KnownRolesStore →
-/// broker check_role_identity; an arbitrary string (typo) would
-/// persist into the allowlist and silently never match.  Validating
-/// at parse time surfaces operator typos immediately rather than at
-/// first failed handshake.
+/// is operator-facing metadata recorded on the `KnownRole` entry in the
+/// vault allowlist; an arbitrary string (typo) would persist into the
+/// allowlist and mislead operator tooling / logs.  Validating at parse
+/// time surfaces operator typos immediately rather than after the fact.
 ///
 /// Empty string is accepted as a synonym for "any" — matches the
 /// KnownRole struct's `role` field doc: `empty = "any"`.

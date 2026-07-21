@@ -753,14 +753,15 @@ roles carry a `proc.<name>.<unique>` uid and are accepted on both
 producer-side and consumer-side gates per HEP-CORE-0011's
 dual-presence model.
 
-**Rationale.**  Pre-R3.5b, `RoleIdentityPolicy::Open` (the
-default) silently admitted empty `consumer_uid`; the downstream
-`_on_consumer_joined` then no-op'd `upsert_role_locked` (gated on
-`!consumer_uid.empty()`), leaving the broker with a `ConsumerEntry`
-but no role-presence row — heartbeats and inbox discovery silently
-failed.  Grammar enforcement is now **unconditional**;
-`RoleIdentityPolicy` only controls verification against
-`known_roles` ON TOP of valid grammar.
+**Rationale.**  Pre-R3.5b, an empty `consumer_uid` was silently
+admitted; the downstream `_on_consumer_joined` then no-op'd
+`upsert_role_locked` (gated on `!consumer_uid.empty()`), leaving the
+broker with a `ConsumerEntry` but no role-presence row — heartbeats and
+inbox discovery silently failed.  Grammar enforcement is now
+**unconditional**.  Role-identity (CURVE pubkey) is enforced separately
+and earlier by the ZAP handler at the handshake (HEP-CORE-0035 §4.1);
+the legacy `RoleIdentityPolicy` string gate was deleted 2026-07-20
+(HEP-0035 §4.5).
 
 **Implementation:** `BrokerServiceImpl::validate_identity_fields`
 + `validate_role_uid_only` in `src/utils/ipc/broker_service.cpp`.

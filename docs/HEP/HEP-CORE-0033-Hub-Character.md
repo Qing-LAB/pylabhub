@@ -634,12 +634,11 @@ asymmetric sides.
     "ready_timeout_ms":   null,
     "pending_timeout_ms": null
   },
-  // NOTE: `broker.known_roles[]` and `broker.federation_trust_mode` are
-  // deferred to HEP-CORE-0035 (Hub-Role Authentication & Federation
-  // Trust).  They are NOT parsed; the placeholder
-  // `RoleIdentityPolicy` machinery in `BrokerService::Config` is unaffected
-  // by config (still settable directly on the service Config struct,
-  // exercised only by `test_datahub_role_identity_policy.cpp`).
+  // NOTE: `broker.federation_trust_mode` is deferred to HEP-CORE-0035.
+  // `broker.known_roles[]` is not parsed from hub.json — it is loaded
+  // from the encrypted hub vault (§4.8) and feeds the ZAP pubkey
+  // allowlist.  The legacy `RoleIdentityPolicy` string gate was deleted
+  // 2026-07-20 (HEP-0035 §4.5 / §8 Phase 6).
 
   "federation": {
     "enabled":           false,
@@ -3166,12 +3165,12 @@ can land in parallel once P1 lands.
   Covered by 9 L2 Pattern-3 tests in
   `tests/test_layer2_service/test_hub_config.cpp`. No behavior change for
   any live binary (hub binary remains disabled).
-  **Auth/access fields (`broker.known_roles[]`,
-  `broker.federation_trust_mode`, per-channel overrides) deliberately
+  **Auth/access fields (`broker.federation_trust_mode`) deliberately
   omitted from `HubBrokerConfig` — see HEP-CORE-0035** for the design that
-  must land before they are added.  The legacy `RoleIdentityPolicy` placeholder
-  remains in `BrokerService::Config` (settable by tests directly, not by
-  hub.json) until HEP-CORE-0035 retires it.
+  must land before they are added.  `broker.known_roles[]` is loaded from
+  the encrypted vault (§4.8), not hub.json.  The legacy `RoleIdentityPolicy`
+  placeholder was deleted from `BrokerService::Config` on 2026-07-20
+  (HEP-CORE-0035 §4.5 / §8 Phase 6).
 
   **Heartbeat alignment with HEP-CORE-0023 §2.5 (2026-04-29 follow-up;
   reduced from four to three multiplier fields 2026-05-07 — `Closing`
@@ -4095,11 +4094,13 @@ present (self-describing), else falls back to `[tag] name`.
    HEP-CORE-0011's dual-presence model.  Implementation:
    `BrokerServiceImpl::validate_identity_fields` +
    `validate_role_uid_only` in `src/utils/ipc/broker_service.cpp`.
-   Grammar enforcement at the gate is **unconditional** —
-   `RoleIdentityPolicy` (G2.2.4 admission policy) only controls
-   verification against `known_roles` ON TOP of valid grammar, not
-   in place of it.  HubState silent-drop remains the defense-in-depth
-   backstop.  See HEP-CORE-0023 §2.5.4 for the wire-format table.
+   Grammar enforcement at the gate is **unconditional**.  Role-identity
+   (CURVE pubkey) is enforced separately and earlier by the ZAP handler
+   at the handshake against the `known_roles` allowlist (HEP-CORE-0035
+   §4.1); the legacy `RoleIdentityPolicy` string gate was deleted
+   2026-07-20 (HEP-0035 §4.5).  HubState silent-drop remains the
+   defense-in-depth backstop.  See HEP-CORE-0023 §2.5.4 for the
+   wire-format table.
 3. **Role-side config parsers**: validate at `plh_role --validate`
    time so misconfigured role UIDs fail early, not at first REG_REQ.
 

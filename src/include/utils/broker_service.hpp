@@ -257,25 +257,15 @@ public:
         std::function<void(const std::string& bound_endpoint,
                            const std::string& pubkey)> on_ready;
 
-        // ── Role identity policy (placeholder — pending HEP-CORE-0035) ──────
-        // Renamed 2026-05-13 from `ConnectionPolicy` / `channel_policies`.
-        // See `role_identity_policy.hpp` for what these fields really do
-        // (verify role's self-asserted identity at REG_REQ — NOT a
-        // connection-layer auth gate).  Settable directly here by tests
-        // and (eventually) Phase 9 wiring; not parsed from hub.json today.
-        /// Hub-wide role identity policy.  Per-channel overrides in
-        /// `channel_policy_overrides` take precedence (first match wins).
-        /// Defaults to Open.
-        RoleIdentityPolicy             role_identity_policy{RoleIdentityPolicy::Open};
-
+        // ── Known-roles allowlist (HEP-CORE-0035 §4.8) ─────────────────────
         /// Roles allowed to register.  Per HEP-CORE-0035 §4.8 the
         /// CTRL ROUTER's ZAP gate is unconditional and admits the
         /// UNION of `known_roles[].pubkey_z85` and `peers[].pubkey_z85`;
         /// an empty union is the legal deny-all state per §4.8.4.
+        /// Loaded from the encrypted hub vault; the legacy self-asserted
+        /// string-identity gate (`RoleIdentityPolicy` / `check_role_identity`)
+        /// was deleted per §4.5 / §8 Phase 6 — pubkey enforcement is ZAP.
         std::vector<KnownRole>         known_roles;
-
-        /// Per-channel policy overrides (first matching glob wins).
-        std::vector<ChannelPolicyOverride>  channel_policy_overrides;
 
         // ── Schema registry (HEP-CORE-0034) ─────────────────────────────────
         /// Directories to search for hub-global schema JSON files (`*.json`).

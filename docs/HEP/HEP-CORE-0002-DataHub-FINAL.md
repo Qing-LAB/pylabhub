@@ -1924,13 +1924,13 @@ broker is used only for channel registration and consumer discovery.
 | CHANNEL_ERROR_NOTIFY | Broker → Affected | Push | Protocol-level error (Cat 1: schema mismatch, etc.) |
 | CHANNEL_EVENT_NOTIFY | Broker → Participants | Push | Informational event (Cat 2: checksum, relay) |
 
-**Connection Policy** (enforced by BrokerService at REG / CONSUMER_REG time):
-- **Open**: No identity required (default)
-- **Tracked**: Identity logged but not enforced
-- **Required**: Producer name + UID must be present in the payload
-- **Verified**: Producer must be in the `known_producers` list
-
-Per-channel glob overrides are configured via `channel_policy_overrides[]`.
+**Role-identity enforcement** (HEP-CORE-0035 §4.1).  A role's CURVE
+pubkey is enforced by the CTRL ROUTER's ZAP handler at the handshake,
+keyed on the vault-backed `known_roles[].pubkey_z85` allowlist — a role
+whose pubkey is not allowlisted never registers.  (The legacy
+`RoleIdentityPolicy` string modes — Open/Tracked/Required/Verified — and
+`channel_policy_overrides[]` were deleted 2026-07-20 per HEP-0035 §4.5 /
+§8 Phase 6 as redundant with ZAP.)
 
 > For complete message framing, handshake sequences, full BrokerService state machine,
 > health notification taxonomy, connection policy enforcement, and the CONSUMER_DIED /
