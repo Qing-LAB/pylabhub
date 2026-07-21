@@ -19,6 +19,7 @@
 
 #include "hub_host_workers.h"
 
+#include "curve_test_setup.h"              // gen_curve_keypair, add_curve_identity
 #include "log_capture_fixture.h"
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -31,6 +32,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/security/key_store.hpp"   // kHubIdentityName
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -112,8 +114,28 @@ struct ConfiguredDir
     fs::path  dir;
 };
 
+/// Seed the hub broker's CURVE identity (`kHubIdentityName`) into the process
+/// KeyStore, once per worker subprocess.  HEP-CORE-0035 §2 makes CURVE
+/// unconditional, so `HubHost::startup()` → `BrokerService` ctor asserts
+/// `secure().keys().has("hub_identity")` and throws on an empty pubkey.  This is
+/// the framework's canonical seeding path (same as `AdminService` and
+/// `broker_test_harness`), NOT a test bypass — it stands in for the vault the
+/// production hub loads its identity from.  Must run after `SecureSubsystem` is
+/// up (i.e. inside the worker lambda, which `make_config` is called from).
+void seed_hub_identity_once()
+{
+    static const bool seeded = [] {
+        pylabhub::tests::add_curve_identity(
+            pylabhub::utils::security::kHubIdentityName,
+            pylabhub::tests::gen_curve_keypair());
+        return true;
+    }();
+    (void)seeded;
+}
+
 ConfiguredDir make_config(const char *tag)
 {
+    seed_hub_identity_once();
     fs::path dir = unique_temp_dir(tag);
     write_test_hub_json(dir, "TestHub");
     return {HubConfig::load_from_directory(dir.string()), std::move(dir)};

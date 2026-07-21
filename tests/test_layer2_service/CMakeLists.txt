@@ -1598,38 +1598,41 @@ gtest_discover_tests(test_layer2_hub_directory
 # Test: HubHost (lifecycle owner — Pattern 2, in-process LifecycleGuard)
 # HEP-CORE-0033 §4 / Phase 6.1b
 # ============================================================================
-# MASKED — HubHost::startup() now throws on empty pubkey per HEP-CORE-0035
-# §2.  These tests construct HubHost without providing a keypair (no vault
-# load).  Restore via HEP-0035 §4.6.5 step 3-revised-F migration; tests
-# either get rewritten to provide a real vault (Argon2id) or to bypass
-# HubHost and test BrokerService directly.
+# RESTORED 2026-07-21 (#71): was MASKED because HubHost::startup() throws on an
+# empty pubkey (HEP-CORE-0035 §2) and the workers constructed HubHost without a
+# hub keypair.  The workers now seed `kHubIdentityName` in the process KeyStore
+# via the framework's canonical `add_curve_identity`/`gen_curve_keypair`
+# (curve_test_setup.h) inside `make_config` — same path AdminService and
+# broker_test_harness use — so the lifecycle FSM suite (startup/shutdown
+# idempotency, busy-port, destructor cleanup, …) is under active coverage again.
 
-# add_executable(test_layer2_hub_host
-#     test_hub_host.cpp
-#     workers/hub_host_workers.cpp
-# )
-# target_include_directories(test_layer2_hub_host PRIVATE workers)
-#
-# target_link_libraries(test_layer2_hub_host
-#     PRIVATE
-#         pylabhub::utils
-#         pylabhub::test_framework
-#         GTest::gtest
-# )
-#
-# pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_host)
-#
-# pylabhub_register_test_for_staging(
-#     TARGET test_layer2_hub_host
-#     SUITE_NAME "Layer2_HubHost"
-# )
-# layer2_require_staged_utils(test_layer2_hub_host)
-#
-# gtest_discover_tests(test_layer2_hub_host
-#     PROPERTIES
-#         LABELS "layer2;service;hub_host"
-#         TIMEOUT 30
-# )
+add_executable(test_layer2_hub_host
+    test_hub_host.cpp
+    workers/hub_host_workers.cpp
+)
+target_include_directories(test_layer2_hub_host PRIVATE workers)
+
+target_link_libraries(test_layer2_hub_host
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_host)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer2_hub_host
+    SUITE_NAME "Layer2_HubHost"
+)
+layer2_require_staged_utils(test_layer2_hub_host)
+
+gtest_discover_tests(test_layer2_hub_host
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer2;service;hub_host"
+        TIMEOUT 30
+)
 
 # ============================================================================
 # Test: AdminService (HEP-CORE-0033 §11 — CURVE-secured admin plane)
