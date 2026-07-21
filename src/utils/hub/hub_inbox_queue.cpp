@@ -92,7 +92,8 @@ struct InboxQueueImpl
 
     // ── CURVE-server auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
     // Set by set_curve_server_identity() before start().  Empty
-    // identity_key_name_ == legacy plaintext inbox (no CURVE arm).
+    // identity_key_name_ == legacy unencrypted inbox (no CURVE arm — the
+    // ZMQ NULL mechanism; production hard-refuses this, see role_api_base).
     std::string identity_key_name_;   ///< KeyStore key (kRoleIdentityName).
     std::string zap_domain_;          ///< Distinct inbox ZAP domain ("<uid>:inbox").
 
@@ -138,7 +139,7 @@ struct InboxClientImpl
 
     // ── CURVE-client auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
     // Set by set_curve_client_identity() before start().  Empty
-    // identity_key_name_ == legacy plaintext (no CURVE arm).
+    // identity_key_name_ == legacy unencrypted (no CURVE arm).
     std::string identity_key_name_;   ///< KeyStore key (kRoleIdentityName).
     std::string server_pubkey_z85_;   ///< Receiver identity pubkey (curve_serverkey).
 };

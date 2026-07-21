@@ -255,11 +255,11 @@ public:
     // snapshot-push `CHANNEL_AUTH_UPDATE` wire frame was retired
     // 2026-06-04.  Task #103.
     //
-    // Legacy plaintext public `pull_from()` / `push_to()` were
+    // Legacy unencrypted (no-CURVE) public `pull_from()` / `push_to()` were
     // deleted in #160 (C4); the bare names now refer exclusively to
-    // the CURVE-only factories.  The plaintext queue-building logic
+    // the CURVE-only factories.  The unencrypted queue-building logic
     // moved to the private `build_plaintext_reader_` /
-    // `build_plaintext_writer_` helpers below — they're not callable
+    // `build_plaintext_writer_` helpers below (name retained) — not callable
     // from outside this class.
 
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
@@ -546,7 +546,7 @@ public:
     /// HEP-CORE-0036 §I9.1 — expose our CURVE client-side identity
     /// pubkey to the role-side finalize glue.  Reads
     /// `identity_key_name_` from the KeyStore; empty when the queue
-    /// has no CURVE identity (plaintext factories).
+    /// has no CURVE identity (unencrypted / no-CURVE).
     std::string own_pubkey_z85() const noexcept override;
 
     /// HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —

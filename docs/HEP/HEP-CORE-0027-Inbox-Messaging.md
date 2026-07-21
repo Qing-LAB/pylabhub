@@ -105,12 +105,31 @@ Inbox uses the same msgpack fixarray[5] wire format as ZmqQueue:
   tag matches its own computed tag; mismatched tags are rejected (increments `recv_frame_error_count`).
 - Payload array size must match the receiver's schema field count; rejected if different
 
-**Checksum verification** is mandatory and always-on (same as ZmqQueue):
-- Sender computes BLAKE2b-256 over the raw payload data before msgpack packing
-- Receiver verifies BLAKE2b-256 after msgpack decoding; frames with mismatched checksums
-  are dropped and logged (increments `checksum_error_count`)
-- Unlike SHM's `ChecksumPolicy` (None/Manual/Enforced), inbox has no policy toggle —
-  checksum is always computed and verified
+**Checksum verification** is an owner-chosen integrity **policy** — the same
+`ChecksumPolicy` (None / Manual / Enforced) the SHM and ZmqQueue paths use —
+applied to the **decrypted message content**, on top of the mandatory CURVE
+transport (§3.5). The inbox OWNER dictates the policy and the sender adopts it,
+advertised as `inbox_checksum` in ROLE_INFO_ACK (§4.2 step 8). The BLAKE2b-256
+is computed over the message content (before CURVE encryption on send; after
+CURVE decryption on receive — the same bytes either way):
+
+- **Enforced** — sender auto-stamps the checksum; receiver auto-verifies.
+  Mismatched checksums are dropped and logged (increments `checksum_error_count`).
+- **Manual** — sender is responsible for stamping the checksum itself; the
+  receiver always verifies, so a missing stamp is rejected.
+- **None** — no checksum is computed or verified (sender sends zeros).
+
+**Why it is a policy, not a mandate.** CURVE is the mandatory transport-integrity
+baseline: every inbox message is encrypted and authenticated on the wire (§3.5),
+and production **hard-refuses** a no-CURVE (unencrypted) inbox (`role_api_base.cpp`
+— *"refusing plaintext inbox"*). So the app-level checksum is **defence-in-depth
+on the decrypted content**: it mainly catches accidental corruption — a packing
+bug, a bad memory write — *after* decryption, whereas deliberate tampering is
+already rejected by CURVE's own per-frame authentication *before* the checksum
+runs. Turning it off (`inbox_checksum: "none"`) trades that extra check for CPU
+and never exposes payloads to an attacker. (Earlier drafts of this section
+wrongly stated the inbox checksum was "mandatory, no toggle" — that contradicted
+both the code and §4.2 step 8; corrected 2026-07-21.)
 
 **ACK**: Single byte sent from ROUTER to DEALER after processing:
 - `0` = OK

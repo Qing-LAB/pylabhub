@@ -766,8 +766,8 @@ public:
      *
      * Returned as an owning string because the underlying keystore
      * lookup uses a name key that this queue owns.  Empty on writers
-     * with no CURVE identity (plaintext transports; SHM writers use
-     * capability-fd handshake, not CURVE).  Used by the role-side
+     * with no CURVE identity (unencrypted / no-CURVE transports; SHM writers
+     * use the capability-fd handshake, not CURVE).  Used by the role-side
      * finalize_connect glue to seed the `PeerReadinessOracle` with
      * the pubkey the broker checks via `is_pubkey_visible_to` against
      * the channel's `VersionedAdmissionLedger` (HEP-CORE-0042 §5.5.2

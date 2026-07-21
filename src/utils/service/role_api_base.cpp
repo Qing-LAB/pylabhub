@@ -4330,15 +4330,15 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             auto inbox_checksum = info.value("inbox_checksum", std::string{});
             // HEP-CORE-0027 §3.5 — the receiver's identity pubkey pins the
             // DEALER's curve_serverkey.  Mandatory: without it we cannot
-            // establish the CURVE session, and there is no plaintext inbox
-            // fallback (hard-enforce per the hub-wide auth model).
+            // establish the CURVE session, and there is no unencrypted
+            // (no-CURVE) inbox fallback (hard-enforce per the hub-wide auth model).
             auto inbox_receiver_pubkey =
                 info.value("inbox_receiver_pubkey_z85", std::string{});
             if (inbox_receiver_pubkey.empty())
             {
                 LOGGER_WARN("[api] open_inbox('{}'): ROLE_INFO_ACK carried no "
                             "inbox_receiver_pubkey_z85 — cannot arm CURVE "
-                            "(HEP-CORE-0027 §3.5); refusing plaintext inbox",
+                            "(HEP-CORE-0027 §3.5); refusing unencrypted inbox",
                             target_uid);
                 return std::nullopt;
             }

@@ -8,8 +8,9 @@
  * The inbox endpoint is registered with the broker at startup (REG_REQ `inbox_endpoint` field).
  * Any role can discover the inbox endpoint via ROLE_INFO_REQ (Phase 4) and connect an InboxClient.
  *
- * ## Wire format (MessagePack array, 4 elements — same as ZmqQueue)
- *   [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N fields)]
+ * ## Wire format (MessagePack fixarray[5] — the same 5-tuple as ZmqQueue,
+ *    packed by the shared `wire_detail::pack_frame` codec)
+ *   [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N fields), checksum:bin32]
  *   - magic      : 0x51484C50 ('PLHQ')
  *   - schema_tag : first 8 bytes of BLAKE2b-256 over the inbox canonical
  *                  form (HEP-CORE-0034 §11.4 — `type:count:length;...|pack:`,
@@ -19,6 +20,10 @@
  *                  field names on the wire.  Optional identity guard.
  *   - seq        : monotonic sender counter
  *   - payload    : N typed field values (scalar or bin)
+ *   - checksum   : bin32 — BLAKE2b-256 over the decrypted message content,
+ *                  per the owner-chosen `ChecksumPolicy` (None/Manual/Enforced);
+ *                  defence-in-depth on top of the mandatory CURVE transport
+ *                  (HEP-CORE-0027 §3).  `None` sends zeros / skips verify.
  *
  * ## ZMQ framing (ROUTER-DEALER)
  * InboxClient sets ZMQ_IDENTITY to the sender's pylabhub UID before connecting.

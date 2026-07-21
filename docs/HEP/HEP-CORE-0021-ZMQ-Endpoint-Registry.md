@@ -646,12 +646,20 @@ No `zmq_in_endpoint` in Processor-B — it is discovered from Hub A at runtime.
 `std::vector<ZmqSchemaField>` + packing string. Wire format is msgpack:
 
 ```
-fixarray[4]
+fixarray[5]
   [0] magic       : uint32  = 0x51484C50 ('PLHQ')
   [1] schema_tag  : bin8    = first 8 bytes of BLAKE2b-256(BLDS) (or zeros if absent)
   [2] seq         : uint64  = monotonic send counter (gaps detected as recv_gap_count)
   [3] payload     : array[N] — one element per schema field
+  [4] checksum    : bin32   = BLAKE2b-256 over the decrypted message content per
+                             the owner-chosen ChecksumPolicy (None/Manual/Enforced);
+                             defence-in-depth on top of the mandatory CURVE
+                             transport. None sends zeros / skips verify.
 ```
+
+The 5-tuple and the `ChecksumPolicy` semantics are shared with the inbox plane
+(`hub::InboxQueue`, HEP-CORE-0027 §3) — both queues serialize through the same
+`wire_detail::pack_frame` codec; that description is the single source of truth.
 
 Payload encoding: scalars as native msgpack types; arrays/string/bytes as `bin` (raw bytes).
 

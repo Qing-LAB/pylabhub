@@ -6,6 +6,18 @@
  * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
  *   payload element i: scalar → native msgpack type; array/string/bytes → bin(byte_size)
  *
+ * **This is the single source of truth for the 5-tuple frame.** Both ZmqQueue
+ * (HEP-CORE-0021 §13) and InboxQueue (HEP-CORE-0027 §3) serialize through this
+ * codec and reference this description rather than restating it.
+ *
+ * The `checksum` element is a BLAKE2b-256 over the decrypted message content,
+ * governed by the owner-chosen `ChecksumPolicy` (None / Manual / Enforced;
+ * `data_block_policy.hpp`).  It is **defence-in-depth on top of the mandatory
+ * CURVE transport** — CURVE already authenticates every frame against tampering,
+ * so the checksum mainly catches accidental corruption after decrypt; `None`
+ * sends zeros and skips verification.  This helper is policy-agnostic: the
+ * caller computes the checksum (or zeros) and passes it in.
+ *
  * Field layout computation is in schema_field_layout.hpp (shared by all queue types).
  * This header adds ZMQ-specific msgpack pack/unpack on top of the shared layout.
  *
