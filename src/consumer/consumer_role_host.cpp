@@ -305,6 +305,7 @@ void ConsumerRoleHost::worker_main_()
         if (!api_ref.start_handler_threads(std::move(handler)))
         {
             LOGGER_ERROR("[cons] start_handler_threads failed");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -362,6 +363,7 @@ void ConsumerRoleHost::worker_main_()
             // no data flow.
             LOGGER_ERROR("[cons] Broker consumer registration failed — "
                          "aborting role startup");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -379,6 +381,7 @@ void ConsumerRoleHost::worker_main_()
         {
             LOGGER_ERROR("[cons] apply_consumer_reg_ack failed — "
                          "Rx queue did not reach Active state");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -420,6 +423,7 @@ void ConsumerRoleHost::worker_main_()
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[cons]"))
         {
             LOGGER_ERROR("[cons] Startup coordination failed — required roles not available");
+            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }

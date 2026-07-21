@@ -1407,8 +1407,29 @@ sequenceDiagram
 
 The numbered list is what the producer / consumer / processor
 `worker_main_()` bodies actually do, in order.  Failure semantics:
-**FATAL** means `promise.set_value(false); return` — the worker
-drops into teardown without opening any data socket.
+**FATAL** means the worker aborts startup — it does **not** open a data
+socket and does **not** run the data loop (Step 8) or the normal Step 9
+`do_role_teardown`.
+
+> **Teardown-on-FATAL rule ("H3b").**  A FATAL return that occurs
+> **after** Step 2b (`setup_infrastructure_`) MUST call
+> `teardown_infrastructure_()` **inline** before `promise.set_value(false);
+> return` — this unwinds the L1 socket + queues + ctrl threads **on the
+> worker thread** (the thread that created the ZMQ sockets).  It is
+> **only** `teardown_infrastructure_()` (sub-step 9.6), not the full
+> `do_role_teardown`: on an aborted startup there is nothing to DEREG in
+> the general case (registration may have failed or the transport may not
+> be up — see below), and the broker reaps any registered-but-aborting
+> role via heartbeat timeout (HEP-CORE-0023 §2.5).  All three role hosts
+> apply this uniformly; skipping it would defer the worker-thread sockets
+> to destructor cleanup on a **different** thread — a ZMQ thread-affinity
+> violation.  A FATAL return that occurs **before** Step 2b (Steps 0/1a/
+> 1b, or the validate-only exit where `setup_infrastructure_` was skipped)
+> has no infrastructure to unwind and correctly omits the call.
+>
+> `teardown_infrastructure_()` is self-contained in this context:
+> `stop_handler_threads()` is idempotent and performs its own ctrl-thread
+> drain, so no prior `do_role_teardown` drain is required.
 
 ```
 Step 0   — Construct the script engine ON THE WORKER THREAD

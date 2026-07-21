@@ -811,6 +811,154 @@ TEST_F(PlhHubCliTest, ZmqE2E_UnauthorizedConsumerDeniedByBroker)
     ::unsetenv("PYLABHUB_ROLE_PASSWORD");
 }
 
+// ─── Consumer registration REJECTED (schema mismatch) → FATAL H3b teardown ──
+//
+// Pins #70 (2026-07-21): the consumer is AUTHORIZED (in known_roles, so the ZAP
+// gate admits its CURVE handshake) but its slot schema (float64) does not match
+// the channel the producer established (float32).  CONSUMER_REG_REQ is therefore
+// rejected, `register_consumer` fails, and the consumer's `worker_main_` takes a
+// FATAL post-setup early-return — which MUST call `teardown_infrastructure_()`
+// (the "H3b" unwind) inline on the worker thread, matching producer/processor.
+//
+// Validation is DETERMINISTIC via the production `event=TeardownInfrastructure`
+// marker: the pre-fix consumer omitted the call on this path, so the marker
+// would be ABSENT.  (The marker fires on teardown entry, so it proves the call
+// was made — the essence of the fix — independent of any later timing.)  We
+// don't depend on the specific reject reason: any register failure routes
+// through the same H3b path.
+TEST_F(PlhHubCliTest, ZmqE2E_ConsumerSchemaMismatch_AbortsAndTearsDown)
+{
+    using std::chrono::seconds;
+
+    const std::string channel  = "lab.l4.zmq.e2e.schemamm";
+    const std::string prod_uid = "prod.l4zmq.uid11112222";
+    const std::string cons_uid = "cons.l4zmq.uid11112222";
+    const int prod_port = 21000 + (::getpid() % 1000);
+
+    const fs::path hub_dir = tmp("zmqe2e_schemamm_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+            {hub_dir.string(), "--name", "L4ZmqSchemaMMHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"]           = false;
+        j["script"]["path"]             = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "zmqe2e-schemamm-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+            {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    const fs::path prod_dir = tmp("zmqe2e_schemamm_prod");
+    const fs::path cons_dir = tmp("zmqe2e_schemamm_cons");
+    std::error_code ec;
+    fs::create_directories(prod_dir / "vault", ec);
+    fs::create_directories(cons_dir / "vault", ec);
+
+    write_zmq_producer_config(prod_dir / "producer.json", hub_dir,
+                               prod_uid, channel, prod_port);
+    write_zmq_producer_script(prod_dir / "script" / "python", 5);
+    write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir,
+                               cons_uid, channel);
+    write_zmq_consumer_script(cons_dir / "script" / "python", 5);
+
+    // MUTATION POINT: producer emits a single scalar `value:float32`.  Give the
+    // consumer a deliberately-mismatched, richer slot schema that differs on
+    // ALL THREE fingerprint axes at once — member set (3 fields vs 1), type
+    // (float64 / uint16 vs float32), and array size (`samples` is a count-8
+    // array vs a scalar).  The fingerprint folds field name + type + count +
+    // length + packing, so this differs from the channel's on every axis → the
+    // broker rejects CONSUMER_REG_REQ.
+    {
+        nlohmann::json j;
+        { std::ifstream f(cons_dir / "consumer.json"); f >> j; }
+        j["in_slot_schema"]["packing"] = "aligned";
+        j["in_slot_schema"]["fields"]  = nlohmann::json::array({
+            nlohmann::json{{"name", "ts"},        {"type", "float64"}},
+            nlohmann::json{{"name", "samples"},   {"type", "float32"}, {"count", 8}},
+            nlohmann::json{{"name", "sensor_id"}, {"type", "uint16"}}
+        });
+        std::ofstream f(cons_dir / "consumer.json");
+        f << j.dump(2);
+    }
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "zmqe2e-schemamm-role-pw", /*overwrite=*/1);
+    const std::string prod_pubkey =
+        keygen_role_and_read_pubkey(prod_dir, "producer", prod_uid,
+                                     "zmqe2e-schemamm-role-pw");
+    const std::string cons_pubkey =
+        keygen_role_and_read_pubkey(cons_dir, "consumer", cons_uid,
+                                     "zmqe2e-schemamm-role-pw");
+    // BOTH authorized — the consumer must clear the ZAP gate and REACH
+    // register_consumer, so the abort is a schema reject, not a handshake deny.
+    add_known_role(hub_dir, "zmqe2e_schemamm_prod", prod_uid, "producer",
+                   prod_pubkey);
+    add_known_role(hub_dir, "zmqe2e_schemamm_cons", cons_uid, "consumer",
+                   cons_pubkey);
+
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on"))
+        << "hub never bound.  Log:\n" << read_hub_log(hub_dir);
+    const std::string bound_ep =
+        extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        { std::ifstream f(hub_dir / "hub.json"); f >> j; }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // Producer establishes the channel (float32) and goes live first.
+    WorkerProcess prod(plh_role_binary(), "--role",
+        {"producer", prod_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
+        "event=RegAckReceived", seconds(15)))
+        << "producer setup failed:\n" << prod.get_stderr();
+
+    // Consumer registers → schema mismatch → register_consumer fails →
+    // FATAL H3b teardown on the worker thread.
+    WorkerProcess cons(plh_role_binary(), "--role",
+        {"consumer", cons_dir.string()});
+
+    // PRIMARY (deterministic) pin of the #70 fix: the FATAL register-fail path
+    // ran teardown_infrastructure_() on the worker thread.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+        "event=TeardownInfrastructure", seconds(15)))
+        << "consumer did NOT tear down infrastructure on the register-fail "
+           "path (H3b) — worker-thread sockets would be deferred to destructor "
+           "cleanup on another thread.  consumer log:\n"
+        << read_role_log(cons_dir) << cons.get_stderr();
+
+    // And it must abort on its own — a GRACEFUL exit (code 0), not a crash or a
+    // hang.  A register-failure abort is a clean shutdown, so exit 0 is correct;
+    // this still catches the failure modes the missing-teardown bug could cause:
+    // a foreign-thread ZMQ close SIGABRT/SIGSEGV → 134/139, or a hang that
+    // wait_for_exit escalates to SIGKILL → 137.
+    const int rc = cons.wait_for_exit(15);
+    EXPECT_EQ(rc, 0)
+        << "consumer must abort startup cleanly (exit 0) on schema reject — a "
+           "non-zero code indicates a crash or a hang killed by the harness.  "
+           "log:\n" << read_role_log(cons_dir) << cons.get_stderr();
+
+    prod.send_signal(SIGTERM);
+    EXPECT_EQ(prod.wait_for_exit(10), 0) << prod.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
 // ─── Scenario C: fan-in with two authorized producers ─────────────────────
 //
 // #246 Phase 3a L4 close-out — multi-producer coverage at the

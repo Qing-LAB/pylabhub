@@ -275,8 +275,24 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 
 void RoleHostFrame::teardown_infrastructure_()
 {
-    // Broker and comm threads already joined via api_->thread_manager().drain().
-    // set_running(false) also already called.  Defensive re-set is safe.
+    // Called in TWO contexts (both correct — this method is self-contained):
+    //   1. Normal path — as sub-step 9.6 of `do_role_teardown`, AFTER the data
+    //      loop, AFTER `set_running(false)`, AFTER the ThreadManager drain.
+    //   2. FATAL path ("H3b") — inline on any post-setup early return in a
+    //      role host's `worker_main_` (e.g. start_handler_threads /
+    //      register / apply_reg_ack / wait_for_roles failure), BEFORE any
+    //      drain has run.  All three role hosts do this uniformly.
+    // It is safe in BOTH because `stop_handler_threads()` below is idempotent
+    // and performs its OWN drain of the peer ctrl threads (HEP-CORE-0031 §4.1
+    // bracket contract) — a prior `drain()` is NOT a precondition.  A defensive
+    // `set_running(false)` is likewise unnecessary here.
+
+    // Lifecycle observability: this marker is what L4 tests read to confirm the
+    // infrastructure unwind actually ran on the worker thread — in particular
+    // that a post-setup FATAL early-return (H3b) tore down rather than deferring
+    // sockets to destructor cleanup on another thread.  Production log line, not
+    // a test hook.
+    LOGGER_INFO("[{}] event=TeardownInfrastructure", frame_cfg_.short_tag);
 
     // Clean up shared resources (engine already finalized — no scripts running).
     core().clear_inbox_cache();
