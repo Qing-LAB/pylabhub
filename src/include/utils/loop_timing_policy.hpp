@@ -152,7 +152,7 @@ static constexpr auto kBrokerReadinessPollInterval =
  * |---------------------------|-------------|-----------------|
  * | MaxRate                   | must be 0    | No sleep; iterate as fast as possible. Single acquire per cycle. |
  * | FixedRate                 | must be > 0  | Sleep to deadline. On overrun: reset deadline to `now + period` (no catch-up). |
- * | FixedRateWithCompensation | must be > 0  | Sleep to deadline. On overrun: advance deadline from cycle start (catches up). |
+ * | FixedRateWithCompensation | must be > 0  | Sleep to deadline. On overrun: advance deadline from the previous deadline by one period (catches up; the schedule stays anchored to the original start = start + N·period). |
  *
  * **MaxRate** is an explicit, first-class policy — not a side-effect of setting period to 0.
  */
