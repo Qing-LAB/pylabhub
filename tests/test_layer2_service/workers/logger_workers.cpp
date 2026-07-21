@@ -194,6 +194,70 @@ int test_flush_waits_for_queue(const std::string &log_path_str)
         "logger::test_flush_waits_for_queue", Logger::GetLifecycleModule());
 }
 
+// Worker to test the synchronous logging path (LOGGER_*_SYNC / write_sync).
+// Pins the three guarantees HEP-CORE-0004 §"Synchronous Logging" makes and that
+// the async path cannot provide: (a) immediacy — the message reaches the sink on
+// the calling thread, before any flush(); (b) the distinct [LOGGER_SYNC] prefix
+// vs the async [LOGGER]; (c) the level filter suppresses a sub-threshold sync
+// message.  Immediacy is deterministic because BaseFileSink::fwrite is a raw
+// ::write(fd) syscall (no userspace buffer) — the bytes are visible to a separate
+// reader as soon as write_sync returns; logger flush() is a separate fsync-style
+// durability step, not a visibility step.  No sleeps, no timing races.
+int test_sync_logging(const std::string &log_path_str)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            Logger &L = Logger::instance();
+            L.set_log_sink_messages_enabled(false); // no sink-switch noise in the file
+            ASSERT_TRUE(L.set_logfile(log_path_str));
+            L.set_level(Logger::Level::L_INFO);
+
+            // Enqueue an async message FIRST, then a sync message.  We deliberately
+            // do NOT flush before reading back — the sync line must already be on
+            // disk, proving it did not travel through the async queue.
+            LOGGER_INFO("async-before-sync marker");
+            const bool sync_ok = LOGGER_ERROR_SYNC("sync-immediate marker");
+            ASSERT_TRUE(sync_ok);
+
+            std::string before_flush;
+            ASSERT_TRUE(read_file_contents(log_path_str, before_flush));
+            // (a) immediacy — present with no flush() → bypassed the queue.
+            ASSERT_NE(before_flush.find("sync-immediate marker"), std::string::npos)
+                << "sync write must reach the sink before flush(); contents:\n"
+                << before_flush;
+            // (b) prefix — the sync line carries [LOGGER_SYNC].
+            ASSERT_NE(before_flush.find("[LOGGER_SYNC]"), std::string::npos)
+                << "sync line must carry the [LOGGER_SYNC] prefix; contents:\n"
+                << before_flush;
+
+            // Drain the async queue; the async line must carry the plain [LOGGER]
+            // prefix.  "[LOGGER] " (trailing space) does not match "[LOGGER_SYNC] ",
+            // so this unambiguously targets the async prefix.
+            L.flush();
+            std::string after_flush;
+            ASSERT_TRUE(read_file_contents(log_path_str, after_flush));
+            ASSERT_NE(after_flush.find("async-before-sync marker"), std::string::npos);
+            ASSERT_NE(after_flush.find("[LOGGER] "), std::string::npos)
+                << "async line must carry the plain [LOGGER] prefix; contents:\n"
+                << after_flush;
+
+            // (c) level filter — a sync INFO below the WARNING threshold is dropped.
+            // log_fmt_sync returns true for a suppressed message (handled, not an
+            // error), so the return value stays true even though nothing is written.
+            L.set_level(Logger::Level::L_WARNING);
+            const bool filtered_ok = LOGGER_INFO_SYNC("sync-filtered-out marker");
+            ASSERT_TRUE(filtered_ok);
+            L.flush();
+            std::string after_filter;
+            ASSERT_TRUE(read_file_contents(log_path_str, after_filter));
+            ASSERT_EQ(after_filter.find("sync-filtered-out marker"), std::string::npos)
+                << "sync INFO below the WARNING level must be suppressed; contents:\n"
+                << after_filter;
+        },
+        "logger::test_sync_logging", Logger::GetLifecycleModule());
+}
+
 // Worker to test that repeated calls to the lifecycle shutdown are handled gracefully.
 int test_shutdown_idempotency(const std::string &log_path_str)
 {
@@ -877,6 +941,8 @@ struct LoggerWorkerRegistrar
                     return test_multithread_stress(argv[2]);
                 if (scenario == "test_flush_waits_for_queue" && argc > 2)
                     return test_flush_waits_for_queue(argv[2]);
+                if (scenario == "test_sync_logging" && argc > 2)
+                    return test_sync_logging(argv[2]);
                 if (scenario == "test_shutdown_idempotency" && argc > 2)
                     return test_shutdown_idempotency(argv[2]);
                 if (scenario == "test_reentrant_error_callback" && argc > 2)

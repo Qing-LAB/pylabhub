@@ -132,6 +132,18 @@ TEST_F(LoggerTest, FlushWaitsForQueue)
     expect_worker_ok(proc);
 }
 
+/// Delegates the SyncLogging test logic to a worker process.  Pins the
+/// synchronous path's three guarantees (immediacy before flush, [LOGGER_SYNC]
+/// prefix, level filter) that the async path cannot make — HEP-CORE-0004.
+TEST_F(LoggerTest, SyncLogging)
+{
+    auto log_path = GetUniqueLogPath("sync_logging");
+    WorkerProcess proc(g_self_exe_path, "logger.test_sync_logging", {log_path.string()});
+    ASSERT_TRUE(proc.valid());
+    proc.wait_for_exit();
+    expect_worker_ok(proc);
+}
+
 /// Delegates the ShutdownIdempotency test logic to a worker process.
 TEST_F(LoggerTest, ShutdownIdempotency)
 {

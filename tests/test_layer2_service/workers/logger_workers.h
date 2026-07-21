@@ -109,6 +109,17 @@ int test_multithread_stress(const std::string &log_path_str);
 int test_flush_waits_for_queue(const std::string &log_path_str);
 
 /**
+ * @brief Tests the synchronous logging path (LOGGER_*_SYNC / write_sync).
+ *
+ * Pins the three HEP-CORE-0004 guarantees the async path cannot make:
+ * (a) immediacy — a sync message is on disk before any flush(); (b) the distinct
+ * [LOGGER_SYNC] prefix vs the async [LOGGER]; (c) the level filter drops a
+ * sub-threshold sync message.
+ * @return 0 on success, non-zero on failure.
+ */
+int test_sync_logging(const std::string &log_path_str);
+
+/**
 
  * @brief Tests that the logger shutdown process is idempotent.
 

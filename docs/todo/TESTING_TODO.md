@@ -93,6 +93,19 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-07-21 — #71 sub-issue 3/4: synchronous logging path pinned (`LoggerTest.SyncLogging`).**
+  Closed the last of the four critical-path coverage gaps in the FullSystem
+  review. New Pattern-3 worker `logger::test_sync_logging`
+  (`tests/test_layer2_service/workers/logger_workers.cpp`) pins the three
+  HEP-0004 §"Synchronous Logging" guarantees the async path cannot make:
+  (a) **immediacy** — a sync line is on disk before any `flush()` (proves the
+  queue bypass); (b) `[LOGGER_SYNC]` prefix vs async `[LOGGER] `; (c) level
+  filter drops a sub-threshold sync message. Deterministic/CI-robust — no
+  sleeps, because `BaseFileSink::fwrite` is a raw `::write(fd)` syscall so the
+  bytes are reader-visible the instant `write_sync` returns. 20× repeat, 0
+  fail. This completes #71 sub-issues 1–4 (HubHost un-mask, classify_peer
+  bug+tests, sync logging, loop-timing math).
+
 - **2026-07-11 — Loop-ready gate + fan-in binding-side reader arc coverage.**
   Full arc E2E-covered by existing L4 tests + one new L2 test
   pinning the AND-composition invariant.  Coverage matrix:
