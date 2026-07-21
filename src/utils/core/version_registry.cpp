@@ -338,7 +338,7 @@ AbiPeerVerdict classify_peer_verdict(const AbiCheckResult &v)
 
     if (!v.compatible)
     {
-        // BUILD_ONLY iff build_id is the ONLY major flag set.
+        // build_id is the ONLY major flag set.
         const bool only_build_id =
             v.major_mismatch.build_id &&
             !v.major_mismatch.library &&
@@ -348,8 +348,24 @@ AbiPeerVerdict classify_peer_verdict(const AbiCheckResult &v)
             !v.major_mismatch.script_api &&
             !v.major_mismatch.script_engine &&
             !v.major_mismatch.config;
-        out.kind = only_build_id ? AbiPeerVerdict::Kind::BuildOnly
-                                  : AbiPeerVerdict::Kind::MajorMismatch;
+        if (only_build_id)
+        {
+            // BUILD_ONLY is "build_id differs but NO axis differs" (§8.6 / the
+            // Kind doc).  If a minor axis ALSO drifts, that is the informative
+            // verdict — reporting BUILD_ONLY would mask the minor drift as a
+            // benign rebuild.  (Any real minor-version difference between two
+            // builds usually changes build_id too, so this is the common case;
+            // without this check MinorMismatch is unreachable whenever build_id
+            // is checked.)  Severity is BuildOnly < MinorMismatch, so elevating
+            // is correct.
+            out.kind = out.minor_axes.empty()
+                           ? AbiPeerVerdict::Kind::BuildOnly
+                           : AbiPeerVerdict::Kind::MinorMismatch;
+        }
+        else
+        {
+            out.kind = AbiPeerVerdict::Kind::MajorMismatch;
+        }
     }
     else if (!out.minor_axes.empty())
     {

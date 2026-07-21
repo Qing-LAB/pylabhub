@@ -505,6 +505,12 @@ result (`AbiCheckResult`):
 | minor on ≥1 axis, no major | WARN, accept | WARN, accept | WARN, accept | WARN, accept |
 | major on ≥1 axis | WARN, accept | ERROR, reject REG_ACK | WARN, accept | ERROR, refuse Registered |
 
+`build_id` is a per-build fingerprint, not a functional axis, so it only sets the
+verdict when it is the **sole** difference (row 1 → `BUILD_ONLY`).  When a minor
+(or major) axis also differs, that functional axis decides the row — a
+co-occurring `build_id` change does not downgrade a minor drift to `BUILD_ONLY`
+(see §8.6).
+
 Strict mode is opt-in via configuration:
 - **`broker.strict_abi_mismatch`** (bool, default `false`)
 - **`role.strict_abi_mismatch`** (bool, default `false`) — role verifies broker's envelope in REG_ACK.
@@ -537,8 +543,16 @@ Where:
 
 Verdict values (matches §8.5 table):
 - `OK` — envelopes match.
-- `BUILD_ONLY` — only `build_id` differs.
-- `MINOR_MISMATCH` — one or more axes differ on minor only.
+- `BUILD_ONLY` — `build_id` differs and **nothing else** does — no major axis
+  and **no minor axis**.  `build_id` is a per-build fingerprint, not a
+  functional-compatibility axis, so this is the "same version, rebuilt" case.
+- `MINOR_MISMATCH` — one or more axes differ on minor, no major axis differs.
+  A co-occurring `build_id` difference does **not** downgrade this to
+  `BUILD_ONLY`: because `build_id` changes on every rebuild, a genuine minor
+  drift between two peers almost always carries a different `build_id` too, so
+  the minor drift is the informative verdict and its axes must be surfaced.
+  (`classify_peer_verdict` enforces this precedence — build_id-only-major +
+  minor axes → `MINOR_MISMATCH`, not `BUILD_ONLY`.)
 - `MAJOR_MISMATCH_ACCEPTED` — major mismatch, default (lenient) mode.
 - `MAJOR_MISMATCH_REJECTED` — major mismatch, strict mode.
 - `ABSENT` — role's REG_REQ carried no `abi_fingerprint` (migration

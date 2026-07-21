@@ -342,6 +342,92 @@ TEST(VerifyPeerVersionsTest, ResultMatchesCheckAbi_ExceptForStderrSideEffect)
 }
 
 // ============================================================================
+// classify_peer_verdict — HEP-CORE-0032 §8.6 verdict taxonomy
+//
+// Shared broker+role helper mapping an AbiCheckResult onto the four-kind
+// verdict (Ok / BuildOnly / MinorMismatch / MajorMismatch) + axis lists.
+// Constructed directly here to isolate the CLASSIFIER from check_abi and from
+// build_id compilation.  Kind doc (plh_version_registry.hpp):
+//   BuildOnly = "build_id differs but NO axis differs".
+// ============================================================================
+
+using pylabhub::version::AbiPeerVerdict;
+using pylabhub::version::classify_peer_verdict;
+
+TEST(ClassifyPeerVerdictTest, Identical_IsOk)
+{
+    AbiCheckResult r{};
+    r.compatible = true;
+    const auto out = classify_peer_verdict(r);
+    EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::Ok);
+    EXPECT_TRUE(out.major_axes.empty());
+    EXPECT_TRUE(out.minor_axes.empty());
+}
+
+TEST(ClassifyPeerVerdictTest, MinorOnly_IsMinorMismatch)
+{
+    AbiCheckResult r{};
+    r.compatible             = true;   // minor drift does not break compatibility
+    r.minor_mismatch.library = true;
+    const auto out = classify_peer_verdict(r);
+    EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MinorMismatch);
+    EXPECT_EQ(out.minor_axes, "library");
+    EXPECT_TRUE(out.major_axes.empty());
+}
+
+TEST(ClassifyPeerVerdictTest, BuildIdOnly_NoAxisDrift_IsBuildOnly)
+{
+    AbiCheckResult r{};
+    r.compatible              = false; // build_id is a major strict-equality axis
+    r.major_mismatch.build_id = true;
+    const auto out = classify_peer_verdict(r);
+    EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::BuildOnly);
+    EXPECT_EQ(out.major_axes, "build_id");
+    EXPECT_TRUE(out.minor_axes.empty());
+}
+
+// Regression pin for the BUILD_ONLY-masks-MINOR bug (#71): a peer that differs
+// in build_id AND a minor axis must report MinorMismatch (surfacing the minor
+// drift), NOT the softer BuildOnly.  Pre-fix this returned BuildOnly, hiding the
+// minor axes — and since any real minor-version difference between two builds
+// also changes build_id, that made MinorMismatch effectively unreachable.
+TEST(ClassifyPeerVerdictTest, BuildIdPlusMinorDrift_IsMinorMismatch_NotBuildOnly)
+{
+    AbiCheckResult r{};
+    r.compatible                  = false; // build_id sets compatible=false
+    r.major_mismatch.build_id     = true;  // only-major flag is build_id
+    r.minor_mismatch.broker_proto = true;  // ... but a minor axis ALSO drifts
+    const auto out = classify_peer_verdict(r);
+    EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MinorMismatch)
+        << "build_id + minor drift must not be masked as BUILD_ONLY";
+    EXPECT_EQ(out.minor_axes, "broker_proto");
+    EXPECT_EQ(out.major_axes, "build_id");
+}
+
+TEST(ClassifyPeerVerdictTest, RealMajorAxis_IsMajorMismatch)
+{
+    AbiCheckResult r{};
+    r.compatible         = false;
+    r.major_mismatch.shm = true;
+    const auto out = classify_peer_verdict(r);
+    EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MajorMismatch);
+    EXPECT_EQ(out.major_axes, "shm");
+    EXPECT_TRUE(out.minor_axes.empty());
+}
+
+TEST(ClassifyPeerVerdictTest, BuildIdPlusRealMajor_IsMajorMismatch)
+{
+    AbiCheckResult r{};
+    r.compatible              = false;
+    r.major_mismatch.build_id = true;
+    r.major_mismatch.shm      = true;  // a real major axis too → not only-build_id
+    const auto out = classify_peer_verdict(r);
+    EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MajorMismatch);
+    // Append order is library, shm, …, build_id → "shm,build_id".
+    EXPECT_EQ(out.major_axes, "shm,build_id");
+}
+
+// ============================================================================
 // to_json_object / from_json_object — wire-envelope serialization
 //
 // HEP-CORE-0032 §8.2 + task #325 slice B.  Round-trip contract:
