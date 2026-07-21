@@ -314,17 +314,9 @@ struct HubStateTestAccess
         return s._on_schemas_evicted_for_owner(owner_uid);
     }
     static ::pylabhub::schema::CitationOutcome validate_schema_citation(
-        HubState                       &s,
-        const std::string              &citer_uid,
-        const std::string              &channel_producer_uid,
-        const std::string              &cited_owner,
-        const std::string              &cited_id,
-        const std::array<uint8_t, 32>  &expected_hash,
-        const std::string              &expected_packing)
+        HubState &s, const ::pylabhub::hub::SchemaCitationInput &in)
     {
-        return s._validate_schema_citation(citer_uid, channel_producer_uid,
-                                           cited_owner, cited_id,
-                                           expected_hash, expected_packing);
+        return s._validate_schema_citation(in);
     }
 };
 

@@ -186,13 +186,27 @@ flowchart TB
    in-memory map elsewhere. Consumers of the schema registry never hold their
    own copy keyed by id or by hash.
 
-4. **Single validator** *(I4)* — citation validation goes through
-   `HubState::_validate_schema_citation(channel_owner, channel_id, cited_owner,
-   cited_id, cited_hash, cited_packing)`. The broker's only job is to extract
-   wire fields and forward them to this method. Stage-2 fingerprint
-   recomputation (`compute_canonical_hash_from_wire` vs claimed `schema_hash`)
-   is a producer-side check that runs in `handle_reg_req` before the validator
-   is reached; it is not a separate validator.
+4. **Single validator** *(I4)* — a joiner's schema is validated in exactly one
+   place: `HubState::_validate_schema_citation`. It compares the joiner's schema
+   against the **channel's stored invariants** (the source of truth, §9), and
+   for a *named* schema additionally checks the registry (existence, fingerprint,
+   and the §9.1 cross-citation rule). Producers and consumers reach it through
+   the same call; a registration handler's only job is to extract wire fields
+   and forward them. No handler may compare a schema against the channel or the
+   registry inline — that duplication is the defect this rule forbids. Two
+   companion rules keep the surface single:
+   - **Request self-consistency is a separate pre-check** —
+     `verify_request_fingerprint` (in `schema_utils`) recomputes the wire hash
+     and compares it to the caller's *own* claimed hash
+     (`FINGERPRINT_INCONSISTENT`). It is the ONLY place a handler calls
+     `compute_canonical_hash_from_wire`; it runs before the validator and is not
+     itself a citation check.
+   - **The `_on_producer_added` re-check is a tripwire, not a second validator**
+     — after the front-door validator accepts, the state-mutation step
+     re-asserts the schema invariants and refuses to mutate on mismatch. In
+     normal operation it never fires; if it does, a caller reached state
+     mutation without passing the validator (a defect), and the hub logs it at
+     ERROR. It is a guard on the point of no return, not a parallel check.
 
 5. **Stateless parser** *(I5)* — `schema_loader` holds **no state**: no maps,
    no caches, no in-memory registry. Each parser function takes input, returns
@@ -247,7 +261,11 @@ flowchart TB
   field of `SchemaRecord` used to populate a SHM header. The two forms do not
   interoperate.
 - Lazy initialisation of a parser-side map keyed on schema_id or hash.
-- Validation logic in any class other than `HubState`.
+- **Citation/channel** validation logic (comparing a joiner's schema against
+  the channel invariants or the registry) in any class other than `HubState`
+  (I4). The request self-consistency pre-check (`verify_request_fingerprint`) is
+  the one sanctioned exception and lives in the stateless `schema_utils` helper —
+  it consults neither the channel nor the registry.
 
 **Permitted patterns:**
 
@@ -606,9 +624,54 @@ the lifetime simple and the citation unambiguous.
 
 ---
 
-## 9. Citation rules
+## 9. Schema validation
 
-### 9.1 The citation invariant
+A joining role — producer or consumer — presents a schema, and the hub decides
+whether it belongs on the channel. Validation answers **three questions, in
+order**, and every registration handler asks them the same way through the same
+functions (§2.4 I4):
+
+1. **Is the request internally consistent?** If the role supplied both a
+   structure (`schema_blds` + `schema_packing`) and a claimed hash, the
+   structure must actually hash to that claim. This is a pure request-sanity
+   pre-check; it touches neither the channel nor the registry. A mismatch is
+   `FINGERPRINT_INCONSISTENT`.
+2. **Does the schema match this channel?** The channel stores the schema its
+   producers have agreed on — always a hash, plus a name and owner when the
+   schema is named (§4.3). The joiner's schema must equal the channel's stored
+   schema. This is the one check both producers and consumers pass through.
+3. **If the schema is named, is the citation legitimate?** A named schema also
+   exists in the registry as an owned record. The §9.1 invariant applies: the
+   cited owner must be the hub or a producer of the channel, the record must
+   exist, and its fingerprint must match.
+
+**The channel is the source of truth.** A role-provided (unnamed) schema exists
+only as a hash on the channel — no registry record is created (§10.1) — so
+step 2 compares against the **channel's stored invariants**, never the registry.
+The registry (step 3) is consulted only for the additional checks a *named*
+schema requires. One function, `HubState::_validate_schema_citation`, performs
+steps 2 and 3 for every caller (§2.4 I4); step 1 is a separate pre-check; the
+mutator that writes a new record is separate again (§2.4 I1).
+
+```mermaid
+flowchart TB
+    REG[REG_REQ / CONSUMER_REG_REQ / PROC_REG_REQ]
+    REG --> A{"1. structure hashes to claimed hash?"}
+    A -- no --> RejFP[FINGERPRINT_INCONSISTENT]
+    A -- yes --> B{"2. matches channel's stored schema?"}
+    B -- no --> RejCh[SCHEMA_MISMATCH producer / SCHEMA_CITATION_REJECTED consumer / SCHEMA_ID_MISMATCH]
+    B -- yes --> C{"3. schema named?"}
+    C -- "no (role-provided)" --> Accept[register / consume / process]
+    C -- yes --> D{"cited owner = hub or a channel producer?"}
+    D -- no --> RejX[cross_citation]
+    D -- yes --> E{"registry record exists + fingerprint matches?"}
+    E -- no --> RejUnk[SCHEMA_UNKNOWN / fingerprint_mismatch]
+    E -- yes --> Accept
+```
+
+### 9.1 The named-citation invariant
+
+For a **named** schema, the citation must additionally satisfy:
 
 > A connection's schema reference must resolve to a record whose owner is
 > either (i) **any** producer currently admitted on the channel being
@@ -616,19 +679,9 @@ the lifetime simple and the citation unambiguous.
 > or (ii) the hub itself.  Cross-citation of a non-producer role's schema
 > is rejected even when the hash matches.
 
-```mermaid
-flowchart TB
-    REG[REG_REQ / CONSUMER_REG_REQ / PROC_REG_REQ\nwith schema_owner, schema_id, hash, packing]
-    REG --> Q1{cited owner = hub?}
-    Q1 -- yes --> Lookup1[lookup hub.schemas&#91;hub,id&#93;]
-    Q1 -- no --> Q2{cited owner ∈\nchannel.producers&#91;*&#93;.role_uid?}
-    Q2 -- yes --> Lookup2[lookup hub.schemas&#91;owner,id&#93;]
-    Q2 -- no --> Reject[SCHEMA_REG_NACK\nreason=cross_citation]
-    Lookup1 --> Q3{hash + packing match?}
-    Lookup2 --> Q3
-    Q3 -- no  --> Reject2[SCHEMA_REG_NACK\nreason=fingerprint_mismatch]
-    Q3 -- yes --> Accept[register / consume / process]
-```
+This invariant does not apply to role-provided (unnamed) schemas — those have
+no owner and no registry record, so step 2 (channel-hash match) is the whole
+check.
 
 ### 9.2 Three legitimate citation paths
 
@@ -660,6 +713,54 @@ working channel — it is not a **sufficient** condition for citation:
 | Authority | Producer may publish v2 in the future; cross-citer's intent was tied to a different role's evolution path |
 | Namespace truth | `prod.X/frame` *is* X's `frame` — citing it while connected to Y mislabels the connection |
 | Diagnostics | Hub has no way to explain channel/schema mismatch if the cited owner is unrelated to the channel |
+
+### 9.4 Validation functions and return values (developer reference)
+
+Three functions implement the process above (I1/I4).  A registration handler
+calls the first two; it never re-implements a comparison inline.
+
+**(1) `verify_request_fingerprint(blds, packing, fz_blds, fz_packing,
+claimed_hash_hex)` → `{ hash, consistent }`** *(`schema_utils`)* — step 1.
+Recomputes the wire fingerprint from the supplied structure; `consistent` is
+false iff a non-empty claimed hash disagrees.  The **only** place a handler
+recomputes the wire hash.  `consistent == false` → wire code
+`FINGERPRINT_INCONSISTENT`.  Mode-specific required-field presence
+(`MISSING_*`) is checked at the call site, not here.
+
+**(2) `HubState::_validate_schema_citation(SchemaCitationInput) →
+CitationOutcome`** *(steps 2–3, the single validator I4)* — matches a joiner
+against the channel (hash, id, owner) and, for an explicit citation only
+(`check_registry_record == true`, i.e. a producer adopting a hub-global),
+also verifies the named registry record (§9.1).  A plain **join** (a 2nd
+producer, a consumer) sets `check_registry_record = false` — it must NOT
+require a registry record, since a fan-in channel opened by a consumer sets
+its named invariants without creating one.
+
+`CitationOutcome::Reason` → wire code (the caller maps by direction, §10.4):
+
+| Reason | Meaning | Producer wire code | Consumer wire code |
+|---|---|---|---|
+| `kOk` | matches | *(accept)* | *(accept)* |
+| `kFingerprintMismatch` | hash ≠ channel (covers blds+packing) | `SCHEMA_MISMATCH` | `SCHEMA_CITATION_REJECTED` |
+| `kSchemaIdMismatch` | id ≠ channel id | `SCHEMA_MISMATCH` | `SCHEMA_ID_MISMATCH` |
+| `kSchemaOwnerMismatch` | claimed owner ≠ channel owner | `SCHEMA_MISMATCH` | *(n/a — consumers name no owner)* |
+| `kCrossCitation` | cited owner not hub/channel-producer *(citation only)* | `SCHEMA_MISMATCH` | *(n/a)* |
+| `kUnknownSchema` | named record absent *(citation only)* | `SCHEMA_UNKNOWN` | *(n/a)* |
+| `kUnknownOwner` | *(unreachable in the channel-first model — a bad owner is `kCrossCitation`)* | — | — |
+
+On any non-ok reason `schema_citation_rejected_total` is incremented.
+
+**(3) `HubState::_on_schema_registered(SchemaRecord)`** — the sole mutator
+(I1), unchanged.  Producer self-register / inbox / hub-globals load records
+through it.  Its own outcomes map to `SCHEMA_HASH_MISMATCH_SELF` /
+`SCHEMA_FORBIDDEN_OWNER`.
+
+**Note — no mutator re-check.**  `_on_producer_added` does NOT re-compare the
+schema invariants (hash/id/blds/owner).  They are validated once at the front
+door via (2); HubState is mutated by a single dispatch thread (I-ROUTER-SERIAL),
+so a duplicate re-check in the mutator can never fire.  The mutator keeps its
+writer lock (concurrent admin-plane readers) and still checks `data_transport`
+(a separate invariant with no front-door equivalent).
 
 ---
 
@@ -759,13 +860,22 @@ they are **not** a separate wire frame.
 | `FINGERPRINT_INCONSISTENT`                 | REG_REQ / CONSUMER_REG_REQ           | producer's claimed `schema_hash` does not equal `BLAKE2b(canonical(blds) || "\|pack:" + packing)`; or consumer-side equivalent |
 | `SCHEMA_HASH_MISMATCH_SELF`                | REG_REQ                              | producer re-registers own `(owner, id)` with different fingerprint |
 | `SCHEMA_FORBIDDEN_OWNER`                   | REG_REQ                              | producer attempts to register under another owner uid |
-| `SCHEMA_CITATION_REJECTED`                 | CONSUMER_REG_REQ                     | citation fails id-match, hash-match, or cross-citation rule |
+| `SCHEMA_MISMATCH`                          | REG_REQ                              | producer joins a channel whose stored schema differs in hash, id, or owner (producer-side "does not match channel"; step 2) |
+| `SCHEMA_CITATION_REJECTED`                 | CONSUMER_REG_REQ                     | consumer's schema does not match the channel — hash or cross-citation (consumer-side "does not match channel"; step 2) |
+| `SCHEMA_ID_MISMATCH`                       | CONSUMER_REG_REQ                     | consumer's `expected_schema_id` differs from the channel's stored `schema_id` (step 2, named) |
 | `MISSING_HASH_FOR_NAMED_CITATION`          | CONSUMER_REG_REQ                     | named mode: `expected_schema_id` present but `expected_schema_hash` missing |
 | `MISSING_BLDS_FOR_ANONYMOUS_CITATION`      | CONSUMER_REG_REQ                     | anonymous mode: `expected_schema_blds` missing |
 | `MISSING_PACKING_FOR_ANONYMOUS_CITATION`   | CONSUMER_REG_REQ                     | anonymous mode: `expected_schema_packing` missing |
 | `SCHEMA_UNKNOWN`                           | SCHEMA_REQ                           | `(owner, id)` lookup found no record |
 | `INBOX_SCHEMA_INVALID`                     | REG_REQ                              | `inbox_schema_json` could not be parsed as a JSON array of fields |
 | `INVALID_INBOX_PACKING`                    | REG_REQ                              | `inbox_packing` is neither `"aligned"` nor `"packed"` |
+
+**`SCHEMA_MISMATCH` vs `SCHEMA_CITATION_REJECTED` — same condition, opposite
+direction.** Both report step 2's "schema does not match the channel". They are
+deliberately kept distinct because they name the **direction of data flow**:
+`SCHEMA_MISMATCH` is a **producer** (data-in) being turned away;
+`SCHEMA_CITATION_REJECTED` is a **consumer** (data-out) being turned away. A
+client can tell from the code which side of the channel it was rejected on.
 
 ---
 

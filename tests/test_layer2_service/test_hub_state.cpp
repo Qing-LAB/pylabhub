@@ -1231,9 +1231,15 @@ TEST(HubStateSchemas, ValidateCitation_SelfOwnedRecord_Ok)
     auto rec = make_schema_rec(prod_uid, "frame", "aligned", 0x11);
     HubStateTestAccess::on_schema_registered(s, rec);
 
-    auto out = HubStateTestAccess::validate_schema_citation(
-        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
-        rec.hash, "aligned");
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = prod_uid;
+    in.channel_id            = "frame";
+    in.channel_hash          = rec.hash;
+    in.channel_producer_uids = {prod_uid};
+    in.cited_id              = "frame";
+    in.expected_hash         = rec.hash;
+    in.check_registry_record = true; // explicit registry citation
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_TRUE(out.ok()) << "self-owned-record citation should validate; reason=" << out.detail;
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
 }
@@ -1244,9 +1250,15 @@ TEST(HubStateSchemas, ValidateCitation_HubGlobal_Ok)
     auto rec = make_schema_rec("hub", "lab.demo.frame@1", "aligned", 0x33);
     HubStateTestAccess::on_schema_registered(s, rec);
 
-    auto out = HubStateTestAccess::validate_schema_citation(
-        s, "prod.cam.uid01234567", "prod.cam.uid01234567", "hub",
-        "lab.demo.frame@1", rec.hash, "aligned");
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = "hub";
+    in.channel_id            = "lab.demo.frame@1";
+    in.channel_hash          = rec.hash;
+    in.channel_producer_uids = {"prod.cam.uid01234567"};
+    in.cited_id              = "lab.demo.frame@1";
+    in.expected_hash         = rec.hash;
+    in.check_registry_record = true; // explicit registry citation
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_TRUE(out.ok()) << "hub-global citation should validate";
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
 }
@@ -1265,11 +1277,45 @@ TEST(HubStateSchemas, ValidateCitation_CrossCitation_Rejected)
     HubStateTestAccess::on_schema_registered(s, rec_a);
     HubStateTestAccess::on_schema_registered(s, rec_b);
 
-    auto out = HubStateTestAccess::validate_schema_citation(
-        s, "cons.viewer.uid00000005", prod_a, prod_b, "frame",
-        rec_b.hash, "aligned");
+    // Channel owned by prod_b, but prod_b is NOT a producer of this channel
+    // (producers = {prod_a}) → cross-citation.
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = prod_b;
+    in.channel_id            = "frame";
+    in.channel_hash          = rec_b.hash;
+    in.channel_producer_uids = {prod_a};
+    in.cited_id              = "frame";
+    in.expected_hash         = rec_b.hash;
+    in.check_registry_record = true; // cross-citation is a step-3 registry rule
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_FALSE(out.ok());
     EXPECT_EQ(out.reason, CitationOutcome::Reason::kCrossCitation);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
+}
+
+TEST(HubStateSchemas, ValidateCitation_OwnerMismatch_Rejected)
+{
+    HubState s;
+    const std::string prod_a = "prod.cam_a.uid00000001";
+    const std::string prod_b = "prod.cam_b.uid00000002";
+    HubStateTestAccess::set_role_registered(s, make_role(prod_a));
+    auto rec = make_schema_rec(prod_a, "frame", "aligned", 0x11);
+    HubStateTestAccess::on_schema_registered(s, rec);
+
+    // Channel established by prod_a (owner = prod_a); a second producer joins
+    // claiming the same id + hash but a different owner (prod_b) → owner
+    // mismatch (producer-only channel-match check).
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = prod_a;
+    in.channel_id            = "frame";
+    in.channel_hash          = rec.hash;
+    in.channel_producer_uids = {prod_a};
+    in.cited_id              = "frame";
+    in.cited_owner           = prod_b;   // differs from channel owner
+    in.expected_hash         = rec.hash;
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_FALSE(out.ok());
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kSchemaOwnerMismatch);
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 
@@ -1282,21 +1328,24 @@ TEST(HubStateSchemas, ValidateCitation_FingerprintMismatch_Rejected)
     auto rec = make_schema_rec(prod_uid, "frame", "aligned", 0x11);
     HubStateTestAccess::on_schema_registered(s, rec);
 
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = prod_uid;
+    in.channel_id            = "frame";
+    in.channel_hash          = rec.hash;
+    in.channel_producer_uids = {prod_uid};
+    in.cited_id              = "frame";
+
+    // Wrong fingerprint → mismatch (step 1, channel-hash compare).  Packing is
+    // folded into the fingerprint, so a packing difference is a hash difference
+    // — there is no separate "matching hash, wrong packing" state to test.
     std::array<uint8_t, 32> wrong_hash;
     wrong_hash.fill(0x99);
-    auto out_h = HubStateTestAccess::validate_schema_citation(
-        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
-        wrong_hash, "aligned");
+    in.expected_hash = wrong_hash;
+    auto out_h = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_FALSE(out_h.ok());
     EXPECT_EQ(out_h.reason, CitationOutcome::Reason::kFingerprintMismatch);
 
-    auto out_p = HubStateTestAccess::validate_schema_citation(
-        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
-        rec.hash, "packed");
-    EXPECT_FALSE(out_p.ok());
-    EXPECT_EQ(out_p.reason, CitationOutcome::Reason::kFingerprintMismatch);
-
-    EXPECT_EQ(s.counters().schema_citation_rejected_total, 2u);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 
 TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
@@ -1305,26 +1354,78 @@ TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
     const std::string prod_uid = "prod.cam.uid01234567";
     HubStateTestAccess::set_role_registered(s, make_role(prod_uid));
 
+    // Named channel owned by a channel producer, but no registry record exists
+    // under (owner, id) → unknown schema.  channel_hash == expected_hash so the
+    // check reaches the registry branch.
     std::array<uint8_t, 32> any_hash{};
-    auto out = HubStateTestAccess::validate_schema_citation(
-        s, "cons.viewer.uid00000005", prod_uid, prod_uid, "frame",
-        any_hash, "aligned");
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = prod_uid;
+    in.channel_id            = "frame";
+    in.channel_hash          = any_hash;
+    in.channel_producer_uids = {prod_uid};
+    in.cited_id              = "frame";
+    in.expected_hash         = any_hash;
+    in.check_registry_record = true; // registry existence is a step-3 rule
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_FALSE(out.ok());
     EXPECT_EQ(out.reason, CitationOutcome::Reason::kUnknownSchema);
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 
-TEST(HubStateSchemas, ValidateCitation_UnknownOwner_Rejected)
+// `kUnknownOwner` is unreachable in the channel-first model: a channel's owner
+// is always "hub" or one of its producers (established at producer
+// registration), so a bad owner is `kCrossCitation`
+// (ValidateCitation_CrossCitation_Rejected).  In its place we pin the
+// role-provided (unnamed) channel path — no schema_id/owner, so the registry
+// branch is skipped and the hash match is the whole check (HEP-CORE-0034 §9).
+TEST(HubStateSchemas, ValidateCitation_RoleProvidedChannel_HashOnly)
 {
     HubState s;
-    const std::string ghost = "prod.ghost.uid00000099";
-    std::array<uint8_t, 32> any_hash{};
-    auto out = HubStateTestAccess::validate_schema_citation(
-        s, "cons.viewer.uid00000005", ghost, ghost, "frame",
-        any_hash, "aligned");
-    EXPECT_FALSE(out.ok());
-    EXPECT_EQ(out.reason, CitationOutcome::Reason::kUnknownOwner);
+    std::array<uint8_t, 32> h;
+    h.fill(0x42);
+
+    pylabhub::hub::SchemaCitationInput in; // channel_id / channel_owner empty
+    in.channel_hash  = h;
+    in.expected_hash = h;
+    auto ok = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_TRUE(ok.ok()) << "unnamed channel, matching hash → ok; " << ok.detail;
+
+    std::array<uint8_t, 32> wrong;
+    wrong.fill(0x43);
+    in.expected_hash = wrong;
+    auto bad = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_FALSE(bad.ok());
+    EXPECT_EQ(bad.reason, CitationOutcome::Reason::kFingerprintMismatch);
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
+}
+
+// Regression (fan-in): a plain channel-match JOIN (check_registry_record=false)
+// against a NAMED channel must succeed on hash/id/owner match even when NO
+// registry record exists.  A fan-in channel opened by a consumer sets its
+// named invariants WITHOUT creating a registry record, and producers must be
+// able to join it.  Step-3 registry existence applies only to an explicit
+// citation / Path-C adoption (check_registry_record=true) — not to a join.
+TEST(HubStateSchemas, ValidateCitation_JoinNamedChannel_NoRegistryRecord_Ok)
+{
+    HubState s;
+    const std::string prod_uid = "prod.cam.uid01234567";
+    std::array<uint8_t, 32> h;
+    h.fill(0x55);
+
+    // Named channel (id + owner set), but NO on_schema_registered → no record.
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner         = prod_uid;
+    in.channel_id            = "frame";
+    in.channel_hash          = h;
+    in.channel_producer_uids = {prod_uid};
+    in.cited_id              = "frame";
+    in.cited_owner           = prod_uid;
+    in.expected_hash         = h;
+    in.check_registry_record = false; // a join, not a citation
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_TRUE(out.ok())
+        << "a join must not require a registry record; " << out.detail;
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
 }
 
 // ─── Wave M2.5 — controlled-access API on ChannelEntry ─────────────────────
@@ -1865,33 +1966,20 @@ TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
     EXPECT_EQ(ch->producer_count(), 2u);
 }
 
-TEST(HubStateProducerAdmission, SecondProducer_SchemaMismatch_Rejected_NoStateMutation)
-{
-    HubState s;
-    ASSERT_EQ(HubStateTestAccess::on_producer_added(
-                  s, "ch.fanin.schema-mismatch",
-                  make_schema_invariants(std::string(64, 'a')),
-                  make_zmq_transport(),
-                  make_producer("prod.camA.uid00000001", 1001))
-                  .producer_result,
-              AddProducerResult::Created);
-
-    auto schema_b = make_schema_invariants(std::string(64, 'b'));
-    auto r = HubStateTestAccess::on_producer_added(
-        s, "ch.fanin.schema-mismatch",
-        schema_b,
-        make_zmq_transport(),
-        make_producer("prod.camB.uid00000002", 1002));
-
-    EXPECT_EQ(r.invariant_result, InvariantSetResult::RejectedMismatch);
-    EXPECT_EQ(r.mismatched_invariant, "schema_hash");
-
-    // No state mutation — producer count unchanged, B's uid absent.
-    auto ch = s.channel("ch.fanin.schema-mismatch");
-    ASSERT_TRUE(ch.has_value());
-    EXPECT_EQ(ch->producer_count(), 1u);
-    EXPECT_EQ(ch->find_producer("prod.camB.uid00000002"), nullptr);
-}
+// RETIRED — `_on_producer_added` no longer re-checks schema invariants
+// (hash/id/blds/owner).  Those are validated ONCE at the broker's front door
+// through the single validator `_validate_schema_citation` (HEP-CORE-0034 §2.4
+// I4).  HubState is mutated only by the single ROUTER dispatch thread
+// (I-ROUTER-SERIAL), so a duplicate re-check in the mutator can never fire
+// (the front door already rejected the mismatch on the same thread) and was a
+// second copy of the validator's logic.  Contract carried forward: the
+// second-producer schema-mismatch rejection is pinned at L3 by
+// `DatahubBrokerTest.SchemaMismatch` / `broker.broker_schema_mismatch` and
+// `Pattern4BrokerProtocolTest.DuplicateReg_DifferentSchemaHash_Rejected`.
+// (The mutator still rejects a `data_transport` invariant mismatch — a
+// separate invariant with no front-door equivalent — see
+// SecondDistinctUid_MatchingInvariants_Appends for the matching-invariant
+// append path.)
 
 TEST(HubStateProducerAdmission, SameUidRedo_Rejected_UidConflict)
 {

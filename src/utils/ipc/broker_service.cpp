@@ -2238,12 +2238,34 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // schema-mismatch event from the rejected newcomer.
     if (auto existing_opt = hub_state_->channel(channel_name); existing_opt.has_value())
     {
-        if (existing_opt->schema_hash != attempted_schema)
+        // Full front-door channel-match through the single validator
+        // (HEP-CORE-0034 §9 / §2.4 I4), BEFORE any schema record is created, so
+        // a mismatched newcomer leaves no orphan.  This matches the producer's
+        // claimed schema_hash + schema_id + schema_owner against the channel's;
+        // the producer's structure is self-consistency-checked in the §10.1
+        // block below (so a claimed hash that matches the channel but a lying
+        // structure is still caught).  `_on_producer_added` re-checks the same
+        // invariants at state-write time as a tripwire.  Any mismatch is a
+        // SCHEMA_MISMATCH — the same wire code the backstop returns today.
+        pylabhub::hub::SchemaCitationInput sin;
+        sin.channel_owner = existing_opt->schema_owner;
+        sin.channel_id    = existing_opt->schema_id;
+        sin.channel_hash  = hex_to_hash_array(existing_opt->schema_hash);
+        sin.channel_producer_uids.reserve(existing_opt->producers.size());
+        for (const auto &p : existing_opt->producers)
+            sin.channel_producer_uids.push_back(p.role_uid);
+        sin.cited_id      = req.value("schema_id", "");
+        // Effective owner: an empty schema_owner means self-registration.
+        const std::string claimed_owner = req.value("schema_owner", "");
+        sin.cited_owner   = claimed_owner.empty() ? role_uid : claimed_owner;
+        sin.expected_hash = hex_to_hash_array(attempted_schema);
+
+        if (const auto vc = hub_state_->_validate_schema_citation(sin); !vc.ok())
         {
             const std::string &existing_schema = existing_opt->schema_hash;
             LOGGER_ERROR(
-                "Broker: Cat1 schema mismatch on '{}': existing={} attempted={} attempted_pid={}",
-                channel_name, existing_schema, attempted_schema, attempted_pid);
+                "Broker: Cat1 schema mismatch on '{}': {} — existing={} attempted={} attempted_pid={}",
+                channel_name, vc.detail, existing_schema, attempted_schema, attempted_pid);
             nlohmann::json err;
             err["channel_name"]          = channel_name;
             err["event"]                 = "schema_mismatch_attempt";
@@ -2255,18 +2277,19 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                 if (prod.zmq_identity.empty()) continue;
                 send_to_identity(socket, prod.zmq_identity,
                                  "CHANNEL_ERROR_NOTIFY", err);
-                LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': event={}, "
-                             "existing_hash={}, attempted_hash={}, attempted_pid={}, target={}",
+                LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': "
+                             "event={}, existing_hash={}, attempted_hash={}, "
+                             "attempted_pid={}, target={}",
                              channel_name, "schema_mismatch_attempt",
                              existing_schema, attempted_schema, attempted_pid,
                              prod.role_uid);
             }
             return make_error(corr_id, "SCHEMA_MISMATCH",
-                              "Schema hash differs from existing registration for channel '" +
-                                  channel_name + "'");
+                              "Schema does not match existing registration for "
+                              "channel '" + channel_name + "': " + vc.detail);
         }
-        // Same schema — admission will append to existing producers[]
-        // via _on_producer_added; consumers are preserved automatically.
+        // Matches — admission will append to existing producers[] via
+        // _on_producer_added; consumers are preserved automatically.
     }
 
     // ── HEP-CORE-0034 Phase 3+4b — named schema record (paths B + C) ───
@@ -2334,11 +2357,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // form covers BOTH the slot and the flexzone when present.
         const std::string req_flexzone_blds    = req.value("flexzone_blds", "");
         const std::string req_flexzone_packing = req.value("flexzone_packing", "");
-        const auto h_recomputed = pylabhub::hub::compute_canonical_hash_from_wire(
+        // Job A — self-consistency: the producer's structure must hash to its
+        // claimed schema_hash.  The shared pre-check is the ONE place a handler
+        // recomputes the wire fingerprint (HEP-CORE-0034 §2.4 I4); its computed
+        // hash is reused below for the record and any Path-C adoption compare.
+        const auto fp_check = pylabhub::hub::verify_request_fingerprint(
             schema_blds_in, req_schema_packing,
-            req_flexzone_blds, req_flexzone_packing);
-        const auto h_claimed = hex_to_hash_array(attempted_schema);
-        if (h_recomputed != h_claimed)
+            req_flexzone_blds, req_flexzone_packing, attempted_schema);
+        if (!fp_check.consistent)
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — schema_blds + "
                         "schema_packing does not hash to schema_hash "
@@ -2349,6 +2375,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                               "canonical(schema_blds || \"|pack:\" + schema_packing); "
                               "see HEP-CORE-0034 §6.3");
         }
+        const auto h_recomputed = fp_check.hash;
 
         const bool is_path_c = (req_schema_owner == "hub");
         const bool is_path_b = req_schema_owner.empty() ||
@@ -2367,30 +2394,29 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
 
         if (is_path_c)
         {
-            // Path C: adopt an existing hub-global.  No new record is
-            // created; we only verify that the producer's fingerprint
-            // matches the global's stored fingerprint.
-            const auto existing = hub_state_->schema("hub", req_schema_id_raw);
-            if (!existing.has_value())
+            // Path C: adopt an existing hub-global — a named citation of
+            // (hub, schema_id).  Validate it through the single validator's
+            // named-registry branch (HEP-CORE-0034 §9 step 3 / §2.4 I4): the
+            // record must exist and its fingerprint match the producer's.
+            pylabhub::hub::SchemaCitationInput sin;
+            sin.channel_owner         = "hub";
+            sin.channel_id            = req_schema_id_raw;
+            sin.channel_hash          = h_recomputed; // computed-from-string
+            sin.cited_id              = req_schema_id_raw;
+            sin.expected_hash         = h_recomputed; // channel-match trivial
+            sin.check_registry_record = true; // Path C IS a registry citation
+            const auto vc = hub_state_->_validate_schema_citation(sin);
+            if (!vc.ok())
             {
-                LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — "
-                            "no hub-global record under (hub, {})",
-                            channel_name, req_schema_id_raw);
-                return make_error(corr_id, "SCHEMA_UNKNOWN",
-                                  "Hub-global schema (hub, " + req_schema_id_raw +
-                                      ") not registered; cannot adopt");
-            }
-            if (existing->hash != h_recomputed ||
-                existing->packing != req_schema_packing)
-            {
-                LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — "
-                            "producer's fingerprint does not match hub-global "
-                            "(hub, {})",
-                            channel_name, req_schema_id_raw);
-                return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
-                                  "Producer's schema fingerprint does not "
-                                  "match hub-global (hub, " +
-                                      req_schema_id_raw + "); cannot adopt");
+                const char *code =
+                    vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kUnknownSchema
+                        ? "SCHEMA_UNKNOWN"       // no such hub-global to adopt
+                        : "FINGERPRINT_INCONSISTENT"; // exists, fingerprint differs
+                LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — {}: {}",
+                            channel_name, code, vc.detail);
+                return make_error(corr_id, code,
+                                  "Cannot adopt hub-global (hub, " +
+                                      req_schema_id_raw + "): " + vc.detail);
             }
             // Adoption succeeds.  Channel is owned by the hub-global,
             // not by the producer.
@@ -3426,99 +3452,87 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     const std::string expected_fz_blds      = req.value("expected_flexzone_blds", "");
     const std::string expected_fz_packing   = req.value("expected_flexzone_packing", "");
 
-    // Schema validation compares consumer's expected_* against the
-    // channel's stored invariants.  When the consumer is opening the
-    // channel (fan-in first arrival) there are no stored invariants
-    // yet — the consumer's expected_* fields BECOME the invariants
-    // (installed inside `_on_consumer_joined`'s channel-open branch).
-    // Skip the compare-against-stored block on that path.
-    if (!consumer_will_open_channel && !expected_schema_id.empty())
+    // Validate the consumer's cited schema against the channel through the
+    // single validator (HEP-CORE-0034 §9 / §2.4 I4).  When the consumer is
+    // opening the channel (fan-in first arrival) there are no stored invariants
+    // yet — its expected_* BECOME the invariants inside `_on_consumer_joined` —
+    // so this block is skipped; likewise when the consumer opts out (all
+    // expected_* empty).
+    const bool has_any_expected =
+        !expected_schema_id.empty() || !expected_hash_hex.empty() ||
+        !expected_blds.empty() || !expected_packing.empty() ||
+        !expected_fz_blds.empty() || !expected_fz_packing.empty();
+    if (!consumer_will_open_channel && has_any_expected)
     {
-        // Named-citation mode.
-        if (expected_hash_hex.empty())
+        // Step 1 (Job A) — resolve the joiner's fingerprint.  Required-field
+        // presence is mode-specific and stays here; the recompute +
+        // self-consistency is the shared pre-check (the ONE place a handler
+        // recomputes the wire hash — HEP-CORE-0034 §2.4 I4).
+        const bool named         = !expected_schema_id.empty();
+        const bool has_structure = !expected_blds.empty() || !expected_packing.empty();
+        if (named && expected_hash_hex.empty())
             return make_error(corr_id, "MISSING_HASH_FOR_NAMED_CITATION",
                               "CONSUMER_REG_REQ with expected_schema_id requires "
                               "expected_schema_hash (HEP-CORE-0034 §10.3)");
 
-        if (channel_entry.schema_id != expected_schema_id)
+        std::array<uint8_t, 32> joiner_hash{};
+        if (has_structure || !named)
         {
-            LOGGER_WARN("Broker: CONSUMER_REG_REQ schema_id mismatch on '{}': "
-                        "expected='{}' channel_schema_id='{}'",
-                        channel_name, expected_schema_id, channel_entry.schema_id);
-            return make_error(corr_id, "SCHEMA_ID_MISMATCH",
-                              "Consumer expected schema_id '" + expected_schema_id +
-                                  "' does not match channel '" + channel_name +
-                                  "' (channel id='" + channel_entry.schema_id + "')");
-        }
-        if (expected_hash_hex != channel_entry.schema_hash)
-            return make_error(corr_id, "SCHEMA_CITATION_REJECTED",
-                              "Consumer's expected_schema_hash does not match "
-                              "channel's stored hash (HEP-CORE-0034 §10.3)");
-
-        // Defense-in-depth: if the consumer also provided the full
-        // structure, verify it hashes to the channel's hash.  Catches
-        // a class of consumer-side bugs where the local ctypes struct
-        // diverges from the named schema definition.
-        if (!expected_blds.empty() || !expected_packing.empty())
-        {
+            // Named-with-structure (defense-in-depth) or anonymous: the full
+            // structure is required and the fingerprint is computed from it.
+            const char *miss_blds = named ? "MISSING_BLDS"
+                                          : "MISSING_BLDS_FOR_ANONYMOUS_CITATION";
+            const char *miss_pack = named ? "MISSING_PACKING"
+                                          : "MISSING_PACKING_FOR_ANONYMOUS_CITATION";
             if (expected_blds.empty())
-                return make_error(corr_id, "MISSING_BLDS",
-                                  "expected_schema_blds required when "
-                                  "expected_schema_packing is provided alongside "
-                                  "named citation");
+                return make_error(corr_id, miss_blds,
+                                  "citation requires expected_schema_blds "
+                                  "(HEP-CORE-0034 §10.3)");
             if (expected_packing.empty())
-                return make_error(corr_id, "MISSING_PACKING",
-                                  "expected_schema_packing required when "
-                                  "expected_schema_blds is provided alongside "
-                                  "named citation");
-            const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
+                return make_error(corr_id, miss_pack,
+                                  "citation requires expected_schema_packing "
+                                  "(HEP-CORE-0034 §10.3)");
+            const auto fp = pylabhub::hub::verify_request_fingerprint(
                 expected_blds, expected_packing,
-                expected_fz_blds, expected_fz_packing);
-            if (h_c != hex_to_hash_array(channel_entry.schema_hash))
+                expected_fz_blds, expected_fz_packing, expected_hash_hex);
+            if (!fp.consistent)
                 return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
-                                  "Consumer's expected_schema_blds + "
-                                  "expected_schema_packing does not hash to the "
-                                  "channel's schema_hash; named-citation "
-                                  "defense-in-depth (HEP-0034 §10.3)");
+                                  "expected_schema_hash does not match BLAKE2b-256 "
+                                  "of canonical(expected_schema_blds + packing)");
+            joiner_hash = fp.hash; // computed-from-string
         }
-    }
-    else if (!consumer_will_open_channel &&
-             (!expected_hash_hex.empty() || !expected_blds.empty() || !expected_packing.empty()
-              || !expected_fz_blds.empty() || !expected_fz_packing.empty()))
-    {
-        // Anonymous-citation mode.  HEP-0034 §10.3 — full structure required.
-        if (expected_blds.empty())
-            return make_error(corr_id, "MISSING_BLDS_FOR_ANONYMOUS_CITATION",
-                              "Anonymous citation (no expected_schema_id) requires "
-                              "expected_schema_blds (HEP-CORE-0034 §10.3)");
-        if (expected_packing.empty())
-            return make_error(corr_id, "MISSING_PACKING_FOR_ANONYMOUS_CITATION",
-                              "Anonymous citation requires expected_schema_packing");
-
-        const auto h_c = pylabhub::hub::compute_canonical_hash_from_wire(
-            expected_blds, expected_packing,
-            expected_fz_blds, expected_fz_packing);
-
-        // Self-consistency check: if consumer also supplied a hash, it
-        // must equal the recomputed hash.  Catches consumer-local
-        // structure-vs-hash drift (Stage-2 verification).
-        if (!expected_hash_hex.empty())
+        else
         {
-            if (h_c != hex_to_hash_array(expected_hash_hex))
-                return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
-                                  "expected_schema_hash does not match BLAKE2b-256 of "
-                                  "canonical(expected_schema_blds || \"|pack:\" + "
-                                  "expected_schema_packing)");
+            // Named without structure: the claim IS the cited hash.
+            joiner_hash = hex_to_hash_array(expected_hash_hex);
         }
 
-        // Compare against producer's hash on the channel.
-        if (h_c != hex_to_hash_array(channel_entry.schema_hash))
-            return make_error(corr_id, "SCHEMA_CITATION_REJECTED",
-                              "Consumer's recomputed fingerprint does not match the "
-                              "channel's schema_hash (HEP-CORE-0034 §10.3)");
+        // Step 2/3 — channel match + named-registry via the single validator.
+        pylabhub::hub::SchemaCitationInput sin;
+        sin.channel_owner = channel_entry.schema_owner;
+        sin.channel_id    = channel_entry.schema_id;
+        sin.channel_hash  = hex_to_hash_array(channel_entry.schema_hash);
+        sin.channel_producer_uids.reserve(channel_entry.producers.size());
+        for (const auto &p : channel_entry.producers)
+            sin.channel_producer_uids.push_back(p.role_uid);
+        sin.cited_id      = expected_schema_id;
+        sin.expected_hash = joiner_hash;
+
+        const auto vc = hub_state_->_validate_schema_citation(sin);
+        if (!vc.ok())
+        {
+            // Consumer-side (data-out) direction: id mismatch → SCHEMA_ID_MISMATCH,
+            // else SCHEMA_CITATION_REJECTED (HEP-CORE-0034 §10.4).
+            const char *code =
+                vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kSchemaIdMismatch
+                    ? "SCHEMA_ID_MISMATCH"
+                    : "SCHEMA_CITATION_REJECTED";
+            LOGGER_WARN("Broker: CONSUMER_REG_REQ schema rejected on '{}': {} — {}",
+                        channel_name, code, vc.detail);
+            return make_error(corr_id, code, vc.detail);
+        }
     }
-    // else: all expected_* empty → consumer opts out of schema validation
-    // (HEP-CORE-0034 §10.3 "I don't care about schema" path).
+    // else: opening the channel, or all expected_* empty (opt-out).
 
     // ── Role identity policy check (placeholder — pending HEP-CORE-0035) ────
     // Grammar check already ran at handler entry (audit R3.5b); this

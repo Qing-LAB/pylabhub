@@ -1295,13 +1295,20 @@ HubState::_on_producer_added(const std::string&              channel_name,
                 result.invariant_result     = InvariantSetResult::RejectedMismatch;
                 result.mismatched_invariant = name;
             };
-            if (cur.schema_hash    != schema.schema_hash)    { reject_invariant("schema_hash");    return result; }
-            // schema_version check retired per C2 — version rides
-            // inside schema_id string; schema_id equality (below)
-            // covers name AND version identity per HEP-CORE-0034 §5.1.
-            if (cur.schema_id      != schema.schema_id)      { reject_invariant("schema_id");      return result; }
-            if (cur.schema_blds    != schema.schema_blds)    { reject_invariant("schema_blds");    return result; }
-            if (cur.schema_owner   != schema.schema_owner)   { reject_invariant("schema_owner");   return result; }
+            // Schema invariants (hash / id / blds / owner) are NOT re-checked
+            // here.  They are validated at the broker's front door through the
+            // single validator `_validate_schema_citation` (HEP-CORE-0034 §2.4
+            // I4) BEFORE this mutator is reached.  HubState is mutated only by
+            // the single ROUTER dispatch thread (I-ROUTER-SERIAL), so the
+            // front-door check and this mutation run back-to-back on one
+            // thread — a second producer with a mismatched schema is already
+            // rejected upstream and can never reach here.  A duplicate compare
+            // would be dead code (it can never fire) and a second copy of the
+            // validator's logic.  (The writer lock above is still required —
+            // it keeps concurrent admin-plane READERS, e.g. `state().snapshot()`,
+            // from observing a half-added producer; it is not a write-write
+            // guard, since there is only one writer.)  Transport is a separate
+            // invariant with no front-door equivalent, so it is checked here.
             if (cur.data_transport != transport.data_transport)
                                                               { reject_invariant("data_transport"); return result; }
 
@@ -2243,69 +2250,80 @@ std::size_t HubState::_on_schemas_evicted_for_owner(const std::string &owner_uid
     return removed;
 }
 
-schema::CitationOutcome HubState::_validate_schema_citation(
-    const std::string &/*citer_uid*/,
-    const std::string &channel_producer_uid,
-    const std::string &cited_owner,
-    const std::string &cited_id,
-    const std::array<uint8_t, 32> &expected_hash,
-    const std::string &expected_packing)
+schema::CitationOutcome
+HubState::_validate_schema_citation(const SchemaCitationInput &in)
 {
     using R = schema::CitationOutcome::Reason;
     schema::CitationOutcome out{R::kOk, {}};
 
-    // Rule 1 — cited owner must be either "hub" or A registered
-    // producer on the channel.  Cross-citation of a non-producer role
-    // is rejected even on hash match (HEP-CORE-0034 §9.1, §9.3).
-    // Cheap check, do it before taking lock.
-    //
-    // Multi-producer note: the parameter is named
-    // `channel_producer_uid` (singular) because the broker calls this
-    // once per admission with the admitted producer's uid (Wave M2.5
-    // step 3 — `_on_producer_added`).  For Fan-In channels, each
-    // producer's REG_REQ → CONSUMER citation runs through this check
-    // independently with the admitting producer's uid; the signature
-    // does not need to be widened because each call resolves a single
-    // producer's claim against the channel-wide invariant.
-    if (cited_owner != "hub" && cited_owner != channel_producer_uid)
-    {
-        out.reason = R::kCrossCitation;
-        out.detail = "cited owner '" + cited_owner +
-                     "' is neither 'hub' nor channel producer '" +
-                     channel_producer_uid + "'";
-    }
-    else
-    {
-        // Rules 2 + 3 — owner-known + record-exists + fingerprint-match,
-        // all under one reader lock.
-        std::shared_lock lk(pImpl->mu);
-        const bool owner_known =
-            cited_owner == "hub" ||
-            pImpl->roles.find(cited_owner) != pImpl->roles.end();
+    // ── Step 2 (HEP-CORE-0034 §9) — channel match ────────────────────────────
+    // The channel's stored schema is the source of truth every joiner is
+    // checked against.  A role-provided (unnamed) channel carries only a hash;
+    // a named channel also carries schema_id / schema_owner / packing.
 
-        if (!owner_known)
+    // Hash must always match — for both named and role-provided channels.
+    if (in.expected_hash != in.channel_hash)
+    {
+        out.reason = R::kFingerprintMismatch;
+        out.detail =
+            "expected fingerprint does not match the channel's schema_hash";
+    }
+    // Named channel: a joiner that cites an id must cite the channel's id.
+    // (Packing needs no separate check — it is folded into the fingerprint,
+    // so a packing difference already shows up as a hash mismatch above.)
+    else if (!in.channel_id.empty() && !in.cited_id.empty() &&
+             in.cited_id != in.channel_id)
+    {
+        out.reason = R::kSchemaIdMismatch;
+        out.detail = "cited schema_id '" + in.cited_id +
+                     "' does not match channel schema_id '" + in.channel_id + "'";
+    }
+    // Named channel: a joiner that claims an owner must claim the channel's
+    // owner (producer-only — consumers name no owner, so this is skipped).
+    else if (!in.channel_id.empty() && !in.cited_owner.empty() &&
+             in.cited_owner != in.channel_owner)
+    {
+        out.reason = R::kSchemaOwnerMismatch;
+        out.detail = "claimed schema_owner '" + in.cited_owner +
+                     "' does not match channel schema_owner '" +
+                     in.channel_owner + "'";
+    }
+    // ── Step 3 (HEP §9.1) — named-registry check ─────────────────────────────
+    // An explicit registry citation (producer adopting a hub-global, Path C)
+    // must resolve to a legitimate record owned by the hub or a channel
+    // producer, existing, fingerprint-matching.  A plain channel-match join
+    // (2nd producer, consumer) skips this — it matches the channel's already-
+    // established schema and must NOT require a registry record (a consumer-
+    // opened fan-in channel sets its invariants without creating one).
+    else if (in.check_registry_record && !in.channel_id.empty())
+    {
+        const std::string &owner = in.channel_owner;
+        const bool owner_is_channel_producer =
+            std::find(in.channel_producer_uids.begin(),
+                      in.channel_producer_uids.end(),
+                      owner) != in.channel_producer_uids.end();
+        if (owner != "hub" && !owner_is_channel_producer)
         {
-            out.reason = R::kUnknownOwner;
-            out.detail = "owner '" + cited_owner +
-                         "' is not a registered role and is not 'hub'";
+            out.reason = R::kCrossCitation;
+            out.detail = "schema owner '" + owner +
+                         "' is neither 'hub' nor a producer of the channel";
         }
         else
         {
-            auto it = pImpl->schemas.find(SchemaKey{cited_owner, cited_id});
+            std::shared_lock lk(pImpl->mu);
+            auto it = pImpl->schemas.find(SchemaKey{owner, in.channel_id});
             if (it == pImpl->schemas.end())
             {
                 out.reason = R::kUnknownSchema;
-                out.detail =
-                    "no record under (" + cited_owner + ", " + cited_id + ")";
+                out.detail = "no schema record under (" + owner + ", " +
+                             in.channel_id + ")";
             }
-            else if (it->second.hash != expected_hash ||
-                     it->second.packing != expected_packing)
+            else if (it->second.hash != in.channel_hash)
             {
                 out.reason = R::kFingerprintMismatch;
-                out.detail = "record (" + cited_owner + ", " + cited_id +
-                             ") exists but hash or packing differs";
+                out.detail = "registry record (" + owner + ", " + in.channel_id +
+                             ") fingerprint differs from the channel's";
             }
-            // else: fingerprint matches → out.reason stays kOk.
         }
     }
 

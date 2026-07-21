@@ -295,6 +295,49 @@ compute_canonical_hash_from_wire(const std::string &slot_blds,
     return pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
 }
 
+/// Result of `verify_request_fingerprint` (HEP-CORE-0034 §9, Job A).
+struct RequestFingerprint
+{
+    std::array<uint8_t, 32> hash{};        ///< recomputed wire fingerprint
+    bool                    consistent{true}; ///< false iff a non-empty claimed
+                                              ///< hash disagrees with `hash`
+};
+
+/// Request self-consistency pre-check (HEP-CORE-0034 §9 step 1 / §2.4 I4).
+///
+/// Recomputes the wire-canonical fingerprint from the caller's supplied
+/// structure and, if the caller ALSO gave a claimed hash, verifies the two
+/// agree.  This is the ONE place a registration handler recomputes the wire
+/// fingerprint — the channel/registry validator (`_validate_schema_citation`)
+/// only ever compares already-computed hashes, never recomputes.
+///
+/// Required-field presence (which fields a given wire mode demands) is
+/// mode-specific and stays at the call site; this helper assumes the slot
+/// structure is present.  `claimed_hash_hex` empty means "no claim — just
+/// compute".  A `consistent == false` result maps to the wire code
+/// `FINGERPRINT_INCONSISTENT` at every caller.
+inline RequestFingerprint
+verify_request_fingerprint(const std::string &slot_blds,
+                           const std::string &slot_packing,
+                           const std::string &fz_blds,
+                           const std::string &fz_packing,
+                           const std::string &claimed_hash_hex)
+{
+    RequestFingerprint out;
+    out.hash = compute_canonical_hash_from_wire(slot_blds, slot_packing,
+                                                fz_blds, fz_packing);
+    if (!claimed_hash_hex.empty())
+    {
+        const std::string claimed =
+            ::pylabhub::format_tools::bytes_from_hex(claimed_hash_hex);
+        out.consistent =
+            claimed.size() == out.hash.size() &&
+            std::equal(claimed.begin(), claimed.end(),
+                       reinterpret_cast<const char *>(out.hash.data()));
+    }
+    return out;
+}
+
 // ── HEP-CORE-0034 §12 hub-global record helpers ─────────────────────────────
 //
 // `to_hub_schema_record(SchemaEntry)` is the bridge between the file-loader

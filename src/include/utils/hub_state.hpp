@@ -1569,6 +1569,46 @@ inline constexpr HandlerId kInvalidHandlerId = 0;
 
 namespace test { struct HubStateTestAccess; } // test-only friend shim
 
+// ─── Schema-citation validation input (HEP-CORE-0034 §9 / §2.4 I4) ───────────
+
+/// Everything `_validate_schema_citation` needs to check a joiner's schema
+/// against a channel: the channel's stored schema (the source of truth) plus
+/// the joiner's claim.  A role-provided (unnamed) channel leaves `channel_id`
+/// / `channel_owner` empty — then only the hash is checked.  For producer
+/// hub-adoption (Path C, 1st producer establishing the channel) the caller
+/// passes the being-established values; channel-match then passes trivially and
+/// the named-registry branch validates `(channel_owner, channel_id)`.
+struct SchemaCitationInput
+{
+    // The channel's stored / intended schema — the source of truth.  Packing
+    // is NOT a separate field: it is folded into the fingerprint by
+    // `compute_canonical_hash_from_wire`, so a packing difference changes the
+    // hash and is caught by the hash comparison.  (`ChannelEntry` likewise
+    // stores no separate packing.)
+    std::string              channel_owner;   ///< "" = unnamed (role-provided)
+    std::string              channel_id;      ///< "" = unnamed (role-provided)
+    std::array<uint8_t, 32>  channel_hash{};  ///< wire fingerprint (packing folded in)
+    std::vector<std::string> channel_producer_uids; ///< for the cross-citation rule
+
+    // The joiner's claim.
+    std::string              cited_id;        ///< "" = joiner names no id
+    std::string              cited_owner;     ///< joiner's claimed schema owner;
+                                              ///< "" = joiner names no owner
+                                              ///< (consumers) → owner check skipped
+    std::array<uint8_t, 32>  expected_hash{}; ///< computed-from-string when a
+                                              ///< structure was supplied
+
+    /// Run the named-registry check (§9 step 3): the cited owner must be hub
+    /// or a channel producer AND `(owner, id)` must exist in the registry with
+    /// a matching fingerprint.  TRUE only for an explicit registry citation
+    /// (a producer adopting a hub-global, Path C).  FALSE for a plain
+    /// channel-match join (a 2nd producer, or a consumer) — those match the
+    /// channel's already-established schema and must NOT require a registry
+    /// record, since a channel opened by a consumer (fan-in) sets its
+    /// invariants without creating one.
+    bool                     check_registry_record{false};
+};
+
 // ─── HubState ───────────────────────────────────────────────────────────────
 
 class PYLABHUB_UTILS_EXPORT HubState
@@ -2193,32 +2233,26 @@ class PYLABHUB_UTILS_EXPORT HubState
     std::size_t _on_schemas_evicted_for_owner(const std::string &owner_uid);
 
     /**
-     * @brief Validate a citation for a connecting role / channel.
+     * @brief The single schema validator (HEP-CORE-0034 §9 / §2.4 I4).
      *
-     * Implements the HEP-CORE-0034 §9.1 invariant:
-     *   - Cited owner must be either `"hub"` or `channel_producer_uid`.
-     *   - Cited record must exist.
-     *   - Cited record's hash AND packing must equal the citer's expected
-     *     fingerprint.
-     *
-     * Cross-citation (owner is a third role) is rejected even on hash
-     * match — see HEP-CORE-0034 §9.3 for rationale.  On any non-ok
-     * outcome, counter `schema_citation_rejected_total` is bumped.
-     *
-     * @param citer_uid              Role uid making the citation (for diagnostics; not used for routing in Phase 2).
-     * @param channel_producer_uid   Producer uid that owns the channel the citer is connecting to.
-     * @param cited_owner            `"hub"` or producer uid as cited by the citer.
-     * @param cited_id               Schema id under cited_owner's namespace.
-     * @param expected_hash          Citer's expected fingerprint bytes (32).
-     * @param expected_packing       Citer's expected packing string.
+     * Checks a joiner's schema claim against a channel, channel-first:
+     *   1. the joiner's fingerprint must equal the channel's `schema_hash`
+     *      (always — named and role-provided channels alike);
+     *   2. for a NAMED channel, the joiner's cited `schema_id` (when given)
+     *      must equal the channel's, and its claimed `schema_owner` (when
+     *      given — producers only) must equal the channel's (packing/blds need
+     *      no separate check — both are folded into the fingerprint, step 1);
+     *   3. for a NAMED channel, the schema must resolve to a registry record
+     *      owned by `"hub"` or a producer of the channel, existing, with a
+     *      matching fingerprint (the §9.1 cross-citation rule).
+     * A role-provided (unnamed) channel has no registry record, so step 1 is
+     * the whole check.  On any non-ok outcome, `schema_citation_rejected_total`
+     * is bumped.  The caller maps the returned reason to its wire code
+     * (`SCHEMA_MISMATCH` for a producer, `SCHEMA_CITATION_REJECTED` /
+     * `SCHEMA_ID_MISMATCH` for a consumer — HEP-CORE-0034 §10.4).
      */
-    schema::CitationOutcome _validate_schema_citation(
-        const std::string &citer_uid,
-        const std::string &channel_producer_uid,
-        const std::string &cited_owner,
-        const std::string &cited_id,
-        const std::array<uint8_t, 32> &expected_hash,
-        const std::string &expected_packing);
+    schema::CitationOutcome
+    _validate_schema_citation(const SchemaCitationInput &in);
 
     struct Impl;
 #if defined(_MSC_VER)

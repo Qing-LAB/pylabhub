@@ -121,6 +121,17 @@ struct CitationOutcome
         /// Record exists but hash or packing differs from the citer's
         /// expected fingerprint.
         kFingerprintMismatch,
+
+        /// Joiner's `schema_id` differs from the channel's stored
+        /// `schema_id` (named channel-match; HEP-CORE-0034 §9 step 2).
+        /// Maps to the wire code `SCHEMA_ID_MISMATCH`.
+        kSchemaIdMismatch,
+
+        /// Joiner's claimed `schema_owner` differs from the channel's
+        /// stored `schema_owner` (named channel-match; HEP-CORE-0034 §9
+        /// step 2).  Producer-only — consumers name no owner, so this is
+        /// never returned for a consumer.  Maps to `SCHEMA_MISMATCH`.
+        kSchemaOwnerMismatch,
     };
 
     Reason      reason{Reason::kOk};
