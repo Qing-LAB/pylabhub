@@ -1372,12 +1372,9 @@ TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 
-// `kUnknownOwner` is unreachable in the channel-first model: a channel's owner
-// is always "hub" or one of its producers (established at producer
-// registration), so a bad owner is `kCrossCitation`
-// (ValidateCitation_CrossCitation_Rejected).  In its place we pin the
-// role-provided (unnamed) channel path — no schema_id/owner, so the registry
-// branch is skipped and the hash match is the whole check (HEP-CORE-0034 §9).
+// Anonymous (role-provided, unnamed) channel path — no schema_id/owner, so the
+// registry branch is skipped and an exact-empty id match + the hash match are
+// the whole check (HEP-CORE-0034 §9 matching contract).
 TEST(HubStateSchemas, ValidateCitation_RoleProvidedChannel_HashOnly)
 {
     HubState s;
@@ -1396,6 +1393,53 @@ TEST(HubStateSchemas, ValidateCitation_RoleProvidedChannel_HashOnly)
     auto bad = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_FALSE(bad.ok());
     EXPECT_EQ(bad.reason, CitationOutcome::Reason::kFingerprintMismatch);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
+}
+
+// Matching contract (HEP-CORE-0034 §9): a NAMED citation against an ANONYMOUS
+// channel is rejected even when the fingerprint matches — an anonymous channel
+// has no named schema to satisfy the citation (schema_id must be exactly equal;
+// "" ≠ "frame").  This is the direction the pre-contract validator wrongly
+// accepted (it gated the id check on the channel being named).
+TEST(HubStateSchemas, ValidateCitation_NamedCitationVsAnonymousChannel_Rejected)
+{
+    HubState s;
+    std::array<uint8_t, 32> h;
+    h.fill(0x42);
+
+    pylabhub::hub::SchemaCitationInput in; // channel_id empty → anonymous channel
+    in.channel_hash  = h;
+    in.cited_id      = "frame";  // joiner cites a name
+    in.expected_hash = h;        // hash DOES match — must still reject
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_FALSE(out.ok())
+        << "named citation of 'frame' must not bind to an anonymous channel";
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kSchemaIdMismatch);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
+}
+
+// Matching contract (HEP-CORE-0034 §9): an ANONYMOUS citation against a NAMED
+// channel is rejected even when the fingerprint matches — a named channel
+// requires the joiner to cite its name; a matching hash is not sufficient
+// (§9.3).  Anonymous matches only anonymous.
+TEST(HubStateSchemas, ValidateCitation_AnonymousCitationVsNamedChannel_Rejected)
+{
+    HubState s;
+    const std::string prod_uid = "prod.cam.uid01234567";
+    std::array<uint8_t, 32> h;
+    h.fill(0x55);
+
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner = prod_uid;
+    in.channel_id    = "frame";   // named channel
+    in.channel_hash  = h;
+    in.channel_producer_uids = {prod_uid};
+    in.cited_id      = "";        // joiner cites anonymously (no id)
+    in.expected_hash = h;         // hash DOES match — must still reject
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_FALSE(out.ok())
+        << "anonymous citation must not bind to the named channel 'frame'";
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kSchemaIdMismatch);
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 

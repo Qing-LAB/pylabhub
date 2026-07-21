@@ -24,6 +24,7 @@
  */
 #include "utils/hub_state.hpp"
 
+#include "utils/format_tools.hpp"  // bytes_to_hex — normalized schema diagnostics
 #include "utils/naming.hpp"
 #include "utils/replay_guard.hpp" // shared sliding-window nonce dedup
 
@@ -2256,37 +2257,57 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
     using R = schema::CitationOutcome::Reason;
     schema::CitationOutcome out{R::kOk, {}};
 
-    // ── Step 2 (HEP-CORE-0034 §9) — channel match ────────────────────────────
-    // The channel's stored schema is the source of truth every joiner is
-    // checked against.  A role-provided (unnamed) channel carries only a hash;
-    // a named channel also carries schema_id / schema_owner / packing.
+    // Normalized diagnostics (HEP-CORE-0034 §9 matching contract): every
+    // rejection names BOTH sides on the failing axis so an operator reads the
+    // exact cause from the message.  An empty id renders as "(anonymous)" and
+    // an empty owner as "(none)"; hashes render as their first 8 hex chars.
+    auto show_id = [](const std::string &s) {
+        return s.empty() ? std::string("(anonymous)") : ("'" + s + "'");
+    };
+    auto show_owner = [](const std::string &s) {
+        return s.empty() ? std::string("(none)") : ("'" + s + "'");
+    };
+    auto short_hash = [](const std::array<uint8_t, 32> &h) {
+        return pylabhub::format_tools::bytes_to_hex(
+            {reinterpret_cast<const char *>(h.data()), 4});
+    };
 
-    // Hash must always match — for both named and role-provided channels.
+    // ── Step 2 (HEP-CORE-0034 §9 matching contract) — channel match ──────────
+    // The channel's stored schema is the source of truth.  A joiner must match
+    // it EXACTLY on every declared axis: fingerprint always; schema_id by exact
+    // equality (empty matches only empty — anonymous↔anonymous, named requires
+    // the same name); and, for a producer named citation, the owner.
+
+    // (a) Fingerprint must always match (necessary; §9.3 — not sufficient).
     if (in.expected_hash != in.channel_hash)
     {
         out.reason = R::kFingerprintMismatch;
-        out.detail =
-            "expected fingerprint does not match the channel's schema_hash";
+        out.detail = "schema fingerprint mismatch: channel hash=" +
+                     short_hash(in.channel_hash) + "… cited hash=" +
+                     short_hash(in.expected_hash) + "…";
     }
-    // Named channel: a joiner that cites an id must cite the channel's id.
-    // (Packing needs no separate check — it is folded into the fingerprint,
-    // so a packing difference already shows up as a hash mismatch above.)
-    else if (!in.channel_id.empty() && !in.cited_id.empty() &&
-             in.cited_id != in.channel_id)
+    // (b) schema_id must be EXACTLY equal.  This enforces the named/anonymous
+    //     symmetry: a named citation against an anonymous channel, an anonymous
+    //     citation against a named channel, and any name difference all reject.
+    //     A matching hash does NOT substitute for the name (§9.3).
+    else if (in.cited_id != in.channel_id)
     {
         out.reason = R::kSchemaIdMismatch;
-        out.detail = "cited schema_id '" + in.cited_id +
-                     "' does not match channel schema_id '" + in.channel_id + "'";
+        out.detail = "schema id mismatch: channel id=" + show_id(in.channel_id) +
+                     " cited id=" + show_id(in.cited_id) +
+                     " (anonymous matches only anonymous; a named channel "
+                     "requires its name — HEP-CORE-0034 §9)";
     }
-    // Named channel: a joiner that claims an owner must claim the channel's
-    // owner (producer-only — consumers name no owner, so this is skipped).
-    else if (!in.channel_id.empty() && !in.cited_owner.empty() &&
+    // (c) Owner axis — asserted only by a producer named citation (consumers
+    //     cite by id only and never claim an owner, so this is skipped for
+    //     them; an anonymous producer likewise makes no owner claim).
+    else if (!in.cited_id.empty() && !in.cited_owner.empty() &&
              in.cited_owner != in.channel_owner)
     {
         out.reason = R::kSchemaOwnerMismatch;
-        out.detail = "claimed schema_owner '" + in.cited_owner +
-                     "' does not match channel schema_owner '" +
-                     in.channel_owner + "'";
+        out.detail = "schema owner mismatch: channel owner=" +
+                     show_owner(in.channel_owner) + " claimed owner=" +
+                     show_owner(in.cited_owner);
     }
     // ── Step 3 (HEP §9.1) — named-registry check ─────────────────────────────
     // An explicit registry citation (producer adopting a hub-global, Path C)
@@ -2305,8 +2326,9 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
         if (owner != "hub" && !owner_is_channel_producer)
         {
             out.reason = R::kCrossCitation;
-            out.detail = "schema owner '" + owner +
-                         "' is neither 'hub' nor a producer of the channel";
+            out.detail = "schema cross-citation: owner " + show_owner(owner) +
+                         " is neither 'hub' nor a producer of the channel "
+                         "(HEP-CORE-0034 §9.1)";
         }
         else
         {
@@ -2315,14 +2337,18 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
             if (it == pImpl->schemas.end())
             {
                 out.reason = R::kUnknownSchema;
-                out.detail = "no schema record under (" + owner + ", " +
-                             in.channel_id + ")";
+                out.detail = "schema unknown: no registry record under (owner=" +
+                             show_owner(owner) + ", id=" + show_id(in.channel_id) +
+                             ")";
             }
             else if (it->second.hash != in.channel_hash)
             {
                 out.reason = R::kFingerprintMismatch;
-                out.detail = "registry record (" + owner + ", " + in.channel_id +
-                             ") fingerprint differs from the channel's";
+                out.detail = "schema fingerprint mismatch: registry record (owner=" +
+                             show_owner(owner) + ", id=" + show_id(in.channel_id) +
+                             ") hash=" + short_hash(it->second.hash) +
+                             "… differs from channel hash=" +
+                             short_hash(in.channel_hash) + "…";
             }
         }
     }

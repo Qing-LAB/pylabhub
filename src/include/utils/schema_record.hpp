@@ -89,17 +89,21 @@ enum class SchemaRegOutcome : uint8_t
     kForbiddenOwner,
 };
 
-/// Outcome of `HubState::_validate_schema_citation`.
+/// Outcome of `HubState::_validate_schema_citation` — the single validator
+/// for the HEP-CORE-0034 §9 matching contract.
 ///
-/// Citation rules per HEP-CORE-0034 §9.1 (multi-producer aware per
-/// HEP-CORE-0023 §2.1.1):
-///   - Cited owner must be either `"hub"` or a role_uid registered as
-///     a producer on the channel being connected to.  Channels admit
-///     1..N producers; the cited owner can be any of them.
-///   - Cited record must exist and its hash + packing must match the
-///     citer's expected fingerprint.
-///   - Cross-citation (cited owner is a non-producer third role) is
-///     rejected even when the fingerprint matches — see §9.3.
+/// The channel is the source of truth (channel-first).  Every joiner is
+/// matched EXACTLY against the channel's stored `(schema_id, schema_owner,
+/// fingerprint)`:
+///   - **Fingerprint** must always match (necessary, not sufficient — §9.3).
+///   - **schema_id** must be exactly equal (empty matches only empty —
+///     anonymous↔anonymous; a name matches only that same name).  A named
+///     citation against an anonymous channel, and vice versa, both reject.
+///   - **owner** is asserted only by a producer named citation and must equal
+///     the channel's owner (consumers cite by id only and never claim owner).
+///   - For an explicit registry citation (producer adopting a hub-global, Path
+///     C), §9.1 additionally requires the cited owner be `"hub"` or a channel
+///     producer, the record to exist, and its fingerprint to match.
 struct CitationOutcome
 {
     enum class Reason : uint8_t
@@ -107,13 +111,8 @@ struct CitationOutcome
         kOk = 0,
 
         /// Cited owner is neither "hub" nor any registered producer of
-        /// the channel.
+        /// the channel (explicit-citation / Path-C only; §9.1).
         kCrossCitation,
-
-        /// Cited owner uid is not registered as a producer in HubState
-        /// (and is not the literal "hub").  Distinct from
-        /// `kCrossCitation`: here the owner doesn't exist at all.
-        kUnknownOwner,
 
         /// `(cited_owner, cited_id)` record does not exist.
         kUnknownSchema,

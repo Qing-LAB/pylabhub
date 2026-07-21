@@ -273,6 +273,15 @@ TEST_F(DatahubBrokerTest, Sch_ConsumerAnonymous_MissingPacking)
     ExpectWorkerOk(proc);
 }
 
+TEST_F(DatahubBrokerTest, Sch_ConsumerAnonymousVsNamed_Rejected)
+{
+    // Matching contract (HEP-CORE-0034 §9): an anonymous consumer citation
+    // must NOT bind to a NAMED channel, even with a matching hash — a named
+    // channel requires the joiner to cite its name → SCHEMA_ID_MISMATCH.
+    auto proc = SpawnWorker("broker.broker_sch_cons_anonymous_vs_named_rejected", {});
+    ExpectWorkerOk(proc);
+}
+
 TEST_F(DatahubBrokerTest, Sch_ConsumerNamed_WithStructureMismatch)
 {
     // Defense-in-depth: named citation + structure that doesn't hash

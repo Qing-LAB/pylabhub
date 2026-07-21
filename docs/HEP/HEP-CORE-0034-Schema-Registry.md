@@ -639,7 +639,12 @@ functions (§2.4 I4):
 2. **Does the schema match this channel?** The channel stores the schema its
    producers have agreed on — always a hash, plus a name and owner when the
    schema is named (§4.3). The joiner's schema must equal the channel's stored
-   schema. This is the one check both producers and consumers pass through.
+   schema **exactly, on every axis it declares**: the joiner's cited `schema_id`
+   must equal the channel's `schema_id` (both empty, or the same name — never
+   one empty and the other set), a named producer's claimed owner must equal the
+   channel's owner, and the fingerprint must always match. This is the one check
+   both producers and consumers pass through. The full rule is the matching
+   contract below.
 3. **If the schema is named, is the citation legitimate?** A named schema also
    exists in the registry as an owned record. The §9.1 invariant applies: the
    cited owner must be the hub or a producer of the channel, the record must
@@ -668,6 +673,40 @@ flowchart TB
     E -- no --> RejUnk[SCHEMA_UNKNOWN / fingerprint_mismatch]
     E -- yes --> Accept
 ```
+
+**Matching contract — named vs anonymous (normative).**  A channel is either
+**named** (its schema has a `schema_id`, e.g. a hub-global adopted by the
+producer or a schema the producer designed) or **anonymous** (`schema_id=""` —
+the producer supplied only a structure + hash; §7.4). A joiner is likewise
+either a **named citation** (it cites a `schema_id`) or an **anonymous citation**
+(it supplies only structure + hash). The two must agree — a channel's named /
+anonymous state is part of its identity, not a soft preference:
+
+| Channel | Joiner cites | Required to match | Result |
+|---|---|---|---|
+| Anonymous (`id=""`) | Anonymous (no id) | fingerprint | ✅ accept if hash matches |
+| Anonymous (`id=""`) | **Named** (`id="X"`) | — | ❌ `SCHEMA_ID_MISMATCH` — the channel has no named schema to satisfy the citation |
+| **Named** (`id="X"`, owner `O`) | **Anonymous** (no id) | — | ❌ `SCHEMA_ID_MISMATCH` — a named channel requires the joiner to cite its name |
+| Named (`id="X"`, owner `O`) | Named (`id="Y"`) | id | ❌ `SCHEMA_ID_MISMATCH` if `Y≠X` |
+| Named (`id="X"`, owner `O`) | Named (`id="X"`, owner `O′`) | id + owner + fingerprint | ✅ if all match; ❌ `SCHEMA_OWNER_MISMATCH` if `O′≠O` (producer only) |
+
+**The rule in one line:** the joiner's cited `schema_id` must be **exactly
+equal** to the channel's `schema_id` — empty matches only empty, a name matches
+only that same name. There is no hash-only shortcut past a name mismatch:
+byte-compatible structure (equal fingerprint) is necessary but **not sufficient**
+(§9.3). Anonymous matches only anonymous; named requires the name.
+
+**Owner axis.** Owner is asserted only by a **producer** making a named citation
+(adopting a hub-global sets owner `"hub"`; self-registering sets owner = the
+producer's uid). A **consumer** cites by id only and never asserts an owner — it
+inherits the channel's owner — so the owner check does not apply to consumers.
+The owner check therefore runs only when the joiner cited both an id and an
+owner (§9.1 governs which owners are legitimate).
+
+**Diagnostics.** Every rejection names both sides explicitly — the channel's
+`(id, owner, fingerprint)` and the joiner's cited `(id, owner, fingerprint)`,
+with an empty id rendered as `(anonymous)` — so an operator can read the exact
+axis that failed from the log line and the error message (§10.4).
 
 ### 9.1 The named-citation invariant
 
@@ -807,9 +846,9 @@ Two citation modes per HEP-CORE-0034 §10.3:
 
 | Mode | Wire fields | Semantics |
 |---|---|---|
-| **Named** | `expected_schema_id` + `expected_schema_hash` (required); `expected_schema_blds` + `expected_schema_packing` (optional) | Citer asserts knowledge of the schema by name. Broker checks id and hash match the channel's stored values. If the citer also supplies the structure, the broker verifies it hashes to the channel's hash (defense-in-depth — catches consumer-local blds drift). |
-| **Anonymous** | `expected_schema_blds` + `expected_schema_packing` (required); `expected_schema_hash` (optional) | Citer has no name claim. Must supply the full structure; broker recomputes the fingerprint and compares to the channel's hash. If `expected_schema_hash` is present, the broker also verifies the citer's claimed hash equals the recomputed one (Stage-2 self-consistency). |
-| **Empty** | none of the above | No validation; backward-compat path for legacy clients. |
+| **Named** | `expected_schema_id` + `expected_schema_hash` (required); `expected_schema_blds` + `expected_schema_packing` (optional) | Citer asserts knowledge of the schema by name. Broker checks id **and** hash match the channel's stored values. **The channel must be named** — a named citation against an anonymous channel is rejected `SCHEMA_ID_MISMATCH` (§9 matching contract). If the citer also supplies the structure, the broker verifies it hashes to the channel's hash (defense-in-depth — catches consumer-local blds drift). |
+| **Anonymous** | `expected_schema_blds` + `expected_schema_packing` (required); `expected_schema_hash` (optional) | Citer makes no name claim. Must supply the full structure; broker recomputes the fingerprint and compares to the channel's hash. **The channel must be anonymous** — an anonymous citation against a *named* channel is rejected `SCHEMA_ID_MISMATCH`, because a named channel requires the joiner to cite its name; a matching hash is not sufficient (§9 matching contract / §9.3). If `expected_schema_hash` is present, the broker also verifies the citer's claimed hash equals the recomputed one (Stage-2 self-consistency). |
+| **Empty** | none of the above | No schema claim at all; no matching performed (backward-compat opt-out for legacy clients). Distinct from *anonymous* — anonymous still asserts a structural fingerprint that must match. |
 
 All consumer-side wire fields carry the `expected_schema_*`
 or `expected_flexzone_*` prefix to mirror the producer's
@@ -860,9 +899,9 @@ they are **not** a separate wire frame.
 | `FINGERPRINT_INCONSISTENT`                 | REG_REQ / CONSUMER_REG_REQ           | producer's claimed `schema_hash` does not equal `BLAKE2b(canonical(blds) || "\|pack:" + packing)`; or consumer-side equivalent |
 | `SCHEMA_HASH_MISMATCH_SELF`                | REG_REQ                              | producer re-registers own `(owner, id)` with different fingerprint |
 | `SCHEMA_FORBIDDEN_OWNER`                   | REG_REQ                              | producer attempts to register under another owner uid |
-| `SCHEMA_MISMATCH`                          | REG_REQ                              | producer joins a channel whose stored schema differs in hash, id, or owner (producer-side "does not match channel"; step 2) |
-| `SCHEMA_CITATION_REJECTED`                 | CONSUMER_REG_REQ                     | consumer's schema does not match the channel — hash or cross-citation (consumer-side "does not match channel"; step 2) |
-| `SCHEMA_ID_MISMATCH`                       | CONSUMER_REG_REQ                     | consumer's `expected_schema_id` differs from the channel's stored `schema_id` (step 2, named) |
+| `SCHEMA_MISMATCH`                          | REG_REQ                              | producer joins a channel whose stored schema differs on any step-2 axis — **fingerprint, id, or owner** (producer-side "does not match channel"). The umbrella producer code; the `error_message` names the exact axis that failed (e.g. `schema id mismatch: channel id=… cited id=…`, `schema owner mismatch: …`). |
+| `SCHEMA_CITATION_REJECTED`                 | CONSUMER_REG_REQ                     | consumer's schema does not match the channel on a non-id axis — fingerprint or cross-citation (consumer-side "does not match channel"; step 2) |
+| `SCHEMA_ID_MISMATCH`                       | CONSUMER_REG_REQ                     | consumer's cited `schema_id` is not **exactly equal** to the channel's `schema_id` (step 2 matching contract). Covers all three id-axis failures: named-vs-named name difference, a **named citation against an anonymous channel**, and an **anonymous citation against a named channel** (a matching hash does not substitute for the name — §9.3). The producer-side equivalent surfaces as `SCHEMA_MISMATCH` with an id-axis `error_message`. |
 | `MISSING_HASH_FOR_NAMED_CITATION`          | CONSUMER_REG_REQ                     | named mode: `expected_schema_id` present but `expected_schema_hash` missing |
 | `MISSING_BLDS_FOR_ANONYMOUS_CITATION`      | CONSUMER_REG_REQ                     | anonymous mode: `expected_schema_blds` missing |
 | `MISSING_PACKING_FOR_ANONYMOUS_CITATION`   | CONSUMER_REG_REQ                     | anonymous mode: `expected_schema_packing` missing |

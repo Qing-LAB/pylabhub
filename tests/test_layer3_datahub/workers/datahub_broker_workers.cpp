@@ -2031,9 +2031,11 @@ int broker_sch_cons_anonymous_happy_path()
             const std::string packing = "aligned";
             const std::string hash    = canonical_hash_hex(blds, packing);
 
-            // Producer registers with a named id (so the channel has a record).
+            // Producer registers ANONYMOUSLY: full structure + hash, NO
+            // schema_id → anonymous channel.  Per the HEP-CORE-0034 §9
+            // matching contract an anonymous consumer may bind only to an
+            // anonymous channel (anonymous matches only anonymous).
             auto reg = baseline_reg_req(ch, p);
-            reg["schema_id"]      = "$lab.canok.frame.v1";
             reg["schema_hash"]    = hash;
             reg["schema_packing"] = packing;
             reg["schema_blds"]    = blds;
@@ -2105,6 +2107,60 @@ int broker_sch_cons_anonymous_missing_packing()
             broker.stop_and_join();
         },
         "broker.broker_sch_cons_anonymous_missing_packing",
+        logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+}
+
+// Matching contract (HEP-CORE-0034 §9): an anonymous consumer citation must
+// NOT bind to a NAMED channel, even when the fingerprint matches — a named
+// channel requires the joiner to cite its name.  Rejected SCHEMA_ID_MISMATCH.
+int broker_sch_cons_anonymous_vs_named_rejected()
+{
+    return run_gtest_worker(
+        []()
+        {
+            auto [broker] = setup_broker_test({"prod.broker.cavn.uid00000001", "cons.broker.cavn.uid00000002"},
+
+                "broker.broker_sch_cons_anonymous_vs_named_rejected");
+
+            const std::string ch  = "broker.sch.cons_anon_vs_named";
+            const std::string p   = "prod.broker.cavn.uid00000001";
+            const std::string c   = "cons.broker.cavn.uid00000002";
+            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
+            const std::string packing = "aligned";
+            const std::string hash    = canonical_hash_hex(blds, packing);
+
+            // Producer registers a NAMED schema → named channel.
+            auto reg = baseline_reg_req(ch, p);
+            reg["schema_id"]      = "$lab.cavn.frame.v1";
+            reg["schema_hash"]    = hash;
+            reg["schema_packing"] = packing;
+            reg["schema_blds"]    = blds;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.cavn.uid00000001")
+                          .value("status", std::string{}),
+                      "success");
+            raw_heartbeat(broker.endpoint, broker.pubkey, ch, p);
+
+            // Consumer joins ANONYMOUSLY (full structure, no id) with the
+            // matching hash → must be rejected: the channel is named.
+            nlohmann::json cons;
+            cons["channel_name"]            = ch;
+            cons["role_uid"]                = c;
+            cons["role_name"]               = "test_consumer";
+            cons["consumer_pid"]            = pylabhub::platform::get_pid();
+            cons["expected_schema_blds"]    = blds;
+            cons["expected_schema_packing"] = packing;
+            // (no expected_schema_id — anonymous citation, hash matches)
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.cavn.uid00000002");
+            ASSERT_FALSE(cr.is_null()) << "raw_req timed out for cr on this call";
+            EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
+            EXPECT_EQ(cr.value("error_code", std::string{}), "SCHEMA_ID_MISMATCH")
+                << "anonymous citation vs named channel must reject "
+                   "SCHEMA_ID_MISMATCH; got: " << cr.dump();
+
+            broker.stop_and_join();
+        },
+        "broker.broker_sch_cons_anonymous_vs_named_rejected",
         logger_module(), file_lock_module(), json_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
 }
@@ -2669,7 +2725,6 @@ int broker_sch_wire_helpers_anonymous_citation()
             const std::string channel  = "broker.sch.helpers.anon";
             const std::string prod_uid = "prod.broker.helpers_a.uid00000001";
             const std::string cons_uid = "cons.broker.helpers_a.uid00000002";
-            const std::string sid      = "$lab.helpers_anon.frame.v1";
 
             pylabhub::hub::SchemaSpec slot_spec;
             slot_spec.has_schema = true;
@@ -2678,10 +2733,12 @@ int broker_sch_wire_helpers_anonymous_citation()
             slot_spec.fields.push_back({"value", "float32", 1u, 0u});
             const pylabhub::hub::SchemaSpec fz_spec;
 
-            // Producer registers under named mode (the channel needs a
-            // schema_owner for any subsequent citation to resolve).
+            // Producer registers ANONYMOUSLY: a non-string slot config
+            // (empty object) leaves schema_id empty → anonymous channel.  The
+            // anonymous consumer below then binds to it, which the matching
+            // contract permits (anonymous↔anonymous; HEP-CORE-0034 §9).
             const auto wp = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json(sid), slot_spec, fz_spec);
+                nlohmann::json::object(), slot_spec, fz_spec);
             auto reg = baseline_reg_req(channel, prod_uid);
             pylabhub::hub::apply_producer_schema_fields(reg, wp);
             auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_a.uid00000001");
@@ -2948,6 +3005,8 @@ struct BrokerWorkerRegistrar
                     return broker_sch_cons_anonymous_happy_path();
                 if (scenario == "broker_sch_cons_anonymous_missing_packing")
                     return broker_sch_cons_anonymous_missing_packing();
+                if (scenario == "broker_sch_cons_anonymous_vs_named_rejected")
+                    return broker_sch_cons_anonymous_vs_named_rejected();
                 if (scenario == "broker_sch_cons_named_with_structure_mismatch")
                     return broker_sch_cons_named_with_structure_mismatch();
                 if (scenario == "broker_sch_inbox_evicts_on_disconnect")

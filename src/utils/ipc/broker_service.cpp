@@ -2207,8 +2207,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         {
             const std::string &existing_schema = existing_opt->schema_hash;
             LOGGER_ERROR(
-                "Broker: Cat1 schema mismatch on '{}': {} — existing={} attempted={} attempted_pid={}",
-                channel_name, vc.detail, existing_schema, attempted_schema, attempted_pid);
+                "Broker: schema match rejected [Cat1 schema mismatch] "
+                "channel='{}' producer_pid={}: {} (existing_hash={} attempted_hash={})",
+                channel_name, attempted_pid, vc.detail, existing_schema, attempted_schema);
             nlohmann::json err;
             err["channel_name"]          = channel_name;
             err["event"]                 = "schema_mismatch_attempt";
@@ -2351,12 +2352,28 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             const auto vc = hub_state_->_validate_schema_citation(sin);
             if (!vc.ok())
             {
-                const char *code =
-                    vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kUnknownSchema
-                        ? "SCHEMA_UNKNOWN"       // no such hub-global to adopt
-                        : "FINGERPRINT_INCONSISTENT"; // exists, fingerprint differs
-                LOGGER_WARN("Broker: REG_REQ path-C rejected for '{}' — {}: {}",
-                            channel_name, code, vc.detail);
+                // Path C channel owner is "hub" and step-2 is trivially
+                // satisfied (cited == channel), so the only reachable step-3
+                // outcomes are kUnknownSchema and kFingerprintMismatch; the
+                // default is a defensive backstop (e.g. a future cross-citation).
+                const char *code = "SCHEMA_MISMATCH";
+                switch (vc.reason)
+                {
+                    using R = ::pylabhub::schema::CitationOutcome::Reason;
+                    case R::kUnknownSchema:
+                        code = "SCHEMA_UNKNOWN";        // no such hub-global to adopt
+                        break;
+                    case R::kFingerprintMismatch:
+                        code = "FINGERPRINT_INCONSISTENT"; // exists, fingerprint differs
+                        break;
+                    default:
+                        code = "SCHEMA_MISMATCH";       // defensive
+                        break;
+                }
+                LOGGER_WARN(
+                    "Broker: schema match rejected — channel='{}' "
+                    "path=adopt-hub-global code={}: {}",
+                    channel_name, code, vc.detail);
                 return make_error(corr_id, code,
                                   "Cannot adopt hub-global (hub, " +
                                       req_schema_id_raw + "): " + vc.detail);
@@ -3470,8 +3487,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                 vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kSchemaIdMismatch
                     ? "SCHEMA_ID_MISMATCH"
                     : "SCHEMA_CITATION_REJECTED";
-            LOGGER_WARN("Broker: CONSUMER_REG_REQ schema rejected on '{}': {} — {}",
-                        channel_name, code, vc.detail);
+            LOGGER_WARN(
+                "Broker: schema match rejected — channel='{}' consumer_uid='{}' "
+                "code={}: {}",
+                channel_name, role_uid, code, vc.detail);
             return make_error(corr_id, code, vc.detail);
         }
     }
