@@ -57,8 +57,8 @@ flowchart TD
     RV --> PARSE["WireEnvelope::parse<br/>I-ENVELOPE-BODY-BINDING (envelope_hash)"]
     PARSE --> ROUTE{"msg_type → validator"}
 
-    ROUTE -->|"REG_REQ / CONSUMER_REG_REQ<br/>(carry zmq_pubkey)"| RFG["run_reg_family_gates<br/>admission_gates.cpp:372"]
-    ROUTE -->|"DEREG / CONSUMER_DEREG /<br/>ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED<br/>(no zmq_pubkey)"| ARF["run_authenticated_reg_family_gates<br/>admission_gates.cpp:401"]
+    ROUTE -->|"REG_REQ / CONSUMER_REG_REQ<br/>(carry zmq_pubkey)"| RFG["run_reg_family_gates<br/>admission_gates.cpp:363"]
+    ROUTE -->|"DEREG / CONSUMER_DEREG /<br/>ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED<br/>(no zmq_pubkey)"| ARF["run_authenticated_reg_family_gates<br/>admission_gates.cpp:391"]
 
     RFG --> RFGG["1 identity_match — ROUTER id == role_uid<br/>2 grammar<br/>3 role_tag_policy<br/>4 known_role_binding — I-PUBKEY-BINDING (also enforces I-KEY-ROTATION-VIA-DEREG)<br/>5 replay"]
     ARF --> ARFG["1 identity_match<br/>2 grammar<br/>3 role_tag_policy<br/>4 replay"]

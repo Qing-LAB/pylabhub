@@ -13,7 +13,8 @@
  *   - load_from_file tolerates missing file → std::nullopt (P-Bootstrap b)
  *   - load_from_file rejects unknown version, missing version, dup uid
  *   - load_from_file enforces ACL (mode 0600) per HEP-CORE-0035 §4.6.2
- *   - as_peer_allowlist excludes empty-pubkey legacy entries
+ *   - as_peer_allowlist projects every stored entry's pubkey (empty pubkeys
+ *     cannot exist — validate_entry rejects them at insertion)
  *   - as_peer_allowlist never returns unrestricted (no operator bypass
  *     ever flows through this method)
  */

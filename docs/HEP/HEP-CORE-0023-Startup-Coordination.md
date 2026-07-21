@@ -763,8 +763,11 @@ and earlier by the ZAP handler at the handshake (HEP-CORE-0035 §4.1);
 the legacy `RoleIdentityPolicy` string gate was deleted 2026-07-20
 (HEP-0035 §4.5).
 
-**Implementation:** `BrokerServiceImpl::validate_identity_fields`
-+ `validate_role_uid_only` in `src/utils/ipc/broker_service.cpp`.
+**Implementation:** grammar validation runs in `gate_grammar`
+(`src/utils/ipc/admission_gates.cpp`) as part of the wire_dispatch
+admission pipeline (HEP-CORE-0046 §14.5); the legacy
+`validate_identity_fields` / `validate_role_uid_only` on
+`BrokerServiceImpl` were retired 2026-07-14 (task #46).
 The HUB-side validator is `is_valid_identifier(s, IdentifierKind::
 {Channel,RoleUid,RoleName})` from `naming.hpp`.
 

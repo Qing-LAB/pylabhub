@@ -283,7 +283,7 @@ gtest_discover_tests(test_layer2_zmq_queue_auth
 #   - missing file → nullopt (P-Bootstrap option b)
 #   - rejects unknown version / missing version / duplicate uid / bad JSON
 #   - enforces ACL (mode 0600) per HEP-CORE-0035 §4.6.2
-#   - as_peer_allowlist excludes empty-pubkey legacy + never unrestricted
+#   - as_peer_allowlist projects every stored pubkey + never unrestricted
 #   - atomic_write_owner_only_file: overwrite, symlink-refusal on tmp
 # ============================================================================
 

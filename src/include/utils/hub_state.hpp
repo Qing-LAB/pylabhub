@@ -1462,7 +1462,11 @@ struct BrokerCounters
     uint64_t schema_registered_total{0};
     /// Bumped per record removed by `_on_schemas_evicted_for_owner`.
     uint64_t schema_evicted_total{0};
-    /// Bumped each time `_validate_schema_citation` returns non-ok.
+    /// Bumped each time `_validate_schema_citation` returns non-ok — i.e. a
+    /// schema-match rejection on ANY joiner path: producer front-door (2nd
+    /// producer join), producer Path-C hub-global adoption, and consumer
+    /// citation.  ("citation" here is the general HEP-0034 §9.2 sense — any
+    /// joiner referencing a schema — not consumer-only.)
     uint64_t schema_citation_rejected_total{0};
 };
 

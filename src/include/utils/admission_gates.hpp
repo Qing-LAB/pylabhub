@@ -4,41 +4,42 @@
  * @brief Reusable admission-gate pipeline for pylabhub REG-family messages.
  *
  * Implements the §14.5 gate sequence from HEP-CORE-0046.
- * Every REG-family handler runs the same 7 gates BEFORE any state mutation;
- * this file owns the single implementation.  No handler re-implements a gate.
+ * Every REG-family handler runs the same gate sequence BEFORE any state
+ * mutation; this file owns the single implementation.  No handler
+ * re-implements a gate.
  *
- * State machine:
+ * State machine.  Gate numbers match the HEP-CORE-0046 §5 flowchart RFGG
+ * box (which describes this same `run_reg_family_gates`), NOT the §14.5
+ * ordered list — §14.5 numbers the full pipeline (parse / proto / … /
+ * topology) and so uses different numbers.  Envelope↔body hash is validated
+ * earlier at `WireEnvelope::parse` (I-ENVELOPE-BODY-BINDING), so it is a
+ * pre-gate here, not a numbered gate.
  *
- *     ┌─────────────┐   parse succeeded, dispatch chose typed body
+ *     ┌─────────────┐   parsed + envelope hash validated (WireEnvelope::parse)
  *     │  Received   │
  *     └──────┬──────┘
- *            │
  *            ▼
- *     ┌─────────────┐   gate 1: envelope↔body hash (already validated at
- *     │  HashOk     │           WireEnvelope::parse; re-check-free)
- *     └──────┬──────┘
- *            │
- *            ▼
- *     ┌─────────────┐   gate 2: env.identity() == body.role_uid()
+ *     ┌─────────────┐   gate 1: env.identity() == body.role_uid()
  *     │ IdentityOk  │           else IDENTITY_MISMATCH
  *     └──────┬──────┘
- *            │
  *            ▼
- *     ┌─────────────┐   gate 4: grammar (HEP-CORE-0033 §G2.2.0b)
+ *     ┌─────────────┐   gate 2: grammar (HEP-CORE-0033 §G2.2.0b)
  *     │ GrammarOk   │           else INVALID_REQUEST
  *     └──────┬──────┘
- *            │
  *            ▼
- *     ┌─────────────┐   gate 5: verify_known_role_binding(role_uid, zmq_pubkey)
+ *     ┌─────────────┐   gate 3: role_tag_policy (per-msg-type tag set)
+ *     │ RoleTagOk   │           else INVALID_ROLE_TAG
+ *     └──────┬──────┘
+ *            ▼
+ *     ┌─────────────┐   gate 4: verify_known_role_binding(role_uid, zmq_pubkey)
  *     │  BoundOk    │           else UNKNOWN_ROLE / PUBKEY_MISMATCH
  *     └──────┬──────┘         (PUBKEY_MISMATCH also enforces I-KEY-ROTATION-
  *            │                 VIA-DEREG: a running hub only accepts a role's
  *            │                 pinned known_roles pubkey; rotation = edit
  *            ▼                 config + hard reload — HEP-CORE-0046)
- *     ┌─────────────┐   gate 7: nonce dedup + wall_ts skew
+ *     ┌─────────────┐   gate 5: nonce dedup + wall_ts skew
  *     │  ReplayOk   │           else REPLAY_OR_SKEW
  *     └──────┬──────┘
- *            │
  *            ▼
  *     ┌─────────────┐   all pre-state-mutation gates passed;
  *     │  Admitted   │   caller runs protocol-level admission
@@ -69,18 +70,21 @@ namespace pylabhub::admission
 /// them per HEP-CORE-0007 §12.4a taxonomy.
 enum class RejectCode
 {
-    // Skeleton / typed body integrity (gate 1)
+    // Skeleton / typed body integrity (parse-time pre-gate — validated
+    // inside WireEnvelope::parse, before the numbered gates)
     envelope_tampered,   ///< I-ENVELOPE-BODY-BINDING: hash mismatch
     body_schema_violation,  ///< Typed body construction threw WireBodyError
 
-    // Identity + binding (gates 3-6)
+    // Identity + binding (gates 1, 2, 4 — identity / grammar / known-role
+    // binding; role_tag is gate 3, grouped separately below.  uid_conflict is
+    // raised later at state-mutation, not by a gate.)
     identity_mismatch,   ///< I-DEALER-IDENTITY: env.identity != body.role_uid
     invalid_request,     ///< Wire-shape violation: grammar / unknown enum / etc.
     unknown_role,        ///< I-PUBKEY-BINDING: (uid, pubkey) not in known_roles
     pubkey_mismatch,     ///< I-PUBKEY-BINDING: uid known, pubkey does not match
     uid_conflict,        ///< uid already registered (duplicate REG)
 
-    // Anti-replay (gate 7)
+    // Anti-replay (gate 5)
     replay_or_skew,      ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
 
     // Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8 table)
@@ -115,7 +119,7 @@ struct PYLABHUB_UTILS_EXPORT RejectDetail
 };
 
 /// Outcome of a known-roles lookup.  Distinguishes "role_uid absent" from
-/// "role_uid present but pubkey differs" so gate 5 (known_role_binding)
+/// "role_uid present but pubkey differs" so gate 4 (known_role_binding)
 /// can report the correct wire error code.  The pubkey_mismatch result
 /// is also what enforces I-KEY-ROTATION-VIA-DEREG (an on-the-fly re-REG
 /// with a rotated pubkey) — there is no separate key-rotation gate.
@@ -202,7 +206,7 @@ struct AdmissionContext
 /// Non-REG-family control messages (HEARTBEAT_REQ / GET_CHANNEL_AUTH_REQ
 /// / DISC_REQ per addendum §14.3) do NOT carry the security triple and
 /// therefore cannot populate this view — they go through a lighter
-/// gate set that skips gate 7.
+/// gate set that skips the anti-replay gate (local gate 5).
 ///
 /// Includes `channel_name` because every REG-family body carries it —
 /// the shared view is the natural home for the universal grammar check
@@ -326,7 +330,8 @@ run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
 
 // ── Pipeline runner (REG_REQ / CONSUMER_REG_REQ) ──────────────────────
 
-/// Runs gates 2-7 (gate 1 already ran inside WireEnvelope::parse) in
+/// Runs gates 1-5 (identity, grammar, role_tag, known_role binding, replay;
+/// the envelope hash pre-gate already ran inside WireEnvelope::parse) in
 /// the §14.5 order.  Returns std::nullopt on all-passed, or the first
 /// failing RejectDetail.  Short-circuit semantics: the first failing
 /// gate stops the sequence; downstream gates do not run (avoids

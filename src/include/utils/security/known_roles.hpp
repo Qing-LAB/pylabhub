@@ -43,13 +43,19 @@
  *
  * **Bridge to PeerAdmission (Phase A).** `as_peer_allowlist()`
  * projects the store onto a `PeerAllowlist` of each entry's
- * `pubkey_z85`.  This is what the broker ROUTER's
- * `PeerAdmission::set_peer_allowlist` receives, and — since the legacy
+ * `pubkey_z85` — the shape the broker ROUTER's
+ * `PeerAdmission::set_peer_allowlist` consumes.  Since the legacy
  * `RoleIdentityPolicy` string gate was deleted (HEP-0035 §4.5 / §8
- * Phase 6) — it is the *sole* role-identity enforcement.  `pubkey_z85`
- * cannot be empty: `validate_entry` rejects empty/short pubkeys at both
- * insertion points (`from_json`, `add`), so no empty-pubkey entry can
- * reach the store.
+ * Phase 6), the ZAP pubkey allowlist is the *sole* role-identity
+ * enforcement.  (Note: the broker currently builds its live CTRL-ROUTER
+ * allowlist by iterating `cfg.known_roles` inline — see
+ * `broker_service.cpp` `set_peer_allowlist` seeding — as the union of
+ * `known_roles[].pubkey_z85` and `peers[].pubkey_z85`; `as_peer_allowlist()`
+ * is the equivalent projection helper, used by tests.  The two are
+ * parallel and a candidate for consolidation.)  `pubkey_z85` cannot be
+ * empty: `validate_entry` rejects empty/short pubkeys at both insertion
+ * points (`from_json`, `add`), so no empty-pubkey entry can reach the
+ * store.
  *
  * **Thread-safety.** The class itself is NOT thread-safe.  Callers
  * serialize access (broker single-threaded; CLI ops run pre-startup).
@@ -188,9 +194,12 @@ public:
     /// Project the store onto a `PeerAllowlist` of {"curve", pubkey}
     /// identities.  `validate_entry` guarantees every stored entry has a
     /// valid 40-char `pubkey_z85`, so there are no empty-pubkey entries
-    /// to exclude.  This allowlist is the sole role-identity gate now
-    /// that the legacy `RoleIdentityPolicy` string check is deleted
-    /// (HEP-0035 §4.5 / §8 Phase 6).
+    /// to exclude.  A ZAP pubkey allowlist of this shape is the sole
+    /// role-identity gate now that the legacy `RoleIdentityPolicy` string
+    /// check is deleted (HEP-0035 §4.5 / §8 Phase 6).  The broker's live
+    /// CTRL-ROUTER allowlist is currently built by an equivalent inline
+    /// projection in `broker_service.cpp`; this method is the reusable
+    /// projection helper (used by tests).
     ///
     /// The returned allowlist's `unrestricted` is always false; only
     /// the explicit `--allow-anonymous-data` operator flag (Phase H)

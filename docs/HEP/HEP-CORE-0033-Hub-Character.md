@@ -4091,9 +4091,11 @@ present (self-describing), else falls back to `[tag] name`.
 
    Wrong-side tags return `INVALID_ROLE_TAG`.  Processor roles
    carry a `proc.*` uid and are accepted on both sides per
-   HEP-CORE-0011's dual-presence model.  Implementation:
-   `BrokerServiceImpl::validate_identity_fields` +
-   `validate_role_uid_only` in `src/utils/ipc/broker_service.cpp`.
+   HEP-CORE-0011's dual-presence model.  Implementation: `gate_grammar`
+   in `src/utils/ipc/admission_gates.cpp` (wire_dispatch admission
+   pipeline, HEP-CORE-0046 §14.5); the legacy
+   `validate_identity_fields` / `validate_role_uid_only` on
+   `BrokerServiceImpl` were retired 2026-07-14 (task #46).
    Grammar enforcement at the gate is **unconditional**.  Role-identity
    (CURVE pubkey) is enforced separately and earlier by the ZAP handler
    at the handshake against the `known_roles` allowlist (HEP-CORE-0035
