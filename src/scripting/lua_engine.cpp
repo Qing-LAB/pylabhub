@@ -584,6 +584,20 @@ void LuaEngine::finalize_engine_()
     // owned by RoleHostCore — cleaned up by the role host, not the engine.
     clear_refs_();
 
+    // Leak safety net: every eval/invoke/callback path is supposed to leave
+    // the scratch stack empty (success paths clear to 0, error paths pop).
+    // clear_refs_ uses the registry, not the stack, so the top is unchanged
+    // here.  A non-empty stack at finalize therefore means some error path
+    // failed to clean up — surface it so the leak class is caught at the
+    // shutdown seam regardless of which path leaked (production invariant, and
+    // the observable the eval-cleanup test relies on).
+    if (int top = lua_gettop(state_.raw()); top != 0)
+    {
+        LOGGER_WARN("[{}] event=LuaStackDirtyAtFinalize slots={} — a script "
+                    "error path left items on the scratch stack (leak)",
+                    log_tag_, top);
+    }
+
     // Destroy primary state.
     state_ = LuaState{}; // lua_close via RAII
 }
@@ -760,6 +774,15 @@ InvokeResponse LuaEngine::eval(const std::string &code)
     auto *L = state_.raw();
     if (luaL_dostring(L, code.c_str()) != 0)
     {
+        // Log the error text (symmetric with invoke()/invoke_returning, which
+        // both surface the reason) so a failed eval is diagnosable, not silent.
+        const char *err = lua_tostring(L, -1);
+        LOGGER_ERROR("[{}] eval: {}", log_tag_, err ? err : "unknown error");
+        // Restore eval's empty-stack postcondition (the success path clears to
+        // 0 at line below).  luaL_dostring leaves the error object on the
+        // stack; leaving it there leaks one slot on the shared owner state per
+        // failed eval and forces hot-path callbacks to run atop a dirty stack.
+        lua_settop(L, 0);
         on_pcall_error_("eval");
         return {InvokeStatus::ScriptError, {}};
     }

@@ -46,3 +46,14 @@ TEST_F(BrokerRequestCommTest, NotificationDispatch)
     // milestone check. Convert to Pattern 3 in the L3 sweep.
     ExpectLegacyWorkerOk(proc);
 }
+
+// A never-answered request (broker killed mid-flight) must not leak in
+// pending_requests: the ctrl-thread reaper removes it after the retention
+// grace.  The worker asserts on the production `reaped_abandoned()` counter.
+TEST_F(BrokerRequestCommTest, ReapAbandonedOnDeadBroker)
+{
+    auto proc = SpawnWorker("broker_req.reap_abandoned_on_dead_broker", {});
+    // Legacy worker bypass run_gtest_worker — opt out of [WORKER_*]
+    // milestone check. Convert to Pattern 3 in the L3 sweep.
+    ExpectLegacyWorkerOk(proc);
+}

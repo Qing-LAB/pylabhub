@@ -2725,17 +2725,26 @@ int eval_syntax_error_returns_script_error(const std::string &dir)
         [](LuaEngine &engine, RoleHostCore & /*core*/) {
             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            auto bad = engine.eval("invalid syntax {{{");
-            EXPECT_EQ(bad.status,
-                      pylabhub::scripting::InvokeStatus::ScriptError);
-            EXPECT_EQ(engine.script_error_count(), 1u)
-                << "eval syntax error must increment script_error_count "
+            // Several CONSECUTIVE failing evals.  Without the stack-clear fix,
+            // luaL_dostring leaves its error object on the shared owner stack
+            // on every failure, so this is where the leak accumulates — caught
+            // at finalize by Detection B (LuaStackDirtyAtFinalize), which the
+            // driver asserts is ABSENT.
+            constexpr unsigned kFails = 5;
+            for (unsigned i = 0; i < kFails; ++i)
+            {
+                auto bad = engine.eval("invalid syntax {{{");
+                EXPECT_EQ(bad.status,
+                          pylabhub::scripting::InvokeStatus::ScriptError);
+            }
+            EXPECT_EQ(engine.script_error_count(), kFails)
+                << "each eval syntax error must increment script_error_count "
                    "the same way invoke errors do";
 
             // Engine still usable: eval a valid scalar expression.
             auto good = engine.eval("return 7 * 6");
             EXPECT_EQ(good.status, pylabhub::scripting::InvokeStatus::Ok)
-                << "engine must be usable after an eval syntax error";
+                << "engine must be usable after repeated eval syntax errors";
             // NB: don't pin good.value here — that belongs in eval's
             // own test (Eval_ReturnsScalarResult, V2 line ~1428).
         });

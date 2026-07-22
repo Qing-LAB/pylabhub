@@ -65,6 +65,15 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
         std::string keystore_name{pylabhub::utils::security::kRoleIdentityName};
         std::string role_uid;         ///< Role UID for channel join/leave
         std::string role_name;        ///< Role display name
+        /// Grace window (ms) a timed-out (abandoned) request-reply record is
+        /// retained before the ctrl-thread reaper removes it.  A late reply
+        /// arriving after a client-side timeout (latency can be heartbeat-
+        /// scale) still finds its entry and lands on the precise
+        /// cross-wire-drop path in `recv_and_dispatch`; only genuinely dead
+        /// entries (no reply ever) are reaped.  Default ≈2× the 5s heartbeat
+        /// send cadence.  Tunable so an operator can trade retention against
+        /// diagnostic precision (and tests can shrink it).
+        int abandoned_reap_grace_ms{10000};
     };
 
     /// Connect DEALER socket to broker. Must be called before run_poll_loop().
@@ -135,6 +144,15 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// production monitoring — a rising counter on a running hub is
     /// a useful diagnostic signal.
     [[nodiscard]] size_t unmatched_replies() const noexcept;
+
+    /// Count of timed-out (abandoned) request-reply records the ctrl-thread
+    /// reaper has removed from the pending map.  A never-answered request
+    /// (slow/dead broker) is registered in the pending map but never erased
+    /// by the reply path; the reaper removes it after `abandoned_reap_grace_ms`
+    /// so the map cannot grow unbounded.  A rising counter is a production
+    /// diagnostic (broker leaving requests unanswered) and the observable the
+    /// reaper test asserts on.  Thread-safe (atomic load).
+    [[nodiscard]] size_t reaped_abandoned() const noexcept;
 
     // ── Fire-and-forget messages (thread-safe, enqueued) ─────────────────
 

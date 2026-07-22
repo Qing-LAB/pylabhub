@@ -129,6 +129,12 @@ struct RequestCmd
     /// timeout write and the poll_recv read are on different threads
     /// with no other synchronization.
     std::atomic<bool>                 abandoned{false};
+    /// Steady instant the CALLER marked this request abandoned.  Written on
+    /// the caller thread immediately BEFORE the `abandoned` release-store, so
+    /// a ctrl-thread acquire-load of `abandoned==true` is guaranteed to see
+    /// this value (release/acquire).  Read only by the ctrl-thread reaper
+    /// (`reap_abandoned_requests`) to apply the retention grace window.
+    std::chrono::steady_clock::time_point abandoned_at{};
 };
 
 /// Install a periodic task into the running poll loop.
@@ -290,6 +296,22 @@ struct BrokerRequestComm::Impl
     /// as WARN); this counter makes the drop observable so tests and
     /// monitoring can catch the regression.
     std::atomic<size_t> unmatched_replies_count{0};
+
+    /// Count of timed-out (abandoned) request-reply records the ctrl-thread
+    /// reaper has removed from pending_requests.  A rising value signals a
+    /// slow/dead broker leaving requests unanswered.  Operator diagnostic +
+    /// test observable (parallel to unmatched_replies_count).
+    std::atomic<size_t> reaped_abandoned_count{0};
+
+    /// Retention grace (ms) for an abandoned pending_requests entry before the
+    /// reaper removes it — from Config.abandoned_reap_grace_ms, applied in
+    /// connect().  Read only on the ctrl thread (the reaper).
+    int abandoned_reap_grace_ms{10000};
+
+    /// Cadence (ms) of the abandoned-request reaper periodic task.  A dead
+    /// broker sends no DEALER traffic, so the reaper must be time-driven, not
+    /// reply-driven — hence a periodic task rather than a sweep in recv.
+    static constexpr int kReapIntervalMs = 1000;
 
     // Callbacks.
     NotificationCallback on_notification_cb;
@@ -564,6 +586,49 @@ struct BrokerRequestComm::Impl
         });
     }
 
+    /// Remove timed-out (abandoned) pending_requests entries whose retention
+    /// grace has elapsed.  Runs on the CTRL thread — the sole owner of
+    /// pending_requests — as a time-only periodic task so it fires even when
+    /// the broker is dead and no DEALER traffic ever arrives (exactly the
+    /// case that leaks: a request registered in handle_command that never
+    /// receives a reply, so recv_and_dispatch never erases it).
+    ///
+    /// Entries are kept for abandoned_reap_grace_ms after abandonment so a
+    /// late reply (latency can be heartbeat-scale) still finds its entry and
+    /// lands on the precise cross-wire-drop path in recv_and_dispatch, rather
+    /// than being misreported as an unexpected reply-shape.  Cross-wiring is
+    /// prevented either way; the grace only preserves diagnostic precision.
+    void reap_abandoned_requests()
+    {
+        if (pending_requests.empty())
+            return;
+        const auto now   = std::chrono::steady_clock::now();
+        const auto grace = std::chrono::milliseconds{abandoned_reap_grace_ms};
+        size_t     reaped = 0;
+        for (auto it = pending_requests.begin(); it != pending_requests.end();)
+        {
+            const auto &req = it->second;
+            // abandoned (acquire) synchronizes-with the caller's release-store,
+            // so abandoned_at is visible whenever this reads true.
+            if (req->abandoned.load(std::memory_order_acquire) &&
+                (now - req->abandoned_at) > grace)
+            {
+                it = pending_requests.erase(it);
+                ++reaped;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        if (reaped > 0)
+        {
+            reaped_abandoned_count.fetch_add(reaped, std::memory_order_relaxed);
+            LOGGER_INFO("[brc/{}] event=BrcReapAbandoned reaped={} remaining={}",
+                        role_name, reaped, pending_requests.size());
+        }
+    }
+
     void handle_command(SendCmd &cmd)
     {
         send_message(cmd.msg_type, cmd.correlation_id,
@@ -663,6 +728,12 @@ struct BrokerRequestComm::Impl
             // it into the caller's NEXT sync REQ of the same ack type.
             // Without this, iteration N's stale reply could satisfy
             // iteration N+1 of the fan-in loop in apply_consumer_reg_ack.
+            //
+            // Stamp abandoned_at BEFORE the release-store so the ctrl-thread
+            // reaper (which acquire-loads `abandoned`) is guaranteed to see it;
+            // the reaper removes this entry once the retention grace elapses so
+            // a never-answered request cannot leak in pending_requests forever.
+            req->abandoned_at = std::chrono::steady_clock::now();
             req->abandoned.store(true, std::memory_order_release);
             return std::nullopt;
         }
@@ -840,6 +911,7 @@ bool BrokerRequestComm::connect(const Config &cfg)
 
         pImpl->role_uid = cfg.role_uid;
         pImpl->role_name = cfg.role_name;
+        pImpl->abandoned_reap_grace_ms = cfg.abandoned_reap_grace_ms;
         pImpl->connected.store(true, std::memory_order_release);
         pImpl->stop_requested.store(false, std::memory_order_release);
 
@@ -992,6 +1064,17 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     // §2.5 for the heartbeat-cadence negotiation that motivates this.
     pImpl->active_loop_periodic_tasks = &loop.periodic_tasks;
 
+    // Abandoned-request reaper.  Time-only periodic task on THIS ctrl thread
+    // (the sole owner of pending_requests) so it reaps even when the broker is
+    // dead and no DEALER traffic arrives.  Installed here — before loop.run(),
+    // for the whole loop lifetime — rather than via InstallPeriodicTaskCmd,
+    // because it must run pre-REG_ACK too (a request can time out during
+    // registration).  See reap_abandoned_requests().
+    loop.periodic_tasks.emplace_back(
+        [this] { pImpl->reap_abandoned_requests(); },
+        Impl::kReapIntervalMs,
+        nullptr);
+
     loop.run();
 
     // Thread Shutdown Contract (HEP-CORE-0031 §4.1): once loop.run()
@@ -1016,6 +1099,11 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
 size_t BrokerRequestComm::unmatched_replies() const noexcept
 {
     return pImpl->unmatched_replies_count.load(std::memory_order_relaxed);
+}
+
+size_t BrokerRequestComm::reaped_abandoned() const noexcept
+{
+    return pImpl->reaped_abandoned_count.load(std::memory_order_relaxed);
 }
 
 void BrokerRequestComm::stop() noexcept

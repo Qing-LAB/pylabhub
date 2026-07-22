@@ -817,12 +817,21 @@ TEST_F(LuaEngineIsolatedTest, Eval_SyntaxError_ReturnsScriptError)
     auto w = SpawnWorker(
         "lua_engine.eval_syntax_error_returns_script_error",
         {unique_dir("err_eval_syntax")});
-    // eval() uses luaL_dostring, not state_.pcall — the engine's
-    // on_pcall_error_ (lua_engine.cpp:1033-1045) does NOT log the
-    // error message, only the stop_on_script_error notice if enabled.
-    // So an eval syntax error bumps script_error_count but emits no
-    // ERROR log line. No expected_error_substrings needed.
-    ExpectWorkerOk(w);
+    // eval() now logs the Lua error text on failure (symmetric with
+    // invoke()/invoke_returning), so each of the worker's five consecutive
+    // failing evals (kFails) emits one `[...] eval: ...` ERROR line.  The
+    // matcher pairs exactly one expected substring per ERROR line, so name
+    // "eval:" once per failing eval.
+    ExpectWorkerOk(w, /*required=*/{},
+                   /*expected_error_substrings=*/std::vector<std::string>(5, "eval:"));
+    // Detection B: a non-empty Lua scratch stack at finalize means an eval
+    // error path failed to clean up (the leak this fix closes).  Without the
+    // fix, five failing evals leave five slots and finalize logs
+    // LuaStackDirtyAtFinalize; with the fix the stack is clean.  Assert the
+    // shutdown invariant did NOT trip.
+    EXPECT_EQ(w.get_stderr().find("LuaStackDirtyAtFinalize"), std::string::npos)
+        << "Lua scratch stack must be empty at finalize — repeated eval "
+           "errors must not leak stack slots";
 }
 
 // ============================================================================

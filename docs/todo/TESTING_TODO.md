@@ -93,6 +93,22 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-07-21 — #70 resource-leak sub-issues: BRC pending-request reaper + Lua eval stack-clear.**
+  Closed the two non-hub/role leak findings from the FullSystem review.
+  (1) **BRC** — a never-answered request leaked forever in `pending_requests`;
+  added a ctrl-thread time-only reaper (`reap_abandoned_requests`) that removes
+  abandoned entries past a retention grace (`Config.abandoned_reap_grace_ms`,
+  default 10s). New L3 test `BrokerRequestCommTest.ReapAbandonedOnDeadBroker`
+  (reuses `start_hubhost_broker`) kills the broker, times out a request, and
+  asserts the production `reaped_abandoned()` counter rises — reads production
+  state per README_testing §1.1 principle 1, no log-marker dependency.
+  (2) **Lua** — `eval()` error path leaked one scratch-stack slot per failure;
+  now clears the stack and logs the error text (symmetric with `invoke`). Added
+  **Detection B** (`event=LuaStackDirtyAtFinalize` WARN at engine finalize) as a
+  production leak safety net + test observable; strengthened
+  `LuaEngineIsolatedTest.Eval_SyntaxError_ReturnsScriptError` to 5 consecutive
+  failing evals and asserts the marker is absent. Full sweep 2632/2632.
+
 - **2026-07-21 — #71 sub-issue 3/4: synchronous logging path pinned (`LoggerTest.SyncLogging`).**
   Closed the last of the four critical-path coverage gaps in the FullSystem
   review. New Pattern-3 worker `logger::test_sync_logging`

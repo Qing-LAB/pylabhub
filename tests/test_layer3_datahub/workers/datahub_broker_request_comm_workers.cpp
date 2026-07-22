@@ -362,6 +362,68 @@ int notification_dispatch()
     return ::testing::Test::HasFailure() ? 1 : 0;
 }
 
+// Reaper: a request that never gets a reply (dead broker) is registered in
+// pending_requests but never erased by the reply path; the ctrl-thread reaper
+// must remove it after the retention grace so the map cannot grow unbounded.
+int reap_abandoned_on_dead_broker()
+{
+    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
+                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                                          hub_module(), zmq_module());
+    utils::LifecycleGuard guard(std::move(mods));
+
+    const std::string uid = "prod.reap.uid00000001";
+    auto curve = pylabhub::tests::make_curve_setup({uid});
+    pylabhub::tests::seed_role_identities(curve);
+    auto broker = pylabhub::tests::start_hubhost_broker(brc_hub_overrides(), curve);
+
+    BrokerRequestComm ch;
+    BrokerRequestComm::Config cfg;
+    cfg.broker_endpoint = broker.endpoint;
+    cfg.broker_pubkey   = broker.pubkey;
+    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
+    cfg.role_uid        = uid;
+    // Shrink the retention grace so the reaper fires within the test window
+    // (production default is 10s ≈ 2× heartbeat).  Cadence is a fixed 1s, so a
+    // 200ms grace means an abandoned entry is reaped on the first tick after
+    // the client-side timeout.
+    cfg.abandoned_reap_grace_ms = 200;
+    EXPECT_TRUE(ch.connect(cfg));
+
+    std::atomic<bool> running{true};
+    std::thread poll_thread([&] {
+        ch.run_poll_loop([&] { return running.load(); });
+    });
+
+    EXPECT_EQ(ch.reaped_abandoned(), 0u);
+
+    // Kill the broker so the request below can NEVER be answered — the exact
+    // leak condition: the request registers in pending_requests (the insert
+    // precedes the connected-gated send), no reply ever arrives, so only the
+    // reaper can remove it.
+    broker.stop_and_join();
+
+    // Short-timeout request against the now-dead broker → times out → the
+    // ctrl thread marks the entry abandoned.
+    auto resp = ch.list_channels(/*timeout_ms=*/300);
+    EXPECT_FALSE(resp.has_value())
+        << "request must time out with the broker gone";
+
+    // The reaper (ctrl thread, 1s cadence, 200ms grace) must remove the
+    // abandoned entry.  Poll the production counter — poll_until, not sleep.
+    const bool reaped = pylabhub::tests::helper::poll_until(
+        [&] { return ch.reaped_abandoned() >= 1; }, std::chrono::seconds{5});
+    EXPECT_TRUE(reaped)
+        << "reaper must remove the never-answered abandoned request; "
+           "reaped_abandoned=" << ch.reaped_abandoned();
+
+    running.store(false);
+    ch.stop();
+    poll_thread.join();
+    ch.disconnect();
+    return ::testing::Test::HasFailure() ? 1 : 0;
+}
+
 // ============================================================================
 // Worker dispatcher
 // ============================================================================
@@ -390,6 +452,8 @@ struct BrokerReqChannelWorkerRegistrar
                     return role_presence();
                 if (scenario == "notification_dispatch")
                     return notification_dispatch();
+                if (scenario == "reap_abandoned_on_dead_broker")
+                    return reap_abandoned_on_dead_broker();
                 return -1;
             });
     }
