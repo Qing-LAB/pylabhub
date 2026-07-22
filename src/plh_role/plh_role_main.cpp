@@ -368,6 +368,19 @@ int main(int argc, char *argv[])
     //
     // Native and Lua deployments skip this entirely; Py_Initialize cost
     // is paid only when actually needed.
+    //
+    // A role ALWAYS runs a script engine — its worker_main_ Step 0
+    // unconditionally builds one (python | lua | native), and there is no
+    // engine-less role.  So the guard keys on the engine TYPE only, with NO
+    // path check (unlike the hub): a `python` role's PythonEngine ctor
+    // hard-panics if the interpreter is not already loaded, so it must
+    // pre-load here whether or not a path is set — gating on the path would
+    // turn a graceful load_script failure into an abort.  The hub differs
+    // because it CAN skip building the engine (a script-less "pure broker"),
+    // so it gates on `runs_script_engine()`.  `type:"none"` and an empty path
+    // are the hub-only "no engine" options and are REJECTED for roles at
+    // config load (parse_script_config, script_optional=false), so a role
+    // reaching this point always has a real engine type.
     if (c.script().type == "python" || c.script().type.empty())
     {
         if (!pylabhub::scripting::ensure_python_interpreter_loaded())

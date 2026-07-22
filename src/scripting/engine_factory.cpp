@@ -56,6 +56,14 @@ std::unique_ptr<ScriptEngine> create_engine_impl(const config::ScriptConfig &sc)
 {
     try
     {
+        if (sc.type == "none")
+        {
+            // Explicit "no engine" (hub-only: run as a pure broker).  Returned
+            // null is the contract for "script-less".  The hub never reaches
+            // here — it skips runner construction on runs_script_engine()==false
+            // — and roles reject "none" at config; this is a defensive backstop.
+            return nullptr;
+        }
         if (sc.type == "native")
         {
             auto ne = std::make_unique<NativeEngine>();

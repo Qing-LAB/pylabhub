@@ -115,7 +115,7 @@ void HubConfig::Impl::load_all(const nlohmann::json &j)
 
     identity = parse_hub_identity_config(j);
     auth = parse_auth_config(j, "hub"); // reads j["hub"]["auth"]
-    script = parse_script_config(j, base_dir, "hub");
+    script = parse_script_config(j, base_dir, "hub", /*script_optional=*/true);
     timing = parse_timing_config(j, "hub");
     logging = parse_logging_config(j, "hub");
     network = parse_hub_network_config(j);

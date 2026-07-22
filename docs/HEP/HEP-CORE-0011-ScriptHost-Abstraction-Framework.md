@@ -1171,6 +1171,44 @@ The worker is the only thread that can simultaneously (a) know that
 the runtime it's about to use is alive and (b) be the lasting GIL
 holder.
 
+### Script-type selection and the script-less hub
+
+`script.type` selects the engine: **`"python"`**, **`"lua"`**, **`"native"`**
+(a compiled C-ABI plugin — still a `ScriptEngine`), or **`"none"`**.
+`"none"` means *no engine at all* and is **hub-only**: a hub with
+`type:"none"` (or, equivalently for back-compat, an empty `script.path`)
+runs as a **pure broker** — `HubHost` skips constructing the
+`HubScriptRunner` entirely and the main never loads the interpreter.
+
+**Roles always run an engine.** There is no engine-less role: each role's
+`worker_main_` Step 0 unconditionally builds one, and the data loop is
+driven through it. Therefore `"none"` and an empty `script.path` are
+**rejected for roles at config load** (`parse_script_config`,
+`script_optional=false`); "no Python" for a role is expressed as
+`type:"native"` or `type:"lua"`, not as "no engine".
+
+**The single "run a script?" signal is `ScriptConfig::runs_script_engine()`**
+= `type != "none" && !path.empty()`. Both the hub main's interpreter
+eager-load and `HubHost`'s runner construction gate on it, so the
+decision lives in exactly one place.
+
+**Why the hub gates the interpreter eager-load on the path but a role does
+not.** The main thread must load the CPython interpreter *before* the
+worker builds a `PythonEngine`, because `PythonEngine`'s constructor
+hard-fails (panics) if the interpreter is not already alive. The **hub**
+can skip building the engine (script-less broker), so it eager-loads the
+interpreter only when `runs_script_engine()` is true *and* the type is
+python. A **role** always builds the engine, so a `python` role must
+always eager-load the interpreter — gating that on the path would convert
+a graceful `load_script` failure into an abort. This asymmetry is
+intentional and follows directly from "hub may be engine-less, a role may
+not."
+
+Config surface: `parse_script_config(json, base, tag, script_optional)` —
+`script_optional=true` (hub) accepts `"none"` and an empty path;
+`script_optional=false` (roles, the default) requires a real engine type
+and a non-empty path, failing fast at config time.
+
 ### `PythonInterpreter` dynamic lifecycle module
 
 A new dynamic LifecycleManager module — name

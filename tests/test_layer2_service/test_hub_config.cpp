@@ -57,6 +57,12 @@ TEST_F(HubConfigTest, LoadFull_AllSectionsParsed)
     ExpectWorkerOk(w);
 }
 
+TEST_F(HubConfigTest, ScriptNone_AcceptedAsScriptLessHub)
+{
+    auto w = SpawnWorker("hub_config.script_none_accepted", {unique_dir("script_none")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(HubConfigTest, LoadMinimal_DefaultsApplied)
 {
     auto w = SpawnWorker("hub_config.load_minimal", {unique_dir("load_minimal")});

@@ -18,12 +18,24 @@ namespace pylabhub::config
 
 struct ScriptConfig
 {
-    std::string type{"python"};       ///< "python", "lua", or "native"
+    std::string type{"python"};       ///< "python", "lua", "native", or "none" (hub-only: no engine)
     std::string path{"."};            ///< Parent dir of the script/<type>/ package
     std::string python_venv;          ///< venv name (Python only), empty = base env
     std::string checksum;             ///< BLAKE2b-256 hex of native .so (native only)
     bool type_explicit{false};        ///< true when "type" was present in JSON
     bool stop_on_script_error{false}; ///< Fatal on script exception in callback.
+
+    /// True iff this config should construct and run a script engine.  The
+    /// single, explicit "run a script?" signal shared by the hub main's
+    /// interpreter eager-load and HubHost's runner construction.  `type ==
+    /// "none"` (hub-only: run as a pure broker) OR an empty `path` (legacy
+    /// script-disabled hub) both mean "no engine".  Roles ALWAYS run an engine
+    /// — config validation rejects `none`/empty-path for roles — so for a role
+    /// this is always true.
+    [[nodiscard]] bool runs_script_engine() const noexcept
+    {
+        return type != "none" && !path.empty();
+    }
 
     /// Release the engine's global interpreter lock during the worker
     /// loop's idle waits (queue I/O wait, deadline sleep, hub event
@@ -170,8 +182,12 @@ inline std::filesystem::path resolve_native_library(const std::string &configure
 /// @param base   Role directory base path (for resolving relative script.path).
 ///               Pass empty path to skip resolution (from_json_file mode).
 /// @param tag    Context tag for error messages (e.g., "Producer config").
+/// @param script_optional  When true (hub), `type:"none"` and an empty `path`
+///        are accepted (run as a pure broker, no engine).  When false (roles),
+///        the script is mandatory: `type` must be a real engine and `path` must
+///        be non-empty, else construction fails fast at config time.
 inline ScriptConfig parse_script_config(const nlohmann::json &j, const std::filesystem::path &base,
-                                        const char *tag)
+                                        const char *tag, bool script_optional = false)
 {
     namespace fs = std::filesystem;
     ScriptConfig sc;
@@ -191,11 +207,13 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j, const std::file
         }
         sc.type_explicit = s.contains("type");
         sc.type = s.value("type", std::string{"python"});
-        if (sc.type != "python" && sc.type != "lua" && sc.type != "native")
+        const bool type_ok = sc.type == "python" || sc.type == "lua" || sc.type == "native" ||
+                             (script_optional && sc.type == "none");
+        if (!type_ok)
             throw std::invalid_argument(
-                std::string(tag) +
-                ": script.type must be \"python\", \"lua\", or \"native\", got: \"" + sc.type +
-                "\"");
+                std::string(tag) + ": script.type must be \"python\", \"lua\", or \"native\"" +
+                (script_optional ? " (or \"none\" for a script-less hub)" : "") + ", got: \"" +
+                sc.type + "\"");
         sc.path = s.value("path", std::string{"."});
         sc.checksum = s.value("checksum", std::string{});
         sc.release_global_lock_during_wait = s.value("release_global_lock_during_wait", false);
@@ -207,6 +225,18 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j, const std::file
     // Resolve relative script.path against the role directory base.
     if (!base.empty() && !sc.path.empty() && !fs::path(sc.path).is_absolute())
         sc.path = fs::weakly_canonical(base / sc.path).string();
+
+    // Roles (script_optional == false) always run an engine — reject a path-less
+    // role at config time.  A real-engine role with no script has nothing to
+    // load; catching it here fails fast and clearly instead of paying
+    // interpreter init and dying at load_script (or, for Python, hard-panicking
+    // if the main's eager-load were ever skipped).  The hub is exempt: an empty
+    // path (like type:"none") means "run as a pure broker".
+    if (!script_optional && sc.path.empty())
+        throw std::invalid_argument(
+            std::string(tag) +
+            ": script.path must be non-empty — a role always runs a script engine "
+            "(python/lua/native) and a path-less role has no script to load");
 
     return sc;
 }

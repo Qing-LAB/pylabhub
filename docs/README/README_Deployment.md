@@ -292,8 +292,8 @@ revisions.
 | `network.broker_endpoint` | no | `"tcp://127.0.0.1:5570"` | ZMQ ROUTER bind address |
 | `network.zmq_io_threads` | no | `1` | ZMQ context I/O thread count |
 | `python_venv` | no | `""` | Virtual environment for hub script; empty = base env |
-| `script.path` | no | `"."` | Base directory; hub script at `<path>/script/<type>/__init__.py`; empty string = no hub script |
-| `script.type` | no | `"python"` | Script engine: `"python"` or `"lua"` |
+| `script.path` | no | `"."` | Base directory; hub script at `<path>/script/<type>/__init__.py`. Empty string = **script-less hub** (pure broker), same as `type:"none"` |
+| `script.type` | no | `"python"` | Script engine: `"python"`, `"lua"`, `"native"`, or **`"none"`** (hub-only: run as a pure broker with no engine). A script-less hub uses `"none"` (or an empty `script.path`); it skips loading any interpreter |
 | `state.disconnected_grace_ms` | no | `60000` | Retention before pruning disconnected entries |
 | `state.max_disconnected_entries` | no | `1000` | Cap on retained disconnected entries |
 | `stop_on_script_error` | no | `false` | Halt hub on uncaught script exception |
@@ -823,8 +823,8 @@ The pre-1h "non-zero secret means enable SHM" sentinel is gone:
 | `inbox_endpoint` | no | auto | ZMQ ROUTER bind endpoint for inbox |
 | `inbox_buffer_depth` | no | `64` | Inbox recv buffer depth (must be > 0) |
 | `inbox_overflow_policy` | no | `"drop"` | `"drop"` or `"block"` |
-| `script.type` | no | `"python"` | Script type |
-| `script.path` | no | `"."` | Script directory; resolves `<path>/script/<type>/__init__.py` |
+| `script.type` | no | `"python"` | Script engine: `"python"`, `"lua"`, or `"native"`. A role **always** runs an engine — `"none"` is hub-only and is rejected for roles; "no Python" is `"native"`/`"lua"`, not "no engine" |
+| `script.path` | no | `"."` | Script directory; resolves `<path>/script/<type>/__init__.py`. Must be non-empty for a role (a role always loads a script) |
 | `python_venv` | no | `""` | Virtual environment name; empty = base env (see §12) |
 
 > **Packing note (producer):** set via `slot_schema.packing`, `flexzone_schema.packing`, and `inbox_schema.packing` (each defaulting to `"aligned"`).  There is no transport-level packing key; the old `zmq_packing` / `inbox_zmq_packing` were removed 2026-04-20 and the parser rejects them.

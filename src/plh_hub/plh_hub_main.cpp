@@ -526,18 +526,25 @@ int main(int argc, char *argv[])
 
     // 10. PythonInterpreter conditional load (HEP-CORE-0011 §"Engine
     //     Construction Lifecycle", Option E final design).  Main thread
-    //     loads the persistent dynamic module IFF the hub config selects
-    //     a Python script.  pi_startup runs Py_InitializeFromConfig on
-    //     this thread (= main) and parks a py::gil_scoped_release so
-    //     HubScriptRunner's worker_main_ can pick up the GIL via
-    //     PythonGilLease.  Native and Lua deployments skip this entirely.
+    //     loads the persistent dynamic module IFF the hub actually runs a
+    //     Python engine: `runs_script_engine()` AND the type is python.
+    //     Unlike a role, the hub MAY be script-less — `script.type:"none"`
+    //     (a pure broker) or an empty `script.path` make
+    //     `runs_script_engine()` false, and HubHost then skips building the
+    //     HubScriptRunner entirely (hub_host.cpp), so no engine and no
+    //     interpreter are needed.  When it does run a Python script,
+    //     pi_startup runs Py_InitializeFromConfig on this thread (= main)
+    //     and parks a py::gil_scoped_release so HubScriptRunner's
+    //     worker_main_ can pick up the GIL via PythonGilLease.  Native and
+    //     Lua hubs run an engine but skip the interpreter load.
     //
     //     The module is registered persistent — it stays loaded until
     //     ~LifecycleGuard runs at process exit, where finalize() Phase 2
     //     invokes pi_shutdown synchronously on THIS thread (same thread
     //     as Py_InitializeFromConfig), satisfying CPython's single-thread
     //     init/finalize contract.
-    if (!cfg.script().path.empty() && (cfg.script().type == "python" || cfg.script().type.empty()))
+    if (cfg.script().runs_script_engine() &&
+        (cfg.script().type == "python" || cfg.script().type.empty()))
     {
         if (!pylabhub::scripting::ensure_python_interpreter_loaded())
         {

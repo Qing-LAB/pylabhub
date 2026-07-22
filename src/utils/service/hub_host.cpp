@@ -410,12 +410,13 @@ void HubHost::startup()
         //
         // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
         // script-enabled vs script-disabled mode is now selected solely
-        // by `cfg.script().path` — non-empty enables, empty disables.
-        // Engine construction has moved off main() / HubHost into the
-        // runner's worker_main_ Step 0.  No engine_pre_startup
-        // injection any more.
-        const bool path_set = !impl_->cfg.script().path.empty();
-        if (path_set)
+        // by `cfg.script().runs_script_engine()` — the single explicit "run a
+        // script?" signal: false when `type:"none"` (pure broker) OR the path
+        // is empty (legacy script-disabled hub).  Engine construction has moved
+        // off main() / HubHost into the runner's worker_main_ Step 0.  No
+        // engine_pre_startup injection any more.
+        const bool runs_script = impl_->cfg.script().runs_script_engine();
+        if (runs_script)
         {
             // Construct + start the runner.  Per Option E, runner
             // reads HubConfig fields through its host_ backref —

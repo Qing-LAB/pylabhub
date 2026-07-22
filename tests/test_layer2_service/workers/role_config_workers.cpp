@@ -772,6 +772,37 @@ int invalid_script_type_throws(const std::string &dir)
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("script.type"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("ruby"));
             }
+
+            // "none" is a HUB-ONLY type (no engine).  A role always runs an
+            // engine, so `parse_script_config(script_optional=false)` rejects it.
+            auto jn = minimal_producer_json();
+            jn["script"]["type"] = "none";
+            auto path_n = write_json(dir, "producer_none.json", jn);
+            try
+            {
+                RoleConfig::load(path_n.string(), "producer");
+                FAIL() << "expected RoleConfig::load to reject type:none for a role";
+            }
+            catch (const std::invalid_argument &e)
+            {
+                EXPECT_THAT(e.what(), ::testing::HasSubstr("script.type"));
+                EXPECT_THAT(e.what(), ::testing::HasSubstr("none"));
+            }
+
+            // An empty script.path is rejected for a role — a role always loads
+            // a script (fail fast at config time, not at load / interpreter init).
+            auto je = minimal_producer_json();
+            je["script"]["path"] = "";
+            auto path_e = write_json(dir, "producer_emptypath.json", je);
+            try
+            {
+                RoleConfig::load(path_e.string(), "producer");
+                FAIL() << "expected RoleConfig::load to reject an empty script.path";
+            }
+            catch (const std::invalid_argument &e)
+            {
+                EXPECT_THAT(e.what(), ::testing::HasSubstr("script.path"));
+            }
         },
         "role_config::invalid_script_type_throws", Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());

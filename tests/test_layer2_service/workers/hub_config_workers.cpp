@@ -221,6 +221,29 @@ int load_minimal(const char *tmpdir)
         JsonConfig::GetLifecycleModule());
 }
 
+// ── script_none_accepted ────────────────────────────────────────────────────
+// A hub may run script-less: `script.type:"none"` is accepted (script_optional
+// on the hub) and yields runs_script_engine()==false (pure broker — HubHost
+// skips the runner).  Roles reject "none"; see role_config::invalid_script_type.
+int script_none_accepted(const char *tmpdir)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            const std::string dir = tmpdir;
+            auto j = minimal_hub_json();
+            j["script"] = {{"type", "none"}, {"path", "."}};
+            write_hub_json(dir, j);
+            auto cfg = HubConfig::load_from_directory(dir);
+
+            EXPECT_EQ(cfg.script().type, "none");
+            EXPECT_FALSE(cfg.script().runs_script_engine())
+                << "type:none must mean no engine (script-less hub)";
+        },
+        "hub_config::script_none_accepted", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
+}
+
 // ── strict_unknown_top_level ────────────────────────────────────────────────
 
 int strict_unknown_top_level(const char *tmpdir)
@@ -705,6 +728,8 @@ struct HubConfigWorkerRegistrar
                     return load_full(dir);
                 if (sc == "load_minimal")
                     return load_minimal(dir);
+                if (sc == "script_none_accepted")
+                    return script_none_accepted(dir);
                 if (sc == "strict_unknown_top_level")
                     return strict_unknown_top_level(dir);
                 if (sc == "strict_unknown_in_section")
