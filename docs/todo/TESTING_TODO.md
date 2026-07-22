@@ -1175,6 +1175,65 @@ Tracked in `docs/todo/PLATFORM_TODO.md`.
 
 ---
 
+## Deferred follow-up — cross-layer subprocess-pattern scan (L2/L3/L4)
+
+**Status: NOT STARTED (deferred).** A proper scan of EVERY test under
+`tests/` at L2, L3, and L4 to decide, per README_testing § "Choosing a test
+pattern", whether each test that transitively reaches a lifecycle module should
+be converted to the subprocess pattern (Pattern 3 `IsolatedProcessTest`, whose
+worker `_exit()`s after finalize) rather than run in-process. This is the
+generalization of the ad-hoc `// Convert to Pattern 3 in the L3 sweep` markers
+already scattered in the tree (e.g. `test_datahub_broker_request_comm.cpp`).
+
+**Prior progress (from memory / conversation — not previously written down):**
+- **L3** — most work done.
+- **L4** — believed OK, but NOT verified; the scan must confirm.
+- **L2** — the main remainder; several in-process `BinaryLifecycleEnvironment`
+  binaries reach lifecycle modules and were left in-process.
+
+**Why it matters — concrete evidence (CI 2026-07-22, 1 of 4 gcc13/14
+debug/release builds):**
+`HubStateProducerAdmissionContract.InvalidChannelName_ReturnsInvalidIdentifier`
+reported `***Timeout 30.01 sec` although gtest logged `[ OK ] … (0 ms)` /
+`[ PASSED ]`. The test LOGIC passed; the **process** hung ~30s after
+`RUN_ALL_TESTS` returned (SodiumInit `04:34:41` → exit/XML `04:35:11`), so ctest
+(process-exit wall-clock) reaped it at the 30s limit. Root cause: the binary
+runs in-process (`PLH_BINARY_LIFECYCLE_MODULES(Logger, SecureSubsystem)`) and
+returns from `main()` normally — no `_exit()` — so **libsodium's own
+`__attribute__((destructor))` runs at exit and can hang indefinitely**
+(README_testing lines 466, 484). Our `LifecycleGuard` finalize DID run clean;
+the hang is a third-party static dtor outside our lifecycle graph, which only
+Pattern 3's `_exit()` skips. Pre-existing; NOT caused by the #70 leak fix or the
+v21 reformat.
+
+**L2 actionable subset (in-process `BinaryLifecycleEnvironment` binaries that
+load a hang-prone lib — libsodium via `SecureSubsystem` and/or libzmq via
+`ZMQContext`; any test in these can flake this way at random):**
+`test_hub_state.cpp`, `test_hub_state_nonce_dedup.cpp`,
+`test_setup_infrastructure_translation.cpp`, `test_data_block_fd_based.cpp`,
+`test_hub_shm_queue_capability.cpp`, `test_hub_shm_queue_contract.cpp`,
+`test_hub_queue_factory.cpp`, `test_hub_zmq_queue.cpp`, `test_role_handler.cpp`,
+`test_admin_service.cpp`, `test_admin_session.cpp`, `test_broker_reg_handler.cpp`,
+`test_attach_protocol.cpp`, `test_shm_attach_orchestrator.cpp` (14 binaries).
+
+**Fix options for the scan to choose per binary:**
+- **(A)** Migrate to Pattern 3 (`IsolatedProcessTest`) — doc-correct, but
+  per-`TEST_F` subprocess (~55ms vs ~5ms) and many tests to rewrite.
+- **(B)** Make the in-process runner `_exit(result)` after `RUN_ALL_TESTS` +
+  Environment TearDown (in `BinaryLifecycleEnvironment` / `test_entrypoint`),
+  extending the sanctioned `_exit()`-dodge to the binary-lifecycle path — fixes
+  the whole group at once. Sharp edge: `_exit()` skips atexit handlers, so if CI
+  collects coverage (gcov/llvm writeout) it needs a coverage-aware guard; the
+  gtest XML is written during `RUN_ALL_TESTS` so that is safe.
+- **(C)** Drop `SecureSubsystem` from a binary + move only its crypto tests to
+  Pattern 3 — often infeasible (tests reach `secure().keys()` transitively via
+  HubState/BrokerService construction).
+
+**Immediate mitigation when a binary flakes this way:** re-run the CI job
+(intermittent); do NOT let it block unrelated branches.
+
+---
+
 ## Related Work
 
 - `docs/README/README_testing.md` — test architecture + pattern
