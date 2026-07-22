@@ -21,7 +21,11 @@ SCAN_DIRS=( "include" "src" "tests" )
 
 # Exclude fragments to prune (fast). We want to prune third_party but allow a
 # very small explicit whitelist under it (handled in a separate pass).
-EXCLUDE_PATH_FRAGMENTS=( "third_party" ".git" "_build" "build" )
+# Each fragment is expanded to `-path '*/<frag>'` + `-path '*/<frag>/*'`, and
+# find's -path honours glob `*`, so "build-*" prunes out-of-source build trees
+# (build-release, build-clang, build-debug, …) whose generated .cmake files must
+# not be reformatted; the bare "build" entry still prunes the default build/.
+EXCLUDE_PATH_FRAGMENTS=( "third_party" ".git" "_build" "build" "build-*" )
 
 # Explicit exceptions (precise). We'll run a small second find pass (no pruning)
 # to collect only these paths:
