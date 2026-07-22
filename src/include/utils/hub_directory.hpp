@@ -42,7 +42,7 @@ namespace pylabhub::utils
  */
 class PYLABHUB_UTILS_EXPORT HubDirectory
 {
-public:
+  public:
     // ── Construction ───────────────────────────────────────────────────────────
 
     ~HubDirectory();
@@ -140,8 +140,7 @@ public:
      *                     "lua" (→ `init.lua`).
      * @return Absolute path to the script entry-point file.
      */
-    std::filesystem::path script_entry(std::string_view script_path,
-                                       std::string_view type) const;
+    std::filesystem::path script_entry(std::string_view script_path, std::string_view type) const;
 
     // ── Security helpers ───────────────────────────────────────────────────────
 
@@ -188,7 +187,7 @@ public:
      *                  but the helper stays defensive).
      */
     static void warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_base,
-                                            const std::string           &keyfile);
+                                           const std::string &keyfile);
 
     // ── Layout inspection ──────────────────────────────────────────────────────
 
@@ -207,7 +206,7 @@ public:
         /// Written to @c logging.max_size_mb if set.
         std::optional<double> max_size_mb;
         /// Written to @c logging.backups if set (@c -1 = keep all).
-        std::optional<int>    backups;
+        std::optional<int> backups;
     };
 
     /**
@@ -232,11 +231,10 @@ public:
      *             dump; unset fields leave the template default in place.
      * @return 0 on success, non-zero on error.
      */
-    static int init_directory(const std::filesystem::path &dir,
-                              const std::string &name,
+    static int init_directory(const std::filesystem::path &dir, const std::string &name,
                               const LogInitOverrides &log = {});
 
-private:
+  private:
     explicit HubDirectory(std::filesystem::path base) noexcept;
 
     std::filesystem::path base_;

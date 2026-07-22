@@ -6,14 +6,14 @@
  *        HEP-CORE-0017 §3.3.0); socket type is selected from (mode ×
  *        socket_pattern) at start().
  *
- * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
- *   payload element i: scalar → native msgpack type; array/string/bytes → bin(byte_size)
- *   checksum: BLAKE2b-256 of the raw (pre-pack) slot data
+ * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N),
+ * checksum:bin32] payload element i: scalar → native msgpack type; array/string/bytes →
+ * bin(byte_size) checksum: BLAKE2b-256 of the raw (pre-pack) slot data
  */
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/context_metrics.hpp"
 #include "utils/logger.hpp"
-#include "utils/loop_timing_policy.hpp"  // kBrokerReadinessPollInterval (finalize_connect)
+#include "utils/loop_timing_policy.hpp" // kBrokerReadinessPollInterval (finalize_connect)
 
 #include <nlohmann/json.hpp>
 #include "portable_atomic_shared_ptr.hpp"
@@ -54,10 +54,15 @@ static constexpr std::chrono::seconds kMismatchWarnInterval{1};
 // ============================================================================
 // ZmqQueueImpl — internal state
 // ============================================================================
-// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding) — field order kept for clarity; reorder in a dedicated layout pass if desired
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding) — field order kept for clarity; reorder
+// in a dedicated layout pass if desired
 struct ZmqQueueImpl
 {
-    enum class Mode { Read, Write } mode;
+    enum class Mode
+    {
+        Read,
+        Write
+    } mode;
 
     /// Socket pattern.  `PushPull` is the pre-2026-07-08 default and
     /// remains the shape produced by `pull_from` / `push_to` /
@@ -66,11 +71,15 @@ struct ZmqQueueImpl
     /// producer binds PUB, consumer connects SUB (subscribes to empty
     /// topic).  The pattern is fixed at construction time and drives
     /// libzmq socket-type selection at `start()`.
-    enum class SocketPattern { PushPull, PubSub } socket_pattern{SocketPattern::PushPull};
+    enum class SocketPattern
+    {
+        PushPull,
+        PubSub
+    } socket_pattern{SocketPattern::PushPull};
 
     std::string endpoint;
     std::string actual_endpoint; ///< Resolved after zmq_bind() — e.g. port 0 → actual port.
-    bool        bind_socket{false};
+    bool bind_socket{false};
     /// HEP-CORE-0036 §6.6.3 — set to true by `apply_master_approval`
     /// when the queue is a fan-in DIALING PUSH (write side + not
     /// bind_socket).  Signals that `apply_master_approval` deliberately
@@ -78,9 +87,9 @@ struct ZmqQueueImpl
     /// the role host invokes uniformly after apply for every role /
     /// topology (HEP-CORE-0036 §I9.1 locality invariant).  Reset to
     /// false once `finalize_connect()` completes.
-    bool        dial_pending{false};
-    size_t      item_sz{0};
-    size_t      max_depth{64};
+    bool dial_pending{false};
+    size_t item_sz{0};
+    size_t max_depth{64};
     std::string queue_name;
     /// ZMQ_SNDHWM for the write-side socket (0 = ZMQ default 1000).
     /// Semantic differs by socket type:
@@ -89,7 +98,7 @@ struct ZmqQueueImpl
     /// - PUB : per-subscriber drop — libzmq silently discards frames
     ///   for a subscriber whose queue is full.  Drops are NOT visible
     ///   via `send_drop_count_` (rev 2.4 wires ZMQ_EVENT_HWM_DROP).
-    int         sndhwm{0};
+    int sndhwm{0};
 
     /// Caller-supplied stable identifier — used as ThreadManager owner_id so the
     /// lifecycle module name is unique across overlapping queue instances (e.g.
@@ -99,11 +108,11 @@ struct ZmqQueueImpl
 
     // ── Schema tag (optional — 8 bytes of BLAKE2b-256 of BLDS) ───────────────
     std::array<uint8_t, 8> schema_tag_{};
-    bool                   has_schema_tag_{false};
+    bool has_schema_tag_{false};
 
     // ── Schema-based field encoding ───────────────────────────────────────────
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
-    size_t                 max_frame_sz_{0}; ///< recv frame buffer size
+    size_t max_frame_sz_{0}; ///< recv frame buffer size
 
     // Context is the shared process-wide zmq::context_t owned by the
     // ZMQContext lifecycle module (see utils/zmq_context.hpp). The
@@ -112,24 +121,24 @@ struct ZmqQueueImpl
     // instance. No per-queue context — prevents the racing zmq_ctx_term()
     // vs still-running send/recv threads that caused SIGABRT under
     // parallel test load.
-    zmq::socket_t socket;  ///< default-constructed empty; assigned in start()
+    zmq::socket_t socket; ///< default-constructed empty; assigned in start()
 
     // ── Read mode — pre-allocated ring buffer [ZQ9] ──────────────────────────
-    std::atomic<bool>                recv_stop_{false};
+    std::atomic<bool> recv_stop_{false};
     // Threads live inside a ThreadManager owned by the queue. Recreated
     // per start()/stop() cycle so each active window has its own dynamic
     // lifecycle module "ThreadManager:ZmqQueue:<name>".
     std::unique_ptr<pylabhub::utils::ThreadManager> thread_mgr_;
 
-    std::vector<std::vector<std::byte>> recv_ring_;  ///< [max_depth] pre-allocated slots
-    size_t                           ring_head_{0};  ///< index of oldest item
-    size_t                           ring_tail_{0};  ///< index of next write slot
-    size_t                           ring_count_{0}; ///< items currently in ring
-    std::mutex                       recv_mu_;
-    std::condition_variable          recv_cv_;
+    std::vector<std::vector<std::byte>> recv_ring_; ///< [max_depth] pre-allocated slots
+    size_t ring_head_{0};                           ///< index of oldest item
+    size_t ring_tail_{0};                           ///< index of next write slot
+    size_t ring_count_{0};                          ///< items currently in ring
+    std::mutex recv_mu_;
+    std::condition_variable recv_cv_;
 
-    std::vector<std::byte>           decode_tmp_;    ///< recv-thread-only staging buffer
-    std::vector<std::byte>           current_read_buf_; ///< returned by read_acquire()
+    std::vector<std::byte> decode_tmp_;       ///< recv-thread-only staging buffer
+    std::vector<std::byte> current_read_buf_; ///< returned by read_acquire()
 
     // ── Write mode — internal send buffer + send_thread_ ─────────────────────
     // The caller writes into write_buf_ (returned by write_acquire()).
@@ -137,28 +146,29 @@ struct ZmqQueueImpl
     // send_thread_.  send_thread_ drains the ring: packs msgpack frames and
     // calls zmq_send, retrying on EAGAIN.  This decouples the caller from the
     // ZMQ send latency and provides configurable back-pressure.
-    std::vector<std::byte>              write_buf_;     ///< caller-visible write buffer (item_sz bytes)
-    size_t                              send_depth_{64};
-    OverflowPolicy                      overflow_policy_{OverflowPolicy::Drop};
-    int                                 send_retry_interval_ms_{10};
+    std::vector<std::byte> write_buf_; ///< caller-visible write buffer (item_sz bytes)
+    size_t send_depth_{64};
+    OverflowPolicy overflow_policy_{OverflowPolicy::Drop};
+    int send_retry_interval_ms_{10};
 
-    std::vector<std::vector<std::byte>> send_ring_;     ///< pre-allocated send ring (send_depth_ × item_sz)
-    size_t                              send_head_{0};  ///< oldest filled slot (send_thread_ reads here)
-    size_t                              send_tail_{0};  ///< next write slot (write_commit() writes here)
-    size_t                              send_count_{0}; ///< filled slots waiting to be sent
-    std::mutex                          send_mu_;
-    std::condition_variable             send_cv_;
-    std::atomic<bool>                   send_stop_{false};
+    std::vector<std::vector<std::byte>>
+        send_ring_;        ///< pre-allocated send ring (send_depth_ × item_sz)
+    size_t send_head_{0};  ///< oldest filled slot (send_thread_ reads here)
+    size_t send_tail_{0};  ///< next write slot (write_commit() writes here)
+    size_t send_count_{0}; ///< filled slots waiting to be sent
+    std::mutex send_mu_;
+    std::condition_variable send_cv_;
+    std::atomic<bool> send_stop_{false};
     // send thread lives in thread_mgr_ (declared above in the Read-mode
     // section); spawn() is called from ZmqQueue::start() based on mode.
-    std::vector<std::byte>              send_local_buf_; ///< send_thread_-private staging (item_sz bytes)
-    msgpack::sbuffer                    send_sbuf_;      ///< send_thread_-private msgpack buffer (reused)
-    std::atomic<uint64_t>               send_seq_{0};
+    std::vector<std::byte> send_local_buf_; ///< send_thread_-private staging (item_sz bytes)
+    msgpack::sbuffer send_sbuf_;            ///< send_thread_-private msgpack buffer (reused)
+    std::atomic<uint64_t> send_seq_{0};
 
     // ── Counters ─────────────────────────────────────────────────────────────
     std::atomic<uint64_t> recv_overflow_count_{0};
     std::atomic<uint64_t> recv_frame_error_count_{0};
-    std::atomic<uint64_t> recv_gap_count_{0};  ///< [ZQ10] sequence gaps
+    std::atomic<uint64_t> recv_gap_count_{0}; ///< [ZQ10] sequence gaps
     std::atomic<uint64_t> send_drop_count_{0};
     std::atomic<uint64_t> send_retry_count_{0};
     std::atomic<uint64_t> data_drop_count_{0};
@@ -201,8 +211,7 @@ struct ZmqQueueImpl
     // pump thread via PortableAtomicSharedPtr.  Mutations through
     // ZmqQueue::set_peer_allowlist are atomic snapshots (HEP-CORE-0036 §I3
     // contract).  Unused on PULL/connect side.
-    pylabhub::utils::detail::PortableAtomicSharedPtr<
-        const pylabhub::utils::security::PeerAllowlist>
+    pylabhub::utils::detail::PortableAtomicSharedPtr<const pylabhub::utils::security::PeerAllowlist>
         allowlist_;
 
     // PUSH/bind side ZAP registration handle.  Active iff CURVE was
@@ -239,24 +248,24 @@ struct ZmqQueueImpl
     // + `endpoint` without taking this mutex because the state
     // machine guarantees `set_*` mutators don't race with `start()`
     // (sequenced by the role host per §I12).
-    std::mutex                   producer_peers_mu_;
-    std::vector<ProducerPeer>    producer_peers_;
+    std::mutex producer_peers_mu_;
+    std::vector<ProducerPeer> producer_peers_;
 
     // ── Domain 2+3 timing (HEP-CORE-0008 §10) ──────────────────────────────
     // Measured in read_acquire/read_release (read mode) or
     // write_acquire/write_commit (write mode). Same semantics as DataBlock ContextMetrics.
-    ContextMetrics ctx_metrics_;  ///< Unified timing + checksum metrics.
+    ContextMetrics ctx_metrics_; ///< Unified timing + checksum metrics.
     ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced}; ///< Default: auto checksum.
 
     using Clock = ContextMetrics::Clock;
 
     // Per-thread timestamps (not atomic — only accessed from caller thread).
-    Clock::time_point t_iter_start_{};       ///< Start of previous acquire (for iteration gap).
-    Clock::time_point t_acquired_{};         ///< When last acquire returned (for work time).
+    Clock::time_point t_iter_start_{}; ///< Start of previous acquire (for iteration gap).
+    Clock::time_point t_acquired_{};   ///< When last acquire returned (for work time).
 
     // ── Sequence tracking [ZQ10] ─────────────────────────────────────────────
     uint64_t expected_seq_{0};
-    bool     seq_initialized_{false};
+    bool seq_initialized_{false};
     /// Last wire seq decoded by recv_thread_. Atomic: written by recv_thread_,
     /// read by last_seq() from caller thread. Diagnostic use only.
     std::atomic<uint64_t> last_seq_{0};
@@ -279,14 +288,14 @@ struct ZmqQueueImpl
     // from "stuck in post-loop cleanup" in the ERROR log on timeout.
     void run_recv_thread_(pylabhub::utils::ThreadManager::SlotContext &ctx)
     {
-        socket.set(zmq::sockopt::rcvtimeo, 100);  // 100ms poll tick for stop-flag checks
+        socket.set(zmq::sockopt::rcvtimeo, 100); // 100ms poll tick for stop-flag checks
 
         zmq::message_t msg;
 
-        while (!recv_stop_.load(std::memory_order_relaxed) &&
-               !ctx.shutdown_requested())
+        while (!recv_stop_.load(std::memory_order_relaxed) && !ctx.shutdown_requested())
         {
-            if (!socket) break;
+            if (!socket)
+                break;
 
             zmq::recv_result_t rr;
             try
@@ -296,13 +305,15 @@ struct ZmqQueueImpl
             catch (const zmq::error_t &e)
             {
                 // ETERM on context shutdown → clean exit; EINTR on signal → retry.
-                if (e.num() == ETERM) break;
-                if (e.num() == EINTR) continue;
-                LOGGER_WARN("[hub::ZmqQueue] recv error on '{}': {}",
-                            queue_name, e.what());
+                if (e.num() == ETERM)
+                    break;
+                if (e.num() == EINTR)
+                    continue;
+                LOGGER_WARN("[hub::ZmqQueue] recv error on '{}': {}", queue_name, e.what());
                 break;
             }
-            if (!rr.has_value()) continue;  // RCVTIMEO expired; re-check stop flag
+            if (!rr.has_value())
+                continue; // RCVTIMEO expired; re-check stop flag
 
             // max_frame_sz_ has a 4-byte slack above any valid schema frame, so
             // size >= max_frame_sz_ indicates a malformed or oversized frame. [ZQ4]
@@ -314,16 +325,18 @@ struct ZmqQueueImpl
 
             try
             {
-                msgpack::object_handle oh = msgpack::unpack(
-                    static_cast<const char *>(msg.data()), msg.size());
+                msgpack::object_handle oh =
+                    msgpack::unpack(static_cast<const char *>(msg.data()), msg.size());
 
                 auto env = wire_detail::unpack_envelope(oh.get());
                 if (!env.valid || env.payload_size != schema_defs_.size())
-                    { ++recv_frame_error_count_; continue; }
+                {
+                    ++recv_frame_error_count_;
+                    continue;
+                }
 
                 // Schema-tag mismatch (rate-limited warning). [ZQ6]
-                if (has_schema_tag_ &&
-                    std::memcmp(env.recv_tag, schema_tag_.data(), 8) != 0)
+                if (has_schema_tag_ && std::memcmp(env.recv_tag, schema_tag_.data(), 8) != 0)
                 {
                     ++recv_frame_error_count_;
                     const auto now = std::chrono::steady_clock::now();
@@ -342,16 +355,18 @@ struct ZmqQueueImpl
                     if (seq_initialized_ && env.seq > expected_seq_)
                         recv_gap_count_.fetch_add(env.seq - expected_seq_,
                                                   std::memory_order_relaxed);
-                    expected_seq_    = env.seq + 1;
+                    expected_seq_ = env.seq + 1;
                     seq_initialized_ = true;
                     last_seq_.store(env.seq, std::memory_order_relaxed);
                 }
 
                 // Decode payload fields into decode_tmp_. [ZQ9]
                 std::fill(decode_tmp_.begin(), decode_tmp_.end(), std::byte{0});
-                if (!wire_detail::unpack_payload(*env.payload, schema_defs_,
-                                                  decode_tmp_.data()))
-                    { ++recv_frame_error_count_; continue; }
+                if (!wire_detail::unpack_payload(*env.payload, schema_defs_, decode_tmp_.data()))
+                {
+                    ++recv_frame_error_count_;
+                    continue;
+                }
 
                 // Checksum verification.
                 if (checksum_policy_ != ChecksumPolicy::None)
@@ -384,11 +399,10 @@ struct ZmqQueueImpl
                 }
                 recv_cv_.notify_one();
             }
-            catch (const std::exception& e)
+            catch (const std::exception &e)
             {
                 ++recv_frame_error_count_;
-                LOGGER_WARN("[hub::ZmqQueue] unpack error on '{}': {}",
-                            queue_name, e.what());
+                LOGGER_WARN("[hub::ZmqQueue] unpack error on '{}': {}", queue_name, e.what());
             }
         }
 
@@ -408,12 +422,15 @@ struct ZmqQueueImpl
             // ── Wait for a slot or stop ───────────────────────────────────
             {
                 std::unique_lock<std::mutex> lk(send_mu_);
-                send_cv_.wait(lk, [this, &ctx] {
-                    return send_count_ > 0
-                        || send_stop_.load(std::memory_order_relaxed)
-                        || ctx.shutdown_requested();
-                });
-                if (send_count_ == 0) break; // stop_ + empty → exit
+                send_cv_.wait(lk,
+                              [this, &ctx]
+                              {
+                                  return send_count_ > 0 ||
+                                         send_stop_.load(std::memory_order_relaxed) ||
+                                         ctx.shutdown_requested();
+                              });
+                if (send_count_ == 0)
+                    break; // stop_ + empty → exit
 
                 // Copy head slot to thread-private buffer under lock (fast memcpy).
                 std::memcpy(send_local_buf_.data(), send_ring_[send_head_].data(), item_sz);
@@ -435,8 +452,8 @@ struct ZmqQueueImpl
                 }
 
                 wire_detail::pack_frame(pk, schema_tag_,
-                    send_seq_.fetch_add(1, std::memory_order_relaxed),
-                    schema_defs_, send_local_buf_.data(), checksum);
+                                        send_seq_.fetch_add(1, std::memory_order_relaxed),
+                                        schema_defs_, send_local_buf_.data(), checksum);
             }
 
             // ── Send with retry on EAGAIN ─────────────────────────────────
@@ -444,10 +461,10 @@ struct ZmqQueueImpl
             {
                 try
                 {
-                    auto sr = socket.send(
-                        zmq::const_buffer(send_sbuf_.data(), send_sbuf_.size()),
-                        zmq::send_flags::dontwait);
-                    if (sr.has_value()) break;  // sent
+                    auto sr = socket.send(zmq::const_buffer(send_sbuf_.data(), send_sbuf_.size()),
+                                          zmq::send_flags::dontwait);
+                    if (sr.has_value())
+                        break; // sent
 
                     // EAGAIN — send ring full
                     if (send_stop_.load(std::memory_order_relaxed))
@@ -456,15 +473,13 @@ struct ZmqQueueImpl
                         break;
                     }
                     ++send_retry_count_;
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(send_retry_interval_ms_));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(send_retry_interval_ms_));
                     continue;
                 }
                 catch (const zmq::error_t &e)
                 {
                     if (e.num() != ETERM)
-                        LOGGER_WARN("[hub::ZmqQueue] send error on '{}': {}",
-                                    queue_name, e.what());
+                        LOGGER_WARN("[hub::ZmqQueue] send error on '{}': {}", queue_name, e.what());
                     ++send_drop_count_;
                     break;
                 }
@@ -498,9 +513,9 @@ static constexpr const char *socket_type_label(ZmqQueueImpl::Mode mode,
 
 /// Validate all type_str values in a schema.  Returns the first invalid type_str,
 /// or an empty string if all are valid.  [ZQ1]
-static std::string find_invalid_type(const std::vector<ZmqSchemaField>& schema)
+static std::string find_invalid_type(const std::vector<ZmqSchemaField> &schema)
 {
-    for (const auto& f : schema)
+    for (const auto &f : schema)
     {
         if (!wire_detail::is_valid_type_str(f.type_str))
             return f.type_str;
@@ -513,12 +528,10 @@ static std::string find_invalid_type(const std::vector<ZmqSchemaField>& schema)
 // ============================================================================
 
 std::unique_ptr<QueueReader>
-ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
-                    std::string packing,
-                    bool bind, size_t max_buffer_depth,
-                    std::optional<std::array<uint8_t, 8>> schema_tag,
-                    std::string instance_id,
-                    bool is_pubsub)
+ZmqQueue::build_plaintext_reader_(const std::string &endpoint, std::vector<ZmqSchemaField> schema,
+                                  std::string packing, bool bind, size_t max_buffer_depth,
+                                  std::optional<std::array<uint8_t, 8>> schema_tag,
+                                  std::string instance_id, bool is_pubsub)
 {
     if (schema.empty())
     {
@@ -532,7 +545,8 @@ ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSc
     }
     if (packing != "aligned" && packing != "packed")
     {
-        LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': invalid packing '{}' (must be \"aligned\" or \"packed\")",
+        LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': invalid packing '{}' (must be \"aligned\" or "
+                     "\"packed\")",
                      endpoint, packing);
         return nullptr;
     }
@@ -543,34 +557,40 @@ ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSc
         return nullptr;
     }
     // Validate string/bytes fields have length > 0; numeric fields have count >= 1. [C2]
-    for (const auto& f : schema)
+    for (const auto &f : schema)
     {
         if ((f.type_str == "string" || f.type_str == "bytes") && f.length == 0)
         {
-            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': string/bytes field has length=0", endpoint);
+            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': string/bytes field has length=0",
+                         endpoint);
             return nullptr;
         }
         if (f.type_str != "string" && f.type_str != "bytes" && f.count == 0)
         {
-            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': numeric/array field count must be >= 1", endpoint);
+            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': numeric/array field count must be >= 1",
+                         endpoint);
             return nullptr;
         }
     }
     auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
-    auto impl               = std::make_unique<ZmqQueueImpl>();
-    impl->mode              = ZmqQueueImpl::Mode::Read;
-    impl->socket_pattern    = is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub
-                                        : ZmqQueueImpl::SocketPattern::PushPull;
-    impl->endpoint          = endpoint;
-    impl->bind_socket       = bind;
-    impl->item_sz           = item_sz;
-    impl->max_depth         = max_buffer_depth;
-    impl->queue_name        = endpoint;
-    impl->instance_id       = std::move(instance_id);
-    impl->max_frame_sz_     = wire_detail::max_frame_size(layouts);
-    impl->schema_defs_      = std::move(layouts);
-    if (schema_tag) { impl->schema_tag_ = *schema_tag; impl->has_schema_tag_ = true; }
+    auto impl = std::make_unique<ZmqQueueImpl>();
+    impl->mode = ZmqQueueImpl::Mode::Read;
+    impl->socket_pattern =
+        is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub : ZmqQueueImpl::SocketPattern::PushPull;
+    impl->endpoint = endpoint;
+    impl->bind_socket = bind;
+    impl->item_sz = item_sz;
+    impl->max_depth = max_buffer_depth;
+    impl->queue_name = endpoint;
+    impl->instance_id = std::move(instance_id);
+    impl->max_frame_sz_ = wire_detail::max_frame_size(layouts);
+    impl->schema_defs_ = std::move(layouts);
+    if (schema_tag)
+    {
+        impl->schema_tag_ = *schema_tag;
+        impl->has_schema_tag_ = true;
+    }
 
     // Pre-allocate ring buffer (max_depth slots) and decode staging buffer. [ZQ9]
     impl->recv_ring_.assign(max_buffer_depth, std::vector<std::byte>(item_sz, std::byte{0}));
@@ -580,17 +600,11 @@ ZmqQueue::build_plaintext_reader_(const std::string& endpoint, std::vector<ZmqSc
     return std::unique_ptr<QueueReader>(new ZmqQueue(std::move(impl)));
 }
 
-std::unique_ptr<QueueWriter>
-ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
-                  std::string packing,
-                  bool bind,
-                  std::optional<std::array<uint8_t, 8>> schema_tag,
-                  int sndhwm,
-                  size_t send_buffer_depth,
-                  OverflowPolicy overflow_policy,
-                  int send_retry_interval_ms,
-                  std::string instance_id,
-                  bool is_pubsub)
+std::unique_ptr<QueueWriter> ZmqQueue::build_plaintext_writer_(
+    const std::string &endpoint, std::vector<ZmqSchemaField> schema, std::string packing, bool bind,
+    std::optional<std::array<uint8_t, 8>> schema_tag, int sndhwm, size_t send_buffer_depth,
+    OverflowPolicy overflow_policy, int send_retry_interval_ms, std::string instance_id,
+    bool is_pubsub)
 {
     if (schema.empty())
     {
@@ -604,7 +618,8 @@ ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSc
     }
     if (packing != "aligned" && packing != "packed")
     {
-        LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': invalid packing '{}' (must be \"aligned\" or \"packed\")",
+        LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': invalid packing '{}' (must be \"aligned\" or "
+                     "\"packed\")",
                      endpoint, packing);
         return nullptr;
     }
@@ -615,7 +630,7 @@ ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSc
         return nullptr;
     }
     // Validate string/bytes fields have length > 0; numeric fields have count >= 1. [C2]
-    for (const auto& f : schema)
+    for (const auto &f : schema)
     {
         if ((f.type_str == "string" || f.type_str == "bytes") && f.length == 0)
         {
@@ -624,28 +639,33 @@ ZmqQueue::build_plaintext_writer_(const std::string& endpoint, std::vector<ZmqSc
         }
         if (f.type_str != "string" && f.type_str != "bytes" && f.count == 0)
         {
-            LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': numeric/array field count must be >= 1", endpoint);
+            LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': numeric/array field count must be >= 1",
+                         endpoint);
             return nullptr;
         }
     }
     auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
-    auto impl                       = std::make_unique<ZmqQueueImpl>();
-    impl->mode                      = ZmqQueueImpl::Mode::Write;
-    impl->socket_pattern            = is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub
-                                                : ZmqQueueImpl::SocketPattern::PushPull;
-    impl->endpoint                  = endpoint;
-    impl->bind_socket               = bind;
-    impl->item_sz                   = item_sz;
-    impl->queue_name                = endpoint;
-    impl->instance_id               = std::move(instance_id);
-    impl->sndhwm                    = sndhwm; // [ZQ8]
-    impl->send_depth_               = send_buffer_depth;
-    impl->overflow_policy_          = overflow_policy;
-    impl->send_retry_interval_ms_   = send_retry_interval_ms;
-    impl->max_frame_sz_             = wire_detail::max_frame_size(layouts);
-    impl->schema_defs_              = std::move(layouts);
-    if (schema_tag) { impl->schema_tag_ = *schema_tag; impl->has_schema_tag_ = true; }
+    auto impl = std::make_unique<ZmqQueueImpl>();
+    impl->mode = ZmqQueueImpl::Mode::Write;
+    impl->socket_pattern =
+        is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub : ZmqQueueImpl::SocketPattern::PushPull;
+    impl->endpoint = endpoint;
+    impl->bind_socket = bind;
+    impl->item_sz = item_sz;
+    impl->queue_name = endpoint;
+    impl->instance_id = std::move(instance_id);
+    impl->sndhwm = sndhwm; // [ZQ8]
+    impl->send_depth_ = send_buffer_depth;
+    impl->overflow_policy_ = overflow_policy;
+    impl->send_retry_interval_ms_ = send_retry_interval_ms;
+    impl->max_frame_sz_ = wire_detail::max_frame_size(layouts);
+    impl->schema_defs_ = std::move(layouts);
+    if (schema_tag)
+    {
+        impl->schema_tag_ = *schema_tag;
+        impl->has_schema_tag_ = true;
+    }
 
     // Pre-allocate caller write buffer, send ring, and send_thread_-private buffer.
     impl->write_buf_.resize(item_sz, std::byte{0});
@@ -675,10 +695,8 @@ constexpr std::size_t kCurveKeyZ85Chars = 40;
 /// failure inside `start()` against a stale errno from an unrelated
 /// prior call.  Used by both `pull_from` (PULL/connect)
 /// and `push_to` (PUSH/bind).
-std::string
-validate_curve_factory_params(std::string_view identity_key_name,
-                              std::string_view server_pubkey_z85,
-                              bool             bind_side)
+std::string validate_curve_factory_params(std::string_view identity_key_name,
+                                          std::string_view server_pubkey_z85, bool bind_side)
 {
     // C1 (#157, HEP-CORE-0035 §2) + C4 (#160): CURVE is unconditional
     // on every role↔hub data path; the post-C4 public factories have
@@ -712,10 +730,8 @@ validate_curve_factory_params(std::string_view identity_key_name,
                    "queue)";
         const auto pub = ks.pubkey(name_str);
         if (pub.size() != kCurveKeyZ85Chars)
-            return "KeyStore entry '" + name_str +
-                   "' has pubkey of " + std::to_string(pub.size()) +
-                   " chars; expected " +
-                   std::to_string(kCurveKeyZ85Chars);
+            return "KeyStore entry '" + name_str + "' has pubkey of " + std::to_string(pub.size()) +
+                   " chars; expected " + std::to_string(kCurveKeyZ85Chars);
     }
 
     // PULL/connect-side serverkey is REQUIRED before `start()`, but it
@@ -760,15 +776,11 @@ validate_curve_factory_params(std::string_view identity_key_name,
 // auth-field writes would land on a running socket too late.
 
 std::unique_ptr<ZmqQueue>
-ZmqQueue::pull_from(const std::string& endpoint,
-                          ::pylabhub::utils::security::Z85PublicKey server_pubkey,
-                          std::vector<ZmqSchemaField> schema,
-                          std::string packing,
-                          std::string_view identity_key_name,
-                          bool bind,
-                          size_t max_buffer_depth,
-                          std::optional<std::array<uint8_t, 8>> schema_tag,
-                          std::string instance_id)
+ZmqQueue::pull_from(const std::string &endpoint,
+                    ::pylabhub::utils::security::Z85PublicKey server_pubkey,
+                    std::vector<ZmqSchemaField> schema, std::string packing,
+                    std::string_view identity_key_name, bool bind, size_t max_buffer_depth,
+                    std::optional<std::array<uint8_t, 8>> schema_tag, std::string instance_id)
 {
     // Z85PublicKey empty-sentinel handling: a default-constructed
     // `Z85PublicKey` is 40 zero bytes — a sentinel meaning "no
@@ -780,12 +792,13 @@ ZmqQueue::pull_from(const std::string& endpoint,
     const std::string server_pubkey_str =
         server_pubkey.empty() ? std::string{} : std::string{server_pubkey.str()};
 
-    if (auto err = validate_curve_factory_params(
-            identity_key_name, server_pubkey_str, /*bind_side=*/bind);
+    if (auto err =
+            validate_curve_factory_params(identity_key_name, server_pubkey_str, /*bind_side=*/bind);
         !err.empty())
     {
         LOGGER_ERROR("[hub::ZmqQueue::pull_from] invalid auth "
-                     "params for '{}': {}", endpoint, err);
+                     "params for '{}': {}",
+                     endpoint, err);
         return nullptr;
     }
 
@@ -793,15 +806,14 @@ ZmqQueue::pull_from(const std::string& endpoint,
                   "ZmqQueue must be final for the post-C4 CURVE factories' "
                   "static_cast to be sound — otherwise the cast may "
                   "silently truncate a most-derived subclass instance.");
-    auto reader = build_plaintext_reader_(endpoint, std::move(schema), std::move(packing),
-                             bind, max_buffer_depth, schema_tag,
-                             std::move(instance_id));
-    if (!reader) return nullptr;
+    auto reader = build_plaintext_reader_(endpoint, std::move(schema), std::move(packing), bind,
+                                          max_buffer_depth, schema_tag, std::move(instance_id));
+    if (!reader)
+        return nullptr;
     std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
-    assert(!z->is_running() &&
-           "pull_from: plaintext factory must not start() the "
-           "queue before auth fields are populated; ordering invariant "
-           "broken — silent plaintext-fallback risk");
+    assert(!z->is_running() && "pull_from: plaintext factory must not start() the "
+                               "queue before auth fields are populated; ordering invariant "
+                               "broken — silent plaintext-fallback risk");
 
     z->pImpl->identity_key_name_ = std::string{identity_key_name};
     z->pImpl->server_pubkey_z85_ = server_pubkey_str;
@@ -809,30 +821,22 @@ ZmqQueue::pull_from(const std::string& endpoint,
 }
 
 std::unique_ptr<ZmqQueue>
-ZmqQueue::push_to(const std::string& endpoint,
-                        std::vector<ZmqSchemaField> schema,
-                        std::string packing,
-                        std::string_view identity_key_name,
-                        std::string zap_domain,
-                        bool bind,
-                        std::optional<std::array<uint8_t, 8>> schema_tag,
-                        int sndhwm,
-                        size_t send_buffer_depth,
-                        OverflowPolicy overflow_policy,
-                        int send_retry_interval_ms,
-                        std::string instance_id,
-                        pylabhub::utils::security::Z85PublicKey server_pubkey)
+ZmqQueue::push_to(const std::string &endpoint, std::vector<ZmqSchemaField> schema,
+                  std::string packing, std::string_view identity_key_name, std::string zap_domain,
+                  bool bind, std::optional<std::array<uint8_t, 8>> schema_tag, int sndhwm,
+                  size_t send_buffer_depth, OverflowPolicy overflow_policy,
+                  int send_retry_interval_ms, std::string instance_id,
+                  pylabhub::utils::security::Z85PublicKey server_pubkey)
 {
-    const std::string server_pubkey_str = server_pubkey.empty()
-        ? std::string{}
-        : std::string{server_pubkey.str()};
-    if (auto err = validate_curve_factory_params(
-            identity_key_name, server_pubkey_str,
-            /*bind_side=*/bind);
+    const std::string server_pubkey_str =
+        server_pubkey.empty() ? std::string{} : std::string{server_pubkey.str()};
+    if (auto err = validate_curve_factory_params(identity_key_name, server_pubkey_str,
+                                                 /*bind_side=*/bind);
         !err.empty())
     {
         LOGGER_ERROR("[hub::ZmqQueue::push_to] invalid auth "
-                     "params for '{}': {}", endpoint, err);
+                     "params for '{}': {}",
+                     endpoint, err);
         return nullptr;
     }
 
@@ -840,19 +844,18 @@ ZmqQueue::push_to(const std::string& endpoint,
                   "ZmqQueue must be final for the post-C4 CURVE factories' "
                   "static_cast to be sound — otherwise the cast may "
                   "silently truncate a most-derived subclass instance.");
-    auto writer = build_plaintext_writer_(endpoint, std::move(schema), std::move(packing),
-                           bind, schema_tag, sndhwm, send_buffer_depth,
-                           overflow_policy, send_retry_interval_ms,
-                           std::move(instance_id));
-    if (!writer) return nullptr;
+    auto writer = build_plaintext_writer_(endpoint, std::move(schema), std::move(packing), bind,
+                                          schema_tag, sndhwm, send_buffer_depth, overflow_policy,
+                                          send_retry_interval_ms, std::move(instance_id));
+    if (!writer)
+        return nullptr;
     std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
-    assert(!z->is_running() &&
-           "push_to: plaintext factory must not start() the "
-           "queue before auth fields are populated; ordering invariant "
-           "broken — silent plaintext-fallback risk");
+    assert(!z->is_running() && "push_to: plaintext factory must not start() the "
+                               "queue before auth fields are populated; ordering invariant "
+                               "broken — silent plaintext-fallback risk");
 
     z->pImpl->identity_key_name_ = std::string{identity_key_name};
-    z->pImpl->zap_domain_        = std::move(zap_domain);
+    z->pImpl->zap_domain_ = std::move(zap_domain);
     // Dialing-side serverkey — used by start() as curve_serverkey
     // when this queue is a PUSH-connect (fan-in producer).  Empty on
     // BINDING sides; `apply_master_approval(REG_ACK)` may populate
@@ -880,9 +883,8 @@ ZmqQueue::push_to(const std::string& endpoint,
 // uses `build_plaintext_*_(is_pubsub=true)` directly, with the same
 // CURVE + ZAP wiring as PUSH/PULL binding sides.
 
-std::unique_ptr<ZmqQueue>
-ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
-                        RxCreateOptions                opts)
+std::unique_ptr<ZmqQueue> ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
+                                                  RxCreateOptions opts)
 {
     using pylabhub::hub::ChannelTopology;
     switch (topology)
@@ -898,29 +900,21 @@ ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
             LOGGER_WARN("[hub::ZmqQueue::create_reader] fan-in consumer "
                         "(BINDING) ignores opts.server_pubkey for '{}'; "
                         "the binding side is the CURVE server. Drop or "
-                        "check topology.", opts.endpoint);
+                        "check topology.",
+                        opts.endpoint);
         }
         return pull_from(std::move(opts.endpoint),
-                          /*server_pubkey=*/{},
-                          std::move(opts.schema),
-                          std::move(opts.packing),
-                          opts.identity_key_name,
-                          /*bind=*/true,
-                          opts.max_buffer_depth,
-                          std::move(opts.schema_tag),
-                          std::move(opts.instance_id));
+                         /*server_pubkey=*/{}, std::move(opts.schema), std::move(opts.packing),
+                         opts.identity_key_name,
+                         /*bind=*/true, opts.max_buffer_depth, std::move(opts.schema_tag),
+                         std::move(opts.instance_id));
     case ChannelTopology::OneToOne:
         // Consumer DIALING side.  server_pubkey is the producer's
         // identity pubkey; passed as curve_serverkey.
-        return pull_from(std::move(opts.endpoint),
-                          std::move(opts.server_pubkey),
-                          std::move(opts.schema),
-                          std::move(opts.packing),
-                          opts.identity_key_name,
-                          /*bind=*/false,
-                          opts.max_buffer_depth,
-                          std::move(opts.schema_tag),
-                          std::move(opts.instance_id));
+        return pull_from(std::move(opts.endpoint), std::move(opts.server_pubkey),
+                         std::move(opts.schema), std::move(opts.packing), opts.identity_key_name,
+                         /*bind=*/false, opts.max_buffer_depth, std::move(opts.schema_tag),
+                         std::move(opts.instance_id));
     case ChannelTopology::FanOut:
     {
         // Consumer DIALING side, SUB connect.  Fan-out consumers must
@@ -932,45 +926,43 @@ ZmqQueue::create_reader(pylabhub::hub::ChannelTopology topology,
         // refusal.
         if (opts.server_pubkey.empty())
         {
-            LOGGER_ERROR(
-                "[hub::ZmqQueue::create_reader] fan-out SUB requires "
-                "opts.server_pubkey (producer's identity pubkey); "
-                "empty rejected for '{}'.", opts.endpoint);
+            LOGGER_ERROR("[hub::ZmqQueue::create_reader] fan-out SUB requires "
+                         "opts.server_pubkey (producer's identity pubkey); "
+                         "empty rejected for '{}'.",
+                         opts.endpoint);
             return nullptr;
         }
         const std::string server_pubkey_str{opts.server_pubkey.str()};
-        if (auto err = validate_curve_factory_params(
-                opts.identity_key_name, server_pubkey_str,
-                /*bind_side=*/false);
+        if (auto err = validate_curve_factory_params(opts.identity_key_name, server_pubkey_str,
+                                                     /*bind_side=*/false);
             !err.empty())
         {
-            LOGGER_ERROR(
-                "[hub::ZmqQueue::create_reader] fan-out SUB: invalid "
-                "auth params for '{}': {}", opts.endpoint, err);
+            LOGGER_ERROR("[hub::ZmqQueue::create_reader] fan-out SUB: invalid "
+                         "auth params for '{}': {}",
+                         opts.endpoint, err);
             return nullptr;
         }
-        auto reader = build_plaintext_reader_(
-            opts.endpoint, std::move(opts.schema), std::move(opts.packing),
-            /*bind=*/false, opts.max_buffer_depth,
-            std::move(opts.schema_tag), std::move(opts.instance_id),
-            /*is_pubsub=*/true);
-        if (!reader) return nullptr;
+        auto reader =
+            build_plaintext_reader_(opts.endpoint, std::move(opts.schema), std::move(opts.packing),
+                                    /*bind=*/false, opts.max_buffer_depth,
+                                    std::move(opts.schema_tag), std::move(opts.instance_id),
+                                    /*is_pubsub=*/true);
+        if (!reader)
+            return nullptr;
         std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(reader.release()));
-        assert(!z->is_running() &&
-               "create_reader(FanOut): plaintext factory must not "
-               "start() the queue before auth fields are populated; "
-               "ordering invariant broken — silent plaintext-fallback risk");
-        z->pImpl->identity_key_name_   = std::string{opts.identity_key_name};
-        z->pImpl->server_pubkey_z85_   = server_pubkey_str;
+        assert(!z->is_running() && "create_reader(FanOut): plaintext factory must not "
+                                   "start() the queue before auth fields are populated; "
+                                   "ordering invariant broken — silent plaintext-fallback risk");
+        z->pImpl->identity_key_name_ = std::string{opts.identity_key_name};
+        z->pImpl->server_pubkey_z85_ = server_pubkey_str;
         return z;
     }
     }
-    return nullptr;  // unreachable under well-formed enum
+    return nullptr; // unreachable under well-formed enum
 }
 
-std::unique_ptr<ZmqQueue>
-ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
-                        TxCreateOptions                opts)
+std::unique_ptr<ZmqQueue> ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
+                                                  TxCreateOptions opts)
 {
     using pylabhub::hub::ChannelTopology;
     switch (topology)
@@ -984,21 +976,15 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
             LOGGER_WARN("[hub::ZmqQueue::create_writer] one-to-one "
                         "producer (BINDING) ignores opts.server_pubkey "
                         "for '{}'; the binding side is the CURVE "
-                        "server. Drop or check topology.", opts.endpoint);
+                        "server. Drop or check topology.",
+                        opts.endpoint);
         }
-        return push_to(std::move(opts.endpoint),
-                        std::move(opts.schema),
-                        std::move(opts.packing),
-                        opts.identity_key_name,
-                        std::move(opts.zap_domain),
-                        /*bind=*/true,
-                        std::move(opts.schema_tag),
-                        opts.sndhwm,
-                        opts.send_buffer_depth,
-                        opts.overflow_policy,
-                        opts.send_retry_interval_ms,
-                        std::move(opts.instance_id),
-                        /*server_pubkey=*/{});
+        return push_to(std::move(opts.endpoint), std::move(opts.schema), std::move(opts.packing),
+                       opts.identity_key_name, std::move(opts.zap_domain),
+                       /*bind=*/true, std::move(opts.schema_tag), opts.sndhwm,
+                       opts.send_buffer_depth, opts.overflow_policy, opts.send_retry_interval_ms,
+                       std::move(opts.instance_id),
+                       /*server_pubkey=*/{});
     case ChannelTopology::FanIn:
         // Producer DIALING side.  PUSH connect to consumer's bind
         // endpoint.  zap_domain is ignored on the dialing side (ZAP is
@@ -1014,21 +1000,15 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
             LOGGER_WARN("[hub::ZmqQueue::create_writer] fan-in producer "
                         "(DIALING) ignores opts.zap_domain for '{}'; "
                         "the dialing side has no ZAP gate. Drop or "
-                        "check topology.", opts.endpoint);
+                        "check topology.",
+                        opts.endpoint);
         }
-        return push_to(std::move(opts.endpoint),
-                        std::move(opts.schema),
-                        std::move(opts.packing),
-                        opts.identity_key_name,
-                        /*zap_domain=*/{},   // no ZAP on dialing side
-                        /*bind=*/false,
-                        std::move(opts.schema_tag),
-                        opts.sndhwm,
-                        opts.send_buffer_depth,
-                        opts.overflow_policy,
-                        opts.send_retry_interval_ms,
-                        std::move(opts.instance_id),
-                        std::move(opts.server_pubkey));
+        return push_to(std::move(opts.endpoint), std::move(opts.schema), std::move(opts.packing),
+                       opts.identity_key_name,
+                       /*zap_domain=*/{}, // no ZAP on dialing side
+                       /*bind=*/false, std::move(opts.schema_tag), opts.sndhwm,
+                       opts.send_buffer_depth, opts.overflow_policy, opts.send_retry_interval_ms,
+                       std::move(opts.instance_id), std::move(opts.server_pubkey));
     case ChannelTopology::FanOut:
     {
         // Producer BINDING side, PUB bind.  Same CURVE-server wiring
@@ -1039,49 +1019,49 @@ ZmqQueue::create_writer(pylabhub::hub::ChannelTopology topology,
             LOGGER_WARN("[hub::ZmqQueue::create_writer] fan-out producer "
                         "(BINDING) ignores opts.server_pubkey for '{}'; "
                         "the binding side is the CURVE server. Drop or "
-                        "check topology.", opts.endpoint);
+                        "check topology.",
+                        opts.endpoint);
         }
-        if (auto err = validate_curve_factory_params(
-                opts.identity_key_name, /*server_pubkey_z85=*/{},
-                /*bind_side=*/true);
+        if (auto err =
+                validate_curve_factory_params(opts.identity_key_name, /*server_pubkey_z85=*/{},
+                                              /*bind_side=*/true);
             !err.empty())
         {
-            LOGGER_ERROR(
-                "[hub::ZmqQueue::create_writer] fan-out PUB: invalid "
-                "auth params for '{}': {}", opts.endpoint, err);
+            LOGGER_ERROR("[hub::ZmqQueue::create_writer] fan-out PUB: invalid "
+                         "auth params for '{}': {}",
+                         opts.endpoint, err);
             return nullptr;
         }
         auto writer = build_plaintext_writer_(
             opts.endpoint, std::move(opts.schema), std::move(opts.packing),
-            /*bind=*/true, std::move(opts.schema_tag),
-            opts.sndhwm, opts.send_buffer_depth, opts.overflow_policy,
-            opts.send_retry_interval_ms, std::move(opts.instance_id),
+            /*bind=*/true, std::move(opts.schema_tag), opts.sndhwm, opts.send_buffer_depth,
+            opts.overflow_policy, opts.send_retry_interval_ms, std::move(opts.instance_id),
             /*is_pubsub=*/true);
-        if (!writer) return nullptr;
+        if (!writer)
+            return nullptr;
         std::unique_ptr<ZmqQueue> z(static_cast<ZmqQueue *>(writer.release()));
-        assert(!z->is_running() &&
-               "create_writer(FanOut): plaintext factory must not "
-               "start() the queue before auth fields are populated; "
-               "ordering invariant broken — silent plaintext-fallback risk");
+        assert(!z->is_running() && "create_writer(FanOut): plaintext factory must not "
+                                   "start() the queue before auth fields are populated; "
+                                   "ordering invariant broken — silent plaintext-fallback risk");
         z->pImpl->identity_key_name_ = std::string{opts.identity_key_name};
-        z->pImpl->zap_domain_        = std::move(opts.zap_domain);
+        z->pImpl->zap_domain_ = std::move(opts.zap_domain);
         // Initial allowlist intentionally NOT seeded — caller invokes
         // `set_peer_allowlist()` after `start()`.  Empty == deny-all
         // secure default (same contract as `push_to`).
         return z;
     }
     }
-    return nullptr;  // unreachable under well-formed enum
+    return nullptr; // unreachable under well-formed enum
 }
 
 // ============================================================================
 // PeerAdmission overrides (`PeerAdmission` interface)
 // ============================================================================
 
-bool ZmqQueue::set_peer_allowlist(
-    pylabhub::utils::security::PeerAllowlist allowlist)
+bool ZmqQueue::set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist)
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     // BINDING side has the ZAP allowlist — both PUSH bind (OneToOne
     // producer), PUB bind (FanOut producer), AND PULL bind (FanIn
     // consumer, under HEP-CORE-0017 §3.3.0 topology migration).
@@ -1106,64 +1086,65 @@ bool ZmqQueue::set_peer_allowlist(
     std::set<std::string> prev_keys;
     if (prev)
     {
-        for (const auto &p : prev->peers) prev_keys.insert(p.data);
+        for (const auto &p : prev->peers)
+            prev_keys.insert(p.data);
     }
     std::vector<std::string> added, removed;
-    std::set_difference(now_keys.begin(), now_keys.end(),
-                        prev_keys.begin(), prev_keys.end(),
+    std::set_difference(now_keys.begin(), now_keys.end(), prev_keys.begin(), prev_keys.end(),
                         std::back_inserter(added));
-    std::set_difference(prev_keys.begin(), prev_keys.end(),
-                        now_keys.begin(), now_keys.end(),
+    std::set_difference(prev_keys.begin(), prev_keys.end(), now_keys.begin(), now_keys.end(),
                         std::back_inserter(removed));
     if (!added.empty() || !removed.empty())
     {
-        auto join = [](const std::vector<std::string> &v) {
+        auto join = [](const std::vector<std::string> &v)
+        {
             std::string s;
             for (const auto &e : v)
             {
-                if (!s.empty()) s += ",";
+                if (!s.empty())
+                    s += ",";
                 s += e;
             }
             return s;
         };
-        LOGGER_INFO(
-            "[hub::ZmqQueue::set_peer_allowlist] endpoint='{}' zap_domain='{}' "
-            "delta: added=[{}] removed=[{}] new_size={} (HEP-CORE-0036 §6.5)",
-            pImpl->endpoint, pImpl->resolved_zap_domain_,
-            join(added), join(removed), now_keys.size());
+        LOGGER_INFO("[hub::ZmqQueue::set_peer_allowlist] endpoint='{}' zap_domain='{}' "
+                    "delta: added=[{}] removed=[{}] new_size={} (HEP-CORE-0036 §6.5)",
+                    pImpl->endpoint, pImpl->resolved_zap_domain_, join(added), join(removed),
+                    now_keys.size());
     }
 
     pImpl->allowlist_.store(
-        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(
-            std::move(allowlist)),
+        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(std::move(allowlist)),
         std::memory_order_release);
     return true;
 }
 
-std::optional<pylabhub::utils::security::PeerAllowlist>
-ZmqQueue::peer_allowlist_snapshot() const
+std::optional<pylabhub::utils::security::PeerAllowlist> ZmqQueue::peer_allowlist_snapshot() const
 {
-    if (!pImpl) return std::nullopt;
+    if (!pImpl)
+        return std::nullopt;
     // BINDING side has the ZAP allowlist (PUSH/PUB bind and PULL bind
     // under fan-in topology).  DIALING sides authenticate the peer via
     // curve_serverkey; no allowlist to snapshot.
     if (!pImpl->bind_socket)
         return std::nullopt;
     auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-    if (!snap) return std::nullopt;
+    if (!snap)
+        return std::nullopt;
     return *snap;
 }
 
-bool ZmqQueue::is_peer_allowed(
-    const pylabhub::utils::security::PeerIdentity& peer) const
+bool ZmqQueue::is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     // BINDING side gates admission via allowlist (PUSH/PUB bind, PULL
     // bind under fan-in).  DIALING side has no inbound handshakes.
     if (!pImpl->bind_socket)
         return false;
     auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-    if (!snap) return false;
+    if (!snap)
+        return false;
     return snap->contains(peer);
 }
 
@@ -1171,12 +1152,14 @@ bool ZmqQueue::is_peer_allowed(
 
 bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->mode != ZmqQueueImpl::Mode::Read)
     {
         LOGGER_INFO("[hub::ZmqQueue::set_producer_peers] inert on "
                     "PUSH side (queue='{}'); call set_peer_allowlist "
-                    "instead", pImpl->endpoint);
+                    "instead",
+                    pImpl->endpoint);
         return false;
     }
 
@@ -1184,13 +1167,13 @@ bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
     // peer (one PUB binding side per channel); N>1 is a topology
     // contract violation.  Refuse instead of silently accepting a
     // multi-peer list that Phase E retirement will strip anyway.
-    if (pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub
-        && list.size() > 1)
+    if (pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub && list.size() > 1)
     {
         LOGGER_WARN("[hub::ZmqQueue::set_producer_peers] SUB side "
                     "(fan-out consumer) accepts at most one peer per "
                     "HEP-CORE-0017 §3.3.0; got {} peers for '{}' — "
-                    "refusing", list.size(), pImpl->endpoint);
+                    "refusing",
+                    list.size(), pImpl->endpoint);
         return false;
     }
 
@@ -1213,13 +1196,14 @@ bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
     return true;
 }
 
-bool ZmqQueue::add_producer_peer(const ProducerPeer& peer)
+bool ZmqQueue::add_producer_peer(const ProducerPeer &peer)
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->mode != ZmqQueueImpl::Mode::Read)
         return false;
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
-    for (auto& existing : pImpl->producer_peers_)
+    for (auto &existing : pImpl->producer_peers_)
     {
         if (existing.role_uid == peer.role_uid)
         {
@@ -1231,15 +1215,15 @@ bool ZmqQueue::add_producer_peer(const ProducerPeer& peer)
     return true;
 }
 
-bool ZmqQueue::remove_producer_peer(const std::string& role_uid)
+bool ZmqQueue::remove_producer_peer(const std::string &role_uid)
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->mode != ZmqQueueImpl::Mode::Read)
         return false;
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
-    auto it = std::find_if(
-        pImpl->producer_peers_.begin(), pImpl->producer_peers_.end(),
-        [&](const ProducerPeer& p) { return p.role_uid == role_uid; });
+    auto it = std::find_if(pImpl->producer_peers_.begin(), pImpl->producer_peers_.end(),
+                           [&](const ProducerPeer &p) { return p.role_uid == role_uid; });
     if (it == pImpl->producer_peers_.end())
         return false;
     pImpl->producer_peers_.erase(it);
@@ -1248,23 +1232,25 @@ bool ZmqQueue::remove_producer_peer(const std::string& role_uid)
 
 std::size_t ZmqQueue::producer_peer_count() const noexcept
 {
-    if (!pImpl) return 0;
-    if (pImpl->mode != ZmqQueueImpl::Mode::Read) return 0;
+    if (!pImpl)
+        return 0;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
+        return 0;
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     return pImpl->producer_peers_.size();
 }
 
-bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
+bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     try
     {
         // Already-running queues: apply runtime updates per §6.7 Active
         // column.  Either way no socket bind/connect — that already
         // happened in the prior apply_master_approval call that drove
         // Standby → Active.
-        const bool already_running =
-            pImpl->running_.load(std::memory_order_acquire);
+        const bool already_running = pImpl->running_.load(std::memory_order_acquire);
 
         // ── Unified peer-list wire field (HEP-CORE-0036 §6.2 + §6.4) ──
         //
@@ -1290,8 +1276,8 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
         // No-op tolerance: if the ACK lacks the peer field the queue
         // is unchanged.  Used by SHM ACKs (SHM branch doesn't touch
         // ZmqQueue) and by runtime refresh ACKs.
-        const bool is_read  = (pImpl->mode == ZmqQueueImpl::Mode::Read);
-        const char *field   = is_read ? "producers" : "initial_allowlist";
+        const bool is_read = (pImpl->mode == ZmqQueueImpl::Mode::Read);
+        const char *field = is_read ? "producers" : "initial_allowlist";
         const bool is_dialing = !pImpl->bind_socket;
 
         std::vector<ProducerPeer> peers;
@@ -1299,39 +1285,41 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
 
         if (artifacts.contains(field))
         {
-            const auto& arr = artifacts.at(field);
+            const auto &arr = artifacts.at(field);
             if (!arr.is_array())
             {
                 LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                            "'{}' field is not an array — refusing", field);
+                            "'{}' field is not an array — refusing",
+                            field);
                 return false;
             }
             // Fan-out (PubSub) enforces singular DIALING per
             // HEP-CORE-0017 §3.3.0 — SUB has exactly one PUB peer.
             // PushPull DIALING may still be multi (legacy fan-in
             // consumer / one-to-one after Phase G).
-            if (is_dialing
-                && pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub
-                && arr.size() > 1)
+            if (is_dialing && pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub &&
+                arr.size() > 1)
             {
                 LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
                             "'{}' on fan-out DIALING (SUB) must have at "
                             "most one entry per HEP-CORE-0017 §3.3.0; "
-                            "got {}", field, arr.size());
+                            "got {}",
+                            field, arr.size());
                 return false;
             }
             peers.reserve(arr.size());
-            for (const auto& entry : arr)
+            for (const auto &entry : arr)
             {
                 if (!entry.is_object())
                 {
                     LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "'{}' entry not an object — refusing", field);
+                                "'{}' entry not an object — refusing",
+                                field);
                     return false;
                 }
                 ProducerPeer p;
-                p.role_uid   = entry.value("role_uid",   std::string{});
-                p.endpoint   = entry.value("endpoint",   std::string{});
+                p.role_uid = entry.value("role_uid", std::string{});
+                p.endpoint = entry.value("endpoint", std::string{});
                 p.pubkey_z85 = entry.value("pubkey_z85", std::string{});
                 if (p.pubkey_z85.size() != 40)
                 {
@@ -1345,7 +1333,8 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                 {
                     LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
                                 "'{}' entry on DIALING side missing "
-                                "required endpoint", field);
+                                "required endpoint",
+                                field);
                     return false;
                 }
                 peers.push_back(std::move(p));
@@ -1374,14 +1363,13 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                 pylabhub::utils::security::PeerAllowlist allowlist;
                 const auto &src = is_read ? pImpl->producer_peers_ : peers;
                 {
-                    std::unique_lock<std::mutex> lock(
-                        pImpl->producer_peers_mu_, std::defer_lock);
-                    if (is_read) lock.lock();
+                    std::unique_lock<std::mutex> lock(pImpl->producer_peers_mu_, std::defer_lock);
+                    if (is_read)
+                        lock.lock();
                     for (const auto &p : src)
                     {
                         allowlist.peers.insert(
-                            pylabhub::utils::security::PeerIdentity{
-                                "curve", p.pubkey_z85});
+                            pylabhub::utils::security::PeerIdentity{"curve", p.pubkey_z85});
                     }
                 }
                 if (!set_peer_allowlist(std::move(allowlist)))
@@ -1397,15 +1385,14 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
                 // Configured" flag per HEP-CORE-0036 §6.7 Option B).
                 // Only mutate on Standby; on Active, held stable for
                 // the socket's lifetime.
-                std::unique_lock<std::mutex> lock(
-                    pImpl->producer_peers_mu_, std::defer_lock);
-                if (is_read) lock.lock();
+                std::unique_lock<std::mutex> lock(pImpl->producer_peers_mu_, std::defer_lock);
+                if (is_read)
+                    lock.lock();
                 const auto &src = is_read ? pImpl->producer_peers_ : peers;
                 if (!src.empty())
                 {
                     const auto &p0 = src.front();
-                    if (pImpl->server_pubkey_z85_.empty()
-                        && !p0.pubkey_z85.empty())
+                    if (pImpl->server_pubkey_z85_.empty() && !p0.pubkey_z85.empty())
                         pImpl->server_pubkey_z85_ = p0.pubkey_z85;
                     if (pImpl->endpoint.empty() && !p0.endpoint.empty())
                         pImpl->endpoint = p0.endpoint;
@@ -1420,8 +1407,8 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
             return true;
         LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
                     "from=Standby to=Configured queue='{}' endpoint='{}'",
-                    socket_type_label(pImpl->mode, pImpl->socket_pattern),
-                    pImpl->queue_name, pImpl->endpoint);
+                    socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->queue_name,
+                    pImpl->endpoint);
 
         // HEP-CORE-0036 §6.6.3 — defer connect for fan-in DIALING PUSH.
         // Rationale: `socket.connect()` inside `start()` triggers the
@@ -1444,36 +1431,35 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json& artifacts) noexcept
         // side CURVE talks to a producer that's already up, so no
         // race exists.
         const bool is_fanin_dialing_push =
-            (pImpl->mode == ZmqQueueImpl::Mode::Write) &&
-            !pImpl->bind_socket;
+            (pImpl->mode == ZmqQueueImpl::Mode::Write) && !pImpl->bind_socket;
         if (is_fanin_dialing_push)
         {
             pImpl->dial_pending = true;
-            LOGGER_INFO(
-                "[hub::ZmqQueue] event=DialDeferred side={} endpoint='{}' "
-                "queue='{}' (HEP-CORE-0036 §6.6.3 — awaiting role-host "
-                "finalize_connect() with PeerReadinessOracle)",
-                socket_type_label(pImpl->mode, pImpl->socket_pattern),
-                pImpl->endpoint, pImpl->queue_name);
+            LOGGER_INFO("[hub::ZmqQueue] event=DialDeferred side={} endpoint='{}' "
+                        "queue='{}' (HEP-CORE-0036 §6.6.3 — awaiting role-host "
+                        "finalize_connect() with PeerReadinessOracle)",
+                        socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->endpoint,
+                        pImpl->queue_name);
             return true;
         }
 
         return start();
     }
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
         LOGGER_ERROR("[hub::ZmqQueue::apply_master_approval] exception "
-                     "parsing artifacts: {}", e.what());
+                     "parsing artifacts: {}",
+                     e.what());
         return false;
     }
 }
 
 bool ZmqQueue::finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
-                                 std::uint64_t                         timeout_ms,
-                                 const std::function<bool()>          &is_cancelled,
-                                 const char                           *log_tag) noexcept
+                                std::uint64_t timeout_ms, const std::function<bool()> &is_cancelled,
+                                const char *log_tag) noexcept
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
 
     // Non-deferred queues (fan-out producer, one-to-one binding-side
     // producer, dialing consumer, any already-running queue): no-op
@@ -1484,28 +1470,26 @@ bool ZmqQueue::finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
     }
 
     const auto start_ts = std::chrono::steady_clock::now();
-    const auto deadline = timeout_ms == 0
-        ? std::chrono::steady_clock::time_point::max()
-        : start_ts + std::chrono::milliseconds(timeout_ms);
+    const auto deadline = timeout_ms == 0 ? std::chrono::steady_clock::time_point::max()
+                                          : start_ts + std::chrono::milliseconds(timeout_ms);
     const bool cancellable = static_cast<bool>(is_cancelled);
     const char *tag = log_tag ? log_tag : "hub::ZmqQueue::finalize_connect";
-    LOGGER_INFO(
-        "[{}] event=FinalizeConnectPolling side={} endpoint='{}' "
-        "queue='{}' timeout_ms={} cancellable={} "
-        "(HEP-CORE-0036 §6.6.3)",
-        tag, socket_type_label(pImpl->mode, pImpl->socket_pattern),
-        pImpl->endpoint, pImpl->queue_name, timeout_ms, cancellable);
+    LOGGER_INFO("[{}] event=FinalizeConnectPolling side={} endpoint='{}' "
+                "queue='{}' timeout_ms={} cancellable={} "
+                "(HEP-CORE-0036 §6.6.3)",
+                tag, socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->endpoint,
+                pImpl->queue_name, timeout_ms, cancellable);
 
     for (;;)
     {
         if (cancellable && is_cancelled())
         {
-            LOGGER_INFO(
-                "[{}] event=FinalizeConnectCancelled queue='{}' "
-                "elapsed_ms={} (shutdown / critical-error observed)",
-                tag, pImpl->queue_name,
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start_ts).count());
+            LOGGER_INFO("[{}] event=FinalizeConnectCancelled queue='{}' "
+                        "elapsed_ms={} (shutdown / critical-error observed)",
+                        tag, pImpl->queue_name,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - start_ts)
+                            .count());
             return false;
         }
 
@@ -1516,43 +1500,42 @@ bool ZmqQueue::finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
         }
         if (result == ::pylabhub::hub::PeerReadinessOracle::PollResult::PermanentError)
         {
-            LOGGER_ERROR(
-                "[{}] event=FinalizeConnectPermanentError queue='{}' "
-                "elapsed_ms={} (oracle returned PermanentError)",
-                tag, pImpl->queue_name,
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start_ts).count());
+            LOGGER_ERROR("[{}] event=FinalizeConnectPermanentError queue='{}' "
+                         "elapsed_ms={} (oracle returned PermanentError)",
+                         tag, pImpl->queue_name,
+                         std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start_ts)
+                             .count());
             return false;
         }
         // NotReady — continue polling until deadline.
         if (deadline != std::chrono::steady_clock::time_point::max() &&
             std::chrono::steady_clock::now() >= deadline)
         {
-            LOGGER_ERROR(
-                "[{}] event=FinalizeConnectTimeout queue='{}' "
-                "budget_ms={} — fatal (HEP-CORE-0036 §6.6.3)",
-                tag, pImpl->queue_name, timeout_ms);
+            LOGGER_ERROR("[{}] event=FinalizeConnectTimeout queue='{}' "
+                         "budget_ms={} — fatal (HEP-CORE-0036 §6.6.3)",
+                         tag, pImpl->queue_name, timeout_ms);
             return false;
         }
-        std::this_thread::sleep_for(
-            ::pylabhub::kBrokerReadinessPollInterval);
+        std::this_thread::sleep_for(::pylabhub::kBrokerReadinessPollInterval);
     }
 
     pImpl->dial_pending = false;
-    LOGGER_INFO(
-        "[hub::ZmqQueue] event=FinalizeConnect side={} endpoint='{}' "
-        "queue='{}' elapsed_ms={} (peer confirmed ready, running "
-        "deferred start())",
-        socket_type_label(pImpl->mode, pImpl->socket_pattern),
-        pImpl->endpoint, pImpl->queue_name,
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start_ts).count());
+    LOGGER_INFO("[hub::ZmqQueue] event=FinalizeConnect side={} endpoint='{}' "
+                "queue='{}' elapsed_ms={} (peer confirmed ready, running "
+                "deferred start())",
+                socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->endpoint,
+                pImpl->queue_name,
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start_ts)
+                    .count());
     return start();
 }
 
 std::string ZmqQueue::own_pubkey_z85() const noexcept
 {
-    if (!pImpl || pImpl->identity_key_name_.empty()) return {};
+    if (!pImpl || pImpl->identity_key_name_.empty())
+        return {};
     try
     {
         namespace sec = pylabhub::utils::security;
@@ -1574,10 +1557,10 @@ std::string ZmqQueue::own_pubkey_z85() const noexcept
 std::string_view ZmqQueue::binding_role_type() const noexcept
 {
     // HEP-CORE-0036 §I9.1 + §6.5 step 6 — queue-owned side identity.
-    if (!pImpl || !pImpl->bind_socket) return {};
-    return (pImpl->mode == ZmqQueueImpl::Mode::Read)
-        ? std::string_view{"consumer"}
-        : std::string_view{"producer"};
+    if (!pImpl || !pImpl->bind_socket)
+        return {};
+    return (pImpl->mode == ZmqQueueImpl::Mode::Read) ? std::string_view{"consumer"}
+                                                     : std::string_view{"producer"};
 }
 
 bool ZmqQueue::is_admission_populated() const noexcept
@@ -1585,13 +1568,15 @@ bool ZmqQueue::is_admission_populated() const noexcept
     // HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
     // queue-owned admission fact.  Called by role-side loop-ready
     // gate through `RoleAPIBase::channel_admission_populated`.
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->bind_socket)
     {
         // Binding side: ZAP allowlist snapshot.  Empty = deny-all,
         // no peer can dial in yet — gate NotReady.
         auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-        if (!snap) return false;
+        if (!snap)
+            return false;
         return !snap->peers.empty();
     }
     // Dialing side.
@@ -1611,7 +1596,8 @@ bool ZmqQueue::is_admission_populated() const noexcept
 
 bool ZmqQueue::is_configured() const noexcept
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     // Server side (any bind): only needs endpoint — CURVE_SERVER
     // artifacts (identity keypair + ZAP allowlist) are resolved at
     // `start()` time from the KeyStore-seeded identity_key_name_ and
@@ -1645,8 +1631,7 @@ bool ZmqQueue::is_configured() const noexcept
     // `start()` reads `producer_peers_` directly for the per-peer
     // connect (HEP-CORE-0017 §3.3); these fields are used ONLY as
     // the Standby→Configured flag here.
-    return !pImpl->server_pubkey_z85_.empty()
-           && !pImpl->endpoint.empty();
+    return !pImpl->server_pubkey_z85_.empty() && !pImpl->endpoint.empty();
 }
 
 // ============================================================================
@@ -1665,9 +1650,9 @@ ZmqQueue::~ZmqQueue()
 // Calling start() again would deliver stale ring items and re-send stale send-ring
 // slots.  Destroy and reconstruct the queue if a restart is needed.
 
-ZmqQueue::ZmqQueue(ZmqQueue&&) noexcept = default;
+ZmqQueue::ZmqQueue(ZmqQueue &&) noexcept = default;
 
-ZmqQueue& ZmqQueue::operator=(ZmqQueue&& o) noexcept
+ZmqQueue &ZmqQueue::operator=(ZmqQueue &&o) noexcept
 {
     // The defaulted move-assignment would destroy pImpl without stopping threads first.
     // A running ZmqQueueImpl holds joinable std::threads; destroying them without
@@ -1686,7 +1671,8 @@ ZmqQueue& ZmqQueue::operator=(ZmqQueue&& o) noexcept
 
 bool ZmqQueue::start()
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->running_.load(std::memory_order_acquire))
         return true; // already running — idempotent
 
@@ -1700,15 +1686,13 @@ bool ZmqQueue::start()
     // the artifacts.
     if (!is_configured())
     {
-        LOGGER_DEBUG(
-            "[hub::ZmqQueue::start] refused — queue in Standby "
-            "(mode={}, endpoint='{}', server_pubkey_set={}); HEP-"
-            "CORE-0036 §6.7 requires Configured state.  Call "
-            "set_producer_peers() to populate transport artifacts "
-            "before start().",
-            socket_type_label(pImpl->mode, pImpl->socket_pattern),
-            pImpl->endpoint,
-            !pImpl->server_pubkey_z85_.empty());
+        LOGGER_DEBUG("[hub::ZmqQueue::start] refused — queue in Standby "
+                     "(mode={}, endpoint='{}', server_pubkey_set={}); HEP-"
+                     "CORE-0036 §6.7 requires Configured state.  Call "
+                     "set_producer_peers() to populate transport artifacts "
+                     "before start().",
+                     socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->endpoint,
+                     !pImpl->server_pubkey_z85_.empty());
         return false;
     }
 
@@ -1725,15 +1709,13 @@ bool ZmqQueue::start()
         zmq::socket_type stype;
         if (pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PushPull)
         {
-            stype = (pImpl->mode == ZmqQueueImpl::Mode::Read)
-                        ? zmq::socket_type::pull
-                        : zmq::socket_type::push;
+            stype = (pImpl->mode == ZmqQueueImpl::Mode::Read) ? zmq::socket_type::pull
+                                                              : zmq::socket_type::push;
         }
-        else  // PubSub
+        else // PubSub
         {
-            stype = (pImpl->mode == ZmqQueueImpl::Mode::Read)
-                        ? zmq::socket_type::sub
-                        : zmq::socket_type::pub;
+            stype = (pImpl->mode == ZmqQueueImpl::Mode::Read) ? zmq::socket_type::sub
+                                                              : zmq::socket_type::pub;
         }
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), stype);
         pImpl->socket.set(zmq::sockopt::linger, 0);
@@ -1767,14 +1749,9 @@ bool ZmqQueue::start()
             namespace sec = pylabhub::utils::security;
             auto &ks = sec::secure().keys();
 
-            pImpl->socket.set(zmq::sockopt::curve_publickey,
-                              ks.pubkey(pImpl->identity_key_name_));
-            ks.with_seckey(pImpl->identity_key_name_,
-                [&](std::string_view seckey)
-                {
-                    pImpl->socket.set(zmq::sockopt::curve_secretkey,
-                                      seckey);
-                });
+            pImpl->socket.set(zmq::sockopt::curve_publickey, ks.pubkey(pImpl->identity_key_name_));
+            ks.with_seckey(pImpl->identity_key_name_, [&](std::string_view seckey)
+                           { pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey); });
 
             if (pImpl->bind_socket)
             {
@@ -1792,14 +1769,12 @@ bool ZmqQueue::start()
                     else
                     {
                         char addr_buf[64];
-                        std::snprintf(addr_buf, sizeof(addr_buf),
-                                      "%s@%p", pImpl->queue_name.c_str(),
-                                      static_cast<void *>(pImpl.get()));
+                        std::snprintf(addr_buf, sizeof(addr_buf), "%s@%p",
+                                      pImpl->queue_name.c_str(), static_cast<void *>(pImpl.get()));
                         pImpl->resolved_zap_domain_ = addr_buf;
                     }
                 }
-                pImpl->socket.set(zmq::sockopt::zap_domain,
-                                  pImpl->resolved_zap_domain_);
+                pImpl->socket.set(zmq::sockopt::zap_domain, pImpl->resolved_zap_domain_);
 
                 // HEP-CORE-0040 §8.4 (#158): seed an EMPTY allowlist
                 // (deny-all secure default) ONLY when no caller has
@@ -1839,9 +1814,8 @@ bool ZmqQueue::start()
                 // Task #103 (AUTH-1).
                 if (!pImpl->allowlist_.load(std::memory_order_acquire))
                 {
-                    pImpl->allowlist_.store(
-                        std::make_shared<const sec::PeerAllowlist>(),
-                        std::memory_order_release);
+                    pImpl->allowlist_.store(std::make_shared<const sec::PeerAllowlist>(),
+                                            std::memory_order_release);
                 }
 
                 // Register with the router BEFORE bind.  Without this
@@ -1849,8 +1823,7 @@ bool ZmqQueue::start()
                 // request that lands on an unregistered domain and
                 // gets denied even though admission is configured.
                 pImpl->zap_handle_.emplace(
-                    sec::ZapRouter::instance().register_domain(
-                        pImpl->resolved_zap_domain_, *this));
+                    sec::ZapRouter::instance().register_domain(pImpl->resolved_zap_domain_, *this));
             }
             // Client side: CURVE `serverkey` is set per-connect below
             // (HEP-CORE-0017 §3.3 multi-endpoint PULL).  The legacy
@@ -1896,17 +1869,15 @@ bool ZmqQueue::start()
             // connects is a client-side no-op with respect to already-
             // established connections — only the NEXT connect is
             // affected.
-            std::lock_guard<std::mutex> peers_lock(
-                pImpl->producer_peers_mu_);
+            std::lock_guard<std::mutex> peers_lock(pImpl->producer_peers_mu_);
 
             const bool curve_wired = !pImpl->identity_key_name_.empty();
 
-            auto connect_one = [&](const std::string &pubkey_z85,
-                                    const std::string &ep) {
+            auto connect_one = [&](const std::string &pubkey_z85, const std::string &ep)
+            {
                 if (curve_wired && !pubkey_z85.empty())
                 {
-                    pImpl->socket.set(zmq::sockopt::curve_serverkey,
-                                      pubkey_z85);
+                    pImpl->socket.set(zmq::sockopt::curve_serverkey, pubkey_z85);
                 }
                 pImpl->socket.connect(ep);
             };
@@ -1916,7 +1887,8 @@ bool ZmqQueue::start()
                 // (a) HEP-0036 canonical multi-peer path.
                 for (const auto &peer : pImpl->producer_peers_)
                 {
-                    if (peer.endpoint.empty()) continue;
+                    if (peer.endpoint.empty())
+                        continue;
                     connect_one(peer.pubkey_z85, peer.endpoint);
                     LOGGER_INFO("[hub::ZmqQueue] event=PullPeerConnected "
                                 "role_uid='{}' endpoint='{}'",
@@ -1952,14 +1924,13 @@ bool ZmqQueue::start()
             // the throw + catch transitioning back to Uninitialized
             // on failure.
             throw std::invalid_argument(
-                "[hub::ZmqQueue::start] libzmq reported mechanism=" +
-                std::to_string(mech) + " (expected ZMQ_CURVE=" +
-                std::to_string(ZMQ_CURVE) + ") — CURVE wiring "
+                "[hub::ZmqQueue::start] libzmq reported mechanism=" + std::to_string(mech) +
+                " (expected ZMQ_CURVE=" + std::to_string(ZMQ_CURVE) +
+                ") — CURVE wiring "
                 "regression (HEP-CORE-0035 §2 invariant violated; "
                 "see ZmqQueue::mechanism() / Mechanism enum)");
         }
-        pImpl->mechanism_.store(Mechanism::Curve,
-                                std::memory_order_release);
+        pImpl->mechanism_.store(Mechanism::Curve, std::memory_order_release);
     }
     catch (const std::invalid_argument &e)
     {
@@ -1970,22 +1941,18 @@ bool ZmqQueue::start()
         // observable mechanism so `mechanism()` reflects the closed
         // state.
         pImpl->socket.close();
-        pImpl->mechanism_.store(Mechanism::Uninitialized,
-                                std::memory_order_release);
+        pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
         pImpl->running_.store(false, std::memory_order_release);
-        LOGGER_ERROR("[hub::ZmqQueue] auth setup failed for '{}': {}",
-                     pImpl->endpoint, e.what());
+        LOGGER_ERROR("[hub::ZmqQueue] auth setup failed for '{}': {}", pImpl->endpoint, e.what());
         return false;
     }
     catch (const zmq::error_t &e)
     {
         pImpl->socket.close();
-        pImpl->mechanism_.store(Mechanism::Uninitialized,
-                                std::memory_order_release);
+        pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
         pImpl->running_.store(false, std::memory_order_release);
         LOGGER_ERROR("[hub::ZmqQueue] socket setup ({}) failed for '{}': {}",
-                     pImpl->bind_socket ? "bind" : "connect",
-                     pImpl->endpoint, e.what());
+                     pImpl->bind_socket ? "bind" : "connect", pImpl->endpoint, e.what());
         return false;
     }
 
@@ -1994,8 +1961,7 @@ bool ZmqQueue::start()
     {
         try
         {
-            pImpl->actual_endpoint =
-                pImpl->socket.get(zmq::sockopt::last_endpoint);
+            pImpl->actual_endpoint = pImpl->socket.get(zmq::sockopt::last_endpoint);
         }
         catch (const zmq::error_t &e)
         {
@@ -2011,7 +1977,7 @@ bool ZmqQueue::start()
     }
 
     // [ZQ5] Capture pImpl raw pointer, not `this`, so move of ZmqQueue is safe.
-    ZmqQueueImpl* impl_ptr = pImpl.get();
+    ZmqQueueImpl *impl_ptr = pImpl.get();
 
     // Create a fresh ThreadManager for this start/stop cycle.
     //
@@ -2032,33 +1998,25 @@ bool ZmqQueue::start()
     else
     {
         char addr_buf[32];
-        std::snprintf(addr_buf, sizeof(addr_buf), "@%p",
-                      static_cast<void *>(impl_ptr));
+        std::snprintf(addr_buf, sizeof(addr_buf), "@%p", static_cast<void *>(impl_ptr));
         owner_id = pImpl->queue_name;
         owner_id += addr_buf;
     }
-    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
-        "ZmqQueue", owner_id);
+    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>("ZmqQueue", owner_id);
 
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {
         pImpl->recv_stop_.store(false, std::memory_order_release);
-        pImpl->thread_mgr_->spawn("recv",
-            [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx) {
-                ctx.with_active_loop([impl_ptr, &ctx] {
-                    impl_ptr->run_recv_thread_(ctx);
-                });
-            });
+        pImpl->thread_mgr_->spawn(
+            "recv", [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx)
+            { ctx.with_active_loop([impl_ptr, &ctx] { impl_ptr->run_recv_thread_(ctx); }); });
     }
     else // Write
     {
         pImpl->send_stop_.store(false, std::memory_order_release);
-        pImpl->thread_mgr_->spawn("send",
-            [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx) {
-                ctx.with_active_loop([impl_ptr, &ctx] {
-                    impl_ptr->run_send_thread_(ctx);
-                });
-            });
+        pImpl->thread_mgr_->spawn(
+            "send", [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx)
+            { ctx.with_active_loop([impl_ptr, &ctx] { impl_ptr->run_send_thread_(ctx); }); });
     }
 
     // HEP-CORE-0036 §6.7 — queue has bound/connected its socket and
@@ -2066,16 +2024,15 @@ bool ZmqQueue::start()
     // emitted by apply_master_approval just above the start() call.
     LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
                 "from=Configured to=Active queue='{}' endpoint='{}'",
-                socket_type_label(pImpl->mode, pImpl->socket_pattern),
-                pImpl->queue_name,
-                pImpl->bind_socket ? pImpl->actual_endpoint
-                                   : pImpl->endpoint);
+                socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->queue_name,
+                pImpl->bind_socket ? pImpl->actual_endpoint : pImpl->endpoint);
     return true;
 }
 
 void ZmqQueue::stop()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
@@ -2103,8 +2060,7 @@ void ZmqQueue::stop()
             // until the thread returns — `~ZmqQueue` calls this stop()
             // before destroying pImpl, so we honor the gate here.
             constexpr auto kGrace = std::chrono::seconds{5};
-            const auto deadline   =
-                std::chrono::steady_clock::now() + kGrace;
+            const auto deadline = std::chrono::steady_clock::now() + kGrace;
             while (!pImpl->thread_mgr_->all_detached_done() &&
                    std::chrono::steady_clock::now() < deadline)
             {
@@ -2116,13 +2072,12 @@ void ZmqQueue::stop()
                 // runaway thread; we surface it so the operator sees it
                 // in the log.  No safe recovery path here — ZmqQueue's
                 // pImpl is a unique_ptr member, we can't leak it.
-                LOGGER_ERROR(
-                    "[hub::ZmqQueue:{}] {} thread(s) detached on stop() "
-                    "AND still running after {}s grace.  Subsequent "
-                    "~ZmqQueueImpl will UAF the runaway thread; if this "
-                    "fires, the thread body is stuck in a libzmq op "
-                    "that ignored the stop flag.",
-                    pImpl->queue_name, detached, kGrace.count());
+                LOGGER_ERROR("[hub::ZmqQueue:{}] {} thread(s) detached on stop() "
+                             "AND still running after {}s grace.  Subsequent "
+                             "~ZmqQueueImpl will UAF the runaway thread; if this "
+                             "fires, the thread body is stuck in a libzmq op "
+                             "that ignored the stop flag.",
+                             pImpl->queue_name, detached, kGrace.count());
             }
         }
         pImpl->thread_mgr_.reset();
@@ -2146,8 +2101,7 @@ void ZmqQueue::stop()
     // Reset the observable mechanism — socket is gone, no negotiated
     // mechanism remains.  `mechanism()` will report `Uninitialized`
     // until the next successful `start()`.
-    pImpl->mechanism_.store(Mechanism::Uninitialized,
-                            std::memory_order_release);
+    pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
 }
 
 bool ZmqQueue::is_running() const noexcept
@@ -2157,7 +2111,8 @@ bool ZmqQueue::is_running() const noexcept
 
 Mechanism ZmqQueue::mechanism() const noexcept
 {
-    if (!pImpl) return Mechanism::Uninitialized;
+    if (!pImpl)
+        return Mechanism::Uninitialized;
     return pImpl->mechanism_.load(std::memory_order_acquire);
 }
 
@@ -2165,26 +2120,26 @@ Mechanism ZmqQueue::mechanism() const noexcept
 // Reading
 // ============================================================================
 
-const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
+const void *ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
-    if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Read) return nullptr;
+    if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Read)
+        return nullptr;
 
     const auto t_entry = ZmqQueueImpl::Clock::now();
 
     // Block until data is available.
     std::unique_lock<std::mutex> lk(pImpl->recv_mu_);
-    pImpl->recv_cv_.wait_for(lk, timeout, [this] {
-        return pImpl->ring_count_ > 0 ||
-               pImpl->recv_stop_.load(std::memory_order_relaxed);
-    });
+    pImpl->recv_cv_.wait_for(
+        lk, timeout, [this]
+        { return pImpl->ring_count_ > 0 || pImpl->recv_stop_.load(std::memory_order_relaxed); });
 
-    if (pImpl->ring_count_ == 0) return nullptr;
+    if (pImpl->ring_count_ == 0)
+        return nullptr;
 
     const auto t_acquired = ZmqQueueImpl::Clock::now();
 
     // Copy from ring slot to current_read_buf_ (pre-allocated; no heap alloc). [ZQ9]
-    std::memcpy(pImpl->current_read_buf_.data(),
-                pImpl->recv_ring_[pImpl->ring_head_].data(),
+    std::memcpy(pImpl->current_read_buf_.data(), pImpl->recv_ring_[pImpl->ring_head_].data(),
                 pImpl->item_sz);
     pImpl->ring_head_ = (pImpl->ring_head_ + 1) % pImpl->max_depth;
     --pImpl->ring_count_;
@@ -2196,13 +2151,14 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     if (pImpl->t_iter_start_ != t_zero)
     {
         const auto elapsed_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - pImpl->t_iter_start_).count());
+            std::chrono::duration_cast<std::chrono::microseconds>(t_acquired - pImpl->t_iter_start_)
+                .count());
         pImpl->ctx_metrics_.set_last_iteration(elapsed_us);
         pImpl->ctx_metrics_.update_max_iteration(elapsed_us);
         pImpl->ctx_metrics_.set_context_elapsed(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - pImpl->ctx_metrics_.context_start_time_val()).count()));
+                                      t_acquired - pImpl->ctx_metrics_.context_start_time_val())
+                                      .count()));
         // No timing overrun detection — the main loop owns the deadline.
         // Reader never drops data (data_drop_count stays 0).
     }
@@ -2211,11 +2167,10 @@ const void* ZmqQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
         pImpl->ctx_metrics_.set_context_start(t_acquired);
     }
 
-    pImpl->ctx_metrics_.set_last_slot_wait(
-        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            t_acquired - t_entry).count()));
+    pImpl->ctx_metrics_.set_last_slot_wait(static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t_acquired - t_entry).count()));
     pImpl->t_iter_start_ = t_acquired;
-    pImpl->t_acquired_   = t_acquired;
+    pImpl->t_acquired_ = t_acquired;
 
     return pImpl->current_read_buf_.data();
 }
@@ -2231,7 +2186,8 @@ void ZmqQueue::read_release() noexcept
         {
             pImpl->ctx_metrics_.set_last_slot_exec(
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()));
+                                          ZmqQueueImpl::Clock::now() - pImpl->t_acquired_)
+                                          .count()));
         }
     }
 }
@@ -2240,9 +2196,10 @@ void ZmqQueue::read_release() noexcept
 // Writing
 // ============================================================================
 
-void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
+void *ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
-    if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Write) return nullptr;
+    if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Write)
+        return nullptr;
     if (pImpl->send_stop_.load(std::memory_order_relaxed))
         return nullptr;
 
@@ -2253,21 +2210,26 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         std::lock_guard<std::mutex> lk(pImpl->send_mu_);
         if (pImpl->send_count_ >= pImpl->send_depth_)
         {
-            pImpl->data_drop_count_.fetch_add(1, std::memory_order_relaxed); // buffer-full: cycle failed
+            pImpl->data_drop_count_.fetch_add(
+                1, std::memory_order_relaxed); // buffer-full: cycle failed
             return nullptr;
         }
     }
     else // Block
     {
-        ZmqQueueImpl* impl_ptr = pImpl.get();
+        ZmqQueueImpl *impl_ptr = pImpl.get();
         std::unique_lock<std::mutex> lk(impl_ptr->send_mu_);
-        const bool ok = impl_ptr->send_cv_.wait_for(lk, timeout, [impl_ptr] {
-            return impl_ptr->send_count_ < impl_ptr->send_depth_ ||
-                   impl_ptr->send_stop_.load(std::memory_order_relaxed);
-        });
+        const bool ok = impl_ptr->send_cv_.wait_for(
+            lk, timeout,
+            [impl_ptr]
+            {
+                return impl_ptr->send_count_ < impl_ptr->send_depth_ ||
+                       impl_ptr->send_stop_.load(std::memory_order_relaxed);
+            });
         if (!ok || impl_ptr->send_stop_.load(std::memory_order_relaxed))
         {
-            impl_ptr->data_drop_count_.fetch_add(1, std::memory_order_relaxed); // timeout or shutdown: cycle failed
+            impl_ptr->data_drop_count_.fetch_add(
+                1, std::memory_order_relaxed); // timeout or shutdown: cycle failed
             return nullptr;
         }
     }
@@ -2280,13 +2242,14 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
     if (pImpl->t_iter_start_ != t_zero)
     {
         const auto elapsed_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - pImpl->t_iter_start_).count());
+            std::chrono::duration_cast<std::chrono::microseconds>(t_acquired - pImpl->t_iter_start_)
+                .count());
         pImpl->ctx_metrics_.set_last_iteration(elapsed_us);
         pImpl->ctx_metrics_.update_max_iteration(elapsed_us);
         pImpl->ctx_metrics_.set_context_elapsed(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - pImpl->ctx_metrics_.context_start_time_val()).count()));
+                                      t_acquired - pImpl->ctx_metrics_.context_start_time_val())
+                                      .count()));
 
         // No timing overrun detection — the main loop owns the deadline.
         // Write-side data_drop_count is incremented above on buffer-full/timeout only.
@@ -2296,11 +2259,10 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
         pImpl->ctx_metrics_.set_context_start(t_acquired);
     }
 
-    pImpl->ctx_metrics_.set_last_slot_wait(
-        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            t_acquired - t_entry).count()));
+    pImpl->ctx_metrics_.set_last_slot_wait(static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(t_acquired - t_entry).count()));
     pImpl->t_iter_start_ = t_acquired;
-    pImpl->t_acquired_   = t_acquired;
+    pImpl->t_acquired_ = t_acquired;
 
     // Zero buffer so padding bytes are deterministic (checksum consistency).
     std::fill(pImpl->write_buf_.begin(), pImpl->write_buf_.end(), std::byte{0});
@@ -2309,7 +2271,8 @@ void* ZmqQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 
 void ZmqQueue::write_commit() noexcept
 {
-    if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Write) return;
+    if (!pImpl || pImpl->mode != ZmqQueueImpl::Mode::Write)
+        return;
 
     // Measure work time: acquire return → commit call.
     {
@@ -2318,7 +2281,8 @@ void ZmqQueue::write_commit() noexcept
         {
             pImpl->ctx_metrics_.set_last_slot_exec(
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-                    ZmqQueueImpl::Clock::now() - pImpl->t_acquired_).count()));
+                                          ZmqQueueImpl::Clock::now() - pImpl->t_acquired_)
+                                          .count()));
         }
     }
 
@@ -2332,8 +2296,7 @@ void ZmqQueue::write_commit() noexcept
                          pImpl->queue_name);
             return;
         }
-        std::memcpy(pImpl->send_ring_[pImpl->send_tail_].data(),
-                    pImpl->write_buf_.data(),
+        std::memcpy(pImpl->send_ring_[pImpl->send_tail_].data(), pImpl->write_buf_.data(),
                     pImpl->item_sz);
         pImpl->send_tail_ = (pImpl->send_tail_ + 1) % pImpl->send_depth_;
         ++pImpl->send_count_;
@@ -2367,7 +2330,8 @@ uint64_t ZmqQueue::last_seq() const noexcept
 
 size_t ZmqQueue::capacity() const
 {
-    if (!pImpl) return 0;
+    if (!pImpl)
+        return 0;
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
         return pImpl->max_depth;
     return pImpl->send_depth_;
@@ -2377,13 +2341,11 @@ std::string ZmqQueue::policy_info() const
 {
     if (!pImpl)
         return "zmq_unconnected";
-    const bool is_pubsub =
-        pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub;
+    const bool is_pubsub = pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub;
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {
         const char *stype = is_pubsub ? "sub" : "pull";
-        return std::string{"zmq_"} + stype + "_ring_"
-             + std::to_string(pImpl->max_depth);
+        return std::string{"zmq_"} + stype + "_ring_" + std::to_string(pImpl->max_depth);
     }
     const char *stype = is_pubsub ? "pub" : "push";
     return (pImpl->overflow_policy_ == OverflowPolicy::Drop)
@@ -2393,7 +2355,8 @@ std::string ZmqQueue::policy_info() const
 
 std::string ZmqQueue::actual_endpoint() const
 {
-    if (!pImpl) return "";
+    if (!pImpl)
+        return "";
     // After start(): resolved (e.g. port-0 bind resolves to actual port).
     // Before start() or on connect-mode: returns configured endpoint.
     return pImpl->actual_endpoint.empty() ? pImpl->endpoint : pImpl->actual_endpoint;
@@ -2440,29 +2403,31 @@ uint64_t ZmqQueue::data_drop_count() const noexcept
 
 QueueMetrics ZmqQueue::metrics() const noexcept
 {
-    if (!pImpl) return {};
+    if (!pImpl)
+        return {};
     QueueMetrics m;
     // Domain 2+3 timing fields (from unified ContextMetrics).
-    m.last_slot_wait_us    = pImpl->ctx_metrics_.last_slot_wait_us_val();
-    m.last_iteration_us    = pImpl->ctx_metrics_.last_iteration_us_val();
-    m.max_iteration_us     = pImpl->ctx_metrics_.max_iteration_us_val();
-    m.context_elapsed_us   = pImpl->ctx_metrics_.context_elapsed_us_val();
-    m.last_slot_exec_us    = pImpl->ctx_metrics_.last_slot_exec_us_val();
-    m.data_drop_count        = pImpl->data_drop_count_.load(std::memory_order_relaxed);
+    m.last_slot_wait_us = pImpl->ctx_metrics_.last_slot_wait_us_val();
+    m.last_iteration_us = pImpl->ctx_metrics_.last_iteration_us_val();
+    m.max_iteration_us = pImpl->ctx_metrics_.max_iteration_us_val();
+    m.context_elapsed_us = pImpl->ctx_metrics_.context_elapsed_us_val();
+    m.last_slot_exec_us = pImpl->ctx_metrics_.last_slot_exec_us_val();
+    m.data_drop_count = pImpl->data_drop_count_.load(std::memory_order_relaxed);
     // configured_period_us reported at loop level (LoopMetricsSnapshot), not queue level.
     // Transport-specific counters.
-    m.recv_overflow_count    = pImpl->recv_overflow_count_.load(std::memory_order_relaxed);
+    m.recv_overflow_count = pImpl->recv_overflow_count_.load(std::memory_order_relaxed);
     m.recv_frame_error_count = pImpl->recv_frame_error_count_.load(std::memory_order_relaxed);
-    m.recv_gap_count         = pImpl->recv_gap_count_.load(std::memory_order_relaxed);
-    m.send_drop_count        = pImpl->send_drop_count_.load(std::memory_order_relaxed);
-    m.send_retry_count       = pImpl->send_retry_count_.load(std::memory_order_relaxed);
-    m.checksum_error_count   = pImpl->ctx_metrics_.checksum_error_count_val();
+    m.recv_gap_count = pImpl->recv_gap_count_.load(std::memory_order_relaxed);
+    m.send_drop_count = pImpl->send_drop_count_.load(std::memory_order_relaxed);
+    m.send_retry_count = pImpl->send_retry_count_.load(std::memory_order_relaxed);
+    m.checksum_error_count = pImpl->ctx_metrics_.checksum_error_count_val();
     return m;
 }
 
 void ZmqQueue::reset_metrics()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->ctx_metrics_.clear();
     pImpl->data_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->recv_overflow_count_.store(0, std::memory_order_relaxed);
@@ -2471,13 +2436,14 @@ void ZmqQueue::reset_metrics()
     pImpl->send_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->send_retry_count_.store(0, std::memory_order_relaxed);
     pImpl->t_iter_start_ = {};
-    pImpl->t_acquired_   = {};
+    pImpl->t_acquired_ = {};
 }
 
 void ZmqQueue::init_metrics()
 {
     reset_metrics();
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     // Reset sequence tracking — only safe at session start (not mid-session,
     // where it would cause false gap detection on the receiver).
     pImpl->send_seq_.store(0, std::memory_order_relaxed);
@@ -2488,13 +2454,15 @@ void ZmqQueue::init_metrics()
 
 void ZmqQueue::set_configured_period(uint64_t period_us)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->ctx_metrics_.set_configured_period(period_us);
 }
 
 void ZmqQueue::set_checksum_policy(ChecksumPolicy policy)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->checksum_policy_ = policy;
 }
 

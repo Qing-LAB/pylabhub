@@ -8,7 +8,7 @@
 // Secret numbers: 74001+ to avoid conflicts with other test suites.
 
 #include "datahub_handle_semantics_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
@@ -25,8 +25,14 @@ using namespace std::chrono_literals;
 namespace pylabhub::tests::worker::handle_semantics
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 /// #275-S2: `secret` param dropped — fd-source factory ignores it.
 static DataBlockConfig make_config()
@@ -89,7 +95,8 @@ int move_producer_transfers_ownership()
             producer2.reset();
             cleanup_test_datablock(channel);
         },
-        "move_producer_transfers_ownership", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "move_producer_transfers_ownership", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -110,7 +117,7 @@ int move_consumer_transfers_ownership()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
             // Take ownership of the consumer so the move semantics under test
             // operate on a stand-alone unique_ptr; transport stays inside `p`.
             auto consumer = std::move(p.consumer);
@@ -157,7 +164,8 @@ int move_consumer_transfers_ownership()
             consumer2.reset();
             cleanup_test_datablock(channel);
         },
-        "move_consumer_transfers_ownership", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "move_consumer_transfers_ownership", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -178,8 +186,8 @@ int default_constructed_handles_are_invalid()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Default-constructed handles are invalid — release must return false
             SlotWriteHandle invalid_write{};
@@ -202,7 +210,8 @@ int default_constructed_handles_are_invalid()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "default_constructed_handles_are_invalid", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "default_constructed_handles_are_invalid", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::handle_semantics

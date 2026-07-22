@@ -51,8 +51,7 @@ TEST_F(PlhHubCliTest, MinimalConfigPasses)
     keygen_minimal_hub(cfg_path);
 
     const auto t0 = std::chrono::steady_clock::now();
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
     const auto elapsed = std::chrono::steady_clock::now() - t0;
@@ -91,14 +90,13 @@ TEST_F(PlhHubCliTest, NoScriptPasses)
     const auto cfg_path = dir / "hub.json";
 
     nlohmann::json overrides;
-    overrides["script"]["path"] = "";   // explicitly disabled
+    overrides["script"]["path"] = ""; // explicitly disabled
     write_minimal_config(cfg_path, dir, overrides);
 
     ScopedHubPassword pw("test-password");
     keygen_minimal_hub(cfg_path);
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos);
@@ -134,12 +132,11 @@ TEST_F(PlhHubCliTest, ConfigAclAdvisory_GroupReadable_EmitsWarn)
     // hub.auth.keyfile embeds.  Non-fatal but worth flagging.
     ::chmod(cfg_path.c_str(), 0640);
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     // Non-fatal: validate must still exit 0 — the advisory is a WARN.
-    EXPECT_EQ(p.wait_for_exit(), 0)
-        << "validate must remain non-fatal on group-readable config; "
-           "stderr:\n" << p.get_stderr();
+    EXPECT_EQ(p.wait_for_exit(), 0) << "validate must remain non-fatal on group-readable config; "
+                                       "stderr:\n"
+                                    << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("hub.json ACL advisory"), std::string::npos)
         << "stderr should carry the L6-wire advisory; got:\n"
         << p.get_stderr();
@@ -175,8 +172,7 @@ TEST_F(PlhHubCliTest, WarnsWhenKeyfileInsideHubDir)
     ScopedHubPassword pw("test-password");
     keygen_minimal_hub(cfg_path);
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
 
     // (a) Warning block is present.
@@ -186,12 +182,15 @@ TEST_F(PlhHubCliTest, WarnsWhenKeyfileInsideHubDir)
         << err;
     // (b) Names the failing field with the exact path the operator wrote.
     EXPECT_NE(err.find("hub.auth.keyfile"), std::string::npos)
-        << "warning should identify 'hub.auth.keyfile'; got:\n" << err;
+        << "warning should identify 'hub.auth.keyfile'; got:\n"
+        << err;
     EXPECT_NE(err.find("vault/hub.l4test.uid00000001.vault"), std::string::npos)
-        << "warning should quote the operator's keyfile value; got:\n" << err;
+        << "warning should quote the operator's keyfile value; got:\n"
+        << err;
     // (c) Tells the operator what to do — recommends moving outside hub_dir.
     EXPECT_NE(err.find("RECOMMENDED"), std::string::npos)
-        << "warning should include a RECOMMENDED action; got:\n" << err;
+        << "warning should include a RECOMMENDED action; got:\n"
+        << err;
     EXPECT_NE(err.find("/etc/pylabhub/vault"), std::string::npos)
         << "warning should suggest /etc/pylabhub/vault for system-managed; got:\n"
         << err;
@@ -206,7 +205,7 @@ TEST_F(PlhHubCliTest, WarnsWhenKeyfileInsideHubDir)
 TEST_F(PlhHubCliTest, NoWarningWhenKeyfileOutsideHubDir)
 {
     const auto dir = tmp("val_no_warn_out");
-    const auto vault_outside = tmp("val_no_warn_vault_outside");  // sibling dir
+    const auto vault_outside = tmp("val_no_warn_vault_outside"); // sibling dir
     const auto cfg_path = dir / "hub.json";
 
     nlohmann::json overrides;
@@ -222,14 +221,14 @@ TEST_F(PlhHubCliTest, NoWarningWhenKeyfileOutsideHubDir)
     ScopedHubPassword pw("test-password");
     keygen_minimal_hub(cfg_path);
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
 
     const std::string &err = p.get_stderr();
     EXPECT_EQ(err.find("PYLABHUB SECURITY WARNING"), std::string::npos)
         << "stderr should NOT contain the security warning when "
-           "keyfile is outside hub_dir; got:\n" << err;
+           "keyfile is outside hub_dir; got:\n"
+        << err;
 }
 
 // ── Error paths ──────────────────────────────────────────────────────────────
@@ -244,12 +243,12 @@ TEST_F(PlhHubCliTest, MalformedJsonFails)
 
     write_file(cfg_path, R"({"hub": { broken json )");
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     const int rc = p.wait_for_exit();
     EXPECT_NE(rc, 0);
     EXPECT_NE(p.get_stderr().find("Config error"), std::string::npos)
-        << "stderr should contain 'Config error'; got:\n" << p.get_stderr();
+        << "stderr should contain 'Config error'; got:\n"
+        << p.get_stderr();
 }
 
 /// Missing config path → non-zero exit, recognizable diagnostic.
@@ -258,8 +257,7 @@ TEST_F(PlhHubCliTest, MissingConfigFails)
     const auto dir = tmp("val_missing");
     const auto cfg_path = dir / "does_not_exist.json";
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0);
 }
 
@@ -285,8 +283,7 @@ TEST_F(PlhHubCliTest, BrokenScriptFails)
     ScopedHubPassword pw("test-password");
     keygen_minimal_hub(cfg_path);
 
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--validate"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0);
     EXPECT_NE(p.get_stderr().find("Validation failed"), std::string::npos)
         << "stderr should contain 'Validation failed'; got:\n"

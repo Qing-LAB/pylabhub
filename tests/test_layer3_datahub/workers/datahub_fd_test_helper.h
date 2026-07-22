@@ -41,14 +41,14 @@
  * this helper covers the non-template case.
  */
 
-#include "utils/data_block.hpp"           // create_datablock_producer_from_fd_impl etc.
+#include "utils/data_block.hpp" // create_datablock_producer_from_fd_impl etc.
 #include "utils/data_block_config.hpp"
 #include "utils/data_block_policy.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 
 #include <memory>
 #include <string>
-#include <unistd.h>  // ::dup, ::close
+#include <unistd.h> // ::dup, ::close
 
 namespace pylabhub::tests::helper
 {
@@ -60,13 +60,13 @@ namespace pylabhub::tests::helper
 struct FdBackedProducer
 {
     std::unique_ptr<pylabhub::utils::security::IShmCapabilityProducer> transport;
-    std::unique_ptr<pylabhub::hub::DataBlockProducer>                  producer;
+    std::unique_ptr<pylabhub::hub::DataBlockProducer> producer;
 
-    FdBackedProducer()                                     = default;
-    FdBackedProducer(const FdBackedProducer &)             = delete;
-    FdBackedProducer &operator=(const FdBackedProducer &)  = delete;
-    FdBackedProducer(FdBackedProducer &&)                  = default;
-    FdBackedProducer &operator=(FdBackedProducer &&)       = default;
+    FdBackedProducer() = default;
+    FdBackedProducer(const FdBackedProducer &) = delete;
+    FdBackedProducer &operator=(const FdBackedProducer &) = delete;
+    FdBackedProducer(FdBackedProducer &&) = default;
+    FdBackedProducer &operator=(FdBackedProducer &&) = default;
 };
 
 /// Owns the L1 transport + producer + consumer for an in-process
@@ -76,14 +76,14 @@ struct FdBackedProducer
 struct FdBackedDataBlock
 {
     std::unique_ptr<pylabhub::utils::security::IShmCapabilityProducer> transport;
-    std::unique_ptr<pylabhub::hub::DataBlockProducer>                  producer;
-    std::unique_ptr<pylabhub::hub::DataBlockConsumer>                  consumer;
+    std::unique_ptr<pylabhub::hub::DataBlockProducer> producer;
+    std::unique_ptr<pylabhub::hub::DataBlockConsumer> consumer;
 
-    FdBackedDataBlock()                                      = default;
-    FdBackedDataBlock(const FdBackedDataBlock &)             = delete;
-    FdBackedDataBlock &operator=(const FdBackedDataBlock &)  = delete;
-    FdBackedDataBlock(FdBackedDataBlock &&)                  = default;
-    FdBackedDataBlock &operator=(FdBackedDataBlock &&)       = default;
+    FdBackedDataBlock() = default;
+    FdBackedDataBlock(const FdBackedDataBlock &) = delete;
+    FdBackedDataBlock &operator=(const FdBackedDataBlock &) = delete;
+    FdBackedDataBlock(FdBackedDataBlock &&) = default;
+    FdBackedDataBlock &operator=(FdBackedDataBlock &&) = default;
 };
 
 /// Build a fd-source DataBlock producer ONLY over an in-process
@@ -106,11 +106,10 @@ struct FdBackedDataBlock
 /// @param fz_schema   Optional FlexZone schema for hash validation.
 /// @param db_schema   Optional DataBlock-slot schema for hash validation.
 [[nodiscard]] inline FdBackedProducer
-make_fd_backed_producer(const std::string                    &channel,
-                        pylabhub::hub::DataBlockPolicy        policy,
+make_fd_backed_producer(const std::string &channel, pylabhub::hub::DataBlockPolicy policy,
                         const pylabhub::hub::DataBlockConfig &cfg,
-                        const pylabhub::schema::SchemaInfo   *fz_schema = nullptr,
-                        const pylabhub::schema::SchemaInfo   *db_schema = nullptr)
+                        const pylabhub::schema::SchemaInfo *fz_schema = nullptr,
+                        const pylabhub::schema::SchemaInfo *db_schema = nullptr)
 {
     namespace sec = pylabhub::utils::security;
     FdBackedProducer out;
@@ -145,13 +144,11 @@ make_fd_backed_producer(const std::string                    &channel,
 ///                      heartbeat slot).
 /// @param consumer_name Optional consumer human-readable name.
 [[nodiscard]] inline FdBackedDataBlock
-make_fd_backed_pair(const std::string                       &channel,
-                    pylabhub::hub::DataBlockPolicy           policy,
-                    const pylabhub::hub::DataBlockConfig    &cfg,
-                    const pylabhub::schema::SchemaInfo      *fz_schema    = nullptr,
-                    const pylabhub::schema::SchemaInfo      *db_schema    = nullptr,
-                    const char                              *consumer_uid  = nullptr,
-                    const char                              *consumer_name = nullptr)
+make_fd_backed_pair(const std::string &channel, pylabhub::hub::DataBlockPolicy policy,
+                    const pylabhub::hub::DataBlockConfig &cfg,
+                    const pylabhub::schema::SchemaInfo *fz_schema = nullptr,
+                    const pylabhub::schema::SchemaInfo *db_schema = nullptr,
+                    const char *consumer_uid = nullptr, const char *consumer_name = nullptr)
 {
     namespace sec = pylabhub::utils::security;
     FdBackedDataBlock out;
@@ -190,8 +187,7 @@ make_fd_backed_pair(const std::string                       &channel,
 /// inline at the call site.
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] inline FdBackedProducer
-make_fd_backed_producer_typed(const std::string                    &channel,
-                              pylabhub::hub::DataBlockPolicy        policy,
+make_fd_backed_producer_typed(const std::string &channel, pylabhub::hub::DataBlockPolicy policy,
                               const pylabhub::hub::DataBlockConfig &cfg)
 {
     namespace sec = pylabhub::utils::security;
@@ -217,11 +213,9 @@ make_fd_backed_producer_typed(const std::string                    &channel,
 /// mint + dup + close at every typed-pair test site.
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] inline FdBackedDataBlock
-make_fd_backed_pair_typed(const std::string                    &channel,
-                          pylabhub::hub::DataBlockPolicy        policy,
+make_fd_backed_pair_typed(const std::string &channel, pylabhub::hub::DataBlockPolicy policy,
                           const pylabhub::hub::DataBlockConfig &cfg,
-                          const char                           *consumer_uid  = nullptr,
-                          const char                           *consumer_name = nullptr)
+                          const char *consumer_uid = nullptr, const char *consumer_name = nullptr)
 {
     namespace sec = pylabhub::utils::security;
     FdBackedDataBlock out;

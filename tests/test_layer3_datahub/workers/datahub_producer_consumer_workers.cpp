@@ -2,16 +2,16 @@
 // DataBlock/slot error paths: timeout, invalid handle, bounds checks.
 // Ensures recoverable errors return false/nullptr/empty instead of undefined behavior.
 #include "datahub_producer_consumer_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source pair + producer-only helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source pair + producer-only helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
-#include "utils/security/shm_capability_channel.hpp"  // template-site direct transport
+#include "utils/security/shm_capability_channel.hpp" // template-site direct transport
 #include <gtest/gtest.h>
 #include <fmt/core.h>
 #include <cstring>
-#include <unistd.h>  // ::dup, ::close for template-site rx-fd duplication
+#include <unistd.h> // ::dup, ::close for template-site rx-fd duplication
 #include <vector>
 
 using namespace pylabhub::hub;
@@ -29,8 +29,14 @@ using namespace std::chrono_literals;
 namespace pylabhub::tests::worker::error_handling
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 int acquire_consume_slot_timeout_returns_null()
 {
@@ -47,7 +53,7 @@ int acquire_consume_slot_timeout_returns_null()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& consumer = p.consumer;
+            auto &consumer = p.consumer;
             // Producer is established (p.producer) but never writes/commits →
             // consumer must get nullptr on short timeout.
             std::unique_ptr<SlotConsumeHandle> h = consumer->acquire_consume_slot(50);
@@ -55,7 +61,8 @@ int acquire_consume_slot_timeout_returns_null()
 
             cleanup_test_datablock(channel);
         },
-        "acquire_consume_slot_timeout_returns_null", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "acquire_consume_slot_timeout_returns_null", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -107,14 +114,14 @@ int release_write_slot_invalid_handle_returns_false()
 
             auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
             SlotWriteHandle invalid_handle; // default-constructed
             EXPECT_FALSE(producer->release_write_slot(invalid_handle));
 
             cleanup_test_datablock(channel);
         },
-        "release_write_slot_invalid_handle_returns_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "release_write_slot_invalid_handle_returns_false", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int release_consume_slot_invalid_handle_returns_false()
@@ -132,14 +139,14 @@ int release_consume_slot_invalid_handle_returns_false()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& consumer = p.consumer;
+            auto &consumer = p.consumer;
             SlotConsumeHandle invalid_handle;
             EXPECT_FALSE(consumer->release_consume_slot(invalid_handle));
 
             cleanup_test_datablock(channel);
         },
-        "release_consume_slot_invalid_handle_returns_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "release_consume_slot_invalid_handle_returns_false", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int write_bounds_return_false()
@@ -156,7 +163,7 @@ int write_bounds_return_false()
 
             auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
             size_t slot_size = write_handle->buffer_span().size();
@@ -170,7 +177,8 @@ int write_bounds_return_false()
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
             cleanup_test_datablock(channel);
         },
-        "write_bounds_return_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "write_bounds_return_false", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int commit_bounds_return_false()
@@ -187,7 +195,7 @@ int commit_bounds_return_false()
 
             auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
             size_t slot_size = write_handle->buffer_span().size();
@@ -196,7 +204,8 @@ int commit_bounds_return_false()
             EXPECT_TRUE(producer->release_write_slot(*write_handle));
             cleanup_test_datablock(channel);
         },
-        "commit_bounds_return_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "commit_bounds_return_false", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int read_bounds_return_false()
@@ -214,8 +223,8 @@ int read_bounds_return_false()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             const char payload[] = "x";
             auto write_handle = producer->acquire_write_slot(5000);
@@ -235,7 +244,8 @@ int read_bounds_return_false()
             consume_handle.reset();
             cleanup_test_datablock(channel);
         },
-        "read_bounds_return_false", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "read_bounds_return_false", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int double_release_write_slot_idempotent()
@@ -252,7 +262,7 @@ int double_release_write_slot_idempotent()
 
             auto p = make_fd_backed_producer(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
             EXPECT_TRUE(write_handle->commit(0));
@@ -261,7 +271,8 @@ int double_release_write_slot_idempotent()
 
             cleanup_test_datablock(channel);
         },
-        "double_release_write_slot_idempotent", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "double_release_write_slot_idempotent", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int slot_acquire_timeout_returns_error()
@@ -278,7 +289,8 @@ int slot_acquire_timeout_returns_error()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            config.flex_zone_size = sizeof(EmptyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(EmptyFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             // Template-typed fd-source pair: mint transport, build producer
             // + consumer over a duplicated fd (in-process substitute for
@@ -319,7 +331,8 @@ int slot_acquire_timeout_returns_error()
             transport.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_acquire_timeout_returns_error", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "slot_acquire_timeout_returns_error", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int sub_page_logical_size_round_trip()
@@ -329,25 +342,24 @@ int sub_page_logical_size_round_trip()
         {
             std::string channel = make_test_channel_name("SubPageRoundTrip");
             DataBlockConfig config{};
-            config.policy               = DataBlockPolicy::RingBuffer;
+            config.policy = DataBlockPolicy::RingBuffer;
             config.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
             config.ring_buffer_capacity = 128;
-            config.physical_page_size   = DataBlockPageSize::Size4K;
-            config.logical_unit_size    = 64; // sub-page: 64 B slots, 4 K pages
-            config.checksum_policy      = ChecksumPolicy::None;
+            config.physical_page_size = DataBlockPageSize::Size4K;
+            config.logical_unit_size = 64; // sub-page: 64 B slots, 4 K pages
+            config.checksum_policy = ChecksumPolicy::None;
 
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write a 32-byte sentinel pattern into the 64-byte slot.
-            const char kPayload[32] = {
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-                0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-                0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
+            const char kPayload[32] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                                       0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+                                       0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+                                       0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
 
             auto write_handle = producer->acquire_write_slot(5000);
             ASSERT_NE(write_handle, nullptr);
@@ -374,7 +386,8 @@ int sub_page_logical_size_round_trip()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "sub_page_logical_size_round_trip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "sub_page_logical_size_round_trip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::error_handling

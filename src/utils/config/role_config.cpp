@@ -3,7 +3,7 @@
  * @brief RoleConfig implementation — factory, accessors, JsonConfig backend.
  */
 #include "utils/config/role_config.hpp"
-#include "utils/hub_state.hpp"                // topology::parse allow-list
+#include "utils/hub_state.hpp" // topology::parse allow-list
 #include "utils/json_config.hpp"
 #include "utils/role_directory.hpp"
 #include "utils/role_vault.hpp"
@@ -30,39 +30,39 @@ struct RoleConfig::Impl
     utils::JsonConfig jcfg;
 
     // Metadata.
-    std::string           role_type;
+    std::string role_type;
     std::filesystem::path base_dir;
 
     // Raw JSON snapshot (for raw() accessor and role_parser callback).
     nlohmann::json raw_json;
 
     // ── Non-directional categories ───────────────────────────────────
-    IdentityConfig   identity;
-    AuthConfig       auth;
-    ScriptConfig     script;
-    TimingConfig     timing;
-    ChecksumConfig   checksum;
-    LoggingConfig    logging;
-    InboxConfig      inbox;
-    StartupConfig    startup;
+    IdentityConfig identity;
+    AuthConfig auth;
+    ScriptConfig script;
+    TimingConfig timing;
+    ChecksumConfig checksum;
+    LoggingConfig logging;
+    InboxConfig inbox;
+    StartupConfig startup;
     MonitoringConfig monitoring;
 
     // ── Directional categories (two slots each) ──────────────────────
-    HubRefConfig                    in_hub;
-    HubRefConfig                    out_hub;
-    TransportConfig              in_transport;
-    TransportConfig              out_transport;
-    ShmConfig                    in_shm;
-    ShmConfig                    out_shm;
-    std::string                  in_channel;
-    std::string                  out_channel;
+    HubRefConfig in_hub;
+    HubRefConfig out_hub;
+    TransportConfig in_transport;
+    TransportConfig out_transport;
+    ShmConfig in_shm;
+    ShmConfig out_shm;
+    std::string in_channel;
+    std::string out_channel;
 
     /// 2026-07-08 topology migration additions.  Empty string means
     /// "not declared in config" — payload builders skip emission on
     /// empty; broker treats missing wire field as default
     /// `"one-to-one"` per HEP-CORE-0007 §12.3 overwrite semantics.
-    std::string                  in_channel_topology;
-    std::string                  out_channel_topology;
+    std::string in_channel_topology;
+    std::string out_channel_topology;
 
     // ── Role-specific extension (type-erased) ────────────────────────
     std::any role_data;
@@ -88,42 +88,62 @@ RoleConfig &RoleConfig::operator=(RoleConfig &&) noexcept = default;
 /// Nested objects (producer.uid, script.type, etc.) are validated by their parsers.
 static const std::unordered_set<std::string> kAllowedKeys = {
     // Identity (nested object — role_type is the key: "producer", "consumer", "processor")
-    "producer", "consumer", "processor",
+    "producer",
+    "consumer",
+    "processor",
     // Script
-    "script", "stop_on_script_error", "python_venv",
+    "script",
+    "stop_on_script_error",
+    "python_venv",
     // Timing
-    "loop_timing", "target_period_ms", "target_rate_hz",
-    "queue_io_wait_timeout_ratio", "heartbeat_interval_ms",
+    "loop_timing",
+    "target_period_ms",
+    "target_rate_hz",
+    "queue_io_wait_timeout_ratio",
+    "heartbeat_interval_ms",
     // Checksum
-    "checksum", "flexzone_checksum",
+    "checksum",
+    "flexzone_checksum",
     // Logging
     "logging",
     // Inbox
-    "inbox_schema", "inbox_endpoint", "inbox_buffer_depth",
+    "inbox_schema",
+    "inbox_endpoint",
+    "inbox_buffer_depth",
     "inbox_overflow_policy",
     // Startup
     "startup",
     // Monitoring
-    "ctrl_queue_max_depth", "peer_dead_timeout_ms",
+    "ctrl_queue_max_depth",
+    "peer_dead_timeout_ms",
     // Per-direction: hub
-    "in_hub_dir", "out_hub_dir",
+    "in_hub_dir",
+    "out_hub_dir",
     // Per-direction: channel
-    "in_channel", "out_channel",
+    "in_channel",
+    "out_channel",
     // Per-direction: channel topology (2026-07-08 topology migration).
     // OPTIONAL; default "one-to-one" when omitted.  See HEP-CORE-0018 §5.3/§5.4.
-    "in_channel_topology", "out_channel_topology",
+    "in_channel_topology",
+    "out_channel_topology",
     // Per-direction: transport
-    "in_transport", "out_transport",
-    "in_zmq_endpoint", "out_zmq_endpoint",
-    "in_zmq_bind", "out_zmq_bind",
-    "in_zmq_buffer_depth", "out_zmq_buffer_depth",
-    "in_zmq_overflow_policy", "out_zmq_overflow_policy",
+    "in_transport",
+    "out_transport",
+    "in_zmq_endpoint",
+    "out_zmq_endpoint",
+    "in_zmq_bind",
+    "out_zmq_bind",
+    "in_zmq_buffer_depth",
+    "out_zmq_buffer_depth",
+    "in_zmq_overflow_policy",
+    "out_zmq_overflow_policy",
     // NOTE: "in_zmq_packing" / "out_zmq_packing" removed 2026-04-20 —
     // packing is schema-level only (SchemaSpec::packing, set via the
     // schema JSON's "packing" field).  Having it also transport-level
     // allowed divergence with no conversion layer → silent corruption.
     // Per-direction: SHM
-    "in_shm_enabled", "out_shm_enabled",
+    "in_shm_enabled",
+    "out_shm_enabled",
     // HEP-CORE-0041 §7 substep 1h (#255) — `in_shm_secret` /
     // `out_shm_secret` retired.  The legacy `shm_secret` field was a
     // header-stored guard secret on SHM channels that the design
@@ -138,11 +158,15 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     // role-layer state).  The `ShmQueue::set_shm_secret` + legacy
     // factories retire in S3c (#275); `SharedMemoryHeader` field
     // renames in S5.
-    "in_shm_slot_count", "out_shm_slot_count",
-    "in_shm_sync_policy", "out_shm_sync_policy",
+    "in_shm_slot_count",
+    "out_shm_slot_count",
+    "in_shm_sync_policy",
+    "out_shm_sync_policy",
     // Role-specific (schemas — validated by role parser, not here)
-    "in_slot_schema", "out_slot_schema",
-    "in_flexzone_schema", "out_flexzone_schema",
+    "in_slot_schema",
+    "out_slot_schema",
+    "in_flexzone_schema",
+    "out_flexzone_schema",
 };
 
 /// HEP-CORE-0041 §7 substep 1h (#255) — explicit retirement of config
@@ -167,7 +191,7 @@ static void reject_retired_keys(const nlohmann::json &j, const char *tag)
         // auth gate (it never gated ATTACH, only LOOKUP).  The
         // capability-transport replacement (substeps 1a-1g) carries
         // no wire equivalent.
-        {"in_shm_secret",  "HEP-CORE-0041 §7 substep 1h (#255)",
+        {"in_shm_secret", "HEP-CORE-0041 §7 substep 1h (#255)",
          "remove the field; auth is now via SCM_RIGHTS capability "
          "transport (HEP-CORE-0041 §5.1) and requires no config knob"},
         {"out_shm_secret", "HEP-CORE-0041 §7 substep 1h (#255)",
@@ -179,10 +203,9 @@ static void reject_retired_keys(const nlohmann::json &j, const char *tag)
     {
         if (j.contains(rk.name))
         {
-            throw std::runtime_error(
-                std::string(tag) + ": config key '" + rk.name +
-                "' was RETIRED by " + rk.hep_ref +
-                ".  Migration: " + rk.migration + ".");
+            throw std::runtime_error(std::string(tag) + ": config key '" + rk.name +
+                                     "' was RETIRED by " + rk.hep_ref +
+                                     ".  Migration: " + rk.migration + ".");
         }
     }
 }
@@ -194,8 +217,7 @@ static void validate_known_keys(const nlohmann::json &j, const char *tag)
     {
         if (kAllowedKeys.find(it.key()) == kAllowedKeys.end())
         {
-            throw std::runtime_error(
-                std::string(tag) + ": unknown config key '" + it.key() + "'");
+            throw std::runtime_error(std::string(tag) + ": unknown config key '" + it.key() + "'");
         }
     }
 }
@@ -214,25 +236,25 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     validate_known_keys(j, tag);
 
     // ── Non-directional categories ───────────────────────────────────
-    identity   = parse_identity_config(j, role_type);
-    auth       = parse_auth_config(j, role_type);
-    script     = parse_script_config(j, base_dir, tag);
-    timing     = parse_timing_config(j, tag);
-    checksum   = parse_checksum_config(j, tag);
-    logging    = parse_logging_config(j, tag);
-    inbox      = parse_inbox_config(j, tag);
-    startup    = parse_startup_config(j, tag);
+    identity = parse_identity_config(j, role_type);
+    auth = parse_auth_config(j, role_type);
+    script = parse_script_config(j, base_dir, tag);
+    timing = parse_timing_config(j, tag);
+    checksum = parse_checksum_config(j, tag);
+    logging = parse_logging_config(j, tag);
+    inbox = parse_inbox_config(j, tag);
+    startup = parse_startup_config(j, tag);
     monitoring = parse_monitoring_config(j);
 
     // ── Directional categories (always load both slots) ──────────────
-    in_hub        = parse_hub_ref_config(j, base_dir, "in");
-    out_hub       = parse_hub_ref_config(j, base_dir, "out");
-    in_transport  = parse_transport_config(j, "in",  tag);
+    in_hub = parse_hub_ref_config(j, base_dir, "in");
+    out_hub = parse_hub_ref_config(j, base_dir, "out");
+    in_transport = parse_transport_config(j, "in", tag);
     out_transport = parse_transport_config(j, "out", tag);
-    in_shm        = parse_shm_config(j, "in",  tag);
-    out_shm       = parse_shm_config(j, "out", tag);
-    in_channel    = j.value("in_channel", std::string{});
-    out_channel   = j.value("out_channel", std::string{});
+    in_shm = parse_shm_config(j, "in", tag);
+    out_shm = parse_shm_config(j, "out", tag);
+    in_channel = j.value("in_channel", std::string{});
+    out_channel = j.value("out_channel", std::string{});
     // 2026-07-08 topology migration — OPTIONAL; empty means "inherit
     // channel's stored topology or default to one-to-one" per broker
     // overwrite semantics (tech draft §5.1 rule 4).
@@ -243,21 +265,21 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     // (`hub_state.hpp:167`) — same validator the broker's REG_REQ
     // handlers use — so a typo like "fanin" fails config-load rather
     // than silently reaching the broker as a CONFIG_INVALID.
-    in_channel_topology  = j.value("in_channel_topology",  std::string{});
+    in_channel_topology = j.value("in_channel_topology", std::string{});
     out_channel_topology = j.value("out_channel_topology", std::string{});
-    for (const auto &[key, val] : std::initializer_list<std::pair<
-             std::string_view, std::string_view>>{
-             {"in_channel_topology",  in_channel_topology},
+    for (const auto &[key, val] :
+         std::initializer_list<std::pair<std::string_view, std::string_view>>{
+             {"in_channel_topology", in_channel_topology},
              {"out_channel_topology", out_channel_topology}})
     {
-        if (val.empty()) continue;  // "inherit" sentinel
+        if (val.empty())
+            continue; // "inherit" sentinel
         if (!pylabhub::hub::topology::parse(val).has_value())
         {
-            throw std::runtime_error(
-                std::string(tag) + ": config key '" + std::string(key) +
-                "' has invalid value '" + std::string(val) +
-                "' (must be one of \"fan-in\", \"fan-out\", "
-                "\"one-to-one\", or omitted; HEP-CORE-0018 §5.3)");
+            throw std::runtime_error(std::string(tag) + ": config key '" + std::string(key) +
+                                     "' has invalid value '" + std::string(val) +
+                                     "' (must be one of \"fan-in\", \"fan-out\", "
+                                     "\"one-to-one\", or omitted; HEP-CORE-0018 §5.3)");
         }
     }
 }
@@ -266,9 +288,7 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
 // Factory methods
 // ============================================================================
 
-RoleConfig RoleConfig::load(const std::string &path,
-                             const char *role_type,
-                             RoleParser role_parser)
+RoleConfig RoleConfig::load(const std::string &path, const char *role_type, RoleParser role_parser)
 {
     namespace fs = std::filesystem;
 
@@ -283,8 +303,8 @@ RoleConfig RoleConfig::load(const std::string &path,
     std::error_code ec;
     s.jcfg = utils::JsonConfig(fs::path(path), /*createIfMissing=*/false, &ec);
     if (ec)
-        throw std::runtime_error(
-            "RoleConfig: cannot open config file '" + path + "': " + ec.message());
+        throw std::runtime_error("RoleConfig: cannot open config file '" + path +
+                                 "': " + ec.message());
 
     // Step 1: Read from JsonConfig's in-memory cache (no file I/O —
     // the constructor already loaded the file).
@@ -292,8 +312,8 @@ RoleConfig RoleConfig::load(const std::string &path,
         std::error_code lock_ec;
         auto rlock = s.jcfg.lock_for_read(&lock_ec);
         if (!rlock)
-            throw std::runtime_error(
-                "RoleConfig: cannot read config '" + path + "': " + lock_ec.message());
+            throw std::runtime_error("RoleConfig: cannot read config '" + path +
+                                     "': " + lock_ec.message());
         s.raw_json = rlock->json();
     }
 
@@ -309,8 +329,7 @@ RoleConfig RoleConfig::load(const std::string &path,
     // gate on diagnostic-non-empty so the group-readable advisory
     // surface (v.ok=true, v.diagnostic set) doesn't go dead.
     if (auto v = utils::security::verify_keyfile_acl(
-            std::filesystem::path(path),
-            utils::security::KeyFileRole::ConfigFileReferencingVault);
+            std::filesystem::path(path), utils::security::KeyFileRole::ConfigFileReferencingVault);
         !v.diagnostic.empty())
     {
         std::fprintf(stderr,
@@ -326,9 +345,8 @@ RoleConfig RoleConfig::load(const std::string &path,
     return cfg;
 }
 
-RoleConfig RoleConfig::load_from_directory(const std::string &dir,
-                                            const char *role_type,
-                                            RoleParser role_parser)
+RoleConfig RoleConfig::load_from_directory(const std::string &dir, const char *role_type,
+                                           RoleParser role_parser)
 {
     namespace fs = std::filesystem;
     const fs::path base = fs::weakly_canonical(fs::path(dir));
@@ -340,30 +358,106 @@ RoleConfig RoleConfig::load_from_directory(const std::string &dir,
 // Non-directional accessors
 // ============================================================================
 
-const IdentityConfig   &RoleConfig::identity()   const { assert(impl_); return impl_->identity; }
-const AuthConfig       &RoleConfig::auth()       const { assert(impl_); return impl_->auth; }
-const ScriptConfig     &RoleConfig::script()     const { assert(impl_); return impl_->script; }
-const TimingConfig     &RoleConfig::timing()     const { assert(impl_); return impl_->timing; }
-const InboxConfig      &RoleConfig::inbox()      const { assert(impl_); return impl_->inbox; }
-const StartupConfig    &RoleConfig::startup()    const { assert(impl_); return impl_->startup; }
-const MonitoringConfig &RoleConfig::monitoring() const { assert(impl_); return impl_->monitoring; }
-const ChecksumConfig   &RoleConfig::checksum()   const { assert(impl_); return impl_->checksum; }
-const LoggingConfig    &RoleConfig::logging()    const { assert(impl_); return impl_->logging; }
+const IdentityConfig &RoleConfig::identity() const
+{
+    assert(impl_);
+    return impl_->identity;
+}
+const AuthConfig &RoleConfig::auth() const
+{
+    assert(impl_);
+    return impl_->auth;
+}
+const ScriptConfig &RoleConfig::script() const
+{
+    assert(impl_);
+    return impl_->script;
+}
+const TimingConfig &RoleConfig::timing() const
+{
+    assert(impl_);
+    return impl_->timing;
+}
+const InboxConfig &RoleConfig::inbox() const
+{
+    assert(impl_);
+    return impl_->inbox;
+}
+const StartupConfig &RoleConfig::startup() const
+{
+    assert(impl_);
+    return impl_->startup;
+}
+const MonitoringConfig &RoleConfig::monitoring() const
+{
+    assert(impl_);
+    return impl_->monitoring;
+}
+const ChecksumConfig &RoleConfig::checksum() const
+{
+    assert(impl_);
+    return impl_->checksum;
+}
+const LoggingConfig &RoleConfig::logging() const
+{
+    assert(impl_);
+    return impl_->logging;
+}
 
 // ============================================================================
 // Directional accessors
 // ============================================================================
 
-const HubRefConfig                   &RoleConfig::in_hub()        const { assert(impl_); return impl_->in_hub; }
-const HubRefConfig                   &RoleConfig::out_hub()       const { assert(impl_); return impl_->out_hub; }
-const TransportConfig             &RoleConfig::in_transport()  const { assert(impl_); return impl_->in_transport; }
-const TransportConfig             &RoleConfig::out_transport() const { assert(impl_); return impl_->out_transport; }
-const ShmConfig                   &RoleConfig::in_shm()        const { assert(impl_); return impl_->in_shm; }
-const ShmConfig                   &RoleConfig::out_shm()       const { assert(impl_); return impl_->out_shm; }
-const std::string                 &RoleConfig::in_channel()    const { assert(impl_); return impl_->in_channel; }
-const std::string                 &RoleConfig::out_channel()   const { assert(impl_); return impl_->out_channel; }
-const std::string                 &RoleConfig::in_channel_topology()  const { assert(impl_); return impl_->in_channel_topology; }
-const std::string                 &RoleConfig::out_channel_topology() const { assert(impl_); return impl_->out_channel_topology; }
+const HubRefConfig &RoleConfig::in_hub() const
+{
+    assert(impl_);
+    return impl_->in_hub;
+}
+const HubRefConfig &RoleConfig::out_hub() const
+{
+    assert(impl_);
+    return impl_->out_hub;
+}
+const TransportConfig &RoleConfig::in_transport() const
+{
+    assert(impl_);
+    return impl_->in_transport;
+}
+const TransportConfig &RoleConfig::out_transport() const
+{
+    assert(impl_);
+    return impl_->out_transport;
+}
+const ShmConfig &RoleConfig::in_shm() const
+{
+    assert(impl_);
+    return impl_->in_shm;
+}
+const ShmConfig &RoleConfig::out_shm() const
+{
+    assert(impl_);
+    return impl_->out_shm;
+}
+const std::string &RoleConfig::in_channel() const
+{
+    assert(impl_);
+    return impl_->in_channel;
+}
+const std::string &RoleConfig::out_channel() const
+{
+    assert(impl_);
+    return impl_->out_channel;
+}
+const std::string &RoleConfig::in_channel_topology() const
+{
+    assert(impl_);
+    return impl_->in_channel_topology;
+}
+const std::string &RoleConfig::out_channel_topology() const
+{
+    assert(impl_);
+    return impl_->out_channel_topology;
+}
 
 // ============================================================================
 // Vault operations
@@ -395,11 +489,10 @@ bool RoleConfig::load_keypair(const std::string &password)
 
     if (!std::filesystem::exists(vault_path))
     {
-        throw std::runtime_error(std::string("[") + tag +
-            "] Error: auth.keyfile = '" + auth.keyfile +
-            "' resolves to '" + vault_path.string() +
-            "' which does not exist.  Run `plh_role --role " + tag +
-            " --keygen` to create the vault (HEP-CORE-0024 §3.4).");
+        throw std::runtime_error(std::string("[") + tag + "] Error: auth.keyfile = '" +
+                                 auth.keyfile + "' resolves to '" + vault_path.string() +
+                                 "' which does not exist.  Run `plh_role --role " + tag +
+                                 " --keygen` to create the vault (HEP-CORE-0024 §3.4).");
     }
 
     // HEP-CORE-0035 §4.6.2: verify ACL contract BEFORE reading the
@@ -407,28 +500,28 @@ bool RoleConfig::load_keypair(const std::string &password)
     // + owner-uid.  Failure produces an OpenSSH-style actionable
     // diagnostic naming the path, observed mode, required mode, and
     // the exact `chmod` command to fix.
-    if (auto v = security::verify_keyfile_acl(
-            vault_path, security::KeyFileRole::VaultFile);
-        !v.ok)
+    if (auto v = security::verify_keyfile_acl(vault_path, security::KeyFileRole::VaultFile); !v.ok)
         throw std::runtime_error(std::string("[") + tag +
-            "] Refusing to load vault — ACL check failed (HEP-CORE-"
-            "0035 §4.6.2):\n" + v.diagnostic);
+                                 "] Refusing to load vault — ACL check failed (HEP-CORE-"
+                                 "0035 §4.6.2):\n" +
+                                 v.diagnostic);
     // Defensive skip if parent_path is empty (operator passed a
     // bare-filename absolute keyfile + empty base_dir).
     if (vault_path.has_parent_path())
     {
-        if (auto v = security::verify_keyfile_acl(
-                vault_path.parent_path(), security::KeyFileRole::VaultDir);
+        if (auto v = security::verify_keyfile_acl(vault_path.parent_path(),
+                                                  security::KeyFileRole::VaultDir);
             !v.ok)
             throw std::runtime_error(std::string("[") + tag +
-                "] Refusing to load vault — parent dir ACL check failed "
-                "(HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
+                                     "] Refusing to load vault — parent dir ACL check failed "
+                                     "(HEP-CORE-0035 §4.6.2):\n" +
+                                     v.diagnostic);
     }
 
     {
         const auto vault = utils::RoleVault::open(vault_path, uid, password);
-        const auto pub = vault.public_key();   // string_view
-        const auto sec = vault.secret_key();   // string_view
+        const auto pub = vault.public_key(); // string_view
+        const auto sec = vault.secret_key(); // string_view
 
         // HEP-CORE-0040 §171: identity keypair lives in `secure().keys()`
         // (LockedKey storage).  `add_identity_from_z85` is the single
@@ -437,8 +530,8 @@ bool RoleConfig::load_keypair(const std::string &password)
         pylabhub::utils::security::secure().keys().add_identity_from_z85(
             pylabhub::utils::security::kRoleIdentityName, pub, sec);
 
-        std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n",
-                     tag, vault_path.string().c_str(), pub.data());
+        std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n", tag,
+                     vault_path.string().c_str(), pub.data());
     }
     return true;
 }
@@ -453,8 +546,7 @@ std::string RoleConfig::create_keypair(const std::string &password)
 
     const auto &uid = impl_->identity.uid;
     const std::filesystem::path vault_path =
-        pylabhub::utils::security::resolve_keyfile_path(
-            auth.keyfile, impl_->base_dir);
+        pylabhub::utils::security::resolve_keyfile_path(auth.keyfile, impl_->base_dir);
 
     // No-silent-overwrite (HEP-CORE-0024 §3.4, added 2026-05-31): refuse
     // to clobber an existing vault file.  --keygen produces a fresh
@@ -462,14 +554,13 @@ std::string RoleConfig::create_keypair(const std::string &password)
     // any hub-side allowlist entry pinned to the old pubkey.  Operator
     // must remove the file explicitly to re-keygen.
     if (std::filesystem::exists(vault_path))
-        throw std::runtime_error(std::string("[") + tag +
-            "] Error: vault already exists at '" +
-            vault_path.string() +
+        throw std::runtime_error(
+            std::string("[") + tag + "] Error: vault already exists at '" + vault_path.string() +
             "'. Refusing to overwrite — that would destroy the existing "
             "CURVE keypair (the hub-side allowlist still pins the OLD "
             "pubkey).  If you really want a new keypair, remove the "
-            "file first:\n    rm '" + vault_path.string() +
-            "'\nthen re-run --keygen (HEP-CORE-0024 §3.4).");
+            "file first:\n    rm '" +
+            vault_path.string() + "'\nthen re-run --keygen (HEP-CORE-0024 §3.4).");
 
     const auto vault = utils::RoleVault::create(vault_path, uid, password);
     return std::string(vault.public_key());
@@ -490,15 +581,16 @@ bool RoleConfig::reload_if_changed()
     assert(impl_);
     bool updated = false;
     impl_->jcfg.transaction(utils::JsonConfig::AccessFlags::ReloadFirst)
-        .read([&](const nlohmann::json &j)
-    {
-        if (j != impl_->raw_json)
-        {
-            impl_->raw_json = j;
-            impl_->load_common(j);
-            updated = true;
-        }
-    });
+        .read(
+            [&](const nlohmann::json &j)
+            {
+                if (j != impl_->raw_json)
+                {
+                    impl_->raw_json = j;
+                    impl_->load_common(j);
+                    updated = true;
+                }
+            });
     return updated;
 }
 
@@ -528,7 +620,15 @@ std::any &RoleConfig::mutable_role_data_any_()
 // Metadata
 // ============================================================================
 
-const std::string           &RoleConfig::role_type() const { assert(impl_); return impl_->role_type; }
-const std::filesystem::path &RoleConfig::base_dir() const { assert(impl_); return impl_->base_dir; }
+const std::string &RoleConfig::role_type() const
+{
+    assert(impl_);
+    return impl_->role_type;
+}
+const std::filesystem::path &RoleConfig::base_dir() const
+{
+    assert(impl_);
+    return impl_->base_dir;
+}
 
 } // namespace pylabhub::config

@@ -13,7 +13,7 @@
  */
 #include "role_api_loop_policy_workers.h"
 
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
 #include "utils/role_host_core.hpp"
@@ -41,8 +41,14 @@ namespace
 /// Lifecycle modules the metric tests need.  Logger for worker-begin/end
 /// milestones + the subprocess's own log stream; SecureSubsystem +
 /// DataBlock for the producer/consumer construction.
-static auto logger_module() { return utils::Logger::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 /// #275-S2: `secret` param dropped — fd-source typed factory ignores
 /// `cfg.shared_secret`; HEP-CORE-0041 capability transport authenticates
@@ -50,12 +56,12 @@ static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 DataBlockConfig make_lp_config()
 {
     DataBlockConfig cfg{};
-    cfg.policy                = DataBlockPolicy::RingBuffer;
-    cfg.consumer_sync_policy  = ConsumerSyncPolicy::Latest_only;
-    cfg.ring_buffer_capacity  = 4;
-    cfg.physical_page_size    = DataBlockPageSize::Size4K;
-    cfg.flex_zone_size        = sizeof(EmptyFlexZone);
-    cfg.checksum_policy       = ChecksumPolicy::None;
+    cfg.policy = DataBlockPolicy::RingBuffer;
+    cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+    cfg.ring_buffer_capacity = 4;
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.flex_zone_size = sizeof(EmptyFlexZone);
+    cfg.checksum_policy = ChecksumPolicy::None;
     return cfg;
 }
 
@@ -73,8 +79,7 @@ DataBlockConfig make_lp_config()
 /// NOTE: ASSERT_NE here is safe only under `throw_on_failure=true`
 /// (set by `run_gtest_worker` before the lambda body runs).  Calling this
 /// from a plain TEST_F body would silently return nullptr on failure.
-std::unique_ptr<DataBlockProducer>
-make_metrics_producer(const char *tag)
+std::unique_ptr<DataBlockProducer> make_metrics_producer(const char *tag)
 {
     const std::string channel = make_test_channel_name(tag);
     auto cfg = make_lp_config();
@@ -126,8 +131,8 @@ int producer_metrics_accumulate()
             EXPECT_GT(m.context_elapsed_us_val(), uint64_t{0})
                 << "context_elapsed_us must advance after ≥ 1 acquire";
         },
-        "role_api_loop_policy::producer_metrics_accumulate",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::producer_metrics_accumulate", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -171,17 +176,17 @@ int producer_metrics_clear()
 
             const auto &m = producer->metrics();
             // Counters zeroed.
-            EXPECT_EQ(m.last_iteration_us_val(),       uint64_t{0});
-            EXPECT_EQ(m.max_iteration_us_val(),        uint64_t{0});
-            EXPECT_EQ(m.last_slot_exec_us_val(),       uint64_t{0});
-            EXPECT_EQ(m.last_slot_wait_us_val(),       uint64_t{0});
-            EXPECT_EQ(m.context_elapsed_us_val(),      uint64_t{0});
+            EXPECT_EQ(m.last_iteration_us_val(), uint64_t{0});
+            EXPECT_EQ(m.max_iteration_us_val(), uint64_t{0});
+            EXPECT_EQ(m.last_slot_exec_us_val(), uint64_t{0});
+            EXPECT_EQ(m.last_slot_wait_us_val(), uint64_t{0});
+            EXPECT_EQ(m.context_elapsed_us_val(), uint64_t{0});
             // Config preserved across clear — this is the key distinction.
-            EXPECT_EQ(m.configured_period_us_val(),    uint64_t{50000})
+            EXPECT_EQ(m.configured_period_us_val(), uint64_t{50000})
                 << "clear_metrics must preserve configured_period (config, not counter)";
         },
-        "role_api_loop_policy::producer_metrics_clear",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::producer_metrics_clear", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -206,8 +211,7 @@ int loop_overrun_count_increment_and_accumulate()
             core.inc_loop_overrun();
             EXPECT_EQ(core.loop_overrun_count(), 3u);
         },
-        "role_api_loop_policy::loop_overrun_count_increment_and_accumulate",
-        logger_module());
+        "role_api_loop_policy::loop_overrun_count_increment_and_accumulate", logger_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -225,8 +229,8 @@ int consumer_metrics_accumulate()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             constexpr int kCycles = 3;
             for (int i = 0; i < kCycles; ++i)
@@ -260,8 +264,8 @@ int consumer_metrics_accumulate()
             EXPECT_GT(pm.context_elapsed_us_val(), uint64_t{0});
             EXPECT_GT(cm.context_elapsed_us_val(), uint64_t{0});
         },
-        "role_api_loop_policy::consumer_metrics_accumulate",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::consumer_metrics_accumulate", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -278,16 +282,16 @@ int zero_on_creation()
             // All ContextMetrics fields start at zero.  Note: iteration
             // count lives on RoleHostCore, not here — this test covers
             // the ContextMetrics surface only.
-            EXPECT_EQ(m.last_slot_wait_us_val(),  uint64_t{0});
-            EXPECT_EQ(m.last_iteration_us_val(),   uint64_t{0});
-            EXPECT_EQ(m.max_iteration_us_val(),    uint64_t{0});
-            EXPECT_EQ(m.last_slot_exec_us_val(),   uint64_t{0});
-            EXPECT_EQ(m.context_elapsed_us_val(),  uint64_t{0});
+            EXPECT_EQ(m.last_slot_wait_us_val(), uint64_t{0});
+            EXPECT_EQ(m.last_iteration_us_val(), uint64_t{0});
+            EXPECT_EQ(m.max_iteration_us_val(), uint64_t{0});
+            EXPECT_EQ(m.last_slot_exec_us_val(), uint64_t{0});
+            EXPECT_EQ(m.context_elapsed_us_val(), uint64_t{0});
             EXPECT_EQ(m.configured_period_us_val(), uint64_t{0});
             EXPECT_EQ(m.context_start_time_val(), ContextMetrics::Clock::time_point{});
         },
-        "role_api_loop_policy::zero_on_creation",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::zero_on_creation", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -317,14 +321,14 @@ int max_rate_metrics_period_zero()
             EXPECT_EQ(m.configured_period_us_val(), uint64_t{0});
             // last_slot_exec_us reflects our 5ms body sleep → ≥ 3000 µs.
             // With 3 writes, this captures the last one's body time.
-            EXPECT_GE(m.last_slot_exec_us_val(),     uint64_t{3000})
+            EXPECT_GE(m.last_slot_exec_us_val(), uint64_t{3000})
                 << "5ms body sleep should land ≥ 3ms in last_slot_exec_us";
             // Iteration timing populated after ≥ 2 acquires.
-            EXPECT_GT(m.last_iteration_us_val(),     uint64_t{0});
-            EXPECT_GT(m.context_elapsed_us_val(),    uint64_t{0});
+            EXPECT_GT(m.last_iteration_us_val(), uint64_t{0});
+            EXPECT_GT(m.context_elapsed_us_val(), uint64_t{0});
         },
-        "role_api_loop_policy::max_rate_metrics_period_zero",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::max_rate_metrics_period_zero", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -340,15 +344,15 @@ int last_slot_work_us_populated()
             {
                 auto h = producer->acquire_write_slot(1000);
                 ASSERT_TRUE(h);
-                std::this_thread::sleep_for(2ms);  // measurable body time
+                std::this_thread::sleep_for(2ms); // measurable body time
                 (void)h->commit(sizeof(TestDataBlock));
                 // ~SlotWriteHandle() records last_slot_exec_us on scope exit.
             }
 
             EXPECT_GT(producer->metrics().last_slot_exec_us_val(), uint64_t{0});
         },
-        "role_api_loop_policy::last_slot_work_us_populated",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::last_slot_work_us_populated", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -376,8 +380,8 @@ int last_iteration_us_populated()
 
             EXPECT_GT(producer->metrics().last_iteration_us_val(), uint64_t{0});
         },
-        "role_api_loop_policy::last_iteration_us_populated",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::last_iteration_us_populated", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -413,8 +417,7 @@ int max_iteration_us_peak()
             // granularity on CI while still catching any bug that
             // recorded the peak at near-zero (e.g. clock source misread
             // or field overwrite by a later short iteration).
-            EXPECT_GE(peak_after_2, uint64_t{3000})
-                << "peak should reflect 5ms inter-iter sleep";
+            EXPECT_GE(peak_after_2, uint64_t{3000}) << "peak should reflect 5ms inter-iter sleep";
 
             // Iteration 3: fast — last_iteration_us smaller, but max must
             // NEVER decrease.
@@ -429,8 +432,8 @@ int max_iteration_us_peak()
                 << "max_iteration_us must be monotonic non-decreasing";
             EXPECT_GE(m.max_iteration_us_val(), m.last_iteration_us_val());
         },
-        "role_api_loop_policy::max_iteration_us_peak",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::max_iteration_us_peak", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -459,8 +462,7 @@ int context_elapsed_us_monotonic()
             }
             const uint64_t elapsed_2 = producer->metrics().context_elapsed_us_val();
 
-            EXPECT_GE(elapsed_2, elapsed_1)
-                << "context_elapsed_us must be non-decreasing";
+            EXPECT_GE(elapsed_2, elapsed_1) << "context_elapsed_us must be non-decreasing";
             // 2 ms sleep + second acquire should advance elapsed by
             // ≥ 1 ms — lower bound leaves headroom for the clock
             // source granularity but catches "elapsed advances by
@@ -470,8 +472,8 @@ int context_elapsed_us_monotonic()
             EXPECT_GT(elapsed_2, elapsed_1)
                 << "after a 2ms sleep + second acquire, elapsed should advance";
         },
-        "role_api_loop_policy::context_elapsed_us_monotonic",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_loop_policy::context_elapsed_us_monotonic", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::role_api_loop_policy
@@ -494,8 +496,7 @@ struct RoleApiLoopPolicyWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 const auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_api_loop_policy")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_api_loop_policy")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_api_loop_policy;
@@ -521,9 +522,7 @@ struct RoleApiLoopPolicyWorkerRegistrar
                 if (sc == "context_elapsed_us_monotonic")
                     return context_elapsed_us_monotonic();
 
-                fmt::print(stderr,
-                           "[role_api_loop_policy] ERROR: unknown scenario '{}'\n",
-                           sc);
+                fmt::print(stderr, "[role_api_loop_policy] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

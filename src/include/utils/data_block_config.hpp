@@ -39,7 +39,7 @@ namespace pylabhub::hub
  */
 enum class DataBlockPageSize : uint32_t
 {
-    Unset  = 0,          ///< Sentinel: must not be stored in header
+    Unset = 0, ///< Sentinel: must not be stored in header
     Size4K = 4096U,
     Size4M = 4194304U,
     Size16M = 16777216U
@@ -68,9 +68,10 @@ PYLABHUB_UTILS_EXPORT DataBlockPageSize system_page_size();
 
 /// @name Slot acquire timeout sentinel values (pass as timeout_ms to acquire_*_slot)
 /// @{
-inline constexpr int TIMEOUT_IMMEDIATE = 0;   ///< Non-blocking: return nullptr immediately if unavailable
-inline constexpr int TIMEOUT_DEFAULT   = 100; ///< Default poll interval (100 ms)
-inline constexpr int TIMEOUT_INFINITE  = -1;  ///< Block indefinitely until a slot is available
+inline constexpr int TIMEOUT_IMMEDIATE =
+    0; ///< Non-blocking: return nullptr immediately if unavailable
+inline constexpr int TIMEOUT_DEFAULT = 100; ///< Default poll interval (100 ms)
+inline constexpr int TIMEOUT_INFINITE = -1; ///< Block indefinitely until a slot is available
 /// @}
 
 // ============================================================================

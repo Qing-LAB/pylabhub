@@ -26,20 +26,18 @@ namespace pylabhub::processor
 class ProcessorAPI
 {
   public:
-    explicit ProcessorAPI(scripting::RoleAPIBase &base)
-        : base_(&base)
-    {}
+    explicit ProcessorAPI(scripting::RoleAPIBase &base) : base_(&base) {}
 
     // Identity
-    [[nodiscard]] const std::string &uid()         const noexcept { return base_->uid(); }
-    [[nodiscard]] const std::string &name()        const noexcept { return base_->name(); }
-    [[nodiscard]] const std::string &in_channel()  const noexcept { return base_->channel(); }
+    [[nodiscard]] const std::string &uid() const noexcept { return base_->uid(); }
+    [[nodiscard]] const std::string &name() const noexcept { return base_->name(); }
+    [[nodiscard]] const std::string &in_channel() const noexcept { return base_->channel(); }
     [[nodiscard]] const std::string &out_channel() const noexcept { return base_->out_channel(); }
-    [[nodiscard]] const std::string &log_level()   const noexcept { return base_->log_level(); }
-    [[nodiscard]] const std::string &script_dir()  const noexcept { return base_->script_dir(); }
-    [[nodiscard]] const std::string &role_dir()    const noexcept { return base_->role_dir(); }
-    [[nodiscard]] std::string        logs_dir()    const { return base_->logs_dir(); }
-    [[nodiscard]] std::string        run_dir()     const { return base_->run_dir(); }
+    [[nodiscard]] const std::string &log_level() const noexcept { return base_->log_level(); }
+    [[nodiscard]] const std::string &script_dir() const noexcept { return base_->script_dir(); }
+    [[nodiscard]] const std::string &role_dir() const noexcept { return base_->role_dir(); }
+    [[nodiscard]] std::string logs_dir() const { return base_->logs_dir(); }
+    [[nodiscard]] std::string run_dir() const { return base_->run_dir(); }
 
     void log(const std::string &level, const std::string &msg) { base_->log(level, msg); }
     void stop() { base_->stop(); }
@@ -53,22 +51,20 @@ class ProcessorAPI
     // Band pub/sub (HEP-CORE-0030)
     py::object band_join(const std::string &channel);
     /// Python-side ergonomic wrapper — see ProducerAPI::band_leave for rationale.
-    bool band_leave(const std::string &channel) {
+    bool band_leave(const std::string &channel)
+    {
         auto resp = base_->band_leave(channel);
-        return resp.has_value() &&
-               resp->value("status", std::string{}) == "success";
+        return resp.has_value() && resp->value("status", std::string{}) == "success";
     }
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
     bool is_in_band(const std::string &channel) const;
 
     /// Inquiry helpers — engine-parity with Native + Lua.
-    bool band_member_contains(const std::string &channel,
-                              const std::string &role_uid);
-    int  band_member_count(const std::string &channel);
-    bool allowed_peer_contains(const std::string &channel,
-                               const std::string &role_uid) const;
-    int  allowed_peer_count(const std::string &channel) const;
+    bool band_member_contains(const std::string &channel, const std::string &role_uid);
+    int band_member_count(const std::string &channel);
+    bool allowed_peer_contains(const std::string &channel, const std::string &role_uid) const;
+    int allowed_peer_count(const std::string &channel) const;
 
     /// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY
     /// (lines 1834-1838) — binding-side live-peer count.
@@ -87,12 +83,21 @@ class ProcessorAPI
     void clear_inbox_cache();
 
     // Diagnostics
-    [[nodiscard]] uint64_t script_error_count() const noexcept { return base_->script_error_count(); }
-    [[nodiscard]] uint64_t in_slots_received()  const noexcept { return base_->in_slots_received(); }
-    [[nodiscard]] uint64_t out_slots_written()  const noexcept { return base_->out_slots_written(); }
-    [[nodiscard]] uint64_t out_drop_count()     const noexcept { return base_->out_drop_count(); }
-    [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return base_->loop_overrun_count(); }
-    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return base_->last_cycle_work_us(); }
+    [[nodiscard]] uint64_t script_error_count() const noexcept
+    {
+        return base_->script_error_count();
+    }
+    [[nodiscard]] uint64_t in_slots_received() const noexcept { return base_->in_slots_received(); }
+    [[nodiscard]] uint64_t out_slots_written() const noexcept { return base_->out_slots_written(); }
+    [[nodiscard]] uint64_t out_drop_count() const noexcept { return base_->out_drop_count(); }
+    [[nodiscard]] uint64_t loop_overrun_count() const noexcept
+    {
+        return base_->loop_overrun_count();
+    }
+    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept
+    {
+        return base_->last_cycle_work_us();
+    }
     [[nodiscard]] py::dict metrics() const;
 
     /// HEP-CORE-0036 §I11 polling surface — processor has a TX side,
@@ -119,27 +124,37 @@ class ProcessorAPI
     /// HEP-CORE-0035 §2 (#186, #194) — see ProducerAPI::queue_mechanism.
     [[nodiscard]] std::string queue_mechanism(int side) const
     {
-        const auto cs = (side == 0) ? scripting::ChannelSide::Tx
-                                    : scripting::ChannelSide::Rx;
-        return std::string{pylabhub::hub::mechanism_name(
-            base_->queue_mechanism(cs))};
+        const auto cs = (side == 0) ? scripting::ChannelSide::Tx : scripting::ChannelSide::Rx;
+        return std::string{pylabhub::hub::mechanism_name(base_->queue_mechanism(cs))};
     }
 
     // Queue state
-    [[nodiscard]] uint64_t last_seq()       const noexcept { return base_->last_seq(); }
-    [[nodiscard]] uint64_t in_capacity()    const noexcept { return static_cast<uint64_t>(base_->in_capacity()); }
-    [[nodiscard]] std::string in_policy()   const { return base_->in_policy(); }
-    [[nodiscard]] uint64_t out_capacity()   const noexcept { return static_cast<uint64_t>(base_->out_capacity()); }
-    [[nodiscard]] std::string out_policy()  const { return base_->out_policy(); }
+    [[nodiscard]] uint64_t last_seq() const noexcept { return base_->last_seq(); }
+    [[nodiscard]] uint64_t in_capacity() const noexcept
+    {
+        return static_cast<uint64_t>(base_->in_capacity());
+    }
+    [[nodiscard]] std::string in_policy() const { return base_->in_policy(); }
+    [[nodiscard]] uint64_t out_capacity() const noexcept
+    {
+        return static_cast<uint64_t>(base_->out_capacity());
+    }
+    [[nodiscard]] std::string out_policy() const { return base_->out_policy(); }
     void set_verify_checksum(bool enable) { base_->set_verify_checksum(enable); }
 
     // Custom metrics
     void report_metric(const std::string &key, double value) { base_->report_metric(key, value); }
-    void report_metrics(const std::unordered_map<std::string, double> &kv) { base_->report_metrics(kv); }
+    void report_metrics(const std::unordered_map<std::string, double> &kv)
+    {
+        base_->report_metrics(kv);
+    }
     void clear_custom_metrics() { base_->clear_custom_metrics(); }
 
     // Metrics snapshot
-    [[nodiscard]] nlohmann::json snapshot_metrics_json() const { return base_->snapshot_metrics_json(); }
+    [[nodiscard]] nlohmann::json snapshot_metrics_json() const
+    {
+        return base_->snapshot_metrics_json();
+    }
 
     // Shutdown
     [[nodiscard]] std::string stop_reason() const noexcept { return base_->stop_reason(); }
@@ -155,11 +170,12 @@ class ProcessorAPI
     void set_rx_flexzone(std::optional<py::object> obj) { rx_flexzone_obj_ = std::move(obj); }
 
   private:
-    scripting::RoleAPIBase  *base_;
+    scripting::RoleAPIBase *base_;
     std::optional<py::object> tx_flexzone_obj_;
     std::optional<py::object> rx_flexzone_obj_;
     std::unordered_map<std::string, py::object> inbox_cache_;
-public:
+
+  public:
     py::object shared_data_{py::none()};
 };
 

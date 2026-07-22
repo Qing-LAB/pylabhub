@@ -37,7 +37,7 @@
  * `create_reader(name, shared_secret, ...)`) + `set_shm_secret` API.
  */
 #include "utils/hub_queue.hpp"
-#include "utils/hub_state.hpp"    // ChannelTopology (for topology-parametric factories)
+#include "utils/hub_state.hpp" // ChannelTopology (for topology-parametric factories)
 #include "utils/data_block.hpp"
 #include "utils/schema_field_layout.hpp"
 
@@ -70,7 +70,7 @@ struct ShmQueueImpl;
  */
 class PYLABHUB_UTILS_EXPORT ShmQueue final : public QueueReader, public QueueWriter
 {
-public:
+  public:
     // ── Standby-mode factories (HEP-CORE-0041 capability transport) ──────────
     //
     // Build a ShmQueue in Standby WITHOUT driving Configured → Active.  The
@@ -96,26 +96,16 @@ public:
      * Configured → Active (wraps the existing memfd via
      * `create_datablock_producer_from_fd_impl`).
      */
-    [[nodiscard]] static std::unique_ptr<ShmQueue>
-    create_writer_standby(const std::string &channel_name,
-                          const std::vector<SchemaFieldDesc> &slot_schema,
-                          const std::string &slot_packing,
-                          const std::vector<SchemaFieldDesc> &fz_schema,
-                          const std::string &fz_packing,
-                          uint32_t ring_buffer_capacity,
-                          DataBlockPageSize page_size,
-                          DataBlockPolicy policy,
-                          ConsumerSyncPolicy sync_policy,
-                          ChecksumPolicy checksum_policy,
-                          bool checksum_slot = false,
-                          bool checksum_fz = false,
-                          bool always_clear_slot = true,
-                          const std::string &hub_uid = {},
-                          const std::string &hub_name = {},
-                          const schema::SchemaInfo *slot_schema_info = nullptr,
-                          const schema::SchemaInfo *fz_schema_info = nullptr,
-                          const std::string &producer_uid = {},
-                          const std::string &producer_name = {});
+    [[nodiscard]] static std::unique_ptr<ShmQueue> create_writer_standby(
+        const std::string &channel_name, const std::vector<SchemaFieldDesc> &slot_schema,
+        const std::string &slot_packing, const std::vector<SchemaFieldDesc> &fz_schema,
+        const std::string &fz_packing, uint32_t ring_buffer_capacity, DataBlockPageSize page_size,
+        DataBlockPolicy policy, ConsumerSyncPolicy sync_policy, ChecksumPolicy checksum_policy,
+        bool checksum_slot = false, bool checksum_fz = false, bool always_clear_slot = true,
+        const std::string &hub_uid = {}, const std::string &hub_name = {},
+        const schema::SchemaInfo *slot_schema_info = nullptr,
+        const schema::SchemaInfo *fz_schema_info = nullptr, const std::string &producer_uid = {},
+        const std::string &producer_name = {});
 
     /**
      * @brief Build a read-mode ShmQueue in Standby (no secret, no attach).
@@ -129,15 +119,11 @@ public:
      * `shm_name` is purely a diagnostic label here — there is no
      * kernel-namespace name on the capability path (the SHM is anonymous).
      */
-    [[nodiscard]] static std::unique_ptr<ShmQueue>
-    create_reader_standby(const std::string &shm_name,
-                          const std::vector<SchemaFieldDesc> &expected_slot_schema,
-                          const std::string &expected_packing,
-                          const std::string &channel_name,
-                          bool verify_slot = false,
-                          bool verify_fz = false,
-                          const std::string &consumer_uid = {},
-                          const std::string &consumer_name = {});
+    [[nodiscard]] static std::unique_ptr<ShmQueue> create_reader_standby(
+        const std::string &shm_name, const std::vector<SchemaFieldDesc> &expected_slot_schema,
+        const std::string &expected_packing, const std::string &channel_name,
+        bool verify_slot = false, bool verify_fz = false, const std::string &consumer_uid = {},
+        const std::string &consumer_name = {});
 
     // ─── Topology-parametric factories (HEP-CORE-0017 §3.3.0, Phase C step 3) ──
     //
@@ -158,37 +144,37 @@ public:
     /// Options passed to `create_reader` — the consumer-side SHM queue.
     struct RxCreateOptions
     {
-        std::string channel_name;           ///< Also used as diagnostic shm_name label.
+        std::string channel_name; ///< Also used as diagnostic shm_name label.
         std::vector<SchemaFieldDesc> slot_schema;
-        std::string                  slot_packing;
-        std::string                  consumer_uid;
-        std::string                  consumer_name;
-        bool                         verify_slot = false;
-        bool                         verify_fz   = false;
+        std::string slot_packing;
+        std::string consumer_uid;
+        std::string consumer_name;
+        bool verify_slot = false;
+        bool verify_fz = false;
     };
 
     /// Options passed to `create_writer` — the producer-side SHM queue.
     struct TxCreateOptions
     {
-        std::string                  channel_name;
+        std::string channel_name;
         std::vector<SchemaFieldDesc> slot_schema;
-        std::string                  slot_packing;
-        std::vector<SchemaFieldDesc> fz_schema;    ///< Empty → no flexzone.
-        std::string                  fz_packing;
-        uint32_t                     ring_buffer_capacity{0};
-        DataBlockPageSize            page_size{DataBlockPageSize::Unset};
-        DataBlockPolicy              policy{DataBlockPolicy::RingBuffer};
-        ConsumerSyncPolicy           sync_policy{ConsumerSyncPolicy::Sequential};
-        ChecksumPolicy               checksum_policy{ChecksumPolicy::Enforced};
-        bool                         checksum_slot = false;
-        bool                         checksum_fz   = false;
-        bool                         always_clear_slot = true;
-        std::string                  hub_uid;
-        std::string                  hub_name;
-        const schema::SchemaInfo    *slot_schema_info = nullptr;
-        const schema::SchemaInfo    *fz_schema_info   = nullptr;
-        std::string                  producer_uid;
-        std::string                  producer_name;
+        std::string slot_packing;
+        std::vector<SchemaFieldDesc> fz_schema; ///< Empty → no flexzone.
+        std::string fz_packing;
+        uint32_t ring_buffer_capacity{0};
+        DataBlockPageSize page_size{DataBlockPageSize::Unset};
+        DataBlockPolicy policy{DataBlockPolicy::RingBuffer};
+        ConsumerSyncPolicy sync_policy{ConsumerSyncPolicy::Sequential};
+        ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
+        bool checksum_slot = false;
+        bool checksum_fz = false;
+        bool always_clear_slot = true;
+        std::string hub_uid;
+        std::string hub_name;
+        const schema::SchemaInfo *slot_schema_info = nullptr;
+        const schema::SchemaInfo *fz_schema_info = nullptr;
+        std::string producer_uid;
+        std::string producer_name;
     };
 
     /// Construct the consumer-side SHM queue for `topology`.
@@ -204,8 +190,7 @@ public:
     ///   with `ZmqQueue::create_reader` and for future divergence if
     ///   fan-out SHM needs distinct handshake semantics.
     [[nodiscard]] static std::unique_ptr<ShmQueue>
-    create_reader(pylabhub::hub::ChannelTopology topology,
-                  RxCreateOptions                opts);
+    create_reader(pylabhub::hub::ChannelTopology topology, RxCreateOptions opts);
 
     /// Construct the producer-side SHM queue for `topology`.
     /// - `FanIn`: returns `nullptr` + `LOGGER_ERROR` per §3.3.0 gate 1.
@@ -215,8 +200,7 @@ public:
     ///   N consumers under fan-out via successive SCM_RIGHTS handoffs
     ///   of the same anon memfd — the queue construction is unchanged.
     [[nodiscard]] static std::unique_ptr<ShmQueue>
-    create_writer(pylabhub::hub::ChannelTopology topology,
-                  TxCreateOptions                opts);
+    create_writer(pylabhub::hub::ChannelTopology topology, TxCreateOptions opts);
 
     // ── Raw DataBlock accessor (for template RAII path only) ─────────────────
 
@@ -227,29 +211,29 @@ public:
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     ~ShmQueue() override;
-    ShmQueue(ShmQueue&&) noexcept;
-    ShmQueue& operator=(ShmQueue&&) noexcept;
-    ShmQueue(const ShmQueue&) = delete;
-    ShmQueue& operator=(const ShmQueue&) = delete;
+    ShmQueue(ShmQueue &&) noexcept;
+    ShmQueue &operator=(ShmQueue &&) noexcept;
+    ShmQueue(const ShmQueue &) = delete;
+    ShmQueue &operator=(const ShmQueue &) = delete;
 
     // ── QueueReader interface — reading ────────────────────────────────────────
 
-    const void* read_acquire(std::chrono::milliseconds timeout) noexcept override;
-    void        read_release() noexcept override;
+    const void *read_acquire(std::chrono::milliseconds timeout) noexcept override;
+    void read_release() noexcept override;
 
     /** Monotonic slot id from the last successful read_acquire(); 0 until then. */
     uint64_t last_seq() const noexcept override;
 
     // ── QueueWriter interface — writing ────────────────────────────────────────
 
-    void* write_acquire(std::chrono::milliseconds timeout) noexcept override;
-    void  write_commit() noexcept override;
-    void  write_discard() noexcept override;
+    void *write_acquire(std::chrono::milliseconds timeout) noexcept override;
+    void write_commit() noexcept override;
+    void write_discard() noexcept override;
 
     // ── Shared metadata (both QueueReader and QueueWriter) ────────────────────
 
-    size_t      item_size()     const noexcept override;
-    std::string name()          const override;
+    size_t item_size() const noexcept override;
+    std::string name() const override;
 
     /**
      * @brief Ring buffer slot count from DataBlock config.
@@ -257,7 +241,7 @@ public:
      * Queries DataBlockConsumer or DataBlockProducer (whichever is active)
      * via get_metrics().slot_count.
      */
-    size_t      capacity()    const override;
+    size_t capacity() const override;
 
     /**
      * @brief Returns "shm_read" (consumer mode) or "shm_write" (producer mode).
@@ -317,7 +301,7 @@ public:
      * unconditionally; this override keeps that uniform-dispatch shape
      * working without driving a state transition.
      */
-    bool apply_master_approval(const nlohmann::json& artifacts) noexcept override;
+    bool apply_master_approval(const nlohmann::json &artifacts) noexcept override;
 
     /** @brief Stop — terminal teardown of any attached SHM resources. */
     void stop() override;
@@ -344,7 +328,8 @@ public:
     [[nodiscard]] Mechanism mechanism() const noexcept override;
 
     /**
-     * @brief Unified metrics snapshot (implements QueueReader::metrics() and QueueWriter::metrics()).
+     * @brief Unified metrics snapshot (implements QueueReader::metrics() and
+     * QueueWriter::metrics()).
      *
      * Bridges Domain 2+3 timing fields from DataBlock ContextMetrics.
      * ZMQ-specific counters (recv_frame_error_count, recv_gap_count, etc.) are always 0.
@@ -364,7 +349,7 @@ public:
      *  Overrides both QueueReader::flexzone() and QueueWriter::flexzone() since
      *  ShmQueue inherits from both. The flexzone is a single shared region per
      *  channel, fully read+write on every endpoint (HEP-CORE-0002 §2.2). */
-    void* flexzone() noexcept override;
+    void *flexzone() noexcept override;
     /** @brief Size of the flexzone in bytes; 0 if not configured. */
     size_t flexzone_size() const noexcept override;
 
@@ -391,7 +376,7 @@ public:
     /** @brief Stamp flexzone checksum after on_init() writes initial content. */
     void sync_flexzone_checksum() noexcept override;
 
-private:
+  private:
     explicit ShmQueue(std::unique_ptr<ShmQueueImpl> impl);
     std::unique_ptr<ShmQueueImpl> pImpl;
 };

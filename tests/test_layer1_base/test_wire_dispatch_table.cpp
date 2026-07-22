@@ -31,46 +31,46 @@ namespace
 // failure by construction (size mismatch below).
 const std::unordered_map<std::string_view, std::string_view> kExpectedTiers = {
     // Full-gate REG-family
-    {"REG_REQ",                        "RegReq"},
-    {"CONSUMER_REG_REQ",               "ConsumerRegReq"},
+    {"REG_REQ", "RegReq"},
+    {"CONSUMER_REG_REQ", "ConsumerRegReq"},
 
     // Authenticated REG-family
-    {"DEREG_REQ",                      "AuthReg_Dereg"},
-    {"CONSUMER_DEREG_REQ",             "AuthReg_ConsumerDereg"},
-    {"ENDPOINT_UPDATE_REQ",            "AuthReg_EndpointUpdate"},
-    {"CHANNEL_AUTH_APPLIED_REQ",       "AuthReg_ChanAuthApplied"},
+    {"DEREG_REQ", "AuthReg_Dereg"},
+    {"CONSUMER_DEREG_REQ", "AuthReg_ConsumerDereg"},
+    {"ENDPOINT_UPDATE_REQ", "AuthReg_EndpointUpdate"},
+    {"CHANNEL_AUTH_APPLIED_REQ", "AuthReg_ChanAuthApplied"},
 
     // Control tier
-    {"HEARTBEAT_NOTIFY",               "Control_HeartbeatNotify"},
-    {"GET_CHANNEL_AUTH_REQ",           "Control_GetChannelAuth"},
-    {"DISC_REQ",                       "Control_Disc"},
+    {"HEARTBEAT_NOTIFY", "Control_HeartbeatNotify"},
+    {"GET_CHANNEL_AUTH_REQ", "Control_GetChannelAuth"},
+    {"DISC_REQ", "Control_Disc"},
 
     // Control_EnvelopeWithRoleUid — body role_uid = caller's own uid;
     // identity_match + grammar + role-tag policy.  A row slipping to
     // plain EnvelopeOnly loses role_uid grammar + identity match —
     // the 2026-07-14 regression this pin now catches.
-    {"CHECK_PEER_READY_REQ",           "Control_EnvelopeWithRoleUid"},
-    {"BAND_JOIN_REQ",                  "Control_EnvelopeWithRoleUid"},
-    {"BAND_LEAVE_REQ",                 "Control_EnvelopeWithRoleUid"},
-    {"BAND_BROADCAST_SEND_NOTIFY",     "Control_EnvelopeWithRoleUid"},
+    {"CHECK_PEER_READY_REQ", "Control_EnvelopeWithRoleUid"},
+    {"BAND_JOIN_REQ", "Control_EnvelopeWithRoleUid"},
+    {"BAND_LEAVE_REQ", "Control_EnvelopeWithRoleUid"},
+    {"BAND_BROADCAST_SEND_NOTIFY", "Control_EnvelopeWithRoleUid"},
 
     // Control_EnvelopeWithQueryRoleUid — body role_uid = queried
     // subject.  Grammar + role-tag policy only; NO identity_match
     // (probes legitimately ask about other roles).
-    {"ROLE_PRESENCE_REQ",              "Control_EnvelopeWithQueryRoleUid"},
-    {"ROLE_INFO_REQ",                  "Control_EnvelopeWithQueryRoleUid"},
+    {"ROLE_PRESENCE_REQ", "Control_EnvelopeWithQueryRoleUid"},
+    {"ROLE_INFO_REQ", "Control_EnvelopeWithQueryRoleUid"},
 
     // EnvelopeOnly tier — body has no identity fields (or
     // CHANNEL_BROADCAST_SEND_NOTIFY's legacy `sender_uid` naming).
-    {"SCHEMA_REQ",                     "EnvelopeOnly"},
-    {"CHANNEL_LIST_REQ",               "EnvelopeOnly"},
-    {"METRICS_REQ",                    "EnvelopeOnly"},
-    {"SHM_BLOCK_QUERY_REQ",            "EnvelopeOnly"},
-    {"BAND_MEMBERS_REQ",               "EnvelopeOnly"},
-    {"CHANNEL_BROADCAST_SEND_NOTIFY",  "EnvelopeOnly"},
+    {"SCHEMA_REQ", "EnvelopeOnly"},
+    {"CHANNEL_LIST_REQ", "EnvelopeOnly"},
+    {"METRICS_REQ", "EnvelopeOnly"},
+    {"SHM_BLOCK_QUERY_REQ", "EnvelopeOnly"},
+    {"BAND_MEMBERS_REQ", "EnvelopeOnly"},
+    {"CHANNEL_BROADCAST_SEND_NOTIFY", "EnvelopeOnly"},
 };
 
-}  // namespace
+} // namespace
 
 TEST(WireDispatchTable, SizeMatchesExpectedMap)
 {
@@ -89,9 +89,8 @@ TEST(WireDispatchTable, EveryExpectedMsgTypeMapsToExpectedTier)
         ASSERT_TRUE(actual.has_value())
             << "msg_type '" << msg_type << "' absent from kDispatchTable "
             << "(broker will reply UNKNOWN_MSG_TYPE for it)";
-        EXPECT_EQ(*actual, expected_tier)
-            << "msg_type '" << msg_type << "' routes to tier '" << *actual
-            << "', expected '" << expected_tier << "'";
+        EXPECT_EQ(*actual, expected_tier) << "msg_type '" << msg_type << "' routes to tier '"
+                                          << *actual << "', expected '" << expected_tier << "'";
     }
 }
 
@@ -99,18 +98,14 @@ TEST(WireDispatchTable, RenamedBroadcastMsgTypesAreLive)
 {
     // Direct pin for the SEND_NOTIFY rename (Group 5 broadcast rename).
     // Both new names must resolve; both old names must not.
-    EXPECT_TRUE(wd::tier_for_msg_type("CHANNEL_BROADCAST_SEND_NOTIFY")
-                    .has_value())
+    EXPECT_TRUE(wd::tier_for_msg_type("CHANNEL_BROADCAST_SEND_NOTIFY").has_value())
         << "CHANNEL_BROADCAST_SEND_NOTIFY missing from dispatch table";
-    EXPECT_TRUE(wd::tier_for_msg_type("BAND_BROADCAST_SEND_NOTIFY")
-                    .has_value())
+    EXPECT_TRUE(wd::tier_for_msg_type("BAND_BROADCAST_SEND_NOTIFY").has_value())
         << "BAND_BROADCAST_SEND_NOTIFY missing from dispatch table";
-    EXPECT_FALSE(wd::tier_for_msg_type("CHANNEL_BROADCAST_REQ")
-                     .has_value())
+    EXPECT_FALSE(wd::tier_for_msg_type("CHANNEL_BROADCAST_REQ").has_value())
         << "old CHANNEL_BROADCAST_REQ literal still resolves — the "
            "SEND_NOTIFY rename did not land completely";
-    EXPECT_FALSE(wd::tier_for_msg_type("BAND_BROADCAST_REQ")
-                     .has_value())
+    EXPECT_FALSE(wd::tier_for_msg_type("BAND_BROADCAST_REQ").has_value())
         << "old BAND_BROADCAST_REQ literal still resolves — the "
            "SEND_NOTIFY rename did not land completely";
 }

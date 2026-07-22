@@ -42,21 +42,18 @@ namespace pylabhub::tests::wire
 /// Test fails with one EXPECT per missing key, naming the key + the
 /// HEP § (@p hep_section) the requirement comes from.  @p msg_name
 /// is the wire message family ("REG_ACK", "BAND_JOIN_ACK", etc.).
-inline void expect_object_has_keys(
-    const nlohmann::json &body,
-    std::initializer_list<std::string_view> required,
-    std::string_view msg_name,
-    std::string_view hep_section)
+inline void expect_object_has_keys(const nlohmann::json &body,
+                                   std::initializer_list<std::string_view> required,
+                                   std::string_view msg_name, std::string_view hep_section)
 {
-    ASSERT_TRUE(body.is_object())
-        << "wire conformance: " << msg_name
-        << " body must be a JSON object (per " << hep_section << ")";
+    ASSERT_TRUE(body.is_object()) << "wire conformance: " << msg_name
+                                  << " body must be a JSON object (per " << hep_section << ")";
     for (const auto &k : required)
     {
         EXPECT_TRUE(body.contains(std::string(k)))
-            << "wire conformance: " << msg_name
-            << " missing required key `" << k << "` (per "
-            << hep_section << ").  Either the broker is not "
+            << "wire conformance: " << msg_name << " missing required key `" << k << "` (per "
+            << hep_section
+            << ").  Either the broker is not "
                "emitting it, or the field was renamed without "
                "updating the spec.";
     }
@@ -65,65 +62,53 @@ inline void expect_object_has_keys(
 /// Assert the JSON object @p body does NOT contain any of @p forbidden.
 /// Catches stale keys that should have been renamed (e.g., `channel`
 /// on a BAND_*_NOTIFY body — the legacy name that B1 fixed).
-inline void expect_object_lacks_keys(
-    const nlohmann::json &body,
-    std::initializer_list<std::string_view> forbidden,
-    std::string_view msg_name,
-    std::string_view hep_section)
+inline void expect_object_lacks_keys(const nlohmann::json &body,
+                                     std::initializer_list<std::string_view> forbidden,
+                                     std::string_view msg_name, std::string_view hep_section)
 {
-    if (!body.is_object()) return;  // expect_object_has_keys reports
+    if (!body.is_object())
+        return; // expect_object_has_keys reports
     for (const auto &k : forbidden)
     {
         EXPECT_FALSE(body.contains(std::string(k)))
-            << "wire conformance: " << msg_name
-            << " has forbidden key `" << k << "` (per "
-            << hep_section << ").  This is typically a stale name "
+            << "wire conformance: " << msg_name << " has forbidden key `" << k << "` (per "
+            << hep_section
+            << ").  This is typically a stale name "
                "from before a rename refactor — the spec authoritative.";
     }
 }
 
 /// Assert @p body[@p key] is a string with exact value @p expected.
 /// Combines presence + type + content into one expectation.
-inline void expect_string_field(
-    const nlohmann::json &body,
-    std::string_view      key,
-    std::string_view      expected,
-    std::string_view      msg_name,
-    std::string_view      hep_section)
+inline void expect_string_field(const nlohmann::json &body, std::string_view key,
+                                std::string_view expected, std::string_view msg_name,
+                                std::string_view hep_section)
 {
-    ASSERT_TRUE(body.is_object())
-        << "wire conformance: " << msg_name
-        << " body must be a JSON object (per " << hep_section << ")";
+    ASSERT_TRUE(body.is_object()) << "wire conformance: " << msg_name
+                                  << " body must be a JSON object (per " << hep_section << ")";
     const std::string k(key);
-    ASSERT_TRUE(body.contains(k))
-        << "wire conformance: " << msg_name << " missing field `"
-        << key << "` (per " << hep_section << ")";
-    ASSERT_TRUE(body.at(k).is_string())
-        << "wire conformance: " << msg_name << " field `" << key
-        << "` must be a string (per " << hep_section << ")";
+    ASSERT_TRUE(body.contains(k)) << "wire conformance: " << msg_name << " missing field `" << key
+                                  << "` (per " << hep_section << ")";
+    ASSERT_TRUE(body.at(k).is_string()) << "wire conformance: " << msg_name << " field `" << key
+                                        << "` must be a string (per " << hep_section << ")";
     EXPECT_EQ(body.at(k).get<std::string>(), std::string(expected))
-        << "wire conformance: " << msg_name << " field `" << key
-        << "` content mismatch (per " << hep_section << ")";
+        << "wire conformance: " << msg_name << " field `" << key << "` content mismatch (per "
+        << hep_section << ")";
 }
 
 /// Assert @p body[@p key] is an integer.  Used for typed checks on
 /// heartbeat block fields, member counts, etc.
-inline void expect_int_field(
-    const nlohmann::json &body,
-    std::string_view      key,
-    std::string_view      msg_name,
-    std::string_view      hep_section)
+inline void expect_int_field(const nlohmann::json &body, std::string_view key,
+                             std::string_view msg_name, std::string_view hep_section)
 {
-    ASSERT_TRUE(body.is_object())
-        << "wire conformance: " << msg_name
-        << " body must be a JSON object (per " << hep_section << ")";
+    ASSERT_TRUE(body.is_object()) << "wire conformance: " << msg_name
+                                  << " body must be a JSON object (per " << hep_section << ")";
     const std::string k(key);
-    ASSERT_TRUE(body.contains(k))
-        << "wire conformance: " << msg_name << " missing field `"
-        << key << "` (per " << hep_section << ")";
+    ASSERT_TRUE(body.contains(k)) << "wire conformance: " << msg_name << " missing field `" << key
+                                  << "` (per " << hep_section << ")";
     EXPECT_TRUE(body.at(k).is_number_integer())
-        << "wire conformance: " << msg_name << " field `" << key
-        << "` must be an integer (per " << hep_section << ")";
+        << "wire conformance: " << msg_name << " field `" << key << "` must be an integer (per "
+        << hep_section << ")";
 }
 
-}  // namespace pylabhub::tests::wire
+} // namespace pylabhub::tests::wire

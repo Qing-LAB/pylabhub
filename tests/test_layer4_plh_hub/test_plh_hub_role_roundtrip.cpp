@@ -35,7 +35,7 @@
 
 #include "plh_hub_fixture.h"
 
-#include "utils/role_vault.hpp"   // open() to extract role pubkey for --add-known-role
+#include "utils/role_vault.hpp" // open() to extract role pubkey for --add-known-role
 
 #include <chrono>
 #include <csignal>
@@ -45,9 +45,9 @@
 #include <thread>
 
 using namespace pylabhub::tests::plh_hub_l4;
-using pylabhub::tests::helper::WorkerProcess;
-using pylabhub::tests::helper::ExpectVaultFileSecured;
 using pylabhub::tests::helper::ExpectVaultDirSecured;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::WorkerProcess;
 
 namespace
 {
@@ -60,20 +60,20 @@ std::string read_hub_log(const fs::path &hub_dir)
 {
     const fs::path logs = hub_dir / "logs";
     std::error_code ec;
-    if (!fs::is_directory(logs, ec)) return {};
+    if (!fs::is_directory(logs, ec))
+        return {};
     fs::path newest;
     for (const auto &e : fs::directory_iterator(logs, ec))
         if (e.path().extension() == ".log" && e.path() > newest)
             newest = e.path();
-    if (newest.empty()) return {};
+    if (newest.empty())
+        return {};
     std::ifstream f(newest);
-    return std::string(std::istreambuf_iterator<char>(f),
-                       std::istreambuf_iterator<char>{});
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>{});
 }
 
 bool wait_for_log_marker(const fs::path &dir, const std::string &marker,
-                          std::chrono::milliseconds timeout =
-                              std::chrono::milliseconds(8000))
+                         std::chrono::milliseconds timeout = std::chrono::milliseconds(8000))
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline)
@@ -91,7 +91,8 @@ std::string extract_bound_endpoint(const std::string &log)
 {
     static const std::regex re(R"(Broker: listening on (tcp://[^\s]+))");
     std::smatch m;
-    if (std::regex_search(log, m, re)) return m[1].str();
+    if (std::regex_search(log, m, re))
+        return m[1].str();
     return {};
 }
 
@@ -99,41 +100,39 @@ std::string extract_bound_endpoint(const std::string &log)
 /// Mirrors `producer_init.cpp`'s template minus the schema (which we
 /// pin explicitly here) and SHM (which the test doesn't exercise —
 /// transport=zmq simplifies the no-SHM-perms-tweak path).
-void write_producer_config(const fs::path &cfg_path,
-                            const fs::path &hub_dir,
-                            const std::string &channel)
+void write_producer_config(const fs::path &cfg_path, const fs::path &hub_dir,
+                           const std::string &channel)
 {
     nlohmann::json j;
-    j["producer"]["uid"]       = "prod.l4round.uid12345678";
-    j["producer"]["name"]      = "L4RoundProducer";
+    j["producer"]["uid"] = "prod.l4round.uid12345678";
+    j["producer"]["name"] = "L4RoundProducer";
     j["producer"]["log_level"] = "info";
     // Canonical relative path; --keygen materializes the vault file
     // at <prod_dir>/vault/<uid>.vault before the producer is launched.
     j["producer"]["auth"]["keyfile"] = "vault/prod.l4round.uid12345678.vault";
 
-    j["out_hub_dir"]      = hub_dir.string();
-    j["out_channel"]      = channel;
-    j["loop_timing"]      = "fixed_rate";
+    j["out_hub_dir"] = hub_dir.string();
+    j["out_channel"] = channel;
+    j["loop_timing"] = "fixed_rate";
     j["target_period_ms"] = 100;
 
     // Use ZMQ transport so no SHM block is required (SHM perms +
     // sysv key handling complicates L4 cross-subprocess teardown).
-    j["out_transport"]      = "zmq";
-    j["out_zmq_endpoint"]   = "tcp://127.0.0.1:0";
-    j["out_zmq_bind"]       = true;
+    j["out_transport"] = "zmq";
+    j["out_zmq_endpoint"] = "tcp://127.0.0.1:0";
+    j["out_zmq_bind"] = true;
     j["out_zmq_buffer_depth"] = 8;
     // Note: "out_zmq_packing" removed 2026-04-20 — packing now lives
     // in the schema (out_slot_schema.packing).
 
     j["out_slot_schema"]["packing"] = "aligned";
-    j["out_slot_schema"]["fields"]  = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
+    j["out_slot_schema"]["fields"] =
+        nlohmann::json::array({nlohmann::json{{"name", "value"}, {"type", "float32"}}});
 
-    j["checksum"]             = "manual";
+    j["checksum"] = "manual";
     j["stop_on_script_error"] = false;
-    j["script"]["type"]       = "python";
-    j["script"]["path"]       = ".";
+    j["script"]["type"] = "python";
+    j["script"]["path"] = ".";
 
     std::error_code ec;
     fs::create_directories(cfg_path.parent_path(), ec);
@@ -162,8 +161,7 @@ void write_producer_script(const fs::path &script_dir)
 /// Path to the staged plh_role binary (sibling of plh_hub_binary()).
 std::string plh_role_binary()
 {
-    return (fs::path(::g_self_exe_path).parent_path()
-            / ".." / "bin" / "plh_role").string();
+    return (fs::path(::g_self_exe_path).parent_path() / ".." / "bin" / "plh_role").string();
 }
 
 } // namespace
@@ -182,7 +180,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     const fs::path hub_dir = tmp("rtrip_hub");
     {
         WorkerProcess init(plh_hub_binary(), "--init",
-            {hub_dir.string(), "--name", "L4RoundtripHub"});
+                           {hub_dir.string(), "--name", "L4RoundtripHub"});
         ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
     }
 
@@ -196,8 +194,8 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
             f >> j;
         }
         j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-        j["admin"]["enabled"]           = false;
-        j["script"]["path"]             = "";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
         // Leave hub.auth.keyfile = "vault/<hub_uid>.vault" from the
         // template (HEP-CORE-0033 §6.5 revised 2026-05-31).
         std::ofstream f(hub_dir / "hub.json");
@@ -221,7 +219,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     ::setenv("PYLABHUB_HUB_PASSWORD", "rtrip-test", /*overwrite=*/1);
     {
         WorkerProcess kg(plh_hub_binary(), "--config",
-            {(hub_dir / "hub.json").string(), "--keygen"});
+                         {(hub_dir / "hub.json").string(), "--keygen"});
         ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
     }
     // Affirmative F1 check — vault file at HEP §7 path with secure
@@ -236,8 +234,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         << "F1 regression: hub.pubkey not published by --keygen — role "
            "would have an empty CURVE pin and reject (or silently "
            "downgrade) the broker connection";
-    EXPECT_GT(fs::file_size(hub_dir / "hub.pubkey"), 0u)
-        << "hub.pubkey written but empty";
+    EXPECT_GT(fs::file_size(hub_dir / "hub.pubkey"), 0u) << "hub.pubkey written but empty";
 
     // ── Role pre-keygen + operator allowlist registration ──────────────────
     // HEP-CORE-0035 §4.8 + PeerAdmission Phase D — the broker's CTRL
@@ -255,21 +252,18 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     //   (d) plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>
     //       writes the canonical entry into known_roles.json
     const fs::path prod_dir = tmp("rtrip_prod");
-    fs::create_directories(prod_dir / "vault");  // 0700 set by RoleVault::create
-    write_producer_config(prod_dir / "producer.json", hub_dir,
-                          "lab.l4.roundtrip");
+    fs::create_directories(prod_dir / "vault"); // 0700 set by RoleVault::create
+    write_producer_config(prod_dir / "producer.json", hub_dir, "lab.l4.roundtrip");
     write_producer_script(prod_dir / "script" / "python");
 
     ::setenv("PYLABHUB_ROLE_PASSWORD", "rtrip-role-pw", /*overwrite=*/1);
-    const std::string role_uid       = "prod.l4round.uid12345678";
-    const fs::path    role_vault_path =
-        prod_dir / "vault" / (role_uid + ".vault");
+    const std::string role_uid = "prod.l4round.uid12345678";
+    const fs::path role_vault_path = prod_dir / "vault" / (role_uid + ".vault");
     {
-        WorkerProcess role_kg(plh_role_binary(), "--role",
-            {"producer", "--config",
-             (prod_dir / "producer.json").string(), "--keygen"});
-        ASSERT_EQ(role_kg.wait_for_exit(), 0)
-            << "role --keygen failed:\n" << role_kg.get_stderr();
+        WorkerProcess role_kg(
+            plh_role_binary(), "--role",
+            {"producer", "--config", (prod_dir / "producer.json").string(), "--keygen"});
+        ASSERT_EQ(role_kg.wait_for_exit(), 0) << "role --keygen failed:\n" << role_kg.get_stderr();
         ExpectVaultFileSecured(role_vault_path);
         EXPECT_TRUE(fs::is_directory(prod_dir / "vault"))
             << "role vault dir missing: " << (prod_dir / "vault");
@@ -277,19 +271,18 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
 
     std::string role_pubkey_z85;
     {
-        auto role_vault = pylabhub::utils::RoleVault::open(
-            role_vault_path, role_uid, "rtrip-role-pw");
+        auto role_vault =
+            pylabhub::utils::RoleVault::open(role_vault_path, role_uid, "rtrip-role-pw");
         role_pubkey_z85 = role_vault.public_key();
         ASSERT_EQ(role_pubkey_z85.size(), 40u)
             << "RoleVault::open returned an unexpected pubkey length";
     }
     {
         WorkerProcess add_known(plh_hub_binary(), "--config",
-            {(hub_dir / "hub.json").string(),
-             "--add-known-role",
-             "l4round", role_uid, "producer", role_pubkey_z85});
-        ASSERT_EQ(add_known.wait_for_exit(), 0)
-            << "plh_hub --add-known-role failed:\n" << add_known.get_stderr();
+                                {(hub_dir / "hub.json").string(), "--add-known-role", "l4round",
+                                 role_uid, "producer", role_pubkey_z85});
+        ASSERT_EQ(add_known.wait_for_exit(), 0) << "plh_hub --add-known-role failed:\n"
+                                                << add_known.get_stderr();
         // CONTENT PIN (H2): the allowlist now lives INSIDE the encrypted
         // vault (HEP-CORE-0035 §4.8).  An --add that wrote garbage would
         // still exit 0, but the running broker would deny our role.  Read
@@ -297,13 +290,12 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         // pubkey landed (PYLABHUB_HUB_PASSWORD is set above so the CLI can
         // unlock the vault).
         WorkerProcess list(plh_hub_binary(), "--config",
-                           {(hub_dir / "hub.json").string(),
-                            "--list-known-roles"});
-        ASSERT_EQ(list.wait_for_exit(), 0)
-            << "--list-known-roles failed:\n" << list.get_stderr();
+                           {(hub_dir / "hub.json").string(), "--list-known-roles"});
+        ASSERT_EQ(list.wait_for_exit(), 0) << "--list-known-roles failed:\n" << list.get_stderr();
         const std::string listed = list.get_stdout();
         EXPECT_NE(listed.find(role_uid), std::string::npos)
-            << "role uid missing from the vault allowlist:\n" << listed;
+            << "role uid missing from the vault allowlist:\n"
+            << listed;
         EXPECT_NE(listed.find(role_pubkey_z85), std::string::npos)
             << "vault allowlist pubkey does not match the one we read from "
                "RoleVault — the operator workflow is broken end-to-end:\n"
@@ -314,15 +306,15 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // the encrypted vault here, picking up the role entry we just added.
     WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
     ASSERT_TRUE(wait_for_log_marker(hub_dir, "Broker: listening on"))
-        << "hub never reached run-mode.  Log:\n" << read_hub_log(hub_dir);
+        << "hub never reached run-mode.  Log:\n"
+        << read_hub_log(hub_dir);
 
     // PATH PIN (H1): assert the CTRL ZAP gate is actually ENFORCED.
     // The gate install is unconditional (HEP-CORE-0035 §2 + §4.6.5);
     // this marker pins the "enforced" log line so a regression that
     // swapped install order or skipped registration surfaces here
     // rather than passing silently on CURVE encryption alone.
-    ASSERT_TRUE(wait_for_log_marker(hub_dir,
-                                     "Broker: CTRL ZAP installed enforced"))
+    ASSERT_TRUE(wait_for_log_marker(hub_dir, "Broker: CTRL ZAP installed enforced"))
         << "Broker did not log enforced CTRL ZAP install — the deny-by-"
            "default gate is silently disabled.  Hub log:\n"
         << read_hub_log(hub_dir);
@@ -331,8 +323,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // tcp://...:0) and PATCH hub.json so the role sees the real port.
     // The role reads `network.broker_endpoint` at config-load time.
     const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
-    ASSERT_FALSE(bound_ep.empty())
-        << "could not parse 'Broker: listening on' line from hub log";
+    ASSERT_FALSE(bound_ep.empty()) << "could not parse 'Broker: listening on' line from hub log";
     {
         nlohmann::json j;
         {
@@ -349,8 +340,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // The role binary reads `prod_dir/producer.json` → `hub_dir` →
     // `hub.pubkey` + the bound endpoint we just patched into hub.json,
     // then connects to the broker.
-    WorkerProcess role(plh_role_binary(), "--role",
-        {"producer", prod_dir.string()});
+    WorkerProcess role(plh_role_binary(), "--role", {"producer", prod_dir.string()});
 
     // The PATH-DISCRIMINATING success marker: hub-side broker logs
     // "Broker: REG_REQ accepted role='...' channel='<name>' ..."
@@ -362,15 +352,15 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // Marker text aligns with Pattern 4 rung 2 (task #221) marker
     // contract; broker_service.cpp::handle_reg_req success path.
     EXPECT_TRUE(wait_for_log_marker(hub_dir,
-                                     "event=RegReqAccepted "
-                                     "role='prod.l4round.uid12345678' "
-                                     "channel='lab.l4.roundtrip'",
-                                     std::chrono::seconds(15)))
+                                    "event=RegReqAccepted "
+                                    "role='prod.l4round.uid12345678' "
+                                    "channel='lab.l4.roundtrip'",
+                                    std::chrono::seconds(15)))
         << "role failed to register channel via broker.  This is the F1\n"
            "regression — without hub.pubkey published by --keygen the\n"
            "role's CURVE pin is empty.  Hub log:\n"
-        << read_hub_log(hub_dir)
-        << "\n--- Role stderr ---\n" << role.get_stderr();
+        << read_hub_log(hub_dir) << "\n--- Role stderr ---\n"
+        << role.get_stderr();
 
     // The hub-side RegReqAccepted marker above fires BEFORE the role
     // reaches is_running() (the role still has REG_ACK processing +
@@ -382,9 +372,8 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     // (REG_ACK processed, instance_id captured, allowlist applied +
     // APPLIED_REQ round-trip closed).  This reads production telemetry
     // only (README_testing §1.1.1 / Pattern 4), no test hook.
-    EXPECT_TRUE(wait_for_log_marker(
-        prod_dir, "event=ChannelAuthApplied channel='lab.l4.roundtrip'",
-        std::chrono::seconds(15)))
+    EXPECT_TRUE(wait_for_log_marker(prod_dir, "event=ChannelAuthApplied channel='lab.l4.roundtrip'",
+                                    std::chrono::seconds(15)))
         << "producer never reached a fully-started state "
            "(event=ChannelAuthApplied).  Role log:\n"
         << read_hub_log(prod_dir) << "\n--- Role stderr ---\n"
@@ -392,22 +381,19 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
 
     // ── Shutdown both ──────────────────────────────────────────────────────
     role.send_signal(SIGTERM);
-    EXPECT_EQ(role.wait_for_exit(10), 0)
-        << "plh_role did not exit cleanly on SIGTERM.  stderr:\n"
-        << role.get_stderr();
+    EXPECT_EQ(role.wait_for_exit(10), 0) << "plh_role did not exit cleanly on SIGTERM.  stderr:\n"
+                                         << role.get_stderr();
 
     hub.send_signal(SIGTERM);
-    EXPECT_EQ(hub.wait_for_exit(10), 0)
-        << "plh_hub did not exit cleanly on SIGTERM.  stderr:\n"
-        << hub.get_stderr();
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << "plh_hub did not exit cleanly on SIGTERM.  stderr:\n"
+                                        << hub.get_stderr();
 
     // ── Class-D gate: no [ERROR ] in either log/stderr ─────────────────────
-    auto contains_error = [](const std::string &s) {
-        return s.find("[ERROR ]") != std::string::npos;
-    };
+    auto contains_error = [](const std::string &s)
+    { return s.find("[ERROR ]") != std::string::npos; };
     const std::string hub_log = read_hub_log(hub_dir);
-    EXPECT_FALSE(contains_error(hub_log))
-        << "hub log contains [ERROR ] after clean SIGTERM:\n" << hub_log;
+    EXPECT_FALSE(contains_error(hub_log)) << "hub log contains [ERROR ] after clean SIGTERM:\n"
+                                          << hub_log;
     EXPECT_FALSE(contains_error(role.get_stderr()))
         << "role stderr contains [ERROR ] after clean SIGTERM:\n"
         << role.get_stderr();

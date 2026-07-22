@@ -30,15 +30,15 @@
 #include "utils/json_config.hpp"
 #include "plh_datahub.hpp"
 #include "utils/role_reg_payload.hpp"
-#include "utils/schema_utils.hpp"  // compute_canonical_hash_from_wire (HEP-0034 §6.3)
-#include "utils/format_tools.hpp"  // bytes_to_hex
+#include "utils/schema_utils.hpp" // compute_canonical_hash_from_wire (HEP-0034 §6.3)
+#include "utils/format_tools.hpp" // bytes_to_hex
 #include "utils/security/key_store.hpp"
 #include "utils/security/known_roles.hpp"
 #include "utils/security/secure_subsystem.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 #include "utils/wire_adapter.hpp"
 #include "utils/wire_envelope.hpp"
-#include "plh_version_registry.hpp"  // abi_fingerprint (HEP-CORE-0032 §8.2)
+#include "plh_version_registry.hpp" // abi_fingerprint (HEP-CORE-0032 §8.2)
 
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -65,11 +65,26 @@ using namespace pylabhub::hub;
 namespace pylabhub::tests::worker::broker
 {
 
-static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
-static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
-static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
-static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto file_lock_module()
+{
+    return ::pylabhub::utils::FileLock::GetLifecycleModule();
+}
+static auto json_module()
+{
+    return ::pylabhub::utils::JsonConfig::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
+static auto zmq_module()
+{
+    return ::pylabhub::hub::GetZMQContextModule();
+}
 
 // ============================================================================
 // File-local helpers
@@ -97,10 +112,10 @@ namespace
 // -----------------------------------------------------------------------------
 struct BrokerHandle
 {
-    std::filesystem::path                    hub_dir;
+    std::filesystem::path hub_dir;
     std::unique_ptr<pylabhub::hub_host::HubHost> host;
-    std::string                              endpoint;
-    std::string                              pubkey;
+    std::string endpoint;
+    std::string pubkey;
 
     BrokerHandle() = default;
     BrokerHandle(BrokerHandle &&) noexcept = default;
@@ -132,9 +147,8 @@ std::filesystem::path make_test_hub_directory(const std::vector<std::string> &sc
 {
     namespace fs = std::filesystem;
     static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_broker_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
+    fs::path dir = fs::temp_directory_path() / ("plh_l3_broker_" + std::to_string(::getpid()) +
+                                                "_" + std::to_string(ctr.fetch_add(1)));
     fs::remove_all(dir);
     fs::create_directories(dir);
     pylabhub::utils::HubDirectory::init_directory(dir, "BrokerTestHub");
@@ -153,7 +167,7 @@ std::filesystem::path make_test_hub_directory(const std::vector<std::string> &sc
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
     j["admin"]["enabled"] = false;
-    j["script"]["path"]   = "";
+    j["script"]["path"] = "";
     {
         std::ofstream f(hub_json);
         f << j.dump(2);
@@ -213,15 +227,14 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
     // from the vault's keypair, and extracts the allowlist into cfg.  This
     // is exactly a real hub boot; no known_roles.json is written, so the
     // §4.8.7 hard-cutover check passes.
-    auto hub_cfg =
-        pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string());
+    auto hub_cfg = pylabhub::config::HubConfig::load_from_directory(h.hub_dir.string());
     pylabhub::tests::provision_hub_vault(hub_cfg, curve);
     pylabhub::tests::load_hub_keypair_fresh(hub_cfg);
 
     h.host = std::make_unique<pylabhub::hub_host::HubHost>(std::move(hub_cfg));
     h.host->startup();
     h.endpoint = h.host->broker_endpoint();
-    h.pubkey   = h.host->broker_pubkey();
+    h.pubkey = h.host->broker_pubkey();
     return h;
 }
 
@@ -240,9 +253,8 @@ struct BrokerTestEnv
     BrokerHandle broker;
 };
 
-BrokerTestEnv setup_broker_test(std::vector<std::string>  uids,
-                                std::string_view          /*tag*/,
-                                std::vector<std::string>  schema_search_dirs = {})
+BrokerTestEnv setup_broker_test(std::vector<std::string> uids, std::string_view /*tag*/,
+                                std::vector<std::string> schema_search_dirs = {})
 {
     // CURVE setup: seed the per-role `role.<uid>` identities so the
     // broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8) admits each role
@@ -300,13 +312,11 @@ BrokerTestEnv setup_broker_test(std::vector<std::string>  uids,
 // the payload's `role_uid` to fill `zmq_pubkey`, which silently
 // produced a self-consistent (Y, Y.pubkey) tuple and masked the
 // Layer-2 check.
-static void apply_5b_canonical_fields(nlohmann::json &req,
-                                      const std::string &wire_identity_uid,
+static void apply_5b_canonical_fields(nlohmann::json &req, const std::string &wire_identity_uid,
                                       bool is_cons)
 {
     namespace sec = pylabhub::utils::security;
-    const std::string ks_name =
-        pylabhub::tests::role_keystore_name(wire_identity_uid);
+    const std::string ks_name = pylabhub::tests::role_keystore_name(wire_identity_uid);
     if (!req.contains("zmq_pubkey") && sec::secure().keys().has(ks_name))
         req["zmq_pubkey"] = std::string{sec::secure().keys().pubkey(ks_name)};
     if (!req.contains("role_type"))
@@ -317,14 +327,15 @@ static void apply_5b_canonical_fields(nlohmann::json &req,
     // (matches producer side); default "shm" mirrors this file's
     // producer-side default so the two sides register on the same
     // channel type.
-    if (!req.contains("data_transport")) req["data_transport"] = "shm";
+    if (!req.contains("data_transport"))
+        req["data_transport"] = "shm";
     if (!is_cons)
     {
-        if (!req.contains("has_shm"))        req["has_shm"]        = true;
+        if (!req.contains("has_shm"))
+            req["has_shm"] = true;
         if (!req.contains("shm_capability_endpoint"))
             req["shm_capability_endpoint"] =
-                sec::default_shm_capability_endpoint(
-                    req.value("channel_name", std::string{}));
+                sec::default_shm_capability_endpoint(req.value("channel_name", std::string{}));
     }
     // HEP-CORE-0032 §8.2 — abi_fingerprint (15-field ComponentVersions
     // envelope) is REQUIRED on REG_REQ / CONSUMER_REG_REQ per
@@ -336,17 +347,14 @@ static void apply_5b_canonical_fields(nlohmann::json &req,
     // runs.  Absent local override, use the current-build snapshot.
     if (!req.contains("abi_fingerprint"))
     {
-        req["abi_fingerprint"] = pylabhub::version::to_json_object(
-            pylabhub::version::current());
+        req["abi_fingerprint"] = pylabhub::version::to_json_object(pylabhub::version::current());
     }
 }
 
-nlohmann::json raw_req(const std::string& endpoint,
-                       const std::string& msg_type,
-                       const nlohmann::json& payload_in,
-                       int timeout_ms = 2000,
-                       const std::string& server_pubkey = "",
-                       const std::string& role_identity_name = "")
+nlohmann::json raw_req(const std::string &endpoint, const std::string &msg_type,
+                       const nlohmann::json &payload_in, int timeout_ms = 2000,
+                       const std::string &server_pubkey = "",
+                       const std::string &role_identity_name = "")
 {
     constexpr size_t kZ85KeyLen = 40;
 
@@ -368,11 +376,10 @@ nlohmann::json raw_req(const std::string& endpoint,
     //     `zmq_pubkey` from; caller is responsible for the payload
     //     shape)
     nlohmann::json payload = payload_in;
-    const bool is_reg  = (msg_type == "REG_REQ");
+    const bool is_reg = (msg_type == "REG_REQ");
     const bool is_cons = (msg_type == "CONSUMER_REG_REQ");
-    if ((is_reg || is_cons)
-     && !role_identity_name.empty()
-     && role_identity_name != "wire.gate.uid00000099")
+    if ((is_reg || is_cons) && !role_identity_name.empty() &&
+        role_identity_name != "wire.gate.uid00000099")
     {
         apply_5b_canonical_fields(payload, role_identity_name, is_cons);
     }
@@ -389,10 +396,9 @@ nlohmann::json raw_req(const std::string& endpoint,
         // a future caller forgetting `role_identity_name` fails loud
         // instead of silently timing out.
         if (role_identity_name.empty())
-            throw std::logic_error(
-                "raw_req: server_pubkey set but role_identity_name is "
-                "empty — strict-CURVE requires every wire call to "
-                "authenticate as a seeded role (HEP-CORE-0035 §2)");
+            throw std::logic_error("raw_req: server_pubkey set but role_identity_name is "
+                                   "empty — strict-CURVE requires every wire call to "
+                                   "authenticate as a seeded role (HEP-CORE-0035 §2)");
 
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
         // Authenticate as a registered role — broker ZAP gate
@@ -406,15 +412,13 @@ nlohmann::json raw_req(const std::string& endpoint,
         // owns; the KeyStore entry name is the prefixed
         // `role.<uid>` form seeded by `seed_curve_identities()`
         // (see `pylabhub::tests::role_keystore_name`).
-        const std::string ks_name =
-            pylabhub::tests::role_keystore_name(role_identity_name);
+        const std::string ks_name = pylabhub::tests::role_keystore_name(role_identity_name);
         sec::secure().keys().with_keypair_z85(
             ks_name,
-            [&](std::string_view pub_z85, std::string_view sec_z85) {
-                dealer.set(zmq::sockopt::curve_publickey,
-                           std::string(pub_z85));
-                dealer.set(zmq::sockopt::curve_secretkey,
-                           std::string(sec_z85));
+            [&](std::string_view pub_z85, std::string_view sec_z85)
+            {
+                dealer.set(zmq::sockopt::curve_publickey, std::string(pub_z85));
+                dealer.set(zmq::sockopt::curve_secretkey, std::string(sec_z85));
             });
     }
 
@@ -426,10 +430,9 @@ nlohmann::json raw_req(const std::string& endpoint,
     // the strict-CURVE ZAP invariant (no key means no valid identity).
     if (role_identity_name.empty())
     {
-        throw std::logic_error(
-            "raw_req: role_identity_name empty — I-DEALER-IDENTITY "
-            "requires every wire call to authenticate as a seeded role "
-            "(HEP-CORE-0046 §8.1 + HEP-CORE-0035 §2 strict-CURVE)");
+        throw std::logic_error("raw_req: role_identity_name empty — I-DEALER-IDENTITY "
+                               "requires every wire call to authenticate as a seeded role "
+                               "(HEP-CORE-0046 §8.1 + HEP-CORE-0035 §2 strict-CURVE)");
     }
     dealer.set(zmq::sockopt::routing_id, role_identity_name);
     dealer.connect(endpoint);
@@ -452,8 +455,7 @@ nlohmann::json raw_req(const std::string& endpoint,
         std::array<std::uint8_t, 16> corr_raw{};
         sec::secure().random_bytes(corr_raw);
         char corr_hex[33] = {};
-        sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
-                              corr_raw.size());
+        sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(), corr_raw.size());
         correlation_id.assign(corr_hex, 32);
     }
 
@@ -468,14 +470,13 @@ nlohmann::json raw_req(const std::string& endpoint,
         nonce_hex = std::string(nh, 32);
         using namespace std::chrono;
         wall_ts = static_cast<std::uint64_t>(
-            duration_cast<milliseconds>(
-                system_clock::now().time_since_epoch()).count());
+            duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
     }
     ::pylabhub::wire::adapter::EncodeContext enc_ctx;
     enc_ctx.dealer_role_uid = role_identity_name;
-    enc_ctx.correlation_id  = correlation_id;
-    enc_ctx.client_nonce    = nonce_hex;
-    enc_ctx.client_wall_ts  = wall_ts;
+    enc_ctx.correlation_id = correlation_id;
+    enc_ctx.client_nonce = nonce_hex;
+    enc_ctx.client_wall_ts = wall_ts;
     try
     {
         zmq::multipart_t wire =
@@ -491,29 +492,32 @@ nlohmann::json raw_req(const std::string& endpoint,
     // unsolicited NOTIFYs (e.g. CHANNEL_CLOSING_NOTIFY on a DEREG_REQ
     // cascade) now reach THIS receive path.  Loop until the ACK-shape
     // reply arrives OR the budget expires, discarding NOTIFYs.
-    auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (true)
     {
         auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) return {};
-        auto ms_left = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           deadline - now)
-                           .count();
+        if (now >= deadline)
+            return {};
+        auto ms_left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
         std::vector<zmq::pollitem_t> items = {{dealer.handle(), 0, ZMQ_POLLIN, 0}};
         zmq::poll(items, std::chrono::milliseconds(ms_left));
-        if ((items[0].revents & ZMQ_POLLIN) == 0) return {};
+        if ((items[0].revents & ZMQ_POLLIN) == 0)
+            return {};
 
         zmq::multipart_t raw;
-        if (!raw.recv(dealer, ZMQ_DONTWAIT)) return {};
+        if (!raw.recv(dealer, ZMQ_DONTWAIT))
+            return {};
         ::pylabhub::wire::ParseError perr = {};
-        auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-            std::move(raw), role_identity_name, &perr);
-        if (!env_opt.has_value()) return {};
+        auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(std::move(raw),
+                                                                         role_identity_name, &perr);
+        if (!env_opt.has_value())
+            return {};
         ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
         // Skip NOTIFYs — the raw_req contract is "return the next reply
         // to my REQ", not "return whatever the broker sent me next".
-        if (env.is_notify()) continue;
+        if (env.is_notify())
+            continue;
         nlohmann::json body_out = env.body();
         if (!env.correlation_id().empty())
             body_out["correlation_id"] = std::string(env.correlation_id());
@@ -525,7 +529,7 @@ namespace
 {
 
 // Forward declaration so the heartbeat helper can refer to BrokerHandle.
-struct BrokerHandle;  // Defined above in the outer anonymous namespace.
+struct BrokerHandle; // Defined above in the outer anonymous namespace.
 
 // raw_heartbeat: HEP-CORE-0036 §5.2 R6 producer-kLive heartbeat — drives a
 // just-registered producer presence to kLive so the broker admits the
@@ -537,23 +541,20 @@ struct BrokerHandle;  // Defined above in the outer anonymous namespace.
 // The 50 ms post-send sleep gives the broker poll loop one cycle to
 // pick up the heartbeat before the test's next REQ; mirrors the pattern
 // in the legacy pid-mismatch test where this contract was first pinned.
-void raw_heartbeat(const std::string &endpoint,
-                   const std::string &server_pubkey,
-                   const std::string &channel,
-                   const std::string &producer_uid,
-                   uint64_t           producer_pid =
-                       pylabhub::platform::get_pid())
+void raw_heartbeat(const std::string &endpoint, const std::string &server_pubkey,
+                   const std::string &channel, const std::string &producer_uid,
+                   uint64_t producer_pid = pylabhub::platform::get_pid())
 {
     constexpr size_t kZ85KeyLen = 40;
     nlohmann::json hb_req;
     hb_req["channel_name"] = channel;
     hb_req["producer_pid"] = producer_pid;
-    hb_req["role_uid"]     = producer_uid;
-    hb_req["role_type"]    = "producer";
+    hb_req["role_uid"] = producer_uid;
+    hb_req["role_type"] = "producer";
 
     namespace sec = pylabhub::utils::security;
     zmq::context_t ctx(1);
-    zmq::socket_t  dealer(ctx, zmq::socket_type::dealer);
+    zmq::socket_t dealer(ctx, zmq::socket_type::dealer);
     // Bounded linger so the destructor flushes the heartbeat to the
     // kernel before close (libzmq's default linger=-1 would block on
     // shutdown).
@@ -561,15 +562,13 @@ void raw_heartbeat(const std::string &endpoint,
     if (server_pubkey.size() == kZ85KeyLen)
     {
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-        const std::string ks_name =
-            pylabhub::tests::role_keystore_name(producer_uid);
+        const std::string ks_name = pylabhub::tests::role_keystore_name(producer_uid);
         sec::secure().keys().with_keypair_z85(
             ks_name,
-            [&](std::string_view pub_z85, std::string_view sec_z85) {
-                dealer.set(zmq::sockopt::curve_publickey,
-                           std::string(pub_z85));
-                dealer.set(zmq::sockopt::curve_secretkey,
-                           std::string(sec_z85));
+            [&](std::string_view pub_z85, std::string_view sec_z85)
+            {
+                dealer.set(zmq::sockopt::curve_publickey, std::string(pub_z85));
+                dealer.set(zmq::sockopt::curve_secretkey, std::string(sec_z85));
             });
     }
     // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = producer_uid so
@@ -583,17 +582,15 @@ void raw_heartbeat(const std::string &endpoint,
     std::array<std::uint8_t, 16> corr_raw{};
     sec::secure().random_bytes(corr_raw);
     char corr_hex[33] = {};
-    sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(),
-                          corr_raw.size());
+    sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(), corr_raw.size());
     const std::string correlation_id(corr_hex, 32);
     ::pylabhub::wire::adapter::EncodeContext enc_ctx;
     enc_ctx.dealer_role_uid = producer_uid;
-    enc_ctx.correlation_id  = correlation_id;
+    enc_ctx.correlation_id = correlation_id;
     try
     {
         zmq::multipart_t wire =
-            ::pylabhub::wire::adapter::encode_dealer_send(
-                "HEARTBEAT_NOTIFY", enc_ctx, hb_req);
+            ::pylabhub::wire::adapter::encode_dealer_send("HEARTBEAT_NOTIFY", enc_ctx, hb_req);
         wire.send(dealer);
     }
     catch (const std::exception &)
@@ -628,34 +625,32 @@ int broker_reg_disc_happy_path()
         {
             auto [broker] = setup_broker_test({"prod.broker.ch1.uid00000001"},
 
-                "broker.broker_reg_disc_happy_path");
+                                              "broker.broker_reg_disc_happy_path");
 
             const std::string channel = "broker.ch1";
-            const std::string uid     = "prod.broker.ch1.uid00000001";
+            const std::string uid = "prod.broker.ch1.uid00000001";
 
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
             // Build §5b-canonical reg payload via the production helper
             // — auto-fills zmq_pubkey (from key_store), role_type,
             // data_transport, has_shm, shm_capability_endpoint.
             namespace sec = pylabhub::utils::security;
-            auto reg_opts = pylabhub::hub::build_producer_reg_payload(
-                pylabhub::hub::ProducerRegInputs{
-                    .channel    = channel,
-                    .role_uid   = uid,
-                    .role_name  = "test_producer",
-                    .role_type  = "producer",
-                    .has_shm    = true,
-                    .is_zmq_transport  = false,
+            auto reg_opts =
+                pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+                    .channel = channel,
+                    .role_uid = uid,
+                    .role_name = "test_producer",
+                    .role_type = "producer",
+                    .has_shm = true,
+                    .is_zmq_transport = false,
                     .zmq_node_endpoint = {},
                     .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                         pylabhub::tests::role_keystore_name(uid))},
-                    .shm_capability_endpoint =
-                        sec::default_shm_capability_endpoint(channel),
+                    .shm_capability_endpoint = sec::default_shm_capability_endpoint(channel),
                 });
-            reg_opts["producer_pid"]   = ::getpid();
+            reg_opts["producer_pid"] = ::getpid();
             // schema_version retired per C2 — version rides inside schema_id.
             auto reg = bh.brc.register_channel(reg_opts, 3000);
             ASSERT_TRUE(reg.has_value()) << "register_channel must succeed";
@@ -672,9 +667,9 @@ int broker_reg_disc_happy_path()
             // explicit teardown needed here.
             broker.stop_and_join();
         },
-        "broker.broker_reg_disc_happy_path",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_reg_disc_happy_path", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ============================================================================
@@ -688,23 +683,24 @@ int broker_schema_mismatch()
         {
             auto [broker] = setup_broker_test({"prod.broker.mismatch.uid00000001"},
 
-                "broker.broker_schema_mismatch");
+                                              "broker.broker_schema_mismatch");
 
-            const std::string channel  = "broker.mismatch.ch";
+            const std::string channel = "broker.mismatch.ch";
             const std::string role_uid = "prod.broker.mismatch.uid00000001";
-            const uint64_t    pid      = pylabhub::platform::get_pid();
+            const uint64_t pid = pylabhub::platform::get_pid();
 
             // First registration — succeeds.  broker_proto 5 (R3.5b)
             // requires a valid role_uid at the gate even under default
             // Open policy.
             nlohmann::json req1;
-            req1["channel_name"]     = channel;
-            req1["schema_hash"]      = zero_hex();
-            req1["producer_pid"]     = pid;
+            req1["channel_name"] = channel;
+            req1["schema_hash"] = zero_hex();
+            req1["producer_pid"] = pid;
             req1["producer_hostname"] = "localhost";
-            req1["role_uid"]         = role_uid;
+            req1["role_uid"] = role_uid;
 
-            nlohmann::json resp1 = raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey, "prod.broker.mismatch.uid00000001");
+            nlohmann::json resp1 = raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey,
+                                           "prod.broker.mismatch.uid00000001");
             ASSERT_FALSE(resp1.is_null()) << "raw_req timed out on first REG_REQ";
             EXPECT_EQ(resp1.value("status", std::string("")), "success")
                 << "First registration must succeed; got: " << resp1.dump();
@@ -712,7 +708,8 @@ int broker_schema_mismatch()
             // Second registration — different schema_hash → SCHEMA_MISMATCH
             nlohmann::json req2 = req1;
             req2["schema_hash"] = aa_hex(); // different hash
-            nlohmann::json resp2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey, "prod.broker.mismatch.uid00000001");
+            nlohmann::json resp2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey,
+                                           "prod.broker.mismatch.uid00000001");
             ASSERT_FALSE(resp2.is_null()) << "raw_req timed out on second REG_REQ";
             EXPECT_EQ(resp2.value("status", std::string("")), "error")
                 << "Second registration with mismatched hash must be rejected";
@@ -721,9 +718,9 @@ int broker_schema_mismatch()
 
             broker.stop_and_join();
         },
-        "broker.broker_schema_mismatch",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_schema_mismatch", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ============================================================================
@@ -737,7 +734,7 @@ int broker_channel_not_found()
         {
             auto [broker] = setup_broker_test({"prod.querier.notfound.uid00000001"},
 
-                "broker.broker_channel_not_found");
+                                              "broker.broker_channel_not_found");
 
             const std::string querier_uid = "prod.querier.notfound.uid00000001";
             pylabhub::tests::BrcHandle bh;
@@ -750,9 +747,9 @@ int broker_channel_not_found()
 
             broker.stop_and_join();
         },
-        "broker.broker_channel_not_found",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_channel_not_found", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ============================================================================
@@ -766,29 +763,27 @@ int broker_dereg_happy_path()
         {
             auto [broker] = setup_broker_test({"prod.dereg.ch.uid00000001"},
 
-                "broker.broker_dereg_happy_path");
+                                              "broker.broker_dereg_happy_path");
 
             const std::string channel = "broker.dereg.ch";
-            const std::string uid     = "prod.dereg.ch.uid00000001";
+            const std::string uid = "prod.dereg.ch.uid00000001";
 
             pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid,
-                     pylabhub::tests::role_keystore_name(uid));
+            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
 
             namespace sec = pylabhub::utils::security;
-            auto reg_opts = pylabhub::hub::build_producer_reg_payload(
-                pylabhub::hub::ProducerRegInputs{
-                    .channel    = channel,
-                    .role_uid   = uid,
-                    .role_name  = "test_producer",
-                    .role_type  = "producer",
-                    .has_shm    = true,
-                    .is_zmq_transport  = false,
+            auto reg_opts =
+                pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+                    .channel = channel,
+                    .role_uid = uid,
+                    .role_name = "test_producer",
+                    .role_type = "producer",
+                    .has_shm = true,
+                    .is_zmq_transport = false,
                     .zmq_node_endpoint = {},
                     .zmq_pubkey = std::string{sec::secure().keys().pubkey(
                         pylabhub::tests::role_keystore_name(uid))},
-                    .shm_capability_endpoint =
-                        sec::default_shm_capability_endpoint(channel),
+                    .shm_capability_endpoint = sec::default_shm_capability_endpoint(channel),
                 });
             reg_opts["producer_pid"] = ::getpid();
             auto reg = bh.brc.register_channel(reg_opts, 3000);
@@ -819,9 +814,9 @@ int broker_dereg_happy_path()
 
             broker.stop_and_join();
         },
-        "broker.broker_dereg_happy_path",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_dereg_happy_path", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ============================================================================
@@ -836,12 +831,12 @@ int broker_dereg_pid_mismatch()
         {
             auto [broker] = setup_broker_test({"prod.broker.pid_mismatch.uid00000001"},
 
-                "broker.broker_dereg_pid_mismatch");
+                                              "broker.broker_dereg_pid_mismatch");
 
-            const std::string channel  = "broker.pid_mismatch.ch";
+            const std::string channel = "broker.pid_mismatch.ch";
             const std::string role_uid = "prod.broker.pid_mismatch.uid00000001";
             const uint64_t correct_pid = 55555;
-            const uint64_t wrong_pid   = 99999;
+            const uint64_t wrong_pid = 99999;
 
             // Register via raw ZMQ.  Per HEP-CORE-0033 §G2.2.0a +
             // HEP-CORE-0023 §2.6, REG_REQ MUST carry `role_uid` for the
@@ -849,12 +844,14 @@ int broker_dereg_pid_mismatch()
             // subsequent DISC_REQ derives its observable from
             // (HEP-CORE-0023 §2.2 — Phase 4 protocol).
             nlohmann::json reg_req;
-            reg_req["channel_name"]      = channel;
-            reg_req["schema_hash"]       = zero_hex();
-            reg_req["producer_pid"]      = correct_pid;
+            reg_req["channel_name"] = channel;
+            reg_req["schema_hash"] = zero_hex();
+            reg_req["producer_pid"] = correct_pid;
             reg_req["producer_hostname"] = "localhost";
-            reg_req["role_uid"]          = role_uid;
-            nlohmann::json reg_resp = raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
+            reg_req["role_uid"] = role_uid;
+            nlohmann::json reg_resp =
+                raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey,
+                        "prod.broker.pid_mismatch.uid00000001");
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
             EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
 
@@ -862,8 +859,7 @@ int broker_dereg_pid_mismatch()
             // broker flips `first_heartbeat_seen=true` and the
             // presence is kLive (HEP-CORE-0019 §4.1 + broker_proto 5
             // R3.5b).  Fire-and-forget via raw_heartbeat helper.
-            raw_heartbeat(broker.endpoint, broker.pubkey, channel,
-                          role_uid, correct_pid);
+            raw_heartbeat(broker.endpoint, broker.pubkey, channel, role_uid, correct_pid);
 
             // DEREG_REQ with wrong pid + correct role_uid → NOT_REGISTERED.
             // broker_proto 2→3 (2026-05-15 audit C3): `role_uid` is now
@@ -873,9 +869,11 @@ int broker_dereg_pid_mismatch()
             // by `broker_dereg_missing_role_uid_rejected` below.
             nlohmann::json dereg_req;
             dereg_req["channel_name"] = channel;
-            dereg_req["role_uid"]     = role_uid;
+            dereg_req["role_uid"] = role_uid;
             dereg_req["producer_pid"] = wrong_pid;
-            nlohmann::json dereg_resp = raw_req(broker.endpoint, "DEREG_REQ", dereg_req, 2000, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
+            nlohmann::json dereg_resp =
+                raw_req(broker.endpoint, "DEREG_REQ", dereg_req, 2000, broker.pubkey,
+                        "prod.broker.pid_mismatch.uid00000001");
             ASSERT_FALSE(dereg_resp.is_null()) << "DEREG_REQ timed out";
             EXPECT_EQ(dereg_resp.value("status", std::string("")), "error")
                 << "DEREG_REQ with wrong pid must be rejected; got: " << dereg_resp.dump();
@@ -885,7 +883,9 @@ int broker_dereg_pid_mismatch()
             // Channel still discoverable via DISC_REQ.
             nlohmann::json disc_req;
             disc_req["channel_name"] = channel;
-            nlohmann::json disc_resp = raw_req(broker.endpoint, "DISC_REQ", disc_req, 2000, broker.pubkey, "prod.broker.pid_mismatch.uid00000001");
+            nlohmann::json disc_resp =
+                raw_req(broker.endpoint, "DISC_REQ", disc_req, 2000, broker.pubkey,
+                        "prod.broker.pid_mismatch.uid00000001");
             ASSERT_FALSE(disc_resp.is_null()) << "DISC_REQ timed out";
             EXPECT_EQ(disc_resp.value("status", std::string("")), "success")
                 << "Channel must still be registered after pid-mismatch deregister attempt";
@@ -894,9 +894,9 @@ int broker_dereg_pid_mismatch()
 
             broker.stop_and_join();
         },
-        "broker.broker_dereg_pid_mismatch",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_dereg_pid_mismatch", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ============================================================================
@@ -912,22 +912,24 @@ int broker_dereg_missing_role_uid_rejected()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.missing_uid.uid00000001", "cons.broker.missing_uid.uid00000001"},
 
                 "broker.broker_dereg_missing_role_uid_rejected");
 
-            const std::string channel  = "broker.missing_uid.ch";
+            const std::string channel = "broker.missing_uid.ch";
             const std::string role_uid = "prod.broker.missing_uid.uid00000001";
-            const uint64_t    pid      = 44444;
+            const uint64_t pid = 44444;
 
             // Register a producer so the channel exists.
             nlohmann::json reg_req;
-            reg_req["channel_name"]      = channel;
-            reg_req["schema_hash"]       = zero_hex();
-            reg_req["producer_pid"]      = pid;
+            reg_req["channel_name"] = channel;
+            reg_req["schema_hash"] = zero_hex();
+            reg_req["producer_pid"] = pid;
             reg_req["producer_hostname"] = "localhost";
-            reg_req["role_uid"]          = role_uid;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey, "prod.broker.missing_uid.uid00000001")
+            reg_req["role_uid"] = role_uid;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey,
+                              "prod.broker.missing_uid.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -943,7 +945,8 @@ int broker_dereg_missing_role_uid_rejected()
             dereg["channel_name"] = channel;
             dereg["producer_pid"] = pid;
             // deliberately omit role_uid
-            nlohmann::json resp = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey, "prod.broker.missing_uid.uid00000001");
+            nlohmann::json resp = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey,
+                                          "prod.broker.missing_uid.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "DEREG_REQ timed out";
             EXPECT_EQ(resp.value("status", std::string{}), "error")
                 << "Missing role_uid must be rejected; got: " << resp.dump();
@@ -963,11 +966,12 @@ int broker_dereg_missing_role_uid_rejected()
             // gate, not the resolution gate).
             const std::string cons_uid = "cons.broker.missing_uid.uid00000001";
             nlohmann::json cons_reg;
-            cons_reg["channel_name"]      = channel;
-            cons_reg["consumer_pid"]      = pid;
+            cons_reg["channel_name"] = channel;
+            cons_reg["consumer_pid"] = pid;
             cons_reg["consumer_hostname"] = "localhost";
-            cons_reg["role_uid"]      = cons_uid;
-            ASSERT_EQ(raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_reg, 2000, broker.pubkey, cons_uid)
+            cons_reg["role_uid"] = cons_uid;
+            ASSERT_EQ(raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_reg, 2000, broker.pubkey,
+                              cons_uid)
                           .value("status", std::string{}),
                       "success");
 
@@ -975,12 +979,11 @@ int broker_dereg_missing_role_uid_rejected()
             cons_dereg["channel_name"] = channel;
             cons_dereg["consumer_pid"] = pid;
             // deliberately omit role_uid
-            nlohmann::json cresp =
-                raw_req(broker.endpoint, "CONSUMER_DEREG_REQ", cons_dereg, 2000, broker.pubkey, cons_uid);
+            nlohmann::json cresp = raw_req(broker.endpoint, "CONSUMER_DEREG_REQ", cons_dereg, 2000,
+                                           broker.pubkey, cons_uid);
             ASSERT_FALSE(cresp.is_null()) << "CONSUMER_DEREG_REQ timed out";
             EXPECT_EQ(cresp.value("status", std::string{}), "error")
-                << "Missing role_uid on CONSUMER_DEREG must be rejected; got: "
-                << cresp.dump();
+                << "Missing role_uid on CONSUMER_DEREG must be rejected; got: " << cresp.dump();
             // Same rationale as DEREG_REQ above: ConsumerDeregReqBody
             // wire class requires role_uid → missing yields
             // BODY_SCHEMA_VIOLATION at the wire body class layer.
@@ -989,9 +992,9 @@ int broker_dereg_missing_role_uid_rejected()
 
             broker.stop_and_join();
         },
-        "broker.broker_dereg_missing_role_uid_rejected",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_dereg_missing_role_uid_rejected", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -1005,15 +1008,14 @@ namespace
 
 /// Boilerplate REG_REQ that's ALWAYS valid except for the fields a
 /// test overrides explicitly.
-nlohmann::json reg_req_template(const std::string &channel,
-                                const std::string &role_uid)
+nlohmann::json reg_req_template(const std::string &channel, const std::string &role_uid)
 {
     nlohmann::json r;
-    r["channel_name"]     = channel;
-    r["schema_hash"]      = zero_hex();
-    r["producer_pid"]     = pylabhub::platform::get_pid();
+    r["channel_name"] = channel;
+    r["schema_hash"] = zero_hex();
+    r["producer_pid"] = pylabhub::platform::get_pid();
     r["producer_hostname"] = "localhost";
-    r["role_uid"]         = role_uid;
+    r["role_uid"] = role_uid;
     return r;
 }
 
@@ -1036,120 +1038,124 @@ nlohmann::json reg_req_template(const std::string &channel,
 int broker_gate_reg_req_rejects_empty_uid()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
-                "broker.broker_gate_reg_req_rejects_empty_uid");
+                                              "broker.broker_gate_reg_req_rejects_empty_uid");
             auto req = reg_req_template("r35b.empty_uid.ch", "");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                                "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "error");
             // Wire body class rejects the shape at dispatch; grammar
             // gate coverage for empty role_uid is L1
             // (AdmissionGate_Grammar.EmptyUidRejects).
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "BODY_SCHEMA_VIOLATION");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
             broker.stop_and_join();
         },
-        "broker.gate_reg_req_rejects_empty_uid",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.gate_reg_req_rejects_empty_uid", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 int broker_gate_reg_req_rejects_malformed_uid()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
-                "broker.broker_gate_reg_req_rejects_malformed_uid");
+                                              "broker.broker_gate_reg_req_rejects_malformed_uid");
             // Wire body class rejects at shape layer; grammar-gate
             // coverage for malformed role_uid is L1
             // (AdmissionGate_Grammar.BadCharacterRejects and siblings).
-            auto req = reg_req_template("r35b.malformed_uid.ch",
-                                        "not-a-uid");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
+            auto req = reg_req_template("r35b.malformed_uid.ch", "not-a-uid");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                                "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "BODY_SCHEMA_VIOLATION");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
 
             req = reg_req_template("r35b.malformed_uid.ch2", "prod.");
-            resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
+            resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                           "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "BODY_SCHEMA_VIOLATION");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
 
             req = reg_req_template("r35b.malformed_uid.ch3", "prod.x");
-            resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
+            resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                           "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "BODY_SCHEMA_VIOLATION");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
             broker.stop_and_join();
         },
-        "broker.gate_reg_req_rejects_malformed_uid",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.gate_reg_req_rejects_malformed_uid", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_gate_reg_req_rejects_consumer_tag()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
-                "broker.broker_gate_reg_req_rejects_consumer_tag");
+                                              "broker.broker_gate_reg_req_rejects_consumer_tag");
             // Wire body class rejects at shape layer; tag-policy
             // coverage for wrong-side tags is L1
             // (AdmissionGate_RoleTagPolicy.RegReqRejectsConsumerUid).
-            auto req = reg_req_template("r35b.wrong_tag.ch",
-                                        "cons.r35b.uid00000001");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "wire.gate.uid00000099");
+            auto req = reg_req_template("r35b.wrong_tag.ch", "cons.r35b.uid00000001");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                                "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "BODY_SCHEMA_VIOLATION");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
             broker.stop_and_join();
         },
-        "broker.gate_reg_req_rejects_consumer_tag",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.gate_reg_req_rejects_consumer_tag", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_gate_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             auto [broker] = setup_broker_test({"proc.r35b.uid00000001"},
 
-                "broker.broker_gate_reg_req_accepts_proc_tag");
+                                              "broker.broker_gate_reg_req_accepts_proc_tag");
             // role_uid="proc.x.y" on REG_REQ → success.  Processor
             // roles register on the producer side for their output
             // channels per HEP-CORE-0011 Phase 6 dual-side model.
-            auto req = reg_req_template("r35b.proc_as_prod.ch",
-                                        "proc.r35b.uid00000001");
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "proc.r35b.uid00000001");
+            auto req = reg_req_template("r35b.proc_as_prod.ch", "proc.r35b.uid00000001");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                                "proc.r35b.uid00000001");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success")
-                << "proc.* uid should be accepted on REG_REQ; got: "
-                << resp.dump();
+                << "proc.* uid should be accepted on REG_REQ; got: " << resp.dump();
             broker.stop_and_join();
         },
-        "broker.gate_reg_req_accepts_proc_tag",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.gate_reg_req_accepts_proc_tag", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 int broker_gate_consumer_reg_req_rejects_producer_tag()
 {
     return run_gtest_worker(
-        []() {
-            auto [broker] = setup_broker_test({"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"},
+        []()
+        {
+            auto [broker] = setup_broker_test(
+                {"prod.r35b.cregwt.uid00000001", "prod.r35b.intruder.uid00000002"},
 
                 "broker.broker_gate_consumer_reg_req_rejects_producer_tag");
             // Need a channel to register a consumer to.
-            const std::string channel  = "r35b.creg_wrong_tag.ch";
+            const std::string channel = "r35b.creg_wrong_tag.ch";
             const std::string prod_uid = "prod.r35b.cregwt.uid00000001";
             auto reg = reg_req_template(channel, prod_uid);
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.r35b.cregwt.uid00000001")
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.r35b.cregwt.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1164,53 +1170,57 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
             nlohmann::json creg;
             creg["channel_name"] = channel;
             creg["consumer_pid"] = pylabhub::platform::get_pid();
-            creg["role_uid"]     = "prod.r35b.intruder.uid00000002";
-            creg["role_name"]    = "intruder";
-            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey, "prod.r35b.intruder.uid00000002");
+            creg["role_uid"] = "prod.r35b.intruder.uid00000002";
+            creg["role_name"] = "intruder";
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey,
+                                "prod.r35b.intruder.uid00000002");
             ASSERT_FALSE(resp.is_null());
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "INVALID_ROLE_TAG");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "INVALID_ROLE_TAG");
             broker.stop_and_join();
         },
-        "broker.gate_consumer_reg_req_rejects_producer_tag",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.gate_consumer_reg_req_rejects_producer_tag", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_gate_consumer_reg_req_accepts_proc_tag()
 {
     return run_gtest_worker(
-        []() {
-            auto [broker] = setup_broker_test({"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"},
+        []()
+        {
+            auto [broker] = setup_broker_test(
+                {"prod.r35b.cregproc.uid00000001", "proc.r35b.cregproc.uid00000002"},
 
                 "broker.broker_gate_consumer_reg_req_accepts_proc_tag");
-            const std::string channel  = "r35b.cregproc.ch";
+            const std::string channel = "r35b.cregproc.ch";
             const std::string prod_uid = "prod.r35b.cregproc.uid00000001";
             auto reg = reg_req_template(channel, prod_uid);
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.r35b.cregproc.uid00000001")
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.r35b.cregproc.uid00000001")
                           .value("status", std::string{}),
                       "success");
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "r35b.cregproc.ch", "prod.r35b.cregproc.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "r35b.cregproc.ch",
+                          "prod.r35b.cregproc.uid00000001");
 
             // CONSUMER_REG_REQ with role_uid="proc.x.y" → success.
             nlohmann::json creg;
             creg["channel_name"] = channel;
             creg["consumer_pid"] = pylabhub::platform::get_pid();
-            creg["role_uid"]     = "proc.r35b.cregproc.uid00000002";
-            creg["role_name"]    = "proc_as_cons";
-            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey, "proc.r35b.cregproc.uid00000002");
+            creg["role_uid"] = "proc.r35b.cregproc.uid00000002";
+            creg["role_name"] = "proc_as_cons";
+            auto resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", creg, 2000, broker.pubkey,
+                                "proc.r35b.cregproc.uid00000002");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success")
-                << "proc.* uid should be accepted on CONSUMER_REG_REQ; got: "
-                << resp.dump();
+                << "proc.* uid should be accepted on CONSUMER_REG_REQ; got: " << resp.dump();
             broker.stop_and_join();
         },
-        "broker.gate_consumer_reg_req_accepts_proc_tag",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.gate_consumer_reg_req_accepts_proc_tag", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -1224,15 +1234,14 @@ namespace
 /// add or override fields (notably `schema_packing`, `schema_id`, `schema_hash`).
 /// Note: `shm_name` (HEP-CORE-0036 §5b.4 retired wire field) was a third
 /// parameter pre-2026-06-29; removed alongside the wire-field retirement.
-nlohmann::json baseline_reg_req(const std::string &channel,
-                                const std::string &uid)
+nlohmann::json baseline_reg_req(const std::string &channel, const std::string &uid)
 {
     nlohmann::json req;
-    req["channel_name"]      = channel;
-    req["producer_pid"]      = pylabhub::platform::get_pid();
+    req["channel_name"] = channel;
+    req["producer_pid"] = pylabhub::platform::get_pid();
     req["producer_hostname"] = "localhost";
-    req["role_uid"]          = uid;
-    req["role_name"]         = "test_producer";
+    req["role_uid"] = uid;
+    req["role_name"] = "test_producer";
     return req;
 }
 
@@ -1241,13 +1250,11 @@ nlohmann::json baseline_reg_req(const std::string &channel,
 /// recompute and verify against the producer's `schema_hash`.  Without
 /// this, tests using placeholder hashes like `aa_hex()` would all NACK
 /// FINGERPRINT_INCONSISTENT under Phase 3 follow-up.
-std::string canonical_hash_hex(const std::string &slot_blds,
-                               const std::string &slot_packing,
-                               const std::string &fz_blds   = {},
-                               const std::string &fz_packing = {})
+std::string canonical_hash_hex(const std::string &slot_blds, const std::string &slot_packing,
+                               const std::string &fz_blds = {}, const std::string &fz_packing = {})
 {
-    const auto h = pylabhub::hub::compute_canonical_hash_from_wire(
-        slot_blds, slot_packing, fz_blds, fz_packing);
+    const auto h = pylabhub::hub::compute_canonical_hash_from_wire(slot_blds, slot_packing, fz_blds,
+                                                                   fz_packing);
     return pylabhub::format_tools::bytes_to_hex(
         {reinterpret_cast<const char *>(h.data()), h.size()});
 }
@@ -1263,24 +1270,25 @@ int broker_sch_record_path_b_created()
         {
             auto [broker] = setup_broker_test({"prod.broker.sch_b.uid00000001"},
 
-                "broker.broker_sch_record_path_b_created");
+                                              "broker.broker_sch_record_path_b_created");
 
             const std::string channel = "broker.sch.path_b";
-            const std::string uid     = "prod.broker.sch_b.uid00000001";
-            const std::string sid     = "$lab.sch_b.frame.v1";
+            const std::string uid = "prod.broker.sch_b.uid00000001";
+            const std::string sid = "$lab.sch_b.frame.v1";
             // Wire-form canonical BLDS (HEP-0034 §10.1): "name:type:count:length"
             // joined with "|".  Broker will recompute the hash from this and
             // compare to schema_hash — placeholder hashes no longer pass.
-            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
+            const std::string blds = "ts:f64:1:0|value:f32:1:0";
             const std::string packing = "aligned";
 
             auto req = baseline_reg_req(channel, uid);
-            req["schema_id"]      = sid;
-            req["schema_hash"]    = canonical_hash_hex(blds, packing);
+            req["schema_id"] = sid;
+            req["schema_hash"] = canonical_hash_hex(blds, packing);
             req["schema_packing"] = packing;
-            req["schema_blds"]    = blds;
+            req["schema_blds"] = blds;
 
-            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "prod.broker.sch_b.uid00000001");
+            auto resp = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                                "prod.broker.sch_b.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "raw_req timed out";
             EXPECT_EQ(resp.value("status", std::string{}), "success")
                 << "REG_REQ with full structure must succeed; got: " << resp.dump();
@@ -1291,7 +1299,8 @@ int broker_sch_record_path_b_created()
             // The schema record stays Created from the first REG_REQ
             // (the broker's anomaly handling preserves it); only the
             // admission itself fails.
-            auto resp2 = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey, "prod.broker.sch_b.uid00000001");
+            auto resp2 = raw_req(broker.endpoint, "REG_REQ", req, 2000, broker.pubkey,
+                                 "prod.broker.sch_b.uid00000001");
             ASSERT_FALSE(resp2.is_null()) << "raw_req timed out for resp2 on this call";
             EXPECT_EQ(resp2.value("status", std::string{}), "error")
                 << "Same-uid re-register must reject; got: " << resp2.dump();
@@ -1300,9 +1309,9 @@ int broker_sch_record_path_b_created()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_record_path_b_created",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_record_path_b_created", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── Same uid + same schema_id on DIFFERENT channels, different fingerprints
@@ -1317,26 +1326,27 @@ int broker_sch_record_hash_mismatch_self()
         {
             auto [broker] = setup_broker_test({"prod.broker.sch_mm.uid00000001"},
 
-                "broker.broker_sch_record_hash_mismatch_self");
+                                              "broker.broker_sch_record_hash_mismatch_self");
 
             const std::string ch1 = "broker.sch.mismatch_self.a";
             const std::string ch2 = "broker.sch.mismatch_self.b";
             const std::string uid = "prod.broker.sch_mm.uid00000001";
             const std::string sid = "$lab.sch_mm.frame.v1";
 
-            const std::string blds_a    = "ts:f64:1:0|value:f32:1:0";
-            const std::string blds_b    = "ts:f64:1:0|value:i32:1:0"; // type differs → different hash
-            const std::string packing   = "aligned";
-            const std::string hash_a    = canonical_hash_hex(blds_a, packing);
-            const std::string hash_b    = canonical_hash_hex(blds_b, packing);
+            const std::string blds_a = "ts:f64:1:0|value:f32:1:0";
+            const std::string blds_b = "ts:f64:1:0|value:i32:1:0"; // type differs → different hash
+            const std::string packing = "aligned";
+            const std::string hash_a = canonical_hash_hex(blds_a, packing);
+            const std::string hash_b = canonical_hash_hex(blds_b, packing);
             ASSERT_NE(hash_a, hash_b) << "Test fixtures must produce different hashes";
 
             auto req1 = baseline_reg_req(ch1, uid);
-            req1["schema_id"]      = sid;
-            req1["schema_hash"]    = hash_a;
+            req1["schema_id"] = sid;
+            req1["schema_hash"] = hash_a;
             req1["schema_packing"] = packing;
-            req1["schema_blds"]    = blds_a;
-            auto r1 = raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey, "prod.broker.sch_mm.uid00000001");
+            req1["schema_blds"] = blds_a;
+            auto r1 = raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey,
+                              "prod.broker.sch_mm.uid00000001");
             ASSERT_FALSE(r1.is_null()) << "raw_req timed out for r1 on this call";
             ASSERT_EQ(r1.value("status", std::string{}), "success") << r1.dump();
 
@@ -1346,11 +1356,12 @@ int broker_sch_record_hash_mismatch_self()
             // exists with hash_a; the new attempt with hash_b collides
             // → kHashMismatchSelf → SCHEMA_HASH_MISMATCH_SELF.
             auto req2 = baseline_reg_req(ch2, uid);
-            req2["schema_id"]      = sid;
-            req2["schema_hash"]    = hash_b;
+            req2["schema_id"] = sid;
+            req2["schema_hash"] = hash_b;
             req2["schema_packing"] = packing;
-            req2["schema_blds"]    = blds_b;
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey, "prod.broker.sch_mm.uid00000001");
+            req2["schema_blds"] = blds_b;
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey,
+                              "prod.broker.sch_mm.uid00000001");
             ASSERT_FALSE(r2.is_null()) << "raw_req timed out";
             EXPECT_EQ(r2.value("status", std::string{}), "error")
                 << "Second REG_REQ with different fingerprint must NACK; got: " << r2.dump();
@@ -1359,9 +1370,9 @@ int broker_sch_record_hash_mismatch_self()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_record_hash_mismatch_self",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_record_hash_mismatch_self", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── Consumer named-citation (id + matching hash) → success ──────────────────
@@ -1381,23 +1392,24 @@ int broker_sch_consumer_citation_match()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.sch_cok.uid00000001", "cons.broker.sch_cok.uid00000002"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.sch_cok.uid00000001", "cons.broker.sch_cok.uid00000002"},
 
                 "broker.broker_sch_consumer_citation_match");
 
             const std::string channel = "broker.sch.cons_ok";
-            const std::string p_uid   = "prod.broker.sch_cok.uid00000001";
-            const std::string c_uid   = "cons.broker.sch_cok.uid00000002";
-            const std::string sid     = "$lab.sch_cok.frame.v1";
-            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
+            const std::string p_uid = "prod.broker.sch_cok.uid00000001";
+            const std::string c_uid = "cons.broker.sch_cok.uid00000002";
+            const std::string sid = "$lab.sch_cok.frame.v1";
+            const std::string blds = "ts:f64:1:0|value:f32:1:0";
             const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
+            const std::string hash = canonical_hash_hex(blds, packing);
 
             auto reg = baseline_reg_req(channel, p_uid);
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = hash;
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
+            reg["schema_blds"] = blds;
             ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, p_uid)
                           .value("status", std::string{}),
                       "success");
@@ -1409,22 +1421,23 @@ int broker_sch_consumer_citation_match()
             // Named-citation mode (HEP-0034 §10.3): consumer cites by id
             // + hash.  Hash must equal channel's stored hash.
             nlohmann::json cons_req;
-            cons_req["channel_name"]         = channel;
-            cons_req["role_uid"]             = c_uid;
-            cons_req["role_name"]            = "test_consumer";
-            cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
-            cons_req["expected_schema_id"]   = sid;
+            cons_req["channel_name"] = channel;
+            cons_req["role_uid"] = c_uid;
+            cons_req["role_name"] = "test_consumer";
+            cons_req["consumer_pid"] = pylabhub::platform::get_pid();
+            cons_req["expected_schema_id"] = sid;
             cons_req["expected_schema_hash"] = hash;
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req, 2000, broker.pubkey, c_uid);
+            auto cr =
+                raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req, 2000, broker.pubkey, c_uid);
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out";
             EXPECT_EQ(cr.value("status", std::string{}), "success")
                 << "Named citation match must succeed; got: " << cr.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_consumer_citation_match",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_consumer_citation_match", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── Consumer named-citation with WRONG hash → SCHEMA_CITATION_REJECTED ──────
@@ -1434,56 +1447,59 @@ int broker_sch_consumer_citation_mismatch()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.sch_cbad.uid00000001", "cons.broker.sch_cbad.uid00000002"},
 
                 "broker.broker_sch_consumer_citation_mismatch");
 
             const std::string channel = "broker.sch.cons_bad";
-            const std::string p_uid   = "prod.broker.sch_cbad.uid00000001";
-            const std::string c_uid   = "cons.broker.sch_cbad.uid00000002";
-            const std::string sid     = "$lab.sch_cbad.frame.v1";
-            const std::string blds_p  = "ts:f64:1:0|value:f32:1:0";
-            const std::string blds_c  = "ts:f64:1:0|value:i32:1:0"; // consumer thinks i32
+            const std::string p_uid = "prod.broker.sch_cbad.uid00000001";
+            const std::string c_uid = "cons.broker.sch_cbad.uid00000002";
+            const std::string sid = "$lab.sch_cbad.frame.v1";
+            const std::string blds_p = "ts:f64:1:0|value:f32:1:0";
+            const std::string blds_c = "ts:f64:1:0|value:i32:1:0"; // consumer thinks i32
             const std::string packing = "aligned";
-            const std::string hash_p  = canonical_hash_hex(blds_p, packing);
-            const std::string hash_c  = canonical_hash_hex(blds_c, packing);
+            const std::string hash_p = canonical_hash_hex(blds_p, packing);
+            const std::string hash_c = canonical_hash_hex(blds_c, packing);
             ASSERT_NE(hash_p, hash_c);
 
             auto reg = baseline_reg_req(channel, p_uid);
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = hash_p;
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = hash_p;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds_p;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.sch_cbad.uid00000001")
+            reg["schema_blds"] = blds_p;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.sch_cbad.uid00000001")
                           .value("status", std::string{}),
                       "success");
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_bad", "prod.broker.sch_cbad.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_bad",
+                          "prod.broker.sch_cbad.uid00000001");
 
             // Consumer cites the right id but a wrong hash (its local
             // expectation differs from what the producer registered).
             nlohmann::json cons_req;
-            cons_req["channel_name"]         = channel;
-            cons_req["role_uid"]         = c_uid;
-            cons_req["role_name"]        = "test_consumer";
-            cons_req["consumer_pid"]         = pylabhub::platform::get_pid();
-            cons_req["expected_schema_id"]   = sid;
-            cons_req["expected_schema_hash"] = hash_c;  // wrong
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req, 2000, broker.pubkey, "cons.broker.sch_cbad.uid00000002");
+            cons_req["channel_name"] = channel;
+            cons_req["role_uid"] = c_uid;
+            cons_req["role_name"] = "test_consumer";
+            cons_req["consumer_pid"] = pylabhub::platform::get_pid();
+            cons_req["expected_schema_id"] = sid;
+            cons_req["expected_schema_hash"] = hash_c; // wrong
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons_req, 2000, broker.pubkey,
+                              "cons.broker.sch_cbad.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out";
             EXPECT_EQ(cr.value("status", std::string{}), "error")
                 << "Hash mismatch must be NACKed; got: " << cr.dump();
-            EXPECT_EQ(cr.value("error_code", std::string{}),
-                      "SCHEMA_CITATION_REJECTED")
+            EXPECT_EQ(cr.value("error_code", std::string{}), "SCHEMA_CITATION_REJECTED")
                 << "Error code must be SCHEMA_CITATION_REJECTED; got: " << cr.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_consumer_citation_mismatch",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_consumer_citation_mismatch", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── REG_REQ without schema_packing → no record created (backward compat) ────
@@ -1495,15 +1511,16 @@ int broker_sch_no_packing_backward_compat()
         {
             auto [broker] = setup_broker_test({"prod.broker.sch_bc.uid00000001"},
 
-                "broker.broker_sch_no_packing_backward_compat");
+                                              "broker.broker_sch_no_packing_backward_compat");
 
             const std::string channel = "broker.sch.bc";
-            const std::string uid     = "prod.broker.sch_bc.uid00000001";
+            const std::string uid = "prod.broker.sch_bc.uid00000001";
 
             // No schema_packing → new schema-record block is skipped.
             auto req1 = baseline_reg_req(channel, uid);
             req1["schema_hash"] = zero_hex();
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey, "prod.broker.sch_bc.uid00000001")
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", req1, 2000, broker.pubkey,
+                              "prod.broker.sch_bc.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1513,7 +1530,8 @@ int broker_sch_no_packing_backward_compat()
             // SCHEMA_HASH_MISMATCH_SELF instead).
             auto req2 = req1;
             req2["schema_hash"] = aa_hex();
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey, "prod.broker.sch_bc.uid00000001");
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", req2, 2000, broker.pubkey,
+                              "prod.broker.sch_bc.uid00000001");
             ASSERT_FALSE(r2.is_null()) << "raw_req timed out for r2 on this call";
             ASSERT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
             EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_MISMATCH")
@@ -1524,9 +1542,9 @@ int broker_sch_no_packing_backward_compat()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_no_packing_backward_compat",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_no_packing_backward_compat", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── SCHEMA_REQ owner+id keying (HEP-0034 §10.3) ─────────────────────────────
@@ -1538,29 +1556,31 @@ int broker_sch_schema_req_owner_id()
         {
             auto [broker] = setup_broker_test({"prod.broker.schreq.uid00000001"},
 
-                "broker.broker_sch_schema_req_owner_id");
+                                              "broker.broker_sch_schema_req_owner_id");
 
             const std::string channel = "broker.sch.schreq";
-            const std::string uid     = "prod.broker.schreq.uid00000001";
-            const std::string sid     = "$lab.schreq.frame.v1";
-            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
+            const std::string uid = "prod.broker.schreq.uid00000001";
+            const std::string sid = "$lab.schreq.frame.v1";
+            const std::string blds = "ts:f64:1:0|value:f32:1:0";
             const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
+            const std::string hash = canonical_hash_hex(blds, packing);
 
             auto reg = baseline_reg_req(channel, uid);
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = hash;
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.schreq.uid00000001")
+            reg["schema_blds"] = blds;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.schreq.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
             // New form: (owner, schema_id) — direct registry lookup.
             nlohmann::json sreq;
-            sreq["owner"]     = uid;
+            sreq["owner"] = uid;
             sreq["schema_id"] = sid;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.schreq.uid00000001");
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                 "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(sresp.is_null());
             EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("owner", std::string{}), uid);
@@ -1571,9 +1591,10 @@ int broker_sch_schema_req_owner_id()
 
             // New form, unknown record → SCHEMA_UNKNOWN.
             nlohmann::json bad_sreq;
-            bad_sreq["owner"]     = uid;
+            bad_sreq["owner"] = uid;
             bad_sreq["schema_id"] = "$lab.does_not_exist.v1";
-            auto bad = raw_req(broker.endpoint, "SCHEMA_REQ", bad_sreq, 2000, broker.pubkey, "prod.broker.schreq.uid00000001");
+            auto bad = raw_req(broker.endpoint, "SCHEMA_REQ", bad_sreq, 2000, broker.pubkey,
+                               "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(bad.is_null()) << "raw_req timed out for bad on this call";
             EXPECT_EQ(bad.value("status", std::string{}), "error");
             EXPECT_EQ(bad.value("error_code", std::string{}), "SCHEMA_UNKNOWN");
@@ -1582,7 +1603,8 @@ int broker_sch_schema_req_owner_id()
             // schema fields, and now also surfaces `schema_owner`.
             nlohmann::json legacy;
             legacy["channel_name"] = channel;
-            auto lresp = raw_req(broker.endpoint, "SCHEMA_REQ", legacy, 2000, broker.pubkey, "prod.broker.schreq.uid00000001");
+            auto lresp = raw_req(broker.endpoint, "SCHEMA_REQ", legacy, 2000, broker.pubkey,
+                                 "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(lresp.is_null()) << "raw_req timed out for lresp on this call";
             EXPECT_EQ(lresp.value("status", std::string{}), "success");
             EXPECT_EQ(lresp.value("schema_owner", std::string{}), uid)
@@ -1592,9 +1614,9 @@ int broker_sch_schema_req_owner_id()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_schema_req_owner_id",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_schema_req_owner_id", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ── Inbox path-A: REG_REQ inbox metadata creates record under (uid, "inbox") ─
@@ -1606,28 +1628,30 @@ int broker_sch_inbox_path_a()
         {
             auto [broker] = setup_broker_test({"prod.broker.inbox.uid00000001"},
 
-                "broker.broker_sch_inbox_path_a");
+                                              "broker.broker_sch_inbox_path_a");
 
-            const std::string channel  = "broker.sch.inbox";
-            const std::string uid      = "prod.broker.inbox.uid00000001";
+            const std::string channel = "broker.sch.inbox";
+            const std::string uid = "prod.broker.inbox.uid00000001";
             const std::string inbox_ep = "tcp://127.0.0.1:9988";
-            const std::string ibj      = R"([{"type":"float64","count":1,"length":0}])";
+            const std::string ibj = R"([{"type":"float64","count":1,"length":0}])";
 
             auto reg = baseline_reg_req(channel, uid);
-            reg["inbox_endpoint"]    = inbox_ep;
+            reg["inbox_endpoint"] = inbox_ep;
             reg["inbox_schema_json"] = ibj;
-            reg["inbox_packing"]     = "aligned";
-            reg["inbox_checksum"]    = "enforced";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.inbox.uid00000001")
+            reg["inbox_packing"] = "aligned";
+            reg["inbox_checksum"] = "enforced";
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.inbox.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
             // SCHEMA_REQ for the inbox record returns the same fields the
             // broker recorded.  Hash and BLDS come back as-stored.
             nlohmann::json sreq;
-            sreq["owner"]     = uid;
+            sreq["owner"] = uid;
             sreq["schema_id"] = "inbox";
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.inbox.uid00000001");
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                 "prod.broker.inbox.uid00000001");
             ASSERT_FALSE(sresp.is_null());
             EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("owner", std::string{}), uid);
@@ -1641,9 +1665,9 @@ int broker_sch_inbox_path_a()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_path_a",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_path_a", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ── Inbox: same uid, different inbox schema → SCHEMA_HASH_MISMATCH_SELF ─────
@@ -1655,17 +1679,18 @@ int broker_sch_inbox_hash_mismatch_self()
         {
             auto [broker] = setup_broker_test({"prod.broker.ibmm.uid00000001"},
 
-                "broker.broker_sch_inbox_hash_mismatch_self");
+                                              "broker.broker_sch_inbox_hash_mismatch_self");
 
             const std::string ch1 = "broker.sch.inbox_mm.a";
             const std::string ch2 = "broker.sch.inbox_mm.b";
             const std::string uid = "prod.broker.ibmm.uid00000001";
 
             auto reg1 = baseline_reg_req(ch1, uid);
-            reg1["inbox_endpoint"]    = "tcp://127.0.0.1:9989";
+            reg1["inbox_endpoint"] = "tcp://127.0.0.1:9989";
             reg1["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
-            reg1["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey, "prod.broker.ibmm.uid00000001")
+            reg1["inbox_packing"] = "aligned";
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey,
+                              "prod.broker.ibmm.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1673,19 +1698,20 @@ int broker_sch_inbox_hash_mismatch_self()
             // §11.4 says the inbox record is keyed by (role_uid, "inbox")
             // independent of channel name → second REG_REQ collides.
             auto reg2 = baseline_reg_req(ch2, uid);
-            reg2["inbox_endpoint"]    = "tcp://127.0.0.1:9990";
+            reg2["inbox_endpoint"] = "tcp://127.0.0.1:9990";
             reg2["inbox_schema_json"] = R"([{"type":"int32","count":4,"length":0}])";
-            reg2["inbox_packing"]     = "aligned";
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, "prod.broker.ibmm.uid00000001");
+            reg2["inbox_packing"] = "aligned";
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey,
+                              "prod.broker.ibmm.uid00000001");
             ASSERT_FALSE(r2.is_null());
             EXPECT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
             EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_HASH_MISMATCH_SELF");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_hash_mismatch_self",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_hash_mismatch_self", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── Inbox: idempotent re-registration (same uid + same fields → success) ────
@@ -1697,7 +1723,7 @@ int broker_sch_inbox_idempotent()
         {
             auto [broker] = setup_broker_test({"prod.broker.idem.uid00000001"},
 
-                "broker.broker_sch_inbox_idempotent");
+                                              "broker.broker_sch_inbox_idempotent");
 
             const std::string ch1 = "broker.sch.inbox_idem.a";
             const std::string ch2 = "broker.sch.inbox_idem.b";
@@ -1705,10 +1731,11 @@ int broker_sch_inbox_idempotent()
             const std::string ibj = R"([{"type":"float64","count":1,"length":0}])";
 
             auto reg1 = baseline_reg_req(ch1, uid);
-            reg1["inbox_endpoint"]    = "tcp://127.0.0.1:9991";
+            reg1["inbox_endpoint"] = "tcp://127.0.0.1:9991";
             reg1["inbox_schema_json"] = ibj;
-            reg1["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey, "prod.broker.idem.uid00000001")
+            reg1["inbox_packing"] = "aligned";
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey,
+                              "prod.broker.idem.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
@@ -1716,18 +1743,19 @@ int broker_sch_inbox_idempotent()
             // registry level, so the broker should accept (and HubState
             // returns kIdempotent without bumping the registered counter).
             auto reg2 = baseline_reg_req(ch2, uid);
-            reg2["inbox_endpoint"]    = "tcp://127.0.0.1:9992";
-            reg2["inbox_schema_json"] = ibj;       // identical fields
-            reg2["inbox_packing"]     = "aligned"; // identical packing
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, "prod.broker.idem.uid00000001");
+            reg2["inbox_endpoint"] = "tcp://127.0.0.1:9992";
+            reg2["inbox_schema_json"] = ibj;   // identical fields
+            reg2["inbox_packing"] = "aligned"; // identical packing
+            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey,
+                              "prod.broker.idem.uid00000001");
             ASSERT_FALSE(r2.is_null()) << "raw_req timed out for r2 on this call";
             EXPECT_EQ(r2.value("status", std::string{}), "success") << r2.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_idempotent",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_idempotent", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ── Inbox: malformed inbox_schema_json → INBOX_SCHEMA_INVALID ───────────────
@@ -1737,19 +1765,21 @@ int broker_sch_inbox_invalid_json()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"},
+            auto [broker] =
+                setup_broker_test({"prod.broker.ibj.uid00000001", "prod.broker.ibj.uid000000011"},
 
-                "broker.broker_sch_inbox_invalid_json");
+                                  "broker.broker_sch_inbox_invalid_json");
 
             const std::string channel = "broker.sch.inbox_bad_json";
-            const std::string uid     = "prod.broker.ibj.uid00000001";
+            const std::string uid = "prod.broker.ibj.uid00000001";
 
             // Parse error.
             auto reg = baseline_reg_req(channel, uid);
-            reg["inbox_endpoint"]    = "tcp://127.0.0.1:9993";
+            reg["inbox_endpoint"] = "tcp://127.0.0.1:9993";
             reg["inbox_schema_json"] = "not-json";
-            reg["inbox_packing"]     = "aligned";
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.ibj.uid00000001");
+            reg["inbox_packing"] = "aligned";
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                             "prod.broker.ibj.uid00000001");
             ASSERT_FALSE(r.is_null());
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "INBOX_SCHEMA_INVALID");
@@ -1760,11 +1790,11 @@ int broker_sch_inbox_invalid_json()
             // wire pubkey must match the payload uid's known_roles
             // entry).  Curve setup seeds both uids; here we use
             // uid000000011 wire identity for the uid000000011 payload.
-            const std::string uid2 = uid + "1";  // "prod.broker.ibj.uid000000011"
+            const std::string uid2 = uid + "1"; // "prod.broker.ibj.uid000000011"
             auto reg2 = baseline_reg_req(channel + ".obj", uid2);
-            reg2["inbox_endpoint"]    = "tcp://127.0.0.1:9994";
+            reg2["inbox_endpoint"] = "tcp://127.0.0.1:9994";
             reg2["inbox_schema_json"] = R"({"type":"float64"})"; // object, not array
-            reg2["inbox_packing"]     = "aligned";
+            reg2["inbox_packing"] = "aligned";
             auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, uid2);
             ASSERT_FALSE(r2.is_null()) << "REG_REQ (reg2) timed out";
             EXPECT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
@@ -1772,9 +1802,9 @@ int broker_sch_inbox_invalid_json()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_invalid_json",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_invalid_json", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ── Inbox: two different roles, each with own inbox → both records exist ────
@@ -1784,9 +1814,10 @@ int broker_sch_inbox_two_owners()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"},
+            auto [broker] =
+                setup_broker_test({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"},
 
-                "broker.broker_sch_inbox_two_owners");
+                                  "broker.broker_sch_inbox_two_owners");
 
             const std::string ch_a = "broker.sch.inbox_2a";
             const std::string ch_b = "broker.sch.inbox_2b";
@@ -1804,20 +1835,21 @@ int broker_sch_inbox_two_owners()
             // catch as PUBKEY_MISMATCH once F7's decoration-vs-wire
             // alignment landed (REVIEW_C2_2026-06-29 F1).
             auto rA = baseline_reg_req(ch_a, uid_a);
-            rA["inbox_endpoint"]    = "tcp://127.0.0.1:9995";
+            rA["inbox_endpoint"] = "tcp://127.0.0.1:9995";
             rA["inbox_schema_json"] = ibj;
-            rA["inbox_packing"]     = "aligned";
+            rA["inbox_packing"] = "aligned";
             ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rA, 2000, broker.pubkey, uid_a)
                           .value("status", std::string{}),
                       "success");
 
             auto rB = baseline_reg_req(ch_b, uid_b);
-            rB["inbox_endpoint"]    = "tcp://127.0.0.1:9996";
-            rB["inbox_schema_json"] = ibj;            // SAME content
-            rB["inbox_packing"]     = "aligned";
+            rB["inbox_endpoint"] = "tcp://127.0.0.1:9996";
+            rB["inbox_schema_json"] = ibj; // SAME content
+            rB["inbox_packing"] = "aligned";
             ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rB, 2000, broker.pubkey, uid_b)
                           .value("status", std::string{}),
-                      "success") << "Different owner with same fields must succeed";
+                      "success")
+                << "Different owner with same fields must succeed";
 
             // Both records resolvable via SCHEMA_REQ — each owner reads
             // its OWN record using its own wire identity (mirrors a
@@ -1825,7 +1857,7 @@ int broker_sch_inbox_two_owners()
             for (const auto &uid : {uid_a, uid_b})
             {
                 nlohmann::json sreq;
-                sreq["owner"]     = uid;
+                sreq["owner"] = uid;
                 sreq["schema_id"] = "inbox";
                 auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, uid);
                 ASSERT_FALSE(sresp.is_null()) << "SCHEMA_REQ timed out for owner=" << uid;
@@ -1835,9 +1867,9 @@ int broker_sch_inbox_two_owners()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_two_owners",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_two_owners", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ── SCHEMA_REQ with no key fields → INVALID_REQUEST ─────────────────────────
@@ -1849,13 +1881,14 @@ int broker_sch_schema_req_invalid()
         {
             auto [broker] = setup_broker_test({"prod.test.uid00000001"},
 
-                "broker.broker_sch_schema_req_invalid");
+                                              "broker.broker_sch_schema_req_invalid");
 
             // No owner, no schema_id, no channel_name — wire payload is
             // an object with no keys (NOT a null json — wire messages
             // are always objects).
             nlohmann::json sreq = nlohmann::json::object();
-            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.test.uid00000001");
+            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                "prod.test.uid00000001");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
             EXPECT_EQ(resp.value("error_code", std::string{}), "INVALID_REQUEST");
@@ -1864,15 +1897,16 @@ int broker_sch_schema_req_invalid()
             // requires channel_name; new form requires both owner + id).
             nlohmann::json half = nlohmann::json::object();
             half["owner"] = "prod.test.uid00000001";
-            auto resp2 = raw_req(broker.endpoint, "SCHEMA_REQ", half, 2000, broker.pubkey, "prod.test.uid00000001");
+            auto resp2 = raw_req(broker.endpoint, "SCHEMA_REQ", half, 2000, broker.pubkey,
+                                 "prod.test.uid00000001");
             ASSERT_FALSE(resp2.is_null()) << "raw_req timed out for resp2 on this call";
             EXPECT_EQ(resp2.value("error_code", std::string{}), "INVALID_REQUEST");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_schema_req_invalid",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_schema_req_invalid", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 // ── Inbox packing must be "aligned" or "packed" ─────────────────────────────
@@ -1884,26 +1918,27 @@ int broker_sch_inbox_invalid_packing()
         {
             auto [broker] = setup_broker_test({"prod.broker.ibp.uid00000001"},
 
-                "broker.broker_sch_inbox_invalid_packing");
+                                              "broker.broker_sch_inbox_invalid_packing");
 
             const std::string channel = "broker.sch.inbox_bad_pack";
-            const std::string uid     = "prod.broker.ibp.uid00000001";
+            const std::string uid = "prod.broker.ibp.uid00000001";
 
             auto reg = baseline_reg_req(channel, uid);
-            reg["inbox_endpoint"]    = "tcp://127.0.0.1:9997";
+            reg["inbox_endpoint"] = "tcp://127.0.0.1:9997";
             reg["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
-            reg["inbox_packing"]     = "natural";  // invalid
+            reg["inbox_packing"] = "natural"; // invalid
 
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.ibp.uid00000001");
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                             "prod.broker.ibp.uid00000001");
             ASSERT_FALSE(r.is_null());
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "INVALID_INBOX_PACKING");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_invalid_packing",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_invalid_packing", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── Phase 3 follow-up — Stage-2 verification + tightened gates ──────────────
@@ -1915,25 +1950,26 @@ int broker_sch_reg_missing_packing()
         {
             auto [broker] = setup_broker_test({"prod.broker.miss_pack.uid00000001"},
 
-                "broker.broker_sch_reg_missing_packing");
+                                              "broker.broker_sch_reg_missing_packing");
 
             // schema_id non-empty but schema_packing missing → NACK MISSING_PACKING.
-            auto reg = baseline_reg_req("broker.sch.miss_pack",
-                                        "prod.broker.miss_pack.uid00000001");
-            reg["schema_id"]      = "$lab.miss_pack.frame.v1";
-            reg["schema_hash"]    = std::string(64, '0');
-            reg["schema_blds"]    = "ts:f64:1:0";
+            auto reg =
+                baseline_reg_req("broker.sch.miss_pack", "prod.broker.miss_pack.uid00000001");
+            reg["schema_id"] = "$lab.miss_pack.frame.v1";
+            reg["schema_hash"] = std::string(64, '0');
+            reg["schema_blds"] = "ts:f64:1:0";
             // intentionally no schema_packing
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.miss_pack.uid00000001");
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                             "prod.broker.miss_pack.uid00000001");
             ASSERT_FALSE(r.is_null()) << "raw_req timed out for r on this call";
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "MISSING_PACKING");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_reg_missing_packing",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_reg_missing_packing", logger_module(), file_lock_module(), json_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
+        zmq_module());
 }
 
 int broker_sch_reg_fingerprint_inconsistent()
@@ -1943,26 +1979,26 @@ int broker_sch_reg_fingerprint_inconsistent()
         {
             auto [broker] = setup_broker_test({"prod.broker.fp_bad.uid00000001"},
 
-                "broker.broker_sch_reg_fingerprint_inconsistent");
+                                              "broker.broker_sch_reg_fingerprint_inconsistent");
 
             // Producer claims a hash that does NOT match BLDS+packing.
             // Stage-2 broker recomputes and rejects.
-            auto reg = baseline_reg_req("broker.sch.fp_bad",
-                                        "prod.broker.fp_bad.uid00000001");
-            reg["schema_id"]      = "$lab.fp_bad.frame.v1";
+            auto reg = baseline_reg_req("broker.sch.fp_bad", "prod.broker.fp_bad.uid00000001");
+            reg["schema_id"] = "$lab.fp_bad.frame.v1";
             reg["schema_packing"] = "aligned";
-            reg["schema_blds"]    = "ts:f64:1:0|value:f32:1:0";
-            reg["schema_hash"]    = aa_hex();  // bogus — doesn't match canonical
-            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.fp_bad.uid00000001");
+            reg["schema_blds"] = "ts:f64:1:0|value:f32:1:0";
+            reg["schema_hash"] = aa_hex(); // bogus — doesn't match canonical
+            auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                             "prod.broker.fp_bad.uid00000001");
             ASSERT_FALSE(r.is_null()) << "raw_req timed out for r on this call";
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
             EXPECT_EQ(r.value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_reg_fingerprint_inconsistent",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_reg_fingerprint_inconsistent", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_cons_named_missing_hash()
@@ -1970,49 +2006,52 @@ int broker_sch_cons_named_missing_hash()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"},
+            auto [broker] =
+                setup_broker_test({"prod.broker.cnh.uid00000001", "cons.broker.cnh.uid00000002"},
 
-                "broker.broker_sch_cons_named_missing_hash");
+                                  "broker.broker_sch_cons_named_missing_hash");
 
-            const std::string ch  = "broker.sch.cons_no_hash";
-            const std::string p   = "prod.broker.cnh.uid00000001";
-            const std::string c   = "cons.broker.cnh.uid00000002";
+            const std::string ch = "broker.sch.cons_no_hash";
+            const std::string p = "prod.broker.cnh.uid00000001";
+            const std::string c = "cons.broker.cnh.uid00000002";
             const std::string sid = "$lab.cnh.frame.v1";
-            const std::string blds    = "ts:f64:1:0";
+            const std::string blds = "ts:f64:1:0";
             const std::string packing = "aligned";
 
             auto reg = baseline_reg_req(ch, p);
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = canonical_hash_hex(blds, packing);
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = canonical_hash_hex(blds, packing);
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.cnh.uid00000001")
+            reg["schema_blds"] = blds;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.cnh.uid00000001")
                           .value("status", std::string{}),
                       "success");
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_no_hash", "prod.broker.cnh.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_no_hash",
+                          "prod.broker.cnh.uid00000001");
 
             // Consumer cites by id but omits the hash → MISSING_HASH_FOR_NAMED_CITATION.
             nlohmann::json cons;
-            cons["channel_name"]       = ch;
-            cons["role_uid"]       = c;
-            cons["role_name"]      = "test_consumer";
-            cons["consumer_pid"]       = pylabhub::platform::get_pid();
+            cons["channel_name"] = ch;
+            cons["role_uid"] = c;
+            cons["role_name"] = "test_consumer";
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
             cons["expected_schema_id"] = sid;
             // intentionally no expected_schema_hash
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.cnh.uid00000002");
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                              "cons.broker.cnh.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out for cr on this call";
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
-            EXPECT_EQ(cr.value("error_code", std::string{}),
-                      "MISSING_HASH_FOR_NAMED_CITATION");
+            EXPECT_EQ(cr.value("error_code", std::string{}), "MISSING_HASH_FOR_NAMED_CITATION");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_cons_named_missing_hash",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_cons_named_missing_hash", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_cons_anonymous_happy_path()
@@ -2020,52 +2059,56 @@ int broker_sch_cons_anonymous_happy_path()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.canok.uid00000001", "cons.broker.canok.uid00000002"},
 
                 "broker.broker_sch_cons_anonymous_happy_path");
 
-            const std::string ch  = "broker.sch.cons_anon_ok";
-            const std::string p   = "prod.broker.canok.uid00000001";
-            const std::string c   = "cons.broker.canok.uid00000002";
-            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
+            const std::string ch = "broker.sch.cons_anon_ok";
+            const std::string p = "prod.broker.canok.uid00000001";
+            const std::string c = "cons.broker.canok.uid00000002";
+            const std::string blds = "ts:f64:1:0|value:f32:1:0";
             const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
+            const std::string hash = canonical_hash_hex(blds, packing);
 
             // Producer registers ANONYMOUSLY: full structure + hash, NO
             // schema_id → anonymous channel.  Per the HEP-CORE-0034 §9
             // matching contract an anonymous consumer may bind only to an
             // anonymous channel (anonymous matches only anonymous).
             auto reg = baseline_reg_req(ch, p);
-            reg["schema_hash"]    = hash;
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.canok.uid00000001")
+            reg["schema_blds"] = blds;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.canok.uid00000001")
                           .value("status", std::string{}),
                       "success");
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_anon_ok", "prod.broker.canok.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_anon_ok",
+                          "prod.broker.canok.uid00000001");
 
             // Consumer in anonymous mode: provides full structure (no id).
             // Hash optional — broker recomputes and compares to channel.
             nlohmann::json cons;
-            cons["channel_name"]     = ch;
-            cons["role_uid"]     = c;
-            cons["role_name"]    = "test_consumer";
-            cons["consumer_pid"]     = pylabhub::platform::get_pid();
-            cons["expected_schema_blds"]    = blds;
+            cons["channel_name"] = ch;
+            cons["role_uid"] = c;
+            cons["role_name"] = "test_consumer";
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
+            cons["expected_schema_blds"] = blds;
             cons["expected_schema_packing"] = packing;
             // (no expected_schema_id, no expected_schema_hash)
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.canok.uid00000002");
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                              "cons.broker.canok.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out for cr on this call";
             EXPECT_EQ(cr.value("status", std::string{}), "success") << cr.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_cons_anonymous_happy_path",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_cons_anonymous_happy_path", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_cons_anonymous_missing_packing()
@@ -2073,32 +2116,36 @@ int broker_sch_cons_anonymous_missing_packing()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"},
+            auto [broker] =
+                setup_broker_test({"prod.broker.canp.uid00000001", "cons.broker.canp.uid00000002"},
 
-                "broker.broker_sch_cons_anonymous_missing_packing");
+                                  "broker.broker_sch_cons_anonymous_missing_packing");
 
             const std::string ch = "broker.sch.cons_anon_nopack";
-            const std::string p  = "prod.broker.canp.uid00000001";
-            const std::string c  = "cons.broker.canp.uid00000002";
+            const std::string p = "prod.broker.canp.uid00000001";
+            const std::string c = "cons.broker.canp.uid00000002";
 
             auto reg = baseline_reg_req(ch, p);
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.canp.uid00000001")
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.canp.uid00000001")
                           .value("status", std::string{}),
                       "success");
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_anon_nopack", "prod.broker.canp.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_anon_nopack",
+                          "prod.broker.canp.uid00000001");
 
             // Anonymous mode with blds but no packing → NACK.
             nlohmann::json cons;
-            cons["channel_name"]  = ch;
-            cons["role_uid"]  = c;
+            cons["channel_name"] = ch;
+            cons["role_uid"] = c;
             cons["role_name"] = "test_consumer";
-            cons["consumer_pid"]  = pylabhub::platform::get_pid();
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
             cons["expected_schema_blds"] = "ts:f64:1:0";
             // intentionally no expected_packing
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.canp.uid00000002");
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                              "cons.broker.canp.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out for cr on this call";
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}),
@@ -2106,9 +2153,9 @@ int broker_sch_cons_anonymous_missing_packing()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_cons_anonymous_missing_packing",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_cons_anonymous_missing_packing", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // Matching contract (HEP-CORE-0034 §9): an anonymous consumer citation must
@@ -2119,24 +2166,26 @@ int broker_sch_cons_anonymous_vs_named_rejected()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.cavn.uid00000001", "cons.broker.cavn.uid00000002"},
+            auto [broker] =
+                setup_broker_test({"prod.broker.cavn.uid00000001", "cons.broker.cavn.uid00000002"},
 
-                "broker.broker_sch_cons_anonymous_vs_named_rejected");
+                                  "broker.broker_sch_cons_anonymous_vs_named_rejected");
 
-            const std::string ch  = "broker.sch.cons_anon_vs_named";
-            const std::string p   = "prod.broker.cavn.uid00000001";
-            const std::string c   = "cons.broker.cavn.uid00000002";
-            const std::string blds    = "ts:f64:1:0|value:f32:1:0";
+            const std::string ch = "broker.sch.cons_anon_vs_named";
+            const std::string p = "prod.broker.cavn.uid00000001";
+            const std::string c = "cons.broker.cavn.uid00000002";
+            const std::string blds = "ts:f64:1:0|value:f32:1:0";
             const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
+            const std::string hash = canonical_hash_hex(blds, packing);
 
             // Producer registers a NAMED schema → named channel.
             auto reg = baseline_reg_req(ch, p);
-            reg["schema_id"]      = "$lab.cavn.frame.v1";
-            reg["schema_hash"]    = hash;
+            reg["schema_id"] = "$lab.cavn.frame.v1";
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.cavn.uid00000001")
+            reg["schema_blds"] = blds;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.cavn.uid00000001")
                           .value("status", std::string{}),
                       "success");
             raw_heartbeat(broker.endpoint, broker.pubkey, ch, p);
@@ -2144,25 +2193,27 @@ int broker_sch_cons_anonymous_vs_named_rejected()
             // Consumer joins ANONYMOUSLY (full structure, no id) with the
             // matching hash → must be rejected: the channel is named.
             nlohmann::json cons;
-            cons["channel_name"]            = ch;
-            cons["role_uid"]                = c;
-            cons["role_name"]               = "test_consumer";
-            cons["consumer_pid"]            = pylabhub::platform::get_pid();
-            cons["expected_schema_blds"]    = blds;
+            cons["channel_name"] = ch;
+            cons["role_uid"] = c;
+            cons["role_name"] = "test_consumer";
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
+            cons["expected_schema_blds"] = blds;
             cons["expected_schema_packing"] = packing;
             // (no expected_schema_id — anonymous citation, hash matches)
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.cavn.uid00000002");
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                              "cons.broker.cavn.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out for cr on this call";
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}), "SCHEMA_ID_MISMATCH")
                 << "anonymous citation vs named channel must reject "
-                   "SCHEMA_ID_MISMATCH; got: " << cr.dump();
+                   "SCHEMA_ID_MISMATCH; got: "
+                << cr.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_cons_anonymous_vs_named_rejected",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_cons_anonymous_vs_named_rejected", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_cons_named_with_structure_mismatch()
@@ -2170,53 +2221,57 @@ int broker_sch_cons_named_with_structure_mismatch()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"},
+            auto [broker] =
+                setup_broker_test({"prod.broker.cnsb.uid00000001", "cons.broker.cnsb.uid00000002"},
 
-                "broker.broker_sch_cons_named_with_structure_mismatch");
+                                  "broker.broker_sch_cons_named_with_structure_mismatch");
 
-            const std::string ch  = "broker.sch.cons_named_struct_bad";
-            const std::string p   = "prod.broker.cnsb.uid00000001";
-            const std::string c   = "cons.broker.cnsb.uid00000002";
+            const std::string ch = "broker.sch.cons_named_struct_bad";
+            const std::string p = "prod.broker.cnsb.uid00000001";
+            const std::string c = "cons.broker.cnsb.uid00000002";
             const std::string sid = "$lab.cnsb.frame.v1";
-            const std::string blds_p    = "ts:f64:1:0|value:f32:1:0";
-            const std::string blds_c    = "ts:f64:1:0|value:i32:1:0"; // consumer thinks i32
-            const std::string packing   = "aligned";
+            const std::string blds_p = "ts:f64:1:0|value:f32:1:0";
+            const std::string blds_c = "ts:f64:1:0|value:i32:1:0"; // consumer thinks i32
+            const std::string packing = "aligned";
 
             auto reg = baseline_reg_req(ch, p);
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = canonical_hash_hex(blds_p, packing);
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = canonical_hash_hex(blds_p, packing);
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds_p;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.cnsb.uid00000001")
+            reg["schema_blds"] = blds_p;
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.cnsb.uid00000001")
                           .value("status", std::string{}),
                       "success");
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_named_struct_bad", "prod.broker.cnsb.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.cons_named_struct_bad",
+                          "prod.broker.cnsb.uid00000001");
 
             // Consumer cites by id with correct hash, BUT also provides
             // a structure that doesn't match the channel's hash —
             // defense-in-depth check kicks in → FINGERPRINT_INCONSISTENT.
             nlohmann::json cons;
-            cons["channel_name"]         = ch;
-            cons["role_uid"]         = c;
-            cons["role_name"]        = "test_consumer";
-            cons["consumer_pid"]         = pylabhub::platform::get_pid();
-            cons["expected_schema_id"]   = sid;
+            cons["channel_name"] = ch;
+            cons["role_uid"] = c;
+            cons["role_name"] = "test_consumer";
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
+            cons["expected_schema_id"] = sid;
             cons["expected_schema_hash"] = canonical_hash_hex(blds_p, packing);
-            cons["expected_schema_blds"]        = blds_c;   // diverges from producer
-            cons["expected_schema_packing"]     = packing;
-            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.cnsb.uid00000002");
+            cons["expected_schema_blds"] = blds_c; // diverges from producer
+            cons["expected_schema_packing"] = packing;
+            auto cr = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                              "cons.broker.cnsb.uid00000002");
             ASSERT_FALSE(cr.is_null()) << "raw_req timed out for cr on this call";
             EXPECT_EQ(cr.value("status", std::string{}), "error") << cr.dump();
             EXPECT_EQ(cr.value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_cons_named_with_structure_mismatch",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_cons_named_with_structure_mismatch", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_inbox_evicts_on_disconnect()
@@ -2226,28 +2281,30 @@ int broker_sch_inbox_evicts_on_disconnect()
         {
             auto [broker] = setup_broker_test({"prod.broker.ibev.uid00000001"},
 
-                "broker.broker_sch_inbox_evicts_on_disconnect");
+                                              "broker.broker_sch_inbox_evicts_on_disconnect");
 
-            const std::string ch  = "broker.sch.inbox_evict";
+            const std::string ch = "broker.sch.inbox_evict";
             const std::string uid = "prod.broker.ibev.uid00000001";
             const auto producer_pid = pylabhub::platform::get_pid();
 
             // Register a producer with inbox metadata.
             auto reg = baseline_reg_req(ch, uid);
-            reg["producer_pid"]      = producer_pid;
-            reg["inbox_endpoint"]    = "tcp://127.0.0.1:9998";
+            reg["producer_pid"] = producer_pid;
+            reg["inbox_endpoint"] = "tcp://127.0.0.1:9998";
             reg["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
-            reg["inbox_packing"]     = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.ibev.uid00000001")
+            reg["inbox_packing"] = "aligned";
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                              "prod.broker.ibev.uid00000001")
                           .value("status", std::string{}),
                       "success");
 
             // Confirm inbox record exists before disconnect.
             {
                 nlohmann::json sreq;
-                sreq["owner"]     = uid;
+                sreq["owner"] = uid;
                 sreq["schema_id"] = "inbox";
-                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.ibev.uid00000001");
+                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                     "prod.broker.ibev.uid00000001");
                 ASSERT_FALSE(sresp.is_null()) << "raw_req timed out for sresp on this call";
                 EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             }
@@ -2257,17 +2314,19 @@ int broker_sch_inbox_evicts_on_disconnect()
             // broker_proto 2→3: `role_uid` REQUIRED on DEREG_REQ.
             nlohmann::json dereg;
             dereg["channel_name"] = ch;
-            dereg["role_uid"]     = uid;
+            dereg["role_uid"] = uid;
             dereg["producer_pid"] = producer_pid;
-            auto dr = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey, "prod.broker.ibev.uid00000001");
+            auto dr = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey,
+                              "prod.broker.ibev.uid00000001");
             ASSERT_FALSE(dr.is_null()) << "raw_req timed out for dr on this call";
             ASSERT_EQ(dr.value("status", std::string{}), "success") << dr.dump();
 
             // Inbox record must be evicted by the cascade.
             nlohmann::json sreq;
-            sreq["owner"]     = uid;
+            sreq["owner"] = uid;
             sreq["schema_id"] = "inbox";
-            auto after = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.ibev.uid00000001");
+            auto after = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                 "prod.broker.ibev.uid00000001");
             ASSERT_FALSE(after.is_null()) << "raw_req timed out for after on this call";
             EXPECT_EQ(after.value("status", std::string{}), "error") << after.dump();
             EXPECT_EQ(after.value("error_code", std::string{}), "SCHEMA_UNKNOWN")
@@ -2276,9 +2335,9 @@ int broker_sch_inbox_evicts_on_disconnect()
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_inbox_evicts_on_disconnect",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_inbox_evicts_on_disconnect", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ============================================================================
@@ -2294,25 +2353,27 @@ namespace
 /// deployment, so the broker's `load_hub_globals_()` walker
 /// (HEP-CORE-0034 §2.4 I2) auto-loads it.
 std::filesystem::path make_global_schema_dir(
-    const std::string &id_dotted,         // e.g. "lab.demo.frame"
-    int                version,
+    const std::string &id_dotted, // e.g. "lab.demo.frame"
+    int version,
     const std::string &fields_array_json) // e.g. R"([{"name":"v","type":"float32"}])"
 {
     auto root = std::filesystem::temp_directory_path() /
                 ("plh_p4b_" + std::to_string(::getpid()) + "_" +
-                 std::to_string(std::chrono::steady_clock::now()
-                                    .time_since_epoch().count()));
+                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root);
 
     // Convert dot-separated id to nested directory tree
     // (lab.demo.frame → lab/demo/frame.v1.json).
     std::vector<std::string> parts;
     {
-        std::string s; std::stringstream ss(id_dotted);
-        while (std::getline(ss, s, '.')) parts.push_back(s);
+        std::string s;
+        std::stringstream ss(id_dotted);
+        while (std::getline(ss, s, '.'))
+            parts.push_back(s);
     }
     auto dir = root;
-    for (size_t i = 0; i + 1 < parts.size(); ++i) dir /= parts[i];
+    for (size_t i = 0; i + 1 < parts.size(); ++i)
+        dir /= parts[i];
     std::filesystem::create_directories(dir);
 
     const std::string fname = parts.back() + ".v" + std::to_string(version) + ".json";
@@ -2330,36 +2391,34 @@ int broker_sch_hub_globals_loaded_at_startup()
         []()
         {
             // Stage a hub-global schema file at <tmp>/lab/demo/frame.v1.json
-            const auto schema_root = make_global_schema_dir(
-                "lab.demo.frame", 1,
-                R"([{"name":"v","type":"float32"}])");
+            const auto schema_root =
+                make_global_schema_dir("lab.demo.frame", 1, R"([{"name":"v","type":"float32"}])");
 
             auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
 
+                                              "broker.broker_sch_hub_globals_loaded_at_startup",
 
-                "broker.broker_sch_hub_globals_loaded_at_startup",
-
-
-                {schema_root.string()});
+                                              {schema_root.string()});
 
             // SCHEMA_REQ for (hub, $lab.demo.frame.v1) must succeed —
             // proves Phase 4b loaded the global into HubState.schemas.
             nlohmann::json sreq;
-            sreq["owner"]     = "hub";
+            sreq["owner"] = "hub";
             sreq["schema_id"] = "$lab.demo.frame.v1";
-            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "wire.gate.uid00000099");
+            auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                "wire.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
-            EXPECT_EQ(resp.value("owner",     std::string{}), "hub");
+            EXPECT_EQ(resp.value("owner", std::string{}), "hub");
             EXPECT_EQ(resp.value("schema_id", std::string{}), "$lab.demo.frame.v1");
-            EXPECT_EQ(resp.value("packing",   std::string{}), "aligned");
+            EXPECT_EQ(resp.value("packing", std::string{}), "aligned");
 
             broker.stop_and_join();
             std::filesystem::remove_all(schema_root);
         },
-        "broker.broker_sch_hub_globals_loaded_at_startup",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_hub_globals_loaded_at_startup", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_adoption_succeeds()
@@ -2368,40 +2427,40 @@ int broker_sch_path_c_adoption_succeeds()
         []()
         {
             const std::string sid_dotted = "lab.demo.adopt";
-            const std::string sid        = "$lab.demo.adopt.v1";
+            const std::string sid = "$lab.demo.adopt.v1";
             // HEP-0034 §6.3 — wire `type` is the JSON type name ("float32"),
             // NOT the BLDS token ("f32").  The hub-global is loaded from
             // JSON with `"type":"float32"`; producer must match exactly.
-            const std::string blds       = "v:float32:1:0";
-            const std::string packing    = "aligned";
-            const std::string hash       = canonical_hash_hex(blds, packing);
-            const auto schema_root = make_global_schema_dir(
-                sid_dotted, 1, R"([{"name":"v","type":"float32"}])");
+            const std::string blds = "v:float32:1:0";
+            const std::string packing = "aligned";
+            const std::string hash = canonical_hash_hex(blds, packing);
+            const auto schema_root =
+                make_global_schema_dir(sid_dotted, 1, R"([{"name":"v","type":"float32"}])");
 
             auto [broker] = setup_broker_test({"prod.broker.adopt.uid00000001"},
 
+                                              "broker.broker_sch_path_c_adoption_succeeds",
 
-                "broker.broker_sch_path_c_adoption_succeeds",
-
-
-                {schema_root.string()});
+                                              {schema_root.string()});
 
             const std::string channel = "broker.sch.adopt";
-            const std::string uid     = "prod.broker.adopt.uid00000001";
+            const std::string uid = "prod.broker.adopt.uid00000001";
             auto reg = baseline_reg_req(channel, uid);
-            reg["schema_owner"]   = "hub";          // path C
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = hash;
+            reg["schema_owner"] = "hub"; // path C
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.adopt.uid00000001");
+            reg["schema_blds"] = blds;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                "prod.broker.adopt.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "raw_req timed out for resp on this call";
             EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
 
             // Verify channel.schema_owner == "hub" via legacy SCHEMA_REQ.
             nlohmann::json sreq;
             sreq["channel_name"] = channel;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.adopt.uid00000001");
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                 "prod.broker.adopt.uid00000001");
             ASSERT_FALSE(sresp.is_null()) << "raw_req timed out for sresp on this call";
             EXPECT_EQ(sresp.value("schema_owner", std::string{}), "hub")
                 << "Path-C-adopted channel should report owner=hub";
@@ -2409,9 +2468,9 @@ int broker_sch_path_c_adoption_succeeds()
             broker.stop_and_join();
             std::filesystem::remove_all(schema_root);
         },
-        "broker.broker_sch_path_c_adoption_succeeds",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_path_c_adoption_succeeds", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_fingerprint_mismatch()
@@ -2421,41 +2480,38 @@ int broker_sch_path_c_fingerprint_mismatch()
         {
             const std::string sid = "$lab.demo.mm.v1";
             // Hub-global has field "v:float32"; producer claims "v:int32".
-            const auto schema_root = make_global_schema_dir(
-                "lab.demo.mm", 1, R"([{"name":"v","type":"float32"}])");
+            const auto schema_root =
+                make_global_schema_dir("lab.demo.mm", 1, R"([{"name":"v","type":"float32"}])");
 
             auto [broker] = setup_broker_test({"prod.broker.mm.uid00000001"},
 
+                                              "broker.broker_sch_path_c_fingerprint_mismatch",
 
-                "broker.broker_sch_path_c_fingerprint_mismatch",
-
-
-                {schema_root.string()});
+                                              {schema_root.string()});
 
             // HEP-0034 §6.3 — wire `type` is the JSON type name.
-            const std::string blds_wrong    = "v:int32:1:0";
-            const std::string packing       = "aligned";
-            const std::string hash_wrong    = canonical_hash_hex(blds_wrong, packing);
+            const std::string blds_wrong = "v:int32:1:0";
+            const std::string packing = "aligned";
+            const std::string hash_wrong = canonical_hash_hex(blds_wrong, packing);
 
-            auto reg = baseline_reg_req("broker.sch.mm",
-                                        "prod.broker.mm.uid00000001");
-            reg["schema_owner"]   = "hub";
-            reg["schema_id"]      = sid;
-            reg["schema_hash"]    = hash_wrong;
+            auto reg = baseline_reg_req("broker.sch.mm", "prod.broker.mm.uid00000001");
+            reg["schema_owner"] = "hub";
+            reg["schema_id"] = sid;
+            reg["schema_hash"] = hash_wrong;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds_wrong;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.mm.uid00000001");
+            reg["schema_blds"] = blds_wrong;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                "prod.broker.mm.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "raw_req timed out for resp on this call";
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "FINGERPRINT_INCONSISTENT");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT");
 
             broker.stop_and_join();
             std::filesystem::remove_all(schema_root);
         },
-        "broker.broker_sch_path_c_fingerprint_mismatch",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_path_c_fingerprint_mismatch", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_path_c_unknown_global()
@@ -2468,8 +2524,7 @@ int broker_sch_path_c_unknown_global()
             // Use an explicit (empty) override so the default dirs aren't
             // searched (would be flaky if /usr/share/pylabhub has files).
             cfg.schema_search_dirs = {std::filesystem::temp_directory_path() /
-                                      ("plh_p4b_empty_" +
-                                       std::to_string(::getpid()))};
+                                      ("plh_p4b_empty_" + std::to_string(::getpid()))};
             std::filesystem::create_directories(cfg.schema_search_dirs[0]);
             auto schema_root = std::filesystem::path(cfg.schema_search_dirs[0]);
             // CURVE setup: seed `secure().keys()` + `vault/known_roles.json`
@@ -2479,18 +2534,18 @@ int broker_sch_path_c_unknown_global()
             pylabhub::tests::seed_curve_identities(curve);
             auto broker = start_broker_in_thread(std::move(cfg), curve);
 
-            const std::string blds    = "v:f32:1:0";
+            const std::string blds = "v:f32:1:0";
             const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
+            const std::string hash = canonical_hash_hex(blds, packing);
 
-            auto reg = baseline_reg_req("broker.sch.unk",
-                                        "prod.broker.unk.uid00000001");
-            reg["schema_owner"]   = "hub";
-            reg["schema_id"]      = "$does.not.exist.v1";
-            reg["schema_hash"]    = hash;
+            auto reg = baseline_reg_req("broker.sch.unk", "prod.broker.unk.uid00000001");
+            reg["schema_owner"] = "hub";
+            reg["schema_id"] = "$does.not.exist.v1";
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.unk.uid00000001");
+            reg["schema_blds"] = blds;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                "prod.broker.unk.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "raw_req timed out for resp on this call";
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
             EXPECT_EQ(resp.value("error_code", std::string{}), "SCHEMA_UNKNOWN");
@@ -2498,9 +2553,9 @@ int broker_sch_path_c_unknown_global()
             broker.stop_and_join();
             std::filesystem::remove_all(schema_root);
         },
-        "broker.broker_sch_path_c_unknown_global",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_path_c_unknown_global", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 int broker_sch_path_x_forbidden_owner()
@@ -2510,31 +2565,30 @@ int broker_sch_path_x_forbidden_owner()
         {
             auto [broker] = setup_broker_test({"prod.broker.fbd.uid00000001"},
 
-                "broker.broker_sch_path_x_forbidden_owner");
+                                              "broker.broker_sch_path_x_forbidden_owner");
 
-            const std::string blds    = "v:f32:1:0";
+            const std::string blds = "v:f32:1:0";
             const std::string packing = "aligned";
-            const std::string hash    = canonical_hash_hex(blds, packing);
+            const std::string hash = canonical_hash_hex(blds, packing);
 
-            auto reg = baseline_reg_req("broker.sch.fbd",
-                                        "prod.broker.fbd.uid00000001");
+            auto reg = baseline_reg_req("broker.sch.fbd", "prod.broker.fbd.uid00000001");
             // Foreign owner (not self, not "hub") → must be rejected.
-            reg["schema_owner"]   = "prod.someone.else.uid00000099";
-            reg["schema_id"]      = "$lab.someone.frame.v1";
-            reg["schema_hash"]    = hash;
+            reg["schema_owner"] = "prod.someone.else.uid00000099";
+            reg["schema_id"] = "$lab.someone.frame.v1";
+            reg["schema_hash"] = hash;
             reg["schema_packing"] = packing;
-            reg["schema_blds"]    = blds;
-            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.fbd.uid00000001");
+            reg["schema_blds"] = blds;
+            auto resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                "prod.broker.fbd.uid00000001");
             ASSERT_FALSE(resp.is_null()) << "raw_req timed out for resp on this call";
             EXPECT_EQ(resp.value("status", std::string{}), "error") << resp.dump();
-            EXPECT_EQ(resp.value("error_code", std::string{}),
-                      "SCHEMA_FORBIDDEN_OWNER");
+            EXPECT_EQ(resp.value("error_code", std::string{}), "SCHEMA_FORBIDDEN_OWNER");
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_path_x_forbidden_owner",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_path_x_forbidden_owner", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // ── Wire-fields helpers × broker integration tests ──────────────────────────
@@ -2568,31 +2622,31 @@ int broker_sch_wire_helpers_register_and_cite()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.helpers_n.uid00000001", "cons.broker.helpers_n.uid00000002"},
 
                 "broker.broker_sch_wire_helpers_register_and_cite");
 
-            const std::string channel  = "broker.sch.helpers.named";
+            const std::string channel = "broker.sch.helpers.named";
             const std::string prod_uid = "prod.broker.helpers_n.uid00000001";
             const std::string cons_uid = "cons.broker.helpers_n.uid00000002";
-            const std::string sid      = "$lab.helpers.frame.v1";
+            const std::string sid = "$lab.helpers.frame.v1";
 
             pylabhub::hub::SchemaSpec slot_spec;
             slot_spec.has_schema = true;
-            slot_spec.packing    = "aligned";
-            slot_spec.fields.push_back({"ts",    "float64", 1u, 0u});
+            slot_spec.packing = "aligned";
+            slot_spec.fields.push_back({"ts", "float64", 1u, 0u});
             slot_spec.fields.push_back({"value", "float32", 1u, 0u});
             const pylabhub::hub::SchemaSpec fz_spec; // no flexzone
 
             // Producer-side helper output: passing `sid` as string makes
             // make_wire_schema_fields populate w.schema_id (named mode).
-            const auto w = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json(sid), slot_spec, fz_spec);
+            const auto w =
+                pylabhub::hub::make_wire_schema_fields(nlohmann::json(sid), slot_spec, fz_spec);
 
             // Helper-output sanity: HEP-0034 §6.3 canonical bytes.
             const std::string blds_json_form = "ts:float64:1:0|value:float32:1:0";
-            const std::string expected_hash =
-                canonical_hash_hex(blds_json_form, "aligned");
+            const std::string expected_hash = canonical_hash_hex(blds_json_form, "aligned");
             ASSERT_EQ(w.schema_blds, blds_json_form)
                 << "make_wire_schema_fields must emit JSON-name canonical form (§6.3)";
             ASSERT_EQ(w.schema_packing, "aligned");
@@ -2615,7 +2669,8 @@ int broker_sch_wire_helpers_register_and_cite()
             ASSERT_FALSE(reg.contains("flexzone_blds"));
             ASSERT_FALSE(reg.contains("flexzone_packing"));
 
-            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_n.uid00000001");
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                    "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ raw_req timed out";
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
                 << "Helper-built REG_REQ must succeed; got: " << reg_resp.dump();
@@ -2628,9 +2683,10 @@ int broker_sch_wire_helpers_register_and_cite()
             // path B → owner = role uid; helper hash/blds must equal what
             // HubState stores (HEP-0034 §10.3).
             nlohmann::json sreq;
-            sreq["owner"]     = prod_uid;
+            sreq["owner"] = prod_uid;
             sreq["schema_id"] = sid;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.helpers_n.uid00000001");
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                 "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(sresp.is_null()) << "SCHEMA_REQ raw_req timed out";
             ASSERT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("owner", std::string{}), prod_uid);
@@ -2642,17 +2698,17 @@ int broker_sch_wire_helpers_register_and_cite()
                 << "SchemaRecord.hash (hex) must equal helper-emitted fingerprint";
 
             // ── Consumer CONSUMER_REG_REQ via apply_consumer_schema_fields ─
-            const auto wc = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json(sid), slot_spec, fz_spec);
+            const auto wc =
+                pylabhub::hub::make_wire_schema_fields(nlohmann::json(sid), slot_spec, fz_spec);
             ASSERT_EQ(wc.schema_hash, w.schema_hash)
                 << "Consumer-side helper must produce same fingerprint as producer";
 
             nlohmann::json cons;
-            cons["channel_name"]      = channel;
-            cons["consumer_pid"]      = pylabhub::platform::get_pid();
+            cons["channel_name"] = channel;
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
             cons["consumer_hostname"] = "localhost";
-            cons["role_uid"]      = cons_uid;
-            cons["role_name"]     = "test_consumer";
+            cons["role_uid"] = cons_uid;
+            cons["role_name"] = "test_consumer";
             pylabhub::hub::apply_consumer_schema_fields(cons, wc);
 
             // Helper must emit the §10.2 expected_schema_* prefix consistently.
@@ -2665,11 +2721,13 @@ int broker_sch_wire_helpers_register_and_cite()
             EXPECT_FALSE(cons.contains("expected_packing"))
                 << "wire field rename (§10.2): bare expected_packing must not be emitted";
 
-            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.helpers_n.uid00000002");
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                                     "cons.broker.helpers_n.uid00000002");
             ASSERT_FALSE(creg_resp.is_null()) << "CONSUMER_REG_REQ raw_req timed out";
             EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
                 << "Helper-built CONSUMER_REG_REQ (named, with defense-in-depth "
-                   "structure) must succeed; got: " << creg_resp.dump();
+                   "structure) must succeed; got: "
+                << creg_resp.dump();
 
             // Wave M2.5 (controlled-access API design §6.2): same-uid
             // re-register is REJECTED with UID_CONFLICT.  The schema
@@ -2681,21 +2739,19 @@ int broker_sch_wire_helpers_register_and_cite()
             // the new policy treats same-uid re-registration as a
             // bookkeeping anomaly (residue or breach) — see
             // docs/tech_draft/controlled_access_api_design.md §6.2.
-            auto reg_resp2 = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_n.uid00000001");
+            auto reg_resp2 = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                     "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(reg_resp2.is_null());
             EXPECT_EQ(reg_resp2.value("status", std::string{}), "error")
-                << "Same-uid re-register must reject; got: "
-                << reg_resp2.dump();
-            EXPECT_EQ(reg_resp2.value("error_code", std::string{}),
-                      "UID_CONFLICT")
-                << "Same-uid re-register error must be UID_CONFLICT; got: "
-                << reg_resp2.dump();
+                << "Same-uid re-register must reject; got: " << reg_resp2.dump();
+            EXPECT_EQ(reg_resp2.value("error_code", std::string{}), "UID_CONFLICT")
+                << "Same-uid re-register error must be UID_CONFLICT; got: " << reg_resp2.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_wire_helpers_register_and_cite",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_wire_helpers_register_and_cite", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // Worker B — anonymous citation via helpers.
@@ -2718,18 +2774,19 @@ int broker_sch_wire_helpers_anonymous_citation()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.helpers_a.uid00000001", "cons.broker.helpers_a.uid00000002"},
 
                 "broker.broker_sch_wire_helpers_anonymous_citation");
 
-            const std::string channel  = "broker.sch.helpers.anon";
+            const std::string channel = "broker.sch.helpers.anon";
             const std::string prod_uid = "prod.broker.helpers_a.uid00000001";
             const std::string cons_uid = "cons.broker.helpers_a.uid00000002";
 
             pylabhub::hub::SchemaSpec slot_spec;
             slot_spec.has_schema = true;
-            slot_spec.packing    = "aligned";
-            slot_spec.fields.push_back({"ts",    "float64", 1u, 0u});
+            slot_spec.packing = "aligned";
+            slot_spec.fields.push_back({"ts", "float64", 1u, 0u});
             slot_spec.fields.push_back({"value", "float32", 1u, 0u});
             const pylabhub::hub::SchemaSpec fz_spec;
 
@@ -2737,16 +2794,18 @@ int broker_sch_wire_helpers_anonymous_citation()
             // (empty object) leaves schema_id empty → anonymous channel.  The
             // anonymous consumer below then binds to it, which the matching
             // contract permits (anonymous↔anonymous; HEP-CORE-0034 §9).
-            const auto wp = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json::object(), slot_spec, fz_spec);
+            const auto wp = pylabhub::hub::make_wire_schema_fields(nlohmann::json::object(),
+                                                                   slot_spec, fz_spec);
             auto reg = baseline_reg_req(channel, prod_uid);
             pylabhub::hub::apply_producer_schema_fields(reg, wp);
-            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_a.uid00000001");
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                    "prod.broker.helpers_a.uid00000001");
             ASSERT_FALSE(reg_resp.is_null()) << "raw_req timed out for reg_resp on this call";
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.helpers.anon", "prod.broker.helpers_a.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.helpers.anon",
+                          "prod.broker.helpers_a.uid00000001");
             ASSERT_FALSE(reg_resp.is_null());
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success") << reg_resp.dump();
 
@@ -2757,8 +2816,8 @@ int broker_sch_wire_helpers_anonymous_citation()
             // path is taken when a role's config carries inline
             // structure (`"slot_schema": {"fields": [...]}`) instead
             // of a schema_id string.
-            const auto wc = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json::object(), slot_spec, fz_spec);
+            const auto wc = pylabhub::hub::make_wire_schema_fields(nlohmann::json::object(),
+                                                                   slot_spec, fz_spec);
             ASSERT_TRUE(wc.schema_id.empty())
                 << "non-string slot_schema_json must leave schema_id empty";
             ASSERT_FALSE(wc.schema_blds.empty());
@@ -2768,11 +2827,11 @@ int broker_sch_wire_helpers_anonymous_citation()
                 << "Same SchemaSpec must produce same fingerprint regardless of id";
 
             nlohmann::json cons;
-            cons["channel_name"]      = channel;
-            cons["consumer_pid"]      = pylabhub::platform::get_pid();
+            cons["channel_name"] = channel;
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
             cons["consumer_hostname"] = "localhost";
-            cons["role_uid"]      = cons_uid;
-            cons["role_name"]     = "test_consumer_anon";
+            cons["role_uid"] = cons_uid;
+            cons["role_name"] = "test_consumer_anon";
             pylabhub::hub::apply_consumer_schema_fields(cons, wc);
 
             // Anonymous-mode shape: id NOT emitted, structure fields emitted.
@@ -2783,17 +2842,19 @@ int broker_sch_wire_helpers_anonymous_citation()
             ASSERT_TRUE(cons.contains("expected_schema_hash"))
                 << "Helper still emits hash; broker uses it for §10.3 self-consistency";
 
-            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.helpers_a.uid00000002");
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                                     "cons.broker.helpers_a.uid00000002");
             ASSERT_FALSE(creg_resp.is_null()) << "CONSUMER_REG_REQ raw_req timed out";
             EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
                 << "Helper-built anonymous CONSUMER_REG_REQ must succeed (HEP-0034 "
-                   "§10.3 anonymous mode); got: " << creg_resp.dump();
+                   "§10.3 anonymous mode); got: "
+                << creg_resp.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_wire_helpers_anonymous_citation",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_wire_helpers_anonymous_citation", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 // Worker D — slot + flexzone via helpers, full round-trip.
@@ -2819,20 +2880,21 @@ int broker_sch_wire_helpers_flexzone_round_trip()
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"},
+            auto [broker] = setup_broker_test(
+                {"prod.broker.helpers_fz.uid00000001", "cons.broker.helpers_fz.uid00000002"},
 
                 "broker.broker_sch_wire_helpers_flexzone_round_trip");
 
-            const std::string channel  = "broker.sch.helpers.fz";
+            const std::string channel = "broker.sch.helpers.fz";
             const std::string prod_uid = "prod.broker.helpers_fz.uid00000001";
             const std::string cons_uid = "cons.broker.helpers_fz.uid00000002";
-            const std::string sid      = "$lab.helpers_fz.frame.v1";
+            const std::string sid = "$lab.helpers_fz.frame.v1";
 
             // Slot: ts (float64), value (float32) — packing aligned.
             pylabhub::hub::SchemaSpec slot_spec;
             slot_spec.has_schema = true;
-            slot_spec.packing    = "aligned";
-            slot_spec.fields.push_back({"ts",    "float64", 1u, 0u});
+            slot_spec.packing = "aligned";
+            slot_spec.fields.push_back({"ts", "float64", 1u, 0u});
             slot_spec.fields.push_back({"value", "float32", 1u, 0u});
 
             // Flexzone: cal (float64[8]) — packing aligned.  Distinct from
@@ -2840,20 +2902,20 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             // section semantics.
             pylabhub::hub::SchemaSpec fz_spec;
             fz_spec.has_schema = true;
-            fz_spec.packing    = "aligned";
+            fz_spec.packing = "aligned";
             fz_spec.fields.push_back({"cal", "float64", 8u, 0u});
 
             // Helper-emitted full payload, slot + fz folded into the hash.
-            const auto w = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json(sid), slot_spec, fz_spec);
+            const auto w =
+                pylabhub::hub::make_wire_schema_fields(nlohmann::json(sid), slot_spec, fz_spec);
 
             const std::string slot_blds = "ts:float64:1:0|value:float32:1:0";
-            const std::string fz_blds   = "cal:float64:8:0";
+            const std::string fz_blds = "cal:float64:8:0";
             const std::string expected_hash =
                 canonical_hash_hex(slot_blds, "aligned", fz_blds, "aligned");
-            ASSERT_EQ(w.schema_blds,    slot_blds);
+            ASSERT_EQ(w.schema_blds, slot_blds);
             ASSERT_EQ(w.schema_packing, "aligned");
-            ASSERT_EQ(w.flexzone_blds,    fz_blds);
+            ASSERT_EQ(w.flexzone_blds, fz_blds);
             ASSERT_EQ(w.flexzone_packing, "aligned");
             ASSERT_EQ(w.schema_hash, expected_hash)
                 << "Helper hash must include flexzone canonical bytes (§6.3 fz section)";
@@ -2865,22 +2927,26 @@ int broker_sch_wire_helpers_flexzone_round_trip()
                 << "Helper must emit flexzone_blds key when fz_spec.has_schema";
             ASSERT_TRUE(reg.contains("flexzone_packing"));
 
-            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, "prod.broker.helpers_fz.uid00000001");
+            auto reg_resp = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
+                                    "prod.broker.helpers_fz.uid00000001");
             ASSERT_FALSE(reg_resp.is_null()) << "raw_req timed out for reg_resp on this call";
             // HEP-CORE-0036 §5.2 R6: broker rejects CONSUMER_REG_REQ until
             // producer's presence is kLive (first heartbeat seen).  Tests
             // pre-dated R6; this heartbeat unblocks the consumer reg below.
-            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.helpers.fz", "prod.broker.helpers_fz.uid00000001");
+            raw_heartbeat(broker.endpoint, broker.pubkey, "broker.sch.helpers.fz",
+                          "prod.broker.helpers_fz.uid00000001");
             ASSERT_FALSE(reg_resp.is_null());
             ASSERT_EQ(reg_resp.value("status", std::string{}), "success")
                 << "Slot+flexzone REG_REQ via helpers must succeed; broker recomputes "
-                   "the full canonical form (Phase 4a fix); got: " << reg_resp.dump();
+                   "the full canonical form (Phase 4a fix); got: "
+                << reg_resp.dump();
 
             // ── SCHEMA_REQ owner+id: hash includes flexzone ──────────────
             nlohmann::json sreq;
-            sreq["owner"]     = prod_uid;
+            sreq["owner"] = prod_uid;
             sreq["schema_id"] = sid;
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, "prod.broker.helpers_fz.uid00000001");
+            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
+                                 "prod.broker.helpers_fz.uid00000001");
             ASSERT_FALSE(sresp.is_null());
             ASSERT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
             EXPECT_EQ(sresp.value("schema_hash", std::string{}), w.schema_hash)
@@ -2891,34 +2957,36 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             // recomputes including flexzone fields and matches the channel's
             // hash.  Verifies expected_flexzone_blds / expected_flexzone_packing
             // path (mirror of Phase 4a on the consumer side).
-            const auto wc = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json(sid), slot_spec, fz_spec);
+            const auto wc =
+                pylabhub::hub::make_wire_schema_fields(nlohmann::json(sid), slot_spec, fz_spec);
             ASSERT_EQ(wc.schema_hash, w.schema_hash);
 
             nlohmann::json cons;
-            cons["channel_name"]      = channel;
-            cons["consumer_pid"]      = pylabhub::platform::get_pid();
+            cons["channel_name"] = channel;
+            cons["consumer_pid"] = pylabhub::platform::get_pid();
             cons["consumer_hostname"] = "localhost";
-            cons["role_uid"]      = cons_uid;
-            cons["role_name"]     = "test_consumer_fz";
+            cons["role_uid"] = cons_uid;
+            cons["role_name"] = "test_consumer_fz";
             pylabhub::hub::apply_consumer_schema_fields(cons, wc);
 
             ASSERT_TRUE(cons.contains("expected_flexzone_blds"))
                 << "Consumer helper must emit expected_flexzone_blds for fz spec";
             ASSERT_TRUE(cons.contains("expected_flexzone_packing"));
 
-            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey, "cons.broker.helpers_fz.uid00000002");
+            auto creg_resp = raw_req(broker.endpoint, "CONSUMER_REG_REQ", cons, 2000, broker.pubkey,
+                                     "cons.broker.helpers_fz.uid00000002");
             ASSERT_FALSE(creg_resp.is_null());
             EXPECT_EQ(creg_resp.value("status", std::string{}), "success")
                 << "Helper-built CONSUMER_REG_REQ with slot+flexzone (named, "
                    "defense-in-depth) must succeed; broker must include flexzone "
-                   "fields in the recomputed fingerprint; got: " << creg_resp.dump();
+                   "fields in the recomputed fingerprint; got: "
+                << creg_resp.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_sch_wire_helpers_flexzone_round_trip",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(), zmq_module());
+        "broker.broker_sch_wire_helpers_flexzone_round_trip", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker
@@ -2935,7 +3003,7 @@ struct BrokerWorkerRegistrar
     BrokerWorkerRegistrar()
     {
         register_worker_dispatcher(
-            [](int argc, char** argv) -> int
+            [](int argc, char **argv) -> int
             {
                 if (argc < 2)
                     return -1;

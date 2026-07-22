@@ -18,15 +18,15 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/timeout_constants.hpp"
-#include "utils/broker_request_comm.hpp"   // hub::BrokerRequestComm (handler/Class A/B/D dispatch returns this ptr)
-#include "utils/config/inbox_config.hpp"   // config::InboxConfig (append_inbox_to_reg)
-#include "utils/data_block.hpp"            // DataBlockConfig (for TxQueueOptions::shm_config)
-#include "utils/data_block_policy.hpp"     // hub::ChecksumPolicy
-#include "utils/hub_state.hpp"             // hub::ChannelTopology
-#include "utils/hub_zmq_queue.hpp"         // hub::OverflowPolicy, kZmqDefaultBufferDepth
+#include "utils/broker_request_comm.hpp" // hub::BrokerRequestComm (handler/Class A/B/D dispatch returns this ptr)
+#include "utils/config/inbox_config.hpp" // config::InboxConfig (append_inbox_to_reg)
+#include "utils/data_block.hpp"          // DataBlockConfig (for TxQueueOptions::shm_config)
+#include "utils/data_block_policy.hpp"   // hub::ChecksumPolicy
+#include "utils/hub_state.hpp"           // hub::ChannelTopology
+#include "utils/hub_zmq_queue.hpp"       // hub::OverflowPolicy, kZmqDefaultBufferDepth
 #include "utils/json_fwd.hpp"
-#include "utils/role_host_core.hpp"        // RoleHostCore, StateValue
-#include "utils/schema_types.hpp"          // hub::SchemaSpec (for InboxOpenResult, TxQueueOptions, RxQueueOptions)
+#include "utils/role_host_core.hpp" // RoleHostCore, StateValue
+#include "utils/schema_types.hpp" // hub::SchemaSpec (for InboxOpenResult, TxQueueOptions, RxQueueOptions)
 
 #include <chrono>
 #include <cstddef>
@@ -43,7 +43,8 @@ namespace pylabhub::hub
 class InboxQueue;
 class InboxClient;
 class SharedSpinLock;
-// BrokerRequestComm: full definition from broker_request_comm.hpp (handler/Class A/B/D dispatch returns this ptr).
+// BrokerRequestComm: full definition from broker_request_comm.hpp (handler/Class A/B/D dispatch
+// returns this ptr).
 
 // ============================================================================
 // Queue options
@@ -83,7 +84,7 @@ struct TxQueueOptions
     /// redundant with it and retires alongside role code migration.
     ChannelTopology topology{ChannelTopology::OneToOne};
 
-    bool            has_shm{false};
+    bool has_shm{false};
     DataBlockConfig shm_config{};
 
     /// Slot + flexzone schemas — single source for fields + packing.
@@ -208,13 +209,13 @@ struct RxQueueOptions
 
 namespace pylabhub::utils
 {
-class ThreadManager;   // fwd decl; full in utils/thread_manager.hpp
+class ThreadManager; // fwd decl; full in utils/thread_manager.hpp
 } // namespace pylabhub::utils
 
 namespace pylabhub::scripting
 {
 
-class ScriptEngine;   // forward declaration (defined in script_engine.hpp)
+class ScriptEngine; // forward declaration (defined in script_engine.hpp)
 
 /// HEP-CORE-0036 §I11 + §6.5 — one entry in the script-side
 /// authorized-peer view.  Producer-side: an authorized consumer of
@@ -228,22 +229,29 @@ struct PYLABHUB_UTILS_EXPORT AllowedPeer
     std::string role_uid;
     std::string pubkey;
 };
-class RoleHandler;    // fwd — defined in utils/role_handler.hpp.  Wave-B
-                      // M4c: RoleAPIBase owns the handler via
-                      // unique_ptr; the handler holds the role's
-                      // presence list + deduplicated HubConnection
-                      // vector + routing indexes.
+class RoleHandler; // fwd — defined in utils/role_handler.hpp.  Wave-B
+                   // M4c: RoleAPIBase owns the handler via
+                   // unique_ptr; the handler holds the role's
+                   // presence list + deduplicated HubConnection
+                   // vector + routing indexes.
 
 /// Identifies which side of the data path (Tx = producer/output, Rx = consumer/input).
 /// Used by spinlock and potentially other side-specific accessors.
-enum class ChannelSide : uint8_t { Tx = 0, Rx = 1 };
+enum class ChannelSide : uint8_t
+{
+    Tx = 0,
+    Rx = 1
+};
 
 // ============================================================================
 // RoleAPIBase
 // ============================================================================
 
 #if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
-namespace test { class RoleAPIBaseTestAccess; }
+namespace test
+{
+class RoleAPIBaseTestAccess;
+}
 #endif
 
 class PYLABHUB_UTILS_EXPORT RoleAPIBase
@@ -278,9 +286,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// The compile-time signature enforces that a caller cannot construct
     /// a RoleAPIBase without providing both halves of role identity.
     /// Throws std::invalid_argument if either string is empty.
-    RoleAPIBase(RoleHostCore &core,
-                std::string   short_tag,
-                std::string   uid);
+    RoleAPIBase(RoleHostCore &core, std::string short_tag, std::string uid);
     ~RoleAPIBase();
 
     RoleAPIBase(const RoleAPIBase &) = delete;
@@ -378,8 +384,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// callback).  Called from the worker thread cycle BEFORE
     /// `dispatch_notifications`.  No-op for roles without a tx queue
     /// (consumer-side; defensive — broker doesn't send notifies there).
-    void handle_channel_auth_notifies(
-        std::vector<pylabhub::scripting::IncomingMessage> &msgs);
+    void handle_channel_auth_notifies(std::vector<pylabhub::scripting::IncomingMessage> &msgs);
 
     /// HEP-CORE-0036 §I11 + §6.5 — script-convenience snapshot of the
     /// producer-side allowlist for a channel.  Each entry is the
@@ -388,8 +393,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// vector if the role is not a producer of the channel or if no
     /// pull has completed yet.  Thread-safe; returns a copy under the
     /// internal lock so the caller may iterate without holding it.
-    [[nodiscard]] std::vector<AllowedPeer>
-    allowed_peers(const std::string &channel) const;
+    [[nodiscard]] std::vector<AllowedPeer> allowed_peers(const std::string &channel) const;
 
     /// Count of admitted peers for the named channel — convenience
     /// accessor equal to `allowed_peers(channel).size()`, provided for
@@ -400,8 +404,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// `apply_{producer,consumer}_reg_ack` and grown by
     /// `handle_channel_auth_notifies` per HEP-CORE-0036 §I11.1.
     /// Thread-safe.
-    [[nodiscard]] std::size_t
-    admitted_peers_count(const std::string &channel) const;
+    [[nodiscard]] std::size_t admitted_peers_count(const std::string &channel) const;
 
     /// HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
     /// queue-owned admission fact for the loop-ready gate.  Forwards
@@ -411,8 +414,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// simple boolean question.  Used by `ConsumerCycleOps::default_init_ready`
     /// and `ProcessorCycleOps::default_init_ready`; script-facing
     /// observability keeps using `allowed_peers` / `admitted_peers_count`.
-    [[nodiscard]] bool
-    channel_admission_populated(const std::string &channel) const noexcept;
+    [[nodiscard]] bool channel_admission_populated(const std::string &channel) const noexcept;
 
     /// HEP-CORE-0036 §I9.1 + §6.6.3 — topology-agnostic finalize step.
     ///
@@ -440,10 +442,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// `check_peer_ready` + `dial_now`, which are retired per §I9.1
     /// (topology and transport are queue-internal — role-side API
     /// carries topology-agnostic verbs only).
-    bool finalize_channel_connect(
-        const std::string           &channel,
-        std::uint64_t                timeout_ms,
-        const std::function<bool()> &is_cancelled = {}) noexcept;
+    bool finalize_channel_connect(const std::string &channel, std::uint64_t timeout_ms,
+                                  const std::function<bool()> &is_cancelled = {}) noexcept;
 
     /// HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 + HEP-CORE-0007
     /// §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
@@ -465,11 +465,9 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// via `curve_serverkey`, not on the script surface).  For the
     /// authorization-time allowlist snapshot (which DOES carry
     /// pubkeys) use `allowed_peers()` instead.
-    [[nodiscard]] std::vector<std::string>
-    producers(const std::string &channel) const;
+    [[nodiscard]] std::vector<std::string> producers(const std::string &channel) const;
 
-    [[nodiscard]] std::vector<std::string>
-    consumers(const std::string &channel) const;
+    [[nodiscard]] std::vector<std::string> consumers(const std::string &channel) const;
 
     /// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY
     /// (lines 1834-1838) — script-observable live-peer count for the
@@ -640,21 +638,17 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // ── Band pub/sub messaging (HEP-CORE-0030) ────────────────────────────────
 
     /// Join a named band. Auto-creates if it doesn't exist.
-    [[nodiscard]] std::optional<nlohmann::json>
-    band_join(const std::string &channel);
+    [[nodiscard]] std::optional<nlohmann::json> band_join(const std::string &channel);
 
     /// Leave a band.  Returns the broker's response body (success or
     /// error per HEP-CORE-0007 §12.3) or `nullopt` on transport failure.
-    [[nodiscard]] std::optional<nlohmann::json>
-    band_leave(const std::string &channel);
+    [[nodiscard]] std::optional<nlohmann::json> band_leave(const std::string &channel);
 
     /// Send JSON message to all band members.
-    void band_broadcast(const std::string &channel,
-                        const nlohmann::json &body);
+    void band_broadcast(const std::string &channel, const nlohmann::json &body);
 
     /// Query band member list.
-    [[nodiscard]] std::optional<nlohmann::json>
-    band_members(const std::string &channel);
+    [[nodiscard]] std::optional<nlohmann::json> band_members(const std::string &channel);
 
     /// Local introspection: returns true iff the role-side
     /// `band_index_` currently has a routing entry for @p channel.
@@ -677,8 +671,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
         size_t item_size{0};
     };
 
-    [[nodiscard]] std::optional<InboxOpenResult>
-    open_inbox_client(const std::string &target_uid);
+    [[nodiscard]] std::optional<InboxOpenResult> open_inbox_client(const std::string &target_uid);
     [[nodiscard]] bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
 
     // ── Output side (safe defaults when no output wired) ──────────────────────
@@ -701,13 +694,13 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] bool is_rx_active() const noexcept;
 
     [[nodiscard]] void *write_acquire(std::chrono::milliseconds timeout) noexcept;
-    void               write_commit() noexcept;
-    void               write_discard() noexcept;
+    void write_commit() noexcept;
+    void write_discard() noexcept;
     /// Flexzone pointer for the given side (Tx or Rx). Single region per
     /// channel, fully read+write on both endpoints per HEP-CORE-0002 §2.2.
     /// Returns nullptr when the side is not wired or the channel has no
     /// flexzone configured.
-    [[nodiscard]] void  *flexzone(ChannelSide side);
+    [[nodiscard]] void *flexzone(ChannelSide side);
     /// Physical flexzone size in bytes for the given side. 0 when not wired.
     [[nodiscard]] size_t flexzone_size(ChannelSide side) const noexcept;
     bool update_flexzone_checksum();
@@ -724,8 +717,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // input side.
 
     [[nodiscard]] const void *read_acquire(std::chrono::milliseconds timeout) noexcept;
-    void                      read_release() noexcept;
-    [[nodiscard]] size_t       read_item_size() const noexcept;
+    void read_release() noexcept;
+    [[nodiscard]] size_t read_item_size() const noexcept;
     [[nodiscard]] uint64_t in_slots_received() const;
     [[nodiscard]] uint64_t last_seq() const;
     [[nodiscard]] size_t in_capacity() const;
@@ -748,8 +741,10 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // Both are populated together by the frame at setup; both readable here.
 
     [[nodiscard]] size_t slot_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
-    [[nodiscard]] size_t flexzone_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
-    [[nodiscard]] size_t flexzone_physical_size(std::optional<ChannelSide> side = std::nullopt) const;
+    [[nodiscard]] size_t
+    flexzone_logical_size(std::optional<ChannelSide> side = std::nullopt) const;
+    [[nodiscard]] size_t
+    flexzone_physical_size(std::optional<ChannelSide> side = std::nullopt) const;
 
     /// Flexzone presence check per side.  Reads from this object's
     /// FlexzoneInfoCache, which the frame populates at setup time
@@ -780,12 +775,12 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     struct FlexzoneInfoCache
     {
         // TX side
-        bool   has_tx_fz{false};
-        size_t tx_logical_size{0};   ///< compute_schema_size(spec, packing)
-        size_t tx_physical_size{0};  ///< align_to_physical_page(tx_logical_size)
+        bool has_tx_fz{false};
+        size_t tx_logical_size{0};  ///< compute_schema_size(spec, packing)
+        size_t tx_physical_size{0}; ///< align_to_physical_page(tx_logical_size)
 
         // RX side
-        bool   has_rx_fz{false};
+        bool has_rx_fz{false};
         size_t rx_logical_size{0};
         size_t rx_physical_size{0};
     };
@@ -833,8 +828,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// The `metrics_hook` fires once per call — for a processor's
     /// 2-presence emission it fires once per side.
     /// Used by `on_heartbeat_tick_` to populate per-presence heartbeats.
-    [[nodiscard]] nlohmann::json
-    snapshot_metrics_for_presence(const std::string &role_type) const;
+    [[nodiscard]] nlohmann::json snapshot_metrics_for_presence(const std::string &role_type) const;
 
     // ── Shared script state (delegates to RoleHostCore) ─────────────────────
 
@@ -990,8 +984,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// @param hub_max_ms_opt Hub's tolerated max (parsed from REG_ACK
     ///                       `heartbeat.heartbeat_interval_ms`); pass
     ///                       `std::nullopt` if not advertised.
-    void install_heartbeat(int role_cfg_ms,
-                            std::optional<int> hub_max_ms_opt) noexcept;
+    void install_heartbeat(int role_cfg_ms, std::optional<int> hub_max_ms_opt) noexcept;
 
     /// Extract the hub's advertised heartbeat-tolerated-max from a
     /// REG_ACK body (or any reply that carries it).  REG_ACK shape
@@ -1015,8 +1008,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     ///     auto reg = hub::build_producer_reg_payload(...);
     ///     api.append_inbox_to_reg(reg, inbox_cfg);
     ///     auto result = api.register_producer_channel(reg);
-    void append_inbox_to_reg(nlohmann::json &opts,
-                              const config::InboxConfig &inbox_cfg) const;
+    void append_inbox_to_reg(nlohmann::json &opts, const config::InboxConfig &inbox_cfg) const;
 
     /// Explicitly deregister from broker while the ctrl threads are still
     /// running to process the command — call BEFORE `stop_handler_threads()`
@@ -1034,12 +1026,12 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     register_producer_channel(const nlohmann::json &opts, int timeout_ms = 5000);
 
     /// Discover a channel (DISC_REQ → DISC_ACK).
-    [[nodiscard]] std::optional<nlohmann::json>
-    discover_channel(const std::string &channel, int timeout_ms = 10000);
+    [[nodiscard]] std::optional<nlohmann::json> discover_channel(const std::string &channel,
+                                                                 int timeout_ms = 10000);
 
     /// Register as consumer (CONSUMER_REG_REQ → CONSUMER_REG_ACK).
-    [[nodiscard]] std::optional<nlohmann::json>
-    register_consumer(const nlohmann::json &opts, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> register_consumer(const nlohmann::json &opts,
+                                                                  int timeout_ms = 5000);
 
     /// Deregister a producer channel (DEREG_REQ → DEREG_ACK or ERROR).
     /// Returns the broker's response body (success or error per HEP-CORE-0007
@@ -1050,8 +1042,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Deregister a consumer (CONSUMER_DEREG_REQ → CONSUMER_DEREG_ACK or ERROR).
     /// Returns the broker's response body (success or error per HEP-CORE-0007
     /// §12.3) or `nullopt` on transport failure.
-    [[nodiscard]] std::optional<nlohmann::json>
-    deregister_consumer(const std::string &channel, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> deregister_consumer(const std::string &channel,
+                                                                    int timeout_ms = 5000);
 
     /// HEP-CORE-0041 §9 D4 broker pre-confirm: producer-side wrapper
     /// for `BrokerRequestComm::consumer_attach(...)`.  Routes the call
@@ -1086,11 +1078,9 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// pre-REVIEW-A scope review).  Engine-binding authors MUST
     /// preserve this exclusion in any future binding-parity sweep.
     [[nodiscard]] std::optional<nlohmann::json>
-    consumer_attach(const std::string &channel,
-                    const std::string &consumer_pubkey,
-                    const std::string &consumer_role_uid,
-                    const std::string &producer_role_uid,
-                    int                timeout_ms = 5000);
+    consumer_attach(const std::string &channel, const std::string &consumer_pubkey,
+                    const std::string &consumer_role_uid, const std::string &producer_role_uid,
+                    int timeout_ms = 5000);
 
     // ── Inbox drain ─────────────────────────────────────────────────────────
     //
@@ -1107,8 +1097,8 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// Side-presence checks for engines/callers that need to gate script-facing
     /// method registration on which side is wired. Supersedes the producer()/
     /// consumer() pointer accessors above.
-    [[nodiscard]] bool has_tx_side() const noexcept;   ///< True iff Tx queue wired.
-    [[nodiscard]] bool has_rx_side() const noexcept;   ///< True iff Rx queue wired.
+    [[nodiscard]] bool has_tx_side() const noexcept; ///< True iff Tx queue wired.
+    [[nodiscard]] bool has_rx_side() const noexcept; ///< True iff Rx queue wired.
 
     /// Queue metrics for the given side. Empty QueueMetrics when the side
     /// is not wired. Routes to QueueReader::metrics() / QueueWriter::metrics().
@@ -1171,10 +1161,9 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// ECONNREFUSED): logs the cause and returns false.  Caller treats
     /// false as a fatal registration failure (matches the §6.7 "fully
     /// refused" semantics on the ZMQ path).
-    [[nodiscard]] bool apply_consumer_reg_ack_shm_(
-        const std::string &channel_name,
-        const std::string &shm_endpoint,
-        const std::string &producer_pubkey_z85);
+    [[nodiscard]] bool apply_consumer_reg_ack_shm_(const std::string &channel_name,
+                                                   const std::string &shm_endpoint,
+                                                   const std::string &producer_pubkey_z85);
 };
 
 } // namespace pylabhub::scripting

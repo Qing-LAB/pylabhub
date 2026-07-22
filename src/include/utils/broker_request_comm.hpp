@@ -63,8 +63,8 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
         /// identities override this per-instance to e.g.
         /// `"role.test.uid_a"`.
         std::string keystore_name{pylabhub::utils::security::kRoleIdentityName};
-        std::string role_uid;         ///< Role UID for channel join/leave
-        std::string role_name;        ///< Role display name
+        std::string role_uid;  ///< Role UID for channel join/leave
+        std::string role_name; ///< Role display name
         /// Grace window (ms) a timed-out (abandoned) request-reply record is
         /// retained before the ctrl-thread reaper removes it.  A late reply
         /// arriving after a client-side timeout (latency can be heartbeat-
@@ -100,8 +100,8 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// Called from the broker thread for each unsolicited broker notification.
     /// The callback receives (msg_type, json_body) and should route to
     /// core_.enqueue_message() or handle directly.
-    using NotificationCallback = std::function<void(const std::string &msg_type,
-                                                     const nlohmann::json &body)>;
+    using NotificationCallback =
+        std::function<void(const std::string &msg_type, const nlohmann::json &body)>;
     void on_notification(NotificationCallback cb);
 
     /// Called when the broker connection is lost (ZMTP heartbeat timeout →
@@ -115,8 +115,7 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// @param action    Callback to execute periodically.
     /// @param interval_ms  Minimum interval between firings.
     /// @param get_iteration  Optional iteration gate (nullptr = time-only).
-    void set_periodic_task(std::function<void()> action,
-                           int interval_ms,
+    void set_periodic_task(std::function<void()> action, int interval_ms,
                            std::function<uint64_t()> get_iteration = nullptr);
 
     // ── Poll loop (runs on the broker thread) ────────────────────────────
@@ -172,10 +171,8 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     ///
     /// `metrics` is optional — pass empty json `{}` when nothing
     /// new to report.
-    void send_heartbeat(const std::string &channel,
-                        const std::string &role_uid,
-                        const std::string &role_type,
-                        const nlohmann::json &metrics);
+    void send_heartbeat(const std::string &channel, const std::string &role_uid,
+                        const std::string &role_type, const nlohmann::json &metrics);
     // M1.4 (2026-05-11): `send_metrics_report` retired.  Metrics
     // piggyback on `send_heartbeat(..., metrics)` per HEP-CORE-0019
     // §2.3 Phase 6.
@@ -184,10 +181,8 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     // anywhere.  The matching CHANNEL_NOTIFY_REQ broker handler is
     // kept for HEP-CORE-0022 federation peer-relay traffic.  See
     // HEP-CORE-0030 §9.1 for the channel-bound family coexistence.
-    void send_broadcast(const std::string &target,
-                        const std::string &sender_uid,
-                        const std::string &msg,
-                        const std::string &data);
+    void send_broadcast(const std::string &target, const std::string &sender_uid,
+                        const std::string &msg, const std::string &data);
     void send_checksum_error(const nlohmann::json &report);
 
     /// Update a producer's endpoint registration on the broker.
@@ -214,11 +209,10 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// wire ACK existed (`broker_service.cpp:1025`) but the BRC dropped
     /// it — a half-mix that HEP-0007 §12.2.1 now explicitly prohibits.
     /// Switched to sync REQ/REP per the design clarification.
-    std::optional<nlohmann::json>
-    send_endpoint_update(const std::string &channel,
-                         const std::string &endpoint_type,
-                         const std::string &endpoint,
-                         int timeout_ms = 5000);
+    std::optional<nlohmann::json> send_endpoint_update(const std::string &channel,
+                                                       const std::string &endpoint_type,
+                                                       const std::string &endpoint,
+                                                       int timeout_ms = 5000);
 
     // ── Request-reply (thread-safe, blocks until reply or timeout) ───────
     //
@@ -226,15 +220,15 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     // and receive the matching reply. The caller blocks on a condition
     // variable; the broker thread signals it when the reply arrives.
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    register_channel(const nlohmann::json &opts, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> register_channel(const nlohmann::json &opts,
+                                                                 int timeout_ms = 5000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    discover_channel(const std::string &channel,
-                     const nlohmann::json &opts, int timeout_ms = 10000);
+    [[nodiscard]] std::optional<nlohmann::json> discover_channel(const std::string &channel,
+                                                                 const nlohmann::json &opts,
+                                                                 int timeout_ms = 10000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    register_consumer(const nlohmann::json &opts, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> register_consumer(const nlohmann::json &opts,
+                                                                  int timeout_ms = 5000);
 
     // ─── Harmonized return shape (HEP-CORE-0007 §12.3 + Stage 2 contract) ──
     //
@@ -244,11 +238,11 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     //     body fields per the §12.3 ACK shape.
     //   - `result->status=="error"`  — broker rejected; inspect
     //     `result->error_code` per the §12.4a taxonomy + `result->message`.
-    [[nodiscard]] std::optional<nlohmann::json>
-    deregister_channel(const std::string &channel, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> deregister_channel(const std::string &channel,
+                                                                   int timeout_ms = 5000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    deregister_consumer(const std::string &channel, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> deregister_consumer(const std::string &channel,
+                                                                    int timeout_ms = 5000);
 
     /// HEP-CORE-0036 §6.5 notify-then-pull — fetch the channel's current
     /// authorized-consumer pubkey allowlist from the broker.  Producer-
@@ -259,10 +253,9 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// (status="success" + allowlist[] / status="error" + error_code), or
     /// `nullopt` on transport failure / timeout.  Caller applies the
     /// allowlist via `ZmqQueue::set_peer_allowlist`.
-    [[nodiscard]] std::optional<nlohmann::json>
-    get_channel_auth(const std::string &channel,
-                     const std::string &role_uid,
-                     int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> get_channel_auth(const std::string &channel,
+                                                                 const std::string &role_uid,
+                                                                 int timeout_ms = 5000);
 
     /// HEP-CORE-0042 §5.5.2 — producer signals the broker that its
     /// per-connection ZAP cache has been updated to `applied_version`.
@@ -309,12 +302,9 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// role_type value comes from the queue's `binding_role_type()`,
     /// not from role-side `is_binding_side()` branching).
     [[nodiscard]] std::optional<nlohmann::json>
-    channel_auth_applied(const std::string &channel,
-                          const std::string &role_uid,
-                          std::string_view   role_type,
-                          std::uint64_t      applied_version,
-                          std::uint64_t      instance_id,
-                          int                timeout_ms = 1000);
+    channel_auth_applied(const std::string &channel, const std::string &role_uid,
+                         std::string_view role_type, std::uint64_t applied_version,
+                         std::uint64_t instance_id, int timeout_ms = 1000);
 
     /// HEP-CORE-0036 §6.6.3 — dialing-side role's readiness pull.
     /// Producer (under fan-in) calls this between REG_ACK apply and
@@ -329,11 +319,10 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     ///   not_ready:  `{status="not_ready", channel_name, reason, ...}`
     ///   error:      `{status="error",     error_code, message, ...}`
     /// Returns `nullopt` on transport failure / timeout.
-    [[nodiscard]] std::optional<nlohmann::json>
-    check_peer_ready(const std::string &channel,
-                      const std::string &role_uid,
-                      const std::string &pubkey_z85,
-                      int                timeout_ms = 1000);
+    [[nodiscard]] std::optional<nlohmann::json> check_peer_ready(const std::string &channel,
+                                                                 const std::string &role_uid,
+                                                                 const std::string &pubkey_z85,
+                                                                 int timeout_ms = 1000);
 
     /// HEP-CORE-0041 §9 D4 pre-attach broker confirmation.  Producer
     /// asks the broker whether one specific consumer is currently
@@ -390,51 +379,45 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// (5000ms).  §5.6 invariant: this MUST be > `producer_apply_wait_ms`
     /// so a broker-observed timeout wins over a client-observed one.
     [[nodiscard]] std::optional<nlohmann::json>
-    consumer_attach_zmq(const std::string &channel,
-                         const std::string &consumer_role_uid,
-                         const std::string &consumer_pubkey,
-                         const std::string &producer_role_uid,
-                         int                timeout_ms = 5000);
+    consumer_attach_zmq(const std::string &channel, const std::string &consumer_role_uid,
+                        const std::string &consumer_pubkey, const std::string &producer_role_uid,
+                        int timeout_ms = 5000);
 
     [[nodiscard]] std::optional<nlohmann::json>
-    consumer_attach(const std::string &channel,
-                    const std::string &consumer_pubkey,
-                    const std::string &consumer_role_uid,
-                    const std::string &producer_role_uid,
+    consumer_attach(const std::string &channel, const std::string &consumer_pubkey,
+                    const std::string &consumer_role_uid, const std::string &producer_role_uid,
                     int timeout_ms = 5000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    query_role_presence(const std::string &uid, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> query_role_presence(const std::string &uid,
+                                                                    int timeout_ms = 5000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    query_role_info(const std::string &uid, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> query_role_info(const std::string &uid,
+                                                                int timeout_ms = 5000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    list_channels(int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> list_channels(int timeout_ms = 5000);
 
-    [[nodiscard]] std::optional<nlohmann::json>
-    query_shm_info(const std::string &channel, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> query_shm_info(const std::string &channel,
+                                                               int timeout_ms = 5000);
 
     // ── Band pub/sub messaging (HEP-CORE-0030) ────────────────────────
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.  Band names are
     // `!`-prefixed identifiers (HEP-CORE-0030 §3 grammar).
 
     /// Join a band (auto-creates if it doesn't exist). Returns member list.
-    [[nodiscard]] std::optional<nlohmann::json>
-    band_join(const std::string &band, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> band_join(const std::string &band,
+                                                          int timeout_ms = 5000);
 
     /// Leave a band.  Returns the broker's response body (success or
     /// error per HEP-CORE-0007 §12.3) or `nullopt` on transport failure.
-    [[nodiscard]] std::optional<nlohmann::json>
-    band_leave(const std::string &band, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> band_leave(const std::string &band,
+                                                           int timeout_ms = 5000);
 
     /// Broadcast JSON message to all band members (fire-and-forget).
-    void band_broadcast(const std::string &band,
-                        const nlohmann::json &body);
+    void band_broadcast(const std::string &band, const nlohmann::json &body);
 
     /// Query current band member list.
-    [[nodiscard]] std::optional<nlohmann::json>
-    band_members(const std::string &band, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> band_members(const std::string &band,
+                                                             int timeout_ms = 5000);
 
   private:
     struct Impl;

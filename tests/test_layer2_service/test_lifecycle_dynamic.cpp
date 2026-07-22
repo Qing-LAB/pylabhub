@@ -96,8 +96,7 @@ TEST_F(LifecycleDynamicTest, LoadFailsWithUnmetStaticDependency)
     // expected_error_substrings.
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
     expect_worker_ok(proc,
-                     {"ERROR: Dependency 'NonExistentStaticMod' for module 'DynA' not found."},
-                     {});
+                     {"ERROR: Dependency 'NonExistentStaticMod' for module 'DynA' not found."}, {});
 #else
     expect_worker_ok(proc);
 #endif
@@ -111,9 +110,7 @@ TEST_F(LifecycleDynamicTest, RegistrationFailsWithUnresolvedDependency)
     proc.wait_for_exit();
     // PLH_DEBUG raw-stderr print → required_substrings.
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
-    expect_worker_ok(proc,
-                     {"ERROR: Dependency 'DynB' for module 'DynA' not found."},
-                     {});
+    expect_worker_ok(proc, {"ERROR: Dependency 'DynB' for module 'DynA' not found."}, {});
 #else
     expect_worker_ok(proc);
 #endif
@@ -130,8 +127,7 @@ TEST_F(LifecycleDynamicTest, ReentrantLoadFails)
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
     expect_worker_ok(proc,
                      {"Re-entrant call to load_module('DynB') detected",
-                      "module 'DynA' threw on startup",
-                      "re-entrant call and failed as expected"},
+                      "module 'DynA' threw on startup", "re-entrant call and failed as expected"},
                      {});
 #else
     expect_worker_ok(proc);
@@ -171,8 +167,7 @@ TEST_F(LifecycleDynamicTest, PersistentModuleIsUnloadedOnFinalize)
 
 TEST_F(LifecycleDynamicTest, OwnerManagedTeardown_CleanUnload)
 {
-    WorkerProcess proc(g_self_exe_path,
-                       "lifecycle.dynamic.owner_managed_teardown_clean_unload",
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.owner_managed_teardown_clean_unload",
                        {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
@@ -181,9 +176,7 @@ TEST_F(LifecycleDynamicTest, OwnerManagedTeardown_CleanUnload)
 
 TEST_F(LifecycleDynamicTest, ValidatorFail_DefaultAnomaly)
 {
-    WorkerProcess proc(g_self_exe_path,
-                       "lifecycle.dynamic.validator_fail_default_anomaly",
-                       {});
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.validator_fail_default_anomaly", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);
@@ -205,8 +198,7 @@ TEST_F(LifecycleDynamicTest, ValidatorFail_DefaultAnomaly)
 
 TEST_F(LifecycleDynamicTest, SyncShutdown_RunsOnCallerThread)
 {
-    WorkerProcess proc(g_self_exe_path,
-                       "lifecycle.dynamic.sync_shutdown_runs_on_caller_thread",
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.sync_shutdown_runs_on_caller_thread",
                        {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
@@ -215,8 +207,7 @@ TEST_F(LifecycleDynamicTest, SyncShutdown_RunsOnCallerThread)
 
 TEST_F(LifecycleDynamicTest, DefaultShutdown_RunsOnSpawnedThread)
 {
-    WorkerProcess proc(g_self_exe_path,
-                       "lifecycle.dynamic.default_shutdown_runs_on_spawned_thread",
+    WorkerProcess proc(g_self_exe_path, "lifecycle.dynamic.default_shutdown_runs_on_spawned_thread",
                        {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
@@ -226,8 +217,7 @@ TEST_F(LifecycleDynamicTest, DefaultShutdown_RunsOnSpawnedThread)
 TEST_F(LifecycleDynamicTest, SyncShutdown_CallbackThrows_IsFailedShutdown)
 {
     WorkerProcess proc(g_self_exe_path,
-                       "lifecycle.dynamic.sync_shutdown_callback_throws_is_failed_shutdown",
-                       {});
+                       "lifecycle.dynamic.sync_shutdown_callback_throws_is_failed_shutdown", {});
     ASSERT_TRUE(proc.valid());
     proc.wait_for_exit();
     expect_worker_ok(proc);

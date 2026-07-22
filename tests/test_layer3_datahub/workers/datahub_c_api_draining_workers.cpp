@@ -15,9 +15,12 @@
 //
 // Test list:
 //   1. draining_state_entered_on_wraparound   — 1-slot ring; reader held; writer wraps → DRAINING
-//   2. draining_rejects_new_readers           — while DRAINING, acquire_consume_slot returns nullptr
-//   3. draining_resolves_after_reader_release — reader release → drain completes → COMMITTED; consumer reads ok
-//   4. draining_timeout_restores_committed    — short writer timeout; slot restored to COMMITTED; data still readable
+//   2. draining_rejects_new_readers           — while DRAINING, acquire_consume_slot returns
+//   nullptr
+//   3. draining_resolves_after_reader_release — reader release → drain completes → COMMITTED;
+//   consumer reads ok
+//   4. draining_timeout_restores_committed    — short writer timeout; slot restored to COMMITTED;
+//   data still readable
 //   5. no_reader_races_on_clean_wraparound    — N full write+read cycles; reader_race_detected == 0
 
 #include "datahub_c_api_draining_workers.h"
@@ -39,8 +42,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::c_api_draining
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // Helper: build a 1-slot Latest_only config (forces wraparound on second write)
 static DataBlockConfig make_one_slot_config()
@@ -59,8 +68,7 @@ static DataBlockConfig make_one_slot_config()
 static bool wait_for_slot_state(SlotRWState *rw, SlotRWState::SlotState expected,
                                 int timeout_ms = 2000)
 {
-    auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (std::chrono::steady_clock::now() < deadline)
     {
         if (rw->slot_state.load(std::memory_order_acquire) == expected)
@@ -92,8 +100,8 @@ int draining_state_entered_on_wraparound()
             auto &consumer = pair_.consumer;
 
             // Open diagnostic handle to inspect raw slot state
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -113,15 +121,16 @@ int draining_state_entered_on_wraparound()
             ASSERT_NE(rh, nullptr);
 
             // Writer thread: wrap around → should enter DRAINING (5 s timeout)
-            std::thread writer([&]()
-            {
-                auto h = producer->acquire_write_slot(5000);
-                if (h)
+            std::thread writer(
+                [&]()
                 {
-                    (void)h->commit(0);
-                    (void)producer->release_write_slot(*h);
-                }
-            });
+                    auto h = producer->acquire_write_slot(5000);
+                    if (h)
+                    {
+                        (void)h->commit(0);
+                        (void)producer->release_write_slot(*h);
+                    }
+                });
 
             // Poll until DRAINING (or timeout)
             bool saw_draining = wait_for_slot_state(rw, SlotRWState::SlotState::DRAINING);
@@ -134,7 +143,8 @@ int draining_state_entered_on_wraparound()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_state_entered_on_wraparound", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "draining_state_entered_on_wraparound", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -158,8 +168,8 @@ int draining_rejects_new_readers()
             auto &producer = pair_.producer;
             auto &consumer = pair_.consumer;
 
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -179,15 +189,16 @@ int draining_rejects_new_readers()
             ASSERT_NE(rh1, nullptr);
 
             // Writer thread: wrap around, enter DRAINING
-            std::thread writer([&]()
-            {
-                auto h = producer->acquire_write_slot(5000);
-                if (h)
+            std::thread writer(
+                [&]()
                 {
-                    (void)h->commit(0);
-                    (void)producer->release_write_slot(*h);
-                }
-            });
+                    auto h = producer->acquire_write_slot(5000);
+                    if (h)
+                    {
+                        (void)h->commit(0);
+                        (void)producer->release_write_slot(*h);
+                    }
+                });
 
             // Wait for DRAINING
             bool saw_draining = wait_for_slot_state(rw, SlotRWState::SlotState::DRAINING);
@@ -204,7 +215,8 @@ int draining_rejects_new_readers()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_rejects_new_readers", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "draining_rejects_new_readers", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -228,8 +240,8 @@ int draining_resolves_after_reader_release()
             auto &producer = pair_.producer;
             auto &consumer = pair_.consumer;
 
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -250,16 +262,17 @@ int draining_resolves_after_reader_release()
 
             // Writer thread: wrap around, write new value=222 after drain
             const uint64_t kNewValue = 222;
-            std::thread writer([&]()
-            {
-                auto h = producer->acquire_write_slot(5000);
-                if (h)
+            std::thread writer(
+                [&]()
                 {
-                    std::memcpy(h->buffer_span().data(), &kNewValue, sizeof(kNewValue));
-                    (void)h->commit(sizeof(kNewValue));
-                    (void)producer->release_write_slot(*h);
-                }
-            });
+                    auto h = producer->acquire_write_slot(5000);
+                    if (h)
+                    {
+                        std::memcpy(h->buffer_span().data(), &kNewValue, sizeof(kNewValue));
+                        (void)h->commit(sizeof(kNewValue));
+                        (void)producer->release_write_slot(*h);
+                    }
+                });
 
             // Wait for DRAINING
             bool saw_draining = wait_for_slot_state(rw, SlotRWState::SlotState::DRAINING);
@@ -279,7 +292,8 @@ int draining_resolves_after_reader_release()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_resolves_after_reader_release", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "draining_resolves_after_reader_release", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -304,8 +318,8 @@ int draining_timeout_restores_committed()
             auto &producer = pair_.producer;
             auto &consumer = pair_.consumer;
 
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
@@ -359,7 +373,8 @@ int draining_timeout_restores_committed()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "draining_timeout_restores_committed", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "draining_timeout_restores_committed", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -413,7 +428,8 @@ int no_reader_races_on_clean_wraparound()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "no_reader_races_on_clean_wraparound", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "no_reader_races_on_clean_wraparound", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -452,8 +468,8 @@ int single_reader_ring_full_blocks_not_draining()
             auto &producer = pair_.producer;
             auto &consumer = pair_.consumer;
 
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw0 = diag->slot_rw_state(0);
             SlotRWState *rw1 = diag->slot_rw_state(1);
@@ -494,7 +510,8 @@ int single_reader_ring_full_blocks_not_draining()
             EXPECT_GT(m.writer_timeout_count, 0u)
                 << "writer_timeout_count must be > 0 (ring-full timeout occurred)";
             EXPECT_EQ(m.writer_reader_timeout_count, 0u)
-                << "writer_reader_timeout_count must be 0 — ring-full blocked before any drain attempt";
+                << "writer_reader_timeout_count must be 0 — ring-full blocked before any drain "
+                   "attempt";
 
             // Verify no slot entered DRAINING state — writer never reached them
             EXPECT_EQ(rw0->slot_state.load(std::memory_order_acquire),
@@ -507,8 +524,8 @@ int single_reader_ring_full_blocks_not_draining()
             (void)consumer->release_consume_slot(*rh);
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "single_reader_ring_full_blocks_not_draining", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "single_reader_ring_full_blocks_not_draining", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -543,7 +560,7 @@ int sync_reader_ring_full_blocks_not_draining()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(pair_.producer, nullptr);
             ASSERT_NE(pair_.consumer, nullptr);
-            auto &producer  = pair_.producer;
+            auto &producer = pair_.producer;
             auto &consumer1 = pair_.consumer;
             const int rx2_fd = ::dup(pair_.transport->borrow_fd());
             ASSERT_GE(rx2_fd, 0) << "dup() for consumer2: errno=" << errno;
@@ -552,8 +569,8 @@ int sync_reader_ring_full_blocks_not_draining()
             ::close(rx2_fd);
             ASSERT_NE(consumer2, nullptr);
 
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
 
             // Fill the ring: 3 slots committed
@@ -609,8 +626,8 @@ int sync_reader_ring_full_blocks_not_draining()
             // (consumer2 already released above so its memory mapping
             // unwinds before transport closes the underlying memfd).
         },
-        "sync_reader_ring_full_blocks_not_draining", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "sync_reader_ring_full_blocks_not_draining", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -672,13 +689,14 @@ int drain_hold_true_never_returns_nullptr()
                 });
 
             // Wait for DRAINING so writer is definitely blocked
-            auto diag = pylabhub::hub::open_datablock_for_diagnostic_from_fd(
-                pair_.transport->borrow_fd());
+            auto diag =
+                pylabhub::hub::open_datablock_for_diagnostic_from_fd(pair_.transport->borrow_fd());
             ASSERT_NE(diag, nullptr);
             SlotRWState *rw = diag->slot_rw_state(0);
             ASSERT_NE(rw, nullptr);
             bool saw_draining = wait_for_slot_state(rw, SlotRWState::SlotState::DRAINING);
-            ASSERT_TRUE(saw_draining) << "Expected DRAINING state before checking blocking invariant";
+            ASSERT_TRUE(saw_draining)
+                << "Expected DRAINING state before checking blocking invariant";
 
             // Hold for 80 ms (≥ 4 × 20 ms timeout resets). Writer must still be blocked.
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -696,7 +714,8 @@ int drain_hold_true_never_returns_nullptr()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "drain_hold_true_never_returns_nullptr", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "drain_hold_true_never_returns_nullptr", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -772,7 +791,8 @@ int drain_hold_true_metrics_accumulated()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "drain_hold_true_metrics_accumulated", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "drain_hold_true_metrics_accumulated", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_draining

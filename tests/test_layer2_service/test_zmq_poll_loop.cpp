@@ -61,12 +61,9 @@ using pylabhub::tests::helper::poll_until;
 // `ZmqPollLoop::run()` emits LOGGER_INFO / LOGGER_WARN.  This is the
 // only `LifecycleGuard` owner in this binary by design — see file
 // header.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
-)
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule())
 
-class ZmqPollLoopTest : public ::testing::Test,
-                         public pylabhub::tests::LogCaptureFixture
+class ZmqPollLoopTest : public ::testing::Test, public pylabhub::tests::LogCaptureFixture
 {
   protected:
     void SetUp() override
@@ -120,11 +117,12 @@ TEST_F(ZmqPollLoopTest, DispatchesOnPollin)
 
     auto recv_ref = zmq::socket_ref(zmq::from_handle, receiver.handle());
     ZmqPollLoop loop{[&] { return running.load(); }, "test"};
-    loop.sockets = {{recv_ref, [&] {
-        zmq::message_t msg;
-        (void)receiver.recv(msg, zmq::recv_flags::dontwait);
-        dispatch_count.fetch_add(1);
-    }}};
+    loop.sockets = {{recv_ref, [&]
+                     {
+                         zmq::message_t msg;
+                         (void)receiver.recv(msg, zmq::recv_flags::dontwait);
+                         dispatch_count.fetch_add(1);
+                     }}};
 
     std::thread t([&] { loop.run(); });
 
@@ -137,8 +135,7 @@ TEST_F(ZmqPollLoopTest, DispatchesOnPollin)
     // Wait for the dispatch handler to actually run — replaces a
     // bare `sleep_for + EXPECT_GE` ordering pattern (Class B
     // silent-failure — see REVIEW_TestAudit_2026-05-01.md §0).
-    ASSERT_TRUE(poll_until([&] { return dispatch_count.load() >= 1; },
-                           std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return dispatch_count.load() >= 1; }, std::chrono::seconds{2}))
         << "dispatch handler did not fire within 2 s after send";
     EXPECT_GE(dispatch_count.load(), 1);
 
@@ -165,8 +162,7 @@ TEST_F(ZmqPollLoopTest, SignalSocketWakesLoop)
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     sig_write.send(zmq::message_t("W", 1), zmq::send_flags::none);
 
-    ASSERT_TRUE(poll_until([&] { return drain_count.load() >= 1; },
-                           std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return drain_count.load() >= 1; }, std::chrono::seconds{2}))
         << "drain_commands callback did not run within 2 s after signal";
     EXPECT_GE(drain_count.load(), 1);
 
@@ -205,16 +201,20 @@ TEST_F(ZmqPollLoopTest, MultipleSocketsDispatchCorrectly)
 
     ZmqPollLoop loop{[&] { return running.load(); }, "test"};
     loop.sockets = {
-        {zmq::socket_ref(zmq::from_handle, s1.handle()), [&] {
-            zmq::message_t m;
-            (void)s1.recv(m, zmq::recv_flags::dontwait);
-            count1.fetch_add(1);
-        }},
-        {zmq::socket_ref(zmq::from_handle, s2.handle()), [&] {
-            zmq::message_t m;
-            (void)s2.recv(m, zmq::recv_flags::dontwait);
-            count2.fetch_add(1);
-        }},
+        {zmq::socket_ref(zmq::from_handle, s1.handle()),
+         [&]
+         {
+             zmq::message_t m;
+             (void)s1.recv(m, zmq::recv_flags::dontwait);
+             count1.fetch_add(1);
+         }},
+        {zmq::socket_ref(zmq::from_handle, s2.handle()),
+         [&]
+         {
+             zmq::message_t m;
+             (void)s2.recv(m, zmq::recv_flags::dontwait);
+             count2.fetch_add(1);
+         }},
     };
 
     std::thread t([&] { loop.run(); });
@@ -222,9 +222,8 @@ TEST_F(ZmqPollLoopTest, MultipleSocketsDispatchCorrectly)
     c1.send(zmq::message_t("A", 1), zmq::send_flags::none);
     c2.send(zmq::message_t("B", 1), zmq::send_flags::none);
 
-    ASSERT_TRUE(poll_until(
-        [&] { return count1.load() >= 1 && count2.load() >= 1; },
-        std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return count1.load() >= 1 && count2.load() >= 1; },
+                           std::chrono::seconds{2}))
         << "expected both per-socket dispatchers to fire; "
         << "count1=" << count1.load() << " count2=" << count2.load();
     EXPECT_GE(count1.load(), 1);
@@ -244,12 +243,10 @@ TEST_F(ZmqPollLoopTest, PeriodicTasksFireDuringLoop)
 
     ZmqPollLoop loop{[&] { return running.load(); }, "test"};
     loop.sockets = {{zmq::socket_ref(zmq::from_handle, sock.handle()), [] {}}};
-    loop.periodic_tasks.emplace_back(
-        [&] { fire_count.fetch_add(1); }, 10); // 10ms, time-only
+    loop.periodic_tasks.emplace_back([&] { fire_count.fetch_add(1); }, 10); // 10ms, time-only
 
     std::thread t([&] { loop.run(); });
-    ASSERT_TRUE(poll_until([&] { return fire_count.load() >= 2; },
-                           std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return fire_count.load() >= 2; }, std::chrono::seconds{2}))
         << "PeriodicTask fired " << fire_count.load() << " times; "
         << "expected >=2 within 2 s at 10 ms cadence";
     EXPECT_GE(fire_count.load(), 2);
@@ -289,7 +286,8 @@ TEST_F(ZmqPollLoopTest, FalsySocketEntrySkipped)
     loop.sockets = {
         {zmq::socket_ref{}, [&] { falsy_count.fetch_add(1); }},
         {zmq::socket_ref(zmq::from_handle, valid.handle()),
-         [&] {
+         [&]
+         {
              zmq::message_t m;
              (void)valid.recv(m, zmq::recv_flags::dontwait);
              valid_count.fetch_add(1);
@@ -300,18 +298,16 @@ TEST_F(ZmqPollLoopTest, FalsySocketEntrySkipped)
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     client.send(zmq::message_t("X", 1), zmq::send_flags::none);
 
-    ASSERT_TRUE(poll_until([&] { return valid_count.load() >= 1; },
-                           std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return valid_count.load() >= 1; }, std::chrono::seconds{2}))
         << "valid socket dispatcher did not fire within 2 s — "
         << "either zmq::poll crashed on the falsy entry, or the "
         << "skip path is broken and the valid entry's index in "
         << "the pollitem array is wrong";
 
     EXPECT_GE(valid_count.load(), 1);
-    EXPECT_EQ(falsy_count.load(), 0)
-        << "falsy entry's dispatch must never be invoked — the "
-        << "skip happens at array-assembly time so its dispatcher "
-        << "is never stored in `dispatchers`";
+    EXPECT_EQ(falsy_count.load(), 0) << "falsy entry's dispatch must never be invoked — the "
+                                     << "skip happens at array-assembly time so its dispatcher "
+                                     << "is never stored in `dispatchers`";
 
     running.store(false);
     t.join();
@@ -333,10 +329,8 @@ TEST_F(ZmqPollLoopTest, MultiplePeriodicTasksFireIndependently)
 
     ZmqPollLoop loop{[&] { return running.load(); }, "test"};
     loop.sockets = {{zmq::socket_ref(zmq::from_handle, sock.handle()), [] {}}};
-    loop.periodic_tasks.emplace_back(
-        [&] { fire_a.fetch_add(1); }, 10);  // time-only, 10 ms
-    loop.periodic_tasks.emplace_back(
-        [&] { fire_b.fetch_add(1); }, 20);  // time-only, 20 ms
+    loop.periodic_tasks.emplace_back([&] { fire_a.fetch_add(1); }, 10); // time-only, 10 ms
+    loop.periodic_tasks.emplace_back([&] { fire_b.fetch_add(1); }, 20); // time-only, 20 ms
 
     std::thread t([&] { loop.run(); });
     // Allow ~250 ms wall time: at 10 ms cadence task A should fire
@@ -344,13 +338,11 @@ TEST_F(ZmqPollLoopTest, MultiplePeriodicTasksFireIndependently)
     // We assert modest lower bounds to stay robust under CI jitter
     // while still proving "both tasks are actually firing on their
     // own cadence, not at the 200 ms cap".
-    ASSERT_TRUE(poll_until(
-        [&] { return fire_a.load() >= 3 && fire_b.load() >= 2; },
-        std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return fire_a.load() >= 3 && fire_b.load() >= 2; },
+                           std::chrono::seconds{2}))
         << "expected both periodic tasks to fire on their own "
         << "cadences within 2 s (A>=3 at 10 ms, B>=2 at 20 ms); "
-        << "got fire_a=" << fire_a.load()
-        << " fire_b=" << fire_b.load() << " — implies the "
+        << "got fire_a=" << fire_a.load() << " fire_b=" << fire_b.load() << " — implies the "
         << "min-timeout logic is starving one of the tasks";
     EXPECT_GE(fire_a.load(), 3);
     EXPECT_GE(fire_b.load(), 2);
@@ -389,8 +381,7 @@ TEST_F(ZmqPollLoopTest, SignalSocketDrainsAllPendingBytesInOnePass)
 
     std::thread t([&] { loop.run(); });
 
-    ASSERT_TRUE(poll_until([&] { return drain_count.load() >= 1; },
-                           std::chrono::seconds{2}))
+    ASSERT_TRUE(poll_until([&] { return drain_count.load() >= 1; }, std::chrono::seconds{2}))
         << "drain_commands did not fire within 2 s after pre-queuing "
         << "5 signal bytes";
 
@@ -401,8 +392,7 @@ TEST_F(ZmqPollLoopTest, SignalSocketDrainsAllPendingBytesInOnePass)
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
     EXPECT_EQ(drain_count.load(), 1)
         << "expected drain_commands invoked exactly once (5 bytes "
-        << "drained in 1 pass via while-loop); got "
-        << drain_count.load()
+        << "drained in 1 pass via while-loop); got " << drain_count.load()
         << " — implies the drain consumes only 1 byte per iteration";
 
     running.store(false);

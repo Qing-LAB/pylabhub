@@ -105,9 +105,9 @@ static_assert(std::is_trivially_copyable_v<StressFlexZone>);
  */
 struct StressSlotData
 {
-    uint64_t sequence{0};       ///< Slot index [0..kNumSlots-1 or kNumSlotsBP-1].
-    uint32_t app_checksum{0};   ///< XOR-fold of payload[]; independent BLAKE2b check.
-    uint8_t  payload[4084]{};   ///< 8 + 4 + 4084 = 4096 bytes.
+    uint64_t sequence{0};     ///< Slot index [0..kNumSlots-1 or kNumSlotsBP-1].
+    uint32_t app_checksum{0}; ///< XOR-fold of payload[]; independent BLAKE2b check.
+    uint8_t payload[4084]{};  ///< 8 + 4 + 4084 = 4096 bytes.
 };
 static_assert(sizeof(StressSlotData) == 4096,
               "StressSlotData must be exactly 4096 bytes — one physical page per slot");
@@ -116,13 +116,13 @@ static_assert(std::is_trivially_copyable_v<StressSlotData>);
 // BLDS schemas — needed by create_datablock_producer / find_datablock_consumer
 // for dual-schema hash validation.
 PYLABHUB_SCHEMA_BEGIN(StressFlexZone)
-    PYLABHUB_SCHEMA_MEMBER(producer_pid)
+PYLABHUB_SCHEMA_MEMBER(producer_pid)
 PYLABHUB_SCHEMA_END(StressFlexZone)
 
 PYLABHUB_SCHEMA_BEGIN(StressSlotData)
-    PYLABHUB_SCHEMA_MEMBER(sequence)
-    PYLABHUB_SCHEMA_MEMBER(app_checksum)
-    PYLABHUB_SCHEMA_MEMBER(payload)
+PYLABHUB_SCHEMA_MEMBER(sequence)
+PYLABHUB_SCHEMA_MEMBER(app_checksum)
+PYLABHUB_SCHEMA_MEMBER(payload)
 PYLABHUB_SCHEMA_END(StressSlotData)
 
 namespace pylabhub::tests::worker::stress_raii
@@ -130,8 +130,14 @@ namespace pylabhub::tests::worker::stress_raii
 
 // --- Lifecycle module helpers -----------------------------------------------
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // ============================================================================
 // Internal utilities
@@ -144,13 +150,13 @@ namespace
 DataBlockConfig make_latest_only_config()
 {
     DataBlockConfig cfg{};
-    cfg.physical_page_size     = DataBlockPageSize::Size4K;
-    cfg.logical_unit_size      = 4096;
-    cfg.ring_buffer_capacity   = static_cast<uint32_t>(kRingCapacity);
-    cfg.policy                 = DataBlockPolicy::RingBuffer;
-    cfg.consumer_sync_policy   = ConsumerSyncPolicy::Latest_only;
-    cfg.checksum_policy        = ChecksumPolicy::Enforced;
-    cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.logical_unit_size = 4096;
+    cfg.ring_buffer_capacity = static_cast<uint32_t>(kRingCapacity);
+    cfg.policy = DataBlockPolicy::RingBuffer;
+    cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+    cfg.checksum_policy = ChecksumPolicy::Enforced;
+    cfg.flex_zone_size = static_cast<size_t>(kFlexZoneSize);
     // #275-S2 deferred (see file header doc-block — multi-process-by-name;
     // no capability-handshake harness available).  Post-#275-S4 the memcmp
     // gate this line targeted is gone (`find_datablock_consumer<F,D>` no
@@ -164,13 +170,13 @@ DataBlockConfig make_latest_only_config()
 DataBlockConfig make_backpressure_config()
 {
     DataBlockConfig cfg{};
-    cfg.physical_page_size     = DataBlockPageSize::Size4K;
-    cfg.logical_unit_size      = 4096;
-    cfg.ring_buffer_capacity   = static_cast<uint32_t>(kRingCapacityBP);
-    cfg.policy                 = DataBlockPolicy::RingBuffer;
-    cfg.consumer_sync_policy   = ConsumerSyncPolicy::Sequential;
-    cfg.checksum_policy        = ChecksumPolicy::Enforced;
-    cfg.flex_zone_size         = static_cast<size_t>(kFlexZoneSize);
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.logical_unit_size = 4096;
+    cfg.ring_buffer_capacity = static_cast<uint32_t>(kRingCapacityBP);
+    cfg.policy = DataBlockPolicy::RingBuffer;
+    cfg.consumer_sync_policy = ConsumerSyncPolicy::Sequential;
+    cfg.checksum_policy = ChecksumPolicy::Enforced;
+    cfg.flex_zone_size = static_cast<size_t>(kFlexZoneSize);
     // #275-S2 deferred — see make_latest_only_config().
     return cfg;
 }
@@ -235,7 +241,7 @@ int stress_producer(int argc, char **argv)
     return run_gtest_worker(
         [&channel]()
         {
-            auto cfg      = make_latest_only_config();
+            auto cfg = make_latest_only_config();
             auto producer = create_datablock_producer<StressFlexZone, StressSlotData>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(producer, nullptr) << "stress_producer: failed to create DataBlock";
@@ -245,7 +251,7 @@ int stress_producer(int argc, char **argv)
                 200ms,
                 [](WriteTransactionContext<StressFlexZone, StressSlotData> &ctx)
                 {
-                    auto zone            = ctx.flexzone();
+                    auto zone = ctx.flexzone();
                     zone.get().producer_pid = static_cast<uint64_t>(getpid());
                     // No data slot written — flexzone-only update.
                 });
@@ -256,8 +262,8 @@ int stress_producer(int argc, char **argv)
             // Write kNumSlots full-4KB slots with random inter-write delays.
             for (int seq = 0; seq < kNumSlots; ++seq)
             {
-                bool written  = false;
-                int  retries  = 0;
+                bool written = false;
+                int retries = 0;
 
                 while (!written && retries < 500)
                 {
@@ -272,12 +278,11 @@ int stress_producer(int argc, char **argv)
                                     ++retries;
                                     break;
                                 }
-                                auto &data     = result.content().get();
-                                data.sequence  = static_cast<uint64_t>(seq);
-                                fill_payload(data.payload, sizeof(data.payload),
-                                             data.sequence);
-                                data.app_checksum = compute_app_checksum(
-                                    data.payload, sizeof(data.payload));
+                                auto &data = result.content().get();
+                                data.sequence = static_cast<uint64_t>(seq);
+                                fill_payload(data.payload, sizeof(data.payload), data.sequence);
+                                data.app_checksum =
+                                    compute_app_checksum(data.payload, sizeof(data.payload));
                                 written = true;
                                 break;
                             }
@@ -287,21 +292,20 @@ int stress_producer(int argc, char **argv)
                     random_sleep(5);
                 }
 
-                ASSERT_TRUE(written)
-                    << "stress_producer: failed to write slot " << seq
-                    << " after " << retries << " retries";
+                ASSERT_TRUE(written) << "stress_producer: failed to write slot " << seq << " after "
+                                     << retries << " retries";
             }
 
             // Keep DataBlock alive briefly so consumers can see the final slot.
             std::this_thread::sleep_for(500ms);
 
-            fmt::print(stderr, "[stress_producer] wrote {} slots (ring={} wraps≈{})\n",
-                       kNumSlots, kRingCapacity, kNumSlots / kRingCapacity);
+            fmt::print(stderr, "[stress_producer] wrote {} slots (ring={} wraps≈{})\n", kNumSlots,
+                       kRingCapacity, kNumSlots / kRingCapacity);
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "stress_raii.stress_producer",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "stress_raii.stress_producer", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -315,8 +319,8 @@ int stress_consumer(int argc, char **argv)
         fmt::print(stderr, "ERROR: stress_consumer requires argv[2]: channel_name\n");
         return 1;
     }
-    const std::string channel      = argv[2];
-    const int         consumer_idx = (argc > 3) ? std::stoi(argv[3]) : 0;
+    const std::string channel = argv[2];
+    const int consumer_idx = (argc > 3) ? std::stoi(argv[3]) : 0;
 
     return run_gtest_worker(
         [&channel, consumer_idx]()
@@ -328,20 +332,19 @@ int stress_consumer(int argc, char **argv)
             std::unique_ptr<DataBlockConsumer> consumer;
             for (int attempt = 0; attempt < 50 && !consumer; ++attempt)
             {
-                consumer = find_datablock_consumer<StressFlexZone, StressSlotData>(
-                    channel, cfg);
+                consumer = find_datablock_consumer<StressFlexZone, StressSlotData>(channel, cfg);
                 if (!consumer)
                     std::this_thread::sleep_for(100ms);
             }
             ASSERT_NE(consumer, nullptr)
                 << "stress_consumer[" << consumer_idx << "]: failed to attach to DataBlock";
 
-            uint64_t last_seq      = std::numeric_limits<uint64_t>::max(); // sentinel: none yet
-            bool     have_first    = false;
-            uint64_t reads         = 0;
+            uint64_t last_seq = std::numeric_limits<uint64_t>::max(); // sentinel: none yet
+            bool have_first = false;
+            uint64_t reads = 0;
             uint64_t pattern_errors = 0;
-            int      timeouts      = 0;
-            bool     done          = false;
+            int timeouts = 0;
+            bool done = false;
 
             // Read until we observe the terminal sequence or exhaust the timeout budget.
             while (!done && timeouts < 200)
@@ -370,16 +373,15 @@ int stress_consumer(int argc, char **argv)
                             }
 
                             // Independent app-level checksum check.
-                            uint32_t expected_cs = compute_app_checksum(
-                                data.payload, sizeof(data.payload));
+                            uint32_t expected_cs =
+                                compute_app_checksum(data.payload, sizeof(data.payload));
                             if (expected_cs != data.app_checksum)
                             {
                                 ++pattern_errors;
-                                ADD_FAILURE()
-                                    << "stress_consumer[" << consumer_idx
-                                    << "]: app_checksum mismatch at seq=" << data.sequence
-                                    << " (expected=" << expected_cs
-                                    << " got=" << data.app_checksum << ")";
+                                ADD_FAILURE() << "stress_consumer[" << consumer_idx
+                                              << "]: app_checksum mismatch at seq=" << data.sequence
+                                              << " (expected=" << expected_cs
+                                              << " got=" << data.app_checksum << ")";
                             }
 
                             // Full byte-level pattern verification.
@@ -392,7 +394,7 @@ int stress_consumer(int argc, char **argv)
                                     << "]: byte-pattern mismatch at seq=" << data.sequence;
                             }
 
-                            last_seq   = data.sequence;
+                            last_seq = data.sequence;
                             have_first = true;
                             ++reads;
                             timeouts = 0; // reset on successful read
@@ -410,8 +412,7 @@ int stress_consumer(int argc, char **argv)
 
             EXPECT_LT(timeouts, 200)
                 << "stress_consumer[" << consumer_idx << "]: timed out before seeing terminal slot";
-            EXPECT_GE(reads, 1u)
-                << "stress_consumer[" << consumer_idx << "]: never read any slot";
+            EXPECT_GE(reads, 1u) << "stress_consumer[" << consumer_idx << "]: never read any slot";
             EXPECT_EQ(pattern_errors, 0u)
                 << "stress_consumer[" << consumer_idx << "]: payload pattern errors detected";
 
@@ -424,12 +425,11 @@ int stress_consumer(int argc, char **argv)
                     << "]: BLAKE2b checksum failures detected in metrics";
             }
 
-            fmt::print(stderr,
-                       "[stress_consumer{}] reads={} last_seq={} pattern_errors={}\n",
+            fmt::print(stderr, "[stress_consumer{}] reads={} last_seq={} pattern_errors={}\n",
                        consumer_idx, reads, last_seq, pattern_errors);
         },
-        "stress_raii.stress_consumer",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "stress_raii.stress_consumer", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -450,23 +450,18 @@ int multi_process_stress_orchestrator(int argc, char **argv)
         [&channel]()
         {
             // Spawn producer with ready-signal: it creates the DataBlock then signals.
-            WorkerProcess producer(
-                g_self_exe_path,
-                "stress_raii.stress_producer",
-                {channel},
-                /*redirect_stderr_to_console=*/false,
-                /*with_ready_signal=*/true);
+            WorkerProcess producer(g_self_exe_path, "stress_raii.stress_producer", {channel},
+                                   /*redirect_stderr_to_console=*/false,
+                                   /*with_ready_signal=*/true);
 
             // Block until DataBlock exists and is ready for consumers to attach.
             producer.wait_for_ready();
 
             // Launch two concurrent consumers (Latest_only — they race the ring).
-            WorkerProcess consumer0(
-                g_self_exe_path, "stress_raii.stress_consumer", {channel, "0"},
-                false, false);
-            WorkerProcess consumer1(
-                g_self_exe_path, "stress_raii.stress_consumer", {channel, "1"},
-                false, false);
+            WorkerProcess consumer0(g_self_exe_path, "stress_raii.stress_consumer", {channel, "0"},
+                                    false, false);
+            WorkerProcess consumer1(g_self_exe_path, "stress_raii.stress_consumer", {channel, "1"},
+                                    false, false);
 
             consumer0.wait_for_exit();
             expect_worker_ok(consumer0);
@@ -477,8 +472,8 @@ int multi_process_stress_orchestrator(int argc, char **argv)
             producer.wait_for_exit();
             expect_worker_ok(producer);
         },
-        "stress_raii.multi_process_stress_orchestrator",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "stress_raii.multi_process_stress_orchestrator", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -497,11 +492,10 @@ int backpressure_producer(int argc, char **argv)
     return run_gtest_worker(
         [&channel]()
         {
-            auto cfg      = make_backpressure_config();
+            auto cfg = make_backpressure_config();
             auto producer = create_datablock_producer<StressFlexZone, StressSlotData>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
-            ASSERT_NE(producer, nullptr)
-                << "backpressure_producer: failed to create DataBlock";
+            ASSERT_NE(producer, nullptr) << "backpressure_producer: failed to create DataBlock";
 
             // Signal ready before writing so the consumer can attach and start reading;
             // with Sequential the consumer MUST be ready before we fill the ring.
@@ -510,7 +504,7 @@ int backpressure_producer(int argc, char **argv)
             for (int seq = 0; seq < kNumSlotsBP; ++seq)
             {
                 bool written = false;
-                int  retries = 0;
+                int retries = 0;
 
                 while (!written && retries < 1000)
                 {
@@ -525,12 +519,11 @@ int backpressure_producer(int argc, char **argv)
                                     ++retries;
                                     break;
                                 }
-                                auto &data        = result.content().get();
-                                data.sequence     = static_cast<uint64_t>(seq);
-                                fill_payload(data.payload, sizeof(data.payload),
-                                             data.sequence);
-                                data.app_checksum = compute_app_checksum(
-                                    data.payload, sizeof(data.payload));
+                                auto &data = result.content().get();
+                                data.sequence = static_cast<uint64_t>(seq);
+                                fill_payload(data.payload, sizeof(data.payload), data.sequence);
+                                data.app_checksum =
+                                    compute_app_checksum(data.payload, sizeof(data.payload));
                                 written = true;
                                 break;
                             }
@@ -540,21 +533,20 @@ int backpressure_producer(int argc, char **argv)
                     random_sleep(5);
                 }
 
-                ASSERT_TRUE(written)
-                    << "backpressure_producer: failed to write slot " << seq
-                    << " after " << retries << " retries";
+                ASSERT_TRUE(written) << "backpressure_producer: failed to write slot " << seq
+                                     << " after " << retries << " retries";
             }
 
             // Keep DataBlock alive until the consumer has read all slots.
             std::this_thread::sleep_for(3000ms);
 
-            fmt::print(stderr, "[backpressure_producer] wrote {} slots (ring={})\n",
-                       kNumSlotsBP, kRingCapacityBP);
+            fmt::print(stderr, "[backpressure_producer] wrote {} slots (ring={})\n", kNumSlotsBP,
+                       kRingCapacityBP);
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "stress_raii.backpressure_producer",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "stress_raii.backpressure_producer", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -578,17 +570,15 @@ int backpressure_consumer(int argc, char **argv)
             std::unique_ptr<DataBlockConsumer> consumer;
             for (int attempt = 0; attempt < 50 && !consumer; ++attempt)
             {
-                consumer = find_datablock_consumer<StressFlexZone, StressSlotData>(
-                    channel, cfg);
+                consumer = find_datablock_consumer<StressFlexZone, StressSlotData>(channel, cfg);
                 if (!consumer)
                     std::this_thread::sleep_for(100ms);
             }
-            ASSERT_NE(consumer, nullptr)
-                << "backpressure_consumer: failed to attach to DataBlock";
+            ASSERT_NE(consumer, nullptr) << "backpressure_consumer: failed to attach to DataBlock";
 
-            uint64_t expected_seq  = 0;
+            uint64_t expected_seq = 0;
             uint64_t pattern_errors = 0;
-            int      timeouts      = 0;
+            int timeouts = 0;
 
             // With Sequential, every slot is delivered; we expect exactly kNumSlotsBP
             // slots in ascending order with no gaps.
@@ -613,18 +603,16 @@ int backpressure_consumer(int argc, char **argv)
                             // With Sequential, slots arrive in exact order.
                             EXPECT_EQ(data.sequence, expected_seq)
                                 << "backpressure_consumer: unexpected sequence"
-                                << " (expected=" << expected_seq
-                                << " got=" << data.sequence << ")";
+                                << " (expected=" << expected_seq << " got=" << data.sequence << ")";
 
                             // Independent app checksum.
-                            uint32_t expected_cs = compute_app_checksum(
-                                data.payload, sizeof(data.payload));
+                            uint32_t expected_cs =
+                                compute_app_checksum(data.payload, sizeof(data.payload));
                             if (expected_cs != data.app_checksum)
                             {
                                 ++pattern_errors;
-                                ADD_FAILURE()
-                                    << "backpressure_consumer: app_checksum mismatch"
-                                    << " at seq=" << data.sequence;
+                                ADD_FAILURE() << "backpressure_consumer: app_checksum mismatch"
+                                              << " at seq=" << data.sequence;
                             }
 
                             // Byte-level pattern.
@@ -632,9 +620,8 @@ int backpressure_consumer(int argc, char **argv)
                                                       data.sequence))
                             {
                                 ++pattern_errors;
-                                ADD_FAILURE()
-                                    << "backpressure_consumer: byte-pattern mismatch"
-                                    << " at seq=" << data.sequence;
+                                ADD_FAILURE() << "backpressure_consumer: byte-pattern mismatch"
+                                              << " at seq=" << data.sequence;
                             }
 
                             got_slot = true;
@@ -669,8 +656,8 @@ int backpressure_consumer(int argc, char **argv)
                        "pattern_errors={}\n",
                        expected_seq, kNumSlotsBP, pattern_errors);
         },
-        "stress_raii.backpressure_consumer",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "stress_raii.backpressure_consumer", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -681,8 +668,7 @@ int backpressure_orchestrator(int argc, char **argv)
 {
     if (argc < 3)
     {
-        fmt::print(stderr,
-                   "ERROR: backpressure_orchestrator requires argv[2]: channel_name\n");
+        fmt::print(stderr, "ERROR: backpressure_orchestrator requires argv[2]: channel_name\n");
         return 1;
     }
     const std::string channel = argv[2];
@@ -692,19 +678,13 @@ int backpressure_orchestrator(int argc, char **argv)
         {
             // Producer signals ready after DataBlock creation; consumer must attach
             // BEFORE the ring fills (otherwise producer blocks indefinitely).
-            WorkerProcess producer(
-                g_self_exe_path,
-                "stress_raii.backpressure_producer",
-                {channel},
-                false, /*with_ready_signal=*/true);
+            WorkerProcess producer(g_self_exe_path, "stress_raii.backpressure_producer", {channel},
+                                   false, /*with_ready_signal=*/true);
 
             producer.wait_for_ready();
 
-            WorkerProcess consumer(
-                g_self_exe_path,
-                "stress_raii.backpressure_consumer",
-                {channel},
-                false, false);
+            WorkerProcess consumer(g_self_exe_path, "stress_raii.backpressure_consumer", {channel},
+                                   false, false);
 
             consumer.wait_for_exit();
             expect_worker_ok(consumer);
@@ -712,8 +692,8 @@ int backpressure_orchestrator(int argc, char **argv)
             producer.wait_for_exit();
             expect_worker_ok(producer);
         },
-        "stress_raii.backpressure_orchestrator",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "stress_raii.backpressure_orchestrator", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::stress_raii
@@ -735,7 +715,7 @@ struct StressRaiiWorkerRegistrar
                 if (argc < 2)
                     return -1;
                 std::string_view mode = argv[1];
-                auto             dot  = mode.find('.');
+                auto dot = mode.find('.');
                 if (dot == std::string_view::npos || mode.substr(0, dot) != "stress_raii")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));

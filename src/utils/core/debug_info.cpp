@@ -382,7 +382,8 @@ inline bool safe_format_to_stderr(fmt::format_string<Args...> fmt_str, Args &&..
  *          resources or file descriptors interact. Prefer calling it from a single thread
  *          or from crash handlers that are aware of these limitations.
  */
-// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- platform branches and symbol resolution
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- platform branches and symbol
+// resolution
 void print_stack_trace(bool use_external_tools) noexcept
 {
     try
@@ -674,8 +675,9 @@ void print_stack_trace(bool use_external_tools) noexcept
         for (auto &entry : binToIdx)
         {
             const std::string &binary = entry.first;
-            const std::vector<int> &indices = entry.second; // These are frame indices for this binary
-            std::vector<std::string> tool_results;       // Raw output from addr2line/atos
+            const std::vector<int> &indices =
+                entry.second;                      // These are frame indices for this binary
+            std::vector<std::string> tool_results; // Raw output from addr2line/atos
 
             if (binary == "[unknown]" || binary.empty())
             {
@@ -746,10 +748,9 @@ void print_stack_trace(bool use_external_tools) noexcept
         // Now print all frames using the resolved_symbols_by_frame_idx map
         for (const auto &meta : metas)
         {
-            std::string resolved_str =
-                resolved_symbols_by_frame_idx.contains(meta.idx)
-                    ? resolved_symbols_by_frame_idx.at(meta.idx)
-                    : "[not processed by external tools]";
+            std::string resolved_str = resolved_symbols_by_frame_idx.contains(meta.idx)
+                                           ? resolved_symbols_by_frame_idx.at(meta.idx)
+                                           : "[not processed by external tools]";
 
             // Attempt to parse resolved_str
             std::string symbol_name;

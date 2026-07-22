@@ -64,8 +64,7 @@ namespace pylabhub::tests::pattern4
 /// Names include `getpid()` + a process-local counter so concurrent
 /// tests under `-j 2` don't collide.  Caller owns cleanup
 /// (recommended: `fs::remove_all` in the test fixture's `TearDown`).
-[[nodiscard]] std::filesystem::path
-make_temp_dir(std::string_view test_label);
+[[nodiscard]] std::filesystem::path make_temp_dir(std::string_view test_label);
 
 // ─── Pattern4Setup ──────────────────────────────────────────────────────────
 
@@ -96,8 +95,7 @@ struct Pattern4Setup
 /// Build a `Pattern4Setup` for a list of role uids.  Picks an unused
 /// port via `pick_unused_port` and generates a fresh CURVE bundle via
 /// `make_curve_setup`.
-[[nodiscard]] Pattern4Setup
-make_pattern4_setup(const std::vector<std::string> &role_uids);
+[[nodiscard]] Pattern4Setup make_pattern4_setup(const std::vector<std::string> &role_uids);
 
 /// JSON serialisation.  Layout:
 ///   {
@@ -108,11 +106,9 @@ make_pattern4_setup(const std::vector<std::string> &role_uids);
 ///       ...
 ///     ]
 ///   }
-void write_pattern4_setup(const Pattern4Setup &setup,
-                          const std::filesystem::path &path);
+void write_pattern4_setup(const Pattern4Setup &setup, const std::filesystem::path &path);
 
-[[nodiscard]] Pattern4Setup
-read_pattern4_setup(const std::filesystem::path &path);
+[[nodiscard]] Pattern4Setup read_pattern4_setup(const std::filesystem::path &path);
 
 // ─── Live-poll a subprocess's captured stderr ───────────────────────────────
 
@@ -128,10 +124,8 @@ read_pattern4_setup(const std::filesystem::path &path);
 ///         timeout.  The caller's typical pattern is:
 ///             EXPECT_TRUE(wait_for_log(proc, "...", kShortTimeoutMs));
 ///         or use `expect_log` (below) for a cleaner failure message.
-[[nodiscard]] bool wait_for_log(
-    const pylabhub::tests::helper::WorkerProcess &proc,
-    std::string_view substring,
-    std::chrono::milliseconds timeout);
+[[nodiscard]] bool wait_for_log(const pylabhub::tests::helper::WorkerProcess &proc,
+                                std::string_view substring, std::chrono::milliseconds timeout);
 
 /// Wrapper that fails the current gtest scope with a diagnostic
 /// message (substring + timeout + tail of captured stderr) if the
@@ -142,8 +136,7 @@ read_pattern4_setup(const std::filesystem::path &path);
 /// (`pylabhub::kShortTimeoutMs` / `kMidTimeoutMs` / `kLongTimeoutMs`)
 /// or HEP-defined intervals — never arbitrary literals.  See
 /// Pattern 4 doc § "Verification — log-driven sequence assertion".
-void expect_log(const pylabhub::tests::helper::WorkerProcess &proc,
-                std::string_view substring,
+void expect_log(const pylabhub::tests::helper::WorkerProcess &proc, std::string_view substring,
                 std::chrono::milliseconds timeout);
 
 // ─── Shared-log verification (rung 2+) ──────────────────────────────────────
@@ -185,9 +178,8 @@ void set_shared_log(const std::filesystem::path &shared_log_path);
 ///
 /// See `docs/README/README_testing.md` § "Pattern 4 — ... — Production
 /// INFO marker contract" for the marker format conventions.
-void expect_log_sequence(
-    const std::filesystem::path &shared_log,
-    std::initializer_list<std::string_view> markers,
-    std::chrono::milliseconds per_step_timeout);
+void expect_log_sequence(const std::filesystem::path &shared_log,
+                         std::initializer_list<std::string_view> markers,
+                         std::chrono::milliseconds per_step_timeout);
 
 } // namespace pylabhub::tests::pattern4

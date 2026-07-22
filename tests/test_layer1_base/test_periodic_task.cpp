@@ -19,7 +19,7 @@
  * live at L2 in `tests/test_layer2_service/test_zmq_poll_loop.cpp`.
  */
 
-#include "utils/zmq_poll_loop.hpp"  // pylabhub::scripting::PeriodicTask
+#include "utils/zmq_poll_loop.hpp" // pylabhub::scripting::PeriodicTask
 
 #include <gtest/gtest.h>
 
@@ -36,8 +36,7 @@ TEST_F(PeriodicTaskTest, FirstTickFiresImmediatelyOnProgress)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 1000,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 1000, [&] { return iter; });
 
     iter = 1;
     task.tick();
@@ -48,8 +47,7 @@ TEST_F(PeriodicTaskTest, NoProgressMeansNoFire)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 1000,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 1000, [&] { return iter; });
 
     task.tick();
     EXPECT_EQ(fire_count, 0);
@@ -62,8 +60,7 @@ TEST_F(PeriodicTaskTest, ProgressButIntervalNotElapsedSkips)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 60000,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 60000, [&] { return iter; });
 
     iter = 1;
     task.tick();
@@ -78,8 +75,7 @@ TEST_F(PeriodicTaskTest, FiresAgainAfterIntervalElapsed)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 10,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 10, [&] { return iter; });
 
     iter = 1;
     task.tick();
@@ -96,8 +92,7 @@ TEST_F(PeriodicTaskTest, DefaultIntervalUsedWhenZero)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 0,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 0, [&] { return iter; });
 
     EXPECT_EQ(task.interval.count(), 2000);
 
@@ -109,8 +104,7 @@ TEST_F(PeriodicTaskTest, DefaultIntervalUsedWhenZero)
 TEST_F(PeriodicTaskTest, NegativeIntervalUsesDefault)
 {
     int fire_count = 0;
-    PeriodicTask task([&] { ++fire_count; }, -5,
-                      [] { return uint64_t{1}; });
+    PeriodicTask task([&] { ++fire_count; }, -5, [] { return uint64_t{1}; });
 
     EXPECT_EQ(task.interval.count(), 2000);
 }
@@ -138,8 +132,7 @@ TEST_F(PeriodicTaskTest, LargeIterationJumpStillFires)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 10,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 10, [&] { return iter; });
 
     iter = 1000;
     task.tick();
@@ -192,15 +185,13 @@ TEST_F(PeriodicTaskTest, TickReturnsIntervalAfterFiring_IterGated)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 1000,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 1000, [&] { return iter; });
 
     iter = 1;
     auto wait = task.tick();
     ASSERT_EQ(fire_count, 1);
-    EXPECT_EQ(wait.count(), 1000)
-        << "fire-now branch must return `interval` exactly (the value "
-        << "consumed by ZmqPollLoop::run() to size its next poll wait)";
+    EXPECT_EQ(wait.count(), 1000) << "fire-now branch must return `interval` exactly (the value "
+                                  << "consumed by ZmqPollLoop::run() to size its next poll wait)";
 }
 
 TEST_F(PeriodicTaskTest, TickReturnsIntervalAfterFiring_TimeOnly)
@@ -210,16 +201,14 @@ TEST_F(PeriodicTaskTest, TickReturnsIntervalAfterFiring_TimeOnly)
 
     auto wait = task.tick();
     ASSERT_EQ(fire_count, 1);
-    EXPECT_EQ(wait.count(), 1000)
-        << "time-only fire-now branch must return `interval` exactly";
+    EXPECT_EQ(wait.count(), 1000) << "time-only fire-now branch must return `interval` exactly";
 }
 
 TEST_F(PeriodicTaskTest, TickReturnsRemainingWhenIterStalled)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 1000,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 1000, [&] { return iter; });
 
     // First tick advances iter from 0 → 1 and fires; last_fired = now.
     iter = 1;
@@ -243,7 +232,7 @@ TEST_F(PeriodicTaskTest, TickReturnsRemainingWhenWithinInterval_TimeOnly)
     int fire_count = 0;
     PeriodicTask task([&] { ++fire_count; }, 1000);
 
-    task.tick();  // first fire
+    task.tick(); // first fire
     ASSERT_EQ(fire_count, 1);
 
     // Immediate re-tick: elapsed ~= 0, return ~= interval.
@@ -257,16 +246,14 @@ TEST_F(PeriodicTaskTest, TickReturnsZeroWhenIterStalledPastInterval)
 {
     int fire_count = 0;
     uint64_t iter = 0;
-    PeriodicTask task([&] { ++fire_count; }, 10,
-                      [&] { return iter; });
+    PeriodicTask task([&] { ++fire_count; }, 10, [&] { return iter; });
 
     // Stall iter at 0; wait well past the 10 ms interval.
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     auto wait = task.tick();
     EXPECT_EQ(fire_count, 0);
-    EXPECT_EQ(wait.count(), 0)
-        << "iter-stalled past-interval must clamp remaining to 0 "
-        << "(std::max with milliseconds{0}); otherwise ZmqPollLoop "
-        << "could be told to wait a negative duration";
+    EXPECT_EQ(wait.count(), 0) << "iter-stalled past-interval must clamp remaining to 0 "
+                               << "(std::max with milliseconds{0}); otherwise ZmqPollLoop "
+                               << "could be told to wait a negative duration";
 }

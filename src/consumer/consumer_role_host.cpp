@@ -15,7 +15,7 @@
  * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "consumer_role_host.hpp"
-#include "utils/script_engine_factory.hpp"  // scripting::create_engine — worker_main_ Step 0
+#include "utils/script_engine_factory.hpp" // scripting::create_engine — worker_main_ Step 0
 #include "utils/thread_manager.hpp"
 #include "service/cycle_ops.hpp"
 #include "service/data_loop.hpp"
@@ -30,9 +30,9 @@
 #include "utils/role_config_translation.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
-#include "utils/role_handler.hpp"     // Wave-B M6: handler-mode startup
-#include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
-#include "utils/role_presence.hpp"    // Wave-B M6: Presence + RoleKind
+#include "utils/role_handler.hpp"       // Wave-B M6: handler-mode startup
+#include "utils/security/key_store.hpp" // HEP-CORE-0040 §173: identity pubkey
+#include "utils/role_presence.hpp"      // Wave-B M6: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
 #include <chrono>
@@ -51,15 +51,14 @@ using Clock = std::chrono::steady_clock;
 // Constructor / Destructor
 // ============================================================================
 
-ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config,
-                                     std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostFrame(std::move(config),
-                                shutdown_flag,
-                                // HEP-CORE-0036 §5b.10: short_tag derived
-                                // once from role_type via short_role_tag().
-                                { /*role_type=*/        "consumer",
-                                  /*short_tag=*/        std::string(pylabhub::hub::short_role_tag("consumer")),
-                                  /*required_callback=*/"on_consume" })
+ConsumerRoleHost::ConsumerRoleHost(config::RoleConfig config, std::atomic<bool> *shutdown_flag)
+    : scripting::RoleHostFrame(
+          std::move(config), shutdown_flag,
+          // HEP-CORE-0036 §5b.10: short_tag derived
+          // once from role_type via short_role_tag().
+          {/*role_type=*/"consumer",
+           /*short_tag=*/std::string(pylabhub::hub::short_role_tag("consumer")),
+           /*required_callback=*/"on_consume"})
 {
     // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011
     // §"Engine Construction Lifecycle".
@@ -93,25 +92,26 @@ void ConsumerRoleHost::worker_main_()
     // Step 0: construct engine on this worker thread (HEP-CORE-0011
     // §"Engine Construction Lifecycle").  GIL is held via the lease
     // above iff Python is configured.
-    auto       &core_        = core();
-    const auto &config_      = config();
-    auto       &promise_ref0 = ready_promise();
+    auto &core_ = core();
+    const auto &config_ = config();
+    auto &promise_ref0 = ready_promise();
     set_engine_(scripting::create_engine(config_.script()));
     if (!has_engine())
     {
         LOGGER_ERROR("[cons] scripting::create_engine returned null for "
-                     "script.type='{}'", config_.script().type);
+                     "script.type='{}'",
+                     config_.script().type);
         promise_ref0.set_value(false);
         return;
     }
-    auto       &engine_ref   = engine();
-    auto       &api_ref      = api();
-    auto       &promise_ref  = ready_promise();
+    auto &engine_ref = engine();
+    auto &api_ref = api();
+    auto &promise_ref = ready_promise();
 
-    const auto &id   = config_.identity();
-    const auto &sc   = config_.script();
-    const auto &hub  = config_.in_hub();
-    const auto &tr   = config_.in_transport();
+    const auto &id = config_.identity();
+    const auto &sc = config_.script();
+    const auto &hub = config_.in_hub();
+    const auto &tr = config_.in_transport();
 
     // Warn if script type was not explicitly set in config.
     if (!sc.type_explicit)
@@ -126,9 +126,9 @@ void ConsumerRoleHost::worker_main_()
     // (slot + fz).  presences_[i] is the canonical per-channel home;
     // every downstream consumer (wire-emission readers, params.*,
     // FlexzoneInfoCache populate) reads from it.
-    const std::filesystem::path base_path =
-        sc.path.empty() ? std::filesystem::current_path()
-                        : std::filesystem::weakly_canonical(sc.path);
+    const std::filesystem::path base_path = sc.path.empty()
+                                                ? std::filesystem::current_path()
+                                                : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
     try
@@ -158,12 +158,11 @@ void ConsumerRoleHost::worker_main_()
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
-            schema_dirs.push_back(
-                (std::filesystem::path(hub.hub_dir) / "schemas").string());
+            schema_dirs.push_back((std::filesystem::path(hub.hub_dir) / "schemas").string());
         try
         {
-            inbox_spec_local = hub::resolve_schema(
-                config_.inbox().schema_json, false, "cons", schema_dirs);
+            inbox_spec_local =
+                hub::resolve_schema(config_.inbox().schema_json, false, "cons", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -174,8 +173,7 @@ void ConsumerRoleHost::worker_main_()
     }
 
     // Packing is schema-driven (was transport-level `zmq_packing` pre-2026-04-20).
-    const std::string packing =
-        in_slot_spec_.has_schema ? in_slot_spec_.packing : "aligned";
+    const std::string packing = in_slot_spec_.has_schema ? in_slot_spec_.packing : "aligned";
 
     // Compute and store slot logical size on core (infrastructure-authoritative).
     // Flexzone sizes live on RoleAPIBase::FlexzoneInfoCache, populated by
@@ -201,15 +199,14 @@ void ConsumerRoleHost::worker_main_()
     // sequence.  `set_inbox_queue` stays AFTER setup_infrastructure_
     // because the inbox queue object is created there.
     api_ref.set_name(id.name);
-    wire_api_for_presences_(presences_);  // sets channel from presences_
+    wire_api_for_presences_(presences_); // sets channel from presences_
     api_ref.set_log_level(id.log_level);
     api_ref.set_script_dir(script_dir.string());
     api_ref.set_role_dir(config_.base_dir().string());
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_strict_abi_mismatch(config_.startup().strict_abi_mismatch);
-    api_ref.set_shm_require_mutual_auth(
-        config_.startup().shm_require_mutual_auth);
+    api_ref.set_shm_require_mutual_auth(config_.startup().shm_require_mutual_auth);
     api_ref.set_engine(&engine_ref);
 
     // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
@@ -234,20 +231,20 @@ void ConsumerRoleHost::worker_main_()
     engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, id.uid);
 
     scripting::EngineModuleParams params;
-    params.engine             = &engine_ref;
-    params.api                = &api_ref;
-    params.tag                = "cons";
-    params.script_dir         = script_dir;
+    params.engine = &engine_ref;
+    params.api = &api_ref;
+    params.tag = "cons";
+    params.script_dir = script_dir;
     // Audit B12 (2026-05-21): see producer_role_host.cpp comment.
-    params.entry_point        = (sc.type == "lua")    ? "init.lua"
-                              : (sc.type == "native") ? "plugin.so"
-                                                      : "__init__.py";
-    params.required_callback  = "on_consume";
-    params.in_slot_spec       = in_slot_spec_;
-    params.in_fz_spec         = in_fz_local;
-    params.inbox_spec         = inbox_spec_local;
-    params.in_packing         = packing;
-    params.module_name        = engine_module_name_;
+    params.entry_point = (sc.type == "lua")      ? "init.lua"
+                         : (sc.type == "native") ? "plugin.so"
+                                                 : "__init__.py";
+    params.required_callback = "on_consume";
+    params.in_slot_spec = in_slot_spec_;
+    params.in_fz_spec = in_fz_local;
+    params.inbox_spec = inbox_spec_local;
+    params.in_packing = packing;
+    params.module_name = engine_module_name_;
 
     try
     {
@@ -290,8 +287,8 @@ void ConsumerRoleHost::worker_main_()
         std::vector<scripting::Presence> presences;
         {
             scripting::Presence p;
-            p.hub       = config_.in_hub();
-            p.channel   = config_.in_channel();
+            p.hub = config_.in_hub();
+            p.channel = config_.in_channel();
             p.role_kind = scripting::RoleKind::Consumer;
             presences.push_back(std::move(p));
         }
@@ -299,13 +296,12 @@ void ConsumerRoleHost::worker_main_()
         // HEP-CORE-0040 §173: CURVE keypair lives in `secure().keys()`
         // — read on-site via `with_seckey` / `pubkey`.  No plumbing
         // through RoleAPIBase.
-        auto handler = std::make_unique<scripting::RoleHandler>(
-            std::move(presences));
+        auto handler = std::make_unique<scripting::RoleHandler>(std::move(presences));
 
         if (!api_ref.start_handler_threads(std::move(handler)))
         {
             LOGGER_ERROR("[cons] start_handler_threads failed");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -316,18 +312,17 @@ void ConsumerRoleHost::worker_main_()
         // `_on_consumer_authorized`.
         const auto &ch = config_.in_channel();
         hub::ConsumerRegInputs cons_reg_in;
-        cons_reg_in.channel   = ch;
-        cons_reg_in.role_uid  = id.uid;
+        cons_reg_in.channel = ch;
+        cons_reg_in.role_uid = id.uid;
         cons_reg_in.role_name = id.name;
         cons_reg_in.role_type = "consumer";
         // Consumer input transport → wire `data_transport` per HEP-CORE-0036 §5b.4.
         cons_reg_in.data_transport =
-            (config_.in_transport().transport ==
-                 pylabhub::config::Transport::Zmq)
+            (config_.in_transport().transport == pylabhub::config::Transport::Zmq)
                 ? std::string{"zmq"}
                 : std::string{"shm"};
-        cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::
-                                              secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
+        cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::secure().keys().pubkey(
+            pylabhub::utils::security::kRoleIdentityName));
         // 2026-07-08 topology migration — consumer declares its input
         // channel topology.  Empty when the config didn't set
         // `in_channel_topology`; the builder skips wire emission and
@@ -340,8 +335,8 @@ void ConsumerRoleHost::worker_main_()
         // vs absent decided by the schema JSON shape; broker enforces the
         // mode rules.
         const auto &cf_for_wire = config_.role_data<consumer::ConsumerFields>();
-        const auto wire_schema = hub::make_wire_schema_fields(
-            cf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
+        const auto wire_schema = hub::make_wire_schema_fields(cf_for_wire.in_slot_schema_json,
+                                                              in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(reg_opts, wire_schema);
 
         // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
@@ -353,8 +348,7 @@ void ConsumerRoleHost::worker_main_()
         // S1+O4, 2026-05-17 — replaces the pre-S1
         // `shared.consumer_channel` string).
         auto reg_result = api_ref.register_consumer(reg_opts);
-        if (!reg_result.has_value() ||
-            reg_result->value("status", std::string{}) != "success")
+        if (!reg_result.has_value() || reg_result->value("status", std::string{}) != "success")
         {
             // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL.  Under
             // §3.5 the consumer's PULL socket is in Standby at S1 and only
@@ -363,7 +357,7 @@ void ConsumerRoleHost::worker_main_()
             // no data flow.
             LOGGER_ERROR("[cons] Broker consumer registration failed — "
                          "aborting role startup");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -381,13 +375,12 @@ void ConsumerRoleHost::worker_main_()
         {
             LOGGER_ERROR("[cons] apply_consumer_reg_ack failed — "
                          "Rx queue did not reach Active state");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
         auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
-        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
-                                   hub_max);
+        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms, hub_max);
 
         // Step 6d.1 — HEP-CORE-0036 §I9.1 topology-agnostic finalize.
         // No-op on consumer today (queue never defers on this side),
@@ -395,20 +388,17 @@ void ConsumerRoleHost::worker_main_()
         // that puts a deferred connect on the consumer side (e.g. a
         // new fan-in-mirror variant) needs no role-host change.  The
         // queue decides.
-        auto is_cancelled = [&core_]() -> bool {
-            return core_.is_shutdown_requested() ||
-                   core_.is_critical_error() ||
+        auto is_cancelled = [&core_]() -> bool
+        {
+            return core_.is_shutdown_requested() || core_.is_critical_error() ||
                    core_.is_process_exit_requested();
         };
-        if (!api_ref.finalize_channel_connect(
-                config_.in_channel(),
-                config_.timing().init_timeout_ms,
-                is_cancelled))
+        if (!api_ref.finalize_channel_connect(config_.in_channel(),
+                                              config_.timing().init_timeout_ms, is_cancelled))
         {
-            LOGGER_ERROR(
-                "[cons] Startup: finalize_channel_connect('{}') failed "
-                "— aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
-                config_.in_channel());
+            LOGGER_ERROR("[cons] Startup: finalize_channel_connect('{}') failed "
+                         "— aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                         config_.in_channel());
             teardown_infrastructure_();
             promise_ref.set_value(false);
             return;
@@ -423,7 +413,7 @@ void ConsumerRoleHost::worker_main_()
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[cons]"))
         {
             LOGGER_ERROR("[cons] Startup coordination failed — required roles not available");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -441,36 +431,31 @@ void ConsumerRoleHost::worker_main_()
     else
     {
         const auto &tc_loop = config_.timing();
-        ConsumerCycleOps ops(api_ref, engine_ref, core_,
-                             sc.stop_on_script_error);
+        ConsumerCycleOps ops(api_ref, engine_ref, core_, sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
-        lcfg.period_us                   = tc_loop.period_us;
-        lcfg.loop_timing                 = tc_loop.loop_timing;
+        lcfg.period_us = tc_loop.period_us;
+        lcfg.loop_timing = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
-        lcfg.release_global_lock_during_wait =
-            engine_ref.release_global_lock_during_wait();
-        lcfg.init_timeout_ms             = tc_loop.init_timeout_ms;
+        lcfg.release_global_lock_during_wait = engine_ref.release_global_lock_during_wait();
+        lcfg.init_timeout_ms = tc_loop.init_timeout_ms;
         scripting::run_data_loop(api_ref, core_, lcfg, ops, engine_ref);
     }
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).
-    scripting::do_role_teardown(
-        engine_ref, api_ref, core_, has_api(),
-        [this] { teardown_infrastructure_(); });
+    scripting::do_role_teardown(engine_ref, api_ref, core_, has_api(),
+                                [this] { teardown_infrastructure_(); });
 }
 
 // ============================================================================
 // make_rx_opts — delegates to the shared free function (M9 §11.6)
 // ============================================================================
 
-hub::RxQueueOptions
-ConsumerRoleHost::make_rx_opts(const config::RoleConfig &config,
-                                const hub::SchemaSpec    &in_slot_spec,
-                                const hub::SchemaSpec    &in_fz_spec,
-                                bool                      has_rx_fz)
+hub::RxQueueOptions ConsumerRoleHost::make_rx_opts(const config::RoleConfig &config,
+                                                   const hub::SchemaSpec &in_slot_spec,
+                                                   const hub::SchemaSpec &in_fz_spec,
+                                                   bool has_rx_fz)
 {
-    return scripting::make_rx_opts(config, in_slot_spec, in_fz_spec,
-                                    has_rx_fz);
+    return scripting::make_rx_opts(config, in_slot_spec, in_fz_spec, has_rx_fz);
 }
 
 // ============================================================================
@@ -486,25 +471,21 @@ std::vector<scripting::Presence>
 ConsumerRoleHost::build_presences_(const config::RoleConfig &c) const
 {
     scripting::Presence p;
-    p.hub       = c.in_hub();
-    p.channel   = c.in_channel();
+    p.hub = c.in_hub();
+    p.channel = c.in_channel();
     p.role_kind = scripting::RoleKind::Consumer;
 
     std::vector<std::string> schema_dirs;
     if (!p.hub.hub_dir.empty())
-        schema_dirs.push_back(
-            (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
+        schema_dirs.push_back((std::filesystem::path(p.hub.hub_dir) / "schemas").string());
 
     const auto &fields = c.role_data<ConsumerFields>();
-    p.slot_spec = hub::resolve_schema(
-        fields.in_slot_schema_json, false, "cons", schema_dirs);
-    p.fz_spec = hub::resolve_schema(
-        fields.in_flexzone_schema_json, true, "cons", schema_dirs);
+    p.slot_spec = hub::resolve_schema(fields.in_slot_schema_json, false, "cons", schema_dirs);
+    p.fz_spec = hub::resolve_schema(fields.in_flexzone_schema_json, true, "cons", schema_dirs);
 
     std::vector<scripting::Presence> v;
     v.push_back(std::move(p));
     return v;
 }
-
 
 } // namespace pylabhub::consumer

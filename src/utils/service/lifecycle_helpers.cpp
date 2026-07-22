@@ -43,8 +43,7 @@ void validate_module_name(std::string_view name, const char *param_name)
 // timedShutdown
 // ---------------------------------------------------------------------------
 
-ShutdownOutcome timedShutdown(const std::function<void()> &func,
-                              std::chrono::milliseconds    timeout)
+ShutdownOutcome timedShutdown(const std::function<void()> &func, std::chrono::milliseconds timeout)
 {
     if (!func)
     {
@@ -56,29 +55,30 @@ ShutdownOutcome timedShutdown(const std::function<void()> &func,
     // would destroy the state while the thread still holds references → UAF/UB.
     struct SharedState
     {
-        std::mutex              mu;
+        std::mutex mu;
         std::condition_variable cv;
-        bool                    completed{false};
-        std::exception_ptr      ex_ptr{nullptr};
+        bool completed{false};
+        std::exception_ptr ex_ptr{nullptr};
     };
     auto state = std::make_shared<SharedState>();
 
-    std::thread thread([func, state]()
-                       {
-                           try
-                           {
-                               func();
-                           }
-                           catch (...)
-                           {
-                               state->ex_ptr = std::current_exception();
-                           }
-                           {
-                               std::lock_guard<std::mutex> lk(state->mu);
-                               state->completed = true;
-                           }
-                           state->cv.notify_one();
-                       });
+    std::thread thread(
+        [func, state]()
+        {
+            try
+            {
+                func();
+            }
+            catch (...)
+            {
+                state->ex_ptr = std::current_exception();
+            }
+            {
+                std::lock_guard<std::mutex> lk(state->mu);
+                state->completed = true;
+            }
+            state->cv.notify_one();
+        });
 
     {
         std::unique_lock<std::mutex> lk(state->mu);

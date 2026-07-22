@@ -38,23 +38,23 @@
 #include "utils/cli_helpers.hpp"
 #include "utils/config/hub_config.hpp"
 #include "utils/hub_cli.hpp"
-#include "utils/script_engine_factory.hpp"  // scripting::init_scripting()
-#include "utils/thread_manager.hpp"         // process_detached_count for exit code
-#include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
+#include "utils/script_engine_factory.hpp"            // scripting::init_scripting()
+#include "utils/thread_manager.hpp"                   // process_detached_count for exit code
+#include "../scripting/python_interpreter_module.hpp" // ensure_python_interpreter_loaded
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
 #include "utils/hub_vault.hpp" // HEP-CORE-0035 §4.8 — vault-backed known_roles
 #include "utils/security/key_file_acl.hpp"
-#include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
+#include "utils/security/key_store.hpp" // HEP-CORE-0040 §172
 #include "utils/security/known_roles.hpp"
 #include "utils/security/secure_subsystem.hpp" // HEP-CORE-0040 §4
 #include "utils/interactive_signal_handler.hpp"
-#include "utils/role_main_helpers.hpp"      // role_lifecycle_modules,
-                                              // register_signal_handler_lifecycle,
-                                              // log_version_info
+#include "utils/role_main_helpers.hpp" // role_lifecycle_modules,
+                                       // register_signal_handler_lifecycle,
+                                       // log_version_info
 
-#include "plh_datahub.hpp"                  // LifecycleGuard + utils prelude
-#include "plh_version_registry.hpp"          // HEP-CORE-0032 ABI check
+#include "plh_datahub.hpp"          // LifecycleGuard + utils prelude
+#include "plh_version_registry.hpp" // HEP-CORE-0032 ABI check
 
 #include <atomic>
 #include <chrono>
@@ -68,8 +68,8 @@
 #include <thread>
 
 using namespace pylabhub::utils;
-namespace cli       = pylabhub::cli;
-namespace hub_cli   = pylabhub::hub_cli;
+namespace cli = pylabhub::cli;
+namespace hub_cli = pylabhub::hub_cli;
 namespace scripting = pylabhub::scripting;
 
 namespace
@@ -91,9 +91,8 @@ bool configure_logger_from_hub_config(const pylabhub::config::HubConfig &cfg)
     namespace fs = std::filesystem;
     const auto &lc = cfg.logging();
 
-    fs::path base = lc.file_path.empty()
-                        ? (cfg.base_dir() / "logs" / (cfg.identity().uid + ".log"))
-                        : fs::path(lc.file_path);
+    fs::path base = lc.file_path.empty() ? (cfg.base_dir() / "logs" / (cfg.identity().uid + ".log"))
+                                         : fs::path(lc.file_path);
     if (base.is_relative())
         base = cfg.base_dir() / base;
 
@@ -103,22 +102,20 @@ bool configure_logger_from_hub_config(const pylabhub::config::HubConfig &cfg)
 
     pylabhub::utils::Logger::RotatingLogConfig rcfg{};
     rcfg.max_file_size_bytes = lc.max_size_bytes;
-    rcfg.max_backup_files    = lc.max_backup_files;
-    rcfg.timestamped_names   = lc.timestamped;
-    rcfg.use_flock           = true;
+    rcfg.max_backup_files = lc.max_backup_files;
+    rcfg.timestamped_names = lc.timestamped;
+    rcfg.use_flock = true;
 
     std::error_code ec;
     if (!pylabhub::utils::Logger::instance().set_rotating_logfile(base, rcfg, ec))
     {
-        LOGGER_ERROR("{} Failed to attach rotating log sink at '{}': {}",
-                     kLogTag, base.string(), ec.message());
+        LOGGER_ERROR("{} Failed to attach rotating log sink at '{}': {}", kLogTag, base.string(),
+                     ec.message());
         return false;
     }
-    LOGGER_INFO("{} Log sink: {} (max_size={:.1f} MiB, backups={}, timestamped={})",
-                kLogTag, base.string(),
-                lc.max_size_bytes / (1024.0 * 1024.0),
-                (lc.max_backup_files ==
-                 pylabhub::config::LoggingConfig::kKeepAllBackups)
+    LOGGER_INFO("{} Log sink: {} (max_size={:.1f} MiB, backups={}, timestamped={})", kLogTag,
+                base.string(), lc.max_size_bytes / (1024.0 * 1024.0),
+                (lc.max_backup_files == pylabhub::config::LoggingConfig::kKeepAllBackups)
                     ? std::string("all")
                     : std::to_string(lc.max_backup_files),
                 lc.timestamped);
@@ -131,19 +128,16 @@ bool configure_logger_from_hub_config(const pylabhub::config::HubConfig &cfg)
 int do_init(const hub_cli::HubArgs &args)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = args.hub_dir.empty()
-                             ? fs::current_path()
-                             : fs::path(args.hub_dir);
+    const fs::path dir = args.hub_dir.empty() ? fs::current_path() : fs::path(args.hub_dir);
 
-    const auto name_opt = cli::resolve_init_name(
-        args.init_name,
-        "Hub name (human-readable, e.g. 'lab1'): ");
+    const auto name_opt =
+        cli::resolve_init_name(args.init_name, "Hub name (human-readable, e.g. 'lab1'): ");
     if (!name_opt)
         return 1;
 
     HubDirectory::LogInitOverrides log_overrides;
     log_overrides.max_size_mb = args.log_max_size_mb;
-    log_overrides.backups     = args.log_backups;
+    log_overrides.backups = args.log_backups;
 
     return HubDirectory::init_directory(dir, *name_opt, log_overrides);
 }
@@ -161,7 +155,7 @@ int do_init(const hub_cli::HubArgs &args)
 // ─────────────────────────────────────────────────────────────────────────────
 int do_known_role_ops(const hub_cli::HubArgs &args)
 {
-    namespace fs       = std::filesystem;
+    namespace fs = std::filesystem;
     namespace security = pylabhub::utils::security;
 
     // Load config (source of truth for auth.keyfile + hub_uid).
@@ -169,11 +163,9 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
     try
     {
         if (!args.hub_dir.empty())
-            cfg_opt.emplace(
-                pylabhub::config::HubConfig::load_from_directory(args.hub_dir));
+            cfg_opt.emplace(pylabhub::config::HubConfig::load_from_directory(args.hub_dir));
         else
-            cfg_opt.emplace(
-                pylabhub::config::HubConfig::load(args.config_path));
+            cfg_opt.emplace(pylabhub::config::HubConfig::load(args.config_path));
     }
     catch (const std::exception &e)
     {
@@ -190,13 +182,11 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         return 1;
     }
 
-    const fs::path vault_path =
-        security::resolve_keyfile_path(cfg.auth().keyfile, cfg.base_dir());
+    const fs::path vault_path = security::resolve_keyfile_path(cfg.auth().keyfile, cfg.base_dir());
     const std::string &uid = cfg.identity().uid;
 
     // Unlock the vault (list is read-only but still needs the payload).
-    const auto password = cli::get_password(
-        "hub", "PYLABHUB_HUB_PASSWORD", "Hub vault password: ");
+    const auto password = cli::get_password("hub", "PYLABHUB_HUB_PASSWORD", "Hub vault password: ");
     if (!password)
         return 1;
 
@@ -219,8 +209,7 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
     {
         const auto &kr = vault.known_roles();
         if (kr.is_object() && !kr.empty())
-            store =
-                security::KnownRolesStore::from_json(kr, vault_path.string());
+            store = security::KnownRolesStore::from_json(kr, vault_path.string());
     }
     catch (const std::exception &e)
     {
@@ -229,7 +218,8 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
     }
 
     // Persist the mutated store back into the vault (re-encrypt in place).
-    const auto persist = [&](const security::KnownRolesStore &s) -> bool {
+    const auto persist = [&](const security::KnownRolesStore &s) -> bool
+    {
         try
         {
             vault.set_known_roles(s.to_json());
@@ -252,18 +242,17 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
             return 1;
         }
         pylabhub::broker::KnownRole entry;
-        entry.name       = args.known_role_args[0];
-        entry.uid        = args.known_role_args[1];
-        entry.role       = args.known_role_args[2];
+        entry.name = args.known_role_args[0];
+        entry.uid = args.known_role_args[1];
+        entry.role = args.known_role_args[2];
         entry.pubkey_z85 = args.known_role_args[3];
         try
         {
             const bool inserted = store.add(std::move(entry));
             if (!persist(store))
                 return 1;
-            std::cout << (inserted ? "added" : "updated")
-                      << " known-role uid='" << args.known_role_args[1]
-                      << "' pubkey=" << args.known_role_args[3] << "\n";
+            std::cout << (inserted ? "added" : "updated") << " known-role uid='"
+                      << args.known_role_args[1] << "' pubkey=" << args.known_role_args[3] << "\n";
             return 0;
         }
         catch (const std::exception &e)
@@ -281,7 +270,7 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
             return 1;
         }
         const std::string &target_uid = args.known_role_args[0];
-        const bool         removed     = store.remove(target_uid);
+        const bool removed = store.remove(target_uid);
 
         // H-K3: only persist when state actually changed — never
         // re-encrypt the vault (advancing its mtime / audit timeline)
@@ -294,8 +283,7 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         }
         else
         {
-            std::cout << "not present known-role uid='" << target_uid
-                      << "' (vault untouched)\n";
+            std::cout << "not present known-role uid='" << target_uid << "' (vault untouched)\n";
         }
         return 0;
     }
@@ -325,18 +313,16 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         std::error_code ec;
         if (!fs::exists(legacy, ec))
         {
-            std::cerr << "Nothing to migrate: no plaintext allowlist at '"
-                      << legacy.string() << "'.\n";
+            std::cerr << "Nothing to migrate: no plaintext allowlist at '" << legacy.string()
+                      << "'.\n";
             return 1;
         }
         // Refuse to overwrite a non-empty vault allowlist — the operator
         // must reconcile deliberately, never silently clobber.
         if (!store.empty())
         {
-            std::cerr << "Refusing to migrate: the vault already holds "
-                      << store.size()
-                      << " known-role(s).  Reconcile manually, then remove '"
-                      << legacy.string()
+            std::cerr << "Refusing to migrate: the vault already holds " << store.size()
+                      << " known-role(s).  Reconcile manually, then remove '" << legacy.string()
                       << "' once the vault is confirmed authoritative.\n";
             return 1;
         }
@@ -349,8 +335,7 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         }
         catch (const std::exception &e)
         {
-            std::cerr << "Error reading '" << legacy.string()
-                      << "': " << e.what() << "\n";
+            std::cerr << "Error reading '" << legacy.string() << "': " << e.what() << "\n";
             return 1;
         }
         if (!persist(migrated))
@@ -360,14 +345,13 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         if (ec)
         {
             std::cerr << "Migrated " << migrated.size()
-                      << " role(s) into the vault, but FAILED to remove '"
-                      << legacy.string() << "': " << ec.message()
+                      << " role(s) into the vault, but FAILED to remove '" << legacy.string()
+                      << "': " << ec.message()
                       << " — remove it manually (the hub refuses to start "
                          "until it is gone).\n";
             return 1;
         }
-        std::cout << "migrated " << migrated.size()
-                  << " known-role(s) into the vault and removed '"
+        std::cout << "migrated " << migrated.size() << " known-role(s) into the vault and removed '"
                   << legacy.string() << "'\n";
         return 0;
     }
@@ -387,11 +371,9 @@ int do_keygen(pylabhub::config::HubConfig &cfg)
         return 1;
     }
 
-    const auto pw_opt = cli::get_new_password(
-        "hub",
-        "PYLABHUB_HUB_PASSWORD",
-        "Hub vault password (empty = no encryption): ",
-        "Confirm password: ");
+    const auto pw_opt =
+        cli::get_new_password("hub", "PYLABHUB_HUB_PASSWORD",
+                              "Hub vault password (empty = no encryption): ", "Confirm password: ");
     if (!pw_opt)
         return 1;
 
@@ -422,16 +404,15 @@ int main(int argc, char *argv[])
     //    field.  Same shape plh_role uses.
     {
         constexpr auto kAbiExpected = pylabhub::version::abi_expected_here();
-        const auto abi = pylabhub::version::check_abi(
-            kAbiExpected.versions, kAbiExpected.build_id);
+        const auto abi = pylabhub::version::check_abi(kAbiExpected.versions, kAbiExpected.build_id);
         if (!abi.compatible)
         {
             std::fprintf(stderr,
-                "[plh_hub] ABI mismatch — refusing to run.\n"
-                "  %s\n"
-                "  Rebuild this binary against the installed library, "
-                "or reinstall a matching library.\n",
-                abi.message.c_str());
+                         "[plh_hub] ABI mismatch — refusing to run.\n"
+                         "  %s\n"
+                         "  Rebuild this binary against the installed library, "
+                         "or reinstall a matching library.\n",
+                         abi.message.c_str());
             return 2;
         }
     }
@@ -439,8 +420,7 @@ int main(int argc, char *argv[])
     // 2. Signal handler (atomic-flag style; bridge thread translates to
     //    host.request_shutdown() once we have a HubHost).
     std::atomic<bool> g_shutdown{false};
-    pylabhub::InteractiveSignalHandler signal_handler(
-        {.binary_name = "plh_hub"}, &g_shutdown);
+    pylabhub::InteractiveSignalHandler signal_handler({.binary_name = "plh_hub"}, &g_shutdown);
     signal_handler.install();
 
     // 2a. Register the dispatching ScriptEngine factory with the
@@ -481,8 +461,8 @@ int main(int argc, char *argv[])
     //     §4.8).  The allowlist lives inside the encrypted vault, so these
     //     ops load the config, unlock the vault with the master password,
     //     mutate the payload, and re-encrypt — see do_known_role_ops().
-    if (args.add_known_role_only || args.revoke_known_role_only ||
-        args.list_known_roles_only || args.migrate_known_roles_only)
+    if (args.add_known_role_only || args.revoke_known_role_only || args.list_known_roles_only ||
+        args.migrate_known_roles_only)
         return do_known_role_ops(args);
 
     // 6. Load config.  HubConfig::load throws on any parse / validation error;
@@ -491,11 +471,9 @@ int main(int argc, char *argv[])
     try
     {
         if (!args.hub_dir.empty())
-            config_opt.emplace(
-                pylabhub::config::HubConfig::load_from_directory(args.hub_dir));
+            config_opt.emplace(pylabhub::config::HubConfig::load_from_directory(args.hub_dir));
         else
-            config_opt.emplace(
-                pylabhub::config::HubConfig::load(args.config_path));
+            config_opt.emplace(pylabhub::config::HubConfig::load(args.config_path));
     }
     catch (const std::exception &e)
     {
@@ -505,7 +483,7 @@ int main(int argc, char *argv[])
     auto &cfg = *config_opt;
 
     // 7. Attach rotating log sink (path auto-composed from config).
-    (void) configure_logger_from_hub_config(cfg);
+    (void)configure_logger_from_hub_config(cfg);
 
     // 8. --keygen mode.  Operates on the loaded config; doesn't enter the
     //    HubHost lifecycle.
@@ -531,10 +509,8 @@ int main(int argc, char *argv[])
     //    vault, both prompt for the password, both unlock.
     if (!cfg.auth().keyfile.empty())
     {
-        const auto vault_password = cli::get_password(
-            "hub",
-            "PYLABHUB_HUB_PASSWORD",
-            "Hub vault password: ");
+        const auto vault_password =
+            cli::get_password("hub", "PYLABHUB_HUB_PASSWORD", "Hub vault password: ");
         if (!vault_password)
             return 1;
         try
@@ -561,8 +537,7 @@ int main(int argc, char *argv[])
     //     invokes pi_shutdown synchronously on THIS thread (same thread
     //     as Py_InitializeFromConfig), satisfying CPython's single-thread
     //     init/finalize contract.
-    if (!cfg.script().path.empty() &&
-        (cfg.script().type == "python" || cfg.script().type.empty()))
+    if (!cfg.script().path.empty() && (cfg.script().type == "python" || cfg.script().type.empty()))
     {
         if (!pylabhub::scripting::ensure_python_interpreter_loaded())
         {
@@ -618,39 +593,38 @@ int main(int argc, char *argv[])
     //     g_shutdown it requests shutdown and exits.  Also exits if the
     //     host stops on its own (e.g., admin-RPC `request_shutdown`) so
     //     the join below is bounded.
-    std::thread bridge([&host, &g_shutdown] {
-        using namespace std::chrono_literals;
-        while (!g_shutdown.load(std::memory_order_acquire))
+    std::thread bridge(
+        [&host, &g_shutdown]
         {
-            if (!host.is_running())
-                return;
-            std::this_thread::sleep_for(100ms);
-        }
-        host.request_shutdown();
-    });
+            using namespace std::chrono_literals;
+            while (!g_shutdown.load(std::memory_order_acquire))
+            {
+                if (!host.is_running())
+                    return;
+                std::this_thread::sleep_for(100ms);
+            }
+            host.request_shutdown();
+        });
 
     // 14. Status callback — printed on demand by the signal-handler watcher
     //     thread (e.g., on a query signal).  Mirrors the plh_role status
     //     shape but with hub-specific fields (broker endpoint instead of
     //     in/out channels).
     const auto start_time = std::chrono::steady_clock::now();
-    signal_handler.set_status_callback([&]() -> std::string
-    {
-        const auto elapsed = std::chrono::steady_clock::now() - start_time;
-        const auto secs    = std::chrono::duration_cast<std::chrono::seconds>(
-                                 elapsed).count();
-        const auto &c = host.config();
-        return fmt::format(
-            "  pyLabHub {} (plh_hub, script={})\n"
-            "  Endpoint:  {}\n"
-            "  UID:       {}\n"
-            "  Uptime:    {}h {}m {}s",
-            pylabhub::platform::get_version_string(),
-            c.script().type,
-            host.broker_endpoint(),
-            c.identity().uid,
-            secs / 3600, (secs % 3600) / 60, secs % 60);
-    });
+    signal_handler.set_status_callback(
+        [&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            const auto &c = host.config();
+            return fmt::format("  pyLabHub {} (plh_hub, script={})\n"
+                               "  Endpoint:  {}\n"
+                               "  UID:       {}\n"
+                               "  Uptime:    {}h {}m {}s",
+                               pylabhub::platform::get_version_string(), c.script().type,
+                               host.broker_endpoint(), c.identity().uid, secs / 3600,
+                               (secs % 3600) / 60, secs % 60);
+        });
 
     // 15. Block until shutdown.  HubHost::run_main_loop returns when
     //     request_shutdown() flips the internal flag (signal handler →

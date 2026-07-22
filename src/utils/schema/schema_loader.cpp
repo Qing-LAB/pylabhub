@@ -35,7 +35,7 @@
 #include "utils/json_fwd.hpp"
 
 #include <algorithm>
-#include <cstdlib>  // std::getenv
+#include <cstdlib> // std::getenv
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -58,32 +58,30 @@ namespace
 
 struct TypeInfo
 {
-    size_t      size;       ///< sizeof(element_type)
-    size_t      align;      ///< alignof(element_type) == size for BLDS types
+    size_t size;            ///< sizeof(element_type)
+    size_t align;           ///< alignof(element_type) == size for BLDS types
     const char *blds_token; ///< BLDS type identifier string
 };
 
 const TypeInfo *type_info_for(const std::string &json_type)
 {
     static constexpr TypeInfo kTypes[] = {
-        {4, 4, "f32"},  // float32
-        {8, 8, "f64"},  // float64
-        {1, 1, "i8"},   // int8
-        {2, 2, "i16"},  // int16
-        {4, 4, "i32"},  // int32
-        {8, 8, "i64"},  // int64
-        {1, 1, "u8"},   // uint8
-        {2, 2, "u16"},  // uint16
-        {4, 4, "u32"},  // uint32
-        {8, 8, "u64"},  // uint64
-        {1, 1, "b"},    // bool
-        {1, 1, "c"},    // char
+        {4, 4, "f32"}, // float32
+        {8, 8, "f64"}, // float64
+        {1, 1, "i8"},  // int8
+        {2, 2, "i16"}, // int16
+        {4, 4, "i32"}, // int32
+        {8, 8, "i64"}, // int64
+        {1, 1, "u8"},  // uint8
+        {2, 2, "u16"}, // uint16
+        {4, 4, "u32"}, // uint32
+        {8, 8, "u64"}, // uint64
+        {1, 1, "b"},   // bool
+        {1, 1, "c"},   // char
     };
     static constexpr const char *kNames[] = {
-        "float32", "float64",
-        "int8", "int16", "int32", "int64",
-        "uint8", "uint16", "uint32", "uint64",
-        "bool", "char",
+        "float32", "float64", "int8",   "int16",  "int32", "int64",
+        "uint8",   "uint16",  "uint32", "uint64", "bool",  "char",
     };
     static constexpr size_t kCount = sizeof(kNames) / sizeof(kNames[0]);
 
@@ -126,7 +124,7 @@ std::string fields_to_blds(const std::vector<SchemaFieldDef> &fields)
 
 size_t fields_to_struct_size(const std::vector<SchemaFieldDef> &fields)
 {
-    size_t offset    = 0;
+    size_t offset = 0;
     size_t max_align = 1;
 
     for (const auto &f : fields)
@@ -136,7 +134,7 @@ size_t fields_to_struct_size(const std::vector<SchemaFieldDef> &fields)
             throw std::invalid_argument("Unknown schema field type: '" + f.type + "'");
 
         const size_t ealign = ti->align;
-        const size_t esize  = ti->size * static_cast<size_t>(f.count);
+        const size_t esize = ti->size * static_cast<size_t>(f.count);
 
         if (ealign > max_align)
             max_align = ealign;
@@ -160,10 +158,10 @@ size_t fields_to_struct_size(const std::vector<SchemaFieldDef> &fields)
 SchemaFieldDef parse_field(const json &j)
 {
     SchemaFieldDef f;
-    f.name        = j.at("name").get<std::string>();
-    f.type        = j.at("type").get<std::string>();
-    f.count       = j.value("count", 1u);
-    f.unit        = j.value("unit", std::string{});
+    f.name = j.at("name").get<std::string>();
+    f.type = j.at("type").get<std::string>();
+    f.count = j.value("count", 1u);
+    f.unit = j.value("unit", std::string{});
     f.description = j.value("description", std::string{});
     if (f.count < 1)
         f.count = 1;
@@ -178,16 +176,14 @@ SchemaLayoutDef parse_layout(const json &j, const std::string &section_label)
     // It is part of the schema fingerprint (§6.3); a missing field would
     // silently default to one mode and collide with the other.
     if (!j.contains("packing"))
-        throw std::runtime_error(
-            "Schema: '" + section_label +
-            ".packing' is required (HEP-CORE-0034 §6.2). Set "
-            "\"packing\": \"aligned\" or \"packing\": \"packed\".");
+        throw std::runtime_error("Schema: '" + section_label +
+                                 ".packing' is required (HEP-CORE-0034 §6.2). Set "
+                                 "\"packing\": \"aligned\" or \"packing\": \"packed\".");
     layout.packing = j.at("packing").get<std::string>();
     if (layout.packing != "aligned" && layout.packing != "packed")
-        throw std::runtime_error(
-            "Schema: '" + section_label +
-            ".packing' must be \"aligned\" or \"packed\" (got \"" +
-            layout.packing + "\").");
+        throw std::runtime_error("Schema: '" + section_label +
+                                 ".packing' must be \"aligned\" or \"packed\" (got \"" +
+                                 layout.packing + "\").");
 
     if (j.contains("fields"))
     {
@@ -212,46 +208,40 @@ SchemaEntry entry_from_json(const json &j, const std::string &id_override)
     {
         // Reject old-format overrides with a migration hint.
         if (id_override.find('@') != std::string::npos)
-            throw std::runtime_error(
-                "Schema id override '" + id_override +
-                "' uses the retired '@<version>' form. Use "
-                "'$<base>.v<version>' (HEP-0033 §G2.2.0b).");
+            throw std::runtime_error("Schema id override '" + id_override +
+                                     "' uses the retired '@<version>' form. Use "
+                                     "'$<base>.v<version>' (HEP-0033 §G2.2.0b).");
 
         const auto parts = pylabhub::hub::parse_schema_id(id_override);
         if (!parts)
-            throw std::runtime_error(
-                "Schema id override '" + id_override +
-                "' is not a valid schema id. Required form: "
-                "'$<base>.v<version>' (HEP-0033 §G2.2.0b).");
+            throw std::runtime_error("Schema id override '" + id_override +
+                                     "' is not a valid schema id. Required form: "
+                                     "'$<base>.v<version>' (HEP-0033 §G2.2.0b).");
         e.schema_id = id_override;
-        e.version   = parts->version;
+        e.version = parts->version;
     }
     else
     {
-        const std::string base_id  = j.at("id").get<std::string>();
+        const std::string base_id = j.at("id").get<std::string>();
         if (base_id.empty())
             throw std::runtime_error("Schema: 'id' field is empty");
         if (base_id.find('@') != std::string::npos)
-            throw std::runtime_error(
-                "Schema 'id' = '" + base_id +
-                "' must not contain '@'; version is encoded as '.v<N>' "
-                "(HEP-0033 §G2.2.0b).");
+            throw std::runtime_error("Schema 'id' = '" + base_id +
+                                     "' must not contain '@'; version is encoded as '.v<N>' "
+                                     "(HEP-0033 §G2.2.0b).");
         if (base_id.front() == '$')
-            throw std::runtime_error(
-                "Schema 'id' = '" + base_id +
-                "' must NOT include the '$' sigil — that is added "
-                "automatically along with the '.v<version>' suffix.");
+            throw std::runtime_error("Schema 'id' = '" + base_id +
+                                     "' must NOT include the '$' sigil — that is added "
+                                     "automatically along with the '.v<version>' suffix.");
 
-        e.version   = j.value("version", 1u);
+        e.version = j.value("version", 1u);
         e.schema_id = "$" + base_id + ".v" + std::to_string(e.version);
 
-        if (!pylabhub::hub::is_valid_identifier(
-                e.schema_id, pylabhub::hub::IdentifierKind::Schema))
-            throw std::runtime_error(
-                "Schema auto-generated id '" + e.schema_id +
-                "' is not a valid HEP-0033 schema id. Check that the "
-                "'id' field uses only [A-Za-z0-9_-] in name components "
-                "and '.' as separator.");
+        if (!pylabhub::hub::is_valid_identifier(e.schema_id, pylabhub::hub::IdentifierKind::Schema))
+            throw std::runtime_error("Schema auto-generated id '" + e.schema_id +
+                                     "' is not a valid HEP-0033 schema id. Check that the "
+                                     "'id' field uses only [A-Za-z0-9_-] in name components "
+                                     "and '.' as separator.");
     }
 
     e.description = j.value("description", std::string{});
@@ -266,14 +256,14 @@ SchemaEntry entry_from_json(const json &j, const std::string &id_override)
         e.flexzone = parse_layout(j.at("flexzone"), e.schema_id + ".flexzone");
 
     // Compute slot SchemaInfo (packing folded into fingerprint per HEP-CORE-0034 §6.3)
-    e.slot_info     = SchemaLibrary::compute_layout_info(
-        e.slot.fields, e.slot.packing, e.schema_id + ".slot");
+    e.slot_info =
+        SchemaLibrary::compute_layout_info(e.slot.fields, e.slot.packing, e.schema_id + ".slot");
 
     // Compute flexzone SchemaInfo (even if empty — results in zero hash + zero size).
     // When flexzone is absent, the SchemaLayoutDef default packing="aligned" is fine
     // because compute_layout_info early-returns on empty fields.
-    e.flexzone_info = SchemaLibrary::compute_layout_info(
-        e.flexzone.fields, e.flexzone.packing, e.schema_id + ".flexzone");
+    e.flexzone_info = SchemaLibrary::compute_layout_info(e.flexzone.fields, e.flexzone.packing,
+                                                         e.schema_id + ".flexzone");
 
     return e;
 }
@@ -305,14 +295,13 @@ std::string SchemaLibrary::hash_to_hex(const std::array<uint8_t, 32> &h)
 }
 
 SchemaInfo SchemaLibrary::compute_layout_info(const std::vector<SchemaFieldDef> &fields,
-                                              const std::string                 &packing,
-                                              const std::string                 &name)
+                                              const std::string &packing, const std::string &name)
 {
     SchemaInfo info;
-    info.name        = name;
+    info.name = name;
     info.struct_size = fields_to_struct_size(fields);
-    info.blds        = fields_to_blds(fields);
-    info.packing     = packing;  // HEP-CORE-0034 §6.3 — packing in fingerprint
+    info.blds = fields_to_blds(fields);
+    info.packing = packing; // HEP-CORE-0034 §6.3 — packing in fingerprint
 
     if (!info.blds.empty())
         info.compute_hash();
@@ -334,14 +323,13 @@ std::vector<std::string> SchemaLibrary::default_search_dirs()
 #else
         constexpr char sep = ':';
 #endif
-        std::string     sv(env);
+        std::string sv(env);
         std::string::size_type pos = 0;
         while (pos < sv.size())
         {
             const auto end = sv.find(sep, pos);
-            const auto segment = (end == std::string::npos)
-                                     ? sv.substr(pos)
-                                     : sv.substr(pos, end - pos);
+            const auto segment =
+                (end == std::string::npos) ? sv.substr(pos) : sv.substr(pos, end - pos);
             if (!segment.empty())
                 dirs.push_back(segment);
             if (end == std::string::npos)

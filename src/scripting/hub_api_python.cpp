@@ -38,7 +38,7 @@
 
 #include "utils/hub_api.hpp"
 
-#include "json_py_helpers.hpp"   // detail::json_to_py (S5)
+#include "json_py_helpers.hpp" // detail::json_to_py (S5)
 
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
@@ -64,10 +64,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
     using pylabhub::hub_host::HubAPI;
 
     py::class_<HubAPI>(m, "HubAPI",
-        "Hub-side script API surface (HEP-CORE-0033 §12.3).\n"
-        "Exposed as a module global `api` to scripts after\n"
-        "PythonEngine::build_api_(HubAPI&) wires it.  Scripts written\n"
-        "for the role side use the same idiom (api.log / api.uid).")
+                       "Hub-side script API surface (HEP-CORE-0033 §12.3).\n"
+                       "Exposed as a module global `api` to scripts after\n"
+                       "PythonEngine::build_api_(HubAPI&) wires it.  Scripts written\n"
+                       "for the role side use the same idiom (api.log / api.uid).")
 
         // ── Lifecycle / log / uid / metrics ───────────────────────────────
         .def("log", &HubAPI::log, py::arg("level"), py::arg("msg"),
@@ -80,25 +80,25 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "Stable for the life of HubAPI; returned by reference to\n"
              "the underlying std::string (pybind11 copies on conversion).")
 
-        .def("metrics",
-             [](const HubAPI &self) -> py::dict {
-                 // S5: shared fast-path walker
-                 // (src/scripting/json_py_helpers.hpp) — same converter
-                 // PythonEngine's dispatch hot path uses for
-                 // event-detail kwargs.  Replaces the prior
-                 // json.loads(dump()) round-trip; semantics match for
-                 // metrics payloads (no NaN/Inf, no deep recursion —
-                 // see header docstring for the divergence rows).
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.metrics())
-                     .cast<py::dict>();
-             },
-             "Return a snapshot of the broker's metrics — channels / "
-             "roles / bands / peers aggregates plus broker counters.\n"
-             "Empty dict when called before HubHost::startup() or after "
-             "shutdown() — same shape AdminService's query_metrics RPC "
-             "uses (single source of truth via the shared "
-             "hub_state_json serializers).")
+        .def(
+            "metrics",
+            [](const HubAPI &self) -> py::dict
+            {
+                // S5: shared fast-path walker
+                // (src/scripting/json_py_helpers.hpp) — same converter
+                // PythonEngine's dispatch hot path uses for
+                // event-detail kwargs.  Replaces the prior
+                // json.loads(dump()) round-trip; semantics match for
+                // metrics payloads (no NaN/Inf, no deep recursion —
+                // see header docstring for the divergence rows).
+                return pylabhub::scripting::detail::json_to_py(self.metrics()).cast<py::dict>();
+            },
+            "Return a snapshot of the broker's metrics — channels / "
+            "roles / bands / peers aggregates plus broker counters.\n"
+            "Empty dict when called before HubHost::startup() or after "
+            "shutdown() — same shape AdminService's query_metrics RPC "
+            "uses (single source of truth via the shared "
+            "hub_state_json serializers).")
 
         // ── Read accessors (HEP-CORE-0033 §12.3 read block) ───────────────
         //
@@ -113,96 +113,76 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "uid().  Empty string if HubHost backref isn't wired yet "
              "(only happens in unit tests).")
 
-        .def("config",
-             [](const HubAPI &self) -> py::dict {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.config())
-                     .cast<py::dict>();
-             },
-             "Full hub config snapshot — equivalent to the contents of "
-             "hub.json post-default-merge.  Read-only; mutations go "
-             "through curated admin RPCs and the control delegates "
-             "below.")
+        .def(
+            "config", [](const HubAPI &self) -> py::dict
+            { return pylabhub::scripting::detail::json_to_py(self.config()).cast<py::dict>(); },
+            "Full hub config snapshot — equivalent to the contents of "
+            "hub.json post-default-merge.  Read-only; mutations go "
+            "through curated admin RPCs and the control delegates "
+            "below.")
 
-        .def("list_channels",
-             [](const HubAPI &self) -> py::list {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.list_channels())
-                     .cast<py::list>();
-             },
-             "List of all currently-registered channels (each a dict in "
-             "the same shape AdminService's list_channels RPC emits).")
+        .def(
+            "list_channels",
+            [](const HubAPI &self) -> py::list
+            {
+                return pylabhub::scripting::detail::json_to_py(self.list_channels())
+                    .cast<py::list>();
+            },
+            "List of all currently-registered channels (each a dict in "
+            "the same shape AdminService's list_channels RPC emits).")
 
-        .def("get_channel",
-             [](const HubAPI &self, const std::string &name) -> py::object {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.get_channel(name));
-             },
-             py::arg("name"),
-             "Single channel lookup.  Returns the channel dict or None "
-             "if not registered.")
+        .def(
+            "get_channel", [](const HubAPI &self, const std::string &name) -> py::object
+            { return pylabhub::scripting::detail::json_to_py(self.get_channel(name)); },
+            py::arg("name"),
+            "Single channel lookup.  Returns the channel dict or None "
+            "if not registered.")
 
-        .def("list_roles",
-             [](const HubAPI &self) -> py::list {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.list_roles())
-                     .cast<py::list>();
-             },
-             "List of all roles (producers / consumers / processors).")
+        .def(
+            "list_roles", [](const HubAPI &self) -> py::list
+            { return pylabhub::scripting::detail::json_to_py(self.list_roles()).cast<py::list>(); },
+            "List of all roles (producers / consumers / processors).")
 
-        .def("get_role",
-             [](const HubAPI &self, const std::string &role_uid) -> py::object {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.get_role(role_uid));
-             },
-             py::arg("role_uid"),
-             "Single role lookup by uid.  Returns the role dict or "
-             "None.")
+        .def(
+            "get_role", [](const HubAPI &self, const std::string &role_uid) -> py::object
+            { return pylabhub::scripting::detail::json_to_py(self.get_role(role_uid)); },
+            py::arg("role_uid"),
+            "Single role lookup by uid.  Returns the role dict or "
+            "None.")
 
-        .def("list_bands",
-             [](const HubAPI &self) -> py::list {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.list_bands())
-                     .cast<py::list>();
-             },
-             "List of all bands (HEP-CORE-0030 pub/sub channels).")
+        .def(
+            "list_bands", [](const HubAPI &self) -> py::list
+            { return pylabhub::scripting::detail::json_to_py(self.list_bands()).cast<py::list>(); },
+            "List of all bands (HEP-CORE-0030 pub/sub channels).")
 
-        .def("get_band",
-             [](const HubAPI &self, const std::string &name) -> py::object {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.get_band(name));
-             },
-             py::arg("name"),
-             "Single band lookup.  Returns the band dict or None.")
+        .def(
+            "get_band", [](const HubAPI &self, const std::string &name) -> py::object
+            { return pylabhub::scripting::detail::json_to_py(self.get_band(name)); },
+            py::arg("name"), "Single band lookup.  Returns the band dict or None.")
 
-        .def("list_peers",
-             [](const HubAPI &self) -> py::list {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.list_peers())
-                     .cast<py::list>();
-             },
-             "List of all federation peer hubs.")
+        .def(
+            "list_peers", [](const HubAPI &self) -> py::list
+            { return pylabhub::scripting::detail::json_to_py(self.list_peers()).cast<py::list>(); },
+            "List of all federation peer hubs.")
 
-        .def("get_peer",
-             [](const HubAPI &self, const std::string &hub_uid) -> py::object {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.get_peer(hub_uid));
-             },
-             py::arg("hub_uid"),
-             "Single peer lookup by hub uid.  Returns the peer dict or "
-             "None.")
+        .def(
+            "get_peer", [](const HubAPI &self, const std::string &hub_uid) -> py::object
+            { return pylabhub::scripting::detail::json_to_py(self.get_peer(hub_uid)); },
+            py::arg("hub_uid"),
+            "Single peer lookup by hub uid.  Returns the peer dict or "
+            "None.")
 
-        .def("query_metrics",
-             [](const HubAPI &self,
-                const std::vector<std::string> &categories) -> py::dict {
-                 return pylabhub::scripting::detail::json_to_py(
-                            self.query_metrics(categories))
-                     .cast<py::dict>();
-             },
-             py::arg("categories") = std::vector<std::string>{},
-             "Filtered metrics — categories is a list of category names "
-             "(e.g. ['channels', 'counters']); empty/absent = all "
-             "categories.  Same JSON shape metrics() produces.")
+        .def(
+            "query_metrics",
+            [](const HubAPI &self, const std::vector<std::string> &categories) -> py::dict
+            {
+                return pylabhub::scripting::detail::json_to_py(self.query_metrics(categories))
+                    .cast<py::dict>();
+            },
+            py::arg("categories") = std::vector<std::string>{},
+            "Filtered metrics — categories is a list of category names "
+            "(e.g. ['channels', 'counters']); empty/absent = all "
+            "categories.  Same JSON shape metrics() produces.")
 
         // ── Control delegates (HEP-CORE-0033 §12.3 control block) ─────────
         //
@@ -211,13 +191,12 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
         // handles unknown-channel inputs idempotently (matches admin
         // RPC accept-ack semantics).
 
-        .def("close_channel", &HubAPI::close_channel,
-             py::arg("name"),
+        .def("close_channel", &HubAPI::close_channel, py::arg("name"),
              "Request the broker to close a channel.  Idempotent for "
              "unknown channel names.")
 
-        .def("broadcast_channel", &HubAPI::broadcast_channel,
-             py::arg("channel"), py::arg("message"), py::arg("data") = "",
+        .def("broadcast_channel", &HubAPI::broadcast_channel, py::arg("channel"),
+             py::arg("message"), py::arg("data") = "",
              "Send a control-plane broadcast frame to all consumers of "
              "a channel.  `data` defaults to empty for pure control "
              "messages.")
@@ -235,8 +214,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "kDefaultAugmentTimeoutHeartbeats * "
              "kDefaultHeartbeatIntervalMs.\n"
              "Convention: -1 = infinite, 0 = non-blocking, >0 = N ms.")
-        .def("set_augment_timeout", &HubAPI::set_augment_timeout,
-             py::arg("ms"),
+        .def("set_augment_timeout", &HubAPI::set_augment_timeout, py::arg("ms"),
              "Override the augmentation cross-thread wait bound.  "
              "Intended to be called from on_start(api) (or any later "
              "callback) when the script knows its callbacks may take "
@@ -244,25 +222,26 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "(maximum flexibility).  Survives until the next call.")
 
         // ── Events (HEP-CORE-0033 §12.2.3 user-posted events) ─────────────
-        .def("post_event",
-             [](HubAPI &self, const std::string &name, py::object data) {
-                 // None / no-arg → empty object; otherwise convert via
-                 // pylabhub::scripting::detail::py_to_json (single source
-                 // of truth for py↔json on this side, used by every
-                 // other surface in this module).
-                 nlohmann::json j;
-                 if (data.is_none())
-                     j = nlohmann::json::object();
-                 else
-                     j = pylabhub::scripting::detail::py_to_json(data);
-                 self.post_event(name, j);
-             },
-             py::arg("name"),
-             py::arg("data") = py::none(),
-             "Post a user-defined event onto the worker's main-loop "
-             "queue.  Fires `on_app_<name>(api, data)` on the worker "
-             "thread.  Thread-safe; callable from any thread including "
-             "out-of-band server threads (HEP-CORE-0033 §12.5).  Fire-"
-             "and-forget — returns immediately after enqueue.\n"
-             "Raises ValueError if name isn't a valid C identifier.");
+        .def(
+            "post_event",
+            [](HubAPI &self, const std::string &name, py::object data)
+            {
+                // None / no-arg → empty object; otherwise convert via
+                // pylabhub::scripting::detail::py_to_json (single source
+                // of truth for py↔json on this side, used by every
+                // other surface in this module).
+                nlohmann::json j;
+                if (data.is_none())
+                    j = nlohmann::json::object();
+                else
+                    j = pylabhub::scripting::detail::py_to_json(data);
+                self.post_event(name, j);
+            },
+            py::arg("name"), py::arg("data") = py::none(),
+            "Post a user-defined event onto the worker's main-loop "
+            "queue.  Fires `on_app_<name>(api, data)` on the worker "
+            "thread.  Thread-safe; callable from any thread including "
+            "out-of-band server threads (HEP-CORE-0033 §12.5).  Fire-"
+            "and-forget — returns immediately after enqueue.\n"
+            "Raises ValueError if name isn't a valid C identifier.");
 }

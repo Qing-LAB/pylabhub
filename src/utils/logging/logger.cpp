@@ -81,9 +81,8 @@ bool check_directory_is_writable(const std::filesystem::path &dir, std::error_co
     err_code.clear();
     try
     {
-        auto temp_file_path =
-            dir / fmt::format("pylabhub_write_check_{}.tmp",
-                              pylabhub::platform::monotonic_time_ns());
+        auto temp_file_path = dir / fmt::format("pylabhub_write_check_{}.tmp",
+                                                pylabhub::platform::monotonic_time_ns());
 
 #ifdef PYLABHUB_PLATFORM_WIN64
         std::wstring wpath = pylabhub::format_tools::win32_to_long_path(temp_file_path);
@@ -192,7 +191,8 @@ class CallbackDispatcher
             {
                 task();
             }
-            catch (...)  // NOLINT(bugprone-empty-catch) -- exceptions in user callbacks are swallowed
+            catch (
+                ...) // NOLINT(bugprone-empty-catch) -- exceptions in user callbacks are swallowed
             {
             }
         }
@@ -247,14 +247,15 @@ void promise_set_safe(const std::shared_ptr<std::promise<T>> &promise_ptr, T val
     {
         promise_ptr->set_value(std::move(value));
     }
-    catch (...)  // NOLINT(bugprone-empty-catch) -- Promise already satisfied or broken; swallow to avoid std::terminate
+    catch (...) // NOLINT(bugprone-empty-catch) -- Promise already satisfied or broken; swallow to
+                // avoid std::terminate
     {
     }
 }
 
 template <typename T>
 void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &promise_ptr,
-                               std::exception_ptr exception_ptr)
+                                std::exception_ptr exception_ptr)
 {
     if (promise_ptr == nullptr)
     {
@@ -264,7 +265,7 @@ void promise_set_exception_safe(const std::shared_ptr<std::promise<T>> &promise_
     {
         promise_ptr->set_exception(exception_ptr);
     }
-    catch (...)  // NOLINT(bugprone-empty-catch) -- swallow to avoid std::terminate
+    catch (...) // NOLINT(bugprone-empty-catch) -- swallow to avoid std::terminate
     {
     }
 }
@@ -288,7 +289,7 @@ struct Logger::Impl
     std::function<void(const std::string &)> error_callback_; // Size: pointer (8 bytes)
     std::thread worker_thread_; // Size: depends on implementation (e.g., 8 bytes on x64 for pointer
                                 // to thread data)
-    std::unique_ptr<Sink> sink_;    // Size: pointer (8 bytes)
+    std::unique_ptr<Sink> sink_; // Size: pointer (8 bytes)
     static constexpr size_t kDefaultMaxQueueSize = 10000;
     std::atomic<size_t> m_max_queue_size{kDefaultMaxQueueSize};
     std::chrono::system_clock::time_point
@@ -306,8 +307,10 @@ struct Logger::Impl
     std::atomic<bool> shutdown_completed_{false};             // Size: 1 byte
     std::atomic<bool> m_log_sink_messages_enabled_{true};     // Size: 1 byte
     std::atomic<bool> m_was_dropping{false};                  // Size: 1 byte
-    std::atomic<size_t> m_messages_dropped{0};                // Batch counter for summary; exchange(0) when processed
-    std::atomic<size_t> m_total_dropped_since_sink_switch{0}; // Accumulated total; reset on sink switch
+    std::atomic<size_t> m_messages_dropped{
+        0}; // Batch counter for summary; exchange(0) when processed
+    std::atomic<size_t> m_total_dropped_since_sink_switch{
+        0}; // Accumulated total; reset on sink switch
     // steady_clock::time_point::rep encoding of when Impl::shutdown()
     // was entered (0 == never).  Read by debug_dump_state_to_stderr()
     // from a signal handler / SIGTERM watchdog to report
@@ -420,12 +423,12 @@ bool Logger::Impl::enqueue_command(Command &&cmd)
     return true;
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- command dispatch and shutdown handling
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- command dispatch and shutdown
+// handling
 void Logger::Impl::worker_loop()
 {
     PLH_DEBUG("Logger worker_loop ENTER tid={}",
-                static_cast<unsigned long long>(
-                    pylabhub::platform::get_native_thread_id()));
+              static_cast<unsigned long long>(pylabhub::platform::get_native_thread_id()));
     std::vector<Command> local_queue;
     size_t iter_n = 0;
 
@@ -439,12 +442,12 @@ void Logger::Impl::worker_loop()
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             PLH_DEBUG("Logger worker_loop iter={} cv_.wait queue_size={} "
-                        "shutdown_req={}",
-                        iter_n, queue_.size(), shutdown_requested_.load());
+                      "shutdown_req={}",
+                      iter_n, queue_.size(), shutdown_requested_.load());
             cv_.wait(lock, [this] { return !queue_.empty() || shutdown_requested_.load(); });
             PLH_DEBUG("Logger worker_loop iter={} cv_.wait WOKE queue_size={} "
-                        "shutdown_req={}",
-                        iter_n, queue_.size(), shutdown_requested_.load());
+                      "shutdown_req={}",
+                      iter_n, queue_.size(), shutdown_requested_.load());
             local_queue.swap(queue_);
 
             if (m_was_dropping.exchange(false, std::memory_order_relaxed))
@@ -453,10 +456,9 @@ void Logger::Impl::worker_loop()
                 dropped_count = m_messages_dropped.exchange(0, std::memory_order_relaxed);
                 if (dropped_count > 0)
                 {
-                    dropping_duration_s =
-                        std::chrono::duration_cast<std::chrono::duration<double>>(
-                            std::chrono::system_clock::now() - m_dropping_since)
-                            .count();
+                    dropping_duration_s = std::chrono::duration_cast<std::chrono::duration<double>>(
+                                              std::chrono::system_clock::now() - m_dropping_since)
+                                              .count();
                 }
             }
 
@@ -478,7 +480,8 @@ void Logger::Impl::worker_loop()
                                         .thread_id = pylabhub::platform::get_native_thread_id(),
                                         .level = static_cast<int>(Logger::Level::L_WARNING),
                                         .body = make_buffer(
-                                            "Overflow detected when processing the queue. Messages may have been dropped in the following batch.")},
+                                            "Overflow detected when processing the queue. Messages "
+                                            "may have been dropped in the following batch.")},
                              /*sync_flag=*/false);
             }
         }
@@ -504,7 +507,8 @@ void Logger::Impl::worker_loop()
         if (trace_per_msg)
         {
             PLH_DEBUG("Logger worker_loop iter={} shutdown-mode batch "
-                        "size={}", iter_n, batch_size);
+                      "size={}",
+                      iter_n, batch_size);
         }
         for (ptrdiff_t i = 0; i < batch_size; ++i)
         {
@@ -516,15 +520,15 @@ void Logger::Impl::worker_loop()
                     if (trace_per_msg)
                     {
                         PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
-                                    "BEFORE acquiring m_sink_mutex (lvl={})",
-                                    iter_n, i + 1, batch_size, msg->level);
+                                  "BEFORE acquiring m_sink_mutex (lvl={})",
+                                  iter_n, i + 1, batch_size, msg->level);
                     }
                     std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                     if (trace_per_msg)
                     {
                         PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
-                                    "acquired m_sink_mutex", iter_n,
-                                    i + 1, batch_size);
+                                  "acquired m_sink_mutex",
+                                  iter_n, i + 1, batch_size);
                     }
                     if (sink_ &&
                         msg->level >= static_cast<int>(level_.load(std::memory_order_relaxed)))
@@ -532,15 +536,15 @@ void Logger::Impl::worker_loop()
                         if (trace_per_msg)
                         {
                             PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
-                                        "BEFORE sink_->write", iter_n,
-                                        i + 1, batch_size);
+                                      "BEFORE sink_->write",
+                                      iter_n, i + 1, batch_size);
                         }
                         sink_->write(*msg, /*sync_flag=*/false);
                         if (trace_per_msg)
                         {
                             PLH_DEBUG("Logger worker_loop iter={} msg {}/{} "
-                                        "AFTER  sink_->write", iter_n,
-                                        i + 1, batch_size);
+                                      "AFTER  sink_->write",
+                                      iter_n, i + 1, batch_size);
                         }
                     }
                     continue; // done with this item; keep ordering
@@ -619,16 +623,15 @@ void Logger::Impl::worker_loop()
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
             if (sink_)
             {
-                sink_->write(
-                    LogMessage{
-                        .timestamp = std::chrono::system_clock::now(),
-                        .process_id = pylabhub::platform::get_pid(),
-                        .thread_id = pylabhub::platform::get_native_thread_id(),
-                        .level = static_cast<int>(Logger::Level::L_WARNING),
-                        .body = make_buffer(
-                            "Summary: At this point in time, the Logger dropped {} messages over {:.2f}s due to full queue.",
-                            dropped_count, dropping_duration_s)},
-                    /*sync_flag=*/false);
+                sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
+                                        .process_id = pylabhub::platform::get_pid(),
+                                        .thread_id = pylabhub::platform::get_native_thread_id(),
+                                        .level = static_cast<int>(Logger::Level::L_WARNING),
+                                        .body = make_buffer(
+                                            "Summary: At this point in time, the Logger dropped {} "
+                                            "messages over {:.2f}s due to full queue.",
+                                            dropped_count, dropping_duration_s)},
+                             /*sync_flag=*/false);
             }
         }
 
@@ -638,23 +641,25 @@ void Logger::Impl::worker_loop()
             if (auto *sink_cmd = std::get_if<SetSinkCommand>(&cmd_variant))
             {
                 PLH_DEBUG("Logger worker_loop iter={} SetSinkCommand "
-                            "acquiring m_sink_mutex", iter_n);
+                          "acquiring m_sink_mutex",
+                          iter_n);
                 std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
                 PLH_DEBUG("Logger worker_loop iter={} SetSinkCommand "
-                            "acquired m_sink_mutex", iter_n);
+                          "acquired m_sink_mutex",
+                          iter_n);
                 if (m_log_sink_messages_enabled_.load(std::memory_order_relaxed))
                 {
                     std::string old_desc = sink_ ? sink_->description() : "null";
                     std::string new_desc =
                         sink_cmd->new_sink ? sink_cmd->new_sink->description() : "null";
                     PLH_DEBUG("Logger worker_loop iter={} sink switch "
-                                "old='{}' new='{}'",
-                                iter_n, old_desc, new_desc);
+                              "old='{}' new='{}'",
+                              iter_n, old_desc, new_desc);
                     if (sink_)
                     {
                         PLH_DEBUG("Logger worker_loop iter={} "
-                                    "BEFORE old_sink->write(switching msg)",
-                                    iter_n);
+                                  "BEFORE old_sink->write(switching msg)",
+                                  iter_n);
                         sink_->write(
                             LogMessage{.timestamp = std::chrono::system_clock::now(),
                                        .process_id = pylabhub::platform::get_pid(),
@@ -663,11 +668,13 @@ void Logger::Impl::worker_loop()
                                        .body = make_buffer("Switching log sink to: {}", new_desc)},
                             /*sync_flag=*/false);
                         PLH_DEBUG("Logger worker_loop iter={} "
-                                    "AFTER  old_sink->write(switching msg); "
-                                    "BEFORE old_sink->flush()", iter_n);
+                                  "AFTER  old_sink->write(switching msg); "
+                                  "BEFORE old_sink->flush()",
+                                  iter_n);
                         sink_->flush();
                         PLH_DEBUG("Logger worker_loop iter={} "
-                                    "AFTER  old_sink->flush()", iter_n);
+                                  "AFTER  old_sink->flush()",
+                                  iter_n);
                     }
                     m_total_dropped_since_sink_switch.store(0, std::memory_order_relaxed);
                     // Carve out the OLD sink so its destructor runs
@@ -676,20 +683,23 @@ void Logger::Impl::worker_loop()
                     // close in the FileSink dtor would be invisible.
                     auto old_sink = std::move(sink_);
                     PLH_DEBUG("Logger worker_loop iter={} "
-                                "BEFORE sink_ = move(new_sink) (carved out "
-                                "old_sink for explicit destruction)", iter_n);
+                              "BEFORE sink_ = move(new_sink) (carved out "
+                              "old_sink for explicit destruction)",
+                              iter_n);
                     sink_ = std::move(sink_cmd->new_sink);
                     PLH_DEBUG("Logger worker_loop iter={} "
-                                "AFTER  sink_ = move(new_sink); "
-                                "BEFORE old_sink.reset()", iter_n);
+                              "AFTER  sink_ = move(new_sink); "
+                              "BEFORE old_sink.reset()",
+                              iter_n);
                     old_sink.reset();
                     PLH_DEBUG("Logger worker_loop iter={} "
-                                "AFTER  old_sink.reset()", iter_n);
+                              "AFTER  old_sink.reset()",
+                              iter_n);
                     if (sink_)
                     {
                         PLH_DEBUG("Logger worker_loop iter={} "
-                                    "BEFORE new_sink->write(switched-from msg)",
-                                    iter_n);
+                                  "BEFORE new_sink->write(switched-from msg)",
+                                  iter_n);
                         sink_->write(
                             LogMessage{.timestamp = std::chrono::system_clock::now(),
                                        .process_id = pylabhub::platform::get_pid(),
@@ -698,8 +708,8 @@ void Logger::Impl::worker_loop()
                                        .body = make_buffer("Log sink switched from: {}", old_desc)},
                             /*sync_flag=*/false);
                         PLH_DEBUG("Logger worker_loop iter={} "
-                                    "AFTER  new_sink->write(switched-from msg)",
-                                    iter_n);
+                                  "AFTER  new_sink->write(switched-from msg)",
+                                  iter_n);
                     }
                 }
                 else
@@ -708,7 +718,8 @@ void Logger::Impl::worker_loop()
                     sink_ = std::move(sink_cmd->new_sink);
                 }
                 PLH_DEBUG("Logger worker_loop iter={} sink switch DONE; "
-                            "fulfilling promise", iter_n);
+                          "fulfilling promise",
+                          iter_n);
                 promise_set_safe(sink_cmd->promise, true);
             }
         }
@@ -730,14 +741,17 @@ void Logger::Impl::worker_loop()
 
             PLH_DEBUG("Logger worker thread shutting down. iter={}", iter_n);
             PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
-                        "acquiring m_sink_mutex", iter_n);
+                      "acquiring m_sink_mutex",
+                      iter_n);
             std::lock_guard<std::mutex> sink_lock(m_sink_mutex);
             PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
-                        "acquired m_sink_mutex", iter_n);
+                      "acquired m_sink_mutex",
+                      iter_n);
             if (sink_)
             {
                 PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
-                            "BEFORE final sink_->write", iter_n);
+                          "BEFORE final sink_->write",
+                          iter_n);
                 sink_->write(LogMessage{.timestamp = std::chrono::system_clock::now(),
                                         .process_id = pylabhub::platform::get_pid(),
                                         .thread_id = pylabhub::platform::get_native_thread_id(),
@@ -745,16 +759,16 @@ void Logger::Impl::worker_loop()
                                         .body = make_buffer("Logger is shutting down.")},
                              /*sync_flag=*/false);
                 PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
-                            "AFTER  final sink_->write; BEFORE final flush",
-                            iter_n);
+                          "AFTER  final sink_->write; BEFORE final flush",
+                          iter_n);
                 sink_->flush();
                 PLH_DEBUG("Logger worker_loop iter={} shutdown branch "
-                            "AFTER  final flush", iter_n);
+                          "AFTER  final flush",
+                          iter_n);
             }
             queue_.clear(); // Ensure queue is explicitly cleared before exit (final safeguard)
             g_logger_state.store(LoggerState::Shutdown, std::memory_order_release);
-            PLH_DEBUG("Logger worker_loop iter={} BREAKING from while loop",
-                        iter_n);
+            PLH_DEBUG("Logger worker_loop iter={} BREAKING from while loop", iter_n);
             break;
         }
     }
@@ -777,47 +791,50 @@ void Logger::Impl::shutdown()
     // Release.
 #if defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
     const auto t0 = std::chrono::steady_clock::now();
-    shutdown_start_steady_.store(t0.time_since_epoch().count(),
-                                    std::memory_order_release);
-    auto since_t0 = [t0]() {
+    shutdown_start_steady_.store(t0.time_since_epoch().count(), std::memory_order_release);
+    auto since_t0 = [t0]()
+    {
         const auto now = std::chrono::steady_clock::now();
         return std::chrono::duration<double, std::milli>(now - t0).count();
     };
 #endif
 
-    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] ENTER tid={}",
-                since_t0(),
-                static_cast<unsigned long long>(
-                    pylabhub::platform::get_native_thread_id()));
+    PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] ENTER tid={}", since_t0(),
+              static_cast<unsigned long long>(pylabhub::platform::get_native_thread_id()));
     if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
     {
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] REENTRY no-op "
-                    "(completed={}, req_was_true={})",
-                    since_t0(),
-                    shutdown_completed_.load(), shutdown_requested_.load());
+                  "(completed={}, req_was_true={})",
+                  since_t0(), shutdown_completed_.load(), shutdown_requested_.load());
         return;
     }
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] set shutdown_requested_; "
-                "about to notify cv_", since_t0());
+              "about to notify cv_",
+              since_t0());
     cv_.notify_one();
     if (worker_thread_.joinable())
     {
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] before "
-                    "worker_thread_.join()", since_t0());
+                  "worker_thread_.join()",
+                  since_t0());
         worker_thread_.join();
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] after  "
-                    "worker_thread_.join()", since_t0());
+                  "worker_thread_.join()",
+                  since_t0());
     }
     else
     {
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] worker_thread_ not "
-                    "joinable", since_t0());
+                  "joinable",
+                  since_t0());
     }
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] before "
-                "callback_dispatcher_.shutdown()", since_t0());
+              "callback_dispatcher_.shutdown()",
+              since_t0());
     callback_dispatcher_.shutdown();
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] after  "
-                "callback_dispatcher_.shutdown()", since_t0());
+              "callback_dispatcher_.shutdown()",
+              since_t0());
     shutdown_completed_.store(true);
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] EXIT", since_t0());
 }
@@ -834,9 +851,9 @@ void Logger::Impl::debug_dump_state_to_stderr(const char *trigger) noexcept
     {
         const std::chrono::steady_clock::time_point start{
             std::chrono::steady_clock::duration{start_rep}};
-        elapsed_ms = std::chrono::duration<double, std::milli>(
-                            std::chrono::steady_clock::now() - start)
-                            .count();
+        elapsed_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                .count();
     }
 
     bool queue_locked = false;
@@ -851,20 +868,15 @@ void Logger::Impl::debug_dump_state_to_stderr(const char *trigger) noexcept
     }
 
     fmt::print(stderr,
-                "[LOGGER_DUMP] trigger='{}' "
-                "shutdown_req={} shutdown_done={} "
-                "shutdown_age_ms={:.3f} "
-                "worker_joinable={} "
-                "queue_mutex_acquirable={} "
-                "queue_size={}\n",
-                trigger ? trigger : "(null)",
-                shutdown_requested_.load(),
-                shutdown_completed_.load(),
-                elapsed_ms,
-                worker_thread_.joinable(),
-                queue_locked,
-                queue_locked ? std::to_string(queue_size)
-                            : std::string("?(contended)"));
+               "[LOGGER_DUMP] trigger='{}' "
+               "shutdown_req={} shutdown_done={} "
+               "shutdown_age_ms={:.3f} "
+               "worker_joinable={} "
+               "queue_mutex_acquirable={} "
+               "queue_size={}\n",
+               trigger ? trigger : "(null)", shutdown_requested_.load(), shutdown_completed_.load(),
+               elapsed_ms, worker_thread_.joinable(), queue_locked,
+               queue_locked ? std::to_string(queue_size) : std::string("?(contended)"));
     std::fflush(stderr);
 }
 
@@ -948,10 +960,10 @@ bool Logger::set_logfile(const std::string &utf8_path, bool use_flock)
     return false;
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws reported via err_code
+// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws reported via
+// err_code
 bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
-                                  const RotatingLogConfig &cfg,
-                                  std::error_code &err_code) noexcept
+                                  const RotatingLogConfig &cfg, std::error_code &err_code) noexcept
 {
     if (!logger_is_loggable("Logger::set_rotating_logfile"))
     {
@@ -983,18 +995,16 @@ bool Logger::set_rotating_logfile(const std::filesystem::path &base_filepath,
                 return false;
             }
         }
-        const auto mode = cfg.timestamped_names
-            ? RotatingFileSink::Mode::Timestamped
-            : RotatingFileSink::Mode::Numeric;
+        const auto mode = cfg.timestamped_names ? RotatingFileSink::Mode::Timestamped
+                                                : RotatingFileSink::Mode::Numeric;
 
         auto promise = std::make_shared<std::promise<bool>>();
         auto future = promise->get_future();
         // 4. Pre-flight checks passed, enqueue the command with the normalized path.
-        pImpl->enqueue_command(
-            SetSinkCommand{std::make_unique<RotatingFileSink>(
-                               normalized_path, cfg.max_file_size_bytes,
-                               cfg.max_backup_files, cfg.use_flock, mode),
-                           promise});
+        pImpl->enqueue_command(SetSinkCommand{
+            std::make_unique<RotatingFileSink>(normalized_path, cfg.max_file_size_bytes,
+                                               cfg.max_backup_files, cfg.use_flock, mode),
+            promise});
         return future.get();
     }
     catch (const std::exception &e)
@@ -1022,7 +1032,8 @@ bool Logger::set_syslog(const char *ident, int option, int facility)
         auto promise = std::make_shared<std::promise<bool>>();
         auto future = promise->get_future();
         pImpl->enqueue_command(SetSinkCommand{
-            std::make_unique<SyslogSink>(ident != nullptr ? ident : "", option, facility), promise});
+            std::make_unique<SyslogSink>(ident != nullptr ? ident : "", option, facility),
+            promise});
         return future.get();
     }
     catch (const std::exception &e)
@@ -1041,7 +1052,8 @@ bool Logger::set_syslog(const char *ident, int option, int facility)
     return false;
 }
 
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- keep as member for API consistency
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- keep as member for API
+// consistency
 bool Logger::set_eventlog(const wchar_t *source_name)
 {
     if (!logger_is_loggable("Logger::set_eventlog"))
@@ -1195,7 +1207,8 @@ bool Logger::should_log(Level lvl) const noexcept
            static_cast<int>(lvl) >= static_cast<int>(pImpl->level_.load(std::memory_order_relaxed));
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws are rare and documented
+// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws are rare and
+// documented
 bool Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
@@ -1204,17 +1217,18 @@ bool Logger::enqueue_log(Level lvl, fmt::memory_buffer &&body) noexcept
     }
     if (pImpl != nullptr)
     {
-        return pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                                 .process_id = pylabhub::platform::get_pid(),
-                                                 .thread_id =
-                                                     pylabhub::platform::get_native_thread_id(),
-                                                 .level = static_cast<int>(lvl),
-                                                 .body = std::move(body)});
+        return pImpl->enqueue_command(
+            LogMessage{.timestamp = std::chrono::system_clock::now(),
+                       .process_id = pylabhub::platform::get_pid(),
+                       .thread_id = pylabhub::platform::get_native_thread_id(),
+                       .level = static_cast<int>(lvl),
+                       .body = std::move(body)});
     }
     return false;
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws are rare and documented
+// NOLINTNEXTLINE(bugprone-exception-escape) -- noexcept for API; internal throws are rare and
+// documented
 bool Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
 {
     if (g_logger_state.load(std::memory_order_acquire) != LoggerState::Initialized)
@@ -1223,12 +1237,12 @@ bool Logger::enqueue_log(Level lvl, std::string &&body_str) noexcept
     }
     if (pImpl != nullptr)
     {
-        return pImpl->enqueue_command(LogMessage{.timestamp = std::chrono::system_clock::now(),
-                                                 .process_id = pylabhub::platform::get_pid(),
-                                                 .thread_id =
-                                                     pylabhub::platform::get_native_thread_id(),
-                                                 .level = static_cast<int>(lvl),
-                                                 .body = make_buffer("{}", std::move(body_str))});
+        return pImpl->enqueue_command(
+            LogMessage{.timestamp = std::chrono::system_clock::now(),
+                       .process_id = pylabhub::platform::get_pid(),
+                       .thread_id = pylabhub::platform::get_native_thread_id(),
+                       .level = static_cast<int>(lvl),
+                       .body = make_buffer("{}", std::move(body_str))});
     }
     return false;
 }
@@ -1347,9 +1361,8 @@ ModuleDef Logger::GetLifecycleModule()
     return module;
 }
 
-ModuleDef Logger::GetStartupLogFileSinkModule(
-    const std::string &log_file_path,
-    std::optional<RotatingLogConfig> rotating)
+ModuleDef Logger::GetStartupLogFileSinkModule(const std::string &log_file_path,
+                                              std::optional<RotatingLogConfig> rotating)
 {
     ModuleDef sink_mod("StartupLogFileSink");
     sink_mod.add_dependency("pylabhub::utils::Logger");
@@ -1376,31 +1389,33 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
                 // itself). Any other shape is a bug in the producer.
                 const std::string encoded(arg);
                 const auto sep1 = encoded.find('|');
-                const auto sep2 = (sep1 == std::string::npos)
-                                      ? std::string::npos : encoded.find('|', sep1 + 1);
-                const auto sep3 = (sep2 == std::string::npos)
-                                      ? std::string::npos : encoded.find('|', sep2 + 1);
+                const auto sep2 =
+                    (sep1 == std::string::npos) ? std::string::npos : encoded.find('|', sep1 + 1);
+                const auto sep3 =
+                    (sep2 == std::string::npos) ? std::string::npos : encoded.find('|', sep2 + 1);
                 if (sep1 == std::string::npos || sep2 == std::string::npos ||
                     sep3 == std::string::npos)
                 {
-                    std::fprintf(stderr, "WARNING: StartupLogFileSink: malformed rotating "
-                                 "logfile arg '%s'\n", arg);
+                    std::fprintf(stderr,
+                                 "WARNING: StartupLogFileSink: malformed rotating "
+                                 "logfile arg '%s'\n",
+                                 arg);
                     return;
                 }
 
-                const std::string path  = encoded.substr(0, sep1);
+                const std::string path = encoded.substr(0, sep1);
                 Logger::RotatingLogConfig cfg;
-                cfg.max_file_size_bytes  = std::stoull(
-                    encoded.substr(sep1 + 1, sep2 - sep1 - 1));
-                cfg.max_backup_files     = std::stoull(
-                    encoded.substr(sep2 + 1, sep3 - sep2 - 1));
-                cfg.timestamped_names    = (encoded.substr(sep3 + 1) == "t");
+                cfg.max_file_size_bytes = std::stoull(encoded.substr(sep1 + 1, sep2 - sep1 - 1));
+                cfg.max_backup_files = std::stoull(encoded.substr(sep2 + 1, sep3 - sep2 - 1));
+                cfg.timestamped_names = (encoded.substr(sep3 + 1) == "t");
 
                 std::error_code ec;
                 if (!Logger::instance().set_rotating_logfile(path, cfg, ec))
                 {
-                    std::fprintf(stderr, "WARNING: failed to open rotating log file '%s': %s, "
-                                 "falling back to console\n", path.c_str(), ec.message().c_str());
+                    std::fprintf(stderr,
+                                 "WARNING: failed to open rotating log file '%s': %s, "
+                                 "falling back to console\n",
+                                 path.c_str(), ec.message().c_str());
                 }
             },
             encoded_arg);
@@ -1415,8 +1430,10 @@ ModuleDef Logger::GetStartupLogFileSinkModule(
                 {
                     if (!Logger::instance().set_logfile(path))
                     {
-                        std::fprintf(stderr, "WARNING: failed to open log file '%s', "
-                                     "falling back to console\n", path);
+                        std::fprintf(stderr,
+                                     "WARNING: failed to open log file '%s', "
+                                     "falling back to console\n",
+                                     path);
                     }
                 }
             },

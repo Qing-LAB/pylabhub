@@ -53,7 +53,7 @@
 //       reshapes these surfaces.  Contract audit 2026-07-16: all four still
 //       validly pin their contracts (see task #55).
 
-#include "broker_test_harness.h"  // DirectBrokerHandle + BrcHandle + make_reg_opts / make_cons_opts
+#include "broker_test_harness.h" // DirectBrokerHandle + BrcHandle + make_reg_opts / make_cons_opts
 #include "test_entrypoint.h"
 #include "test_process_utils.h"
 #include "shared_test_helpers.h"
@@ -66,7 +66,7 @@
 #include "utils/role_handler.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/security/key_store.hpp"
-#include "service/cycle_ops.hpp"   // dispatch_notifications + StopRequestor
+#include "service/cycle_ops.hpp" // dispatch_notifications + StopRequestor
 #include "plh_datahub.hpp"
 
 #include <gtest/gtest.h>
@@ -90,8 +90,14 @@ using pylabhub::tests::role_keystore_name;
 namespace pylabhub::tests::worker::broker_role_state
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto zmq_module()
+{
+    return ::pylabhub::hub::GetZMQContextModule();
+}
 
 // ============================================================================
 // metrics_reclaim_cycle — full Ready -> Pending -> dereg, verified via metrics
@@ -103,8 +109,9 @@ static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
 int metrics_reclaim_cycle()
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch  = make_test_channel_name("role_state.metrics_cycle");
+        []()
+        {
+            const std::string ch = make_test_channel_name("role_state.metrics_cycle");
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
@@ -112,22 +119,22 @@ int metrics_reclaim_cycle()
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.ready_timeout_override           = std::chrono::milliseconds(150);
-            cfg.pending_timeout_override         = std::chrono::milliseconds(150);
+            cfg.ready_timeout_override = std::chrono::milliseconds(150);
+            cfg.pending_timeout_override = std::chrono::milliseconds(150);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, role_keystore_name(uid));
 
-            auto reg = bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch, uid), 3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             // One heartbeat -> PendingReady -> Ready, bumps pending_to_ready.
             bh.brc.send_heartbeat(ch, uid, "producer", {});
 
             // Stop heartbeating; wait for Ready -> Pending -> dereg via metrics.
-            auto metrics_reclaimed = [&]() {
+            auto metrics_reclaimed = [&]()
+            {
                 auto m = broker.service->query_role_state_metrics();
                 return m.pending_to_deregistered_total >= 1;
             };
@@ -139,8 +146,7 @@ int metrics_reclaim_cycle()
             // Pending→Connected recoveries.  First-heartbeat (kRegistering
             // → kLive sub-state flip) is NOT a Pending→Connected transition
             // and does not bump this counter.
-            EXPECT_EQ(m.pending_to_ready_total, 0u)
-                << "no recovery happened in this scenario";
+            EXPECT_EQ(m.pending_to_ready_total, 0u) << "no recovery happened in this scenario";
             EXPECT_GE(m.ready_to_pending_total, 1u)
                 << "ready_to_pending_total should be >=1 (demotion on timeout)";
             EXPECT_GE(m.pending_to_deregistered_total, 1u)
@@ -149,8 +155,8 @@ int metrics_reclaim_cycle()
             bh.stop();
             broker.stop_and_join();
         },
-        "role_state.metrics_reclaim_cycle",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.metrics_reclaim_cycle", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -162,8 +168,9 @@ int metrics_reclaim_cycle()
 int pending_recovers_to_ready()
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch  = make_test_channel_name("role_state.recover");
+        []()
+        {
+            const std::string ch = make_test_channel_name("role_state.recover");
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
@@ -171,20 +178,20 @@ int pending_recovers_to_ready()
 
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.ready_timeout_override           = std::chrono::milliseconds(150);
-            cfg.pending_timeout_override         = std::chrono::seconds(10); // long -> won't dereg
+            cfg.ready_timeout_override = std::chrono::milliseconds(150);
+            cfg.pending_timeout_override = std::chrono::seconds(10); // long -> won't dereg
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, role_keystore_name(uid));
 
-            auto reg = bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch, uid), 3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
-            bh.brc.send_heartbeat(ch, uid, "producer", {});  // -> Ready
+            bh.brc.send_heartbeat(ch, uid, "producer", {}); // -> Ready
 
             // Wait for demotion to Pending.
-            auto demoted = [&]() {
+            auto demoted = [&]()
+            {
                 auto m = broker.service->query_role_state_metrics();
                 return m.ready_to_pending_total >= 1;
             };
@@ -194,7 +201,8 @@ int pending_recovers_to_ready()
             // Heartbeat again -> should transition Pending -> Ready (counter +1).
             auto before = broker.service->query_role_state_metrics().pending_to_ready_total;
             bh.brc.send_heartbeat(ch, uid, "producer", {});
-            auto recovered = [&]() {
+            auto recovered = [&]()
+            {
                 auto m = broker.service->query_role_state_metrics();
                 return m.pending_to_ready_total > before;
             };
@@ -208,8 +216,8 @@ int pending_recovers_to_ready()
             bh.stop();
             broker.stop_and_join();
         },
-        "role_state.pending_recovers_to_ready",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.pending_recovers_to_ready", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -221,8 +229,9 @@ int pending_recovers_to_ready()
 int stuck_in_pending_reclaimed()
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch  = make_test_channel_name("role_state.stuck_pending");
+        []()
+        {
+            const std::string ch = make_test_channel_name("role_state.stuck_pending");
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
@@ -237,21 +246,21 @@ int stuck_in_pending_reclaimed()
             // (~150 ms) fits in a 2 s poll window.
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.ready_timeout_override           = std::chrono::milliseconds(50);
-            cfg.pending_timeout_override         = std::chrono::milliseconds(100);
+            cfg.ready_timeout_override = std::chrono::milliseconds(50);
+            cfg.pending_timeout_override = std::chrono::milliseconds(100);
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
 
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, role_keystore_name(uid));
 
-            auto reg = bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch, uid), 3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
             // Deliberately NO heartbeat sent — presence is registered but
             // remains in the "registering" sub-state until ready_timeout
             // demotes it.
 
-            auto reclaimed = [&]() {
+            auto reclaimed = [&]()
+            {
                 auto m = broker.service->query_role_state_metrics();
                 return m.pending_to_deregistered_total >= 1;
             };
@@ -268,8 +277,8 @@ int stuck_in_pending_reclaimed()
             bh.stop();
             broker.stop_and_join();
         },
-        "role_state.stuck_in_pending_reclaimed",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.stuck_in_pending_reclaimed", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // band_membership_cleaned_on_role_close MIGRATED to
@@ -294,8 +303,9 @@ int stuck_in_pending_reclaimed()
 int role_entry_terminal_cleanup_on_last_presence_dereg()
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch  = make_test_channel_name("role_state.cleanup_prod");
+        []()
+        {
+            const std::string ch = make_test_channel_name("role_state.cleanup_prod");
             const std::string uid = "prod." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({uid});
@@ -308,8 +318,7 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
             BrcHandle bh;
             bh.start(broker.endpoint, broker.pubkey, uid, role_keystore_name(uid));
 
-            auto reg = bh.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch, uid), 3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             // Pre-condition: role entry exists post-REG.
@@ -326,9 +335,7 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
 
             // Post-condition: role entry must be GONE.  Broker handles
             // dispatch on its IO thread; poll up to 2 s.
-            auto entry_gone = [&]() {
-                return !broker.hub_state->role(uid).has_value();
-            };
+            auto entry_gone = [&]() { return !broker.hub_state->role(uid).has_value(); };
             ASSERT_TRUE(poll_until(entry_gone, std::chrono::seconds(2)))
                 << "Role entry was not erased after last producer DEREG "
                    "(H1 wiring gap — _dispatch_role_disconnected_if_dead "
@@ -337,8 +344,8 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
             bh.stop();
             broker.stop_and_join();
         },
-        "role_state.role_entry_terminal_cleanup_on_last_presence_dereg",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.role_entry_terminal_cleanup_on_last_presence_dereg", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -354,10 +361,11 @@ int role_entry_terminal_cleanup_on_last_presence_dereg()
 int role_entry_terminal_cleanup_on_consumer_left_last()
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch         = make_test_channel_name("role_state.cleanup_cons");
-            const std::string prod_uid   = "prod." + ch;
-            const std::string cons_uid   = "cons." + ch;
+        []()
+        {
+            const std::string ch = make_test_channel_name("role_state.cleanup_cons");
+            const std::string prod_uid = "prod." + ch;
+            const std::string cons_uid = "cons." + ch;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
             pylabhub::tests::seed_curve_identities(curve);
@@ -370,8 +378,8 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             // consumer-side cleanup, so prod_uid stays alive.
             BrcHandle pb;
             pb.start(broker.endpoint, broker.pubkey, prod_uid, role_keystore_name(prod_uid));
-            ASSERT_TRUE(pb.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch, prod_uid), 3000).has_value());
+            ASSERT_TRUE(pb.brc.register_channel(pylabhub::tests::make_reg_opts(ch, prod_uid), 3000)
+                            .has_value());
 
             // HEP-CORE-0036 §5.2 R6 producer-kLive gate: a single
             // producer heartbeat is required BEFORE CONSUMER_REG_REQ
@@ -385,11 +393,10 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             BrcHandle cb;
             cb.start(broker.endpoint, broker.pubkey, cons_uid, role_keystore_name(cons_uid));
 
-            auto cons_reg = cb.brc.register_consumer(
-                pylabhub::tests::make_cons_opts(ch, cons_uid), 3000);
+            auto cons_reg =
+                cb.brc.register_consumer(pylabhub::tests::make_cons_opts(ch, cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value())
-                << "CONSUMER_REG_REQ failed: " <<
-                   (cons_reg.has_value() ? "(none)" : "no response");
+                << "CONSUMER_REG_REQ failed: " << (cons_reg.has_value() ? "(none)" : "no response");
 
             ASSERT_TRUE(broker.hub_state->role(cons_uid).has_value())
                 << "Consumer role entry must exist after CONSUMER_REG_REQ";
@@ -400,9 +407,7 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             ASSERT_TRUE(dereg.has_value());
             ASSERT_EQ(dereg->value("status", std::string{}), "success");
 
-            auto entry_gone = [&]() {
-                return !broker.hub_state->role(cons_uid).has_value();
-            };
+            auto entry_gone = [&]() { return !broker.hub_state->role(cons_uid).has_value(); };
             ASSERT_TRUE(poll_until(entry_gone, std::chrono::seconds(2)))
                 << "Consumer role entry was not erased after "
                    "CONSUMER_DEREG_REQ (H1 wiring gap).";
@@ -416,8 +421,8 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
             pb.stop();
             broker.stop_and_join();
         },
-        "role_state.role_entry_terminal_cleanup_on_consumer_left_last",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.role_entry_terminal_cleanup_on_consumer_left_last", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -437,8 +442,9 @@ int role_entry_terminal_cleanup_on_consumer_left_last()
 int consumer_heartbeat_timeout_fires_consumer_died_notify()
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch       = make_test_channel_name("role_state.cons_hb_timeout");
+        []()
+        {
+            const std::string ch = make_test_channel_name("role_state.cons_hb_timeout");
             const std::string prod_uid = "prod." + ch;
             const std::string cons_uid = "cons." + ch;
 
@@ -450,8 +456,8 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             // Poll window below is 3 s — generous against CI jitter.
             BrokerService::Config cfg;
             cfg.endpoint = "tcp://127.0.0.1:0";
-            cfg.ready_timeout_override           = std::chrono::milliseconds(150);
-            cfg.pending_timeout_override         = std::chrono::milliseconds(150);
+            cfg.ready_timeout_override = std::chrono::milliseconds(150);
+            cfg.pending_timeout_override = std::chrono::milliseconds(150);
             // Disable the PID-death sweep to keep the notification path
             // unambiguous — only the heartbeat-timeout path can fire.
             auto broker = pylabhub::tests::start_direct_broker(std::move(cfg), curve);
@@ -459,12 +465,13 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             // ── Producer BRC: needs a notification callback BEFORE the
             //    poll loop starts, so we build it inline rather than via
             //    BrcHandle (which doesn't expose the callback hook).
-            std::mutex                  notify_mu;
+            std::mutex notify_mu;
             std::vector<nlohmann::json> consumer_died_notifies;
 
             BrokerRequestComm prod_brc;
             prod_brc.on_notification(
-                [&](const std::string &msg_type, const nlohmann::json &body) {
+                [&](const std::string &msg_type, const nlohmann::json &body)
+                {
                     if (msg_type == "CONSUMER_DIED_NOTIFY")
                     {
                         std::lock_guard<std::mutex> lk(notify_mu);
@@ -474,27 +481,27 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
 
             BrokerRequestComm::Config prod_cfg;
             prod_cfg.broker_endpoint = broker.endpoint;
-            prod_cfg.broker_pubkey   = broker.pubkey;
-            prod_cfg.role_uid        = prod_uid;
-            prod_cfg.keystore_name   = role_keystore_name(prod_uid);
+            prod_cfg.broker_pubkey = broker.pubkey;
+            prod_cfg.role_uid = prod_uid;
+            prod_cfg.keystore_name = role_keystore_name(prod_uid);
             ASSERT_TRUE(prod_brc.connect(prod_cfg));
 
             std::atomic<bool> prod_poll_running{true};
-            std::thread       prod_poll_thread([&]() {
-                prod_brc.run_poll_loop([&]() { return prod_poll_running.load(); });
-            });
+            std::thread prod_poll_thread(
+                [&]() { prod_brc.run_poll_loop([&]() { return prod_poll_running.load(); }); });
 
-            ASSERT_TRUE(prod_brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch, prod_uid), 3000).has_value());
+            ASSERT_TRUE(
+                prod_brc.register_channel(pylabhub::tests::make_reg_opts(ch, prod_uid), 3000)
+                    .has_value());
             prod_brc.send_heartbeat(ch, prod_uid, "producer", {});
 
             // ── Consumer BRC: standard BrcHandle.
             BrcHandle cons_bh;
-            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          role_keystore_name(cons_uid));
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid, role_keystore_name(cons_uid));
 
-            ASSERT_TRUE(cons_bh.brc.register_consumer(
-                pylabhub::tests::make_cons_opts(ch, cons_uid), 3000).has_value());
+            ASSERT_TRUE(
+                cons_bh.brc.register_consumer(pylabhub::tests::make_cons_opts(ch, cons_uid), 3000)
+                    .has_value());
             cons_bh.brc.send_heartbeat(ch, cons_uid, "consumer", {});
 
             // Keep the producer's own presence alive throughout the
@@ -502,19 +509,22 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             // be reclaimed (ready_timeout fires after 150 ms) before
             // we observe the consumer's CONSUMER_DIED_NOTIFY arrival.
             std::atomic<bool> prod_hb_running{true};
-            std::thread       prod_hb_thread([&]() {
-                while (prod_hb_running.load())
+            std::thread prod_hb_thread(
+                [&]()
                 {
-                    prod_brc.send_heartbeat(ch, prod_uid, "producer", {});
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                }
-            });
+                    while (prod_hb_running.load())
+                    {
+                        prod_brc.send_heartbeat(ch, prod_uid, "producer", {});
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                });
 
             // From this point the consumer stops heartbeating.  After
             // ready_timeout + pending_timeout (≈300 ms + broker sweep
             // cadence), broker reclaims the consumer-presence and
             // emits CONSUMER_DIED_NOTIFY to the producer.
-            auto notify_arrived = [&]() {
+            auto notify_arrived = [&]()
+            {
                 std::lock_guard<std::mutex> lk(notify_mu);
                 return !consumer_died_notifies.empty();
             };
@@ -525,7 +535,8 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             // Stop the producer's heartbeat thread before asserting on
             // the captured notification body.
             prod_hb_running.store(false);
-            if (prod_hb_thread.joinable()) prod_hb_thread.join();
+            if (prod_hb_thread.joinable())
+                prod_hb_thread.join();
 
             // Body shape: reason="heartbeat_timeout" (heartbeat timeout is
             // the sole consumer-liveness path).  The consumer_uid field
@@ -560,9 +571,7 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             // Consumer role entry erased — last alive presence
             // transitioned Disconnected, so the role-disconnect cascade
             // fired (`_dispatch_role_disconnected_if_dead`).
-            auto cons_entry_gone = [&]() {
-                return !broker.hub_state->role(cons_uid).has_value();
-            };
+            auto cons_entry_gone = [&]() { return !broker.hub_state->role(cons_uid).has_value(); };
             EXPECT_TRUE(poll_until(cons_entry_gone, std::chrono::seconds(1)))
                 << "Consumer role entry must be erased after its last "
                    "presence transitions Disconnected (H1 wiring cascade).";
@@ -578,12 +587,13 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
             cons_bh.stop();
             prod_poll_running.store(false);
             prod_brc.stop();
-            if (prod_poll_thread.joinable()) prod_poll_thread.join();
+            if (prod_poll_thread.joinable())
+                prod_poll_thread.join();
             prod_brc.disconnect();
             broker.stop_and_join();
         },
-        "role_state.consumer_heartbeat_timeout_fires_consumer_died_notify",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.consumer_heartbeat_timeout_fires_consumer_died_notify", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // RE-LAYERED 2026-06-27 — the 4 `role_handler_*` worker bodies that
@@ -596,11 +606,14 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
 // pointer-identity behavior; the broker that lived here was scaffolding
 // only because `BRC::is_connected()` reads an internal flag set at end
 // of `connect()` (before any wire handshake).  Mapping:
-//   - role_handler_connections_start_stop_smoke      → RoleHandlerLifecycle.StartStop_Smoke_SinglePresence
-//   - role_handler_connections_dual_hub              → RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected
-//   - role_handler_connections_double_start_rejected → RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared
-//   - role_handler_brc_for_x_post_start              → RoleHandlerRouting.BrcForX_PostStart_PointerIdentity
-
+//   - role_handler_connections_start_stop_smoke      →
+//   RoleHandlerLifecycle.StartStop_Smoke_SinglePresence
+//   - role_handler_connections_dual_hub              →
+//   RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected
+//   - role_handler_connections_double_start_rejected →
+//   RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared
+//   - role_handler_brc_for_x_post_start              →
+//   RoleHandlerRouting.BrcForX_PostStart_PointerIdentity
 
 // ============================================================================
 // role_api_base_start_handler_threads_e2e
@@ -620,9 +633,10 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
 int role_api_base_start_handler_threads_e2e()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             const std::string role_uid = "prod.m4c_e2e.uid00000001";
-            const std::string channel  = make_test_channel_name("m4c.e2e");
+            const std::string channel = make_test_channel_name("m4c.e2e");
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
             pylabhub::tests::seed_curve_identities(curve);
@@ -631,9 +645,8 @@ int role_api_base_start_handler_threads_e2e()
             // lookup name (HEP-CORE-0040 §172 + #173) — production
             // ships one role identity per process.  Seed the api
             // role's keys under that name too.
-            pylabhub::tests::add_curve_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                curve.role(role_uid));
+            pylabhub::tests::add_curve_identity(pylabhub::utils::security::kRoleIdentityName,
+                                                curve.role(role_uid));
 
             BrokerService::Config bcfg;
             bcfg.endpoint = "tcp://127.0.0.1:0";
@@ -648,25 +661,23 @@ int role_api_base_start_handler_threads_e2e()
             // poll thread runs.
             core.set_running(true);
 
-            pylabhub::scripting::RoleAPIBase  api(core, "prod", role_uid);
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid);
             api.set_name("m4c_e2e");
             api.set_channel(channel);
 
             pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = broker.endpoint;
+            hub_cfg.broker = broker.endpoint;
             hub_cfg.broker_pubkey = broker.pubkey;
 
             std::vector<pylabhub::scripting::Presence> presences;
             {
                 pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
+                p.hub = hub_cfg;
+                p.channel = channel;
                 p.role_kind = pylabhub::scripting::RoleKind::Producer;
                 presences.push_back(std::move(p));
             }
-            auto handler =
-                std::make_unique<pylabhub::scripting::RoleHandler>(
-                    std::move(presences));
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(std::move(presences));
 
             // ── start_handler_threads ────────────────────────────────────
             ASSERT_TRUE(api.start_handler_threads(std::move(handler)))
@@ -674,20 +685,17 @@ int role_api_base_start_handler_threads_e2e()
 
             ASSERT_NE(api.handler(), nullptr)
                 << "handler() returns the stored RoleHandler post-start";
-            EXPECT_TRUE(api.handler()->connections_started())
-                << "RoleHandler is in started state";
+            EXPECT_TRUE(api.handler()->connections_started()) << "RoleHandler is in started state";
 
             // Atomicity guard — second call must be refused.
             {
                 std::vector<pylabhub::scripting::Presence> p2;
                 pylabhub::scripting::Presence ep;
-                ep.hub       = hub_cfg;
-                ep.channel   = channel;
+                ep.hub = hub_cfg;
+                ep.channel = channel;
                 ep.role_kind = pylabhub::scripting::RoleKind::Producer;
                 p2.push_back(std::move(ep));
-                auto handler2 =
-                    std::make_unique<pylabhub::scripting::RoleHandler>(
-                        std::move(p2));
+                auto handler2 = std::make_unique<pylabhub::scripting::RoleHandler>(std::move(p2));
                 EXPECT_FALSE(api.start_handler_threads(std::move(handler2)))
                     << "Atomicity guard: second start must be refused.";
                 EXPECT_NE(api.handler(), nullptr)
@@ -718,16 +726,15 @@ int role_api_base_start_handler_threads_e2e()
 
             // ── stop_handler_threads ─────────────────────────────────────
             api.stop_handler_threads();
-            EXPECT_EQ(api.handler(), nullptr)
-                << "handler() returns nullptr post-stop";
+            EXPECT_EQ(api.handler(), nullptr) << "handler() returns nullptr post-stop";
 
             // Idempotent: second stop is a no-op.
             api.stop_handler_threads();
 
             broker.stop_and_join();
         },
-        "role_state.role_api_base_start_handler_threads_e2e",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.role_api_base_start_handler_threads_e2e", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -753,16 +760,16 @@ int role_api_base_start_handler_threads_e2e()
 int role_api_base_band_join_handler_mode()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             const std::string role_uid = "prod.a0_band.uid00000001";
-            const std::string channel  = make_test_channel_name("a0.band");
-            const std::string band     = "!test_band_a0";  // R3.5: `!`-prefixed per HEP-0030 §3
+            const std::string channel = make_test_channel_name("a0.band");
+            const std::string band = "!test_band_a0"; // R3.5: `!`-prefixed per HEP-0030 §3
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
             pylabhub::tests::seed_curve_identities(curve);
-            pylabhub::tests::add_curve_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                curve.role(role_uid));
+            pylabhub::tests::add_curve_identity(pylabhub::utils::security::kRoleIdentityName,
+                                                curve.role(role_uid));
 
             BrokerService::Config bcfg;
             bcfg.endpoint = "tcp://127.0.0.1:0";
@@ -771,24 +778,23 @@ int role_api_base_band_join_handler_mode()
             pylabhub::scripting::RoleHostCore core;
             core.set_running(true);
 
-            pylabhub::scripting::RoleAPIBase  api(core, "prod", role_uid);
+            pylabhub::scripting::RoleAPIBase api(core, "prod", role_uid);
             api.set_name("a0_band");
             api.set_channel(channel);
 
             pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = broker.endpoint;
+            hub_cfg.broker = broker.endpoint;
             hub_cfg.broker_pubkey = broker.pubkey;
 
             std::vector<pylabhub::scripting::Presence> presences;
             {
                 pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
+                p.hub = hub_cfg;
+                p.channel = channel;
                 p.role_kind = pylabhub::scripting::RoleKind::Producer;
                 presences.push_back(std::move(p));
             }
-            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(
-                std::move(presences));
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(std::move(presences));
 
             ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
             ASSERT_NE(api.handler(), nullptr);
@@ -814,8 +820,7 @@ int role_api_base_band_join_handler_mode()
             // Now exercise band_leave to confirm the round-trip works
             // end-to-end and the band index gets cleared.
             auto leave_resp = api.band_leave(band);
-            EXPECT_TRUE(leave_resp.has_value())
-                << "band_leave must succeed for a joined band";
+            EXPECT_TRUE(leave_resp.has_value()) << "band_leave must succeed for a joined band";
             EXPECT_EQ(leave_resp->value("status", std::string{}), "success");
             EXPECT_EQ(api.handler()->brc_for_band(band), nullptr)
                 << "band_index_ must be cleared after band_leave";
@@ -823,8 +828,8 @@ int role_api_base_band_join_handler_mode()
             api.stop_handler_threads();
             broker.stop_and_join();
         },
-        "role_state.role_api_base_band_join_handler_mode",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.role_api_base_band_join_handler_mode", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // broker_band_rejects_invalid_identifier MIGRATED to
@@ -873,18 +878,18 @@ int role_api_base_band_join_handler_mode()
 int role_api_base_band_notify_wire_field_and_routing()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             const std::string role_uid_a = "prod.b1.a.uid00000001";
             const std::string role_uid_b = "prod.b1.b.uid00000002";
-            const std::string channel    = make_test_channel_name("b1.chan");
-            const std::string band       = "!" + make_test_channel_name("b1.band");
+            const std::string channel = make_test_channel_name("b1.chan");
+            const std::string band = "!" + make_test_channel_name("b1.band");
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid_a, role_uid_b});
             pylabhub::tests::seed_curve_identities(curve);
             // role A is the api role; role B is a raw BRC.
-            pylabhub::tests::add_curve_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                curve.role(role_uid_a));
+            pylabhub::tests::add_curve_identity(pylabhub::utils::security::kRoleIdentityName,
+                                                curve.role(role_uid_a));
 
             BrokerService::Config bcfg;
             bcfg.endpoint = "tcp://127.0.0.1:0";
@@ -900,24 +905,22 @@ int role_api_base_band_notify_wire_field_and_routing()
             api.set_channel(channel);
 
             pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = broker.endpoint;
+            hub_cfg.broker = broker.endpoint;
             hub_cfg.broker_pubkey = broker.pubkey;
 
             std::vector<pylabhub::scripting::Presence> presences;
             {
                 pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
+                p.hub = hub_cfg;
+                p.channel = channel;
                 p.role_kind = pylabhub::scripting::RoleKind::Producer;
                 presences.push_back(std::move(p));
             }
             auto handler_uptr =
-                std::make_unique<pylabhub::scripting::RoleHandler>(
-                    std::move(presences));
+                std::make_unique<pylabhub::scripting::RoleHandler>(std::move(presences));
             // Capture a non-owning pointer for post-start lookups; the
             // unique_ptr is moved into start_handler_threads below.
-            const pylabhub::scripting::RoleHandler *handler_ptr =
-                handler_uptr.get();
+            const pylabhub::scripting::RoleHandler *handler_ptr = handler_uptr.get();
 
             ASSERT_TRUE(api.start_handler_threads(std::move(handler_uptr)));
 
@@ -930,8 +933,7 @@ int role_api_base_band_notify_wire_field_and_routing()
             // ── Role B: raw BRC client (no handler — just enough to
             //    trigger the notify) ──────────────────────────────────
             BrcHandle b;
-            b.start(broker.endpoint, broker.pubkey, role_uid_b,
-                    role_keystore_name(role_uid_b));
+            b.start(broker.endpoint, broker.pubkey, role_uid_b, role_keystore_name(role_uid_b));
             ASSERT_TRUE(b.brc.band_join(band, 3000).has_value());
 
             // ── Step 6: wait for BAND_JOIN_NOTIFY to land in core's
@@ -940,8 +942,7 @@ int role_api_base_band_notify_wire_field_and_routing()
             //    core.incoming_queue_, so we drain that. ─────────────
             pylabhub::scripting::IncomingMessage notify_msg;
             bool got_notify = false;
-            auto deadline = std::chrono::steady_clock::now() +
-                            std::chrono::seconds(3);
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
             while (std::chrono::steady_clock::now() < deadline && !got_notify)
             {
                 auto msgs = core.drain_messages();
@@ -957,11 +958,10 @@ int role_api_base_band_notify_wire_field_and_routing()
                 if (!got_notify)
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
-            ASSERT_TRUE(got_notify)
-                << "BAND_JOIN_NOTIFY never reached role A's incoming queue "
-                   "within 3s.  Broker did not emit the notify or wiring "
-                   "between BRC on_notification → core.enqueue_message is "
-                   "broken.";
+            ASSERT_TRUE(got_notify) << "BAND_JOIN_NOTIFY never reached role A's incoming queue "
+                                       "within 3s.  Broker did not emit the notify or wiring "
+                                       "between BRC on_notification → core.enqueue_message is "
+                                       "broken.";
 
             // ── Step 7 (B1 wire conformance): the body must carry the
             //    band identifier under key `band` per HEP-CORE-0030 §5.1.
@@ -984,8 +984,8 @@ int role_api_base_band_notify_wire_field_and_routing()
             //    `body["band_name"]` — an invention from Wave-B M4b that
             //    no broker ever emits — so this returned nullptr. ──────
             const pylabhub::scripting::Presence *resolved =
-                handler_ptr->find_presence_from_notification(
-                    "BAND_JOIN_NOTIFY", notify_msg.details);
+                handler_ptr->find_presence_from_notification("BAND_JOIN_NOTIFY",
+                                                             notify_msg.details);
             ASSERT_NE(resolved, nullptr)
                 << "B2 regression: find_presence_from_notification returned "
                    "nullptr for a real broker-emitted BAND_JOIN_NOTIFY body.  "
@@ -999,8 +999,8 @@ int role_api_base_band_notify_wire_field_and_routing()
             api.stop_handler_threads();
             broker.stop_and_join();
         },
-        "role_state.role_api_base_band_notify_wire_field_and_routing",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.role_api_base_band_notify_wire_field_and_routing", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 // ============================================================================
@@ -1045,15 +1045,15 @@ int role_api_base_band_notify_wire_field_and_routing()
 int role_api_base_registration_fsm_transitions()
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             const std::string role_uid = "prod.s1.uid00000001";
-            const std::string channel  = make_test_channel_name("s1.chan");
+            const std::string channel = make_test_channel_name("s1.chan");
 
             auto curve = pylabhub::tests::make_curve_setup({role_uid});
             pylabhub::tests::seed_curve_identities(curve);
-            pylabhub::tests::add_curve_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                curve.role(role_uid));
+            pylabhub::tests::add_curve_identity(pylabhub::utils::security::kRoleIdentityName,
+                                                curve.role(role_uid));
 
             BrokerService::Config bcfg;
             bcfg.endpoint = "tcp://127.0.0.1:0";
@@ -1067,20 +1067,19 @@ int role_api_base_registration_fsm_transitions()
             api.set_channel(channel);
 
             pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = broker.endpoint;
+            hub_cfg.broker = broker.endpoint;
             hub_cfg.broker_pubkey = broker.pubkey;
 
             std::vector<pylabhub::scripting::Presence> presences;
             {
                 pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
+                p.hub = hub_cfg;
+                p.channel = channel;
                 p.role_kind = pylabhub::scripting::RoleKind::Producer;
                 presences.push_back(std::move(p));
             }
             auto handler_uptr =
-                std::make_unique<pylabhub::scripting::RoleHandler>(
-                    std::move(presences));
+                std::make_unique<pylabhub::scripting::RoleHandler>(std::move(presences));
             // Pre-start the presence's registration_state should be
             // Unregistered (the default).
             {
@@ -1097,8 +1096,7 @@ int role_api_base_registration_fsm_transitions()
             // has not been dispatched yet.  State should still be
             // Unregistered — connection ≠ registration.
             {
-                const auto *p =
-                    api.handler()->find_presence_for_channel(channel);
+                const auto *p = api.handler()->find_presence_for_channel(channel);
                 ASSERT_NE(p, nullptr);
                 EXPECT_EQ(p->registration_state.load(),
                           pylabhub::scripting::RegistrationState::Unregistered)
@@ -1108,15 +1106,14 @@ int role_api_base_registration_fsm_transitions()
             }
 
             // Issue REG_REQ.
-            auto reg_result = api.register_producer_channel(
-                pylabhub::tests::make_reg_opts(channel, role_uid));
+            auto reg_result =
+                api.register_producer_channel(pylabhub::tests::make_reg_opts(channel, role_uid));
             ASSERT_TRUE(reg_result.has_value());
             EXPECT_EQ(reg_result->value("status", std::string{}), "success");
 
             // After successful REG_REQ: Registered.
             {
-                const auto *p =
-                    api.handler()->find_presence_for_channel(channel);
+                const auto *p = api.handler()->find_presence_for_channel(channel);
                 ASSERT_NE(p, nullptr);
                 EXPECT_EQ(p->registration_state.load(),
                           pylabhub::scripting::RegistrationState::Registered)
@@ -1137,8 +1134,7 @@ int role_api_base_registration_fsm_transitions()
 
             // After successful DEREG: Deregistered.
             {
-                const auto *p =
-                    api.handler()->find_presence_for_channel(channel);
+                const auto *p = api.handler()->find_presence_for_channel(channel);
                 ASSERT_NE(p, nullptr);
                 EXPECT_EQ(p->registration_state.load(),
                           pylabhub::scripting::RegistrationState::Deregistered)
@@ -1154,13 +1150,13 @@ int role_api_base_registration_fsm_transitions()
             // presence).  Pre-S1 this was guarded by the
             // `take_producer_channel` returning empty; the FSM walk
             // achieves the same via the `needs_dereg` predicate.
-            api.deregister_from_broker();  // should not crash, no extra DEREG
+            api.deregister_from_broker(); // should not crash, no extra DEREG
 
             api.stop_handler_threads();
             broker.stop_and_join();
         },
-        "role_state.role_api_base_registration_fsm_transitions",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "role_state.role_api_base_registration_fsm_transitions", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
 } // namespace pylabhub::tests::worker::broker_role_state
@@ -1173,18 +1169,22 @@ struct BrokerRoleStateWorkerRegistrar
     BrokerRoleStateWorkerRegistrar()
     {
         register_worker_dispatcher(
-            [](int argc, char** argv) -> int {
-                if (argc < 2) return -1;
+            [](int argc, char **argv) -> int
+            {
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 const auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "broker_role_state")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "broker_role_state")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_role_state;
-                if (scenario == "metrics_reclaim_cycle")       return metrics_reclaim_cycle();
-                if (scenario == "pending_recovers_to_ready")   return pending_recovers_to_ready();
-                if (scenario == "stuck_in_pending_reclaimed")  return stuck_in_pending_reclaimed();
+                if (scenario == "metrics_reclaim_cycle")
+                    return metrics_reclaim_cycle();
+                if (scenario == "pending_recovers_to_ready")
+                    return pending_recovers_to_ready();
+                if (scenario == "stuck_in_pending_reclaimed")
+                    return stuck_in_pending_reclaimed();
                 // band_membership_cleaned_on_role_close migrated to
                 // Pattern4BrokerProtocolTest.Band_MembershipCleanedOnProducerDereg
                 // (task #52 DirectBrokerHandle sweep).
@@ -1226,4 +1226,4 @@ struct BrokerRoleStateWorkerRegistrar
 
 static BrokerRoleStateWorkerRegistrar g_broker_role_state_registrar; // NOLINT(cert-err58-cpp)
 
-} // anon
+} // namespace

@@ -6,11 +6,11 @@
 #include <windows.h>
 #include <string> // For std::to_string
 #else
-#include <cerrno>   // For ETIMEDOUT, EOWNERDEAD
-#include <cstdint>  // For int64_t
+#include <cerrno>  // For ETIMEDOUT, EOWNERDEAD
+#include <cstdint> // For int64_t
 #include <pthread.h>
-#include <string>   // For std::to_string
-#include <ctime>    // For clock_gettime, CLOCK_REALTIME
+#include <string> // For std::to_string
+#include <ctime>  // For clock_gettime, CLOCK_REALTIME
 #endif
 
 namespace pylabhub::hub
@@ -162,7 +162,8 @@ void DataBlockMutex::unlock()
 
 #else
 // --- POSIX: pthread_mutex in shared memory (embedded or dedicated shm segment) ---
-// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- constructor branches by platform and creator/attacher
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- constructor branches by platform and
+// creator/attacher
 DataBlockMutex::DataBlockMutex(std::string name, void *base_shared_memory_address,
                                size_t offset_to_mutex_storage, bool is_creator)
     : m_name(std::move(name)), m_is_creator(is_creator),
@@ -179,8 +180,8 @@ DataBlockMutex::DataBlockMutex(std::string name, void *base_shared_memory_addres
 
         if (m_is_creator)
         {
-            m_dedicated_shm = pylabhub::platform::shm_create(shm_name.c_str(), mutex_size,
-                                                            pylabhub::platform::SHM_CREATE_EXCLUSIVE);
+            m_dedicated_shm = pylabhub::platform::shm_create(
+                shm_name.c_str(), mutex_size, pylabhub::platform::SHM_CREATE_EXCLUSIVE);
             if (m_dedicated_shm.base == nullptr)
             {
                 m_dedicated_shm = pylabhub::platform::shm_create(
@@ -328,9 +329,9 @@ void DataBlockMutex::lock()
 namespace
 {
 constexpr long kMsPerSecond = 1000;
-constexpr int64_t kNsPerMs      = 1'000'000;
-constexpr int64_t kNsPerSecond  = 1'000'000'000;
-}
+constexpr int64_t kNsPerMs = 1'000'000;
+constexpr int64_t kNsPerSecond = 1'000'000'000;
+} // namespace
 
 bool DataBlockMutex::try_lock_for(int timeout_ms)
 {
@@ -385,8 +386,8 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
     struct timespec mono_start;
     if (clock_gettime(CLOCK_MONOTONIC, &mono_start) != 0)
     {
-        throw std::runtime_error("POSIX DataBlockMutex: clock_gettime(MONOTONIC) failed for '"
-                                 + m_name + "'.");
+        throw std::runtime_error("POSIX DataBlockMutex: clock_gettime(MONOTONIC) failed for '" +
+                                 m_name + "'.");
     }
     const int64_t timeout_ns = static_cast<int64_t>(timeout_ms) * kNsPerMs;
 
@@ -395,27 +396,27 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
         // How much monotonic time has elapsed?
         struct timespec mono_now;
         clock_gettime(CLOCK_MONOTONIC, &mono_now);
-        const int64_t elapsed_ns = (mono_now.tv_sec - mono_start.tv_sec) * kNsPerSecond
-                                 + (mono_now.tv_nsec - mono_start.tv_nsec);
+        const int64_t elapsed_ns = (mono_now.tv_sec - mono_start.tv_sec) * kNsPerSecond +
+                                   (mono_now.tv_nsec - mono_start.tv_nsec);
         if (elapsed_ns >= timeout_ns)
             return false; // budget exhausted
 
         // Remaining time, capped at 500 ms to limit exposure to clock jumps.
         constexpr int64_t kMaxChunkNs = 500 * kNsPerMs; // 500 ms
         const int64_t remaining_ns = timeout_ns - elapsed_ns;
-        const int64_t chunk_ns     = (remaining_ns < kMaxChunkNs) ? remaining_ns : kMaxChunkNs;
+        const int64_t chunk_ns = (remaining_ns < kMaxChunkNs) ? remaining_ns : kMaxChunkNs;
 
         // Compute a short CLOCK_REALTIME deadline for this iteration.
         struct timespec abstime;
         if (clock_gettime(CLOCK_REALTIME, &abstime) != 0)
         {
-            throw std::runtime_error(
-                "POSIX DataBlockMutex: clock_gettime(REALTIME) failed for '" + m_name + "'.");
+            throw std::runtime_error("POSIX DataBlockMutex: clock_gettime(REALTIME) failed for '" +
+                                     m_name + "'.");
         }
         abstime.tv_nsec += static_cast<long>(chunk_ns);
         while (abstime.tv_nsec >= kNsPerSecond)
         {
-            abstime.tv_sec  += 1;
+            abstime.tv_sec += 1;
             abstime.tv_nsec -= kNsPerSecond;
         }
 
@@ -425,9 +426,8 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
 
         if (res == EOWNERDEAD)
         {
-            LOGGER_INFO(
-                "POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marking consistent.",
-                m_name);
+            LOGGER_INFO("POSIX DataBlockMutex: Mutex for '{}' was abandoned. Marking consistent.",
+                        m_name);
             if (pthread_mutex_consistent(mutex_ptr) != 0)
             {
                 throw std::runtime_error(
@@ -439,9 +439,8 @@ bool DataBlockMutex::try_lock_for(int timeout_ms)
         if (res == ETIMEDOUT)
             continue; // chunk expired — loop checks monotonic budget
 
-        throw std::runtime_error(
-            "POSIX DataBlockMutex: pthread_mutex_timedlock failed for '" + m_name +
-            "'. Error: " + std::to_string(res));
+        throw std::runtime_error("POSIX DataBlockMutex: pthread_mutex_timedlock failed for '" +
+                                 m_name + "'. Error: " + std::to_string(res));
     }
 }
 

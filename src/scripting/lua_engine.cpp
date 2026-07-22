@@ -12,8 +12,7 @@
 #include "metrics_lua.hpp"
 
 #include "utils/format_tools.hpp"
-#include "utils/hub_api.hpp"          // build_api_(HubAPI&) needs full type
-
+#include "utils/hub_api.hpp" // build_api_(HubAPI&) needs full type
 
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/shared_memory_spinlock.hpp"
@@ -145,7 +144,7 @@ static constexpr const char *kInboxHandleMT = "pylabhub.InboxHandle";
 
 struct LuaInboxUD
 {
-    LuaEngine  *engine;
+    LuaEngine *engine;
     std::string target_uid;
 };
 
@@ -201,9 +200,8 @@ bool LuaEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 // load_script — add script dir to package.path, load, extract callbacks
 // ============================================================================
 
-bool LuaEngine::load_script(const std::filesystem::path &script_dir,
-                             const std::string &entry_point,
-                             const std::string &required_callback)
+bool LuaEngine::load_script(const std::filesystem::path &script_dir, const std::string &entry_point,
+                            const std::string &required_callback)
 {
     script_dir_str_ = script_dir.string();
     entry_point_ = entry_point.empty() ? "init.lua" : entry_point;
@@ -228,14 +226,14 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     ref_on_init_ = extract_callback_ref_("on_init");
     ref_on_stop_ = extract_callback_ref_("on_stop");
     ref_on_channel_closing_ = extract_callback_ref_("on_channel_closing");
-    ref_on_consumer_died_   = extract_callback_ref_("on_consumer_died");
-    ref_on_hub_dead_        = extract_callback_ref_("on_hub_dead");
+    ref_on_consumer_died_ = extract_callback_ref_("on_consumer_died");
+    ref_on_hub_dead_ = extract_callback_ref_("on_hub_dead");
     // S4 expansion 2026-05-19 — typed band callbacks.
     ref_on_band_member_joined_ = extract_callback_ref_("on_band_member_joined");
-    ref_on_band_member_left_   = extract_callback_ref_("on_band_member_left");
-    ref_on_band_message_       = extract_callback_ref_("on_band_message");
-    ref_on_band_lost_          = extract_callback_ref_("on_band_lost");
-    ref_on_allowlist_changed_  = extract_callback_ref_("on_allowlist_changed");
+    ref_on_band_member_left_ = extract_callback_ref_("on_band_member_left");
+    ref_on_band_message_ = extract_callback_ref_("on_band_message");
+    ref_on_band_lost_ = extract_callback_ref_("on_band_lost");
+    ref_on_allowlist_changed_ = extract_callback_ref_("on_allowlist_changed");
     ref_on_produce_ = extract_callback_ref_("on_produce");
     ref_on_consume_ = extract_callback_ref_("on_consume");
     ref_on_process_ = extract_callback_ref_("on_process");
@@ -250,28 +248,25 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
     // what `RoleAPIBase::on_heartbeat_tick_` (ctrl thread) and
     // `HubAPI::augment_*` (admin RPC thread) rely on.
     reset_standard_callback_cache();
-    set_standard_callback_present("on_init",    state_.is_ref_callable(ref_on_init_));
-    set_standard_callback_present("on_stop",    state_.is_ref_callable(ref_on_stop_));
+    set_standard_callback_present("on_init", state_.is_ref_callable(ref_on_init_));
+    set_standard_callback_present("on_stop", state_.is_ref_callable(ref_on_stop_));
     set_standard_callback_present("on_channel_closing",
                                   state_.is_ref_callable(ref_on_channel_closing_));
     set_standard_callback_present("on_consumer_died",
                                   state_.is_ref_callable(ref_on_consumer_died_));
-    set_standard_callback_present("on_hub_dead",
-                                  state_.is_ref_callable(ref_on_hub_dead_));
+    set_standard_callback_present("on_hub_dead", state_.is_ref_callable(ref_on_hub_dead_));
     set_standard_callback_present("on_band_member_joined",
                                   state_.is_ref_callable(ref_on_band_member_joined_));
     set_standard_callback_present("on_band_member_left",
                                   state_.is_ref_callable(ref_on_band_member_left_));
-    set_standard_callback_present("on_band_message",
-                                  state_.is_ref_callable(ref_on_band_message_));
-    set_standard_callback_present("on_band_lost",
-                                  state_.is_ref_callable(ref_on_band_lost_));
+    set_standard_callback_present("on_band_message", state_.is_ref_callable(ref_on_band_message_));
+    set_standard_callback_present("on_band_lost", state_.is_ref_callable(ref_on_band_lost_));
     set_standard_callback_present("on_allowlist_changed",
                                   state_.is_ref_callable(ref_on_allowlist_changed_));
     set_standard_callback_present("on_produce", state_.is_ref_callable(ref_on_produce_));
     set_standard_callback_present("on_consume", state_.is_ref_callable(ref_on_consume_));
     set_standard_callback_present("on_process", state_.is_ref_callable(ref_on_process_));
-    set_standard_callback_present("on_inbox",   state_.is_ref_callable(ref_on_inbox_));
+    set_standard_callback_present("on_inbox", state_.is_ref_callable(ref_on_inbox_));
     {
         // Probe the additional standard names by global lookup on
         // lua_State.  Same set as PythonEngine — adding entries here
@@ -282,11 +277,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir,
         // from `HubAPI::augment_*` (`src/utils/service/hub_api.cpp`)
         // and `RoleAPIBase::on_heartbeat_tick_`.
         const char *const probe_names[] = {
-            "on_heartbeat",
-            "on_query_metrics",
-            "on_list_roles",
-            "on_get_channel",
-            "on_peer_message",
+            "on_heartbeat",   "on_query_metrics", "on_list_roles",
+            "on_get_channel", "on_peer_message",
         };
         for (const char *probe : probe_names)
         {
@@ -360,7 +352,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     register_spinlock_metatable_();
 
     // Helper: push a C closure with `this` as upvalue(1).
-    auto push_closure = [&](const char *name, lua_CFunction fn) {
+    auto push_closure = [&](const char *name, lua_CFunction fn)
+    {
         lua_pushlightuserdata(L, this);
         lua_pushcclosure(L, fn, 1);
         lua_setfield(L, -2, name);
@@ -381,11 +374,11 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("out_drop_count", lua_api_out_drop_count);
     push_closure("metrics", lua_api_metrics);
     push_closure("queue_mechanism", lua_api_queue_mechanism);
-    push_closure("allowed_peers",   lua_api_allowed_peers);
-    push_closure("producers",       lua_api_producers);
-    push_closure("consumers",       lua_api_consumers);
-    push_closure("consumer_count",  lua_api_consumer_count);
-    push_closure("producer_count",  lua_api_producer_count);
+    push_closure("allowed_peers", lua_api_allowed_peers);
+    push_closure("producers", lua_api_producers);
+    push_closure("consumers", lua_api_consumers);
+    push_closure("consumer_count", lua_api_consumer_count);
+    push_closure("producer_count", lua_api_producer_count);
     push_closure("is_channel_ready", lua_api_is_channel_ready);
 
     // ── Role-specific closures based on short_tag ────────────────────────
@@ -445,8 +438,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     }
 
     // Store api table in the registry AND as a global (for generic invoke).
-    lua_pushvalue(L, -1);            // duplicate the api table
-    lua_setglobal(L, "api");         // set as global for scripts calling api.* from free functions
+    lua_pushvalue(L, -1);    // duplicate the api table
+    lua_setglobal(L, "api"); // set as global for scripts calling api.* from free functions
     ref_api_ = luaL_ref(L, LUA_REGISTRYINDEX);
     return true;
 }
@@ -497,44 +490,45 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
     // dereference `self->hub_api_` — guaranteed non-null because this
     // method is only entered when `build_api(HubAPI&)` set it (the
     // base class wrapper sets `hub_api_ = &api` BEFORE calling this).
-    auto push_closure = [&](const char *name, lua_CFunction fn) {
+    auto push_closure = [&](const char *name, lua_CFunction fn)
+    {
         lua_pushlightuserdata(L, this);
         lua_pushcclosure(L, fn, 1);
         lua_setfield(L, -2, name);
     };
 
     // Lifecycle.
-    push_closure("log",               lua_api_hub_log);
-    push_closure("uid",               lua_api_hub_uid);
-    push_closure("metrics",           lua_api_hub_metrics);
+    push_closure("log", lua_api_hub_log);
+    push_closure("uid", lua_api_hub_uid);
+    push_closure("metrics", lua_api_hub_metrics);
     // Read accessors (HEP-CORE-0033 §12.3 read block).
-    push_closure("name",              lua_api_hub_name);
-    push_closure("config",            lua_api_hub_config);
-    push_closure("list_channels",     lua_api_hub_list_channels);
-    push_closure("get_channel",       lua_api_hub_get_channel);
-    push_closure("list_roles",        lua_api_hub_list_roles);
-    push_closure("get_role",          lua_api_hub_get_role);
-    push_closure("list_bands",        lua_api_hub_list_bands);
-    push_closure("get_band",          lua_api_hub_get_band);
-    push_closure("list_peers",        lua_api_hub_list_peers);
-    push_closure("get_peer",          lua_api_hub_get_peer);
-    push_closure("query_metrics",     lua_api_hub_query_metrics);
+    push_closure("name", lua_api_hub_name);
+    push_closure("config", lua_api_hub_config);
+    push_closure("list_channels", lua_api_hub_list_channels);
+    push_closure("get_channel", lua_api_hub_get_channel);
+    push_closure("list_roles", lua_api_hub_list_roles);
+    push_closure("get_role", lua_api_hub_get_role);
+    push_closure("list_bands", lua_api_hub_list_bands);
+    push_closure("get_band", lua_api_hub_get_band);
+    push_closure("list_peers", lua_api_hub_list_peers);
+    push_closure("get_peer", lua_api_hub_get_peer);
+    push_closure("query_metrics", lua_api_hub_query_metrics);
     // Control delegates (HEP-CORE-0033 §12.3 control block).
-    push_closure("close_channel",     lua_api_hub_close_channel);
+    push_closure("close_channel", lua_api_hub_close_channel);
     push_closure("broadcast_channel", lua_api_hub_broadcast_channel);
-    push_closure("request_shutdown",  lua_api_hub_request_shutdown);
+    push_closure("request_shutdown", lua_api_hub_request_shutdown);
     // Events (HEP-CORE-0033 §12.2.3 user-posted events).
-    push_closure("post_event",        lua_api_hub_post_event);
+    push_closure("post_event", lua_api_hub_post_event);
     // Augmentation timeout knob (HEP-CORE-0033 §12.2.2).
-    push_closure("augment_timeout_ms",   lua_api_hub_augment_timeout_ms);
-    push_closure("set_augment_timeout",  lua_api_hub_set_augment_timeout);
+    push_closure("augment_timeout_ms", lua_api_hub_augment_timeout_ms);
+    push_closure("set_augment_timeout", lua_api_hub_set_augment_timeout);
 
     // Expose the api table as a Lua global so scripts can call
     // `api:log(...)` from event/tick callbacks.  We dup the table
     // first because `lua_setglobal` consumes it and we still need it
     // on the stack to store as a registry ref.
-    lua_pushvalue(L, -1);          // dup api table
-    lua_setglobal(L, "api");       // setglobal consumes the dup
+    lua_pushvalue(L, -1);    // dup api table
+    lua_setglobal(L, "api"); // setglobal consumes the dup
 
     // Store the original (non-dup'd) table as a registry ref —
     // `luaL_ref` consumes the value at the top of the stack.
@@ -623,9 +617,7 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     // forbids remote code injection); the null-safe dispatch is kept
     // as an internal C++ extensibility invariant for any future C++
     // caller that holds a non-owner-thread reference to the engine.
-    RoleHostCore *core = api_     ? api_->core()
-                       : hub_api_ ? hub_api_->core()
-                                  : nullptr;
+    RoleHostCore *core = api_ ? api_->core() : hub_api_ ? hub_api_->core() : nullptr;
     if (!core)
     {
         LOGGER_ERROR("[{}] get_or_create_thread_state_: no ApiT bound — "
@@ -642,8 +634,7 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
         LOGGER_ERROR("[{}] Failed to create thread-local LuaEngine", log_tag_);
         return nullptr;
     }
-    if (!child->load_script(script_dir_str_, entry_point_,
-                             required_callback_))
+    if (!child->load_script(script_dir_str_, entry_point_, required_callback_))
     {
         LOGGER_ERROR("[{}] Thread-local LuaEngine: load_script failed", log_tag_);
         child->finalize();
@@ -652,9 +643,7 @@ LuaEngine *LuaEngine::get_or_create_thread_state_()
     // Dispatch build_api on whichever ApiT is set.  Both overloads are
     // virtuals on ScriptEngine; the public `build_api()` non-virtual
     // base wrapper picks the right one based on the argument type.
-    const bool ok = api_     ? child->build_api(*api_)
-                  : hub_api_ ? child->build_api(*hub_api_)
-                             : false;
+    const bool ok = api_ ? child->build_api(*api_) : hub_api_ ? child->build_api(*hub_api_) : false;
     if (!ok)
     {
         LOGGER_ERROR("[{}] Thread-local LuaEngine: build_api failed", log_tag_);
@@ -826,13 +815,13 @@ InvokeResponse LuaEngine::execute_direct_returning_(const std::string &name,
         return {InvokeStatus::NotFound, {}};
     }
 
-    json_to_lua(L, args);  // single positional table arg, mirrors `invoke(name, args)`
+    json_to_lua(L, args); // single positional table arg, mirrors `invoke(name, args)`
 
     if (lua_pcall(L, 1, 1, 0) != 0)
     {
         const char *err = lua_tostring(L, -1);
-        LOGGER_ERROR("[{}] invoke_returning('{}', args): {}",
-                     log_tag_, name, err ? err : "unknown error");
+        LOGGER_ERROR("[{}] invoke_returning('{}', args): {}", log_tag_, name,
+                     err ? err : "unknown error");
         lua_pop(L, 1);
         on_pcall_error_(name);
         return {InvokeStatus::ScriptError, {}};
@@ -850,9 +839,8 @@ InvokeResponse LuaEngine::execute_direct_returning_(const std::string &name,
     return {InvokeStatus::Ok, std::move(ret)};
 }
 
-InvokeResponse LuaEngine::invoke_returning(const std::string &name,
-                                            const nlohmann::json &args,
-                                            int64_t timeout_ms)
+InvokeResponse LuaEngine::invoke_returning(const std::string &name, const nlohmann::json &args,
+                                           int64_t timeout_ms)
 {
     if (name.empty() || !is_accepting())
         return {InvokeStatus::EngineShutdown, {}};
@@ -869,9 +857,7 @@ InvokeResponse LuaEngine::invoke_returning(const std::string &name,
         request_queue_.push_back({name, args, std::move(promise)});
     }
     // Wake the worker thread so it drains process_pending() promptly.
-    RoleHostCore *core = api_     ? api_->core()
-                       : hub_api_ ? hub_api_->core()
-                                  : nullptr;
+    RoleHostCore *core = api_ ? api_->core() : hub_api_ ? hub_api_->core() : nullptr;
     if (core)
         core->notify_incoming();
 
@@ -879,8 +865,7 @@ InvokeResponse LuaEngine::invoke_returning(const std::string &name,
     if (timeout_ms < 0)
         return future.get();
 
-    if (future.wait_for(std::chrono::milliseconds(timeout_ms))
-        == std::future_status::ready)
+    if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::ready)
     {
         return future.get();
     }
@@ -947,9 +932,8 @@ bool LuaEngine::probe_uncached_callback_(const std::string &name) const noexcept
 // build_ffi_cdef_ — shared hub::SchemaSpec → FFI typedef string builder
 // ============================================================================
 
-std::string LuaEngine::build_ffi_cdef_(const hub::SchemaSpec &spec,
-                                        const std::string &type_name,
-                                        const std::string &packing)
+std::string LuaEngine::build_ffi_cdef_(const hub::SchemaSpec &spec, const std::string &type_name,
+                                       const std::string &packing)
 {
     std::ostringstream ss;
     const bool is_packed = (packing == "packed");
@@ -962,19 +946,32 @@ std::string LuaEngine::build_ffi_cdef_(const hub::SchemaSpec &spec,
     for (const auto &f : spec.fields)
     {
         std::string c_type;
-        if (f.type_str == "bool")         c_type = "bool";
-        else if (f.type_str == "int8")    c_type = "int8_t";
-        else if (f.type_str == "uint8")   c_type = "uint8_t";
-        else if (f.type_str == "int16")   c_type = "int16_t";
-        else if (f.type_str == "uint16")  c_type = "uint16_t";
-        else if (f.type_str == "int32")   c_type = "int32_t";
-        else if (f.type_str == "uint32")  c_type = "uint32_t";
-        else if (f.type_str == "int64")   c_type = "int64_t";
-        else if (f.type_str == "uint64")  c_type = "uint64_t";
-        else if (f.type_str == "float32") c_type = "float";
-        else if (f.type_str == "float64") c_type = "double";
-        else if (f.type_str == "string")  c_type = "char";
-        else if (f.type_str == "bytes")   c_type = "uint8_t";
+        if (f.type_str == "bool")
+            c_type = "bool";
+        else if (f.type_str == "int8")
+            c_type = "int8_t";
+        else if (f.type_str == "uint8")
+            c_type = "uint8_t";
+        else if (f.type_str == "int16")
+            c_type = "int16_t";
+        else if (f.type_str == "uint16")
+            c_type = "uint16_t";
+        else if (f.type_str == "int32")
+            c_type = "int32_t";
+        else if (f.type_str == "uint32")
+            c_type = "uint32_t";
+        else if (f.type_str == "int64")
+            c_type = "int64_t";
+        else if (f.type_str == "uint64")
+            c_type = "uint64_t";
+        else if (f.type_str == "float32")
+            c_type = "float";
+        else if (f.type_str == "float64")
+            c_type = "double";
+        else if (f.type_str == "string")
+            c_type = "char";
+        else if (f.type_str == "bytes")
+            c_type = "uint8_t";
         else
         {
             LOGGER_ERROR("[{}] Unsupported field type '{}' in schema", log_tag_, f.type_str);
@@ -997,9 +994,8 @@ std::string LuaEngine::build_ffi_cdef_(const hub::SchemaSpec &spec,
 // register_slot_type / type_sizeof
 // ============================================================================
 
-bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec,
-                                    const std::string &type_name,
-                                    const std::string &packing)
+bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec, const std::string &type_name,
+                                   const std::string &packing)
 {
     // Validate canonical name UP FRONT — before any side effects.
     // Rejecting unknown names here (rather than silently falling
@@ -1008,11 +1004,8 @@ bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec,
     // canonical frame names are valid.  A typo in a role host /
     // schema config must fail loudly at this point, not corrupt
     // LuaJIT's global FFI type registry with a stray cdef.
-    if (type_name != "InSlotFrame"
-        && type_name != "OutSlotFrame"
-        && type_name != "InFlexFrame"
-        && type_name != "OutFlexFrame"
-        && type_name != "InboxFrame")
+    if (type_name != "InSlotFrame" && type_name != "OutSlotFrame" && type_name != "InFlexFrame" &&
+        type_name != "OutFlexFrame" && type_name != "InboxFrame")
     {
         LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
                      "'{}' — must be one of InSlotFrame, OutSlotFrame, "
@@ -1023,8 +1016,8 @@ bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec,
 
     if (!spec.has_schema)
     {
-        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
-                     log_tag_, type_name);
+        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false", log_tag_,
+                     type_name);
         return false;
     }
 
@@ -1051,7 +1044,8 @@ bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec,
     // Cache ffi.typeof() for slot views — no string ops per invoke call.
     // All known type names must be cached (see script_engine.hpp §register_slot_type).
     // Helper: unref old ref before overwriting to prevent registry leak.
-    auto safe_cache = [&](int &ref, const std::string &name, bool readonly) {
+    auto safe_cache = [&](int &ref, const std::string &name, bool readonly)
+    {
         if (ref != LUA_NOREF)
             state_.unref(ref);
         ref = state_.cache_ffi_typeof(name.c_str(), readonly);
@@ -1089,8 +1083,7 @@ size_t LuaEngine::type_sizeof(const std::string &type_name) const
 // invoke_on_init
 // ============================================================================
 
-pylabhub::scripting::ScriptEngine::InitStatus
-LuaEngine::invoke_on_init()
+pylabhub::scripting::ScriptEngine::InitStatus LuaEngine::invoke_on_init()
 {
     // HEP-CORE-0011 §"Loop-ready gate" — Lua coercion:
     //   - No `on_init` defined                     → Ready
@@ -1120,10 +1113,10 @@ LuaEngine::invoke_on_init()
     if (top > 0 && !lua_isnil(L, -1))
     {
         // lua_toboolean returns 0 for false/nil, non-zero otherwise.
-        status = lua_toboolean(L, -1) ? InitStatus::Ready
-                                       : InitStatus::NotReady;
+        status = lua_toboolean(L, -1) ? InitStatus::Ready : InitStatus::NotReady;
     }
-    if (top > 0) lua_pop(L, 1);   // clear the returned value
+    if (top > 0)
+        lua_pop(L, 1); // clear the returned value
     return status;
 }
 
@@ -1150,8 +1143,7 @@ void LuaEngine::invoke_on_stop()
 // invoke_on_channel_closing — on_channel_closing(channel, reason, api)
 // ============================================================================
 
-void LuaEngine::invoke_on_channel_closing(const std::string &channel,
-                                           const std::string &reason)
+void LuaEngine::invoke_on_channel_closing(const std::string &channel, const std::string &reason)
 {
     if (!state_.is_ref_callable(ref_on_channel_closing_))
         return;
@@ -1159,7 +1151,7 @@ void LuaEngine::invoke_on_channel_closing(const std::string &channel,
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_channel_closing_);
     lua_pushlstring(L, channel.data(), channel.size());
-    lua_pushlstring(L, reason.data(),  reason.size());
+    lua_pushlstring(L, reason.data(), reason.size());
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
     if (!state_.pcall(3, 0, "on_channel_closing"))
@@ -1172,18 +1164,17 @@ void LuaEngine::invoke_on_channel_closing(const std::string &channel,
 // invoke_on_consumer_died — on_consumer_died(channel, consumer_uid, reason, api)
 // ============================================================================
 
-void LuaEngine::invoke_on_consumer_died(const std::string &channel,
-                                         const std::string &consumer_uid,
-                                         const std::string &reason)
+void LuaEngine::invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
+                                        const std::string &reason)
 {
     if (!state_.is_ref_callable(ref_on_consumer_died_))
         return;
 
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_consumer_died_);
-    lua_pushlstring(L, channel.data(),      channel.size());
+    lua_pushlstring(L, channel.data(), channel.size());
     lua_pushlstring(L, consumer_uid.data(), consumer_uid.size());
-    lua_pushlstring(L, reason.data(),       reason.size());
+    lua_pushlstring(L, reason.data(), reason.size());
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
 
     if (!state_.pcall(4, 0, "on_consumer_died"))
@@ -1217,44 +1208,44 @@ void LuaEngine::invoke_on_hub_dead(const std::string &source_hub_uid)
 // Same shape as channel/consumer/hub: pushref, push args, pcall.
 // ============================================================================
 
-void LuaEngine::invoke_on_band_member_joined(const std::string &band,
-                                             const std::string &role_uid,
+void LuaEngine::invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                              const std::string &role_name)
 {
-    if (!state_.is_ref_callable(ref_on_band_member_joined_)) return;
+    if (!state_.is_ref_callable(ref_on_band_member_joined_))
+        return;
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_member_joined_);
-    lua_pushlstring(L, band.data(),      band.size());
-    lua_pushlstring(L, role_uid.data(),  role_uid.size());
+    lua_pushlstring(L, band.data(), band.size());
+    lua_pushlstring(L, role_uid.data(), role_uid.size());
     lua_pushlstring(L, role_name.data(), role_name.size());
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
     if (!state_.pcall(4, 0, "on_band_member_joined"))
         on_pcall_error_("on_band_member_joined");
 }
 
-void LuaEngine::invoke_on_band_member_left(const std::string &band,
-                                           const std::string &role_uid,
+void LuaEngine::invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
                                            const std::string &reason)
 {
-    if (!state_.is_ref_callable(ref_on_band_member_left_)) return;
+    if (!state_.is_ref_callable(ref_on_band_member_left_))
+        return;
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_member_left_);
-    lua_pushlstring(L, band.data(),     band.size());
+    lua_pushlstring(L, band.data(), band.size());
     lua_pushlstring(L, role_uid.data(), role_uid.size());
-    lua_pushlstring(L, reason.data(),   reason.size());
+    lua_pushlstring(L, reason.data(), reason.size());
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
     if (!state_.pcall(4, 0, "on_band_member_left"))
         on_pcall_error_("on_band_member_left");
 }
 
-void LuaEngine::invoke_on_band_message(const std::string  &band,
-                                       const std::string  &sender_role_uid,
+void LuaEngine::invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                        const nlohmann::json &body)
 {
-    if (!state_.is_ref_callable(ref_on_band_message_)) return;
+    if (!state_.is_ref_callable(ref_on_band_message_))
+        return;
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_message_);
-    lua_pushlstring(L, band.data(),            band.size());
+    lua_pushlstring(L, band.data(), band.size());
     lua_pushlstring(L, sender_role_uid.data(), sender_role_uid.size());
     json_to_lua(L, body);
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
@@ -1262,25 +1253,25 @@ void LuaEngine::invoke_on_band_message(const std::string  &band,
         on_pcall_error_("on_band_message");
 }
 
-void LuaEngine::invoke_on_band_lost(const std::string &band,
-                                    const std::string &reason)
+void LuaEngine::invoke_on_band_lost(const std::string &band, const std::string &reason)
 {
-    if (!state_.is_ref_callable(ref_on_band_lost_)) return;
+    if (!state_.is_ref_callable(ref_on_band_lost_))
+        return;
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_band_lost_);
-    lua_pushlstring(L, band.data(),   band.size());
+    lua_pushlstring(L, band.data(), band.size());
     lua_pushlstring(L, reason.data(), reason.size());
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
     if (!state_.pcall(3, 0, "on_band_lost"))
         on_pcall_error_("on_band_lost");
 }
 
-void LuaEngine::invoke_on_allowlist_changed(
-    const std::string &channel,
-    const std::vector<AllowedPeer> &allowlist,
-    const std::string &reason)
+void LuaEngine::invoke_on_allowlist_changed(const std::string &channel,
+                                            const std::vector<AllowedPeer> &allowlist,
+                                            const std::string &reason)
 {
-    if (!state_.is_ref_callable(ref_on_allowlist_changed_)) return;
+    if (!state_.is_ref_callable(ref_on_allowlist_changed_))
+        return;
     lua_State *L = state_.raw();
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_allowlist_changed_);
     lua_pushlstring(L, channel.data(), channel.size());
@@ -1289,13 +1280,11 @@ void LuaEngine::invoke_on_allowlist_changed(
     for (size_t i = 0; i < allowlist.size(); ++i)
     {
         lua_createtable(L, 0, 2);
-        lua_pushlstring(L, allowlist[i].role_uid.data(),
-                          allowlist[i].role_uid.size());
+        lua_pushlstring(L, allowlist[i].role_uid.data(), allowlist[i].role_uid.size());
         lua_setfield(L, -2, "role_uid");
-        lua_pushlstring(L, allowlist[i].pubkey.data(),
-                          allowlist[i].pubkey.size());
+        lua_pushlstring(L, allowlist[i].pubkey.data(), allowlist[i].pubkey.size());
         lua_setfield(L, -2, "pubkey");
-        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
+        lua_rawseti(L, -2, static_cast<int>(i + 1)); // 1-based Lua
     }
     lua_pushlstring(L, reason.data(), reason.size());
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
@@ -1307,9 +1296,7 @@ void LuaEngine::invoke_on_allowlist_changed(
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
-InvokeResult LuaEngine::invoke_produce(
-    InvokeTx tx,
-    std::vector<IncomingMessage> &msgs)
+InvokeResult LuaEngine::invoke_produce(InvokeTx tx, std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_produce_))
     {
@@ -1332,7 +1319,10 @@ InvokeResult LuaEngine::invoke_produce(
     if (tx.slot != nullptr && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
         lua_setfield(L, -2, "slot");
     else
-    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
+    {
+        lua_pushnil(L);
+        lua_setfield(L, -2, "slot");
+    }
 
     // Arg 2: messages table.
     push_messages_table_(msgs);
@@ -1364,8 +1354,7 @@ InvokeResult LuaEngine::invoke_produce(
     {
         LOGGER_ERROR("[{}] on_produce returned non-boolean type '{}' (value: {}) — "
                      "expected 'return true' or 'return false'. Treating as error.",
-                     log_tag_,
-                     lua_typename(L, lua_type(L, -1)),
+                     log_tag_, lua_typename(L, lua_type(L, -1)),
                      lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
         result = on_pcall_error_("on_produce [wrong return type]");
     }
@@ -1377,9 +1366,7 @@ InvokeResult LuaEngine::invoke_produce(
 // invoke_consume — on_consume(rx, msgs, api) -> bool
 // ============================================================================
 
-InvokeResult LuaEngine::invoke_consume(
-    InvokeRx rx,
-    std::vector<IncomingMessage> &msgs)
+InvokeResult LuaEngine::invoke_consume(InvokeRx rx, std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_consume_))
     {
@@ -1399,11 +1386,14 @@ InvokeResult LuaEngine::invoke_consume(
 
     // Arg 1: rx table {slot=cdata}.
     lua_createtable(L, 0, 1);
-    if (rx.slot != nullptr
-        && state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
+    if (rx.slot != nullptr &&
+        state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
         lua_setfield(L, -2, "slot");
     else
-    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
+    {
+        lua_pushnil(L);
+        lua_setfield(L, -2, "slot");
+    }
 
     // Arg 2: messages table (bare variant for consumer).
     push_messages_table_bare_(msgs);
@@ -1443,9 +1433,7 @@ InvokeResult LuaEngine::invoke_consume(
 // invoke_process — on_process(rx, tx, msgs, api) -> bool
 // ============================================================================
 
-InvokeResult LuaEngine::invoke_process(
-    InvokeRx rx, InvokeTx tx,
-    std::vector<IncomingMessage> &msgs)
+InvokeResult LuaEngine::invoke_process(InvokeRx rx, InvokeTx tx, std::vector<IncomingMessage> &msgs)
 {
     if (!state_.is_ref_callable(ref_on_process_))
     {
@@ -1465,19 +1453,24 @@ InvokeResult LuaEngine::invoke_process(
 
     // Arg 1: rx table {slot=cdata}.
     lua_createtable(L, 0, 1);
-    if (rx.slot != nullptr
-        && state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
+    if (rx.slot != nullptr &&
+        state_.push_slot_view_cached(const_cast<void *>(rx.slot), ref_in_slot_readonly_))
         lua_setfield(L, -2, "slot");
     else
-    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
+    {
+        lua_pushnil(L);
+        lua_setfield(L, -2, "slot");
+    }
 
     // Arg 2: tx table {slot=cdata}.
     lua_createtable(L, 0, 1);
-    if (tx.slot != nullptr
-        && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
+    if (tx.slot != nullptr && state_.push_slot_view_cached(tx.slot, ref_out_slot_writable_))
         lua_setfield(L, -2, "slot");
     else
-    { lua_pushnil(L); lua_setfield(L, -2, "slot"); }
+    {
+        lua_pushnil(L);
+        lua_setfield(L, -2, "slot");
+    }
 
     // Arg 3: messages table.
     push_messages_table_(msgs);
@@ -1506,8 +1499,7 @@ InvokeResult LuaEngine::invoke_process(
     {
         LOGGER_ERROR("[{}] on_process returned non-boolean type '{}' (value: {}) — "
                      "expected 'return true' or 'return false'. Treating as error.",
-                     log_tag_,
-                     lua_typename(L, lua_type(L, -1)),
+                     log_tag_, lua_typename(L, lua_type(L, -1)),
                      lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
         result = on_pcall_error_("on_process [wrong return type]");
     }
@@ -1553,11 +1545,14 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
     // Arg 1: msg table {data=cdata, sender_uid=string, seq=number}.
     lua_createtable(L, 0, 3);
 
-    if (msg.data != nullptr && msg.data_size > 0
-        && state_.push_slot_view_cached(const_cast<void *>(msg.data), ref_inbox_readonly_))
+    if (msg.data != nullptr && msg.data_size > 0 &&
+        state_.push_slot_view_cached(const_cast<void *>(msg.data), ref_inbox_readonly_))
         lua_setfield(L, -2, "data");
     else
-    { lua_pushnil(L); lua_setfield(L, -2, "data"); }
+    {
+        lua_pushnil(L);
+        lua_setfield(L, -2, "data");
+    }
 
     lua_pushstring(L, msg.sender_uid.c_str());
     lua_setfield(L, -2, "sender_uid");
@@ -1618,17 +1613,15 @@ InvokeResult LuaEngine::on_pcall_error_(const std::string &callback_name)
     // expose the same `core()` accessor shape, so the resolved
     // RoleHostCore* drives the script-error counter + stop-request
     // path uniformly.
-    RoleHostCore *core = api_       ? api_->core()
-                       : hub_api_   ? hub_api_->core()
-                                    : nullptr;
+    RoleHostCore *core = api_ ? api_->core() : hub_api_ ? hub_api_->core() : nullptr;
     if (core)
         core->inc_script_error_count();
     // Hot-path callers (invoke_produce etc.) use state_.pcall() which logs the error.
     // Generic invoke() callers log the error themselves before calling this.
     if (stop_on_script_error_)
     {
-        LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
-                     log_tag_, callback_name);
+        LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error", log_tag_,
+                     callback_name);
         if (core)
         {
             // Audit S2 (2026-05-18) — see PythonEngine for rationale.
@@ -1764,7 +1757,8 @@ void LuaEngine::push_messages_table_bare_(std::vector<IncomingMessage> &msgs)
 
 void LuaEngine::push_common_api_closures_(lua_State *L)
 {
-    auto push_closure = [&](const char *name, lua_CFunction fn) {
+    auto push_closure = [&](const char *name, lua_CFunction fn)
+    {
         lua_pushlightuserdata(L, this);
         lua_pushcclosure(L, fn, 1);
         lua_setfield(L, -2, name);
@@ -1835,81 +1829,94 @@ void LuaEngine::register_inbox_metatable_()
         // Static helper lambdas for inbox methods.
         // These do not need `this` as upvalue because they look up the engine
         // from the LuaInboxUD userdata.
-        auto set_method = [&](const char *name, lua_CFunction fn) {
+        auto set_method = [&](const char *name, lua_CFunction fn)
+        {
             lua_pushcfunction(L, fn);
             lua_setfield(L, -2, name);
         };
 
-        set_method("acquire", [](lua_State *Ls) -> int {
-            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
-            if (!entry || !entry->client || !entry->client->is_running())
-            {
-                lua_pushnil(Ls);
-                return 1;
-            }
+        set_method("acquire",
+                   [](lua_State *Ls) -> int
+                   {
+                       auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+                       auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
+                       if (!entry || !entry->client || !entry->client->is_running())
+                       {
+                           lua_pushnil(Ls);
+                           return 1;
+                       }
 
-            void *buf = entry->client->acquire();
-            if (!buf)
-            {
-                lua_pushnil(Ls);
-                return 1;
-            }
+                       void *buf = entry->client->acquire();
+                       if (!buf)
+                       {
+                           lua_pushnil(Ls);
+                           return 1;
+                       }
 
-            if (!ud->engine->state_.push_slot_view(buf, entry->item_size,
-                                                    entry->type_name.c_str()))
-            {
-                lua_pushnil(Ls);
-                return 1;
-            }
-            return 1;
-        });
+                       if (!ud->engine->state_.push_slot_view(buf, entry->item_size,
+                                                              entry->type_name.c_str()))
+                       {
+                           lua_pushnil(Ls);
+                           return 1;
+                       }
+                       return 1;
+                   });
 
-        set_method("send", [](lua_State *Ls) -> int {
-            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
-            if (!entry || !entry->client || !entry->client->is_running())
-            {
-                lua_pushinteger(Ls, 255);
-                return 1;
-            }
+        set_method("send",
+                   [](lua_State *Ls) -> int
+                   {
+                       auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+                       auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
+                       if (!entry || !entry->client || !entry->client->is_running())
+                       {
+                           lua_pushinteger(Ls, 255);
+                           return 1;
+                       }
 
-            int timeout_ms = static_cast<int>(luaL_optinteger(Ls, 2, 5000));
-            uint8_t rc = entry->client->send(std::chrono::milliseconds{timeout_ms});
-            lua_pushinteger(Ls, static_cast<lua_Integer>(rc));
-            return 1;
-        });
+                       int timeout_ms = static_cast<int>(luaL_optinteger(Ls, 2, 5000));
+                       uint8_t rc = entry->client->send(std::chrono::milliseconds{timeout_ms});
+                       lua_pushinteger(Ls, static_cast<lua_Integer>(rc));
+                       return 1;
+                   });
 
-        set_method("discard", [](lua_State *Ls) -> int {
-            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
-            if (entry && entry->client)
-                entry->client->abort();
-            return 0;
-        });
+        set_method("discard",
+                   [](lua_State *Ls) -> int
+                   {
+                       auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+                       auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
+                       if (entry && entry->client)
+                           entry->client->abort();
+                       return 0;
+                   });
 
-        set_method("is_ready", [](lua_State *Ls) -> int {
-            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
-            lua_pushboolean(Ls,
-                            (entry && entry->client && entry->client->is_running()) ? 1 : 0);
-            return 1;
-        });
+        set_method("is_ready",
+                   [](lua_State *Ls) -> int
+                   {
+                       auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+                       auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
+                       lua_pushboolean(
+                           Ls, (entry && entry->client && entry->client->is_running()) ? 1 : 0);
+                       return 1;
+                   });
 
-        set_method("close", [](lua_State *Ls) -> int {
-            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
-            if (entry && entry->client)
-                entry->client->stop();
-            return 0;
-        });
+        set_method("close",
+                   [](lua_State *Ls) -> int
+                   {
+                       auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+                       auto entry = ud->engine->api_->core()->get_inbox_entry(ud->target_uid);
+                       if (entry && entry->client)
+                           entry->client->stop();
+                       return 0;
+                   });
 
         // __gc: call destructor on LuaInboxUD to release std::string.
-        set_method("__gc", [](lua_State *Ls) -> int {
-            auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
-            ud->~LuaInboxUD();
-            return 0;
-        });
+        set_method("__gc",
+                   [](lua_State *Ls) -> int
+                   {
+                       auto *ud = static_cast<LuaInboxUD *>(luaL_checkudata(Ls, 1, kInboxHandleMT));
+                       ud->~LuaInboxUD();
+                       return 0;
+                   });
     }
     lua_pop(L, 1); // pop metatable
 }
@@ -1931,7 +1938,7 @@ int LuaEngine::lua_api_hub_log(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *level = luaL_checkstring(L, 1);
-    const char *msg   = luaL_checkstring(L, 2);
+    const char *msg = luaL_checkstring(L, 2);
     self->hub_api_->log(level, msg);
     return 0;
 }
@@ -2080,9 +2087,7 @@ int LuaEngine::lua_api_hub_broadcast_channel(lua_State *L)
     const char *channel = luaL_checkstring(L, 1);
     const char *message = luaL_checkstring(L, 2);
     // Optional third arg: data payload, default empty.
-    const char *data = (lua_gettop(L) >= 3 && lua_isstring(L, 3))
-                           ? lua_tostring(L, 3)
-                           : "";
+    const char *data = (lua_gettop(L) >= 3 && lua_isstring(L, 3)) ? lua_tostring(L, 3) : "";
     self->hub_api_->broadcast_channel(channel, message, data);
     return 0;
 }
@@ -2097,8 +2102,7 @@ int LuaEngine::lua_api_hub_request_shutdown(lua_State *L)
 int LuaEngine::lua_api_hub_augment_timeout_ms(lua_State *L)
 {
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
-    lua_pushinteger(L,
-        static_cast<lua_Integer>(self->hub_api_->augment_timeout_ms()));
+    lua_pushinteger(L, static_cast<lua_Integer>(self->hub_api_->augment_timeout_ms()));
     return 1;
 }
 
@@ -2129,9 +2133,8 @@ int LuaEngine::lua_api_hub_post_event(lua_State *L)
     if (lua_gettop(L) >= 2 && !lua_isnil(L, 2))
     {
         if (!lua_istable(L, 2))
-            return luaL_error(L,
-                "api.post_event: data must be a table or nil (got %s)",
-                lua_typename(L, lua_type(L, 2)));
+            return luaL_error(L, "api.post_event: data must be a table or nil (got %s)",
+                              lua_typename(L, lua_type(L, 2)));
         data = lua_to_json(L, 2);
     }
     else
@@ -2189,8 +2192,7 @@ int LuaEngine::lua_api_set_critical_error(lua_State *L)
     // wrong-type so the script author sees the mistake immediately
     // (matches Python's pybind11 TypeError for a missing required arg).
     if (lua_gettop(L) < 1 || lua_isnil(L, 1) || !lua_isstring(L, 1))
-        return luaL_error(L,
-            "api.set_critical_error(msg) requires a string message argument");
+        return luaL_error(L, "api.set_critical_error(msg) requires a string message argument");
     const char *msg = lua_tostring(L, 1);
     // Forward to RoleAPIBase so the log line format is uniform across
     // Python / Lua / Native engines: "[short_tag/uid] CRITICAL: <msg>".
@@ -2233,18 +2235,20 @@ int LuaEngine::lua_api_get_shared_data(lua_State *L)
         lua_pushnil(L);
         return 1;
     }
-    std::visit([L](const auto &v)
-    {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, int64_t>)
-            lua_pushinteger(L, static_cast<lua_Integer>(v));
-        else if constexpr (std::is_same_v<T, double>)
-            lua_pushnumber(L, v);
-        else if constexpr (std::is_same_v<T, bool>)
-            lua_pushboolean(L, v ? 1 : 0);
-        else if constexpr (std::is_same_v<T, std::string>)
-            lua_pushlstring(L, v.data(), v.size());
-    }, *val);
+    std::visit(
+        [L](const auto &v)
+        {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, int64_t>)
+                lua_pushinteger(L, static_cast<lua_Integer>(v));
+            else if constexpr (std::is_same_v<T, double>)
+                lua_pushnumber(L, v);
+            else if constexpr (std::is_same_v<T, bool>)
+                lua_pushboolean(L, v ? 1 : 0);
+            else if constexpr (std::is_same_v<T, std::string>)
+                lua_pushlstring(L, v.data(), v.size());
+        },
+        *val);
     return 1;
 }
 
@@ -2308,7 +2312,8 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
     {
         std::string ffi_type = fmt::format("InboxSlot_{}", target_uid);
         for (auto &c : ffi_type)
-            if (c == '-') c = '_';
+            if (c == '-')
+                c = '_';
 
         std::string cdef = self->build_ffi_cdef_(result->spec, ffi_type, result->packing);
         if (cdef.empty() || !self->state_.register_ffi_type(cdef, self->log_tag_.c_str()))
@@ -2552,8 +2557,7 @@ int LuaEngine::lua_api_band_leave(lua_State *L)
     // (HEP-CORE-0007 §12.3 / Bucket-C contract) to a boolean for scripts
     // that just want yes/no.
     auto resp = self->api_->band_leave(channel);
-    const bool ok = resp.has_value() &&
-                    resp->value("status", std::string{}) == "success";
+    const bool ok = resp.has_value() && resp->value("status", std::string{}) == "success";
     lua_pushboolean(L, ok ? 1 : 0);
     return 1;
 }
@@ -2626,7 +2630,8 @@ int LuaEngine::lua_api_band_members(lua_State *L)
 // surface principle).  File-local; the two callers stay readable inline
 // while the table-push loop has a single source of truth.
 // ============================================================================
-namespace {
+namespace
+{
 
 void push_peer_table_(lua_State *L, const std::vector<AllowedPeer> &peers)
 {
@@ -2638,7 +2643,7 @@ void push_peer_table_(lua_State *L, const std::vector<AllowedPeer> &peers)
         lua_setfield(L, -2, "role_uid");
         lua_pushlstring(L, peers[i].pubkey.data(), peers[i].pubkey.size());
         lua_setfield(L, -2, "pubkey");
-        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
+        lua_rawseti(L, -2, static_cast<int>(i + 1)); // 1-based Lua
     }
 }
 
@@ -2652,7 +2657,7 @@ void push_uid_table_(lua_State *L, const std::vector<std::string> &uids)
     for (size_t i = 0; i < uids.size(); ++i)
     {
         lua_pushlstring(L, uids[i].data(), uids[i].size());
-        lua_rawseti(L, -2, static_cast<int>(i + 1));   // 1-based Lua
+        lua_rawseti(L, -2, static_cast<int>(i + 1)); // 1-based Lua
     }
 }
 
@@ -2673,8 +2678,7 @@ int LuaEngine::lua_api_allowed_peers(lua_State *L)
     const char *arg = luaL_checkstring(L, 1);
     const std::string channel = arg ? arg : "";
     if (channel.empty())
-        return luaL_error(L,
-            "api.allowed_peers: channel argument must be a non-empty string");
+        return luaL_error(L, "api.allowed_peers: channel argument must be a non-empty string");
     push_peer_table_(L, self->api_->allowed_peers(channel));
     return 1;
 }
@@ -2695,8 +2699,7 @@ int LuaEngine::lua_api_producers(lua_State *L)
     const char *arg = luaL_checkstring(L, 1);
     const std::string channel = arg ? arg : "";
     if (channel.empty())
-        return luaL_error(L,
-            "api.producers: channel argument must be a non-empty string");
+        return luaL_error(L, "api.producers: channel argument must be a non-empty string");
     push_uid_table_(L, self->api_->producers(channel));
     return 1;
 }
@@ -2707,8 +2710,7 @@ int LuaEngine::lua_api_consumers(lua_State *L)
     const char *arg = luaL_checkstring(L, 1);
     const std::string channel = arg ? arg : "";
     if (channel.empty())
-        return luaL_error(L,
-            "api.consumers: channel argument must be a non-empty string");
+        return luaL_error(L, "api.consumers: channel argument must be a non-empty string");
     push_uid_table_(L, self->api_->consumers(channel));
     return 1;
 }
@@ -2726,8 +2728,7 @@ int LuaEngine::lua_api_is_channel_ready(lua_State *L)
     const char *arg = luaL_checkstring(L, 1);
     const std::string channel = arg ? arg : "";
     if (channel.empty())
-        return luaL_error(L,
-            "api.is_channel_ready: channel argument must be a non-empty string");
+        return luaL_error(L, "api.is_channel_ready: channel argument must be a non-empty string");
     lua_pushboolean(L, self->api_->is_channel_ready(channel) ? 1 : 0);
     return 1;
 }
@@ -2741,10 +2742,8 @@ int LuaEngine::lua_api_consumer_count(lua_State *L)
     const char *arg = luaL_checkstring(L, 1);
     const std::string channel = arg ? arg : "";
     if (channel.empty())
-        return luaL_error(L,
-            "api.consumer_count: channel argument must be a non-empty string");
-    lua_pushinteger(L,
-        static_cast<lua_Integer>(self->api_->consumer_count(channel)));
+        return luaL_error(L, "api.consumer_count: channel argument must be a non-empty string");
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->consumer_count(channel)));
     return 1;
 }
 
@@ -2754,10 +2753,8 @@ int LuaEngine::lua_api_producer_count(lua_State *L)
     const char *arg = luaL_checkstring(L, 1);
     const std::string channel = arg ? arg : "";
     if (channel.empty())
-        return luaL_error(L,
-            "api.producer_count: channel argument must be a non-empty string");
-    lua_pushinteger(L,
-        static_cast<lua_Integer>(self->api_->producer_count(channel)));
+        return luaL_error(L, "api.producer_count: channel argument must be a non-empty string");
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->producer_count(channel)));
     return 1;
 }
 
@@ -2769,8 +2766,10 @@ int LuaEngine::lua_api_queue_mechanism(lua_State *L)
 
     if (lua_gettop(L) == 0)
     {
-        if (role == "prod")      side = scripting::ChannelSide::Tx;
-        else if (role == "cons") side = scripting::ChannelSide::Rx;
+        if (role == "prod")
+            side = scripting::ChannelSide::Tx;
+        else if (role == "cons")
+            side = scripting::ChannelSide::Rx;
         else
             return luaL_error(L, "api.queue_mechanism: processor role "
                                  "requires a side argument (\"tx\" or "
@@ -2780,12 +2779,16 @@ int LuaEngine::lua_api_queue_mechanism(lua_State *L)
     {
         const char *arg = luaL_checkstring(L, 1);
         const std::string s = arg ? arg : "";
-        if (s == "tx" || s == "TX" || s == "out") side = scripting::ChannelSide::Tx;
-        else if (s == "rx" || s == "RX" || s == "in") side = scripting::ChannelSide::Rx;
+        if (s == "tx" || s == "TX" || s == "out")
+            side = scripting::ChannelSide::Tx;
+        else if (s == "rx" || s == "RX" || s == "in")
+            side = scripting::ChannelSide::Rx;
         else
-            return luaL_error(L, "api.queue_mechanism: side must be "
-                                 "\"tx\"/\"out\" or \"rx\"/\"in\", got "
-                                 "'%s'", arg ? arg : "(nil)");
+            return luaL_error(L,
+                              "api.queue_mechanism: side must be "
+                              "\"tx\"/\"out\" or \"rx\"/\"in\", got "
+                              "'%s'",
+                              arg ? arg : "(nil)");
     }
 
     lua_pushstring(L, hub::mechanism_name(self->api_->queue_mechanism(side)));
@@ -2964,8 +2967,7 @@ int LuaEngine::lua_api_spinlock(lua_State *L)
     try
     {
         void *ud = lua_newuserdata(L, sizeof(hub::SharedSpinLock));
-        new (ud) hub::SharedSpinLock(
-            self->api_->get_spinlock(static_cast<size_t>(idx), side));
+        new (ud) hub::SharedSpinLock(self->api_->get_spinlock(static_cast<size_t>(idx), side));
         luaL_setmetatable(L, kSpinlockMT);
     }
     catch (const std::exception &e)
@@ -2977,24 +2979,21 @@ int LuaEngine::lua_api_spinlock(lua_State *L)
 
 int LuaEngine::lua_spinlock_lock(lua_State *L)
 {
-    auto *lock = static_cast<hub::SharedSpinLock *>(
-        luaL_checkudata(L, 1, kSpinlockMT));
+    auto *lock = static_cast<hub::SharedSpinLock *>(luaL_checkudata(L, 1, kSpinlockMT));
     lock->lock();
     return 0;
 }
 
 int LuaEngine::lua_spinlock_unlock(lua_State *L)
 {
-    auto *lock = static_cast<hub::SharedSpinLock *>(
-        luaL_checkudata(L, 1, kSpinlockMT));
+    auto *lock = static_cast<hub::SharedSpinLock *>(luaL_checkudata(L, 1, kSpinlockMT));
     lock->unlock();
     return 0;
 }
 
 int LuaEngine::lua_spinlock_try_lock_for(lua_State *L)
 {
-    auto *lock = static_cast<hub::SharedSpinLock *>(
-        luaL_checkudata(L, 1, kSpinlockMT));
+    auto *lock = static_cast<hub::SharedSpinLock *>(luaL_checkudata(L, 1, kSpinlockMT));
     int timeout_ms = static_cast<int>(luaL_checkinteger(L, 2));
     lua_pushboolean(L, lock->try_lock_for(timeout_ms) ? 1 : 0);
     return 1;
@@ -3002,16 +3001,14 @@ int LuaEngine::lua_spinlock_try_lock_for(lua_State *L)
 
 int LuaEngine::lua_spinlock_is_locked(lua_State *L)
 {
-    auto *lock = static_cast<hub::SharedSpinLock *>(
-        luaL_checkudata(L, 1, kSpinlockMT));
+    auto *lock = static_cast<hub::SharedSpinLock *>(luaL_checkudata(L, 1, kSpinlockMT));
     lua_pushboolean(L, lock->is_locked_by_current_process() ? 1 : 0);
     return 1;
 }
 
 int LuaEngine::lua_spinlock_gc(lua_State *L)
 {
-    auto *lock = static_cast<hub::SharedSpinLock *>(
-        luaL_checkudata(L, 1, kSpinlockMT));
+    auto *lock = static_cast<hub::SharedSpinLock *>(luaL_checkudata(L, 1, kSpinlockMT));
     // If still locked by us, unlock to prevent deadlock on GC.
     if (lock->is_locked_by_current_process())
         lock->unlock();
@@ -3028,7 +3025,8 @@ void LuaEngine::register_spinlock_metatable_()
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
 
-        auto reg = [&](const char *name, lua_CFunction fn) {
+        auto reg = [&](const char *name, lua_CFunction fn)
+        {
             lua_pushcfunction(L, fn);
             lua_setfield(L, -2, name);
         };
@@ -3103,9 +3101,9 @@ int LuaEngine::lua_api_flexzone(lua_State *L)
 
 uint64_t LuaEngine::script_error_count() const noexcept
 {
-    return api_     ? api_->core()->script_error_count()
-         : hub_api_ ? hub_api_->core()->script_error_count()
-                    : 0;
+    return api_       ? api_->core()->script_error_count()
+           : hub_api_ ? hub_api_->core()->script_error_count()
+                      : 0;
 }
 
 } // namespace pylabhub::scripting

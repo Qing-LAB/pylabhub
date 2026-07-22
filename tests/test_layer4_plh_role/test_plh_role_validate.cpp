@@ -25,7 +25,10 @@ using pylabhub::tests::helper::WorkerProcess;
 namespace
 {
 
-struct RoleSpec { std::string_view role; };
+struct RoleSpec
+{
+    std::string_view role;
+};
 
 // See PrintTo rationale in test_plh_role_init.cpp — keeps CTest test
 // names as `Roles/<Case>/producer` instead of a raw 16-byte dump.
@@ -34,16 +37,14 @@ inline void PrintTo(const RoleSpec &s, std::ostream *os)
     *os << s.role;
 }
 
-class PlhRoleValidateTest : public PlhRoleCliTest,
-                            public ::testing::WithParamInterface<RoleSpec>
+class PlhRoleValidateTest : public PlhRoleCliTest, public ::testing::WithParamInterface<RoleSpec>
 {
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Roles, PlhRoleValidateTest,
-    ::testing::Values(
-        RoleSpec{"producer"}, RoleSpec{"consumer"}, RoleSpec{"processor"}),
-    [](const auto &info) { return std::string(info.param.role); });
+INSTANTIATE_TEST_SUITE_P(Roles, PlhRoleValidateTest,
+                         ::testing::Values(RoleSpec{"producer"}, RoleSpec{"consumer"},
+                                           RoleSpec{"processor"}),
+                         [](const auto &info) { return std::string(info.param.role); });
 
 // ── L6 wire — config-ACL advisory (HEP-CORE-0035 §4.6.1) ────────────────────
 
@@ -71,16 +72,16 @@ TEST_P(PlhRoleValidateTest, ConfigAclAdvisory_GroupReadable_EmitsWarn)
     ::chmod(cfg.c_str(), 0640);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
-    EXPECT_EQ(p.wait_for_exit(), 0)
-        << "validate must remain non-fatal on group-readable config; "
-           "stderr:\n" << p.get_stderr();
-    EXPECT_NE(p.get_stderr().find("role config ACL advisory"),
-              std::string::npos)
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "validate must remain non-fatal on group-readable config; "
+                                       "stderr:\n"
+                                    << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("role config ACL advisory"), std::string::npos)
         << "stderr should carry the L6-wire advisory; got:\n"
         << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("group-readable"), std::string::npos)
-        << "advisory should name the reason; got:\n" << p.get_stderr();
+        << "advisory should name the reason; got:\n"
+        << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
         << "advisory should cite HEP-CORE-0035 §4.6.1; got:\n"
         << p.get_stderr();
@@ -105,7 +106,7 @@ TEST_P(PlhRoleValidateTest, MinimalConfigPasses)
     keygen_minimal_role(s.role, cfg);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos)
@@ -160,20 +161,19 @@ TEST_P(PlhRoleValidateTest, CurveGate_CorruptVault_AbortsBeforeBind)
     // test for the symmetrical assertion at the lib tier.
     const auto vault_path = dir / "vault" / "placeholder.vault";
     {
-        std::ofstream truncate(vault_path,
-                               std::ios::binary | std::ios::trunc);
+        std::ofstream truncate(vault_path, std::ios::binary | std::ios::trunc);
         truncate.write("not-a-valid-vault-payload", 25);
     }
     ::chmod(vault_path.c_str(), 0600);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
-    EXPECT_NE(p.wait_for_exit(), 0)
-        << "Corrupt vault MUST cause --validate to exit non-zero — the "
-           "C5 gate (HEP-CORE-0035 §2 + AUTH_TODO §C5) requires that "
-           "no valid CURVE identity → no role startup → no socket "
-           "bind.  If this test passed with rc=0, the loader gate has "
-           "regressed.  stderr:\n" << p.get_stderr();
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
+    EXPECT_NE(p.wait_for_exit(), 0) << "Corrupt vault MUST cause --validate to exit non-zero — the "
+                                       "C5 gate (HEP-CORE-0035 §2 + AUTH_TODO §C5) requires that "
+                                       "no valid CURVE identity → no role startup → no socket "
+                                       "bind.  If this test passed with rc=0, the loader gate has "
+                                       "regressed.  stderr:\n"
+                                    << p.get_stderr();
 }
 #endif
 
@@ -194,8 +194,7 @@ TEST_P(PlhRoleValidateTest, DirectoryFlavorPasses)
     keygen_minimal_role(s.role, cfg);
 
     // Positional <dir> instead of --config <file>.
-    WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), dir.string(), "--validate"});
+    WorkerProcess p(plh_role_binary(), "--role", {std::string(s.role), dir.string(), "--validate"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Validation passed"), std::string::npos);
@@ -215,10 +214,11 @@ TEST_P(PlhRoleValidateTest, MalformedJsonFails)
     write_file(cfg, R"({"producer": { broken json )");
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0) << "malformed JSON must fail";
     EXPECT_NE(p.get_stderr().find("Config error"), std::string::npos)
-        << "stderr missing 'Config error' diagnostic; got:\n" << p.get_stderr();
+        << "stderr missing 'Config error' diagnostic; got:\n"
+        << p.get_stderr();
 }
 
 /// Config missing the role-specific identity block → non-zero exit.
@@ -236,7 +236,7 @@ TEST_P(PlhRoleValidateTest, MissingIdentityBlockFails)
     write_file(cfg, R"({"script": {"type": "python", "path": "."}})");
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0) << "config without identity block must fail";
 }
 
@@ -250,19 +250,17 @@ TEST_P(PlhRoleValidateTest, MissingScriptDirFails)
     const auto cfg = dir / (std::string(s.role) + ".json");
 
     // Config points at a non-existent script path.
-    write_minimal_config(cfg, std::string(s.role),
-                          dir / "nonexistent_script_dir");
+    write_minimal_config(cfg, std::string(s.role), dir / "nonexistent_script_dir");
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0) << "missing script dir must fail";
     // Either "Script load failed" or the engine startup exception message
     // — both are reasonable; keep pin loose to "Script" so reworded
     // messages still land.
-    EXPECT_TRUE(
-        p.get_stderr().find("Script")  != std::string::npos ||
-        p.get_stderr().find("script")  != std::string::npos ||
-        p.get_stderr().find("Startup") != std::string::npos)
+    EXPECT_TRUE(p.get_stderr().find("Script") != std::string::npos ||
+                p.get_stderr().find("script") != std::string::npos ||
+                p.get_stderr().find("Startup") != std::string::npos)
         << "stderr did not mention script / startup failure; got:\n"
         << p.get_stderr();
 }
@@ -281,7 +279,7 @@ TEST_P(PlhRoleValidateTest, ScriptSyntaxErrorFails)
     write_minimal_config(cfg, std::string(s.role), dir);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0) << "script syntax error must fail";
 }
 
@@ -308,9 +306,8 @@ TEST_P(PlhRoleValidateTest, MissingRequiredCallbackFails)
     write_minimal_config(cfg, std::string(s.role), dir);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
-    EXPECT_NE(p.wait_for_exit(), 0)
-        << s.role << " config with missing required callback must fail";
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
+    EXPECT_NE(p.wait_for_exit(), 0) << s.role << " config with missing required callback must fail";
 }
 
 /// --validate without --role fails — plh_role must know which role to
@@ -323,11 +320,11 @@ TEST_F(PlhRoleCliTest, ValidateWithoutRoleFails)
     write_minimal_script(script_dir);
     write_minimal_config(cfg, "producer", dir);
 
-    WorkerProcess p(plh_role_binary(), "--config",
-        {cfg.string(), "--validate"});
+    WorkerProcess p(plh_role_binary(), "--config", {cfg.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0);
     EXPECT_NE(p.get_stderr().find("--role"), std::string::npos)
-        << "stderr should mention --role; got:\n" << p.get_stderr();
+        << "stderr should mention --role; got:\n"
+        << p.get_stderr();
 }
 
 /// --validate without either --config <path> or <dir> positional → error.
@@ -335,11 +332,9 @@ TEST_F(PlhRoleCliTest, ValidateWithoutRoleFails)
 ///   "Error: specify a role directory, --init, or --config <path>".
 TEST_F(PlhRoleCliTest, ValidateWithoutConfigOrDirFails)
 {
-    WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", "--validate"});
+    WorkerProcess p(plh_role_binary(), "--role", {"producer", "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0);
-    EXPECT_NE(p.get_stderr().find("specify a role directory"),
-              std::string::npos)
+    EXPECT_NE(p.get_stderr().find("specify a role directory"), std::string::npos)
         << "stderr should prompt for input location; got:\n"
         << p.get_stderr();
 }
@@ -365,13 +360,14 @@ TEST_P(PlhRoleValidateTest, UnknownTopLevelKeyFails)
     write_minimal_config(cfg, std::string(s.role), dir, overrides);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {std::string(s.role), "--config", cfg.string(), "--validate"});
+                    {std::string(s.role), "--config", cfg.string(), "--validate"});
     EXPECT_NE(p.wait_for_exit(), 0) << "unknown top-level key must fail";
     EXPECT_NE(p.get_stderr().find("unknown config key"), std::string::npos)
         << "stderr should identify the unknown-key rejection; got:\n"
         << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("bogus_top_level_key"), std::string::npos)
-        << "stderr should echo the offending key; got:\n" << p.get_stderr();
+        << "stderr should echo the offending key; got:\n"
+        << p.get_stderr();
 }
 
 } // namespace

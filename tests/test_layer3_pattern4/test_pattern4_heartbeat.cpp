@@ -67,7 +67,7 @@ namespace
 
 class Pattern4HeartbeatTest : public IsolatedProcessTest
 {
-protected:
+  protected:
     void TearDown() override
     {
         for (const auto &p : paths_to_clean_)
@@ -92,7 +92,8 @@ protected:
 std::string read_shared_log(const fs::path &shared_log)
 {
     std::ifstream in(shared_log, std::ios::in | std::ios::binary);
-    if (!in) return {};
+    if (!in)
+        return {};
     std::ostringstream oss;
     oss << in.rdbuf();
     return oss.str();
@@ -101,50 +102,62 @@ std::string read_shared_log(const fs::path &shared_log)
 // Find the first line that contains `anchor`, then extract the
 // integer that follows `field`.  Returns -1 on miss; caller's
 // ASSERT_GE rejects.
-[[nodiscard]] int extract_int_after(const std::string &text,
-                                     std::string_view anchor,
-                                     std::string_view field)
+[[nodiscard]] int extract_int_after(const std::string &text, std::string_view anchor,
+                                    std::string_view field)
 {
     const auto anchor_pos = text.find(anchor);
-    if (anchor_pos == std::string::npos) return -1;
+    if (anchor_pos == std::string::npos)
+        return -1;
     // Find the end of the line containing the anchor — extraction
     // must stay within that single line so the marker contract is
     // unambiguous.
     const auto line_end = text.find('\n', anchor_pos);
     const auto field_pos = text.find(field, anchor_pos);
-    if (field_pos == std::string::npos ||
-        (line_end != std::string::npos && field_pos > line_end))
+    if (field_pos == std::string::npos || (line_end != std::string::npos && field_pos > line_end))
         return -1;
     const auto digits_start = field_pos + field.size();
     std::size_t i = digits_start;
     while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i])))
         ++i;
-    if (i == digits_start) return -1;
-    try { return std::stoi(text.substr(digits_start, i - digits_start)); }
-    catch (...) { return -1; }
+    if (i == digits_start)
+        return -1;
+    try
+    {
+        return std::stoi(text.substr(digits_start, i - digits_start));
+    }
+    catch (...)
+    {
+        return -1;
+    }
 }
 
 // Same as `extract_int_after`, but anchors on the LAST occurrence of
 // the marker rather than the first.  Used for the broker's periodic
 // snapshot lines — we want the most recent count, not the first.
-[[nodiscard]] int extract_int_after_last(const std::string &text,
-                                          std::string_view anchor,
-                                          std::string_view field)
+[[nodiscard]] int extract_int_after_last(const std::string &text, std::string_view anchor,
+                                         std::string_view field)
 {
     const auto anchor_pos = text.rfind(anchor);
-    if (anchor_pos == std::string::npos) return -1;
+    if (anchor_pos == std::string::npos)
+        return -1;
     const auto line_end = text.find('\n', anchor_pos);
     const auto field_pos = text.find(field, anchor_pos);
-    if (field_pos == std::string::npos ||
-        (line_end != std::string::npos && field_pos > line_end))
+    if (field_pos == std::string::npos || (line_end != std::string::npos && field_pos > line_end))
         return -1;
     const auto digits_start = field_pos + field.size();
     std::size_t i = digits_start;
     while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i])))
         ++i;
-    if (i == digits_start) return -1;
-    try { return std::stoi(text.substr(digits_start, i - digits_start)); }
-    catch (...) { return -1; }
+    if (i == digits_start)
+        return -1;
+    try
+    {
+        return std::stoi(text.substr(digits_start, i - digits_start));
+    }
+    catch (...)
+    {
+        return -1;
+    }
 }
 
 // ─── Rung 3: heartbeat cadence + first-tick + counters + symmetry ──────────
@@ -173,8 +186,8 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     const std::string role_uid = pylabhub::scripting::make_role_uid(
         pylabhub::scripting::RoleUidTag::Producer, "pattern4hb", 1u);
     const fs::path temp_dir = make_test_temp_dir("cadence_negotiated_and_steady");
-    auto           setup    = make_pattern4_setup({role_uid});
-    setup.shared_log_path   = (temp_dir / "shared.log").string();
+    auto setup = make_pattern4_setup({role_uid});
+    setup.shared_log_path = (temp_dir / "shared.log").string();
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const fs::path shared_log = setup.shared_log_path;
 
@@ -182,14 +195,10 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     // Broker subprocess decides when to exit on its own (detects
     // "role done" by observing the heartbeat counter stop growing) —
     // no quit-signal pipe needed.
-    auto broker = SpawnWorker("pattern4_heartbeat.broker",
-                              {temp_dir.string()});
-    expect_log_sequence(
-        shared_log,
-        {"Pattern4Broker: bound endpoint='"},
-        milliseconds{kMidTimeoutMs});
-    auto role = SpawnWorker("pattern4_heartbeat.producer_role",
-                            {temp_dir.string()});
+    auto broker = SpawnWorker("pattern4_heartbeat.broker", {temp_dir.string()});
+    expect_log_sequence(shared_log, {"Pattern4Broker: bound endpoint='"},
+                        milliseconds{kMidTimeoutMs});
+    auto role = SpawnWorker("pattern4_heartbeat.producer_role", {temp_dir.string()});
 
     // ── 3. Pin sequence up through first heartbeat received ──
     //
@@ -203,12 +212,13 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     expect_log_sequence(
         shared_log,
         {
-            "event=PresenceStateTransition channel='hb.test' role_type=producer from=Unregistered to=RegRequestPending",
-            fmt::format("event=RegReqAccepted role='{}' channel='hb.test'",
-                        role_uid),
+            "event=PresenceStateTransition channel='hb.test' role_type=producer from=Unregistered "
+            "to=RegRequestPending",
+            fmt::format("event=RegReqAccepted role='{}' channel='hb.test'", role_uid),
             "event=RegAckSending channel='hb.test' heartbeat_interval_ms=",
             "event=RegAckReceived channel='hb.test' status=success",
-            "event=PresenceStateTransition channel='hb.test' role_type=producer from=RegRequestPending to=Registered",
+            "event=PresenceStateTransition channel='hb.test' role_type=producer "
+            "from=RegRequestPending to=Registered",
             // role_cfg (1000ms) > hub_max (500ms) so the role logs
             // the DOWNGRADE-to-hub-max WARN, not the "aligned with
             // hub" INFO.  This IS axis-1 negotiation: hub authority
@@ -231,13 +241,12 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
 
     // ── 5. Wait for the role's shutdown summary + at least one broker
     //       snapshot line containing received > 0 ──
-    expect_log_sequence(
-        shared_log,
-        {
-            "event=HeartbeatCounterReport sent=",        // role side
-            "Pattern4Broker: counter snapshot ",         // broker side, any tick
-        },
-        milliseconds{kMidTimeoutMs});
+    expect_log_sequence(shared_log,
+                        {
+                            "event=HeartbeatCounterReport sent=", // role side
+                            "Pattern4Broker: counter snapshot ",  // broker side, any tick
+                        },
+                        milliseconds{kMidTimeoutMs});
 
     broker.wait_for_exit();
 
@@ -248,21 +257,15 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     // Axis 1 — Negotiation: install_interval ≤ ack_interval.  Role cfg
     // is 1000 ms; hub's typical default is 500 ms; expect install at 500.
     const int ack_interval =
-        extract_int_after(log, "event=RegAckSending channel='hb.test'",
-                          "heartbeat_interval_ms=");
+        extract_int_after(log, "event=RegAckSending channel='hb.test'", "heartbeat_interval_ms=");
     const int install_interval =
-        extract_int_after(log, "heartbeat: periodic tick installed at ",
-                          "at ");
-    ASSERT_GT(ack_interval, 0)
-        << "broker REG_ACK didn't include heartbeat_interval_ms";
-    ASSERT_GT(install_interval, 0)
-        << "role didn't log heartbeat install marker";
+        extract_int_after(log, "heartbeat: periodic tick installed at ", "at ");
+    ASSERT_GT(ack_interval, 0) << "broker REG_ACK didn't include heartbeat_interval_ms";
+    ASSERT_GT(install_interval, 0) << "role didn't log heartbeat install marker";
     EXPECT_LE(install_interval, ack_interval)
-        << "axis 1 negotiation: role's effective cadence ("
-        << install_interval << " ms) exceeds hub's tolerated max ("
-        << ack_interval
-        << " ms) — HEP-CORE-0023 §2.5.1 violated.  Role role_cfg_ms="
-        << role_cfg_ms;
+        << "axis 1 negotiation: role's effective cadence (" << install_interval
+        << " ms) exceeds hub's tolerated max (" << ack_interval
+        << " ms) — HEP-CORE-0023 §2.5.1 violated.  Role role_cfg_ms=" << role_cfg_ms;
 
     // Axis 3 — Cadence × steady-state (rate-based).
     //
@@ -276,39 +279,32 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
     // CI scheduling under -j 2 can stretch a 500 ms periodic tick to
     // 600-700 ms occasionally.  The tighter local band is the
     // mutation-discipline floor.
-    const int sent_count =
-        extract_int_after(log, "event=HeartbeatCounterReport sent=", "sent=");
-    const int elapsed_ms =
-        extract_int_after(log, "event=HeartbeatCounterReport sent=", "over=");
+    const int sent_count = extract_int_after(log, "event=HeartbeatCounterReport sent=", "sent=");
+    const int elapsed_ms = extract_int_after(log, "event=HeartbeatCounterReport sent=", "over=");
     // For the broker side, take the LAST snapshot line — the count is
     // monotone non-decreasing, so the latest is the most accurate.
     const int received_count =
-        extract_int_after_last(log, "Pattern4Broker: counter snapshot ",
-                               "received=");
-    ASSERT_GE(sent_count, 0)
-        << "role didn't log shutdown counter — install_heartbeat failed?";
-    ASSERT_GT(elapsed_ms, 0)
-        << "role didn't log elapsed time alongside sent count";
-    ASSERT_GE(received_count, 0)
-        << "broker didn't emit periodic snapshot — broker worker bug?";
+        extract_int_after_last(log, "Pattern4Broker: counter snapshot ", "received=");
+    ASSERT_GE(sent_count, 0) << "role didn't log shutdown counter — install_heartbeat failed?";
+    ASSERT_GT(elapsed_ms, 0) << "role didn't log elapsed time alongside sent count";
+    ASSERT_GE(received_count, 0) << "broker didn't emit periodic snapshot — broker worker bug?";
 
 #ifdef PYLABHUB_CI_BUILD
-    constexpr double kRateTolerance = 0.50;  // CI -j 2 scheduling
+    constexpr double kRateTolerance = 0.50; // CI -j 2 scheduling
 #else
-    constexpr double kRateTolerance = 0.30;  // local mutation-discipline floor
+    constexpr double kRateTolerance = 0.30; // local mutation-discipline floor
 #endif
 
     const double observed_rate = sent_count * 1000.0 / elapsed_ms;
     const double expected_rate = 1000.0 / install_interval;
     EXPECT_GE(observed_rate, expected_rate * (1.0 - kRateTolerance))
-        << "axis 3 cadence: observed " << observed_rate << " Hz from sent="
-        << sent_count << " over " << elapsed_ms
-        << " ms is below expected " << expected_rate
-        << " Hz (tolerance " << (kRateTolerance * 100) << "%)";
+        << "axis 3 cadence: observed " << observed_rate << " Hz from sent=" << sent_count
+        << " over " << elapsed_ms << " ms is below expected " << expected_rate << " Hz (tolerance "
+        << (kRateTolerance * 100) << "%)";
     EXPECT_LE(observed_rate, expected_rate * (1.0 + kRateTolerance))
         << "axis 3 cadence: observed " << observed_rate << " Hz exceeds "
-        << "expected " << expected_rate << " Hz (tolerance "
-        << (kRateTolerance * 100) << "%) — heartbeat sending faster than "
+        << "expected " << expected_rate << " Hz (tolerance " << (kRateTolerance * 100)
+        << "%) — heartbeat sending faster than "
         << "negotiated; cadence-gate broken?";
 
     // Axis 4 — Symmetry: broker received within tolerance of role sent.
@@ -321,8 +317,7 @@ TEST_F(Pattern4HeartbeatTest, CadenceNegotiatedAndSteadyState)
         << "; suspect handle_heartbeat_req drop path or counter wiring";
     EXPECT_LE(received_count, sent_count + 1)
         << "axis 4 symmetry: broker received=" << received_count
-        << " exceeds role sent=" << sent_count
-        << "; impossible without retransmits — counter bug";
+        << " exceeds role sent=" << sent_count << "; impossible without retransmits — counter bug";
 
     ExpectWorkerOk(broker);
     ExpectWorkerOk(role);

@@ -21,9 +21,9 @@ constexpr size_t kDebugInfoReserveBytes = 4096;
 
 namespace pylabhub::utils
 {
-using lifecycle_internal::validate_module_name;
-using lifecycle_internal::timedShutdown;
 using lifecycle_internal::ShutdownOutcome;
+using lifecycle_internal::timedShutdown;
+using lifecycle_internal::validate_module_name;
 
 class ModuleDefImpl
 {
@@ -46,7 +46,8 @@ ModuleDef::ModuleDef(std::string_view name, void *userdata, UserDataValidateFn v
     if (userdata)
     {
         uint64_t key;
-        do {
+        do
+        {
             key = LifecycleManager::next_unique_key();
         } while (key == 0u);
         pImpl->def.userdata_key = key;
@@ -84,7 +85,8 @@ void ModuleDef::set_startup(LifecycleCallback startup_func, std::string_view arg
     {
         if (arg.size() > MAX_CALLBACK_PARAM_STRLEN)
         {
-            throw std::length_error("Lifecycle: startup argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
+            throw std::length_error(
+                "Lifecycle: startup argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
         }
         void *ud = pImpl->def.userdata;
         std::string arg_str(arg);
@@ -108,7 +110,8 @@ void ModuleDef::set_shutdown(LifecycleCallback shutdown_func, std::chrono::milli
     {
         if (arg.size() > MAX_CALLBACK_PARAM_STRLEN)
         {
-            throw std::length_error("Lifecycle: shutdown argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
+            throw std::length_error(
+                "Lifecycle: shutdown argument length exceeds MAX_CALLBACK_PARAM_STRLEN.");
         }
         void *ud = pImpl->def.userdata;
         std::string arg_str(arg);
@@ -451,17 +454,17 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     // shutdown is in flight when the hang happens.  The aggregated
     // `debug_info` string still gets the same content for the final
     // bulk-flush summary.
-    auto run_inline = [&debug_info](InternalGraphNode &mod) {
+    auto run_inline = [&debug_info](InternalGraphNode &mod)
+    {
         const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
 
         PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] ENTER "
                   "{} module '{}' — direct call (no thread spawn, no "
                   "deadline; if this is the last log line before a hang, "
                   "the stall is INSIDE this module's shutdown callback).",
-                  pylabhub::platform::get_native_thread_id(),
-                  type_str, mod.name);
-        debug_info += fmt::format("     <- [SYNC] Shutting down {} module: '{}'...",
-                                   type_str, mod.name);
+                  pylabhub::platform::get_native_thread_id(), type_str, mod.name);
+        debug_info +=
+            fmt::format("     <- [SYNC] Shutting down {} module: '{}'...", type_str, mod.name);
 
         if (!mod.shutdown.func)
         {
@@ -470,8 +473,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] "
                       "EXIT {} module '{}' — no shutdown.func registered "
                       "(no-op).",
-                      pylabhub::platform::get_native_thread_id(),
-                      type_str, mod.name);
+                      pylabhub::platform::get_native_thread_id(), type_str, mod.name);
             return;
         }
 
@@ -482,19 +484,16 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
             debug_info += "done.\n";
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
                       "{} module '{}' — shutdown callback returned cleanly.",
-                      pylabhub::platform::get_native_thread_id(),
-                      type_str, mod.name);
+                      pylabhub::platform::get_native_thread_id(), type_str, mod.name);
         }
         catch (const std::exception &e)
         {
             mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-            debug_info += fmt::format(
-                "\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
-                type_str, mod.name, e.what());
+            debug_info += fmt::format("\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
+                                      type_str, mod.name, e.what());
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
                       "{} module '{}' — shutdown callback THREW: {}",
-                      pylabhub::platform::get_native_thread_id(),
-                      type_str, mod.name, e.what());
+                      pylabhub::platform::get_native_thread_id(), type_str, mod.name, e.what());
         }
         catch (...)
         {
@@ -505,8 +504,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
                       "{} module '{}' — shutdown callback threw a non-std "
                       "exception.",
-                      pylabhub::platform::get_native_thread_id(),
-                      type_str, mod.name);
+                      pylabhub::platform::get_native_thread_id(), type_str, mod.name);
         }
     };
 
@@ -515,7 +513,8 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     // (`run_inline`); everyone else gets the existing timed-thread
     // path (`shutdownModuleWithTimeout`).  The choice is logged so an
     // operator who sees a stall knows which path is in flight.
-    auto dispatch_shutdown = [&](InternalGraphNode &mod) {
+    auto dispatch_shutdown = [&](InternalGraphNode &mod)
+    {
         if (mod.synchronous_shutdown)
         {
             PLH_DEBUG("[PLH_LifeCycle] [DISPATCH|thread={}] module '{}' "
@@ -539,29 +538,26 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     {
         auto dyn_shutdown_order = topologicalSort(loaded_dyn_nodes);
         std::reverse(dyn_shutdown_order.begin(), dyn_shutdown_order.end());
-        debug_info += fmt::format(
-            "     -> [Phase-2|thread={}] tearing down {} remaining "
-            "dynamic module(s) in reverse-topological order; per-module "
-            "dispatch (SYNC direct-call vs ASYNC timed-thread) selected "
-            "by ModuleDef::set_synchronous_shutdown().\n",
-            pylabhub::platform::get_native_thread_id(),
-            dyn_shutdown_order.size());
+        debug_info +=
+            fmt::format("     -> [Phase-2|thread={}] tearing down {} remaining "
+                        "dynamic module(s) in reverse-topological order; per-module "
+                        "dispatch (SYNC direct-call vs ASYNC timed-thread) selected "
+                        "by ModuleDef::set_synchronous_shutdown().\n",
+                        pylabhub::platform::get_native_thread_id(), dyn_shutdown_order.size());
         for (auto *mod : dyn_shutdown_order)
             dispatch_shutdown(*mod);
     }
     else
     {
-        debug_info += fmt::format(
-            "     --- [Phase-2|thread={}] no remaining dynamic modules ---\n",
-            pylabhub::platform::get_native_thread_id());
+        debug_info += fmt::format("     --- [Phase-2|thread={}] no remaining dynamic modules ---\n",
+                                  pylabhub::platform::get_native_thread_id());
     }
 
     // Phase 3: static modules in reverse startup order.
-    debug_info += fmt::format(
-        "\n     <- [Phase-3|thread={}] tearing down static modules "
-        "in reverse-topological order; per-module dispatch selected "
-        "by ModuleDef::set_synchronous_shutdown().\n",
-        pylabhub::platform::get_native_thread_id());
+    debug_info += fmt::format("\n     <- [Phase-3|thread={}] tearing down static modules "
+                              "in reverse-topological order; per-module dispatch selected "
+                              "by ModuleDef::set_synchronous_shutdown().\n",
+                              pylabhub::platform::get_native_thread_id());
     for (auto *mod : m_shutdown_order)
     {
         if (mod->status.load(std::memory_order_acquire) == ModuleStatus::Started)
@@ -569,14 +565,13 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         else
         {
             mod->status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            debug_info += fmt::format("     <- static module '{}' (skip — not Started)\n",
-                                      mod->name);
+            debug_info +=
+                fmt::format("     <- static module '{}' (skip — not Started)\n", mod->name);
         }
     }
-    debug_info += fmt::format(
-        "\n     --- [SYNC|Phase-2+3|thread={}] complete; application "
-        "finalization done. ---\n",
-        pylabhub::platform::get_native_thread_id());
+    debug_info += fmt::format("\n     --- [SYNC|Phase-2+3|thread={}] complete; application "
+                              "finalization done. ---\n",
+                              pylabhub::platform::get_native_thread_id());
     PLH_DEBUG("{}", debug_info);
 }
 
@@ -657,7 +652,7 @@ bool LifecycleManager::unload_module(std::string_view name, std::source_location
     return pImpl->unloadModule(name, loc);
 }
 DynModuleState LifecycleManager::wait_for_unload(std::string_view name,
-                                                  std::chrono::milliseconds timeout)
+                                                 std::chrono::milliseconds timeout)
 {
     return pImpl->waitForUnload(name, timeout);
 }
@@ -680,6 +675,5 @@ void LifecycleManager::clear_lifecycle_log_sink() noexcept
 {
     pImpl->clearLifecycleLogSink();
 }
-
 
 } // namespace pylabhub::utils

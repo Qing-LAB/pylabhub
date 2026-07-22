@@ -116,7 +116,7 @@ namespace pylabhub::tests::pattern4
 namespace
 {
 
-constexpr int  kBindMaxAttempts    = 4;
+constexpr int kBindMaxAttempts = 4;
 constexpr auto kBindInitialBackoff = std::chrono::milliseconds{10};
 
 // Safety timeout for any worker held on the quit-pipe.  Same generous
@@ -129,16 +129,17 @@ void maybe_redirect_to_shared_log(const Pattern4Setup &setup)
         set_shared_log(setup.shared_log_path);
 }
 
-} // anon
+} // namespace
 
 // ─── pattern4_consumer_lifecycle.broker ─────────────────────────────────────
 
 int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
 
             pylabhub::tests::seed_curve_identities(setup.curve);
 
@@ -149,23 +150,21 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
             pylabhub::tests::apply_curve_to(cfg, setup.curve);
 
             std::promise<std::string> ready_promise;
-            auto                       ready_future = ready_promise.get_future();
-            cfg.on_ready = [&ready_promise](const std::string &ep,
-                                             const std::string &pk) {
-                LOGGER_INFO("Pattern4Broker: bound endpoint='{}' pubkey='{}'",
-                            ep, pk);
+            auto ready_future = ready_promise.get_future();
+            cfg.on_ready = [&ready_promise](const std::string &ep, const std::string &pk)
+            {
+                LOGGER_INFO("Pattern4Broker: bound endpoint='{}' pubkey='{}'", ep, pk);
                 ready_promise.set_value(ep);
             };
 
-            pylabhub::hub::HubState                            state;
+            pylabhub::hub::HubState state;
             std::unique_ptr<pylabhub::broker::BrokerService> broker;
             auto backoff = kBindInitialBackoff;
             for (int attempt = 1; attempt <= kBindMaxAttempts; ++attempt)
             {
                 try
                 {
-                    broker = std::make_unique<
-                        pylabhub::broker::BrokerService>(cfg, state);
+                    broker = std::make_unique<pylabhub::broker::BrokerService>(cfg, state);
                     break;
                 }
                 catch (const zmq::error_t &e)
@@ -175,8 +174,7 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
                         LOGGER_WARN("Pattern4Broker: bind EADDRINUSE on "
                                     "endpoint='{}' - retrying in {}ms "
                                     "(attempt {}/{})",
-                                    cfg.endpoint, backoff.count(),
-                                    attempt, kBindMaxAttempts);
+                                    cfg.endpoint, backoff.count(), attempt, kBindMaxAttempts);
                         std::this_thread::sleep_for(backoff);
                         backoff *= 5;
                         continue;
@@ -184,23 +182,19 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
                     throw;
                 }
             }
-            ASSERT_TRUE(broker)
-                << "Pattern4Broker: failed to bind after "
-                << kBindMaxAttempts << " attempts on '"
-                << cfg.endpoint << "'";
+            ASSERT_TRUE(broker) << "Pattern4Broker: failed to bind after " << kBindMaxAttempts
+                                << " attempts on '" << cfg.endpoint << "'";
 
             std::thread broker_thread([&] { broker->run(); });
 
-            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}),
-                      std::future_status::ready)
+            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}), std::future_status::ready)
                 << "Pattern4Broker: on_ready callback did not fire within 2s";
 
             LOGGER_INFO("Pattern4Broker: waiting on quit-signal pipe "
                         "(safety timeout {} s)",
                         kSafetyTimeout.count());
             const auto wait_result =
-                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
-                    kSafetyTimeout);
+                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(kSafetyTimeout);
             switch (wait_result)
             {
             case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
@@ -222,12 +216,10 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
             broker_thread.join();
             LOGGER_INFO("Pattern4Broker: exiting cleanly");
         },
-        "pattern4_consumer_lifecycle.broker",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_consumer_lifecycle.broker", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // ─── pattern4_consumer_lifecycle.producer_role ──────────────────────────────
@@ -235,18 +227,17 @@ int pattern4_consumer_lifecycle_broker(const char *temp_dir_arg)
 int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
             const std::string role_uid = pylabhub::scripting::make_role_uid(
-                pylabhub::scripting::RoleUidTag::Producer,
-                "pattern4cons", 1u);
+                pylabhub::scripting::RoleUidTag::Producer, "pattern4cons", 1u);
             const std::string channel = "data.test";
 
             pylabhub::tests::seed_curve_identities(setup.curve);
-            pylabhub::tests::add_curve_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                setup.curve.role_keys.at(role_uid));
+            pylabhub::tests::add_curve_identity(pylabhub::utils::security::kRoleIdentityName,
+                                                setup.curve.role_keys.at(role_uid));
 
             maybe_redirect_to_shared_log(setup);
 
@@ -257,20 +248,18 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             api.set_channel(channel);
 
             pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = setup.broker_endpoint;
+            hub_cfg.broker = setup.broker_endpoint;
             hub_cfg.broker_pubkey = setup.curve.hub.public_z85;
 
             std::vector<pylabhub::scripting::Presence> presences;
             {
                 pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
+                p.hub = hub_cfg;
+                p.channel = channel;
                 p.role_kind = pylabhub::scripting::RoleKind::Producer;
                 presences.push_back(std::move(p));
             }
-            auto handler =
-                std::make_unique<pylabhub::scripting::RoleHandler>(
-                    std::move(presences));
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(std::move(presences));
 
             ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
             ASSERT_NE(api.handler(), nullptr);
@@ -292,20 +281,18 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             //    test picks a minimal single-uint32 schema (matches the
             //    consumer's choice below — broker enforces schema-hash
             //    consistency across the channel's producers).
-            const int tx_port =
-                pylabhub::tests::pattern4::pick_unused_port();
-            const std::string tx_endpoint =
-                "tcp://127.0.0.1:" + std::to_string(tx_port);
+            const int tx_port = pylabhub::tests::pattern4::pick_unused_port();
+            const std::string tx_endpoint = "tcp://127.0.0.1:" + std::to_string(tx_port);
             hub::TxQueueOptions tx_opts;
-            tx_opts.data_transport       = "zmq";
-            tx_opts.zmq_bind             = true;
-            tx_opts.zmq_node_endpoint    = tx_endpoint;
+            tx_opts.data_transport = "zmq";
+            tx_opts.zmq_bind = true;
+            tx_opts.zmq_node_endpoint = tx_endpoint;
             tx_opts.slot_spec.has_schema = true;
-            tx_opts.slot_spec.fields.push_back(
-                pylabhub::hub::FieldDef{"value", "uint32", 1u, 0u});
+            tx_opts.slot_spec.fields.push_back(pylabhub::hub::FieldDef{"value", "uint32", 1u, 0u});
             ASSERT_TRUE(api.build_tx_queue(tx_opts))
                 << "Pattern4Role[producer]: build_tx_queue must succeed "
-                   "with bound endpoint '" << tx_endpoint << "'";
+                   "with bound endpoint '"
+                << tx_endpoint << "'";
 
             // ── Step 2: build REG_REQ via the production builder.
             //    Mirrors producer_role_host.cpp:327-349 — `ProducerRegInputs`
@@ -317,17 +304,15 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             //    production payload shape.
             namespace sec = pylabhub::utils::security;
             pylabhub::hub::ProducerRegInputs reg_in;
-            reg_in.channel           = channel;
-            reg_in.role_uid          = role_uid;
-            reg_in.role_name         = "pattern4_consumer_lifecycle_producer";
-            reg_in.role_type          = "producer";
-            reg_in.has_shm           = false;
-            reg_in.is_zmq_transport  = true;
+            reg_in.channel = channel;
+            reg_in.role_uid = role_uid;
+            reg_in.role_name = "pattern4_consumer_lifecycle_producer";
+            reg_in.role_type = "producer";
+            reg_in.has_shm = false;
+            reg_in.is_zmq_transport = true;
             reg_in.zmq_node_endpoint = tx_endpoint;
-            reg_in.zmq_pubkey        = std::string(
-                sec::secure().keys().pubkey(sec::kRoleIdentityName));
-            auto reg_opts =
-                pylabhub::hub::build_producer_reg_payload(reg_in);
+            reg_in.zmq_pubkey = std::string(sec::secure().keys().pubkey(sec::kRoleIdentityName));
+            auto reg_opts = pylabhub::hub::build_producer_reg_payload(reg_in);
 
             // ── Step 3: schema fields layered on top of the REG_REQ
             //    (HEP-CORE-0034 §10.1).  Production calls this after the
@@ -338,9 +323,8 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             //    BLDS named schema is configured.
             const pylabhub::hub::SchemaSpec empty_fz_spec{};
             const auto wire_schema = pylabhub::hub::make_wire_schema_fields(
-                nlohmann::json{},               // slot_schema_json (anonymous mode)
-                tx_opts.slot_spec,
-                empty_fz_spec);
+                nlohmann::json{}, // slot_schema_json (anonymous mode)
+                tx_opts.slot_spec, empty_fz_spec);
             pylabhub::hub::apply_producer_schema_fields(reg_opts, wire_schema);
 
             // ── Step 4: register_producer_channel → apply_producer_reg_ack
@@ -348,8 +332,7 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             //    Production order is enforced — apply_producer_reg_ack
             //    MUST run before install_heartbeat (§3.5.4 INV1: first
             //    heartbeat after data plane is up).
-            auto reg_resp = api.register_producer_channel(
-                reg_opts, pylabhub::kMidTimeoutMs);
+            auto reg_resp = api.register_producer_channel(reg_opts, pylabhub::kMidTimeoutMs);
             ASSERT_TRUE(reg_resp.has_value())
                 << "Pattern4Role[producer]: REG_REQ must reach broker";
             ASSERT_EQ(reg_resp->value("status", std::string{}), "success")
@@ -365,8 +348,7 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             // CHANNEL_NOT_READY/awaiting_first_heartbeat until timeout
             // (HEP-CORE-0036 §5.2 R6 + §6.6 reason catalog).
             const auto hub_max =
-                pylabhub::scripting::RoleAPIBase::extract_hub_heartbeat_max(
-                    *reg_resp);
+                pylabhub::scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_resp);
             api.install_heartbeat(/*role_cfg_ms*/ 500, hub_max);
 
             // BRC's `set_periodic_task` gates each firing on an
@@ -375,24 +357,23 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             // as rung 3's iter_driver — needed because the test has
             // no production main loop calling inc_iteration_count()).
             std::atomic<bool> iter_driver_running{true};
-            std::thread iter_driver([&core, &iter_driver_running] {
-                while (iter_driver_running.load(std::memory_order_relaxed))
+            std::thread iter_driver(
+                [&core, &iter_driver_running]
                 {
-                    core.inc_iteration_count();
-                    std::this_thread::sleep_for(std::chrono::milliseconds{20});
-                }
-            });
+                    while (iter_driver_running.load(std::memory_order_relaxed))
+                    {
+                        core.inc_iteration_count();
+                        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                    }
+                });
 
-            LOGGER_INFO("Pattern4Role[{}]: holding for consumer (quit-pipe)",
-                        role_uid);
+            LOGGER_INFO("Pattern4Role[{}]: holding for consumer (quit-pipe)", role_uid);
             const auto wait_result =
-                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
-                    kSafetyTimeout);
+                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(kSafetyTimeout);
             switch (wait_result)
             {
             case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
-                LOGGER_INFO("Pattern4Role[{}]: quit signal received",
-                            role_uid);
+                LOGGER_INFO("Pattern4Role[{}]: quit signal received", role_uid);
                 break;
             case pylabhub::tests::helper::QuitWaitResult::SafetyTimeout:
                 LOGGER_WARN("Pattern4Role[{}]: safety timeout — parent did "
@@ -413,30 +394,30 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             api.stop_handler_threads();
             LOGGER_INFO("Pattern4Role[{}]: exiting cleanly", role_uid);
         },
-        "pattern4_consumer_lifecycle.producer_role",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_consumer_lifecycle.producer_role", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // ─── Dispatcher registration ────────────────────────────────────────────────
 
 int dispatch_pattern4_consumer_lifecycle(int argc, char **argv)
 {
-    if (argc < 2) return -1;
+    if (argc < 2)
+        return -1;
     const std::string mode = argv[1];
-    const auto        dot  = mode.find('.');
-    if (dot == std::string::npos) return -1;
-    const std::string module   = mode.substr(0, dot);
+    const auto dot = mode.find('.');
+    if (dot == std::string::npos)
+        return -1;
+    const std::string module = mode.substr(0, dot);
     const std::string scenario = mode.substr(dot + 1);
-    if (module != "pattern4_consumer_lifecycle") return -1;
+    if (module != "pattern4_consumer_lifecycle")
+        return -1;
 
     if (argc < 3)
     {
-        std::fprintf(stderr,
-                     "pattern4_consumer_lifecycle.%s: missing <temp_dir> arg\n",
+        std::fprintf(stderr, "pattern4_consumer_lifecycle.%s: missing <temp_dir> arg\n",
                      scenario.c_str());
         return 1;
     }
@@ -452,9 +433,7 @@ int dispatch_pattern4_consumer_lifecycle(int argc, char **argv)
     // migration record.  L4 (`test_plh_hub_role_zmq_e2e.cpp`) owns
     // the happy-path scenario the retired L3 test approximated.
 
-    std::fprintf(stderr,
-                 "pattern4_consumer_lifecycle: unknown scenario '%s'\n",
-                 scenario.c_str());
+    std::fprintf(stderr, "pattern4_consumer_lifecycle: unknown scenario '%s'\n", scenario.c_str());
     return 1;
 }
 

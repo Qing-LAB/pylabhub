@@ -35,18 +35,39 @@ namespace
 constexpr bool make_z85_alphabet_table_(unsigned char c)
 {
     // Decimal digits, lower-case, upper-case.
-    if (c >= '0' && c <= '9') return true;
-    if (c >= 'a' && c <= 'z') return true;
-    if (c >= 'A' && c <= 'Z') return true;
+    if (c >= '0' && c <= '9')
+        return true;
+    if (c >= 'a' && c <= 'z')
+        return true;
+    if (c >= 'A' && c <= 'Z')
+        return true;
     // The 23 punctuation chars in the Z85 alphabet:
     //   .-:+=^!/*?&<>()[]{}@%$#
     switch (c)
     {
-    case '.': case '-': case ':': case '+': case '=':
-    case '^': case '!': case '/': case '*': case '?':
-    case '&': case '<': case '>': case '(': case ')':
-    case '[': case ']': case '{': case '}': case '@':
-    case '%': case '$': case '#':
+    case '.':
+    case '-':
+    case ':':
+    case '+':
+    case '=':
+    case '^':
+    case '!':
+    case '/':
+    case '*':
+    case '?':
+    case '&':
+    case '<':
+    case '>':
+    case '(':
+    case ')':
+    case '[':
+    case ']':
+    case '{':
+    case '}':
+    case '@':
+    case '%':
+    case '$':
+    case '#':
         return true;
     }
     return false;
@@ -54,9 +75,7 @@ constexpr bool make_z85_alphabet_table_(unsigned char c)
 
 } // namespace
 
-Z85PublicKey::Z85PublicKey() noexcept
-    : z85_(Z85PublicKey::kZ85Chars, '\0')
-{}
+Z85PublicKey::Z85PublicKey() noexcept : z85_(Z85PublicKey::kZ85Chars, '\0') {}
 
 Z85PublicKey Z85PublicKey::validate(std::string_view z85)
 {
@@ -64,8 +83,7 @@ Z85PublicKey Z85PublicKey::validate(std::string_view z85)
     {
         throw std::invalid_argument(
             "pylabhub::utils::security::Z85PublicKey::validate: input length " +
-            std::to_string(z85.size()) +
-            " is not the required " +
+            std::to_string(z85.size()) + " is not the required " +
             std::to_string(Z85PublicKey::kZ85Chars) +
             " chars (CURVE public key, Z85-encoded — RFC 32 §4)");
     }
@@ -77,9 +95,9 @@ Z85PublicKey Z85PublicKey::validate(std::string_view z85)
             throw std::invalid_argument(
                 "pylabhub::utils::security::Z85PublicKey::validate: input "
                 "contains non-Z85 character at position " +
-                std::to_string(i) +
-                " (byte 0x" +
-                [](unsigned char b) {
+                std::to_string(i) + " (byte 0x" +
+                [](unsigned char b)
+                {
                     const char hex[] = "0123456789abcdef";
                     std::string s{hex[b >> 4], hex[b & 0xF]};
                     return s;
@@ -100,8 +118,10 @@ bool Z85PublicKey::empty() const noexcept
     // Sentinel value is 40 zero bytes; that's the ONLY shape the
     // default ctor produces.  Any validated ctor input contains
     // only Z85 chars (which excludes \0).
-    for (char c : z85_) {
-        if (c != '\0') return false;
+    for (char c : z85_)
+    {
+        if (c != '\0')
+            return false;
     }
     return true;
 }
@@ -114,9 +134,8 @@ CurveKeypair generate_curve_keypair()
     {
         ::sodium_memzero(sec.data(), sec.size());
         ::sodium_memzero(pub.data(), pub.size());
-        throw std::runtime_error(
-            "pylabhub::utils::security::generate_curve_keypair: "
-            "zmq_curve_keypair failed (libzmq CSPRNG init?)");
+        throw std::runtime_error("pylabhub::utils::security::generate_curve_keypair: "
+                                 "zmq_curve_keypair failed (libzmq CSPRNG init?)");
     }
     CurveKeypair out{
         std::string(pub.data(), kZ85KeyLen),

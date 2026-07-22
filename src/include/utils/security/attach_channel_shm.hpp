@@ -65,7 +65,7 @@ namespace pylabhub::utils::security
 /// wire format, deadline discipline, and fd-ownership contract.
 class PYLABHUB_UTILS_EXPORT ShmAttachChannel final : public IAttachChannel
 {
-public:
+  public:
     /// Construct a channel bound to `fd`.  The channel does NOT
     /// take ownership; the caller retains close responsibility.
     ///
@@ -75,23 +75,19 @@ public:
     ///              ("producer" / "consumer").  Not part of the wire
     ///              protocol.  Stored by copy — safe to pass a
     ///              temporary string.
-    ShmAttachChannel(int fd, std::string side)
-        : fd_(fd), side_(std::move(side))
-    {}
+    ShmAttachChannel(int fd, std::string side) : fd_(fd), side_(std::move(side)) {}
 
     ~ShmAttachChannel() override = default;
 
-    ShmAttachChannel(const ShmAttachChannel &)            = delete;
+    ShmAttachChannel(const ShmAttachChannel &) = delete;
     ShmAttachChannel &operator=(const ShmAttachChannel &) = delete;
-    ShmAttachChannel(ShmAttachChannel &&)                 = delete;
-    ShmAttachChannel &operator=(ShmAttachChannel &&)      = delete;
+    ShmAttachChannel(ShmAttachChannel &&) = delete;
+    ShmAttachChannel &operator=(ShmAttachChannel &&) = delete;
 
-    void
-    send_frame(const nlohmann::json                  &frame,
-               std::chrono::steady_clock::time_point  deadline) override;
+    void send_frame(const nlohmann::json &frame,
+                    std::chrono::steady_clock::time_point deadline) override;
 
-    nlohmann::json
-    recv_frame(std::chrono::steady_clock::time_point deadline) override;
+    nlohmann::json recv_frame(std::chrono::steady_clock::time_point deadline) override;
 
     /// The underlying fd (non-owning view).  Exposed only for the
     /// caller's post-handshake SCM_RIGHTS handoff — no code path
@@ -99,8 +95,8 @@ public:
     /// should touch it.
     [[nodiscard]] int fd() const noexcept { return fd_; }
 
-private:
-    int         fd_;
+  private:
+    int fd_;
     std::string side_;
 };
 

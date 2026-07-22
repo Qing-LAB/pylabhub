@@ -1,12 +1,12 @@
 /**
  * @file slot_ref.hpp
  * @brief Type-safe wrapper for data slot access in RAII layer
- * 
+ *
  * @copyright Copyright (c) 2024-2026 PyLabHub Project
- * 
+ *
  * Part of Phase 3: C++ RAII Layer
  * Provides type-safe access to datablock slots with compile-time and runtime validation.
- * 
+ *
  * Design Philosophy:
  * - Wraps existing SlotWriteHandle/SlotConsumeHandle primitives
  * - Provides typed .get() access with size validation
@@ -28,43 +28,43 @@ namespace pylabhub::hub
 /**
  * @class SlotRef
  * @brief Type-safe reference to a datablock slot
- * 
+ *
  * @tparam DataBlockT The data type stored in the slot (must be trivially copyable)
  * @tparam IsMutable True for write access, false for read-only access
- * 
+ *
  * SlotRef wraps the low-level SlotWriteHandle (producer) or SlotConsumeHandle (consumer)
  * and provides:
  * 1. **Typed access**: `.get()` returns `DataBlockT&` with size validation
  * 2. **Raw access**: `.raw_access()` returns `std::span<std::byte>` for advanced use
  * 3. **Metadata**: Slot ID and index
- * 
+ *
  * Usage (Producer):
  * @code
  * WriteSlotRef<MyData> slot = ...;
  * slot.get().payload = 42;  // Type-safe write
  * @endcode
- * 
+ *
  * Usage (Consumer):
  * @code
  * ReadSlotRef<MyData> slot = ...;
  * int value = slot.get().payload;  // Type-safe read
  * @endcode
- * 
+ *
  * Raw Access (Advanced):
  * @code
  * auto raw_span = slot.raw_access();
  * // Manual interpretation at user's risk
  * @endcode
- * 
+ *
  * Thread Safety: SlotRef instances are not thread-safe. Each thread should use
  * its own transaction context and slot references.
  */
-template <typename DataBlockT, bool IsMutable>
-class SlotRef
+template <typename DataBlockT, bool IsMutable> class SlotRef
 {
   public:
     using value_type = std::conditional_t<IsMutable, DataBlockT, const DataBlockT>;
-    using span_type = std::conditional_t<IsMutable, std::span<std::byte>, std::span<const std::byte>>;
+    using span_type =
+        std::conditional_t<IsMutable, std::span<std::byte>, std::span<const std::byte>>;
 
     // Compile-time check: DataBlockT must be trivially copyable for shared memory
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
@@ -79,7 +79,9 @@ class SlotRef
      * @brief Construct from SlotWriteHandle (producer/mutable)
      * @param handle Pointer to write handle (non-null)
      */
-    explicit SlotRef(SlotWriteHandle *handle) requires IsMutable : m_write_handle(handle)
+    explicit SlotRef(SlotWriteHandle *handle)
+        requires IsMutable
+        : m_write_handle(handle)
     {
         if (!handle)
         {
@@ -91,7 +93,9 @@ class SlotRef
      * @brief Construct from SlotConsumeHandle (consumer/const)
      * @param handle Pointer to consume handle (non-null)
      */
-    explicit SlotRef(SlotConsumeHandle *handle) requires(!IsMutable) : m_read_handle(handle)
+    explicit SlotRef(SlotConsumeHandle *handle)
+        requires(!IsMutable)
+        : m_read_handle(handle)
     {
         if (!handle)
         {
@@ -113,10 +117,10 @@ class SlotRef
      * @brief Get typed reference to slot data
      * @return Reference to DataBlockT stored in slot
      * @throws std::runtime_error if slot size < sizeof(DataBlockT)
-     * 
+     *
      * This is the primary interface for type-safe access. The returned reference
      * is valid for the lifetime of the SlotRef.
-     * 
+     *
      * Size validation ensures the slot is large enough for DataBlockT.
      */
     [[nodiscard]] value_type &get()
@@ -167,15 +171,16 @@ class SlotRef
     /**
      * @brief Get raw memory span for advanced usage (mutable version)
      * @return Mutable span of bytes covering the slot
-     * 
+     *
      * **Use with caution**: This bypasses type safety. User is responsible for:
      * - Correct interpretation of memory layout
      * - Not exceeding span boundaries
      * - Maintaining data structure invariants
-     * 
+     *
      * Only available after transaction entry validation (schema, checksums, etc.)
      */
-    [[nodiscard]] std::span<std::byte> raw_access() requires IsMutable
+    [[nodiscard]] std::span<std::byte> raw_access()
+        requires IsMutable
     {
         if (!m_write_handle)
         {
@@ -246,8 +251,8 @@ class SlotRef
 
   private:
     // Storage: either write handle (producer) or read handle (consumer)
-    SlotWriteHandle *m_write_handle = nullptr;     // Valid when IsMutable == true
-    SlotConsumeHandle *m_read_handle = nullptr;    // Valid when IsMutable == false
+    SlotWriteHandle *m_write_handle = nullptr;  // Valid when IsMutable == true
+    SlotConsumeHandle *m_read_handle = nullptr; // Valid when IsMutable == false
 };
 
 // ====================================================================
@@ -258,14 +263,12 @@ class SlotRef
  * @brief Type alias for mutable slot reference (producer side)
  * @tparam T The data type stored in the slot
  */
-template <typename T>
-using WriteSlotRef = SlotRef<T, true>;
+template <typename T> using WriteSlotRef = SlotRef<T, true>;
 
 /**
  * @brief Type alias for const slot reference (consumer side)
  * @tparam T The data type stored in the slot
  */
-template <typename T>
-using ReadSlotRef = SlotRef<T, false>;
+template <typename T> using ReadSlotRef = SlotRef<T, false>;
 
 } // namespace pylabhub::hub

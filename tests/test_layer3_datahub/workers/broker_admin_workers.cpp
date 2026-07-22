@@ -71,8 +71,8 @@ json hubhost_overrides()
 {
     return json{
         {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
-        {"admin",   {{"enabled", false}}},
-        {"script",  {{"path", ""}}},
+        {"admin", {{"enabled", false}}},
+        {"script", {{"path", ""}}},
     };
 }
 
@@ -89,15 +89,13 @@ std::string pid_chan(const std::string &base)
 /// LogCaptureFixture under real CURVE + admission (HEP-CORE-0035
 /// §2 + §4.6.5).  Body receives (broker, curve).
 template <typename Body>
-int run_with_host(std::string_view worker_name,
-                  std::vector<std::string> role_uids,
-                  Body &&body,
+int run_with_host(std::string_view worker_name, std::vector<std::string> role_uids, Body &&body,
                   std::vector<std::string> expect_log_warns = {})
 {
     return run_gtest_worker(
-        [role_uids = std::move(role_uids),
-         body = std::forward<Body>(body),
-         expect_log_warns = std::move(expect_log_warns)]() mutable {
+        [role_uids = std::move(role_uids), body = std::forward<Body>(body),
+         expect_log_warns = std::move(expect_log_warns)]() mutable
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             for (auto &w : expect_log_warns)
@@ -108,8 +106,7 @@ int run_with_host(std::string_view worker_name,
             // seeding (the production-shaped path); start_hubhost_broker
             // only reads from secure().keys().
             pylabhub::tests::seed_role_identities(curve);
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hubhost_overrides(), curve);
+            auto broker = pylabhub::tests::start_hubhost_broker(hubhost_overrides(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
 
             body(broker, curve);
@@ -118,47 +115,45 @@ int run_with_host(std::string_view worker_name,
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        std::string(worker_name).c_str(),
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule(),
+        std::string(worker_name).c_str(), Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        pylabhub::hub::GetDataBlockModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::hub::GetDataBlockModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 } // namespace
-
 
 // RATIONALE (task #52 Round 3, KEEP): in-process `request_close_channel`
 // stimulus (admin wire plane disabled) — no wire trigger.  See file header.
 int close_channel_existing()
 {
     const std::string channel = pid_chan("admin.close.existing");
-    const std::string uid     = "prod." + channel;
-    return run_with_host(
-        "broker_admin::close_channel_existing", {uid},
-        [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
-                       pylabhub::tests::CurveSetup & /*curve*/) {
-            pylabhub::tests::BrcHandle bh;
-            bh.start(broker.endpoint, broker.pubkey, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(
-                make_reg_opts(channel, uid), 3000);
-            ASSERT_TRUE(reg.has_value()) << "register_channel failed";
+    const std::string uid = "prod." + channel;
+    return run_with_host("broker_admin::close_channel_existing", {uid},
+                         [channel, uid](pylabhub::tests::HubHostBrokerHandle &broker,
+                                        pylabhub::tests::CurveSetup & /*curve*/)
+                         {
+                             pylabhub::tests::BrcHandle bh;
+                             bh.start(broker.endpoint, broker.pubkey, uid,
+                                      pylabhub::tests::role_keystore_name(uid));
+                             auto reg = bh.brc.register_channel(make_reg_opts(channel, uid), 3000);
+                             ASSERT_TRUE(reg.has_value()) << "register_channel failed";
 
-            broker.service().request_close_channel(channel);
+                             broker.service().request_close_channel(channel);
 
-            auto channel_gone = [&] {
-                auto s = broker.service().query_channel_snapshot();
-                for (const auto &ch : s.channels)
-                    if (ch.name == channel) return false;
-                return true;
-            };
-            EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
-                << "Channel still present 3s after request_close_channel";
+                             auto channel_gone = [&]
+                             {
+                                 auto s = broker.service().query_channel_snapshot();
+                                 for (const auto &ch : s.channels)
+                                     if (ch.name == channel)
+                                         return false;
+                                 return true;
+                             };
+                             EXPECT_TRUE(poll_until(channel_gone, std::chrono::seconds(3)))
+                                 << "Channel still present 3s after request_close_channel";
 
-            bh.stop();
-        });
+                             bh.stop();
+                         });
 }
 
 // RATIONALE (task #52 Round 3, KEEP): in-process `request_close_channel`
@@ -167,11 +162,9 @@ int close_channel_non_existent()
 {
     return run_with_host(
         "broker_admin::close_channel_non_existent", {},
-        [](pylabhub::tests::HubHostBrokerHandle &broker,
-           pylabhub::tests::CurveSetup &) {
-            EXPECT_NO_THROW(
-                broker.service().request_close_channel(
-                    pid_chan("admin.close.bogus")));
+        [](pylabhub::tests::HubHostBrokerHandle &broker, pylabhub::tests::CurveSetup &)
+        {
+            EXPECT_NO_THROW(broker.service().request_close_channel(pid_chan("admin.close.bogus")));
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
             EXPECT_NO_THROW({
@@ -185,9 +178,6 @@ int close_channel_non_existent()
 // (task #52 Round 2, `test_pattern4_broker_admin.cpp` — error paths — and
 // Round 3 success paths).  Their local `make_baseline_{shm,zmq}_reg` builders
 // were removed here with them (dead code after migration).
-
-
-
 
 } // namespace broker_admin
 } // namespace pylabhub::tests::worker
@@ -204,11 +194,11 @@ struct BrokerAdminRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "broker_admin")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "broker_admin")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::broker_admin;

@@ -14,7 +14,7 @@
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
-#include "../scripting/json_py_helpers.hpp"   // detail::json_to_py (S5)
+#include "../scripting/json_py_helpers.hpp" // detail::json_to_py (S5)
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -72,16 +72,14 @@ bool ConsumerAPI::is_in_band(const std::string &channel) const
     return base_->is_in_band(channel);
 }
 
-bool ConsumerAPI::band_member_contains(const std::string &channel,
-                                        const std::string &role_uid)
+bool ConsumerAPI::band_member_contains(const std::string &channel, const std::string &role_uid)
 {
     // Bug fix 2026-06-16 (#235): previously checked `result->is_array()`
     // on the raw broker reply, which is `{"members": [...]}` — an
     // object, not an array — so this function silently returned false
     // for all roles regardless of actual membership.  Helper unwraps
     // the members array correctly (mirrors Native engine pattern).
-    const auto members =
-        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
     for (const auto &m : members)
         if (m.value("role_uid", std::string{}) == role_uid)
             return true;
@@ -93,8 +91,7 @@ int ConsumerAPI::band_member_count(const std::string &channel)
     // Bug fix 2026-06-16 (#235): same `result->is_array()` nesting bug
     // as band_member_contains; silently returned 0 for all roles.
     // Helper unwraps the members array correctly.
-    const auto members =
-        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
     int count = 0;
     for (const auto &m : members)
         if (!m.value("role_uid", std::string{}).empty())
@@ -103,7 +100,7 @@ int ConsumerAPI::band_member_count(const std::string &channel)
 }
 
 bool ConsumerAPI::allowed_peer_contains(const std::string &channel,
-                                         const std::string &role_uid) const
+                                        const std::string &role_uid) const
 {
     for (const auto &p : base_->allowed_peers(channel))
         if (p.role_uid == role_uid)
@@ -120,8 +117,7 @@ py::dict ConsumerAPI::metrics() const
 {
     // S5: was `json.loads(j.dump())` round-trip — replaced with the
     // shared fast-path walker (src/scripting/json_py_helpers.hpp).
-    return scripting::detail::json_to_py(base_->snapshot_metrics_json())
-        .cast<py::dict>();
+    return scripting::detail::json_to_py(base_->snapshot_metrics_json()).cast<py::dict>();
 }
 
 py::list ConsumerAPI::allowed_peers(const std::string &channel) const
@@ -153,13 +149,17 @@ py::list ConsumerAPI::consumers(const std::string &channel) const
 uint64_t ConsumerAPI::slot_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->slot_logical_size(
-        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+        side.has_value()
+            ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)}
+            : std::nullopt));
 }
 
 uint64_t ConsumerAPI::flexzone_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->flexzone_logical_size(
-        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+        side.has_value()
+            ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)}
+            : std::nullopt));
 }
 
 static std::optional<scripting::ChannelSide> to_channel_side(std::optional<int> side)
@@ -213,13 +213,13 @@ py::object ConsumerAPI::open_inbox(const std::string &target_uid)
         return py::none();
 
     py::object slot_type = result->spec.fields.empty()
-        ? py::none()
-        : scripting::build_ctypes_struct(result->spec, "InboxSlot");
+                               ? py::none()
+                               : scripting::build_ctypes_struct(result->spec, "InboxSlot");
 
-    py::object handle = py::cast(
-        scripting::InboxHandle(std::move(result->client), std::move(result->spec),
-                               std::move(slot_type), result->item_size),
-        py::return_value_policy::move);
+    py::object handle =
+        py::cast(scripting::InboxHandle(std::move(result->client), std::move(result->spec),
+                                        std::move(slot_type), result->item_size),
+                 py::return_value_policy::move);
     inbox_cache_[target_uid] = handle;
     return handle;
 }
@@ -243,13 +243,13 @@ void ConsumerAPI::clear_inbox_cache()
             // Cleanup path; see ProducerAPI::clear_inbox_cache for the
             // rationale.  Log so broken handles surface; continue with
             // the rest of the cache.
-            LOGGER_WARN("ConsumerAPI: clear_inbox_cache uid='{}' threw: {}",
-                        uid, e.what());
+            LOGGER_WARN("ConsumerAPI: clear_inbox_cache uid='{}' threw: {}", uid, e.what());
         }
         catch (...)
         {
             LOGGER_WARN("ConsumerAPI: clear_inbox_cache uid='{}' "
-                        "threw (non-std exception)", uid);
+                        "threw (non-std exception)",
+                        uid);
         }
     }
     inbox_cache_.clear();
@@ -275,138 +275,122 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def_readwrite("slot", &scripting::PyTxChannel::slot);
 
     py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
-        .def_readonly("data",       &scripting::PyInboxMsg::data)
+        .def_readonly("data", &scripting::PyInboxMsg::data)
         .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
-        .def_readonly("seq",        &scripting::PyInboxMsg::seq);
+        .def_readonly("seq", &scripting::PyInboxMsg::seq);
 
     py::class_<scripting::InboxHandle>(m, "InboxHandle")
-        .def("acquire",  &scripting::InboxHandle::acquire)
-        .def("send",     &scripting::InboxHandle::send,    py::arg("timeout_ms") = 5000)
-        .def("discard",  &scripting::InboxHandle::discard)
+        .def("acquire", &scripting::InboxHandle::acquire)
+        .def("send", &scripting::InboxHandle::send, py::arg("timeout_ms") = 5000)
+        .def("discard", &scripting::InboxHandle::discard)
         .def("is_ready", &scripting::InboxHandle::is_ready)
-        .def("close",    &scripting::InboxHandle::close);
+        .def("close", &scripting::InboxHandle::close);
 
     py::class_<ConsumerAPI>(m, "ConsumerAPI")
-        .def("log",          &ConsumerAPI::log, py::arg("level"), py::arg("msg"))
-        .def("uid",          &ConsumerAPI::uid)
-        .def("name",         &ConsumerAPI::name)
-        .def("channel",      &ConsumerAPI::channel)
-        .def("log_level",    &ConsumerAPI::log_level)
-        .def("script_dir",   &ConsumerAPI::script_dir)
-        .def("role_dir",     &ConsumerAPI::role_dir)
-        .def("logs_dir",     &ConsumerAPI::logs_dir)
-        .def("run_dir",      &ConsumerAPI::run_dir)
-        .def("stop",         &ConsumerAPI::stop)
-        .def("set_critical_error",    &ConsumerAPI::set_critical_error,
-             py::arg("msg"),
+        .def("log", &ConsumerAPI::log, py::arg("level"), py::arg("msg"))
+        .def("uid", &ConsumerAPI::uid)
+        .def("name", &ConsumerAPI::name)
+        .def("channel", &ConsumerAPI::channel)
+        .def("log_level", &ConsumerAPI::log_level)
+        .def("script_dir", &ConsumerAPI::script_dir)
+        .def("role_dir", &ConsumerAPI::role_dir)
+        .def("logs_dir", &ConsumerAPI::logs_dir)
+        .def("run_dir", &ConsumerAPI::run_dir)
+        .def("stop", &ConsumerAPI::stop)
+        .def("set_critical_error", &ConsumerAPI::set_critical_error, py::arg("msg"),
              "Flag a critical (unrecoverable) error and request shutdown. "
              "msg is REQUIRED — logged at ERROR level by the framework. "
              "stop_reason becomes 'critical_error'.")
-        .def("critical_error",        &ConsumerAPI::critical_error)
-        .def("band_join",         &ConsumerAPI::band_join, py::arg("channel"))
-        .def("band_leave",        &ConsumerAPI::band_leave, py::arg("channel"))
-        .def("band_broadcast",    &ConsumerAPI::band_broadcast,
-             py::arg("channel"), py::arg("body"))
-        .def("band_members",      &ConsumerAPI::band_members, py::arg("channel"))
-        .def("band_member_contains", &ConsumerAPI::band_member_contains,
-             py::arg("channel"), py::arg("role_uid"),
+        .def("critical_error", &ConsumerAPI::critical_error)
+        .def("band_join", &ConsumerAPI::band_join, py::arg("channel"))
+        .def("band_leave", &ConsumerAPI::band_leave, py::arg("channel"))
+        .def("band_broadcast", &ConsumerAPI::band_broadcast, py::arg("channel"), py::arg("body"))
+        .def("band_members", &ConsumerAPI::band_members, py::arg("channel"))
+        .def("band_member_contains", &ConsumerAPI::band_member_contains, py::arg("channel"),
+             py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the band's "
              "member list.  Raises ValueError on transport failure.")
-        .def("band_member_count", &ConsumerAPI::band_member_count,
-             py::arg("channel"),
+        .def("band_member_count", &ConsumerAPI::band_member_count, py::arg("channel"),
              "Engine-parity inquiry — band member count.  Raises "
              "ValueError on transport failure.")
-        .def("is_in_band",        &ConsumerAPI::is_in_band, py::arg("channel"))
+        .def("is_in_band", &ConsumerAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &ConsumerAPI::script_error_count)
-        .def("in_slots_received",  &ConsumerAPI::in_slots_received)
+        .def("in_slots_received", &ConsumerAPI::in_slots_received)
         .def("loop_overrun_count", &ConsumerAPI::loop_overrun_count)
         .def("last_cycle_work_us", &ConsumerAPI::last_cycle_work_us)
-        .def("last_seq",       &ConsumerAPI::last_seq)
-        .def("in_capacity",    &ConsumerAPI::in_capacity)
-        .def("in_policy",      &ConsumerAPI::in_policy)
-        .def("flexzone",     &ConsumerAPI::flexzone,
-             py::arg("side") = py::none(),
+        .def("last_seq", &ConsumerAPI::last_seq)
+        .def("in_capacity", &ConsumerAPI::in_capacity)
+        .def("in_policy", &ConsumerAPI::in_policy)
+        .def("flexzone", &ConsumerAPI::flexzone, py::arg("side") = py::none(),
              "Flexzone typed view. Returns None if no flexzone configured.")
         .def("set_verify_checksum", &ConsumerAPI::set_verify_checksum, py::arg("enable"))
-        .def("slot_logical_size", &ConsumerAPI::slot_logical_size,
-             py::arg("side") = py::none())
+        .def("slot_logical_size", &ConsumerAPI::slot_logical_size, py::arg("side") = py::none())
         .def("flexzone_logical_size", &ConsumerAPI::flexzone_logical_size,
              py::arg("side") = py::none())
-        .def("spinlock",       &ConsumerAPI::spinlock,
-             py::arg("index"), py::arg("side") = py::none())
-        .def("spinlock_count", &ConsumerAPI::spinlock_count,
-             py::arg("side") = py::none())
-        .def_property_readonly_static("Tx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Tx); })
-        .def_property_readonly_static("Rx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Rx); })
-        .def("metrics",        &ConsumerAPI::metrics)
-        .def("allowed_peers",  &ConsumerAPI::allowed_peers,
-             py::arg("channel"),
+        .def("spinlock", &ConsumerAPI::spinlock, py::arg("index"), py::arg("side") = py::none())
+        .def("spinlock_count", &ConsumerAPI::spinlock_count, py::arg("side") = py::none())
+        .def_property_readonly_static("Tx", [](py::object)
+                                      { return static_cast<int>(scripting::ChannelSide::Tx); })
+        .def_property_readonly_static("Rx", [](py::object)
+                                      { return static_cast<int>(scripting::ChannelSide::Rx); })
+        .def("metrics", &ConsumerAPI::metrics)
+        .def("allowed_peers", &ConsumerAPI::allowed_peers, py::arg("channel"),
              "HEP-CORE-0036 §I11 polling surface (engine-parity stub).  "
              "Returns an empty list on consumer side — no allowlist "
              "exists on the consumer's PULL queue.  Present for API "
              "uniformity with ProducerAPI.allowed_peers.")
-        .def("consumers",      &ConsumerAPI::consumers,
-             py::arg("channel"),
+        .def("consumers", &ConsumerAPI::consumers, py::arg("channel"),
              "HEP-CORE-0028 §6a — live consumer role_uid list "
              "(symmetric with producers()).  Empty on consumer-role "
              "side per HEP-CORE-0011 Cross-Engine Surface Parity "
              "sentinel.")
-        .def("producers",      &ConsumerAPI::producers,
-             py::arg("channel"),
+        .def("producers", &ConsumerAPI::producers, py::arg("channel"),
              "HEP-CORE-0036 §I11 + §6.4 polling surface.  Returns a "
              "list of {role_uid, pubkey} dicts for the broker's most "
              "recent CONSUMER_REG_ACK.producers[] delivery.  Empty "
              "list when the channel was never registered, the broker "
              "delivered an empty list, or the transport is SHM.  "
              "Mirrors Lua's api.producers; read-only.")
-        .def("allowed_peer_contains", &ConsumerAPI::allowed_peer_contains,
-             py::arg("channel"), py::arg("role_uid"),
+        .def("allowed_peer_contains", &ConsumerAPI::allowed_peer_contains, py::arg("channel"),
+             py::arg("role_uid"),
              "Engine-parity inquiry — always false on consumer side "
              "(empty allowlist).  Present for API uniformity.")
-        .def("allowed_peer_count", &ConsumerAPI::allowed_peer_count,
-             py::arg("channel"),
+        .def("allowed_peer_count", &ConsumerAPI::allowed_peer_count, py::arg("channel"),
              "Engine-parity inquiry — always 0 on consumer side.")
-        .def("consumer_count", &ConsumerAPI::consumer_count,
-             py::arg("channel"),
+        .def("consumer_count", &ConsumerAPI::consumer_count, py::arg("channel"),
              "HEP-CORE-0028 §6a — binding-side live consumer count "
              "backed by phase=live NOTIFY.  Fan-in consumers see live "
              "peer producers via producer_count; consumer_count is "
              "typically 0 on this side (documented sentinel).")
-        .def("producer_count", &ConsumerAPI::producer_count,
-             py::arg("channel"),
+        .def("producer_count", &ConsumerAPI::producer_count, py::arg("channel"),
              "HEP-CORE-0028 §6a — binding-side live producer count "
              "backed by phase=live NOTIFY.  Fan-in consumer gates its "
              "admission on this count reaching the expected N.")
-        .def("is_channel_ready", &ConsumerAPI::is_channel_ready,
-             py::arg("channel"),
+        .def("is_channel_ready", &ConsumerAPI::is_channel_ready, py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
              "named channel is in the Active state.  Engine-parity with "
              "Lua's api.is_channel_ready.  Read-only.")
-        .def("queue_mechanism",  &ConsumerAPI::queue_mechanism,
-             py::arg("side"),
+        .def("queue_mechanism", &ConsumerAPI::queue_mechanism, py::arg("side"),
              "HEP-CORE-0035 §2 (#194) — direct mechanism accessor; engine "
              "parity with Lua.  See ProducerAPI::queue_mechanism.")
-        .def("report_metric",  &ConsumerAPI::report_metric, py::arg("key"), py::arg("value"))
+        .def("report_metric", &ConsumerAPI::report_metric, py::arg("key"), py::arg("value"))
         .def("report_metrics", &ConsumerAPI::report_metrics, py::arg("kv"))
         .def("clear_custom_metrics", &ConsumerAPI::clear_custom_metrics)
-        .def("open_inbox",         &ConsumerAPI::open_inbox, py::arg("target_uid"))
-        .def("clear_inbox_cache",  &ConsumerAPI::clear_inbox_cache)
-        .def("wait_for_role",      &ConsumerAPI::wait_for_role,
-             py::arg("uid"), py::arg("timeout_ms") = 5000)
-        .def("stop_reason",        &ConsumerAPI::stop_reason)
+        .def("open_inbox", &ConsumerAPI::open_inbox, py::arg("target_uid"))
+        .def("clear_inbox_cache", &ConsumerAPI::clear_inbox_cache)
+        .def("wait_for_role", &ConsumerAPI::wait_for_role, py::arg("uid"),
+             py::arg("timeout_ms") = 5000)
+        .def("stop_reason", &ConsumerAPI::stop_reason)
         .def_readwrite("shared_data", &ConsumerAPI::shared_data_)
         .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"));
 
-    m.def("version_info", []() -> py::str
-    {
-        return pylabhub::version::version_info_json();
-    });
+    m.def("version_info", []() -> py::str { return pylabhub::version::version_info_json(); });
 
     py::class_<scripting::SpinLockPy>(m, "SpinLock")
-        .def("lock",   &scripting::SpinLockPy::lock)
+        .def("lock", &scripting::SpinLockPy::lock)
         .def("unlock", &scripting::SpinLockPy::unlock)
         .def("try_lock_for", &scripting::SpinLockPy::try_lock_for, py::arg("timeout_ms"))
         .def("is_locked_by_current_process", &scripting::SpinLockPy::is_locked_by_current_process)
         .def("__enter__", &scripting::SpinLockPy::enter, py::return_value_policy::reference)
-        .def("__exit__",  &scripting::SpinLockPy::exit);
+        .def("__exit__", &scripting::SpinLockPy::exit);
 }

@@ -59,7 +59,7 @@ namespace
 /// Test fixture analogue: paired RoleHostCore + RoleAPIBase.
 struct TestContext
 {
-    RoleHostCore                 core;
+    RoleHostCore core;
     std::unique_ptr<RoleAPIBase> base;
 
     explicit TestContext(const std::string &tag)
@@ -100,8 +100,7 @@ int producer_snapshot_base_no_shm()
             EXPECT_FALSE(snap.contains("queue"));
             EXPECT_FALSE(snap.contains("custom"));
         },
-        "metrics_api::producer_snapshot_base_no_shm",
-        Logger::GetLifecycleModule());
+        "metrics_api::producer_snapshot_base_no_shm", Logger::GetLifecycleModule());
 }
 
 int producer_report_metric()
@@ -117,8 +116,7 @@ int producer_report_metric()
             ASSERT_TRUE(snap.contains("custom"));
             EXPECT_DOUBLE_EQ(snap["custom"]["temperature"].get<double>(), 23.5);
         },
-        "metrics_api::producer_report_metric",
-        Logger::GetLifecycleModule());
+        "metrics_api::producer_report_metric", Logger::GetLifecycleModule());
 }
 
 int producer_report_metrics_batch()
@@ -134,8 +132,7 @@ int producer_report_metrics_batch()
             EXPECT_DOUBLE_EQ(snap["custom"]["a"].get<double>(), 1.0);
             EXPECT_DOUBLE_EQ(snap["custom"]["b"].get<double>(), 2.0);
         },
-        "metrics_api::producer_report_metrics_batch",
-        Logger::GetLifecycleModule());
+        "metrics_api::producer_report_metrics_batch", Logger::GetLifecycleModule());
 }
 
 int producer_clear_custom_metrics()
@@ -151,8 +148,7 @@ int producer_clear_custom_metrics()
             json snap = api.snapshot_metrics_json();
             EXPECT_TRUE(snap["custom"].empty());
         },
-        "metrics_api::producer_clear_custom_metrics",
-        Logger::GetLifecycleModule());
+        "metrics_api::producer_clear_custom_metrics", Logger::GetLifecycleModule());
 }
 
 int producer_report_metric_overwrite()
@@ -168,8 +164,7 @@ int producer_report_metric_overwrite()
             json snap = api.snapshot_metrics_json();
             EXPECT_DOUBLE_EQ(snap["custom"]["x"].get<double>(), 99.0);
         },
-        "metrics_api::producer_report_metric_overwrite",
-        Logger::GetLifecycleModule());
+        "metrics_api::producer_report_metric_overwrite", Logger::GetLifecycleModule());
 }
 
 // ── ConsumerAPI metrics ─────────────────────────────────────────────────────
@@ -197,8 +192,7 @@ int consumer_snapshot_base_no_shm()
             EXPECT_FALSE(snap.contains("queue"));
             EXPECT_FALSE(snap.contains("custom"));
         },
-        "metrics_api::consumer_snapshot_base_no_shm",
-        Logger::GetLifecycleModule());
+        "metrics_api::consumer_snapshot_base_no_shm", Logger::GetLifecycleModule());
 }
 
 int consumer_report_and_clear()
@@ -217,8 +211,7 @@ int consumer_report_and_clear()
             snap = api.snapshot_metrics_json();
             EXPECT_TRUE(snap["custom"].empty());
         },
-        "metrics_api::consumer_report_and_clear",
-        Logger::GetLifecycleModule());
+        "metrics_api::consumer_report_and_clear", Logger::GetLifecycleModule());
 }
 
 // ── ProcessorAPI metrics ────────────────────────────────────────────────────
@@ -247,8 +240,7 @@ int processor_snapshot_base_no_shm()
             EXPECT_FALSE(snap.contains("out_queue"));
             EXPECT_FALSE(snap.contains("custom"));
         },
-        "metrics_api::processor_snapshot_base_no_shm",
-        Logger::GetLifecycleModule());
+        "metrics_api::processor_snapshot_base_no_shm", Logger::GetLifecycleModule());
 }
 
 int processor_report_and_snapshot()
@@ -264,8 +256,7 @@ int processor_report_and_snapshot()
             ASSERT_TRUE(snap.contains("custom"));
             EXPECT_DOUBLE_EQ(snap["custom"]["rate"].get<double>(), 100.0);
         },
-        "metrics_api::processor_report_and_snapshot",
-        Logger::GetLifecycleModule());
+        "metrics_api::processor_report_and_snapshot", Logger::GetLifecycleModule());
 }
 
 // ── Per-presence emission shape (Wave-B M2 + audit C2 follow-up) ───────────
@@ -316,8 +307,7 @@ int processor_per_presence_consumer_shape()
             ASSERT_TRUE(snap.contains("loop"))
                 << "Loop metrics are role-wide; appear on every presence";
         },
-        "metrics_api::processor_per_presence_consumer_shape",
-        Logger::GetLifecycleModule());
+        "metrics_api::processor_per_presence_consumer_shape", Logger::GetLifecycleModule());
 }
 
 int processor_per_presence_producer_shape()
@@ -351,8 +341,7 @@ int processor_per_presence_producer_shape()
 
             ASSERT_TRUE(snap.contains("loop"));
         },
-        "metrics_api::processor_per_presence_producer_shape",
-        Logger::GetLifecycleModule());
+        "metrics_api::processor_per_presence_producer_shape", Logger::GetLifecycleModule());
 }
 
 int per_presence_custom_metrics_on_both_sides()
@@ -376,11 +365,9 @@ int per_presence_custom_metrics_on_both_sides()
             // Hook fires once per snapshot — calling it twice does NOT
             // mutate state (custom_metrics_snapshot is read-only).
             EXPECT_DOUBLE_EQ(
-                ctx.base->snapshot_metrics_json()["custom"]["temperature"].get<double>(),
-                23.5);
+                ctx.base->snapshot_metrics_json()["custom"]["temperature"].get<double>(), 23.5);
         },
-        "metrics_api::per_presence_custom_metrics_on_both_sides",
-        Logger::GetLifecycleModule());
+        "metrics_api::per_presence_custom_metrics_on_both_sides", Logger::GetLifecycleModule());
 }
 
 // ── PyDict workers ──────────────────────────────────────────────────────────
@@ -396,7 +383,7 @@ int producer_pydict_hierarchical_no_queue()
         [&]()
         {
             py::scoped_interpreter interp;
-            TestContext            ctx("prod");
+            TestContext ctx("prod");
             pylabhub::producer::ProducerAPI api(*ctx.base);
 
             ctx.core.inc_out_slots_written();
@@ -411,8 +398,7 @@ int producer_pydict_hierarchical_no_queue()
             EXPECT_EQ(role["out_slots_written"].cast<uint64_t>(), 1u);
             EXPECT_EQ(role["script_error_count"].cast<uint64_t>(), 0u);
         },
-        "metrics_api::producer_pydict_hierarchical_no_queue",
-        Logger::GetLifecycleModule());
+        "metrics_api::producer_pydict_hierarchical_no_queue", Logger::GetLifecycleModule());
 }
 
 int consumer_pydict_hierarchical_no_queue()
@@ -421,7 +407,7 @@ int consumer_pydict_hierarchical_no_queue()
         [&]()
         {
             py::scoped_interpreter interp;
-            TestContext            ctx("cons");
+            TestContext ctx("cons");
             pylabhub::consumer::ConsumerAPI api(*ctx.base);
 
             py::dict d = api.metrics();
@@ -433,8 +419,7 @@ int consumer_pydict_hierarchical_no_queue()
             auto role = d["role"].cast<py::dict>();
             EXPECT_EQ(role["in_slots_received"].cast<uint64_t>(), 0u);
         },
-        "metrics_api::consumer_pydict_hierarchical_no_queue",
-        Logger::GetLifecycleModule());
+        "metrics_api::consumer_pydict_hierarchical_no_queue", Logger::GetLifecycleModule());
 }
 
 int processor_pydict_hierarchical_no_queue()
@@ -443,7 +428,7 @@ int processor_pydict_hierarchical_no_queue()
         [&]()
         {
             py::scoped_interpreter interp;
-            TestContext            ctx("proc");
+            TestContext ctx("proc");
             pylabhub::processor::ProcessorAPI api(*ctx.base);
 
             py::dict d = api.metrics();
@@ -453,8 +438,7 @@ int processor_pydict_hierarchical_no_queue()
             EXPECT_FALSE(d.contains("in_queue"));
             EXPECT_FALSE(d.contains("out_queue"));
         },
-        "metrics_api::processor_pydict_hierarchical_no_queue",
-        Logger::GetLifecycleModule());
+        "metrics_api::processor_pydict_hierarchical_no_queue", Logger::GetLifecycleModule());
 }
 
 } // namespace metrics_api
@@ -474,8 +458,7 @@ struct MetricsApiWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "metrics_api")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "metrics_api")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::metrics_api;
@@ -511,8 +494,7 @@ struct MetricsApiWorkerRegistrar
                 if (sc == "per_presence_custom_metrics_on_both_sides")
                     return per_presence_custom_metrics_on_both_sides();
 
-                fmt::print(stderr,
-                           "[metrics_api] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[metrics_api] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

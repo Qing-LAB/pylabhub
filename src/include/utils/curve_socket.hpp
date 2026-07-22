@@ -36,16 +36,14 @@ namespace pylabhub::utils
 /// read use-not-export inside `KeyStore::with_seckey` and never copied out.
 /// Requires SecureSubsystem initialized and the named identity present.
 /// The caller applies the ZAP policy afterwards (see the file docblock).
-inline void arm_curve_server(zmq::socket_t   &sock,
-                             std::string_view identity_key_name)
+inline void arm_curve_server(zmq::socket_t &sock, std::string_view identity_key_name)
 {
     namespace sec = pylabhub::utils::security;
     auto &ks = sec::secure().keys();
     sock.set(zmq::sockopt::curve_server, 1);
     sock.set(zmq::sockopt::curve_publickey, ks.pubkey(identity_key_name));
-    ks.with_seckey(identity_key_name, [&](std::string_view seckey) {
-        sock.set(zmq::sockopt::curve_secretkey, seckey);
-    });
+    ks.with_seckey(identity_key_name, [&](std::string_view seckey)
+                   { sock.set(zmq::sockopt::curve_secretkey, seckey); });
 }
 
 } // namespace pylabhub::utils

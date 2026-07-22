@@ -40,9 +40,9 @@ namespace pylabhub::role_cli
  */
 struct RoleArgs
 {
-    std::string config_path;    ///< --config <path>
-    std::string role_dir;       ///< positional <role_dir> or --init [dir]
-    std::string init_name;      ///< --name <name>  (for --init)
+    std::string config_path; ///< --config <path>
+    std::string role_dir;    ///< positional <role_dir> or --init [dir]
+    std::string init_name;   ///< --name <name>  (for --init)
 
     /// --role <tag>. Long-form role name ("producer"/"consumer"/"processor").
     /// Required by @c plh_role's map-based dispatch; ignored by the legacy
@@ -57,10 +57,10 @@ struct RoleArgs
     /// the generated JSON. @c -1 = keep all files. Empty → default (5).
     std::optional<int> log_backups;
 
-    bool validate_only{false};  ///< --validate
-    bool keygen_only{false};    ///< --keygen
-    bool init_only{false};      ///< --init
-    bool skeleton_only{false};  ///< --skeleton (HEP-CORE-0024 §3.4.2 layout-only path)
+    bool validate_only{false}; ///< --validate
+    bool keygen_only{false};   ///< --keygen
+    bool init_only{false};     ///< --init
+    bool skeleton_only{false}; ///< --skeleton (HEP-CORE-0024 §3.4.2 layout-only path)
 
     /// --uid <value>. Role UID supplied at the CLI boundary.  Resolved
     /// by `cli::get_required_uid` against env / TTY prompt per
@@ -80,32 +80,31 @@ struct RoleArgs
 namespace detail
 {
 
-inline void print_role_usage(const char *prog, const char *role_name,
-                              std::ostream &os = std::cout)
+inline void print_role_usage(const char *prog, const char *role_name, std::ostream &os = std::cout)
 {
-    os  << "Usage:\n"
-        << "  " << prog << " --init [<" << role_name << "_dir>]  # Create role directory\n"
-        << "  " << prog << " <" << role_name << "_dir>             # Run from directory\n"
-        << "  " << prog << " --config <path.json> [--validate | --keygen]\n\n"
-        << "Modes (at most one; default is run):\n"
-        << "  --init [dir]       Create role directory with config template; exit 0\n"
-        << "  --validate         Validate config + script; exit 0 on success\n"
-        << "  --keygen           Generate NaCl keypair at auth.keyfile path; exit 0\n"
-        << "\n"
-        << "Common options:\n"
-        << "  <role_dir>         Role directory containing <role>.json\n"
-        << "  --config <path>    Path to role JSON config file\n"
-        << "  --role <tag>       Role type (required by plh_role; otherwise preset)\n"
-        << "  --name <name>      Role name for --init (skips interactive prompt)\n"
-        << "\n"
-        << "Init-only options (write into generated logging config):\n"
-        << "  --log-maxsize <MB> Rotate when a log file reaches this size (default 10)\n"
-        << "  --log-backups <N>  Keep N rotated files (default 5; -1 = keep all)\n"
-        << "\n"
-        << "  --help             Show this message\n"
-        << "\n"
-        << "Log destination at run time is always <role_dir>/logs/<uid>-<ts>.log\n"
-        << "(composed from config; not configurable via CLI).\n";
+    os << "Usage:\n"
+       << "  " << prog << " --init [<" << role_name << "_dir>]  # Create role directory\n"
+       << "  " << prog << " <" << role_name << "_dir>             # Run from directory\n"
+       << "  " << prog << " --config <path.json> [--validate | --keygen]\n\n"
+       << "Modes (at most one; default is run):\n"
+       << "  --init [dir]       Create role directory with config template; exit 0\n"
+       << "  --validate         Validate config + script; exit 0 on success\n"
+       << "  --keygen           Generate NaCl keypair at auth.keyfile path; exit 0\n"
+       << "\n"
+       << "Common options:\n"
+       << "  <role_dir>         Role directory containing <role>.json\n"
+       << "  --config <path>    Path to role JSON config file\n"
+       << "  --role <tag>       Role type (required by plh_role; otherwise preset)\n"
+       << "  --name <name>      Role name for --init (skips interactive prompt)\n"
+       << "\n"
+       << "Init-only options (write into generated logging config):\n"
+       << "  --log-maxsize <MB> Rotate when a log file reaches this size (default 10)\n"
+       << "  --log-backups <N>  Keep N rotated files (default 5; -1 = keep all)\n"
+       << "\n"
+       << "  --help             Show this message\n"
+       << "\n"
+       << "Log destination at run time is always <role_dir>/logs/<uid>-<ts>.log\n"
+       << "(composed from config; not configurable via CLI).\n";
 }
 
 } // namespace detail
@@ -125,7 +124,7 @@ inline void print_role_usage(const char *prog, const char *role_name,
 struct ParseResult
 {
     RoleArgs args;
-    int      exit_code = -1;
+    int exit_code = -1;
 };
 
 /**
@@ -146,15 +145,15 @@ struct ParseResult
  *         on --help @c exit_code==0 (usage already printed);
  *         on error  @c exit_code==1 (message already printed).
  */
-inline ParseResult parse_role_args(int argc, char *argv[],
-                                     const char *role_name,
-                                     std::ostream &out_stream = std::cout,
-                                     std::ostream &err_stream = std::cerr)
+inline ParseResult parse_role_args(int argc, char *argv[], const char *role_name,
+                                   std::ostream &out_stream = std::cout,
+                                   std::ostream &err_stream = std::cerr)
 {
     ParseResult result;
-    RoleArgs   &args = result.args;
+    RoleArgs &args = result.args;
 
-    auto fail_with_usage = [&](std::string_view prefix) -> ParseResult & {
+    auto fail_with_usage = [&](std::string_view prefix) -> ParseResult &
+    {
         err_stream << prefix;
         detail::print_role_usage(argv[0], role_name, err_stream);
         result.exit_code = 1;
@@ -209,7 +208,10 @@ inline ParseResult parse_role_args(int argc, char *argv[],
         }
         else if (arg == "--log-maxsize" && i + 1 < argc)
         {
-            try { args.log_max_size_mb = std::stod(argv[++i]); }
+            try
+            {
+                args.log_max_size_mb = std::stod(argv[++i]);
+            }
             catch (const std::exception &)
             {
                 err_stream << "Error: --log-maxsize expects a number (MB)\n";
@@ -219,7 +221,10 @@ inline ParseResult parse_role_args(int argc, char *argv[],
         }
         else if (arg == "--log-backups" && i + 1 < argc)
         {
-            try { args.log_backups = std::stoi(argv[++i]); }
+            try
+            {
+                args.log_backups = std::stoi(argv[++i]);
+            }
             catch (const std::exception &)
             {
                 err_stream << "Error: --log-backups expects an integer "
@@ -239,8 +244,7 @@ inline ParseResult parse_role_args(int argc, char *argv[],
         else if (arg[0] != '-')
         {
             if (!args.role_dir.empty())
-                return fail_with_usage(
-                    "Error: multiple positional arguments not supported\n\n");
+                return fail_with_usage("Error: multiple positional arguments not supported\n\n");
             args.role_dir = std::string(arg);
         }
         else
@@ -253,32 +257,27 @@ inline ParseResult parse_role_args(int argc, char *argv[],
     }
 
     // ── Mode exclusion: at most one mode flag ──────────────────────────
-    const int mode_count = static_cast<int>(args.init_only) +
-                           static_cast<int>(args.skeleton_only) +
+    const int mode_count = static_cast<int>(args.init_only) + static_cast<int>(args.skeleton_only) +
                            static_cast<int>(args.validate_only) +
                            static_cast<int>(args.keygen_only);
     if (mode_count > 1)
-        return fail_with_usage(
-            "Error: --init, --skeleton, --validate, and --keygen are "
-            "mutually exclusive (at most one mode).\n\n");
+        return fail_with_usage("Error: --init, --skeleton, --validate, and --keygen are "
+                               "mutually exclusive (at most one mode).\n\n");
 
     // ── Init/skeleton-only flags must not appear outside those modes ───
     const bool init_or_skeleton = args.init_only || args.skeleton_only;
     if (!init_or_skeleton &&
         (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
-         !args.init_name.empty() || !args.role_uid.empty() ||
-         !args.vault_path.empty()))
-        return fail_with_usage(
-            "Error: --name, --uid, --vault-path, --log-maxsize, and "
-            "--log-backups are only valid with --init or --skeleton.\n\n");
+         !args.init_name.empty() || !args.role_uid.empty() || !args.vault_path.empty()))
+        return fail_with_usage("Error: --name, --uid, --vault-path, --log-maxsize, and "
+                               "--log-backups are only valid with --init or --skeleton.\n\n");
 
     // ── Required positional for non-init/skeleton modes ────────────────
     if (!init_or_skeleton && args.config_path.empty() && args.role_dir.empty())
-        return fail_with_usage(
-            "Error: specify a role directory, --init, --skeleton, "
-            "or --config <path>\n\n");
+        return fail_with_usage("Error: specify a role directory, --init, --skeleton, "
+                               "or --config <path>\n\n");
 
-    return result;  // exit_code stays -1 → caller proceeds
+    return result; // exit_code stays -1 → caller proceeds
 }
 
 } // namespace pylabhub::role_cli

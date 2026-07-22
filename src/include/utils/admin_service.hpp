@@ -55,17 +55,26 @@
 #include <string>
 #include <string_view>
 
-namespace zmq { class context_t; }
+namespace zmq
+{
+class context_t;
+}
 
-namespace pylabhub::config { struct HubAdminConfig; }
-namespace pylabhub::hub_host { class HubHost; }
+namespace pylabhub::config
+{
+struct HubAdminConfig;
+}
+namespace pylabhub::hub_host
+{
+class HubHost;
+}
 
 namespace pylabhub::admin
 {
 
 class PYLABHUB_UTILS_EXPORT AdminService
 {
-public:
+  public:
     /// Construct around an already-loaded HubAdminConfig.  Requires a
     /// non-empty `admin_token` (mandatory per §11.3); throws
     /// `std::invalid_argument` if empty.  Does NOT bind the socket — the
@@ -84,17 +93,15 @@ public:
     ///                      `HubAdminConfig::admin_token`; passed
     ///                      explicitly for clarity at the boundary).
     /// @param host          Backref for method dispatchers.  Borrowed.
-    AdminService(zmq::context_t          &zmq_ctx,
-                 const config::HubAdminConfig &cfg,
-                 std::string_view         admin_token,
-                 hub_host::HubHost       &host);
+    AdminService(zmq::context_t &zmq_ctx, const config::HubAdminConfig &cfg,
+                 std::string_view admin_token, hub_host::HubHost &host);
 
     ~AdminService();
 
-    AdminService(const AdminService &)            = delete;
+    AdminService(const AdminService &) = delete;
     AdminService &operator=(const AdminService &) = delete;
-    AdminService(AdminService &&)                 = delete;
-    AdminService &operator=(AdminService &&)      = delete;
+    AdminService(AdminService &&) = delete;
+    AdminService &operator=(AdminService &&) = delete;
 
     /// Bind REP socket and serve until `stop()`.  Spawned by HubHost
     /// on a dedicated `"admin"` thread.  Throws on bind failure.
@@ -110,7 +117,7 @@ public:
     /// ephemeral port was requested).  Empty before bind.
     [[nodiscard]] const std::string &bound_endpoint() const noexcept;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

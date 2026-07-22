@@ -32,7 +32,7 @@
 #include "binary_lifecycle.h"
 #include "utils/logger.hpp"
 #include "utils/security/attach_protocol.hpp"
-#include "utils/security/key_store.hpp"          // secure().keys().add_identity_from_z85
+#include "utils/security/key_store.hpp" // secure().keys().add_identity_from_z85
 #include "utils/security/shm_capability_channel.hpp"
 
 #include <gtest/gtest.h>
@@ -58,7 +58,7 @@
 
 extern "C"
 {
-char *zmq_z85_encode(char *dest, const uint8_t *data, size_t size);
+    char *zmq_z85_encode(char *dest, const uint8_t *data, size_t size);
 }
 
 namespace fs = std::filesystem;
@@ -68,16 +68,15 @@ namespace fs = std::filesystem;
 // AttachProtocol resolves seckeys by KeyStore ENTRY NAME
 // (HEP-CORE-0043 §6), so SMS must be up before any `add_identity_*`
 // or `initiate_consumer_handshake` call.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 using pylabhub::utils::security::AttachProtocolAcceptor;
 using pylabhub::utils::security::AuthenticatedConsumer;
 using pylabhub::utils::security::ConsumerAuthMaterial;
-using pylabhub::utils::security::IShmCapabilityProducer;
 using pylabhub::utils::security::create_shm_capability_producer;
 using pylabhub::utils::security::initiate_consumer_handshake;
+using pylabhub::utils::security::IShmCapabilityProducer;
 using pylabhub::utils::security::secure;
 
 namespace
@@ -98,8 +97,8 @@ struct TestKeypair
     /// beneath the API to prove the crypto layer rejects malformed
     /// input — a legitimate white-box test scenario.
     std::array<unsigned char, kRawKeyBytes> sec_raw{};
-    std::string                             pub_z85;
-    std::string                             name;   // KeyStore entry name
+    std::string pub_z85;
+    std::string name; // KeyStore entry name
 };
 
 /// Mint + seed a fresh CURVE keypair into the process KeyStore under
@@ -109,8 +108,7 @@ struct TestKeypair
 /// preserved on the returned `TestKeypair` for manual-crafting
 /// negative-path tests; the SAME bytes are also seeded into KeyStore
 /// so production-parity calls succeed under `own_seckey_name = name`.
-TestKeypair
-make_and_seed_test_keypair(std::string_view name)
+TestKeypair make_and_seed_test_keypair(std::string_view name)
 {
     TestKeypair kp;
     ::crypto_box_keypair(kp.pub_raw.data(), kp.sec_raw.data());
@@ -121,9 +119,8 @@ make_and_seed_test_keypair(std::string_view name)
     if (::zmq_z85_encode(sec_z85, kp.sec_raw.data(), kRawKeyBytes) == nullptr)
         throw std::runtime_error("make_and_seed_test_keypair: zmq_z85_encode sec failed");
     kp.pub_z85 = std::string(pub_z85, 40);
-    kp.name    = std::string(name);
-    secure().keys().add_identity_from_z85(
-        kp.name, kp.pub_z85, std::string(sec_z85, 40));
+    kp.name = std::string(name);
+    secure().keys().add_identity_from_z85(kp.name, kp.pub_z85, std::string(sec_z85, 40));
     return kp;
 }
 
@@ -144,13 +141,11 @@ class AttachProtocolTest : public ::testing::Test
         seeded_names_.clear();
     }
 
-    std::string
-    unique_socket_path(const char *tag)
+    std::string unique_socket_path(const char *tag)
     {
         static std::atomic<int> ctr{0};
-        fs::path                p = fs::temp_directory_path() /
-                     ("plh_l2_attach_" + std::string(tag) + "_" +
-                      std::to_string(::getpid()) + "_" +
+        fs::path p = fs::temp_directory_path() /
+                     ("plh_l2_attach_" + std::string(tag) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)) + ".sock");
         paths_.push_back(p);
         return p.string();
@@ -158,28 +153,26 @@ class AttachProtocolTest : public ::testing::Test
 
     /// Mint + seed a fresh CURVE keypair under a unique KeyStore name.
     /// Recorded for TearDown cleanup.
-    TestKeypair
-    MakeKeypair(const char *tag)
+    TestKeypair MakeKeypair(const char *tag)
     {
         static std::atomic<int> ctr{0};
-        std::string             name = "test.attach." + std::string(tag) + "." +
-                          std::to_string(ctr.fetch_add(1));
+        std::string name =
+            "test.attach." + std::string(tag) + "." + std::to_string(ctr.fetch_add(1));
         TestKeypair kp = make_and_seed_test_keypair(name);
         seeded_names_.push_back(name);
         return kp;
     }
 
-    std::vector<fs::path>    paths_;
+    std::vector<fs::path> paths_;
     std::vector<std::string> seeded_names_;
 };
 
 // Helpers for the negative-path tests that send hand-crafted bytes
 // to the producer (bypassing the consumer-side library entirely).
 
-void
-send_all_raw(int fd, const void *buf, std::size_t n)
+void send_all_raw(int fd, const void *buf, std::size_t n)
 {
-    const auto *p    = static_cast<const std::byte *>(buf);
+    const auto *p = static_cast<const std::byte *>(buf);
     std::size_t sent = 0;
     while (sent < n)
     {
@@ -190,10 +183,9 @@ send_all_raw(int fd, const void *buf, std::size_t n)
     }
 }
 
-void
-send_length_prefixed_raw(int fd, const std::string &body)
+void send_length_prefixed_raw(int fd, const std::string &body)
 {
-    const auto         len = static_cast<std::uint32_t>(body.size());
+    const auto len = static_cast<std::uint32_t>(body.size());
     const std::uint8_t lb[4] = {
         static_cast<std::uint8_t>(len & 0xFF),
         static_cast<std::uint8_t>((len >> 8) & 0xFF),
@@ -205,8 +197,7 @@ send_length_prefixed_raw(int fd, const std::string &body)
         send_all_raw(fd, body.data(), body.size());
 }
 
-int
-connect_raw(const std::string &endpoint)
+int connect_raw(const std::string &endpoint)
 {
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd == -1)
@@ -224,11 +215,10 @@ connect_raw(const std::string &endpoint)
 }
 
 // Read N bytes (used by negative-path tests to drain frame 1).
-void
-recv_exact_raw(int fd, void *buf, std::size_t n)
+void recv_exact_raw(int fd, void *buf, std::size_t n)
 {
-    auto       *p    = static_cast<std::byte *>(buf);
-    std::size_t got  = 0;
+    auto *p = static_cast<std::byte *>(buf);
+    std::size_t got = 0;
     while (got < n)
     {
         const ssize_t r = ::recv(fd, p + got, n - got, 0);
@@ -238,15 +228,13 @@ recv_exact_raw(int fd, void *buf, std::size_t n)
     }
 }
 
-void
-drain_frame1(int fd)
+void drain_frame1(int fd)
 {
     std::uint8_t lb[4]{};
     recv_exact_raw(fd, lb, 4);
-    const std::uint32_t len = static_cast<std::uint32_t>(lb[0]) |
-                              (static_cast<std::uint32_t>(lb[1]) << 8) |
-                              (static_cast<std::uint32_t>(lb[2]) << 16) |
-                              (static_cast<std::uint32_t>(lb[3]) << 24);
+    const std::uint32_t len =
+        static_cast<std::uint32_t>(lb[0]) | (static_cast<std::uint32_t>(lb[1]) << 8) |
+        (static_cast<std::uint32_t>(lb[2]) << 16) | (static_cast<std::uint32_t>(lb[3]) << 24);
     std::vector<char> body(len);
     if (len > 0)
         recv_exact_raw(fd, body.data(), len);
@@ -265,26 +253,25 @@ TEST_F(AttachProtocolTest, RoundTrip_HelloAndChallengeResponse)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    ConsumerAuthMaterial cons_auth{"consumer.test.roundtrip", cons.pub_z85,
-                                   cons.name};
+    ConsumerAuthMaterial cons_auth{"consumer.test.roundtrip", cons.pub_z85, cons.name};
 
     std::optional<int> connected_fd;
     std::exception_ptr cons_exc;
-    std::thread        cons_thread{[&] {
-        try
+    std::thread cons_thread{
+        [&]
         {
-            connected_fd =
-                initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
-                                            std::chrono::milliseconds{2000});
-        }
-        catch (...)
-        {
-            cons_exc = std::current_exception();
-        }
-    }};
+            try
+            {
+                connected_fd = initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
+                                                           std::chrono::milliseconds{2000});
+            }
+            catch (...)
+            {
+                cons_exc = std::current_exception();
+            }
+        }};
 
     auto auth = acceptor.accept_one(std::chrono::milliseconds{2000});
     cons_thread.join();
@@ -322,7 +309,7 @@ TEST_F(AttachProtocolTest, ConnectToUnboundEndpoint_ReturnsNulloptNotThrow)
     std::optional<int> result;
     ASSERT_NO_THROW({
         result = initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
-                                              std::chrono::milliseconds{200});
+                                             std::chrono::milliseconds{200});
     }) << "ENOENT/ECONNREFUSED is the H3a retry signal — MUST NOT throw";
     EXPECT_FALSE(result.has_value())
         << "unbound endpoint must yield nullopt so the dial loop retries";
@@ -336,8 +323,7 @@ TEST_F(AttachProtocolTest, EmptyEndpoint_ThrowsNotNullopt)
     // A boundary/programmer error must throw (so the dial loop bails), NOT
     // return nullopt (which would spin the retry loop uselessly).
     EXPECT_THROW(
-        initiate_consumer_handshake("", cons_auth, prod.pub_z85,
-                                    std::chrono::milliseconds{200}),
+        initiate_consumer_handshake("", cons_auth, prod.pub_z85, std::chrono::milliseconds{200}),
         std::invalid_argument)
         << "empty endpoint is a programmer error — must throw, not retry";
 }
@@ -350,37 +336,36 @@ TEST_F(AttachProtocolTest, RejectsConsumerWithWrongSeckey)
     // but claims K_legit.pub in the hello.  Producer's
     // crypto_box_open_easy with (K_legit.pub, producer.sec) MUST fail
     // MAC verification.
-    const auto prod      = MakeKeypair("prod");
-    const auto k_legit   = MakeKeypair("test");  // claimed pubkey
-    const auto k_attacker = MakeKeypair("test");  // actual seckey used
-    const auto path      = unique_socket_path("wrong_sk");
+    const auto prod = MakeKeypair("prod");
+    const auto k_legit = MakeKeypair("test");    // claimed pubkey
+    const auto k_attacker = MakeKeypair("test"); // actual seckey used
+    const auto path = unique_socket_path("wrong_sk");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    ConsumerAuthMaterial impersonator{
-        "impersonator.test", k_legit.pub_z85,
-        k_attacker.name};  // <-- wrong seckey
+    ConsumerAuthMaterial impersonator{"impersonator.test", k_legit.pub_z85,
+                                      k_attacker.name}; // <-- wrong seckey
 
-    std::thread cons_thread{[&] {
-        try
-        {
-            initiate_consumer_handshake(path, impersonator, prod.pub_z85,
-                                        std::chrono::milliseconds{2000});
-        }
-        catch (...)
-        {
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    initiate_consumer_handshake(path, impersonator, prod.pub_z85,
+                                                                std::chrono::milliseconds{2000});
+                                }
+                                catch (...)
+                                {
+                                }
+                            }};
 
     try
     {
         auto auth = acceptor.accept_one(std::chrono::milliseconds{2000});
         FAIL() << "accept_one should have thrown — impersonator passed!";
-        (void) auth;
+        (void)auth;
     }
     catch (const std::runtime_error &e)
     {
@@ -404,74 +389,70 @@ TEST_F(AttachProtocolTest, RejectsTamperedCipher)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    std::thread cons_thread{[&] {
-        try
+    std::thread cons_thread{
+        [&]
         {
-            // Hand-craft consumer side: connect, read frame 1, encrypt
-            // correctly, flip a byte in the cipher, send frame 2.
-            int fd = connect_raw(path);
-
-            // Read frame 1.
-            std::uint8_t lb[4]{};
-            recv_exact_raw(fd, lb, 4);
-            const std::uint32_t len = static_cast<std::uint32_t>(lb[0]) |
-                                      (static_cast<std::uint32_t>(lb[1]) << 8) |
-                                      (static_cast<std::uint32_t>(lb[2]) << 16) |
-                                      (static_cast<std::uint32_t>(lb[3]) << 24);
-            std::vector<char> body(len);
-            recv_exact_raw(fd, body.data(), len);
-            const auto challenge_in = nlohmann::json::parse(body);
-
-            // Decode nonce + challenge from b64.
-            std::vector<unsigned char> nonce(crypto_box_NONCEBYTES);
-            std::size_t                nonce_len = 0;
-            const std::string nonce_b64 = challenge_in.at("nonce_b64");
-            ::sodium_base642bin(nonce.data(), nonce.size(), nonce_b64.data(),
-                                nonce_b64.size(), nullptr, &nonce_len, nullptr,
-                                sodium_base64_VARIANT_ORIGINAL);
-
-            std::vector<unsigned char> challenge(16);
-            std::size_t                chal_len = 0;
-            const std::string chal_b64 = challenge_in.at("challenge_b64");
-            ::sodium_base642bin(challenge.data(), challenge.size(),
-                                chal_b64.data(), chal_b64.size(), nullptr,
-                                &chal_len, nullptr,
-                                sodium_base64_VARIANT_ORIGINAL);
-
-            // Encrypt.
-            std::vector<unsigned char> cipher(16 + crypto_box_MACBYTES);
-            if (::crypto_box_easy(cipher.data(), challenge.data(), 16,
-                                  nonce.data(), prod.pub_raw.data(),
-                                  cons.sec_raw.data()) != 0)
+            try
             {
-                throw std::runtime_error("test: crypto_box_easy failed");
+                // Hand-craft consumer side: connect, read frame 1, encrypt
+                // correctly, flip a byte in the cipher, send frame 2.
+                int fd = connect_raw(path);
+
+                // Read frame 1.
+                std::uint8_t lb[4]{};
+                recv_exact_raw(fd, lb, 4);
+                const std::uint32_t len = static_cast<std::uint32_t>(lb[0]) |
+                                          (static_cast<std::uint32_t>(lb[1]) << 8) |
+                                          (static_cast<std::uint32_t>(lb[2]) << 16) |
+                                          (static_cast<std::uint32_t>(lb[3]) << 24);
+                std::vector<char> body(len);
+                recv_exact_raw(fd, body.data(), len);
+                const auto challenge_in = nlohmann::json::parse(body);
+
+                // Decode nonce + challenge from b64.
+                std::vector<unsigned char> nonce(crypto_box_NONCEBYTES);
+                std::size_t nonce_len = 0;
+                const std::string nonce_b64 = challenge_in.at("nonce_b64");
+                ::sodium_base642bin(nonce.data(), nonce.size(), nonce_b64.data(), nonce_b64.size(),
+                                    nullptr, &nonce_len, nullptr, sodium_base64_VARIANT_ORIGINAL);
+
+                std::vector<unsigned char> challenge(16);
+                std::size_t chal_len = 0;
+                const std::string chal_b64 = challenge_in.at("challenge_b64");
+                ::sodium_base642bin(challenge.data(), challenge.size(), chal_b64.data(),
+                                    chal_b64.size(), nullptr, &chal_len, nullptr,
+                                    sodium_base64_VARIANT_ORIGINAL);
+
+                // Encrypt.
+                std::vector<unsigned char> cipher(16 + crypto_box_MACBYTES);
+                if (::crypto_box_easy(cipher.data(), challenge.data(), 16, nonce.data(),
+                                      prod.pub_raw.data(), cons.sec_raw.data()) != 0)
+                {
+                    throw std::runtime_error("test: crypto_box_easy failed");
+                }
+
+                // Tamper: flip the high bit of the last byte (in the MAC).
+                cipher.back() ^= 0x80;
+
+                // Build + send frame 2.
+                char b64_buf[256] = {};
+                ::sodium_bin2base64(b64_buf, sizeof(b64_buf), cipher.data(), cipher.size(),
+                                    sodium_base64_VARIANT_ORIGINAL);
+                nlohmann::json hello;
+                hello["protocol_version"] = "hep-0041-1";
+                hello["role_uid"] = "tamperer.test";
+                hello["pubkey_z85"] = cons.pub_z85;
+                hello["challenge_response_b64"] = std::string(b64_buf, std::strlen(b64_buf));
+                send_length_prefixed_raw(fd, hello.dump());
+
+                ::close(fd);
             }
-
-            // Tamper: flip the high bit of the last byte (in the MAC).
-            cipher.back() ^= 0x80;
-
-            // Build + send frame 2.
-            char        b64_buf[256] = {};
-            ::sodium_bin2base64(b64_buf, sizeof(b64_buf), cipher.data(),
-                                cipher.size(),
-                                sodium_base64_VARIANT_ORIGINAL);
-            nlohmann::json hello;
-            hello["protocol_version"]      = "hep-0041-1";
-            hello["role_uid"]               = "tamperer.test";
-            hello["pubkey_z85"]             = cons.pub_z85;
-            hello["challenge_response_b64"] =
-                std::string(b64_buf, std::strlen(b64_buf));
-            send_length_prefixed_raw(fd, hello.dump());
-
-            ::close(fd);
-        }
-        catch (...)
-        {
-        }
-    }};
+            catch (...)
+            {
+            }
+        }};
 
     EXPECT_THROW(
         {
@@ -481,8 +462,7 @@ TEST_F(AttachProtocolTest, RejectsTamperedCipher)
             }
             catch (const std::runtime_error &e)
             {
-                EXPECT_NE(std::string(e.what()).find("challenge-response"),
-                          std::string::npos)
+                EXPECT_NE(std::string(e.what()).find("challenge-response"), std::string::npos)
                     << "expected MAC-failure error, got: " << e.what();
                 throw;
             }
@@ -502,15 +482,13 @@ TEST_F(AttachProtocolTest, AcceptOneReturnsNulloptOnTimeout)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
     const auto start = std::chrono::steady_clock::now();
-    auto       res   = acceptor.accept_one(std::chrono::milliseconds{50});
-    const auto elapsed =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start)
-            .count();
+    auto res = acceptor.accept_one(std::chrono::milliseconds{50});
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count();
 
     EXPECT_FALSE(res.has_value());
     EXPECT_GE(elapsed, 40);
@@ -527,29 +505,28 @@ TEST_F(AttachProtocolTest, RejectsHelloWithWrongProtocolVersion)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    std::thread cons_thread{[&] {
-        try
-        {
-            int fd = connect_raw(path);
-            drain_frame1(fd);
-            nlohmann::json bad;
-            bad["protocol_version"]      = "nope";
-            bad["role_uid"]               = "x";
-            bad["pubkey_z85"]             = std::string(40, 'a');
-            bad["challenge_response_b64"] = "AAA=";
-            send_length_prefixed_raw(fd, bad.dump());
-            ::close(fd);
-        }
-        catch (...)
-        {
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    int fd = connect_raw(path);
+                                    drain_frame1(fd);
+                                    nlohmann::json bad;
+                                    bad["protocol_version"] = "nope";
+                                    bad["role_uid"] = "x";
+                                    bad["pubkey_z85"] = std::string(40, 'a');
+                                    bad["challenge_response_b64"] = "AAA=";
+                                    send_length_prefixed_raw(fd, bad.dump());
+                                    ::close(fd);
+                                }
+                                catch (...)
+                                {
+                                }
+                            }};
 
-    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}),
-                 std::runtime_error);
+    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}), std::runtime_error);
     cons_thread.join();
 }
 
@@ -561,28 +538,27 @@ TEST_F(AttachProtocolTest, RejectsHelloWithMissingRoleUid)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    std::thread cons_thread{[&] {
-        try
-        {
-            int fd = connect_raw(path);
-            drain_frame1(fd);
-            nlohmann::json bad;
-            bad["protocol_version"]      = "hep-0041-1";
-            bad["pubkey_z85"]             = std::string(40, 'a');
-            bad["challenge_response_b64"] = "AAA=";
-            send_length_prefixed_raw(fd, bad.dump());
-            ::close(fd);
-        }
-        catch (...)
-        {
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    int fd = connect_raw(path);
+                                    drain_frame1(fd);
+                                    nlohmann::json bad;
+                                    bad["protocol_version"] = "hep-0041-1";
+                                    bad["pubkey_z85"] = std::string(40, 'a');
+                                    bad["challenge_response_b64"] = "AAA=";
+                                    send_length_prefixed_raw(fd, bad.dump());
+                                    ::close(fd);
+                                }
+                                catch (...)
+                                {
+                                }
+                            }};
 
-    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}),
-                 std::runtime_error);
+    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}), std::runtime_error);
     cons_thread.join();
 }
 
@@ -594,26 +570,25 @@ TEST_F(AttachProtocolTest, RejectsHelloOversizedFrame)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    std::thread cons_thread{[&] {
-        try
-        {
-            int fd = connect_raw(path);
-            drain_frame1(fd);
-            // Frame length = 99999 — way over 4096 DoS cap.
-            const std::uint8_t lb[4] = {0x9F, 0x86, 0x01, 0x00};  // 99999
-            send_all_raw(fd, lb, 4);
-            ::close(fd);
-        }
-        catch (...)
-        {
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    int fd = connect_raw(path);
+                                    drain_frame1(fd);
+                                    // Frame length = 99999 — way over 4096 DoS cap.
+                                    const std::uint8_t lb[4] = {0x9F, 0x86, 0x01, 0x00}; // 99999
+                                    send_all_raw(fd, lb, 4);
+                                    ::close(fd);
+                                }
+                                catch (...)
+                                {
+                                }
+                            }};
 
-    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}),
-                 std::runtime_error);
+    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}), std::runtime_error);
     cons_thread.join();
 }
 
@@ -625,24 +600,23 @@ TEST_F(AttachProtocolTest, RejectsHelloWithMalformedJson)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    std::thread cons_thread{[&] {
-        try
-        {
-            int fd = connect_raw(path);
-            drain_frame1(fd);
-            send_length_prefixed_raw(fd, "{not valid json");
-            ::close(fd);
-        }
-        catch (...)
-        {
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    int fd = connect_raw(path);
+                                    drain_frame1(fd);
+                                    send_length_prefixed_raw(fd, "{not valid json");
+                                    ::close(fd);
+                                }
+                                catch (...)
+                                {
+                                }
+                            }};
 
-    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}),
-                 std::runtime_error);
+    EXPECT_THROW(acceptor.accept_one(std::chrono::milliseconds{2000}), std::runtime_error);
     cons_thread.join();
 }
 
@@ -653,13 +627,10 @@ TEST_F(AttachProtocolTest, ConsumerHandshakeReturnsNulloptOnAbsentEndpoint)
     const auto cons = MakeKeypair("cons");
     const auto prod = MakeKeypair("prod");
     const std::string nonexistent =
-        "/tmp/plh_l2_attach_no_such_endpoint_" +
-        std::to_string(::getpid()) + ".sock";
+        "/tmp/plh_l2_attach_no_such_endpoint_" + std::to_string(::getpid()) + ".sock";
 
-    ConsumerAuthMaterial cons_auth{"consumer.test", cons.pub_z85,
-                                   cons.name};
-    auto res = initiate_consumer_handshake(nonexistent, cons_auth,
-                                           prod.pub_z85,
+    ConsumerAuthMaterial cons_auth{"consumer.test", cons.pub_z85, cons.name};
+    auto res = initiate_consumer_handshake(nonexistent, cons_auth, prod.pub_z85,
                                            std::chrono::milliseconds{100});
     EXPECT_FALSE(res.has_value())
         << "ENOENT/ECONNREFUSED on connect must return nullopt, not throw";
@@ -699,27 +670,26 @@ TEST_F(AttachProtocolTest, MutualAuth_RoundTripSucceeds)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    ConsumerAuthMaterial cons_auth{"consumer.mutual.happy", cons.pub_z85,
-                                   cons.name};
+    ConsumerAuthMaterial cons_auth{"consumer.mutual.happy", cons.pub_z85, cons.name};
 
     std::optional<int> connected_fd;
     std::exception_ptr cons_exc;
-    std::thread        cons_thread{[&] {
-        try
-        {
-            connected_fd =
-                initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
-                                            std::chrono::milliseconds{2000},
-                                            /*require_mutual_auth=*/true);
-        }
-        catch (...)
-        {
-            cons_exc = std::current_exception();
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    connected_fd =
+                                        initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
+                                                                    std::chrono::milliseconds{2000},
+                                                                    /*require_mutual_auth=*/true);
+                                }
+                                catch (...)
+                                {
+                                    cons_exc = std::current_exception();
+                                }
+                            }};
 
     // 2026-07-03 code review Finding #8 — wrap accept_one to prevent
     // std::terminate() when a future regression makes accept_one throw
@@ -727,7 +697,7 @@ TEST_F(AttachProtocolTest, MutualAuth_RoundTripSucceeds)
     // MutualAuth_RejectsWrongProducerPubkey follows this pattern
     // already.
     std::optional<pylabhub::utils::security::AuthenticatedConsumer> auth;
-    std::exception_ptr                                              acc_exc;
+    std::exception_ptr acc_exc;
     try
     {
         auth = acceptor.accept_one(std::chrono::milliseconds{2000});
@@ -757,67 +727,66 @@ TEST_F(AttachProtocolTest, MutualAuth_RejectsWrongProducerPubkey)
     // consumer detects the mismatch against its expectation (X)
     // and throws with the attach_producer_not_authenticated marker.
     // This is the PRIMARY THREAT MODEL closed by §D4.5.
-    const auto real_prod  = MakeKeypair("test");  // actual server
-    const auto other_prod = MakeKeypair("test");  // consumer's expectation
-    const auto cons       = MakeKeypair("test");
-    const auto path       = unique_socket_path("mutual_mismatch");
+    const auto real_prod = MakeKeypair("test");  // actual server
+    const auto other_prod = MakeKeypair("test"); // consumer's expectation
+    const auto cons = MakeKeypair("test");
+    const auto path = unique_socket_path("mutual_mismatch");
 
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
     // Server holds real_prod.sec; consumer will supply other_prod.pub_z85
     // as its EXPECTED producer pubkey.
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    real_prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), real_prod.name};
 
-    ConsumerAuthMaterial cons_auth{"consumer.mutual.squatter", cons.pub_z85,
-                                   cons.name};
+    ConsumerAuthMaterial cons_auth{"consumer.mutual.squatter", cons.pub_z85, cons.name};
 
-    std::string        cons_error;
+    std::string cons_error;
     std::exception_ptr cons_exc;
-    std::thread        cons_thread{[&] {
-        try
+    std::thread cons_thread{
+        [&]
         {
-            // For crypto_box on the consumer's outbound cipher to
-            // succeed, we need to use other_prod.pub_z85 in the
-            // FIRST step (the consumer's proof to producer).
-            // Frame 3 verify fails when the peer's actual pubkey
-            // (real_prod) doesn't match the expected (other_prod).
-            // We can't easily separate "expected for step 3" from
-            // "expected for step 1" through the current API, so
-            // this test uses a modified scenario: consumer's step 1
-            // cipher won't decrypt on the server (since server has
-            // real_prod.sec, not other_prod.sec).  Server logs a
-            // verification-failure and closes, which then surfaces
-            // to the consumer as the peer-closed-mid-frame error
-            // — different marker, but same net effect.
-            //
-            // To pin the FRAME 3 mismatch specifically, we would
-            // need to expose a "producer_pubkey_for_step1_only" +
-            // "producer_pubkey_for_step3_verify" split — that's
-            // over-engineering for a single test.  Instead we assert
-            // consumer bailed with SOME error (not silently
-            // succeeded), which is the security-critical outcome.
-            (void) initiate_consumer_handshake(path, cons_auth,
-                                                other_prod.pub_z85,
-                                                std::chrono::milliseconds{2000},
-                                                /*require_mutual_auth=*/true);
-        }
-        catch (const std::exception &e)
-        {
-            cons_error = e.what();
-        }
-        catch (...)
-        {
-            cons_error = "<non-std::exception>";
-        }
-    }};
+            try
+            {
+                // For crypto_box on the consumer's outbound cipher to
+                // succeed, we need to use other_prod.pub_z85 in the
+                // FIRST step (the consumer's proof to producer).
+                // Frame 3 verify fails when the peer's actual pubkey
+                // (real_prod) doesn't match the expected (other_prod).
+                // We can't easily separate "expected for step 3" from
+                // "expected for step 1" through the current API, so
+                // this test uses a modified scenario: consumer's step 1
+                // cipher won't decrypt on the server (since server has
+                // real_prod.sec, not other_prod.sec).  Server logs a
+                // verification-failure and closes, which then surfaces
+                // to the consumer as the peer-closed-mid-frame error
+                // — different marker, but same net effect.
+                //
+                // To pin the FRAME 3 mismatch specifically, we would
+                // need to expose a "producer_pubkey_for_step1_only" +
+                // "producer_pubkey_for_step3_verify" split — that's
+                // over-engineering for a single test.  Instead we assert
+                // consumer bailed with SOME error (not silently
+                // succeeded), which is the security-critical outcome.
+                (void)initiate_consumer_handshake(path, cons_auth, other_prod.pub_z85,
+                                                  std::chrono::milliseconds{2000},
+                                                  /*require_mutual_auth=*/true);
+            }
+            catch (const std::exception &e)
+            {
+                cons_error = e.what();
+            }
+            catch (...)
+            {
+                cons_error = "<non-std::exception>";
+            }
+        }};
 
     // Producer side may throw internally on the verification failure;
     // absorb any exception cleanly.
     try
     {
-        (void) acceptor.accept_one(std::chrono::milliseconds{2000});
+        (void)acceptor.accept_one(std::chrono::milliseconds{2000});
     }
     catch (...)
     {
@@ -846,31 +815,30 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
     auto transport = create_shm_capability_producer(4096);
     ASSERT_TRUE(transport->bind_endpoint(path));
 
-    AttachProtocolAcceptor acceptor{*transport, ::getuid(),
-                                    prod.name};
+    AttachProtocolAcceptor acceptor{*transport, ::getuid(), prod.name};
 
-    ConsumerAuthMaterial cons_auth{"consumer.mutual.backcompat", cons.pub_z85,
-                                   cons.name};
+    ConsumerAuthMaterial cons_auth{"consumer.mutual.backcompat", cons.pub_z85, cons.name};
 
     std::optional<int> connected_fd;
     std::exception_ptr cons_exc;
-    std::thread        cons_thread{[&] {
-        try
+    std::thread cons_thread{
+        [&]
         {
-            connected_fd =
-                initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
-                                            std::chrono::milliseconds{2000}
-                                            /*require_mutual_auth defaults false*/);
-        }
-        catch (...)
-        {
-            cons_exc = std::current_exception();
-        }
-    }};
+            try
+            {
+                connected_fd = initiate_consumer_handshake(
+                    path, cons_auth, prod.pub_z85,
+                    std::chrono::milliseconds{2000} /*require_mutual_auth defaults false*/);
+            }
+            catch (...)
+            {
+                cons_exc = std::current_exception();
+            }
+        }};
 
     // 2026-07-03 code review Finding #8 — try/catch wrap.
     std::optional<pylabhub::utils::security::AuthenticatedConsumer> auth;
-    std::exception_ptr                                              acc_exc;
+    std::exception_ptr acc_exc;
     try
     {
         auth = acceptor.accept_one(std::chrono::milliseconds{2000});
@@ -882,10 +850,9 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
     cons_thread.join();
 
     ASSERT_FALSE(acc_exc) << "acceptor threw on backward-compat path";
-    ASSERT_FALSE(cons_exc)
-        << "Backward-compat consumer (require=false) MUST succeed with "
-        << "a mutual-auth-capable producer — producer sees no consumer "
-        << "extras and skips Frame 3";
+    ASSERT_FALSE(cons_exc) << "Backward-compat consumer (require=false) MUST succeed with "
+                           << "a mutual-auth-capable producer — producer sees no consumer "
+                           << "extras and skips Frame 3";
     ASSERT_TRUE(auth.has_value());
     EXPECT_EQ(auth->consumer_pubkey_z85, cons.pub_z85);
 
@@ -909,15 +876,15 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
 // the consumer's expectation (A) → rejected.
 TEST_F(AttachProtocolTest, MutualAuth_RejectsFrame3PubkeyMismatch)
 {
-    auto gen = []() {
+    auto gen = []()
+    {
         std::array<unsigned char, kRawKeyBytes> pub{}, sec{};
         ::crypto_box_keypair(pub.data(), sec.data());
         char pz[41] = {}, sz[41] = {};
         if (::zmq_z85_encode(pz, pub.data(), kRawKeyBytes) == nullptr ||
             ::zmq_z85_encode(sz, sec.data(), kRawKeyBytes) == nullptr)
             throw std::runtime_error("gen: zmq_z85_encode failed");
-        return std::pair<std::string, std::string>(std::string(pz, 40),
-                                                   std::string(sz, 40));
+        return std::pair<std::string, std::string>(std::string(pz, 40), std::string(sz, 40));
     };
     const auto keyA = gen(); // pubA matches secA (the real decrypt key)
     const auto keyB = gen(); // pubB is the WRONG key advertised in Frame 3
@@ -943,25 +910,26 @@ TEST_F(AttachProtocolTest, MutualAuth_RejectsFrame3PubkeyMismatch)
     ConsumerAuthMaterial cons_auth{"consumer.frame3", cons.pub_z85, cons.name};
 
     std::string cons_error;
-    std::thread cons_thread{[&] {
-        try
-        {
-            // Consumer EXPECTS pubA → encrypts Frame 2 to pubA (producer
-            // decrypts with secA) → reaches Frame 3 → producer advertises
-            // pubB → mismatch.
-            (void)initiate_consumer_handshake(path, cons_auth, pubA,
-                                               std::chrono::milliseconds{2000},
-                                               /*require_mutual_auth=*/true);
-        }
-        catch (const std::exception &e)
-        {
-            cons_error = e.what();
-        }
-        catch (...)
-        {
-            cons_error = "<non-std::exception>";
-        }
-    }};
+    std::thread cons_thread{[&]
+                            {
+                                try
+                                {
+                                    // Consumer EXPECTS pubA → encrypts Frame 2 to pubA (producer
+                                    // decrypts with secA) → reaches Frame 3 → producer advertises
+                                    // pubB → mismatch.
+                                    (void)initiate_consumer_handshake(
+                                        path, cons_auth, pubA, std::chrono::milliseconds{2000},
+                                        /*require_mutual_auth=*/true);
+                                }
+                                catch (const std::exception &e)
+                                {
+                                    cons_error = e.what();
+                                }
+                                catch (...)
+                                {
+                                    cons_error = "<non-std::exception>";
+                                }
+                            }};
 
     std::exception_ptr acc_exc;
     try
@@ -976,8 +944,7 @@ TEST_F(AttachProtocolTest, MutualAuth_RejectsFrame3PubkeyMismatch)
 
     ASSERT_FALSE(cons_error.empty())
         << "consumer must reject a Frame-3 pubkey mismatch, not succeed";
-    EXPECT_NE(cons_error.find("attach_producer_not_authenticated"),
-              std::string::npos)
+    EXPECT_NE(cons_error.find("attach_producer_not_authenticated"), std::string::npos)
         << "Frame-3 pubkey mismatch MUST surface the "
            "attach_producer_not_authenticated marker; got: "
         << cons_error;

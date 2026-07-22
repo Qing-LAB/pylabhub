@@ -29,8 +29,8 @@
 #include <stdexcept>
 #include <string>
 
-using pylabhub::hub::ProducerRegInputs;
 using pylabhub::hub::build_producer_reg_payload;
+using pylabhub::hub::ProducerRegInputs;
 
 namespace
 {
@@ -38,14 +38,14 @@ namespace
 ProducerRegInputs make_baseline(bool has_shm, bool is_zmq_transport)
 {
     ProducerRegInputs in;
-    in.channel               = "test.channel";
-    in.role_uid              = "prod.test.uid00000001";
-    in.role_name             = "test_producer";
-    in.role_type             = "producer";
-    in.has_shm               = has_shm;
-    in.is_zmq_transport      = is_zmq_transport;
-    in.zmq_node_endpoint     = "tcp://127.0.0.1:5555";
-    in.zmq_pubkey            = "01234567890123456789012345678901234567";
+    in.channel = "test.channel";
+    in.role_uid = "prod.test.uid00000001";
+    in.role_name = "test_producer";
+    in.role_type = "producer";
+    in.has_shm = has_shm;
+    in.is_zmq_transport = is_zmq_transport;
+    in.zmq_node_endpoint = "tcp://127.0.0.1:5555";
+    in.zmq_pubkey = "01234567890123456789012345678901234567";
     in.shm_capability_endpoint = "unix:///tmp/test.cap.sock";
     return in;
 }
@@ -54,11 +54,10 @@ ProducerRegInputs make_baseline(bool has_shm, bool is_zmq_transport)
 
 TEST(RoleRegPayload, ZmqBranch_EmitsDataTransportZmq)
 {
-    auto in  = make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true);
+    auto in = make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true);
     auto reg = build_producer_reg_payload(in);
     EXPECT_EQ(reg.value("data_transport", std::string{}), "zmq");
-    EXPECT_EQ(reg.value("zmq_node_endpoint", std::string{}),
-              "tcp://127.0.0.1:5555");
+    EXPECT_EQ(reg.value("zmq_node_endpoint", std::string{}), "tcp://127.0.0.1:5555");
     EXPECT_FALSE(reg.contains("shm_capability_endpoint"));
 }
 
@@ -66,11 +65,10 @@ TEST(RoleRegPayload, ZmqBranch_EmitsDataTransportZmq)
 
 TEST(RoleRegPayload, ShmBranch_EmitsDataTransportShm)
 {
-    auto in  = make_baseline(/*has_shm=*/true, /*is_zmq_transport=*/false);
+    auto in = make_baseline(/*has_shm=*/true, /*is_zmq_transport=*/false);
     auto reg = build_producer_reg_payload(in);
     EXPECT_EQ(reg.value("data_transport", std::string{}), "shm");
-    EXPECT_EQ(reg.value("shm_capability_endpoint", std::string{}),
-              "unix:///tmp/test.cap.sock");
+    EXPECT_EQ(reg.value("shm_capability_endpoint", std::string{}), "unix:///tmp/test.cap.sock");
     EXPECT_FALSE(reg.contains("zmq_node_endpoint"));
 }
 
@@ -93,7 +91,7 @@ TEST(RoleRegPayload, NeitherTransportFlag_DiagnosticPointsAtConfig)
     auto in = make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/false);
     try
     {
-        (void) build_producer_reg_payload(in);
+        (void)build_producer_reg_payload(in);
         FAIL() << "Expected std::logic_error";
     }
     catch (const std::logic_error &e)
@@ -103,11 +101,9 @@ TEST(RoleRegPayload, NeitherTransportFlag_DiagnosticPointsAtConfig)
         // and transport fields), NOT at the wire field `data_transport`.
         // This is what makes the error message actionable for operators.
         EXPECT_NE(msg.find("shm.enabled"), std::string::npos)
-            << "Diagnostic must name the `shm.enabled` config field — got: "
-            << msg;
+            << "Diagnostic must name the `shm.enabled` config field — got: " << msg;
         EXPECT_NE(msg.find("transport"), std::string::npos)
-            << "Diagnostic must name the `transport` config field — got: "
-            << msg;
+            << "Diagnostic must name the `transport` config field — got: " << msg;
     }
 }
 
@@ -118,25 +114,25 @@ TEST(RoleRegPayload, NeitherTransportFlag_DiagnosticPointsAtConfig)
 // refactor that renames a field or omits the envelope breaks these
 // tests immediately.
 
-using pylabhub::hub::ConsumerRegInputs;
 using pylabhub::hub::build_consumer_reg_payload;
+using pylabhub::hub::ConsumerRegInputs;
 
 ConsumerRegInputs make_consumer_baseline()
 {
     ConsumerRegInputs in;
-    in.channel        = "test.channel";
-    in.role_uid       = "cons.test.uid00000001";
-    in.role_name      = "test_consumer";
-    in.role_type      = "consumer";
+    in.channel = "test.channel";
+    in.role_uid = "cons.test.uid00000001";
+    in.role_name = "test_consumer";
+    in.role_type = "consumer";
     in.data_transport = "zmq";
-    in.zmq_pubkey     = "01234567890123456789012345678901234567";
+    in.zmq_pubkey = "01234567890123456789012345678901234567";
     return in;
 }
 
 TEST(RoleRegPayload, ProducerReg_CarriesAbiFingerprintEnvelope)
 {
-    auto reg = build_producer_reg_payload(
-        make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
+    auto reg =
+        build_producer_reg_payload(make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
 
     ASSERT_TRUE(reg.contains("abi_fingerprint"))
         << "REG_REQ MUST carry `abi_fingerprint` per HEP-CORE-0032 §8.2";
@@ -189,27 +185,26 @@ TEST(RoleRegPayload, ProducerReg_AbiFingerprintMatchesCurrentComponentVersions)
     // ComponentVersions the running library reports via current().
     // A refactor that hardcodes a value or drifts from current()
     // breaks this pin.
-    auto reg = build_producer_reg_payload(
-        make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
-    const auto parsed = pylabhub::version::from_json_object(
-        reg["abi_fingerprint"]);
+    auto reg =
+        build_producer_reg_payload(make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
+    const auto parsed = pylabhub::version::from_json_object(reg["abi_fingerprint"]);
     const auto cur = pylabhub::version::current();
 
-    EXPECT_EQ(parsed.library_major,       cur.library_major);
-    EXPECT_EQ(parsed.library_minor,       cur.library_minor);
-    EXPECT_EQ(parsed.library_rolling,     cur.library_rolling);
-    EXPECT_EQ(parsed.shm_major,           cur.shm_major);
-    EXPECT_EQ(parsed.shm_minor,           cur.shm_minor);
-    EXPECT_EQ(parsed.broker_proto_major,  cur.broker_proto_major);
-    EXPECT_EQ(parsed.broker_proto_minor,  cur.broker_proto_minor);
-    EXPECT_EQ(parsed.zmq_frame_major,     cur.zmq_frame_major);
-    EXPECT_EQ(parsed.zmq_frame_minor,     cur.zmq_frame_minor);
-    EXPECT_EQ(parsed.script_api_major,    cur.script_api_major);
-    EXPECT_EQ(parsed.script_api_minor,    cur.script_api_minor);
+    EXPECT_EQ(parsed.library_major, cur.library_major);
+    EXPECT_EQ(parsed.library_minor, cur.library_minor);
+    EXPECT_EQ(parsed.library_rolling, cur.library_rolling);
+    EXPECT_EQ(parsed.shm_major, cur.shm_major);
+    EXPECT_EQ(parsed.shm_minor, cur.shm_minor);
+    EXPECT_EQ(parsed.broker_proto_major, cur.broker_proto_major);
+    EXPECT_EQ(parsed.broker_proto_minor, cur.broker_proto_minor);
+    EXPECT_EQ(parsed.zmq_frame_major, cur.zmq_frame_major);
+    EXPECT_EQ(parsed.zmq_frame_minor, cur.zmq_frame_minor);
+    EXPECT_EQ(parsed.script_api_major, cur.script_api_major);
+    EXPECT_EQ(parsed.script_api_minor, cur.script_api_minor);
     EXPECT_EQ(parsed.script_engine_major, cur.script_engine_major);
     EXPECT_EQ(parsed.script_engine_minor, cur.script_engine_minor);
-    EXPECT_EQ(parsed.config_major,        cur.config_major);
-    EXPECT_EQ(parsed.config_minor,        cur.config_minor);
+    EXPECT_EQ(parsed.config_major, cur.config_major);
+    EXPECT_EQ(parsed.config_minor, cur.config_minor);
 }
 
 TEST(RoleRegPayload, ProducerReg_BuildIdIsSiblingNotNested)
@@ -219,8 +214,8 @@ TEST(RoleRegPayload, ProducerReg_BuildIdIsSiblingNotNested)
     // omit the build_id check independently of the envelope check.
     // Refactor that nests build_id inside the envelope silently
     // breaks the receiver-side comparator contract.
-    auto reg = build_producer_reg_payload(
-        make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
+    auto reg =
+        build_producer_reg_payload(make_baseline(/*has_shm=*/false, /*is_zmq_transport=*/true));
 
     EXPECT_FALSE(reg["abi_fingerprint"].contains("build_id"))
         << "build_id MUST NOT live inside the abi_fingerprint envelope; "
@@ -231,10 +226,8 @@ TEST(RoleRegPayload, ProducerReg_BuildIdIsSiblingNotNested)
     if (const char *bid = pylabhub::version::build_id())
     {
         EXPECT_TRUE(reg.contains("build_id"))
-            << "Library reports build_id='" << bid
-            << "' — REG_REQ must carry the sibling field.";
-        EXPECT_EQ(reg.value("build_id", std::string{}),
-                  std::string(bid));
+            << "Library reports build_id='" << bid << "' — REG_REQ must carry the sibling field.";
+        EXPECT_EQ(reg.value("build_id", std::string{}), std::string(bid));
     }
     else
     {
@@ -257,8 +250,7 @@ TEST(RoleRegPayload, ConsumerReg_BuildIdIsSiblingNotNested)
     if (const char *bid = pylabhub::version::build_id())
     {
         EXPECT_TRUE(reg.contains("build_id"));
-        EXPECT_EQ(reg.value("build_id", std::string{}),
-                  std::string(bid));
+        EXPECT_EQ(reg.value("build_id", std::string{}), std::string(bid));
     }
     else
     {
@@ -266,4 +258,4 @@ TEST(RoleRegPayload, ConsumerReg_BuildIdIsSiblingNotNested)
     }
 }
 
-} // anon
+} // namespace

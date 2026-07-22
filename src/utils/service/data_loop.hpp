@@ -20,8 +20,8 @@
 #include "utils/loop_timing_policy.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
-#include "utils/script_engine.hpp"          // ScriptEngine::InitStatus
-#include "utils/script_engine_factory.hpp"  // EngineGlobalLockRelease
+#include "utils/script_engine.hpp"         // ScriptEngine::InitStatus
+#include "utils/script_engine_factory.hpp" // EngineGlobalLockRelease
 
 #include <chrono>
 #include <functional>
@@ -39,10 +39,10 @@ namespace pylabhub::scripting
 /// Passed to CycleOps::acquire() so role code never computes timeouts.
 struct AcquireContext
 {
-    std::chrono::milliseconds              short_timeout;
-    std::chrono::microseconds              short_timeout_us;
-    std::chrono::steady_clock::time_point  deadline;
-    bool                                   is_max_rate;
+    std::chrono::milliseconds short_timeout;
+    std::chrono::microseconds short_timeout_us;
+    std::chrono::steady_clock::time_point deadline;
+    bool is_max_rate;
 };
 
 // ============================================================================
@@ -60,10 +60,8 @@ struct AcquireContext
 /// First cycle (deadline == time_point::max()): retries indefinitely
 /// until success or shutdown (per loop_design_unified.md S3 Step A).
 ///
-void *retry_acquire(
-    const AcquireContext &ctx,
-    RoleHostCore &core,
-    const std::function<void *(std::chrono::milliseconds)> &try_once);
+void *retry_acquire(const AcquireContext &ctx, RoleHostCore &core,
+                    const std::function<void *(std::chrono::milliseconds)> &try_once);
 
 // ============================================================================
 // LoopConfig — timing parameters for the shared data loop
@@ -71,9 +69,9 @@ void *retry_acquire(
 
 struct LoopConfig
 {
-    double            period_us{0};
-    LoopTimingPolicy  loop_timing{LoopTimingPolicy::MaxRate};
-    double            queue_io_wait_timeout_ratio{0.1};
+    double period_us{0};
+    LoopTimingPolicy loop_timing{LoopTimingPolicy::MaxRate};
+    double queue_io_wait_timeout_ratio{0.1};
 
     /// Mirror of `ScriptEngine::release_global_lock_during_wait()` for
     /// the engine bound to this loop.  Read by the role host BEFORE
@@ -82,7 +80,7 @@ struct LoopConfig
     /// it.  Default false → wraps below are constant-folded out.
     /// See ScriptEngine + HEP-CORE-0011 §"Engine Thread Affinity"
     /// "Optional global-lock release during idle waits".
-    bool              release_global_lock_during_wait{false};
+    bool release_global_lock_during_wait{false};
 
     /// HEP-CORE-0011 §"Loop-ready gate" startup budget.  While
     /// `on_init` (script hook AND-composed with the per-role
@@ -96,7 +94,7 @@ struct LoopConfig
     ///   - 0: no timeout — wait forever.  For long-tail production
     ///     paths where a peer may take minutes to boot.
     /// Role config surfaces this as `timing.init_timeout_ms`.
-    std::uint64_t     init_timeout_ms{30'000};
+    std::uint64_t init_timeout_ms{30'000};
 };
 
 // ============================================================================
@@ -113,18 +111,17 @@ struct LoopConfig
 ///   - bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
 ///   - void cleanup_on_exit()
 template <typename Ops>
-void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
-                   const LoopConfig &cfg, Ops &ops,
+void run_data_loop(RoleAPIBase &api, RoleHostCore &core, const LoopConfig &cfg, Ops &ops,
                    ScriptEngine &engine)
 {
     const std::string &tag = api.short_tag();
 
     // -- Timing setup --------------------------------------------------------
-    const auto policy      = cfg.loop_timing;
+    const auto policy = cfg.loop_timing;
     const double period_us = cfg.period_us;
     const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
     const auto short_timeout_us = compute_short_timeout(period_us, cfg.queue_io_wait_timeout_ratio);
-    const auto short_timeout    = std::chrono::duration_cast<std::chrono::milliseconds>(
+    const auto short_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         short_timeout_us + std::chrono::microseconds{999});
 
     using Clock = std::chrono::steady_clock;
@@ -185,12 +182,10 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
     const bool has_on_init_hook = engine.has_callback("on_init");
     const auto init_start = Clock::now();
     const auto init_deadline = cfg.init_timeout_ms == 0
-        ? Clock::time_point::max()
-        : init_start + std::chrono::milliseconds(cfg.init_timeout_ms);
+                                   ? Clock::time_point::max()
+                                   : init_start + std::chrono::milliseconds(cfg.init_timeout_ms);
 
-    while (core.is_running() &&
-           !core.is_shutdown_requested() &&
-           !core.is_critical_error() &&
+    while (core.is_running() && !core.is_shutdown_requested() && !core.is_critical_error() &&
            api.any_presence_authorized())
     {
         if (core.is_process_exit_requested())
@@ -204,25 +199,22 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
             const bool default_ready = ops.default_init_ready(api);
             bool script_ready = true;
             if (has_on_init_hook)
-                script_ready =
-                    (engine.invoke_on_init() ==
-                     ScriptEngine::InitStatus::Ready);
+                script_ready = (engine.invoke_on_init() == ScriptEngine::InitStatus::Ready);
             init_done = default_ready && script_ready;
 
             if (init_done)
             {
                 LOGGER_INFO("[{}] event=LoopInitReady", tag);
             }
-            else if (init_deadline != Clock::time_point::max() &&
-                     Clock::now() > init_deadline)
+            else if (init_deadline != Clock::time_point::max() && Clock::now() > init_deadline)
             {
                 LOGGER_ERROR(
                     "[{}] event=LoopInitTimeout budget_ms={} elapsed_ms={} "
                     "default_ready={} script_ready={} — stopping with "
                     "StopReason::InitTimeout",
                     tag, cfg.init_timeout_ms,
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        Clock::now() - init_start).count(),
+                    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - init_start)
+                        .count(),
                     default_ready, script_ready);
                 // set_critical_error() latches the flag + writes
                 // StopReason::CriticalError; overwrite with InitTimeout
@@ -282,8 +274,8 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
                 has_data = ops.acquire(ctx);
 
                 // -- Step B: Deadline wait -------------------------------------------
-                if (!is_max_rate && has_data &&
-                    deadline != Clock::time_point::max() && Clock::now() < deadline)
+                if (!is_max_rate && has_data && deadline != Clock::time_point::max() &&
+                    Clock::now() < deadline)
                 {
                     std::this_thread::sleep_until(deadline);
                 }
@@ -310,9 +302,7 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
             //    Atomic-flag reads do not need the GIL; cleanup_on_shutdown
             //    is audited GIL-free.  This must happen BEFORE the dtor
             //    reacquires the GIL — see comment block above.
-            if (!core.is_running() ||
-                core.is_shutdown_requested() ||
-                core.is_critical_error() ||
+            if (!core.is_running() || core.is_shutdown_requested() || core.is_critical_error() ||
                 core.is_process_exit_requested())
             {
                 ops.cleanup_on_shutdown();
@@ -332,10 +322,9 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
             break;
 
         // -- Step F: Metrics -------------------------------------------------
-        const auto now     = Clock::now();
+        const auto now = Clock::now();
         const auto work_us = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now - cycle_start).count());
+            std::chrono::duration_cast<std::chrono::microseconds>(now - cycle_start).count());
         core.set_last_cycle_work_us(work_us);
         core.inc_iteration_count();
         if (deadline != Clock::time_point::max() && now > deadline)
@@ -357,12 +346,9 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
     // `Authorized` (test misconfiguration).  Either way, the WARN
     // surfaces the cause instead of leaving operators to guess from
     // a silent exit.
-    const bool guard_exit =
-        !api.any_presence_authorized() &&
-        core.is_running() &&
-        !core.is_shutdown_requested() &&
-        !core.is_critical_error() &&
-        !core.is_process_exit_requested();
+    const bool guard_exit = !api.any_presence_authorized() && core.is_running() &&
+                            !core.is_shutdown_requested() && !core.is_critical_error() &&
+                            !core.is_process_exit_requested();
     if (guard_exit)
     {
         LOGGER_WARN("[{}] run_data_loop exiting via §8.2 outer guard: "
@@ -370,13 +356,14 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core,
                     "means the last live hub for this role died (see "
                     "HEP-CORE-0036 §4.3.3); in tests it may mean a "
                     "setup path did not transition any presence through "
-                    "to Authorized.", tag);
+                    "to Authorized.",
+                    tag);
     }
 
     LOGGER_INFO("[{}] run_data_loop exiting: running={} shutdown={} critical={} "
                 "any_presence_authorized={}",
-                tag, core.is_running(), core.is_shutdown_requested(),
-                core.is_critical_error(), api.any_presence_authorized());
+                tag, core.is_running(), core.is_shutdown_requested(), core.is_critical_error(),
+                api.any_presence_authorized());
 }
 
 } // namespace pylabhub::scripting

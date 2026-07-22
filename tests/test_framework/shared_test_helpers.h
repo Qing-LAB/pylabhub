@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
  * lifecycle management and exception handling.
  */
 
-#include <cstdio>  // for std::fflush (run_gtest_worker)
+#include <cstdio> // for std::fflush (run_gtest_worker)
 
 #if PYLABHUB_IS_POSIX
 #include <fcntl.h>
@@ -176,7 +176,10 @@ int scaled_value(int original, int small_value);
 /**
  * @brief Stress test level (0=Low, 1=Medium, 2=High). Set by CMake STRESS_TEST_LEVEL.
  */
-inline int get_stress_level() { return STRESS_TEST_LEVEL; }
+inline int get_stress_level()
+{
+    return STRESS_TEST_LEVEL;
+}
 
 /**
  * @brief Duration in seconds for stress tests. Low=10, Medium=20, High=30.
@@ -216,7 +219,9 @@ inline int get_stress_num_threads()
  */
 inline int get_stress_iterations(int high_val, int low_val)
 {
-    return STRESS_TEST_LEVEL == 2 ? high_val : STRESS_TEST_LEVEL == 1 ? (high_val + low_val) / 2 : low_val;
+    return STRESS_TEST_LEVEL == 2   ? high_val
+           : STRESS_TEST_LEVEL == 1 ? (high_val + low_val) / 2
+                                    : low_val;
 }
 
 /**
@@ -319,8 +324,7 @@ int run_gtest_worker(Fn test_logic, const char *test_name, Mods &&...mods)
     // real test failure (1/2/3) takes precedence over a leak.
     if (exit_code == 0)
     {
-        const auto leaked =
-            pylabhub::utils::ThreadManager::process_detached_count();
+        const auto leaked = pylabhub::utils::ThreadManager::process_detached_count();
         if (leaked > 0)
         {
             fmt::print(stderr,
@@ -387,8 +391,8 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
     }
     catch (const ::testing::internal::GoogleTestFailureException &e)
     {
-        fmt::print(stderr, "[WORKER BARE FAILURE] GTest assertion failed in {}: \n{}\n",
-                   test_name, e.what());
+        fmt::print(stderr, "[WORKER BARE FAILURE] GTest assertion failed in {}: \n{}\n", test_name,
+                   e.what());
         pylabhub::debug::print_stack_trace();
         return 1;
     }
@@ -416,8 +420,7 @@ template <typename Fn> int run_worker_bare(Fn test_logic, const char *test_name)
     // Same unclean-shutdown check as run_gtest_worker: any ThreadManager
     // detach-on-timeout during the body produces exit code 4 so the parent
     // IsolatedProcessTest fails rather than treating the worker as clean.
-    const auto leaked =
-        pylabhub::utils::ThreadManager::process_detached_count();
+    const auto leaked = pylabhub::utils::ThreadManager::process_detached_count();
     if (leaked > 0)
     {
         fmt::print(stderr,
@@ -568,8 +571,7 @@ enum class QuitWaitResult : std::uint8_t
  * @param safety_timeout Fallback wait duration if parent never signals.
  * @return One of QuitWaitResult — caller branches on it.
  */
-[[nodiscard]] QuitWaitResult
-wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout);
+[[nodiscard]] QuitWaitResult wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout);
 
 // ============================================================================
 // DataBlock Test Utilities (for layered test architecture)
@@ -642,8 +644,7 @@ inline void ExpectVaultFileSecured(const std::filesystem::path &path)
     ASSERT_TRUE(fs::exists(path)) << "vault file missing: " << path;
     ASSERT_TRUE(fs::is_regular_file(path))
         << "vault path exists but is not a regular file: " << path;
-    EXPECT_GT(fs::file_size(path), 0u)
-        << "vault file is zero-sized: " << path;
+    EXPECT_GT(fs::file_size(path), 0u) << "vault file is zero-sized: " << path;
 #if PYLABHUB_IS_POSIX
     const auto perms = fs::status(path).permissions();
     // Owner: rw exactly (no x).
@@ -668,8 +669,7 @@ inline void ExpectVaultDirSecured(const std::filesystem::path &dir)
 {
     namespace fs = std::filesystem;
     ASSERT_TRUE(fs::exists(dir)) << "vault dir missing: " << dir;
-    ASSERT_TRUE(fs::is_directory(dir))
-        << "vault path exists but is not a directory: " << dir;
+    ASSERT_TRUE(fs::is_directory(dir)) << "vault path exists but is not a directory: " << dir;
 #if PYLABHUB_IS_POSIX
     const auto perms = fs::status(dir).permissions();
     // Owner: rwx (all three bits required for a usable dir).
@@ -688,7 +688,7 @@ inline void ExpectVaultDirSecured(const std::filesystem::path &dir)
 /// is expected to FAIL fast at config-load — if a half-written
 /// vault appeared anyway, this catches it.
 inline void ExpectNoVaultArtifactsUnder(const std::filesystem::path &root,
-                                          const std::string &suffix = ".vault")
+                                        const std::string &suffix = ".vault")
 {
     namespace fs = std::filesystem;
     if (!fs::exists(root))
@@ -699,21 +699,25 @@ inline void ExpectNoVaultArtifactsUnder(const std::filesystem::path &root,
          !ec && it != fs::recursive_directory_iterator(); ++it)
     {
         if (it->is_regular_file() && it->path().string().size() >= suffix.size() &&
-            it->path().string().compare(it->path().string().size() - suffix.size(),
-                                         suffix.size(), suffix) == 0)
+            it->path().string().compare(it->path().string().size() - suffix.size(), suffix.size(),
+                                        suffix) == 0)
         {
             found.push_back(it->path().string());
         }
     }
-    EXPECT_TRUE(found.empty())
-        << "Expected NO '" << suffix << "' files under " << root
-        << " (config-load should have rejected before any artifact was "
-           "written); found: "
-        << [&]() {
-               std::string s;
-               for (const auto &p : found) { s += "\n  "; s += p; }
-               return s;
-           }();
+    EXPECT_TRUE(found.empty()) << "Expected NO '" << suffix << "' files under " << root
+                               << " (config-load should have rejected before any artifact was "
+                                  "written); found: "
+                               << [&]()
+    {
+        std::string s;
+        for (const auto &p : found)
+        {
+            s += "\n  ";
+            s += p;
+        }
+        return s;
+    }();
 }
 
 } // namespace pylabhub::tests::helper

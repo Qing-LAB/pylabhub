@@ -42,8 +42,7 @@ namespace fs = std::filesystem;
 inline std::string plh_role_binary()
 {
     // g_self_exe_path is a global in the root namespace (test_entrypoint.h).
-    return (fs::path(::g_self_exe_path).parent_path()
-            / ".." / "bin" / "plh_role").string();
+    return (fs::path(::g_self_exe_path).parent_path() / ".." / "bin" / "plh_role").string();
 }
 
 /// Create a uniquely-named test scratch directory.
@@ -83,16 +82,14 @@ inline fs::path make_tmp_dir(const std::string &prefix)
         // gets serialized into role config JSON read back by
         // subprocesses with different CWDs — see #258 self-inflicted
         // path-resolution bug 2026-06-26.
-        root = fs::absolute(
-                   fs::path(::g_self_exe_path).parent_path().parent_path())
-             / "test_artifacts" / "plh_role_l4";
+        root = fs::absolute(fs::path(::g_self_exe_path).parent_path().parent_path()) /
+               "test_artifacts" / "plh_role_l4";
     }
 
-    fs::path dir = root / ("plh_role_l4_" + prefix + "_"
-                            + std::to_string(::getpid()) + "_"
-                            + std::to_string(id));
+    fs::path dir = root / ("plh_role_l4_" + prefix + "_" + std::to_string(::getpid()) + "_" +
+                           std::to_string(id));
     std::error_code ec;
-    fs::remove_all(dir, ec);    // best-effort: previous aborted run
+    fs::remove_all(dir, ec); // best-effort: previous aborted run
     fs::create_directories(dir);
 
     // Scoreboard append (mirror of plh_hub_fixture.h::make_tmp_dir).
@@ -108,7 +105,9 @@ inline fs::path make_tmp_dir(const std::string &prefix)
             f << dir.string() << "\n";
         }
     }
-    catch (...) { /* scoreboard is best-effort */ }
+    catch (...)
+    { /* scoreboard is best-effort */
+    }
 
     return dir;
 }
@@ -142,11 +141,9 @@ inline nlohmann::json read_json(const fs::path &path)
 ///
 /// This is what --validate runs against — its pass/fail behavior is what
 /// every validate test uses.
-inline void write_minimal_config(const fs::path       &cfg_path,
-                                 const std::string    &role,
-                                 const fs::path       &script_path,
-                                 const nlohmann::json &overrides =
-                                     nlohmann::json::object())
+inline void write_minimal_config(const fs::path &cfg_path, const std::string &role,
+                                 const fs::path &script_path,
+                                 const nlohmann::json &overrides = nlohmann::json::object())
 {
     nlohmann::json j;
 
@@ -170,7 +167,7 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     auto slot_schema = nlohmann::json::object();
     auto fields = nlohmann::json::array();
     fields.push_back(nlohmann::json{{"name", "v"}, {"type", "float32"}});
-    slot_schema["packing"] = "aligned";  // HEP-CORE-0034 §6.2 — required
+    slot_schema["packing"] = "aligned"; // HEP-CORE-0034 §6.2 — required
     slot_schema["fields"] = fields;
 
     j["script"]["type"] = "python";
@@ -179,32 +176,32 @@ inline void write_minimal_config(const fs::path       &cfg_path,
     // role parsers accept it for every role.  Init templates emit role-
     // specific defaults (producer=fixed_rate, cons/proc=max_rate); this
     // helper optimizes for "minimal-valid", not "canonical".
-    j["loop_timing"]   = "max_rate";
+    j["loop_timing"] = "max_rate";
 
     if (role == "producer")
     {
-        j["producer"]["uid"]  = "prod.l4test.uid00000001";
+        j["producer"]["uid"] = "prod.l4test.uid00000001";
         j["producer"]["name"] = "L4Test";
         j["producer"]["auth"]["keyfile"] = "vault/placeholder.vault";
-        j["out_channel"]     = "lab.l4.test";
+        j["out_channel"] = "lab.l4.test";
         j["out_slot_schema"] = slot_schema;
     }
     else if (role == "consumer")
     {
-        j["consumer"]["uid"]  = "cons.l4test.uid00000001";
+        j["consumer"]["uid"] = "cons.l4test.uid00000001";
         j["consumer"]["name"] = "L4Test";
         j["consumer"]["auth"]["keyfile"] = "vault/placeholder.vault";
-        j["in_channel"]     = "lab.l4.test";
+        j["in_channel"] = "lab.l4.test";
         j["in_slot_schema"] = slot_schema;
     }
     else if (role == "processor")
     {
-        j["processor"]["uid"]  = "proc.l4test.uid00000001";
+        j["processor"]["uid"] = "proc.l4test.uid00000001";
         j["processor"]["name"] = "L4Test";
         j["processor"]["auth"]["keyfile"] = "vault/placeholder.vault";
-        j["in_channel"]      = "lab.l4.in";
-        j["out_channel"]     = "lab.l4.out";
-        j["in_slot_schema"]  = slot_schema;
+        j["in_channel"] = "lab.l4.in";
+        j["out_channel"] = "lab.l4.out";
+        j["in_slot_schema"] = slot_schema;
         j["out_slot_schema"] = slot_schema;
     }
     else
@@ -224,21 +221,20 @@ inline void write_minimal_config(const fs::path       &cfg_path,
 /// the engine.
 inline std::string minimal_python_script()
 {
-    return
-        "def on_init(api):\n"
-        "    pass\n"
-        "\n"
-        "def on_produce(tx, msgs, api):\n"
-        "    return False\n"
-        "\n"
-        "def on_consume(rx, msgs, api):\n"
-        "    return True\n"
-        "\n"
-        "def on_process(rx, tx, msgs, api):\n"
-        "    return False\n"
-        "\n"
-        "def on_stop(api):\n"
-        "    pass\n";
+    return "def on_init(api):\n"
+           "    pass\n"
+           "\n"
+           "def on_produce(tx, msgs, api):\n"
+           "    return False\n"
+           "\n"
+           "def on_consume(rx, msgs, api):\n"
+           "    return True\n"
+           "\n"
+           "def on_process(rx, tx, msgs, api):\n"
+           "    return False\n"
+           "\n"
+           "def on_stop(api):\n"
+           "    pass\n";
 }
 
 /// Write the canonical script at @p script_dir / "__init__.py".
@@ -259,15 +255,12 @@ class PlhRoleCliTest : public pylabhub::tests::IsolatedProcessTest
         // generated config files, vault file, etc. can be inspected
         // post-mortem.  See make_tmp_dir() docstring.
         const bool keep =
-            ::testing::Test::HasFailure() ||
-            (std::getenv("PLH_KEEP_TEST_ARTIFACTS") != nullptr);
+            ::testing::Test::HasFailure() || (std::getenv("PLH_KEEP_TEST_ARTIFACTS") != nullptr);
         if (keep)
         {
             for (const auto &p : paths_to_clean_)
             {
-                fmt::print(stderr,
-                            "[PLH_TEST_ARTIFACTS] preserved on failure: {}\n",
-                            p.string());
+                fmt::print(stderr, "[PLH_TEST_ARTIFACTS] preserved on failure: {}\n", p.string());
             }
         }
         else
@@ -309,19 +302,17 @@ struct ScopedRolePassword
 /// vault via `plh_role <role> --config <cfg_path> --keygen`.
 ///
 /// Caller MUST hold a live `ScopedRolePassword` before invoking.
-inline void keygen_minimal_role(std::string_view role,
-                                  const std::filesystem::path &cfg_path)
+inline void keygen_minimal_role(std::string_view role, const std::filesystem::path &cfg_path)
 {
     pylabhub::tests::helper::WorkerProcess kg(
-        plh_role_binary(),
-        "--role",
+        plh_role_binary(), "--role",
         {std::string(role), "--config", cfg_path.string(), "--keygen"});
     const int rc = kg.wait_for_exit();
     if (rc != 0)
     {
-        ADD_FAILURE() << "keygen_minimal_role: plh_role " << role
-                      << " --keygen failed (rc=" << rc << ") for cfg '"
-                      << cfg_path << "'; stderr:\n" << kg.get_stderr();
+        ADD_FAILURE() << "keygen_minimal_role: plh_role " << role << " --keygen failed (rc=" << rc
+                      << ") for cfg '" << cfg_path << "'; stderr:\n"
+                      << kg.get_stderr();
     }
 }
 
@@ -338,8 +329,7 @@ inline void keygen_minimal_role(std::string_view role,
 /// do NOT call this — the binary's own diagnostic output is part of
 /// the contract there, and the test pins specific error substrings
 /// via Class A path-discrimination.
-inline void expect_no_unexpected_errors(
-    const pylabhub::tests::helper::WorkerProcess &p)
+inline void expect_no_unexpected_errors(const pylabhub::tests::helper::WorkerProcess &p)
 {
     const std::string &err = p.get_stderr();
     std::istringstream lines(err);

@@ -93,22 +93,19 @@ TEST_F(MetricsApiTest, ProcessorAPI_ReportAndSnapshot)
 
 TEST_F(MetricsApiTest, Processor_PerPresence_ConsumerShape_NoProducerCountersLeak)
 {
-    auto w = SpawnWorker(
-        "metrics_api.processor_per_presence_consumer_shape", {});
+    auto w = SpawnWorker("metrics_api.processor_per_presence_consumer_shape", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsApiTest, Processor_PerPresence_ProducerShape_NoConsumerCountersLeak)
 {
-    auto w = SpawnWorker(
-        "metrics_api.processor_per_presence_producer_shape", {});
+    auto w = SpawnWorker("metrics_api.processor_per_presence_producer_shape", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsApiTest, PerPresence_CustomMetrics_AppearOnBothPresences)
 {
-    auto w = SpawnWorker(
-        "metrics_api.per_presence_custom_metrics_on_both_sides", {});
+    auto w = SpawnWorker("metrics_api.per_presence_custom_metrics_on_both_sides", {});
     ExpectWorkerOk(w);
 }
 
@@ -120,21 +117,18 @@ class MetricsApiPyDictTest : public IsolatedProcessTest
 
 TEST_F(MetricsApiPyDictTest, ProducerAPI_PyDict_Hierarchical_NoQueue)
 {
-    auto w = SpawnWorker("metrics_api.producer_pydict_hierarchical_no_queue",
-                         {});
+    auto w = SpawnWorker("metrics_api.producer_pydict_hierarchical_no_queue", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsApiPyDictTest, ConsumerAPI_PyDict_Hierarchical_NoQueue)
 {
-    auto w = SpawnWorker("metrics_api.consumer_pydict_hierarchical_no_queue",
-                         {});
+    auto w = SpawnWorker("metrics_api.consumer_pydict_hierarchical_no_queue", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsApiPyDictTest, ProcessorAPI_PyDict_Hierarchical_NoQueue)
 {
-    auto w = SpawnWorker("metrics_api.processor_pydict_hierarchical_no_queue",
-                         {});
+    auto w = SpawnWorker("metrics_api.processor_pydict_hierarchical_no_queue", {});
     ExpectWorkerOk(w);
 }

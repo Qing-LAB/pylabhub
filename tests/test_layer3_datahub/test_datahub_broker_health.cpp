@@ -52,8 +52,7 @@ TEST_F(DatahubBrokerHealthTest, MultiProducer_PartialPendingTimeout_ChannelSurvi
     // B's presence is removed but the channel SURVIVES.  A migration that
     // accidentally tears the channel down on any producer drop would fail
     // here (surviving producer A would receive CHANNEL_CLOSING_NOTIFY).
-    auto proc = SpawnWorker(
-        "broker_health.multi_producer_partial_pending_timeout", {});
+    auto proc = SpawnWorker("broker_health.multi_producer_partial_pending_timeout", {});
     ExpectWorkerOk(proc);
 }
 
@@ -83,8 +82,7 @@ TEST_F(DatahubBrokerHealthTest, ChannelTornDown_ConsumerPass2Skipped)
     // CONSUMER_DIED_NOTIFY to a vanished channel).  A migration that
     // drops the short-circuit would silently emit a CONSUMER_DIED_NOTIFY
     // after CHANNEL_CLOSING_NOTIFY — this test asserts the count stays 0.
-    auto proc = SpawnWorker(
-        "broker_health.channel_torn_down_consumer_pass2_skipped", {});
+    auto proc = SpawnWorker("broker_health.channel_torn_down_consumer_pass2_skipped", {});
     ExpectWorkerOk(proc);
 }
 

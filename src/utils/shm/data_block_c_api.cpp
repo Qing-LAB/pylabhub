@@ -25,7 +25,8 @@ using namespace internal;
 extern "C"
 {
 
-    PYLABHUB_UTILS_EXPORT SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms)
+    PYLABHUB_UTILS_EXPORT SlotAcquireResult
+    slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms)
     {
         if (rw_state == nullptr)
         {
@@ -39,7 +40,8 @@ extern "C"
         if (rw_state != nullptr)
         {
             // slot_id=0: header is nullptr so commit_index is not updated by this C API path.
-            // Callers that need commit_index tracking must use DataBlockProducer::release_write_slot().
+            // Callers that need commit_index tracking must use
+            // DataBlockProducer::release_write_slot().
             commit_write(rw_state, nullptr, 0);
         }
     }
@@ -52,8 +54,8 @@ extern "C"
         }
     }
 
-    PYLABHUB_UTILS_EXPORT SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
-                                           uint64_t *out_generation)
+    PYLABHUB_UTILS_EXPORT SlotAcquireResult
+    slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state, uint64_t *out_generation)
     {
         if (rw_state == nullptr || out_generation == nullptr)
         {
@@ -62,7 +64,8 @@ extern "C"
         return acquire_read(rw_state, nullptr, out_generation);
     }
 
-    PYLABHUB_UTILS_EXPORT bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation)
+    PYLABHUB_UTILS_EXPORT bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state,
+                                                     uint64_t generation)
     {
         if (rw_state == nullptr)
         {
@@ -100,8 +103,9 @@ extern "C"
         }
     }
 
-    PYLABHUB_UTILS_EXPORT int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
-                            DataBlockMetrics *out_metrics)
+    PYLABHUB_UTILS_EXPORT int
+    slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
+                        DataBlockMetrics *out_metrics)
     {
         if (shared_memory_header == nullptr || out_metrics == nullptr)
         {
@@ -178,28 +182,27 @@ extern "C"
         return 0;
     }
 
-    PYLABHUB_UTILS_EXPORT uint64_t slot_rw_get_total_slots_written(
-        const pylabhub::hub::SharedMemoryHeader *header)
+    PYLABHUB_UTILS_EXPORT uint64_t
+    slot_rw_get_total_slots_written(const pylabhub::hub::SharedMemoryHeader *header)
     {
-        return header != nullptr
-                   ? header->total_slots_written.load(std::memory_order_relaxed)
-                   : 0;
+        return header != nullptr ? header->total_slots_written.load(std::memory_order_relaxed) : 0;
     }
 
-    PYLABHUB_UTILS_EXPORT uint64_t slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header)
+    PYLABHUB_UTILS_EXPORT uint64_t
+    slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header)
     {
         // acquire: consistent with the release store in update_commit_index()
-        return header != nullptr
-                   ? header->commit_index.load(std::memory_order_acquire)
-                   : 0;
+        return header != nullptr ? header->commit_index.load(std::memory_order_acquire) : 0;
     }
 
-    PYLABHUB_UTILS_EXPORT uint32_t slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header)
+    PYLABHUB_UTILS_EXPORT uint32_t
+    slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header)
     {
         return header != nullptr ? pylabhub::hub::detail::get_slot_count(header) : 0;
     }
 
-    PYLABHUB_UTILS_EXPORT int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header)
+    PYLABHUB_UTILS_EXPORT int
+    slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header)
     {
         if (shared_memory_header == nullptr)
         {
@@ -238,8 +241,9 @@ extern "C"
         return 0;
     }
 
-    PYLABHUB_UTILS_EXPORT int slot_rw_get_channel_identity(
-        const pylabhub::hub::SharedMemoryHeader *header, plh_channel_identity_t *out)
+    PYLABHUB_UTILS_EXPORT int
+    slot_rw_get_channel_identity(const pylabhub::hub::SharedMemoryHeader *header,
+                                 plh_channel_identity_t *out)
     {
         if (header == nullptr || out == nullptr)
         {
@@ -250,16 +254,16 @@ extern "C"
         std::memcpy(out->producer_uid, header->producer_uid, sizeof(out->producer_uid));
         std::memcpy(out->producer_name, header->producer_name, sizeof(out->producer_name));
         // Guarantee null-termination regardless of what the producer wrote
-        out->hub_uid[sizeof(out->hub_uid) - 1]             = '\0';
-        out->hub_name[sizeof(out->hub_name) - 1]           = '\0';
-        out->producer_uid[sizeof(out->producer_uid) - 1]   = '\0';
+        out->hub_uid[sizeof(out->hub_uid) - 1] = '\0';
+        out->hub_name[sizeof(out->hub_name) - 1] = '\0';
+        out->producer_uid[sizeof(out->producer_uid) - 1] = '\0';
         out->producer_name[sizeof(out->producer_name) - 1] = '\0';
         return 0;
     }
 
-    PYLABHUB_UTILS_EXPORT int slot_rw_list_consumers(
-        const pylabhub::hub::SharedMemoryHeader *header, plh_consumer_identity_t *out_array,
-        int array_capacity, int *out_count)
+    PYLABHUB_UTILS_EXPORT int
+    slot_rw_list_consumers(const pylabhub::hub::SharedMemoryHeader *header,
+                           plh_consumer_identity_t *out_array, int array_capacity, int *out_count)
     {
         if (header == nullptr || out_array == nullptr || array_capacity <= 0 ||
             out_count == nullptr)
@@ -280,9 +284,9 @@ extern "C"
                 break;
             }
             plh_consumer_identity_t &entry = out_array[*out_count];
-            entry.consumer_pid             = pid;
-            entry.last_heartbeat_ns        = header->consumer_heartbeats[i].last_heartbeat_ns.load(
-                std::memory_order_relaxed);
+            entry.consumer_pid = pid;
+            entry.last_heartbeat_ns =
+                header->consumer_heartbeats[i].last_heartbeat_ns.load(std::memory_order_relaxed);
             entry.slot_index = static_cast<int>(i);
             std::memcpy(entry.consumer_uid, header->consumer_heartbeats[i].consumer_uid,
                         sizeof(entry.consumer_uid));

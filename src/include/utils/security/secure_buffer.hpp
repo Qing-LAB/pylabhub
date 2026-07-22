@@ -29,26 +29,19 @@ namespace pylabhub::utils::security
 /// Fixed-size stack buffer; dtor calls `sodium_memzero` (compiler cannot
 /// optimize it away).  Move/copy disabled — the only sensible use is
 /// "write, hand off, destruct."
-template <std::size_t N>
-class SecureBuffer
+template <std::size_t N> class SecureBuffer
 {
-public:
+  public:
     SecureBuffer() = default;
 
-    ~SecureBuffer() noexcept
-    {
-        ::sodium_memzero(data_.data(), N);
-    }
+    ~SecureBuffer() noexcept { ::sodium_memzero(data_.data(), N); }
 
-    SecureBuffer(const SecureBuffer &)            = delete;
+    SecureBuffer(const SecureBuffer &) = delete;
     SecureBuffer &operator=(const SecureBuffer &) = delete;
-    SecureBuffer(SecureBuffer &&)                 = delete;
-    SecureBuffer &operator=(SecureBuffer &&)      = delete;
+    SecureBuffer(SecureBuffer &&) = delete;
+    SecureBuffer &operator=(SecureBuffer &&) = delete;
 
-    [[nodiscard]] std::span<std::byte> span() noexcept
-    {
-        return std::span<std::byte>(data_);
-    }
+    [[nodiscard]] std::span<std::byte> span() noexcept { return std::span<std::byte>(data_); }
 
     [[nodiscard]] std::span<const std::byte> span() const noexcept
     {
@@ -57,7 +50,7 @@ public:
 
     [[nodiscard]] static constexpr std::size_t size() noexcept { return N; }
 
-private:
+  private:
     std::array<std::byte, N> data_{};
 };
 

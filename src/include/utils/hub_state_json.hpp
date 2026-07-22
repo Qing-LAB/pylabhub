@@ -45,26 +45,22 @@ namespace pylabhub::hub
 /// on this channel), both fields serialize as 0.
 [[nodiscard]] nlohmann::json
 channel_to_json(const ChannelEntry &c, ChannelObservable obs,
-                 const std::optional<ChannelAccessEntry> &access = std::nullopt);
+                const std::optional<ChannelAccessEntry> &access = std::nullopt);
 
 /// Serialize a registered role.  Includes the latest pushed metrics
 /// payload so callers don't have to issue a separate fetch.
-[[nodiscard]] nlohmann::json
-role_to_json(const RoleEntry &r);
+[[nodiscard]] nlohmann::json role_to_json(const RoleEntry &r);
 
 /// Serialize a band (HEP-CORE-0030).  Members are emitted in stored
 /// order with `joined_ms_ago` instead of an absolute timestamp.
-[[nodiscard]] nlohmann::json
-band_to_json(const BandEntry &b);
+[[nodiscard]] nlohmann::json band_to_json(const BandEntry &b);
 
 /// Serialize a federation peer.  Excludes the raw ZMQ routing
 /// identity (broker-internal — not for off-wire consumers).
-[[nodiscard]] nlohmann::json
-peer_to_json(const PeerEntry &p);
+[[nodiscard]] nlohmann::json peer_to_json(const PeerEntry &p);
 
 /// Serialize the broker counters block.  Output preserves the full
 /// `msg_type_counts` / `msg_type_errors` maps without filtering.
-[[nodiscard]] nlohmann::json
-broker_counters_to_json(const BrokerCounters &c);
+[[nodiscard]] nlohmann::json broker_counters_to_json(const BrokerCounters &c);
 
 } // namespace pylabhub::hub

@@ -49,9 +49,8 @@ class RoleConfigTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_rcfg_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                     ("plh_l2_rcfg_" + std::string(test_name) + "_" + std::to_string(::getpid()) +
+                      "_" + std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
         return p.string();
@@ -66,22 +65,20 @@ class RoleConfigTest : public IsolatedProcessTest
 
 TEST_F(RoleConfigTest, LoadProducer_Identity)
 {
-    auto w = SpawnWorker("role_config.load_producer_identity",
-                         {unique_dir("load_producer_identity")});
+    auto w =
+        SpawnWorker("role_config.load_producer_identity", {unique_dir("load_producer_identity")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Timing)
 {
-    auto w = SpawnWorker("role_config.load_producer_timing",
-                         {unique_dir("load_producer_timing")});
+    auto w = SpawnWorker("role_config.load_producer_timing", {unique_dir("load_producer_timing")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, LoadProducer_Script)
 {
-    auto w = SpawnWorker("role_config.load_producer_script",
-                         {unique_dir("load_producer_script")});
+    auto w = SpawnWorker("role_config.load_producer_script", {unique_dir("load_producer_script")});
     ExpectWorkerOk(w);
 }
 
@@ -117,8 +114,8 @@ TEST_F(RoleConfigTest, LoadProducer_Validation_StopOnScriptError)
 
 TEST_F(RoleConfigTest, LoadConsumer_Identity)
 {
-    auto w = SpawnWorker("role_config.load_consumer_identity",
-                         {unique_dir("load_consumer_identity")});
+    auto w =
+        SpawnWorker("role_config.load_consumer_identity", {unique_dir("load_consumer_identity")});
     ExpectWorkerOk(w);
 }
 
@@ -177,8 +174,7 @@ TEST_F(RoleConfigTest, RoleData_ProducerFields)
 
 TEST_F(RoleConfigTest, RoleData_NoParser)
 {
-    auto w = SpawnWorker("role_config.role_data_no_parser",
-                         {unique_dir("role_data_no_parser")});
+    auto w = SpawnWorker("role_config.role_data_no_parser", {unique_dir("role_data_no_parser")});
     ExpectWorkerOk(w);
 }
 
@@ -230,8 +226,8 @@ TEST_F(RoleConfigTest, Auth_KeyfileWrongType_Throws)
 
 TEST_F(RoleConfigTest, Auth_NotObject_Throws)
 {
-    auto w = SpawnWorker("role_config.auth_not_object_throws",
-                         {unique_dir("auth_not_object_throws")});
+    auto w =
+        SpawnWorker("role_config.auth_not_object_throws", {unique_dir("auth_not_object_throws")});
     ExpectWorkerOk(w);
 }
 
@@ -259,9 +255,8 @@ TEST_F(RoleConfigTest, LoadKeypair_RefusesLooseVaultParentDirMode)
 // scenario pins the property.
 TEST_F(RoleConfigTest, LoadKeypair_RejectsCorruptVaultContents)
 {
-    auto w = SpawnWorker(
-        "role_config.load_keypair_rejects_corrupt_vault_contents",
-        {unique_dir("load_keypair_corrupt_vault")});
+    auto w = SpawnWorker("role_config.load_keypair_rejects_corrupt_vault_contents",
+                         {unique_dir("load_keypair_corrupt_vault")});
     ExpectWorkerOk(w);
 }
 #endif
@@ -288,8 +283,7 @@ TEST_F(RoleConfigTest, BaseDir)
 
 TEST_F(RoleConfigTest, LoadFromDirectory)
 {
-    auto w = SpawnWorker("role_config.load_from_directory",
-                         {unique_dir("load_from_directory")});
+    auto w = SpawnWorker("role_config.load_from_directory", {unique_dir("load_from_directory")});
     ExpectWorkerOk(w);
 }
 
@@ -323,8 +317,7 @@ TEST_F(RoleConfigTest, ZmqTransport_MissingEndpoint_Throws)
 
 TEST_F(RoleConfigTest, ZmqTransport_Valid)
 {
-    auto w = SpawnWorker("role_config.zmq_transport_valid",
-                         {unique_dir("zmq_transport_valid")});
+    auto w = SpawnWorker("role_config.zmq_transport_valid", {unique_dir("zmq_transport_valid")});
     ExpectWorkerOk(w);
 }
 
@@ -332,8 +325,7 @@ TEST_F(RoleConfigTest, ZmqTransport_Valid)
 
 TEST_F(RoleConfigTest, MoveConstruct)
 {
-    auto w = SpawnWorker("role_config.move_construct",
-                         {unique_dir("move_construct")});
+    auto w = SpawnWorker("role_config.move_construct", {unique_dir("move_construct")});
     ExpectWorkerOk(w);
 }
 
@@ -361,15 +353,15 @@ TEST_F(RoleConfigTest, ChecksumExplicit_Manual)
 
 TEST_F(RoleConfigTest, ChecksumExplicit_None)
 {
-    auto w = SpawnWorker("role_config.checksum_explicit_none",
-                         {unique_dir("checksum_explicit_none")});
+    auto w =
+        SpawnWorker("role_config.checksum_explicit_none", {unique_dir("checksum_explicit_none")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleConfigTest, ChecksumInvalid_Throws)
 {
-    auto w = SpawnWorker("role_config.checksum_invalid_throws",
-                         {unique_dir("checksum_invalid_throws")});
+    auto w =
+        SpawnWorker("role_config.checksum_invalid_throws", {unique_dir("checksum_invalid_throws")});
     ExpectWorkerOk(w);
 }
 
@@ -382,8 +374,7 @@ TEST_F(RoleConfigTest, ChecksumNull_DefaultEnforced)
 
 TEST_F(RoleConfigTest, UnknownKey_Throws)
 {
-    auto w = SpawnWorker("role_config.unknown_key_throws",
-                         {unique_dir("unknown_key_throws")});
+    auto w = SpawnWorker("role_config.unknown_key_throws", {unique_dir("unknown_key_throws")});
     ExpectWorkerOk(w);
 }
 
@@ -415,9 +406,8 @@ TEST_F(RoleConfigTest, LoggingExplicit_AllFields)
 
 TEST_F(RoleConfigTest, LoggingPartial_MixesDefaultsAndExplicit)
 {
-    auto w = SpawnWorker(
-        "role_config.logging_partial_mixes_defaults_and_explicit",
-        {unique_dir("logging_partial_mixes")});
+    auto w = SpawnWorker("role_config.logging_partial_mixes_defaults_and_explicit",
+                         {unique_dir("logging_partial_mixes")});
     ExpectWorkerOk(w);
 }
 
@@ -425,7 +415,7 @@ TEST_F(RoleConfigTest, LoggingZeroBackups_Throws)
 {
     auto w = SpawnWorker("role_config.logging_zero_backups_throws",
                          {unique_dir("logging_zero_backups_throws")});
-    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
+    ExpectWorkerOk(w); // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingBackupsNegativeOne_KeepsAllFiles)
@@ -439,35 +429,35 @@ TEST_F(RoleConfigTest, LoggingNegativeBackupsOther_Throws)
 {
     auto w = SpawnWorker("role_config.logging_negative_backups_other_throws",
                          {unique_dir("logging_negative_backups_other")});
-    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
+    ExpectWorkerOk(w); // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingZeroMaxSize_Throws)
 {
     auto w = SpawnWorker("role_config.logging_zero_max_size_throws",
                          {unique_dir("logging_zero_max_size_throws")});
-    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
+    ExpectWorkerOk(w); // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingNegativeMaxSize_Throws)
 {
     auto w = SpawnWorker("role_config.logging_negative_max_size_throws",
                          {unique_dir("logging_negative_max_size_throws")});
-    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
+    ExpectWorkerOk(w); // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingUnknownSubKey_Throws)
 {
     auto w = SpawnWorker("role_config.logging_unknown_sub_key_throws",
                          {unique_dir("logging_unknown_sub_key_throws")});
-    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
+    ExpectWorkerOk(w); // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingNotObject_Throws)
 {
     auto w = SpawnWorker("role_config.logging_not_object_throws",
                          {unique_dir("logging_not_object_throws")});
-    ExpectWorkerOk(w);  // see NOTE above re: missing LOGGER_ERROR_RT
+    ExpectWorkerOk(w); // see NOTE above re: missing LOGGER_ERROR_RT
 }
 
 TEST_F(RoleConfigTest, LoggingFractionalMaxSize_Accepted)

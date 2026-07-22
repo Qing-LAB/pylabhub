@@ -56,9 +56,8 @@ void DirectBrokerHandle::stop_and_join()
         thread.join();
 }
 
-DirectBrokerHandle
-start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
-                    const CurveSetup &setup)
+DirectBrokerHandle start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
+                                       const CurveSetup &setup)
 {
     // HEP-CORE-0040 §172: the hub identity is read from `secure().keys()`
     // under `"hub_identity"`.  Caller MUST have a
@@ -71,24 +70,22 @@ start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
 
     using Ready = std::pair<std::string, std::string>;
     auto promise = std::make_shared<std::promise<Ready>>();
-    auto fut     = promise->get_future();
-    cfg.on_ready = [promise](const std::string &ep, const std::string &pk) {
-        promise->set_value({ep, pk});
-    };
+    auto fut = promise->get_future();
+    cfg.on_ready = [promise](const std::string &ep, const std::string &pk)
+    { promise->set_value({ep, pk}); };
 
     auto state = std::make_unique<pylabhub::hub::HubState>();
-    auto svc   = std::make_unique<pylabhub::broker::BrokerService>(
-        std::move(cfg), *state);
+    auto svc = std::make_unique<pylabhub::broker::BrokerService>(std::move(cfg), *state);
     auto raw = svc.get();
     std::thread t([raw]() { raw->run(); });
     auto info = fut.get();
 
     DirectBrokerHandle h;
     h.hub_state = std::move(state);
-    h.service   = std::move(svc);
-    h.thread    = std::move(t);
-    h.endpoint  = std::move(info.first);
-    h.pubkey    = std::move(info.second);
+    h.service = std::move(svc);
+    h.thread = std::move(t);
+    h.endpoint = std::move(info.first);
+    h.pubkey = std::move(info.second);
     return h;
 }
 
@@ -123,21 +120,18 @@ namespace
 {
 fs::path make_unique_hub_dir(std::string_view hub_name_for_log)
 {
-    (void) hub_name_for_log;
+    (void)hub_name_for_log;
     static std::atomic<int> ctr{0};
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_l3_harness_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(ctr.fetch_add(1)));
+    fs::path dir = fs::temp_directory_path() / ("plh_l3_harness_" + std::to_string(::getpid()) +
+                                                "_" + std::to_string(ctr.fetch_add(1)));
     fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
 }
-} // anon
+} // namespace
 
-HubHostBrokerHandle
-start_hubhost_broker(const nlohmann::json &j_overrides,
-                     const CurveSetup &setup,
-                     std::string_view hub_name)
+HubHostBrokerHandle start_hubhost_broker(const nlohmann::json &j_overrides, const CurveSetup &setup,
+                                         std::string_view hub_name)
 {
     // HEP-CORE-0035 §4.8 + HEP-CORE-0040 §172.  Identity ownership split:
     //   - the caller seeds the per-role `"role.<uid>"` entries ONCE via
@@ -152,12 +146,11 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
 
     // Step 1 — initialize hub directory.  Writes hub.json template +
     // logging skeleton + vault/ + scripts/ + logs/.
-    if (pylabhub::utils::HubDirectory::init_directory(
-            h.hub_dir, std::string(hub_name)) != 0)
+    if (pylabhub::utils::HubDirectory::init_directory(h.hub_dir, std::string(hub_name)) != 0)
     {
-        throw std::runtime_error(
-            "start_hubhost_broker: HubDirectory::init_directory failed "
-            "for '" + h.hub_dir.string() + "'");
+        throw std::runtime_error("start_hubhost_broker: HubDirectory::init_directory failed "
+                                 "for '" +
+                                 h.hub_dir.string() + "'");
     }
 
     // Step 2 — merge j_overrides into hub.json so per-fixture tweaks
@@ -168,23 +161,20 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
         {
             std::ifstream in(hub_json_path);
             if (!in)
-                throw std::runtime_error(
-                    "start_hubhost_broker: cannot open " +
-                    hub_json_path.string() + " after init_directory");
+                throw std::runtime_error("start_hubhost_broker: cannot open " +
+                                         hub_json_path.string() + " after init_directory");
             in >> j;
         }
         if (!j_overrides.empty())
             j.merge_patch(j_overrides);
         {
-            std::ofstream out(hub_json_path,
-                              std::ios::out | std::ios::trunc);
+            std::ofstream out(hub_json_path, std::ios::out | std::ios::trunc);
             out << j.dump(2);
         }
     }
 
     // Step 3 — load HubConfig from the prepared directory.
-    auto cfg =
-        pylabhub::config::HubConfig::load_from_directory(h.hub_dir);
+    auto cfg = pylabhub::config::HubConfig::load_from_directory(h.hub_dir);
 
     // Step 4 (HEP-CORE-0035 §4.8) — provision the real encrypted vault:
     // a freshly minted CURVE keypair + the known_roles allowlist built
@@ -201,13 +191,12 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
     // load_keypair above), wires the admin/script subsystems, and
     // spawns the broker thread.  After startup() returns the broker
     // is listening on `broker_endpoint()`.
-    h.host =
-        std::make_unique<pylabhub::hub_host::HubHost>(std::move(cfg));
+    h.host = std::make_unique<pylabhub::hub_host::HubHost>(std::move(cfg));
     h.host->startup();
     h.endpoint = h.host->broker_endpoint();
     // The hub pubkey is the vault's minted keypair (NOT setup.hub) —
     // surface it from the running host so role clients pin the right key.
-    h.pubkey   = h.host->broker_pubkey();
+    h.pubkey = h.host->broker_pubkey();
     return h;
 }
 
@@ -219,20 +208,16 @@ BrcHandle::~BrcHandle()
         stop();
 }
 
-void BrcHandle::start(const std::string &endpoint,
-                      const std::string &server_pubkey,
-                      const std::string &role_uid,
-                      const std::string &keystore_name)
+void BrcHandle::start(const std::string &endpoint, const std::string &server_pubkey,
+                      const std::string &role_uid, const std::string &keystore_name)
 {
     pylabhub::hub::BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = endpoint;
-    cfg.broker_pubkey   = server_pubkey;
-    cfg.keystore_name   = keystore_name;
-    cfg.role_uid        = role_uid;
+    cfg.broker_pubkey = server_pubkey;
+    cfg.keystore_name = keystore_name;
+    cfg.role_uid = role_uid;
     ASSERT_TRUE(brc.connect(cfg));
-    thread = std::thread([this] {
-        brc.run_poll_loop([this] { return running.load(); });
-    });
+    thread = std::thread([this] { brc.run_poll_loop([this] { return running.load(); }); });
 }
 
 void BrcHandle::stop()
@@ -246,103 +231,89 @@ void BrcHandle::stop()
 
 // ── REG_REQ / CONSUMER_REG_REQ payload builders ─────────────────────────────
 
-nlohmann::json make_reg_opts(const std::string &channel,
-                              const std::string &role_uid,
-                              std::optional<uint64_t> producer_pid,
+nlohmann::json make_reg_opts(const std::string &channel, const std::string &role_uid,
+                             std::optional<uint64_t> producer_pid,
+                             const std::string &channel_topology)
+{
+    namespace sec = pylabhub::utils::security;
+    auto opts = pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+        .channel = channel,
+        .role_uid = role_uid,
+        .role_name = "test_producer",
+        .role_type = "producer",
+        .has_shm = true,
+        .is_zmq_transport = false,
+        .zmq_node_endpoint = {},
+        // HEP-CORE-0036 §I10: one pubkey per role_uid — derived from
+        // the keystore, not passed by the caller.  Throws
+        // `std::out_of_range` if the caller forgot to seed the
+        // `seed_curve_identities()` for this uid.
+        .zmq_pubkey =
+            std::string{sec::secure().keys().pubkey(pylabhub::tests::role_keystore_name(role_uid))},
+        .shm_capability_endpoint = sec::default_shm_capability_endpoint(channel),
+        .channel_topology = channel_topology,
+    });
+    opts["producer_pid"] =
+        producer_pid.has_value() ? *producer_pid : static_cast<uint64_t>(::getpid());
+    return opts;
+}
+
+nlohmann::json make_cons_opts(const std::string &channel, const std::string &consumer_uid,
+                              std::optional<uint64_t> consumer_pid,
                               const std::string &channel_topology)
 {
     namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "test_producer",
-            .role_type  = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            // HEP-CORE-0036 §I10: one pubkey per role_uid — derived from
-            // the keystore, not passed by the caller.  Throws
-            // `std::out_of_range` if the caller forgot to seed the
-            // `seed_curve_identities()` for this uid.
-            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
-                pylabhub::tests::role_keystore_name(role_uid))},
-            .shm_capability_endpoint =
-                sec::default_shm_capability_endpoint(channel),
-            .channel_topology = channel_topology,
-        });
-    opts["producer_pid"] =
-        producer_pid.has_value() ? *producer_pid
-                                  : static_cast<uint64_t>(::getpid());
+    auto opts = pylabhub::hub::build_consumer_reg_payload(pylabhub::hub::ConsumerRegInputs{
+        .channel = channel,
+        .role_uid = consumer_uid,
+        .role_name = "test_consumer",
+        .role_type = "consumer",
+        .data_transport = "zmq",
+        // Same §I10 derivation as `make_reg_opts`.
+        .zmq_pubkey = std::string{sec::secure().keys().pubkey(
+            pylabhub::tests::role_keystore_name(consumer_uid))},
+        .channel_topology = channel_topology,
+    });
+    opts["consumer_pid"] =
+        consumer_pid.has_value() ? *consumer_pid : static_cast<uint64_t>(::getpid());
     return opts;
 }
 
-nlohmann::json make_cons_opts(const std::string &channel,
-                               const std::string &consumer_uid,
-                               std::optional<uint64_t> consumer_pid,
-                               const std::string &channel_topology)
+nlohmann::json make_reg_opts_with_explicit_pubkey(const std::string &channel,
+                                                  const std::string &role_uid,
+                                                  const std::string &zmq_pubkey,
+                                                  std::optional<uint64_t> producer_pid)
 {
     namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_consumer_reg_payload(
-        pylabhub::hub::ConsumerRegInputs{
-            .channel        = channel,
-            .role_uid       = consumer_uid,
-            .role_name      = "test_consumer",
-            .role_type      = "consumer",
-            .data_transport = "zmq",
-            // Same §I10 derivation as `make_reg_opts`.
-            .zmq_pubkey     = std::string{sec::secure().keys().pubkey(
-                pylabhub::tests::role_keystore_name(consumer_uid))},
-            .channel_topology = channel_topology,
-        });
-    opts["consumer_pid"] =
-        consumer_pid.has_value() ? *consumer_pid
-                                  : static_cast<uint64_t>(::getpid());
-    return opts;
-}
-
-nlohmann::json make_reg_opts_with_explicit_pubkey(
-    const std::string &channel,
-    const std::string &role_uid,
-    const std::string &zmq_pubkey,
-    std::optional<uint64_t> producer_pid)
-{
-    namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = role_uid,
-            .role_name  = "test_producer",
-            .role_type  = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = zmq_pubkey,
-            .shm_capability_endpoint =
-                sec::default_shm_capability_endpoint(channel),
-        });
+    auto opts = pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+        .channel = channel,
+        .role_uid = role_uid,
+        .role_name = "test_producer",
+        .role_type = "producer",
+        .has_shm = true,
+        .is_zmq_transport = false,
+        .zmq_node_endpoint = {},
+        .zmq_pubkey = zmq_pubkey,
+        .shm_capability_endpoint = sec::default_shm_capability_endpoint(channel),
+    });
     opts["producer_pid"] =
-        producer_pid.has_value() ? *producer_pid
-                                  : static_cast<uint64_t>(::getpid());
+        producer_pid.has_value() ? *producer_pid : static_cast<uint64_t>(::getpid());
     return opts;
 }
 
-nlohmann::json make_cons_opts_with_explicit_pubkey(
-    const std::string &channel,
-    const std::string &consumer_uid,
-    const std::string &zmq_pubkey,
-    std::optional<uint64_t> consumer_pid)
+nlohmann::json make_cons_opts_with_explicit_pubkey(const std::string &channel,
+                                                   const std::string &consumer_uid,
+                                                   const std::string &zmq_pubkey,
+                                                   std::optional<uint64_t> consumer_pid)
 {
-    auto opts = pylabhub::hub::build_consumer_reg_payload(
-        pylabhub::hub::ConsumerRegInputs{
-            .channel    = channel,
-            .role_uid   = consumer_uid,
-            .role_name  = "test_consumer",
-            .zmq_pubkey = zmq_pubkey,
-        });
+    auto opts = pylabhub::hub::build_consumer_reg_payload(pylabhub::hub::ConsumerRegInputs{
+        .channel = channel,
+        .role_uid = consumer_uid,
+        .role_name = "test_consumer",
+        .zmq_pubkey = zmq_pubkey,
+    });
     opts["consumer_pid"] =
-        consumer_pid.has_value() ? *consumer_pid
-                                  : static_cast<uint64_t>(::getpid());
+        consumer_pid.has_value() ? *consumer_pid : static_cast<uint64_t>(::getpid());
     return opts;
 }
 

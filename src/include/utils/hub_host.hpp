@@ -86,20 +86,38 @@
 #include <memory>
 #include <string>
 
-namespace pylabhub::config    { class HubConfig; }
-namespace pylabhub::broker    { class BrokerService; }
-namespace pylabhub::hub       { class HubState; }
-namespace pylabhub::admin     { class AdminService; }
-namespace pylabhub::scripting { class ScriptEngine;
-                                class HubScriptRunner; }
-namespace pylabhub::hub_host  { class HubAPI; }
+namespace pylabhub::config
+{
+class HubConfig;
+}
+namespace pylabhub::broker
+{
+class BrokerService;
+}
+namespace pylabhub::hub
+{
+class HubState;
+}
+namespace pylabhub::admin
+{
+class AdminService;
+}
+namespace pylabhub::scripting
+{
+class ScriptEngine;
+class HubScriptRunner;
+} // namespace pylabhub::scripting
+namespace pylabhub::hub_host
+{
+class HubAPI;
+}
 
 namespace pylabhub::hub_host
 {
 
 class PYLABHUB_UTILS_EXPORT HubHost
 {
-public:
+  public:
     /// Construct around an already-loaded HubConfig.  Per HEP-CORE-0011
     /// §"Engine Construction Lifecycle" (2026-05-07), HubHost is built
     /// with config only — the engine (when scripts are enabled) is
@@ -120,10 +138,10 @@ public:
 
     ~HubHost();
 
-    HubHost(const HubHost &)            = delete;
+    HubHost(const HubHost &) = delete;
     HubHost &operator=(const HubHost &) = delete;
-    HubHost(HubHost &&)                 = delete;
-    HubHost &operator=(HubHost &&)      = delete;
+    HubHost(HubHost &&) = delete;
+    HubHost &operator=(HubHost &&) = delete;
 
     // ── Start / Stop  (not a LifecycleGuard module) ───────────────
 
@@ -193,9 +211,8 @@ public:
     /// there is no timestamp argument, so client wall time can never reach
     /// the dedup window (see ReplayGuard header).  `window_ms` MUST be
     /// >= 2 * the caller's skew tolerance.
-    [[nodiscard]] bool nonce_seen(std::string_view identity,
-                                  std::string_view client_nonce,
-                                  std::uint64_t    window_ms) noexcept;
+    [[nodiscard]] bool nonce_seen(std::string_view identity, std::string_view client_nonce,
+                                  std::uint64_t window_ms) noexcept;
 
     /// Bound broker endpoint (e.g. `tcp://127.0.0.1:5570`).  Empty
     /// before `startup()` returns.  After successful startup, this
@@ -227,7 +244,7 @@ public:
     /// `engine.invoke_returning`.
     [[nodiscard]] HubAPI *hub_api() noexcept;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

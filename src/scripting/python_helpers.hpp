@@ -48,23 +48,25 @@ namespace pylabhub::scripting
 /// (role_host_core.hpp:495).  Any change there MUST update this list.
 inline void register_stop_reason_constants(py::module_ &m)
 {
-    struct StopReasonNS {};
+    struct StopReasonNS
+    {
+    };
     py::class_<StopReasonNS>(m, "StopReason",
-        "String constants matching values returned by api.stop_reason().\n"
-        "Use `api.stop_reason() == module.StopReason.PeerDead` for "
-        "linter-friendly comparisons (avoids hard-coding strings).")
+                             "String constants matching values returned by api.stop_reason().\n"
+                             "Use `api.stop_reason() == module.StopReason.PeerDead` for "
+                             "linter-friendly comparisons (avoids hard-coding strings).")
         .def_property_readonly_static("Normal",
-            [](py::object) -> py::str { return py::str("normal"); })
+                                      [](py::object) -> py::str { return py::str("normal"); })
         .def_property_readonly_static("PeerDead",
-            [](py::object) -> py::str { return py::str("peer_dead"); })
+                                      [](py::object) -> py::str { return py::str("peer_dead"); })
         .def_property_readonly_static("HubDead",
-            [](py::object) -> py::str { return py::str("hub_dead"); })
-        .def_property_readonly_static("CriticalError",
-            [](py::object) -> py::str { return py::str("critical_error"); })
-        .def_property_readonly_static("ChannelClosed",
-            [](py::object) -> py::str { return py::str("channel_closed"); })
-        .def_property_readonly_static("ScriptError",
-            [](py::object) -> py::str { return py::str("script_error"); });
+                                      [](py::object) -> py::str { return py::str("hub_dead"); })
+        .def_property_readonly_static("CriticalError", [](py::object) -> py::str
+                                      { return py::str("critical_error"); })
+        .def_property_readonly_static("ChannelClosed", [](py::object) -> py::str
+                                      { return py::str("channel_closed"); })
+        .def_property_readonly_static("ScriptError", [](py::object) -> py::str
+                                      { return py::str("script_error"); });
 }
 
 // ── Python callable check ────────────────────────────────────────────────────
@@ -94,7 +96,7 @@ inline bool is_callable(const py::object &obj)
 /// for the duration of the callback, and writes are blocked at the Python level
 /// via the readonly wrapper (for read-side types) or are intentional (write side).
 inline py::object make_slot_view(const hub::SchemaSpec &spec, const py::object &type,
-                                  const void *data, size_t size, bool is_read_side)
+                                 const void *data, size_t size, bool is_read_side)
 {
     if (!spec.has_schema)
     {
@@ -108,9 +110,8 @@ inline py::object make_slot_view(const hub::SchemaSpec &spec, const py::object &
     // (see wrap_as_readonly_ctypes). Subobject mutation through array subscript
     // is not blocked at the ctypes level — a known limitation of the approach.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    auto mv = py::memoryview::from_memory(const_cast<void *>(data),
-                                           static_cast<py::ssize_t>(size),
-                                           /*readonly=*/false);
+    auto mv = py::memoryview::from_memory(const_cast<void *>(data), static_cast<py::ssize_t>(size),
+                                          /*readonly=*/false);
     return type.attr("from_buffer")(mv);
 }
 
@@ -148,17 +149,28 @@ def _plh_readonly_setattr(self, name, value):
 inline py::object json_type_to_ctypes(py::module_ &ct, const hub::FieldDef &fd)
 {
     py::object base;
-    if      (fd.type_str == "bool")    base = ct.attr("c_bool");
-    else if (fd.type_str == "int8")    base = ct.attr("c_int8");
-    else if (fd.type_str == "uint8")   base = ct.attr("c_uint8");
-    else if (fd.type_str == "int16")   base = ct.attr("c_int16");
-    else if (fd.type_str == "uint16")  base = ct.attr("c_uint16");
-    else if (fd.type_str == "int32")   base = ct.attr("c_int32");
-    else if (fd.type_str == "uint32")  base = ct.attr("c_uint32");
-    else if (fd.type_str == "int64")   base = ct.attr("c_int64");
-    else if (fd.type_str == "uint64")  base = ct.attr("c_uint64");
-    else if (fd.type_str == "float32") base = ct.attr("c_float");
-    else if (fd.type_str == "float64") base = ct.attr("c_double");
+    if (fd.type_str == "bool")
+        base = ct.attr("c_bool");
+    else if (fd.type_str == "int8")
+        base = ct.attr("c_int8");
+    else if (fd.type_str == "uint8")
+        base = ct.attr("c_uint8");
+    else if (fd.type_str == "int16")
+        base = ct.attr("c_int16");
+    else if (fd.type_str == "uint16")
+        base = ct.attr("c_uint16");
+    else if (fd.type_str == "int32")
+        base = ct.attr("c_int32");
+    else if (fd.type_str == "uint32")
+        base = ct.attr("c_uint32");
+    else if (fd.type_str == "int64")
+        base = ct.attr("c_int64");
+    else if (fd.type_str == "uint64")
+        base = ct.attr("c_uint64");
+    else if (fd.type_str == "float32")
+        base = ct.attr("c_float");
+    else if (fd.type_str == "float64")
+        base = ct.attr("c_double");
     else if (fd.type_str == "string")
     {
         if (fd.length == 0)
@@ -183,7 +195,7 @@ inline py::object json_type_to_ctypes(py::module_ &ct, const hub::FieldDef &fd)
 inline py::object build_ctypes_struct(const hub::SchemaSpec &spec, const std::string &name)
 {
     py::module_ ct = py::module_::import("ctypes");
-    py::list    fields;
+    py::list fields;
     for (const auto &fd : spec.fields)
         fields.append(py::make_tuple(fd.name, json_type_to_ctypes(ct, fd)));
     py::dict kw;
@@ -229,17 +241,28 @@ inline py::object as_numpy_view(py::object ctypes_array)
     // Map ctypes element type to numpy dtype string.
     // Using ctypes sizeof for reliable mapping.
     py::object dtype;
-    if (ctype.is(ct.attr("c_float")))       dtype = np.attr("float32");
-    else if (ctype.is(ct.attr("c_double"))) dtype = np.attr("float64");
-    else if (ctype.is(ct.attr("c_int8")))   dtype = np.attr("int8");
-    else if (ctype.is(ct.attr("c_uint8")))  dtype = np.attr("uint8");
-    else if (ctype.is(ct.attr("c_int16")))  dtype = np.attr("int16");
-    else if (ctype.is(ct.attr("c_uint16"))) dtype = np.attr("uint16");
-    else if (ctype.is(ct.attr("c_int32")))  dtype = np.attr("int32");
-    else if (ctype.is(ct.attr("c_uint32"))) dtype = np.attr("uint32");
-    else if (ctype.is(ct.attr("c_int64")))  dtype = np.attr("int64");
-    else if (ctype.is(ct.attr("c_uint64"))) dtype = np.attr("uint64");
-    else if (ctype.is(ct.attr("c_bool")))   dtype = np.attr("bool_");
+    if (ctype.is(ct.attr("c_float")))
+        dtype = np.attr("float32");
+    else if (ctype.is(ct.attr("c_double")))
+        dtype = np.attr("float64");
+    else if (ctype.is(ct.attr("c_int8")))
+        dtype = np.attr("int8");
+    else if (ctype.is(ct.attr("c_uint8")))
+        dtype = np.attr("uint8");
+    else if (ctype.is(ct.attr("c_int16")))
+        dtype = np.attr("int16");
+    else if (ctype.is(ct.attr("c_uint16")))
+        dtype = np.attr("uint16");
+    else if (ctype.is(ct.attr("c_int32")))
+        dtype = np.attr("int32");
+    else if (ctype.is(ct.attr("c_uint32")))
+        dtype = np.attr("uint32");
+    else if (ctype.is(ct.attr("c_int64")))
+        dtype = np.attr("int64");
+    else if (ctype.is(ct.attr("c_uint64")))
+        dtype = np.attr("uint64");
+    else if (ctype.is(ct.attr("c_bool")))
+        dtype = np.attr("bool_");
     else
         throw py::type_error("as_numpy: unsupported ctypes element type for numpy conversion");
 
@@ -258,33 +281,29 @@ inline py::module_ import_role_script_module(const std::string &role_name,
 {
     namespace fs = std::filesystem;
 
-    const fs::path base_path = base_dir.empty()
-                               ? fs::current_path()
-                               : fs::weakly_canonical(base_dir);
+    const fs::path base_path =
+        base_dir.empty() ? fs::current_path() : fs::weakly_canonical(base_dir);
 
     const fs::path pkg_init = base_path / module_name / script_type / "__init__.py";
 
     if (!fs::exists(pkg_init))
-        throw std::runtime_error(
-            "Script not found for '" + role_name +
-            "': expected '" + pkg_init.string() + "'");
+        throw std::runtime_error("Script not found for '" + role_name + "': expected '" +
+                                 pkg_init.string() + "'");
 
-    const std::string alias     = "_plh_" + uid_hex + "_" + role_name;
-    py::module_  importlib_util = py::module_::import("importlib.util");
-    py::module_  sys_mod        = py::module_::import("sys");
-    py::dict     sys_modules    = sys_mod.attr("modules").cast<py::dict>();
+    const std::string alias = "_plh_" + uid_hex + "_" + role_name;
+    py::module_ importlib_util = py::module_::import("importlib.util");
+    py::module_ sys_mod = py::module_::import("sys");
+    py::dict sys_modules = sys_mod.attr("modules").cast<py::dict>();
 
     py::list search_locs;
     search_locs.append(pkg_init.parent_path().string());
 
     py::object spec = importlib_util.attr("spec_from_file_location")(
-        alias, pkg_init.string(),
-        py::arg("submodule_search_locations") = search_locs);
+        alias, pkg_init.string(), py::arg("submodule_search_locations") = search_locs);
 
     if (spec.is_none())
-        throw std::runtime_error(
-            "spec_from_file_location failed for '" + role_name +
-            "' file '" + pkg_init.string() + "'");
+        throw std::runtime_error("spec_from_file_location failed for '" + role_name + "' file '" +
+                                 pkg_init.string() + "'");
 
     py::object mod = importlib_util.attr("module_from_spec")(spec);
     sys_modules[alias.c_str()] = mod;
@@ -302,20 +321,19 @@ inline void print_ctypes_layout(const py::object &type_, const char *label, size
     size_t prev_end = 0;
     for (auto item : fields)
     {
-        const auto name   = item[py::int_(0)].cast<std::string>();
-        const auto desc   = type_.attr(name.c_str());
+        const auto name = item[py::int_(0)].cast<std::string>();
+        const auto desc = type_.attr(name.c_str());
         const auto offset = desc.attr("offset").cast<size_t>();
-        const auto size   = desc.attr("size").cast<size_t>();
+        const auto size = desc.attr("size").cast<size_t>();
         if (offset > prev_end)
             std::cout << "    [" << (offset - prev_end) << " bytes padding]\n";
-        std::cout << "    " << name
-                  << "  offset=" << offset << "  size=" << size << "\n";
+        std::cout << "    " << name << "  offset=" << offset << "  size=" << size << "\n";
         prev_end = offset + size;
     }
     if (prev_end < total_size)
         std::cout << "    [" << (total_size - prev_end) << " bytes trailing padding]\n";
-    std::cout << "  Total: " << total_size
-              << " bytes  (ctypes.sizeof = " << ctypes_sizeof(type_) << ")\n";
+    std::cout << "  Total: " << total_size << " bytes  (ctypes.sizeof = " << ctypes_sizeof(type_)
+              << ")\n";
 }
 
 // Schema size computation and ZMQ field conversion are in schema_utils.hpp.
@@ -340,9 +358,9 @@ struct PyTxChannel
 /// msg.data = typed inbox payload (read-only copy), msg.sender_uid, msg.seq.
 struct PyInboxMsg
 {
-    py::object  data{py::none()};
+    py::object data{py::none()};
     std::string sender_uid;
-    uint64_t    seq{0};
+    uint64_t seq{0};
 };
 
 // ── InboxHandle — Python-facing wrapper for hub::InboxClient ─────────────────
@@ -368,14 +386,10 @@ struct PyInboxMsg
 class InboxHandle
 {
   public:
-    InboxHandle(std::shared_ptr<hub::InboxClient> client,
-                hub::SchemaSpec                         spec,
-                py::object                         slot_type,
-                size_t                             item_size)
-        : client_(std::move(client))
-        , spec_(std::move(spec))
-        , slot_type_(std::move(slot_type))
-        , item_size_(item_size)
+    InboxHandle(std::shared_ptr<hub::InboxClient> client, hub::SchemaSpec spec,
+                py::object slot_type, size_t item_size)
+        : client_(std::move(client)), spec_(std::move(spec)), slot_type_(std::move(slot_type)),
+          item_size_(item_size)
     {
     }
 
@@ -408,10 +422,7 @@ class InboxHandle
             client_->abort();
     }
 
-    [[nodiscard]] bool is_ready() const noexcept
-    {
-        return client_ && client_->is_running();
-    }
+    [[nodiscard]] bool is_ready() const noexcept { return client_ && client_->is_running(); }
 
     /// Stop the underlying client and invalidate this handle.
     /// After calling this, is_ready() returns false; acquire/send return error values.
@@ -422,16 +433,13 @@ class InboxHandle
     }
 
     /// Release Python objects. Call with GIL held before interpreter shutdown.
-    void clear_pyobjects()
-    {
-        slot_type_ = py::none();
-    }
+    void clear_pyobjects() { slot_type_ = py::none(); }
 
   private:
     std::shared_ptr<hub::InboxClient> client_;
-    hub::SchemaSpec                         spec_;
-    py::object                         slot_type_{py::none()};
-    size_t                             item_size_{0};
+    hub::SchemaSpec spec_;
+    py::object slot_type_{py::none()};
+    size_t item_size_{0};
 };
 
 // ============================================================================
@@ -442,13 +450,20 @@ class SpinLockPy
 {
   public:
     explicit SpinLockPy(hub::SharedSpinLock lock) : lock_(std::move(lock)) {}
-    void lock()   { lock_.lock(); }
+    void lock() { lock_.lock(); }
     void unlock() { lock_.unlock(); }
     bool try_lock_for(int timeout_ms) { return lock_.try_lock_for(timeout_ms); }
     [[nodiscard]] bool is_locked_by_current_process() const
-        { return lock_.is_locked_by_current_process(); }
-    SpinLockPy &enter() { lock_.lock(); return *this; }
+    {
+        return lock_.is_locked_by_current_process();
+    }
+    SpinLockPy &enter()
+    {
+        lock_.lock();
+        return *this;
+    }
     void exit(py::object, py::object, py::object) { lock_.unlock(); }
+
   private:
     hub::SharedSpinLock lock_;
 };

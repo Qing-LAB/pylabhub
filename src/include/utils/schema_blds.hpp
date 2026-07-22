@@ -34,7 +34,7 @@
  *
  * @see HEP-CORE-0002-DataHub-FINAL.md Section 11 (Schema Validation)
  */
-#include "utils/security/secure_subsystem.hpp"  // secure().compute_blake2b_array
+#include "utils/security/secure_subsystem.hpp" // secure().compute_blake2b_array
 
 #include <array>
 #include <atomic>
@@ -205,12 +205,12 @@ struct SchemaVersion
  */
 struct SchemaInfo
 {
-    std::string name;                       ///< Schema name (e.g., "SensorHub.SensorData")
-    std::string blds;                       ///< BLDS string representation
-    std::array<uint8_t, 32> hash{};         ///< BLAKE2b-256 hash of canonical(BLDS, packing)
-    SchemaVersion version;                  ///< Semantic version
-    size_t struct_size = 0;                 ///< sizeof(T) for validation
-    std::string packing{"aligned"};         ///< "aligned" | "packed" (HEP-CORE-0034 §6.3)
+    std::string name;               ///< Schema name (e.g., "SensorHub.SensorData")
+    std::string blds;               ///< BLDS string representation
+    std::array<uint8_t, 32> hash{}; ///< BLAKE2b-256 hash of canonical(BLDS, packing)
+    SchemaVersion version;          ///< Semantic version
+    size_t struct_size = 0;         ///< sizeof(T) for validation
+    std::string packing{"aligned"}; ///< "aligned" | "packed" (HEP-CORE-0034 §6.3)
 
     /**
      * @brief Computes the BLAKE2b-256 hash of the canonical schema string.
@@ -227,7 +227,8 @@ struct SchemaInfo
         canonical.append(blds);
         canonical.append("|pack:");
         canonical.append(packing);
-        hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
+        hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
+                                                                         canonical.size());
     }
 
     /**
@@ -349,8 +350,7 @@ template <typename T> struct SchemaRegistry;
  *
  * @tparam T  Any C++ type.
  */
-template <typename T, typename = void>
-struct has_schema_registry : std::false_type
+template <typename T, typename = void> struct has_schema_registry : std::false_type
 {
 };
 template <typename T>
@@ -358,8 +358,7 @@ struct has_schema_registry<T, std::void_t<decltype(SchemaRegistry<T>::generate_b
     : std::true_type
 {
 };
-template <typename T>
-inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
+template <typename T> inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
 
 // ============================================================================
 // Schema Registration Macros
@@ -382,8 +381,7 @@ inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
  *
  * @see PYLABHUB_SCHEMA_BEGIN_PACKED — for `#pragma pack(1)` / `__attribute__((packed))` structs
  */
-#define PYLABHUB_SCHEMA_BEGIN(StructName)                                                          \
-    PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, "aligned")
+#define PYLABHUB_SCHEMA_BEGIN(StructName) PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, "aligned")
 
 /**
  * @def PYLABHUB_SCHEMA_BEGIN_PACKED(StructName)
@@ -417,8 +415,7 @@ inline constexpr bool has_schema_registry_v = has_schema_registry<T>::value;
  *     PYLABHUB_SCHEMA_MEMBER(value)
  * PYLABHUB_SCHEMA_END(WireFrame)
  */
-#define PYLABHUB_SCHEMA_BEGIN_PACKED(StructName)                                                   \
-    PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, "packed")
+#define PYLABHUB_SCHEMA_BEGIN_PACKED(StructName) PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, "packed")
 
 #define PYLABHUB_SCHEMA_BEGIN_IMPL_(StructName, PackingStr)                                        \
     namespace pylabhub::schema                                                                     \

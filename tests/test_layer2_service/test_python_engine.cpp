@@ -34,7 +34,7 @@
  */
 #include <gtest/gtest.h>
 
-#include "test_patterns.h"     // Pattern 3 (IsolatedProcessTest) base
+#include "test_patterns.h" // Pattern 3 (IsolatedProcessTest) base
 
 #include <atomic>
 #include <filesystem>
@@ -75,8 +75,7 @@ class PythonEngineIsolatedTest : public pylabhub::tests::IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_py_" + std::string(label) + "_" +
-                      std::to_string(::getpid()) + "_" +
+                     ("plh_l2_py_" + std::string(label) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
@@ -90,8 +89,7 @@ class PythonEngineIsolatedTest : public pylabhub::tests::IsolatedProcessTest
 
 TEST_F(PythonEngineIsolatedTest, FullLifecycle)
 {
-    auto w = SpawnWorker("python_engine.full_lifecycle",
-                         {unique_dir("full_lifecycle")});
+    auto w = SpawnWorker("python_engine.full_lifecycle", {unique_dir("full_lifecycle")});
     ExpectWorkerOk(w);
 }
 
@@ -104,15 +102,14 @@ TEST_F(PythonEngineIsolatedTest, InitializeAndFinalize_Succeeds)
 
 TEST_F(PythonEngineIsolatedTest, RegisterSlotType_SizeofCorrect)
 {
-    auto w = SpawnWorker("python_engine.register_slot_type_sizeof_correct",
-                         {unique_dir("reg_sizeof")});
+    auto w =
+        SpawnWorker("python_engine.register_slot_type_sizeof_correct", {unique_dir("reg_sizeof")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, RegisterSlotType_MultiField)
 {
-    auto w = SpawnWorker("python_engine.register_slot_type_multi_field",
-                         {unique_dir("reg_multi")});
+    auto w = SpawnWorker("python_engine.register_slot_type_multi_field", {unique_dir("reg_multi")});
     ExpectWorkerOk(w);
 }
 
@@ -128,9 +125,8 @@ TEST_F(PythonEngineIsolatedTest, RegisterSlotType_PackedPacking)
 
 TEST_F(PythonEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "python_engine.register_slot_type_has_schema_false_returns_false",
-        {unique_dir("reg_no_schema")});
+    auto w = SpawnWorker("python_engine.register_slot_type_has_schema_false_returns_false",
+                         {unique_dir("reg_no_schema")});
     // register_slot_type logs an ERROR when called with has_schema=false
     // (python_engine.cpp). That log is expected.
     ExpectWorkerOk(w, /*required=*/{},
@@ -140,45 +136,43 @@ TEST_F(PythonEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 
 TEST_F(PythonEngineIsolatedTest, RegisterSlotType_AllSupportedTypes_Succeeds)
 {
-    auto w = SpawnWorker(
-        "python_engine.register_slot_type_all_supported_types",
-        {unique_dir("reg_all_types")});
+    auto w = SpawnWorker("python_engine.register_slot_type_all_supported_types",
+                         {unique_dir("reg_all_types")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Alias_SlotFrame_Producer)
 {
-    auto w = SpawnWorker("python_engine.alias_slot_frame_producer",
-                         {unique_dir("alias_slot_prod")});
+    auto w =
+        SpawnWorker("python_engine.alias_slot_frame_producer", {unique_dir("alias_slot_prod")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Alias_SlotFrame_Consumer)
 {
-    auto w = SpawnWorker("python_engine.alias_slot_frame_consumer",
-                         {unique_dir("alias_slot_cons")});
+    auto w =
+        SpawnWorker("python_engine.alias_slot_frame_consumer", {unique_dir("alias_slot_cons")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Alias_NoAlias_Processor)
 {
-    auto w = SpawnWorker("python_engine.alias_no_alias_processor",
-                         {unique_dir("alias_noalias_proc")});
+    auto w =
+        SpawnWorker("python_engine.alias_no_alias_processor", {unique_dir("alias_noalias_proc")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Alias_FlexFrame_Producer)
 {
-    auto w = SpawnWorker("python_engine.alias_flex_frame_producer",
-                         {unique_dir("alias_flex_prod")});
+    auto w =
+        SpawnWorker("python_engine.alias_flex_frame_producer", {unique_dir("alias_flex_prod")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Alias_ProducerNoFz_NoFlexFrameAlias)
 {
-    auto w = SpawnWorker(
-        "python_engine.alias_producer_no_fz_no_flex_frame_alias",
-        {unique_dir("alias_nofz")});
+    auto w = SpawnWorker("python_engine.alias_producer_no_fz_no_flex_frame_alias",
+                         {unique_dir("alias_nofz")});
     ExpectWorkerOk(w);
 }
 
@@ -202,9 +196,8 @@ TEST_F(PythonEngineIsolatedTest, SupportsMultiState_ReturnsFalse)
 // diagnostic.
 TEST_F(PythonEngineIsolatedTest, ReleaseGlobalLockDuringWait_LetsSubthreadRun)
 {
-    auto w = SpawnWorker(
-        "python_engine.release_global_lock_during_wait_lets_subthread_run",
-        {unique_dir("gil_release")});
+    auto w = SpawnWorker("python_engine.release_global_lock_during_wait_lets_subthread_run",
+                         {unique_dir("gil_release")});
     ExpectWorkerOk(w);
 }
 
@@ -241,8 +234,8 @@ TEST_F(PythonEngineIsolatedTest, ReleaseGlobalLockDuringWait_LetsSubthreadRun)
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_CommitOnTrue)
 {
-    auto w = SpawnWorker("python_engine.invoke_produce_commit_on_true",
-                         {unique_dir("produce_commit")});
+    auto w =
+        SpawnWorker("python_engine.invoke_produce_commit_on_true", {unique_dir("produce_commit")});
     ExpectWorkerOk(w);
 }
 
@@ -269,8 +262,8 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_NoneReturn_IsError)
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_NoneSlot)
 {
-    auto w = SpawnWorker("python_engine.invoke_produce_none_slot",
-                         {unique_dir("produce_none_slot")});
+    auto w =
+        SpawnWorker("python_engine.invoke_produce_none_slot", {unique_dir("produce_none_slot")});
     ExpectWorkerOk(w);
 }
 
@@ -286,9 +279,8 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_ScriptError)
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_WrongReturnType_IsError)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_wrong_return_type_is_error",
-        {unique_dir("produce_wrong_type")});
+    auto w = SpawnWorker("python_engine.invoke_produce_wrong_return_type_is_error",
+                         {unique_dir("produce_wrong_type")});
     // Engine logs ERROR "<cb> returned non-boolean type '<typename>' —
     // expected 'return True' or 'return False'." (python_engine.cpp:
     // 1204-1207).  Pin both the diagnostic and the `'int'` type name
@@ -301,9 +293,8 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_WrongReturnType_IsError)
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_wrong_return_string_is_error",
-        {unique_dir("produce_wrong_str")});
+    auto w = SpawnWorker("python_engine.invoke_produce_wrong_return_string_is_error",
+                         {unique_dir("produce_wrong_str")});
     // Same diagnostic as WrongReturnType but with 'str'.  Covers the
     // truthy-string-but-not-bool case — a truthiness-based check would
     // incorrectly yield Commit.
@@ -315,12 +306,10 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
 // NEW gap-fill — pins the "engine does NOT roll back Python writes to
 // tx.slot on Discard" contract.  Mirrors Lua's
 // InvokeProduce_DiscardOnFalse_ButLuaWroteSlot.
-TEST_F(PythonEngineIsolatedTest,
-       InvokeProduce_DiscardOnFalse_ButPythonWroteSlot)
+TEST_F(PythonEngineIsolatedTest, InvokeProduce_DiscardOnFalse_ButPythonWroteSlot)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_discard_on_false_but_python_wrote_slot",
-        {unique_dir("produce_discard_wrote")});
+    auto w = SpawnWorker("python_engine.invoke_produce_discard_on_false_but_python_wrote_slot",
+                         {unique_dir("produce_discard_wrote")});
     ExpectWorkerOk(w);
 }
 
@@ -338,15 +327,15 @@ TEST_F(PythonEngineIsolatedTest,
 
 TEST_F(PythonEngineIsolatedTest, InvokeConsume_ReceivesSlot)
 {
-    auto w = SpawnWorker("python_engine.invoke_consume_receives_slot",
-                         {unique_dir("consume_receives")});
+    auto w =
+        SpawnWorker("python_engine.invoke_consume_receives_slot", {unique_dir("consume_receives")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeConsume_NoneSlot)
 {
-    auto w = SpawnWorker("python_engine.invoke_consume_none_slot",
-                         {unique_dir("consume_none_slot")});
+    auto w =
+        SpawnWorker("python_engine.invoke_consume_none_slot", {unique_dir("consume_none_slot")});
     ExpectWorkerOk(w);
 }
 
@@ -391,8 +380,7 @@ TEST_F(PythonEngineIsolatedTest, InvokeConsume_RxSlot_IsReadOnly)
 
 TEST_F(PythonEngineIsolatedTest, InvokeProcess_DualSlots)
 {
-    auto w = SpawnWorker("python_engine.invoke_process_dual_slots",
-                         {unique_dir("process_dual")});
+    auto w = SpawnWorker("python_engine.invoke_process_dual_slots", {unique_dir("process_dual")});
     ExpectWorkerOk(w);
 }
 
@@ -440,17 +428,15 @@ TEST_F(PythonEngineIsolatedTest, InvokeProcess_RxSlot_IsReadOnly)
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_EventWithDetails)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_receives_messages_event_with_details",
-        {unique_dir("msg_event_details")});
+    auto w = SpawnWorker("python_engine.invoke_produce_receives_messages_event_with_details",
+                         {unique_dir("msg_event_details")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_EmptyList)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_receives_messages_empty_list",
-        {unique_dir("msg_empty")});
+    auto w = SpawnWorker("python_engine.invoke_produce_receives_messages_empty_list",
+                         {unique_dir("msg_empty")});
     ExpectWorkerOk(w);
 }
 
@@ -459,17 +445,15 @@ TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_EmptyList)
 // sender-hex formatting and bytes construction code untested.
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_ReceivesMessages_DataMessage)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_receives_messages_data_message",
-        {unique_dir("msg_data_tuple")});
+    auto w = SpawnWorker("python_engine.invoke_produce_receives_messages_data_message",
+                         {unique_dir("msg_data_tuple")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeConsume_ReceivesMessages_DataBareFormat)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_consume_receives_messages_data_bare_format",
-        {unique_dir("msg_consumer_bare")});
+    auto w = SpawnWorker("python_engine.invoke_consume_receives_messages_data_bare_format",
+                         {unique_dir("msg_consumer_bare")});
     ExpectWorkerOk(w);
 }
 
@@ -507,16 +491,15 @@ TEST_F(PythonEngineIsolatedTest, WrongRoleModuleImport_RaisesError)
 
 TEST_F(PythonEngineIsolatedTest, ApiStop_SetsShutdownRequested)
 {
-    auto w = SpawnWorker("python_engine.api_stop_sets_shutdown_requested",
-                         {unique_dir("api_stop")});
+    auto w =
+        SpawnWorker("python_engine.api_stop_sets_shutdown_requested", {unique_dir("api_stop")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_critical_error_set_and_read_and_stop_reason",
-        {unique_dir("api_crit")});
+    auto w = SpawnWorker("python_engine.api_critical_error_set_and_read_and_stop_reason",
+                         {unique_dir("api_crit")});
     // Audit S2 (2026-05-18) — RoleAPIBase emits a uniform
     // "[short_tag/uid] CRITICAL: <msg>" ERROR-level log line for every
     // api.set_critical_error(msg) call (Python / Lua / Native engines
@@ -537,9 +520,8 @@ TEST_F(PythonEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
 // strengthening.
 TEST_F(PythonEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_stop_reason_reflects_all_enum_values",
-        {unique_dir("api_stop_reason_all")});
+    auto w = SpawnWorker("python_engine.api_stop_reason_reflects_all_enum_values",
+                         {unique_dir("api_stop_reason_all")});
     ExpectWorkerOk(w);
 }
 
@@ -561,9 +543,8 @@ TEST_F(PythonEngineIsolatedTest, Metrics_IndividualAccessors_ReadCoreCounters_Li
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "python_engine.metrics_individual_accessors_read_core_counters_live",
-        {unique_dir("metrics_indiv_live")});
+    auto w = SpawnWorker("python_engine.metrics_individual_accessors_read_core_counters_live",
+                         {unique_dir("metrics_indiv_live")});
     ExpectWorkerOk(w);
 #endif
 }
@@ -574,18 +555,16 @@ TEST_F(PythonEngineIsolatedTest, Metrics_InSlotsReceived_Works_Consumer)
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "python_engine.metrics_in_slots_received_works_consumer",
-        {unique_dir("metrics_inrx_consumer")});
+    auto w = SpawnWorker("python_engine.metrics_in_slots_received_works_consumer",
+                         {unique_dir("metrics_inrx_consumer")});
     ExpectWorkerOk(w);
 #endif
 }
 
 TEST_F(PythonEngineIsolatedTest, MultipleErrors_CountAccumulates)
 {
-    auto w = SpawnWorker(
-        "python_engine.multiple_errors_count_accumulates",
-        {unique_dir("multi_errors_accum")});
+    auto w = SpawnWorker("python_engine.multiple_errors_count_accumulates",
+                         {unique_dir("multi_errors_accum")});
     // 5 raised RuntimeErrors via on_python_error_ → 5 ERROR lines.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -594,9 +573,8 @@ TEST_F(PythonEngineIsolatedTest, MultipleErrors_CountAccumulates)
 
 TEST_F(PythonEngineIsolatedTest, StopOnScriptError_SetsShutdownOnError)
 {
-    auto w = SpawnWorker(
-        "python_engine.stop_on_script_error_sets_shutdown_on_error",
-        {unique_dir("stop_on_script_err")});
+    auto w = SpawnWorker("python_engine.stop_on_script_error_sets_shutdown_on_error",
+                         {unique_dir("stop_on_script_err")});
     // Raised RuntimeError routed through on_python_error_ →
     // one "intentional error" ERROR line.  Followed by an additional
     // "stop_on_script_error: requesting shutdown after on_produce
@@ -604,15 +582,13 @@ TEST_F(PythonEngineIsolatedTest, StopOnScriptError_SetsShutdownOnError)
     // (python_engine.cpp on_python_error_ branch).
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"intentional error",
-                    "stop_on_script_error: requesting shutdown"});
+                   {"intentional error", "stop_on_script_error: requesting shutdown"});
 }
 
 TEST_F(PythonEngineIsolatedTest, Metrics_AllLoopFields_AnchoredValues)
 {
-    auto w = SpawnWorker(
-        "python_engine.metrics_all_loop_fields_anchored_values",
-        {unique_dir("metrics_all_loop_anchored")});
+    auto w = SpawnWorker("python_engine.metrics_all_loop_fields_anchored_values",
+                         {unique_dir("metrics_all_loop_anchored")});
     ExpectWorkerOk(w);
 }
 
@@ -625,9 +601,8 @@ TEST_F(PythonEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "python_engine.metrics_hierarchical_table_producer_full_shape",
-        {unique_dir("metrics_ht_prod_full")});
+    auto w = SpawnWorker("python_engine.metrics_hierarchical_table_producer_full_shape",
+                         {unique_dir("metrics_ht_prod_full")});
     ExpectWorkerOk(w);
 #endif
 }
@@ -638,9 +613,8 @@ TEST_F(PythonEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
 // slip through individual-accessor tests.
 TEST_F(PythonEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
 {
-    auto w = SpawnWorker(
-        "python_engine.metrics_role_script_error_count_reflects_raised_error",
-        {unique_dir("metrics_serc_reflects")});
+    auto w = SpawnWorker("python_engine.metrics_role_script_error_count_reflects_raised_error",
+                         {unique_dir("metrics_serc_reflects")});
     // 2 seed phases raise "seed phase N".
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -662,8 +636,7 @@ TEST_F(PythonEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedErro
 
 TEST_F(PythonEngineIsolatedTest, LoadScript_MissingFile)
 {
-    auto w = SpawnWorker("python_engine.load_script_missing_file",
-                         {unique_dir("load_missing")});
+    auto w = SpawnWorker("python_engine.load_script_missing_file", {unique_dir("load_missing")});
     // Python's load_script catch path logs ERROR "Failed to load
     // script from '<dir>': <exc>" at python_engine.cpp.
     ExpectWorkerOk(w, /*required=*/{},
@@ -673,9 +646,8 @@ TEST_F(PythonEngineIsolatedTest, LoadScript_MissingFile)
 
 TEST_F(PythonEngineIsolatedTest, LoadScript_MissingRequiredCallback)
 {
-    auto w = SpawnWorker(
-        "python_engine.load_script_missing_required_callback",
-        {unique_dir("load_missing_cb")});
+    auto w = SpawnWorker("python_engine.load_script_missing_required_callback",
+                         {unique_dir("load_missing_cb")});
     // python_engine.cpp: "Script has no 'on_produce' function".
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -700,8 +672,7 @@ TEST_F(PythonEngineIsolatedTest, RegisterSlotType_BadFieldType)
 
 TEST_F(PythonEngineIsolatedTest, LoadScript_SyntaxError)
 {
-    auto w = SpawnWorker("python_engine.load_script_syntax_error",
-                         {unique_dir("load_syntax")});
+    auto w = SpawnWorker("python_engine.load_script_syntax_error", {unique_dir("load_syntax")});
     // SyntaxError surfaces in the "Failed to load script" ERROR.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -710,8 +681,7 @@ TEST_F(PythonEngineIsolatedTest, LoadScript_SyntaxError)
 
 TEST_F(PythonEngineIsolatedTest, HasCallback)
 {
-    auto w = SpawnWorker("python_engine.has_callback",
-                         {unique_dir("has_cb")});
+    auto w = SpawnWorker("python_engine.has_callback", {unique_dir("has_cb")});
     ExpectWorkerOk(w);
 }
 
@@ -746,16 +716,15 @@ TEST_F(PythonEngineIsolatedTest, Invoke_ExistingFunction_ReturnsTrue)
 
 TEST_F(PythonEngineIsolatedTest, Invoke_NonExistentFunction_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_non_existent_function_returns_false",
-        {unique_dir("invoke_not_found")});
+    auto w = SpawnWorker("python_engine.invoke_non_existent_function_returns_false",
+                         {unique_dir("invoke_not_found")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Invoke_EmptyName_ReturnsFalse)
 {
-    auto w = SpawnWorker("python_engine.invoke_empty_name_returns_false",
-                         {unique_dir("invoke_empty")});
+    auto w =
+        SpawnWorker("python_engine.invoke_empty_name_returns_false", {unique_dir("invoke_empty")});
     ExpectWorkerOk(w);
 }
 
@@ -766,9 +735,8 @@ TEST_F(PythonEngineIsolatedTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErr
     // python_engine.cpp:644.  Pinned at the parent level so a
     // regression that silently swallowed the log (but still
     // incremented the count) would still fail here.
-    auto w = SpawnWorker(
-        "python_engine.invoke_script_error_returns_false_and_increments_errors",
-        {unique_dir("invoke_script_err")});
+    auto w = SpawnWorker("python_engine.invoke_script_error_returns_false_and_increments_errors",
+                         {unique_dir("invoke_script_err")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"intentional test error"});
@@ -783,9 +751,8 @@ TEST_F(PythonEngineIsolatedTest, Invoke_FromNonOwnerThread_Queued)
 
 TEST_F(PythonEngineIsolatedTest, Invoke_FromNonOwnerThread_FinalizeUnblocks)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_from_non_owner_thread_finalize_unblocks",
-        {unique_dir("invoke_finalize_unblock")});
+    auto w = SpawnWorker("python_engine.invoke_from_non_owner_thread_finalize_unblocks",
+                         {unique_dir("invoke_finalize_unblock")});
     ExpectWorkerOk(w);
 }
 
@@ -812,9 +779,8 @@ TEST_F(PythonEngineIsolatedTest, Invoke_WithArgs_CallsFunction)
 
 TEST_F(PythonEngineIsolatedTest, Invoke_WithArgs_FromNonOwnerThread)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_with_args_from_non_owner_thread",
-        {unique_dir("invoke_args_non_owner")});
+    auto w = SpawnWorker("python_engine.invoke_with_args_from_non_owner_thread",
+                         {unique_dir("invoke_args_non_owner")});
     ExpectWorkerOk(w);
 }
 
@@ -832,8 +798,7 @@ TEST_F(PythonEngineIsolatedTest, Invoke_WithArgs_FromNonOwnerThread)
 
 TEST_F(PythonEngineIsolatedTest, Eval_ReturnsScalarResult)
 {
-    auto w = SpawnWorker("python_engine.eval_returns_scalar_result",
-                         {unique_dir("eval_scalar")});
+    auto w = SpawnWorker("python_engine.eval_returns_scalar_result", {unique_dir("eval_scalar")});
     ExpectWorkerOk(w);
 }
 
@@ -843,8 +808,7 @@ TEST_F(PythonEngineIsolatedTest, Eval_ErrorReturnsEmpty)
     // engine's on_python_error_ translator (python_engine.cpp:693)
     // is producing Python-side exception names — not a generic
     // "eval failed" placeholder.
-    auto w = SpawnWorker("python_engine.eval_error_returns_empty",
-                         {unique_dir("eval_error")});
+    auto w = SpawnWorker("python_engine.eval_error_returns_empty", {unique_dir("eval_error")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"NameError", "SyntaxError", "ZeroDivisionError"});
@@ -852,9 +816,8 @@ TEST_F(PythonEngineIsolatedTest, Eval_ErrorReturnsEmpty)
 
 TEST_F(PythonEngineIsolatedTest, SharedData_PersistsAcrossCallbacks)
 {
-    auto w = SpawnWorker(
-        "python_engine.shared_data_persists_across_callbacks",
-        {unique_dir("shared_data")});
+    auto w = SpawnWorker("python_engine.shared_data_persists_across_callbacks",
+                         {unique_dir("shared_data")});
     ExpectWorkerOk(w);
 }
 
@@ -897,9 +860,8 @@ TEST_F(PythonEngineIsolatedTest, Api_LastCycleWorkUs_ReadsFromCore)
 
 TEST_F(PythonEngineIsolatedTest, Api_IdentityAccessors_ReturnCorrectValues)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_identity_accessors_return_correct_values",
-        {unique_dir("api_identity")});
+    auto w = SpawnWorker("python_engine.api_identity_accessors_return_correct_values",
+                         {unique_dir("api_identity")});
     ExpectWorkerOk(w);
 }
 
@@ -917,17 +879,15 @@ TEST_F(PythonEngineIsolatedTest, Api_IdentityAccessors_ReturnCorrectValues)
 
 TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ReportAndReadInMetrics)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_custom_metrics_report_and_read_in_metrics",
-        {unique_dir("api_cm_read")});
+    auto w = SpawnWorker("python_engine.api_custom_metrics_report_and_read_in_metrics",
+                         {unique_dir("api_cm_read")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_BatchAndClear)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_custom_metrics_batch_and_clear",
-        {unique_dir("api_cm_clear")});
+    auto w = SpawnWorker("python_engine.api_custom_metrics_batch_and_clear",
+                         {unique_dir("api_cm_clear")});
     ExpectWorkerOk(w);
 }
 
@@ -941,24 +901,22 @@ TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_BatchAndClear)
 
 TEST_F(PythonEngineIsolatedTest, InvokeOnInit_ScriptError)
 {
-    auto w = SpawnWorker("python_engine.invoke_on_init_script_error",
-                         {unique_dir("on_init_err")});
+    auto w = SpawnWorker("python_engine.invoke_on_init_script_error", {unique_dir("on_init_err")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"init exploded"});
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeOnStop_ScriptError)
 {
-    auto w = SpawnWorker("python_engine.invoke_on_stop_script_error",
-                         {unique_dir("on_stop_err")});
+    auto w = SpawnWorker("python_engine.invoke_on_stop_script_error", {unique_dir("on_stop_err")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"stop exploded"});
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_ScriptError)
 {
-    auto w = SpawnWorker("python_engine.invoke_on_inbox_script_error",
-                         {unique_dir("on_inbox_err")});
+    auto w =
+        SpawnWorker("python_engine.invoke_on_inbox_script_error", {unique_dir("on_inbox_err")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"inbox exploded"});
 }
@@ -969,31 +927,28 @@ TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_ScriptError)
 
 TEST_F(PythonEngineIsolatedTest, StatePersistsAcrossCalls)
 {
-    auto w = SpawnWorker("python_engine.state_persists_across_calls",
-                         {unique_dir("state_persists")});
+    auto w =
+        SpawnWorker("python_engine.state_persists_across_calls", {unique_dir("state_persists")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeProduce_SlotOnly_NoFlexzoneOnInvoke)
 {
-    auto w = SpawnWorker(
-        "python_engine.invoke_produce_slot_only_no_flexzone_on_invoke",
-        {unique_dir("slot_only_no_fz")});
+    auto w = SpawnWorker("python_engine.invoke_produce_slot_only_no_flexzone_on_invoke",
+                         {unique_dir("slot_only_no_fz")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_TypedData)
 {
-    auto w = SpawnWorker("python_engine.invoke_on_inbox_typed_data",
-                         {unique_dir("inbox_typed")});
+    auto w = SpawnWorker("python_engine.invoke_on_inbox_typed_data", {unique_dir("inbox_typed")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
 {
-    auto w = SpawnWorker(
-        "python_engine.type_sizeof_inbox_frame_returns_correct_size",
-        {unique_dir("inbox_sizeof")});
+    auto w = SpawnWorker("python_engine.type_sizeof_inbox_frame_returns_correct_size",
+                         {unique_dir("inbox_sizeof")});
     ExpectWorkerOk(w);
 }
 
@@ -1004,9 +959,8 @@ TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
     // regression that silently fails (no ERROR log) would be caught at
     // the ExpectWorkerOk layer even if script_error_count happened to
     // be exactly 1 for a different reason.
-    auto w = SpawnWorker(
-        "python_engine.invoke_on_inbox_missing_type_reports_error",
-        {unique_dir("inbox_missing_type")});
+    auto w = SpawnWorker("python_engine.invoke_on_inbox_missing_type_reports_error",
+                         {unique_dir("inbox_missing_type")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"InboxFrame type not registered"});
@@ -1035,17 +989,15 @@ TEST_F(PythonEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
 
 TEST_F(PythonEngineIsolatedTest, Api_ProducerQueueState_WithoutQueue)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_producer_queue_state_without_queue",
-        {unique_dir("api_prod_qs")});
+    auto w = SpawnWorker("python_engine.api_producer_queue_state_without_queue",
+                         {unique_dir("api_prod_qs")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Api_ProcessorQueueState_DualDefaults)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_processor_queue_state_dual_defaults",
-        {unique_dir("api_proc_qs")});
+    auto w = SpawnWorker("python_engine.api_processor_queue_state_dual_defaults",
+                         {unique_dir("api_proc_qs")});
     ExpectWorkerOk(w);
 }
 
@@ -1061,16 +1013,15 @@ TEST_F(PythonEngineIsolatedTest, Api_ProcessorQueueState_DualDefaults)
 
 TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_OverwriteSameKey)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_custom_metrics_overwrite_same_key",
-        {unique_dir("api_cm_overwrite")});
+    auto w = SpawnWorker("python_engine.api_custom_metrics_overwrite_same_key",
+                         {unique_dir("api_cm_overwrite")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ZeroValue)
 {
-    auto w = SpawnWorker("python_engine.api_custom_metrics_zero_value",
-                         {unique_dir("api_cm_zero")});
+    auto w =
+        SpawnWorker("python_engine.api_custom_metrics_zero_value", {unique_dir("api_cm_zero")});
     ExpectWorkerOk(w);
 }
 
@@ -1080,9 +1031,8 @@ TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ReportTypeErrors)
     // mismatch triggers pybind11 TypeError caught in-script.  Also
     // pins side-effect containment (a rejected dict update must NOT
     // partially apply to the core snapshot).
-    auto w = SpawnWorker(
-        "python_engine.api_custom_metrics_report_type_errors",
-        {unique_dir("api_cm_typerr")});
+    auto w = SpawnWorker("python_engine.api_custom_metrics_report_type_errors",
+                         {unique_dir("api_cm_typerr")});
     ExpectWorkerOk(w);
 }
 
@@ -1108,8 +1058,8 @@ TEST_F(PythonEngineIsolatedTest, Api_CustomMetrics_ReportTypeErrors)
 
 TEST_F(PythonEngineIsolatedTest, Api_ProcessorChannels_InOut)
 {
-    auto w = SpawnWorker("python_engine.api_processor_channels_in_out",
-                         {unique_dir("api_proc_ch")});
+    auto w =
+        SpawnWorker("python_engine.api_processor_channels_in_out", {unique_dir("api_proc_ch")});
     ExpectWorkerOk(w);
 }
 
@@ -1119,8 +1069,8 @@ TEST_F(PythonEngineIsolatedTest, Api_ProcessorChannels_InOut)
 
 TEST_F(PythonEngineIsolatedTest, Api_OpenInbox_WithoutBroker)
 {
-    auto w = SpawnWorker("python_engine.api_open_inbox_without_broker",
-                         {unique_dir("api_open_inbox")});
+    auto w =
+        SpawnWorker("python_engine.api_open_inbox_without_broker", {unique_dir("api_open_inbox")});
     ExpectWorkerOk(w);
 }
 
@@ -1132,9 +1082,8 @@ TEST_F(PythonEngineIsolatedTest, Api_ReportMetrics_NonDictArg_IsError)
 {
     // Parent pins the pybind11 type-mismatch ERROR text — confirms
     // the error came from the type guard, not some cascading follow-on.
-    auto w = SpawnWorker(
-        "python_engine.api_report_metrics_non_dict_arg_is_error",
-        {unique_dir("api_report_non_dict")});
+    auto w = SpawnWorker("python_engine.api_report_metrics_non_dict_arg_is_error",
+                         {unique_dir("api_report_non_dict")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"report_metrics"});
 }
@@ -1156,9 +1105,8 @@ TEST_F(PythonEngineIsolatedTest, Api_ReportMetrics_NonDictArg_IsError)
 
 TEST_F(PythonEngineIsolatedTest, FullLifecycle_VerifiesCallbackExecution)
 {
-    auto w = SpawnWorker(
-        "python_engine.full_lifecycle_verifies_callback_execution",
-        {unique_dir("full_lifecycle")});
+    auto w = SpawnWorker("python_engine.full_lifecycle_verifies_callback_execution",
+                         {unique_dir("full_lifecycle")});
     ExpectWorkerOk(w);
 }
 
@@ -1168,17 +1116,15 @@ TEST_F(PythonEngineIsolatedTest, FullLifecycle_VerifiesCallbackExecution)
 
 TEST_F(PythonEngineIsolatedTest, Api_ConsumerQueueState_WithoutQueue)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_consumer_queue_state_without_queue",
-        {unique_dir("api_cons_qs")});
+    auto w = SpawnWorker("python_engine.api_consumer_queue_state_without_queue",
+                         {unique_dir("api_cons_qs")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Api_EnvironmentStrings_LogsDirRunDir)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_environment_strings_logs_dir_run_dir",
-        {unique_dir("api_env_strs")});
+    auto w = SpawnWorker("python_engine.api_environment_strings_logs_dir_run_dir",
+                         {unique_dir("api_env_strs")});
     ExpectWorkerOk(w);
 }
 
@@ -1203,16 +1149,15 @@ TEST_F(PythonEngineIsolatedTest, Api_Spinlock_WithoutSHM_IsError)
 
 TEST_F(PythonEngineIsolatedTest, Api_AsNumpy_ArrayField)
 {
-    auto w = SpawnWorker("python_engine.api_as_numpy_array_field",
-                         {unique_dir("api_as_numpy_arr")});
+    auto w =
+        SpawnWorker("python_engine.api_as_numpy_array_field", {unique_dir("api_as_numpy_arr")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, Api_AsNumpy_NonArrayField_Throws)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_as_numpy_non_array_field_throws",
-        {unique_dir("api_as_numpy_scalar")});
+    auto w = SpawnWorker("python_engine.api_as_numpy_non_array_field_throws",
+                         {unique_dir("api_as_numpy_scalar")});
     ExpectWorkerOk(w);
 }
 
@@ -1229,23 +1174,20 @@ TEST_F(PythonEngineIsolatedTest, FullStartup_Producer_SlotOnly)
 
 TEST_F(PythonEngineIsolatedTest, FullStartup_Producer_SlotAndFlexzone)
 {
-    auto w = SpawnWorker(
-        "python_engine.full_startup_producer_slot_and_flexzone",
-        {unique_dir("full_prod_slotfz")});
+    auto w = SpawnWorker("python_engine.full_startup_producer_slot_and_flexzone",
+                         {unique_dir("full_prod_slotfz")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, FullStartup_Consumer)
 {
-    auto w = SpawnWorker("python_engine.full_startup_consumer",
-                         {unique_dir("full_cons")});
+    auto w = SpawnWorker("python_engine.full_startup_consumer", {unique_dir("full_cons")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, FullStartup_Processor)
 {
-    auto w = SpawnWorker("python_engine.full_startup_processor",
-                         {unique_dir("full_proc")});
+    auto w = SpawnWorker("python_engine.full_startup_processor", {unique_dir("full_proc")});
     ExpectWorkerOk(w);
 }
 
@@ -1267,9 +1209,8 @@ TEST_F(PythonEngineIsolatedTest, FullStartup_Processor)
 
 TEST_F(PythonEngineIsolatedTest, SlotLogicalSize_Aligned_PaddingSensitive)
 {
-    auto w = SpawnWorker(
-        "python_engine.slot_logical_size_aligned_padding_sensitive",
-        {unique_dir("slot_ls_aligned")});
+    auto w = SpawnWorker("python_engine.slot_logical_size_aligned_padding_sensitive",
+                         {unique_dir("slot_ls_aligned")});
     ExpectWorkerOk(w);
 }
 
@@ -1282,9 +1223,8 @@ TEST_F(PythonEngineIsolatedTest, SlotLogicalSize_Packed_NoPadding)
 
 TEST_F(PythonEngineIsolatedTest, SlotLogicalSize_ComplexMixed_Aligned)
 {
-    auto w = SpawnWorker(
-        "python_engine.slot_logical_size_complex_mixed_aligned",
-        {unique_dir("slot_ls_complex")});
+    auto w = SpawnWorker("python_engine.slot_logical_size_complex_mixed_aligned",
+                         {unique_dir("slot_ls_complex")});
     ExpectWorkerOk(w);
 }
 
@@ -1301,15 +1241,15 @@ TEST_F(PythonEngineIsolatedTest, FlexzoneLogicalSize_ArrayFields)
 
 TEST_F(PythonEngineIsolatedTest, FullStartup_Producer_Multifield)
 {
-    auto w = SpawnWorker("python_engine.full_startup_producer_multifield",
-                         {unique_dir("full_prod_mf")});
+    auto w =
+        SpawnWorker("python_engine.full_startup_producer_multifield", {unique_dir("full_prod_mf")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(PythonEngineIsolatedTest, FullStartup_Consumer_Multifield)
 {
-    auto w = SpawnWorker("python_engine.full_startup_consumer_multifield",
-                         {unique_dir("full_cons_mf")});
+    auto w =
+        SpawnWorker("python_engine.full_startup_consumer_multifield", {unique_dir("full_cons_mf")});
     ExpectWorkerOk(w);
 }
 
@@ -1327,8 +1267,7 @@ TEST_F(PythonEngineIsolatedTest, FullStartup_Processor_Multifield)
 
 TEST_F(PythonEngineIsolatedTest, Api_Band_AllMethodsGraceful_NoBroker)
 {
-    auto w = SpawnWorker(
-        "python_engine.api_band_all_methods_graceful_no_broker",
-        {unique_dir("api_band_no_broker")});
+    auto w = SpawnWorker("python_engine.api_band_all_methods_graceful_no_broker",
+                         {unique_dir("api_band_no_broker")});
     ExpectWorkerOk(w);
 }

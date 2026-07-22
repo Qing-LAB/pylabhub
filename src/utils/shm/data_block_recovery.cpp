@@ -48,7 +48,8 @@ static std::optional<RecoveryContext> open_for_recovery(const char *shm_name_cst
     return RecoveryContext{std::move(handle), header, std::move(shm_name)};
 }
 
-// Store platform monotonic timestamp (ns) into header->last_error_timestamp_ns. Used after recovery actions.
+// Store platform monotonic timestamp (ns) into header->last_error_timestamp_ns. Used after recovery
+// actions.
 static void set_recovery_timestamp(pylabhub::hub::SharedMemoryHeader *header)
 {
     if (header != nullptr)
@@ -99,7 +100,8 @@ extern "C"
             // Populate SlotDiagnostic
             out->slot_index = slot_index;
             out->slot_id = rw_state->write_generation.load(
-                std::memory_order_acquire); // Per-slot write generation (unique ID for slot's content)
+                std::memory_order_acquire); // Per-slot write generation (unique ID for slot's
+                                            // content)
             out->slot_state = map_slot_state(rw_state->slot_state.load(std::memory_order_acquire));
             out->write_lock = rw_state->write_lock.load(std::memory_order_acquire);
             out->reader_count = rw_state->reader_count.load(std::memory_order_acquire);
@@ -115,17 +117,18 @@ extern "C"
                 if (!pylabhub::hub::is_writer_alive(header, out->write_lock))
                 {
                     out->is_stuck = true;
-                    // Not yet implemented: stuck_duration_ms requires timestamp when lock was acquired.
-                    // See docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
+                    // Not yet implemented: stuck_duration_ms requires timestamp when lock was
+                    // acquired. See
+                    // docs/archive/transient-2026-03-06/DATAHUB_MEMORY_LAYOUT_AND_REMAPPING_DESIGN.md
                 }
             }
             else if (out->reader_count > 0)
             { // If readers exist, but no active process
-                // This is harder to diagnose without tracking individual reader PIDs.
-                // For now, a non-zero reader_count with no corresponding active consumer PID
-                // is a potential stuck state.
-                // This needs refinement based on actual consumer heartbeat tracking.
-                // if (header->active_consumer_count.load() == 0) out->is_stuck = true;
+              // This is harder to diagnose without tracking individual reader PIDs.
+              // For now, a non-zero reader_count with no corresponding active consumer PID
+              // is a potential stuck state.
+              // This needs refinement based on actual consumer heartbeat tracking.
+              // if (header->active_consumer_count.load() == 0) out->is_stuck = true;
             }
         }
         catch (const std::runtime_error &ex)
@@ -198,8 +201,8 @@ extern "C"
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_diagnose_all_slots: Unexpected error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_diagnose_all_slots: Unexpected error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return DIAGNOSE_UNEXPECTED;
         }
 
@@ -245,7 +248,8 @@ extern "C"
             pylabhub::hub::SlotRWState::SlotState current_slot_state =
                 rw_state->slot_state.load(std::memory_order_acquire);
 
-            if (current_write_lock != 0 && pylabhub::hub::is_writer_alive(header, current_write_lock))
+            if (current_write_lock != 0 &&
+                pylabhub::hub::is_writer_alive(header, current_write_lock))
             {
                 if (!force)
                 {
@@ -335,14 +339,14 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Runtime error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_force_reset_all_slots: Runtime error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_force_reset_all_slots: Unexpected error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_force_reset_all_slots: Unexpected error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
 
@@ -416,7 +420,8 @@ extern "C"
                 // DRAINING: write_lock held; producer was draining readers before writing.
                 // Previous commit data is still valid (write not yet started).
                 // Restore to COMMITTED so consumers can still read the last good value.
-                // The zombie write_lock (if any) is cleared by the next acquire_write() zombie check.
+                // The zombie write_lock (if any) is cleared by the next acquire_write() zombie
+                // check.
                 rw_state->slot_state.store(pylabhub::hub::SlotRWState::SlotState::COMMITTED,
                                            std::memory_order_release);
             }
@@ -429,8 +434,8 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_release_zombie_readers: Runtime error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_release_zombie_readers: Runtime error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
@@ -513,14 +518,14 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_release_zombie_writer: Runtime error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_release_zombie_writer: Runtime error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_release_zombie_writer: Unexpected error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_release_zombie_writer: Unexpected error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
 
@@ -541,7 +546,8 @@ extern "C"
             LOGGER_INFO("RECOVERY: Starting cleanup of dead consumers in '{}'.", ctx->shm_name);
 
             int cleaned_count = 0;
-            // NOLINTNEXTLINE(modernize-loop-convert) -- index i required for compare_exchange_strong and logging
+            // NOLINTNEXTLINE(modernize-loop-convert) -- index i required for
+            // compare_exchange_strong and logging
             for (size_t i = 0; i < pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS; ++i)
             {
                 uint64_t pid = header->consumer_heartbeats[i].consumer_pid.load(
@@ -555,25 +561,27 @@ extern "C"
                     { // Corrected
                         // Guard against underflow: active_consumer_count could be 0 if
                         // recovery is called multiple times or count got out of sync.
-                        uint32_t prev_count = header->active_consumer_count.load(
-                            std::memory_order_acquire);
+                        uint32_t prev_count =
+                            header->active_consumer_count.load(std::memory_order_acquire);
                         if (prev_count == 0)
                         {
-                            LOGGER_WARN("RECOVERY: active_consumer_count already 0 while clearing dead "
-                                        "consumer PID {} — count/heartbeat table out of sync.",
-                                        pid);
+                            LOGGER_WARN(
+                                "RECOVERY: active_consumer_count already 0 while clearing dead "
+                                "consumer PID {} — count/heartbeat table out of sync.",
+                                pid);
                         }
                         else
                         {
                             while (!header->active_consumer_count.compare_exchange_weak(
-                                prev_count, prev_count - 1,
-                                std::memory_order_acq_rel, std::memory_order_acquire))
+                                prev_count, prev_count - 1, std::memory_order_acq_rel,
+                                std::memory_order_acquire))
                             {
                                 if (prev_count == 0)
                                 {
-                                    LOGGER_WARN("RECOVERY: active_consumer_count underflow avoided for "
-                                                "dead consumer PID {}.",
-                                                pid);
+                                    LOGGER_WARN(
+                                        "RECOVERY: active_consumer_count underflow avoided for "
+                                        "dead consumer PID {}.",
+                                        pid);
                                     break;
                                 }
                             }
@@ -595,8 +603,8 @@ extern "C"
         }
         catch (const std::runtime_error &ex)
         {
-            LOGGER_ERROR("datablock_cleanup_dead_consumers: Runtime error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_cleanup_dead_consumers: Runtime error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
         catch (const std::exception &ex)
@@ -609,7 +617,8 @@ extern "C"
         return RECOVERY_SUCCESS;
     }
 
-    // NOLINTNEXTLINE(readability-function-cognitive-complexity) -- validation branches over many header/checksum cases
+    // NOLINTNEXTLINE(readability-function-cognitive-complexity) -- validation branches over many
+    // header/checksum cases
     PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(const char *shm_name_cstr,
                                                                       bool repair)
     {
@@ -628,8 +637,8 @@ extern "C"
                         ctx->shm_name, repair ? "ON" : "OFF");
 
             // 1. Magic Number
-            if (!pylabhub::hub::detail::is_header_magic_valid(&header->magic_number,
-                                                               pylabhub::hub::detail::DATABLOCK_MAGIC_NUMBER))
+            if (!pylabhub::hub::detail::is_header_magic_valid(
+                    &header->magic_number, pylabhub::hub::detail::DATABLOCK_MAGIC_NUMBER))
             {
                 LOGGER_ERROR("INTEGRITY_CHECK: Invalid magic number! Expected {:#x}, found {:#x}.",
                              pylabhub::hub::detail::DATABLOCK_MAGIC_NUMBER,
@@ -644,8 +653,8 @@ extern "C"
             {
                 LOGGER_ERROR("INTEGRITY_CHECK: Version mismatch! Expected {}.{}, found {}.{}.",
                              pylabhub::hub::detail::HEADER_VERSION_MAJOR,
-                             pylabhub::hub::detail::HEADER_VERSION_MINOR,
-                             header->version_major, header->version_minor);
+                             pylabhub::hub::detail::HEADER_VERSION_MINOR, header->version_major,
+                             header->version_minor);
                 overall_result = RECOVERY_FAILED;
                 // Cannot repair this.
             }
@@ -688,9 +697,8 @@ extern "C"
             }
             // Header stores resolved bytes (>= physical); legacy 0 means use physical_page_size
             expected_config.logical_unit_size =
-                (header->logical_unit_size != 0)
-                    ? static_cast<size_t>(header->logical_unit_size)
-                    : static_cast<size_t>(header->physical_page_size);
+                (header->logical_unit_size != 0) ? static_cast<size_t>(header->logical_unit_size)
+                                                 : static_cast<size_t>(header->physical_page_size);
             expected_config.policy = header->policy;
             expected_config.consumer_sync_policy = header->consumer_sync_policy;
             expected_config.checksum_type =
@@ -706,8 +714,7 @@ extern "C"
                 pylabhub::hub::ChecksumType::Unset)
             {
                 auto consumer = pylabhub::hub::find_datablock_consumer_impl(
-                    ctx->shm_name,
-                    &expected_config, nullptr, nullptr);
+                    ctx->shm_name, &expected_config, nullptr, nullptr);
 
                 if (!consumer)
                 {
@@ -720,19 +727,18 @@ extern "C"
                 // Flexible zone checksum (single flex zone in Phase 2 design)
                 if (expected_config.flex_zone_size > 0)
                 {
-                        if (!consumer->verify_checksum_flexible_zone())
-                        {
-                            LOGGER_WARN(
-                                "INTEGRITY_CHECK: Flexible zone checksum is invalid for '{}'.",
-                                ctx->shm_name);
+                    if (!consumer->verify_checksum_flexible_zone())
+                    {
+                        LOGGER_WARN("INTEGRITY_CHECK: Flexible zone checksum is invalid for '{}'.",
+                                    ctx->shm_name);
                         if (repair)
                         {
                             LOGGER_WARN("REPAIR: Attempting to recalculate flexible zone "
                                         "checksum for '{}'.",
                                         ctx->shm_name);
                             auto producer = pylabhub::hub::create_datablock_producer_impl(
-                                ctx->shm_name,
-                                expected_config.policy, expected_config, nullptr, nullptr);
+                                ctx->shm_name, expected_config.policy, expected_config, nullptr,
+                                nullptr);
                             if (producer && producer->update_checksum_flexible_zone())
                             {
                                 LOGGER_WARN("REPAIR: Successfully recalculated flexible zone "
@@ -770,34 +776,38 @@ extern "C"
                         {
                             if (!consumer->verify_checksum_slot(i))
                             {
-                                LOGGER_WARN("INTEGRITY_CHECK: Slot {} checksum is invalid for '{}'.", i,
-                                        ctx->shm_name);
-                            if (repair)
-                            {
-                                LOGGER_WARN("REPAIR: Attempting to recalculate checksum for slot "
+                                LOGGER_WARN(
+                                    "INTEGRITY_CHECK: Slot {} checksum is invalid for '{}'.", i,
+                                    ctx->shm_name);
+                                if (repair)
+                                {
+                                    LOGGER_WARN(
+                                        "REPAIR: Attempting to recalculate checksum for slot "
+                                        "{} in '{}'.",
+                                        i, ctx->shm_name);
+                                    auto producer = pylabhub::hub::create_datablock_producer_impl(
+                                        ctx->shm_name, expected_config.policy, expected_config,
+                                        nullptr, nullptr);
+                                    if (producer && producer->update_checksum_slot(i))
+                                    {
+                                        LOGGER_WARN(
+                                            "REPAIR: Successfully recalculated checksum for "
+                                            "slot {} in '{}'.",
+                                            i, ctx->shm_name);
+                                    }
+                                    else
+                                    {
+                                        LOGGER_ERROR(
+                                            "REPAIR: Failed to recalculate checksum for slot "
                                             "{} in '{}'.",
                                             i, ctx->shm_name);
-                                auto producer = pylabhub::hub::create_datablock_producer_impl(
-                                    ctx->shm_name,
-                                    expected_config.policy, expected_config, nullptr, nullptr);
-                                if (producer && producer->update_checksum_slot(i))
-                                {
-                                    LOGGER_WARN("REPAIR: Successfully recalculated checksum for "
-                                                "slot {} in '{}'.",
-                                                i, ctx->shm_name);
+                                        overall_result = RECOVERY_FAILED;
+                                    }
                                 }
                                 else
                                 {
-                                    LOGGER_ERROR("REPAIR: Failed to recalculate checksum for slot "
-                                                 "{} in '{}'.",
-                                                 i, ctx->shm_name);
                                     overall_result = RECOVERY_FAILED;
                                 }
-                            }
-                            else
-                            {
-                                overall_result = RECOVERY_FAILED;
-                            }
                             }
                         }
                     }
@@ -815,8 +825,8 @@ extern "C"
         }
         catch (const std::exception &ex)
         {
-            LOGGER_ERROR("datablock_validate_integrity: Unexpected error for '{}': {}", ctx->shm_name,
-                         ex.what());
+            LOGGER_ERROR("datablock_validate_integrity: Unexpected error for '{}': {}",
+                         ctx->shm_name, ex.what());
             return RECOVERY_FAILED;
         }
         return overall_result;
@@ -865,15 +875,17 @@ extern "C"
         if (!handle)
         {
             LOGGER_ERROR("recovery: Failed to open memfd (source_fd={}) for "
-                          "observer metrics read (magic / ABI / mmap "
-                          "check may have failed).", source_fd);
+                         "observer metrics read (magic / ABI / mmap "
+                         "check may have failed).",
+                         source_fd);
             return -1;
         }
         const pylabhub::hub::SharedMemoryHeader *header = handle->header();
         if (header == nullptr)
         {
             LOGGER_ERROR("recovery: Failed to get header from observer "
-                          "handle (source_fd={}).", source_fd);
+                         "handle (source_fd={}).",
+                         source_fd);
             return -1;
         }
         return slot_rw_get_metrics(header, out_metrics);

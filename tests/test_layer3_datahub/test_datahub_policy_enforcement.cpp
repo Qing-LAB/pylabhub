@@ -59,13 +59,15 @@ TEST_F(DatahubPolicyEnforcementTest, ChecksumManualRequiresExplicitCall)
 
 TEST_F(DatahubPolicyEnforcementTest, ConsumerAutoRegistersHeartbeatOnConstruction)
 {
-    auto proc = SpawnWorker("policy_enforcement.consumer_auto_registers_heartbeat_on_construction", {});
+    auto proc =
+        SpawnWorker("policy_enforcement.consumer_auto_registers_heartbeat_on_construction", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
 TEST_F(DatahubPolicyEnforcementTest, ConsumerAutoUnregistersHeartbeatOnDestroy)
 {
-    auto proc = SpawnWorker("policy_enforcement.consumer_auto_unregisters_heartbeat_on_destroy", {});
+    auto proc =
+        SpawnWorker("policy_enforcement.consumer_auto_unregisters_heartbeat_on_destroy", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 
@@ -79,7 +81,8 @@ TEST_F(DatahubPolicyEnforcementTest, AllPolicyConsumersHaveHeartbeat)
 
 TEST_F(DatahubPolicyEnforcementTest, SyncReaderProducerRespectsConsumerPosition)
 {
-    auto proc = SpawnWorker("policy_enforcement.sync_reader_producer_respects_consumer_position", {});
+    auto proc =
+        SpawnWorker("policy_enforcement.sync_reader_producer_respects_consumer_position", {});
     ExpectWorkerOk(proc, {"[policy_enforcement]"});
 }
 

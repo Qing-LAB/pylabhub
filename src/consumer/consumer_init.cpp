@@ -22,26 +22,24 @@ namespace pylabhub::consumer
 namespace
 {
 
-nlohmann::json consumer_config_template(const std::string &uid,
-                                         const std::string &name)
+nlohmann::json consumer_config_template(const std::string &uid, const std::string &name)
 {
     nlohmann::json j;
 
-    j["consumer"]["uid"]       = uid;
-    j["consumer"]["name"]      = name;
+    j["consumer"]["uid"] = uid;
+    j["consumer"]["name"] = name;
     j["consumer"]["log_level"] = "info";
     // Canonical default vault path per HEP-CORE-0024 §3.4 (finalized
     // 2026-05-31).  See producer_init.cpp for full rationale; the
     // §3.4.1 SECURITY WARNING applies symmetrically here.
-    j["consumer"]["auth"]["keyfile"] =
-        "vault/" + std::string(uid) + ".vault";
+    j["consumer"]["auth"]["keyfile"] = "vault/" + std::string(uid) + ".vault";
 
-    j["loop_timing"]         = "max_rate";
-    j["in_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
-    j["in_channel"]          = "lab.my.channel";
-    j["in_transport"]        = "shm";
-    j["in_shm_enabled"]      = true;
-    j["checksum"]            = "enforced";
+    j["loop_timing"] = "max_rate";
+    j["in_hub_dir"] = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
+    j["in_channel"] = "lab.my.channel";
+    j["in_transport"] = "shm";
+    j["in_shm_enabled"] = true;
+    j["checksum"] = "enforced";
 
     j["stop_on_script_error"] = false;
 
@@ -66,15 +64,15 @@ void consumer_on_init(const utils::RoleDirectory &rd, const std::string &name)
         if (!out)
             throw std::runtime_error(fmt::format("cannot write '{}'", init_py.string()));
         fmt::print(out,
-            "\"\"\"Consumer: {} — package entry point.\n"
-            "\n"
-            "Re-exports callbacks from callbacks.py. Edit callbacks.py to\n"
-            "implement your data-consumption logic.\n"
-            "\"\"\"\n"
-            "from .callbacks import on_init, on_consume, on_stop\n"
-            "\n"
-            "__all__ = [\"on_init\", \"on_consume\", \"on_stop\"]\n",
-            name);
+                   "\"\"\"Consumer: {} — package entry point.\n"
+                   "\n"
+                   "Re-exports callbacks from callbacks.py. Edit callbacks.py to\n"
+                   "implement your data-consumption logic.\n"
+                   "\"\"\"\n"
+                   "from .callbacks import on_init, on_consume, on_stop\n"
+                   "\n"
+                   "__all__ = [\"on_init\", \"on_consume\", \"on_stop\"]\n",
+                   name);
     }
 
     // callbacks.py
@@ -82,35 +80,34 @@ void consumer_on_init(const utils::RoleDirectory &rd, const std::string &name)
         std::ofstream out(callbacks_py);
         if (!out)
             throw std::runtime_error(fmt::format("cannot write '{}'", callbacks_py.string()));
-        fmt::print(out,
-            "\"\"\"Consumer callbacks — edit this file.\"\"\"\n"
-            "import pylabhub_consumer as cons\n"
-            "\n"
-            "\n"
-            "def on_init(api: cons.ConsumerAPI) -> None:\n"
-            "    \"\"\"Called once before the consumption loop starts.\"\"\"\n"
-            "    api.log('info', f\"on_init: uid={{api.uid()}}\")\n"
-            "\n"
-            "\n"
-            "def on_consume(rx, messages, api: cons.ConsumerAPI) -> bool:\n"
-            "    \"\"\"\n"
-            "    Called on each incoming slot.\n"
-            "\n"
-            "    rx.slot:  ctypes/numpy read-only view of the input SHM slot.\n"
-            "    messages: list of bytes from ZMQ data channel.\n"
-            "    api:      ConsumerAPI — log, stop, metrics, etc.\n"
-            "              api.flexzone(ChannelSide.Rx) for input flexzone.\n"
-            "\n"
-            "    Return True to acknowledge the slot.\n"
-            "    \"\"\"\n"
-            "    # TODO: replace with real data-consumption logic\n"
-            "    api.log('debug', f\"received slot #{{api.in_slots_received()}}\")\n"
-            "    return True\n"
-            "\n"
-            "\n"
-            "def on_stop(api: cons.ConsumerAPI) -> None:\n"
-            "    \"\"\"Called once after the consumption loop exits.\"\"\"\n"
-            "    api.log('info', f\"on_stop: uid={{api.uid()}}\")\n");
+        fmt::print(out, "\"\"\"Consumer callbacks — edit this file.\"\"\"\n"
+                        "import pylabhub_consumer as cons\n"
+                        "\n"
+                        "\n"
+                        "def on_init(api: cons.ConsumerAPI) -> None:\n"
+                        "    \"\"\"Called once before the consumption loop starts.\"\"\"\n"
+                        "    api.log('info', f\"on_init: uid={{api.uid()}}\")\n"
+                        "\n"
+                        "\n"
+                        "def on_consume(rx, messages, api: cons.ConsumerAPI) -> bool:\n"
+                        "    \"\"\"\n"
+                        "    Called on each incoming slot.\n"
+                        "\n"
+                        "    rx.slot:  ctypes/numpy read-only view of the input SHM slot.\n"
+                        "    messages: list of bytes from ZMQ data channel.\n"
+                        "    api:      ConsumerAPI — log, stop, metrics, etc.\n"
+                        "              api.flexzone(ChannelSide.Rx) for input flexzone.\n"
+                        "\n"
+                        "    Return True to acknowledge the slot.\n"
+                        "    \"\"\"\n"
+                        "    # TODO: replace with real data-consumption logic\n"
+                        "    api.log('debug', f\"received slot #{{api.in_slots_received()}}\")\n"
+                        "    return True\n"
+                        "\n"
+                        "\n"
+                        "def on_stop(api: cons.ConsumerAPI) -> None:\n"
+                        "    \"\"\"Called once after the consumption loop exits.\"\"\"\n"
+                        "    api.log('info', f\"on_stop: uid={{api.uid()}}\")\n");
     }
 }
 
@@ -131,12 +128,10 @@ void register_consumer_init()
 namespace
 {
 
-std::unique_ptr<scripting::RoleHostBase> make_consumer_host(
-    config::RoleConfig config,
-    std::atomic<bool> *shutdown_flag)
+std::unique_ptr<scripting::RoleHostBase> make_consumer_host(config::RoleConfig config,
+                                                            std::atomic<bool> *shutdown_flag)
 {
-    return std::make_unique<ConsumerRoleHost>(
-        std::move(config), shutdown_flag);
+    return std::make_unique<ConsumerRoleHost>(std::move(config), shutdown_flag);
 }
 
 } // namespace

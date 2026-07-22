@@ -65,7 +65,7 @@ namespace pylabhub::wire
 {
 class WireEnvelope;
 class ProducerRegReqBody;
-}
+} // namespace pylabhub::wire
 
 namespace pylabhub::admission
 {
@@ -84,8 +84,8 @@ namespace pylabhub::admission
 /// mutation knows which admission primitive to run.
 enum class AdmissionSide
 {
-    binding,   ///< fan-out / one-to-one producer, or fan-in consumer
-    dialing,   ///< fan-in producer, or fan-out / one-to-one consumer
+    binding, ///< fan-out / one-to-one producer, or fan-in consumer
+    dialing, ///< fan-in producer, or fan-out / one-to-one consumer
 };
 
 /// The subset of ProducerRegReqBody fields the state-mutation primitive needs.
@@ -93,20 +93,20 @@ enum class AdmissionSide
 /// `_on_consumer_joined` calling convention.
 struct RegRequest
 {
-    std::string   channel_name;
-    std::string   role_uid;
-    std::string   role_name;
-    std::string   role_type;           ///< "producer" | "consumer" | "processor"
-    std::string   zmq_pubkey;
-    std::string   channel_topology;    ///< "" defaults to "one-to-one" downstream
-    std::string   data_transport;      ///< "zmq" | "shm"
+    std::string channel_name;
+    std::string role_uid;
+    std::string role_name;
+    std::string role_type; ///< "producer" | "consumer" | "processor"
+    std::string zmq_pubkey;
+    std::string channel_topology; ///< "" defaults to "one-to-one" downstream
+    std::string data_transport;   ///< "zmq" | "shm"
     // Schema invariants — passed through verbatim to _on_producer_added.
-    std::string   schema_hash;
+    std::string schema_hash;
     // schema_version retired per C2 — version rides inside schema_id
     // (`$name.v<N>`) per HEP-CORE-0033 §G2.2.0b.
-    std::string   schema_id;
-    std::string   schema_blds;
-    std::string   schema_owner;
+    std::string schema_id;
+    std::string schema_blds;
+    std::string schema_owner;
 };
 
 // ── Outcome variants ──────────────────────────────────────────────────
@@ -116,11 +116,11 @@ struct RegRequest
 
 struct PYLABHUB_UTILS_EXPORT RegAccepted
 {
-    RegRequest    request;              ///< echoed for convenience
-    AdmissionSide side;                  ///< which side this REG landed on
-    bool          channel_opened;        ///< first admission on this channel
+    RegRequest request;  ///< echoed for convenience
+    AdmissionSide side;  ///< which side this REG landed on
+    bool channel_opened; ///< first admission on this channel
     std::uint64_t assigned_instance_id;
-    std::uint64_t channel_version;       ///< post-mutation snapshot
+    std::uint64_t channel_version; ///< post-mutation snapshot
     // NOTIFY manifest — pipeline records what NOTIFYs the caller should
     // fire, but does NOT fire them itself.  Each entry is
     // (msg_type, target_role_uid, phase, subject_role_uid, subject_role_type).
@@ -128,9 +128,9 @@ struct PYLABHUB_UTILS_EXPORT RegAccepted
     // pipeline decoupled from ZMQ.
     struct NotifyItem
     {
-        std::string phase;               ///< "admitted" | "live" | "left"
+        std::string phase; ///< "admitted" | "live" | "left"
         std::string subject_role_uid;
-        std::string subject_role_type;   ///< "producer" | "consumer"
+        std::string subject_role_type; ///< "producer" | "consumer"
     };
     std::vector<NotifyItem> pending_notifies;
 };
@@ -151,8 +151,7 @@ struct PYLABHUB_UTILS_EXPORT RegPended
     std::uint64_t my_version{0};
 };
 
-using RegOutcome =
-    std::variant<RegAccepted, RegRejected, RegPended>;
+using RegOutcome = std::variant<RegAccepted, RegRejected, RegPended>;
 
 // ── State-mutation callback signature ─────────────────────────────────
 //
@@ -195,10 +194,8 @@ using RegCommitFn = std::function<RegOutcome(const RegRequest &)>;
 /// Gate callbacks are supplied via `gate_ctx.cb`; the pipeline uses the
 /// same `AdmissionContext` reference the gates read from — a single
 /// source of truth, no parallel copy on the pipeline surface.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT RegOutcome
-run_reg_admission(const ::pylabhub::wire::WireEnvelope &env,
-                   const ::pylabhub::wire::ProducerRegReqBody    &body,
-                   const AdmissionContext                &gate_ctx,
-                   const RegCommitFn                     &commit);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT RegOutcome run_reg_admission(
+    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::ProducerRegReqBody &body,
+    const AdmissionContext &gate_ctx, const RegCommitFn &commit);
 
-}  // namespace pylabhub::admission
+} // namespace pylabhub::admission

@@ -65,16 +65,14 @@ fs::path make_tmp_dir(const char *tag)
 {
     static std::atomic<int> ctr{0};
     fs::path d = fs::temp_directory_path() /
-                 ("plh_l3_schema_loader_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
-                  std::to_string(ctr.fetch_add(1)));
+                 ("plh_l3_schema_loader_" + std::string(tag) + "_" + std::to_string(::getpid()) +
+                  "_" + std::to_string(ctr.fetch_add(1)));
     fs::remove_all(d);
     fs::create_directories(d);
     return d;
 }
 
-void write_json(const fs::path &dir, const fs::path &relative,
-                const std::string &content)
+void write_json(const fs::path &dir, const fs::path &relative, const std::string &content)
 {
     auto full_path = dir / relative;
     fs::create_directories(full_path.parent_path());
@@ -93,7 +91,8 @@ void remove_tree(const fs::path &p)
 int load_all_from_dirs_single_file()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -108,25 +107,23 @@ int load_all_from_dirs_single_file()
             })";
             write_json(tmpdir, "test.simple.v1.json", schema_json);
 
-            const auto entries = pylabhub::schema::load_all_from_dirs(
-                {tmpdir.string()});
+            const auto entries = pylabhub::schema::load_all_from_dirs({tmpdir.string()});
             ASSERT_EQ(entries.size(), 1u);
             EXPECT_EQ(entries[0].second.schema_id, "$test.simple.v1");
-            EXPECT_NE(entries[0].first.find("test.simple.v1.json"),
-                      std::string::npos);
+            EXPECT_NE(entries[0].first.find("test.simple.v1.json"), std::string::npos);
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(tmpdir);
         },
-        "datahub_schema_loader::load_all_from_dirs_single_file",
-        Logger::GetLifecycleModule());
+        "datahub_schema_loader::load_all_from_dirs_single_file", Logger::GetLifecycleModule());
 }
 
 int load_all_from_dirs_nested_path()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -142,28 +139,25 @@ int load_all_from_dirs_nested_path()
                     ]
                 }
             })";
-            write_json(tmpdir,
-                       fs::path("lab") / "sensors" / "temperature.raw.v1.json",
+            write_json(tmpdir, fs::path("lab") / "sensors" / "temperature.raw.v1.json",
                        schema_json);
 
-            const auto entries = pylabhub::schema::load_all_from_dirs(
-                {tmpdir.string()});
+            const auto entries = pylabhub::schema::load_all_from_dirs({tmpdir.string()});
             ASSERT_EQ(entries.size(), 1u);
-            EXPECT_EQ(entries[0].second.schema_id,
-                      "$lab.sensors.temperature.raw.v1");
+            EXPECT_EQ(entries[0].second.schema_id, "$lab.sensors.temperature.raw.v1");
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(tmpdir);
         },
-        "datahub_schema_loader::load_all_from_dirs_nested_path",
-        Logger::GetLifecycleModule());
+        "datahub_schema_loader::load_all_from_dirs_nested_path", Logger::GetLifecycleModule());
 }
 
 int load_all_from_dirs_invalid_json_skipped()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogWarn("Failed to parse schema file");
@@ -180,11 +174,9 @@ int load_all_from_dirs_invalid_json_skipped()
             write_json(tmpdir, "valid.json", valid_json);
             write_json(tmpdir, "broken.json", "{ this is not valid JSON }}}");
 
-            const auto entries = pylabhub::schema::load_all_from_dirs(
-                {tmpdir.string()});
-            ASSERT_EQ(entries.size(), 1u)
-                << "Valid schema should still load despite broken "
-                   "JSON file";
+            const auto entries = pylabhub::schema::load_all_from_dirs({tmpdir.string()});
+            ASSERT_EQ(entries.size(), 1u) << "Valid schema should still load despite broken "
+                                             "JSON file";
             EXPECT_EQ(entries[0].second.schema_id, "$test.valid.v1");
 
             log_cap.AssertNoUnexpectedLogWarnError();
@@ -198,7 +190,8 @@ int load_all_from_dirs_invalid_json_skipped()
 int load_all_from_dirs_first_match_wins_across_dirs()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogWarn("Duplicate schema_id");
@@ -233,8 +226,8 @@ int load_all_from_dirs_first_match_wins_across_dirs()
                 })";
             }
 
-            const auto entries = pylabhub::schema::load_all_from_dirs(
-                {dir_a.string(), dir_b.string()});
+            const auto entries =
+                pylabhub::schema::load_all_from_dirs({dir_a.string(), dir_b.string()});
             ASSERT_EQ(entries.size(), 1u);
             EXPECT_EQ(entries[0].second.slot.fields[0].type, "int32")
                 << "first-match-wins: dir_a should be retained over "
@@ -264,11 +257,11 @@ struct DatahubSchemaLoaderRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "datahub_schema_loader")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "datahub_schema_loader")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::datahub_schema_loader;

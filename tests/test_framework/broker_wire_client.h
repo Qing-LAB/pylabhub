@@ -55,11 +55,12 @@
 #include <cppzmq/zmq.hpp>
 #include <nlohmann/json.hpp>
 
-namespace pylabhub::tests::pattern4 {
+namespace pylabhub::tests::pattern4
+{
 
 class BrokerWireClient
 {
-public:
+  public:
     struct Config
     {
         /// "tcp://127.0.0.1:PORT" — where the broker's ROUTER binds.
@@ -113,17 +114,17 @@ public:
     /// The only cases that throw at construct time are libzmq's
     /// setsockopt validation of a malformed z85 CURVE key (throws
     /// `zmq::error_t` from `dealer.set(...)`).
-    explicit BrokerWireClient(zmq::context_t& ctx, const Config& cfg);
+    explicit BrokerWireClient(zmq::context_t &ctx, const Config &cfg);
     ~BrokerWireClient();
 
     // Movable (pImpl is unique_ptr; no additional invariants to
     // preserve across move).  Copies are disabled because a DEALER
     // socket cannot be duplicated.  Rule-of-five: user-declared dtor
     // implicitly deletes the move members, so we explicitly re-enable.
-    BrokerWireClient(BrokerWireClient&&) noexcept            = default;
-    BrokerWireClient& operator=(BrokerWireClient&&) noexcept = default;
-    BrokerWireClient(const BrokerWireClient&)                = delete;
-    BrokerWireClient& operator=(const BrokerWireClient&)     = delete;
+    BrokerWireClient(BrokerWireClient &&) noexcept = default;
+    BrokerWireClient &operator=(BrokerWireClient &&) noexcept = default;
+    BrokerWireClient(const BrokerWireClient &) = delete;
+    BrokerWireClient &operator=(const BrokerWireClient &) = delete;
 
     /// Send the 3-frame wire `[C, msg_type, body]` on the DEALER socket.
     /// Semantics: `zmq::send_multipart` with default blocking flags,
@@ -134,7 +135,7 @@ public:
     /// `zmq::error_t` (EAGAIN).  Tests that spam sends (e.g.
     /// wait-path queueing stress) should either drain replies between
     /// bursts or catch the exception.
-    void send(std::string_view msg_type, const nlohmann::json& body);
+    void send(std::string_view msg_type, const nlohmann::json &body);
 
     /// Poll for the next reply frame with a deadline.
     /// - Returns the `{msg_type, body}` pair on success.
@@ -175,13 +176,12 @@ public:
     /// HWM contention) propagates — this is by design because such a
     /// failure is not a "timeout" outcome but a socket-state error
     /// the test should surface immediately.
-    [[nodiscard]] std::optional<nlohmann::json>
-    request(std::string_view      req_type,
-             const nlohmann::json &body,
-             std::string_view      expect_ack_type,
-             std::chrono::milliseconds timeout);
+    [[nodiscard]] std::optional<nlohmann::json> request(std::string_view req_type,
+                                                        const nlohmann::json &body,
+                                                        std::string_view expect_ack_type,
+                                                        std::chrono::milliseconds timeout);
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;
 };

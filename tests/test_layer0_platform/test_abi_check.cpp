@@ -22,9 +22,9 @@
 
 #include <gtest/gtest.h>
 
-using pylabhub::version::ComponentVersions;
 using pylabhub::version::AbiCheckResult;
 using pylabhub::version::check_abi;
+using pylabhub::version::ComponentVersions;
 using pylabhub::version::current;
 
 namespace
@@ -35,25 +35,39 @@ namespace
 // repeating the full struct.
 ComponentVersions with_major_bumped(ComponentVersions v, const char *axis)
 {
-    if      (std::strcmp(axis, "library")       == 0) v.library_major       += 1;
-    else if (std::strcmp(axis, "shm")           == 0) v.shm_major            += 1;
-    else if (std::strcmp(axis, "broker_proto")  == 0) v.broker_proto_major   += 1;
-    else if (std::strcmp(axis, "zmq_frame")     == 0) v.zmq_frame_major      += 1;
-    else if (std::strcmp(axis, "script_api")    == 0) v.script_api_major     += 1;
-    else if (std::strcmp(axis, "script_engine") == 0) v.script_engine_major  += 1;
-    else if (std::strcmp(axis, "config")        == 0) v.config_major         += 1;
+    if (std::strcmp(axis, "library") == 0)
+        v.library_major += 1;
+    else if (std::strcmp(axis, "shm") == 0)
+        v.shm_major += 1;
+    else if (std::strcmp(axis, "broker_proto") == 0)
+        v.broker_proto_major += 1;
+    else if (std::strcmp(axis, "zmq_frame") == 0)
+        v.zmq_frame_major += 1;
+    else if (std::strcmp(axis, "script_api") == 0)
+        v.script_api_major += 1;
+    else if (std::strcmp(axis, "script_engine") == 0)
+        v.script_engine_major += 1;
+    else if (std::strcmp(axis, "config") == 0)
+        v.config_major += 1;
     return v;
 }
 
 ComponentVersions with_minor_bumped(ComponentVersions v, const char *axis)
 {
-    if      (std::strcmp(axis, "library")       == 0) v.library_minor        += 1;
-    else if (std::strcmp(axis, "shm")           == 0) v.shm_minor            += 1;
-    else if (std::strcmp(axis, "broker_proto")  == 0) v.broker_proto_minor   += 1;
-    else if (std::strcmp(axis, "zmq_frame")     == 0) v.zmq_frame_minor      += 1;
-    else if (std::strcmp(axis, "script_api")    == 0) v.script_api_minor     += 1;
-    else if (std::strcmp(axis, "script_engine") == 0) v.script_engine_minor  += 1;
-    else if (std::strcmp(axis, "config")        == 0) v.config_minor         += 1;
+    if (std::strcmp(axis, "library") == 0)
+        v.library_minor += 1;
+    else if (std::strcmp(axis, "shm") == 0)
+        v.shm_minor += 1;
+    else if (std::strcmp(axis, "broker_proto") == 0)
+        v.broker_proto_minor += 1;
+    else if (std::strcmp(axis, "zmq_frame") == 0)
+        v.zmq_frame_minor += 1;
+    else if (std::strcmp(axis, "script_api") == 0)
+        v.script_api_minor += 1;
+    else if (std::strcmp(axis, "script_engine") == 0)
+        v.script_engine_minor += 1;
+    else if (std::strcmp(axis, "config") == 0)
+        v.config_minor += 1;
     return v;
 }
 
@@ -66,20 +80,16 @@ ComponentVersions with_minor_bumped(ComponentVersions v, const char *axis)
 // If the consteval machinery is broken or the kXxxMajor constants are
 // not actually `inline constexpr`, this static_assert fails to compile.
 // That's the design's "it folds at compile time" guarantee.
-static_assert(
-    pylabhub::version::compiled_against_here().library_major ==
-        static_cast<uint16_t>(PYLABHUB_VERSION_MAJOR),
-    "compiled_against_here() must fold library_major from PYLABHUB_VERSION_MAJOR");
+static_assert(pylabhub::version::compiled_against_here().library_major ==
+                  static_cast<uint16_t>(PYLABHUB_VERSION_MAJOR),
+              "compiled_against_here() must fold library_major from PYLABHUB_VERSION_MAJOR");
 
-static_assert(
-    pylabhub::version::compiled_against_here().shm_major ==
-        pylabhub::version::kShmMajor,
-    "compiled_against_here() must fold shm_major from kShmMajor");
+static_assert(pylabhub::version::compiled_against_here().shm_major == pylabhub::version::kShmMajor,
+              "compiled_against_here() must fold shm_major from kShmMajor");
 
-static_assert(
-    pylabhub::version::compiled_against_here().script_engine_major ==
-        pylabhub::version::kScriptEngineMajor,
-    "compiled_against_here() must fold script_engine_major from kScriptEngineMajor");
+static_assert(pylabhub::version::compiled_against_here().script_engine_major ==
+                  pylabhub::version::kScriptEngineMajor,
+              "compiled_against_here() must fold script_engine_major from kScriptEngineMajor");
 
 // ============================================================================
 // Identity check — current-vs-current compatible
@@ -109,7 +119,7 @@ TEST(AbiCheckTest, MajorMismatch_Library_FailsWithFlag)
     const auto r = check_abi(with_major_bumped(current(), "library"));
     EXPECT_FALSE(r.compatible);
     EXPECT_TRUE(r.major_mismatch.library);
-    EXPECT_FALSE(r.major_mismatch.shm);  // only the one axis
+    EXPECT_FALSE(r.major_mismatch.shm); // only the one axis
     EXPECT_NE(r.message.find("library major"), std::string::npos)
         << "message must mention the axis name; got: " << r.message;
 }
@@ -170,8 +180,7 @@ TEST(AbiCheckTest, MinorMismatch_OnlyAxis_StillCompatible)
 {
     // Spot-check one axis; the predicate is uniform across all 7.
     const auto r = check_abi(with_minor_bumped(current(), "script_api"));
-    EXPECT_TRUE(r.compatible)
-        << "additive minor change must NOT flip compatible to false";
+    EXPECT_TRUE(r.compatible) << "additive minor change must NOT flip compatible to false";
     EXPECT_FALSE(r.major_mismatch.script_api)
         << "minor-only bump must not set the major mismatch flag";
     // message is "ABI OK" because no major mismatch contributed.
@@ -208,20 +217,20 @@ TEST(AbiCheckTest, BuildId_Mismatch_Fails)
 TEST(AbiCheckTest, MultipleMismatches_AllFlagsSet)
 {
     auto bumped = current();
-    bumped.library_major        += 1;
-    bumped.broker_proto_major   += 1;
-    bumped.script_engine_major  += 1;
+    bumped.library_major += 1;
+    bumped.broker_proto_major += 1;
+    bumped.script_engine_major += 1;
 
     const auto r = check_abi(bumped);
     EXPECT_FALSE(r.compatible);
     EXPECT_TRUE(r.major_mismatch.library);
     EXPECT_TRUE(r.major_mismatch.broker_proto);
     EXPECT_TRUE(r.major_mismatch.script_engine);
-    EXPECT_FALSE(r.major_mismatch.shm);  // untouched
+    EXPECT_FALSE(r.major_mismatch.shm); // untouched
 
     // Message mentions each of the three bumped axes.
-    EXPECT_NE(r.message.find("library major"),       std::string::npos);
-    EXPECT_NE(r.message.find("broker_proto major"),  std::string::npos);
+    EXPECT_NE(r.message.find("library major"), std::string::npos);
+    EXPECT_NE(r.message.find("broker_proto major"), std::string::npos);
     EXPECT_NE(r.message.find("script_engine major"), std::string::npos);
 }
 
@@ -233,9 +242,9 @@ TEST(AbiCheckTest, AbiExpectedHere_MatchesCurrent)
 {
     constexpr auto exp = pylabhub::version::abi_expected_here();
     const auto r = check_abi(exp.versions, exp.build_id);
-    EXPECT_TRUE(r.compatible)
-        << "caller's abi_expected_here() must match the library it's "
-           "running against; got: " << r.message;
+    EXPECT_TRUE(r.compatible) << "caller's abi_expected_here() must match the library it's "
+                                 "running against; got: "
+                              << r.message;
 }
 
 // ============================================================================
@@ -259,9 +268,8 @@ TEST(VerifyPeerVersionsTest, IdenticalPeer_Compatible_NoStderr)
 
     EXPECT_TRUE(r.compatible);
     EXPECT_EQ(r.message, "ABI OK");
-    EXPECT_TRUE(stderr_out.empty())
-        << "verify_peer_versions must be pure — no stderr side effect. "
-        << "Got: " << stderr_out;
+    EXPECT_TRUE(stderr_out.empty()) << "verify_peer_versions must be pure — no stderr side effect. "
+                                    << "Got: " << stderr_out;
 }
 
 TEST(VerifyPeerVersionsTest, PeerMinorMismatch_CompatibleAndSilent)
@@ -275,12 +283,10 @@ TEST(VerifyPeerVersionsTest, PeerMinorMismatch_CompatibleAndSilent)
     const std::string stderr_out = ::testing::internal::GetCapturedStderr();
 
     EXPECT_TRUE(r.compatible);
-    EXPECT_EQ(r.message, "ABI OK")
-        << "compatible minor deltas leave message = 'ABI OK'; only "
-        << "major mismatches populate the message with per-axis text.";
-    EXPECT_TRUE(stderr_out.empty())
-        << "verify_peer_versions must NOT emit minor WARN to stderr "
-        << "(that's check_abi's job at startup, before Logger is up).";
+    EXPECT_EQ(r.message, "ABI OK") << "compatible minor deltas leave message = 'ABI OK'; only "
+                                   << "major mismatches populate the message with per-axis text.";
+    EXPECT_TRUE(stderr_out.empty()) << "verify_peer_versions must NOT emit minor WARN to stderr "
+                                    << "(that's check_abi's job at startup, before Logger is up).";
 }
 
 TEST(VerifyPeerVersionsTest, PeerMajorMismatch_Incompatible_FlagAndMessage)
@@ -290,10 +296,9 @@ TEST(VerifyPeerVersionsTest, PeerMajorMismatch_Incompatible_FlagAndMessage)
 
     EXPECT_FALSE(r.compatible);
     EXPECT_TRUE(r.major_mismatch.shm);
-    EXPECT_EQ(r.major_mismatch.library,      false);
+    EXPECT_EQ(r.major_mismatch.library, false);
     EXPECT_EQ(r.major_mismatch.broker_proto, false);
-    EXPECT_NE(r.message.find("shm major"), std::string::npos)
-        << "message: " << r.message;
+    EXPECT_NE(r.message.find("shm major"), std::string::npos) << "message: " << r.message;
 }
 
 TEST(VerifyPeerVersionsTest, PeerBuildIdMismatch_Incompatible)
@@ -306,12 +311,10 @@ TEST(VerifyPeerVersionsTest, PeerBuildIdMismatch_Incompatible)
         GTEST_SKIP() << "build_id support not compiled in (Release without "
                         "PYLABHUB_STRICT_ABI_CHECK)";
     }
-    const auto r = verify_peer_versions(current(),
-                                         "peer-has-a-different-build-id-string");
+    const auto r = verify_peer_versions(current(), "peer-has-a-different-build-id-string");
     EXPECT_FALSE(r.compatible);
     EXPECT_TRUE(r.major_mismatch.build_id);
-    EXPECT_NE(r.message.find("build_id"), std::string::npos)
-        << "message: " << r.message;
+    EXPECT_NE(r.message.find("build_id"), std::string::npos) << "message: " << r.message;
 }
 
 TEST(VerifyPeerVersionsTest, ResultMatchesCheckAbi_ExceptForStderrSideEffect)
@@ -320,25 +323,24 @@ TEST(VerifyPeerVersionsTest, ResultMatchesCheckAbi_ExceptForStderrSideEffect)
     // AbiCheckResult for identical inputs.  Only difference is
     // stderr emission on minor mismatch.  This test asserts the
     // result equivalence.
-    const auto peer = with_major_bumped(
-        with_minor_bumped(current(), "config"), "zmq_frame");
+    const auto peer = with_major_bumped(with_minor_bumped(current(), "config"), "zmq_frame");
 
     ::testing::internal::CaptureStderr();
     const auto rc = check_abi(peer, nullptr);
-    (void)::testing::internal::GetCapturedStderr();  // discard the WARN
+    (void)::testing::internal::GetCapturedStderr(); // discard the WARN
 
     const auto rv = verify_peer_versions(peer, nullptr);
 
-    EXPECT_EQ(rc.compatible,                     rv.compatible);
-    EXPECT_EQ(rc.message,                        rv.message);
-    EXPECT_EQ(rc.major_mismatch.library,         rv.major_mismatch.library);
-    EXPECT_EQ(rc.major_mismatch.shm,             rv.major_mismatch.shm);
-    EXPECT_EQ(rc.major_mismatch.broker_proto,    rv.major_mismatch.broker_proto);
-    EXPECT_EQ(rc.major_mismatch.zmq_frame,       rv.major_mismatch.zmq_frame);
-    EXPECT_EQ(rc.major_mismatch.script_api,      rv.major_mismatch.script_api);
-    EXPECT_EQ(rc.major_mismatch.script_engine,   rv.major_mismatch.script_engine);
-    EXPECT_EQ(rc.major_mismatch.config,          rv.major_mismatch.config);
-    EXPECT_EQ(rc.major_mismatch.build_id,        rv.major_mismatch.build_id);
+    EXPECT_EQ(rc.compatible, rv.compatible);
+    EXPECT_EQ(rc.message, rv.message);
+    EXPECT_EQ(rc.major_mismatch.library, rv.major_mismatch.library);
+    EXPECT_EQ(rc.major_mismatch.shm, rv.major_mismatch.shm);
+    EXPECT_EQ(rc.major_mismatch.broker_proto, rv.major_mismatch.broker_proto);
+    EXPECT_EQ(rc.major_mismatch.zmq_frame, rv.major_mismatch.zmq_frame);
+    EXPECT_EQ(rc.major_mismatch.script_api, rv.major_mismatch.script_api);
+    EXPECT_EQ(rc.major_mismatch.script_engine, rv.major_mismatch.script_engine);
+    EXPECT_EQ(rc.major_mismatch.config, rv.major_mismatch.config);
+    EXPECT_EQ(rc.major_mismatch.build_id, rv.major_mismatch.build_id);
 }
 
 // ============================================================================
@@ -367,7 +369,7 @@ TEST(ClassifyPeerVerdictTest, Identical_IsOk)
 TEST(ClassifyPeerVerdictTest, MinorOnly_IsMinorMismatch)
 {
     AbiCheckResult r{};
-    r.compatible             = true;   // minor drift does not break compatibility
+    r.compatible = true; // minor drift does not break compatibility
     r.minor_mismatch.library = true;
     const auto out = classify_peer_verdict(r);
     EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MinorMismatch);
@@ -378,7 +380,7 @@ TEST(ClassifyPeerVerdictTest, MinorOnly_IsMinorMismatch)
 TEST(ClassifyPeerVerdictTest, BuildIdOnly_NoAxisDrift_IsBuildOnly)
 {
     AbiCheckResult r{};
-    r.compatible              = false; // build_id is a major strict-equality axis
+    r.compatible = false; // build_id is a major strict-equality axis
     r.major_mismatch.build_id = true;
     const auto out = classify_peer_verdict(r);
     EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::BuildOnly);
@@ -394,9 +396,9 @@ TEST(ClassifyPeerVerdictTest, BuildIdOnly_NoAxisDrift_IsBuildOnly)
 TEST(ClassifyPeerVerdictTest, BuildIdPlusMinorDrift_IsMinorMismatch_NotBuildOnly)
 {
     AbiCheckResult r{};
-    r.compatible                  = false; // build_id sets compatible=false
-    r.major_mismatch.build_id     = true;  // only-major flag is build_id
-    r.minor_mismatch.broker_proto = true;  // ... but a minor axis ALSO drifts
+    r.compatible = false;                 // build_id sets compatible=false
+    r.major_mismatch.build_id = true;     // only-major flag is build_id
+    r.minor_mismatch.broker_proto = true; // ... but a minor axis ALSO drifts
     const auto out = classify_peer_verdict(r);
     EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MinorMismatch)
         << "build_id + minor drift must not be masked as BUILD_ONLY";
@@ -407,7 +409,7 @@ TEST(ClassifyPeerVerdictTest, BuildIdPlusMinorDrift_IsMinorMismatch_NotBuildOnly
 TEST(ClassifyPeerVerdictTest, RealMajorAxis_IsMajorMismatch)
 {
     AbiCheckResult r{};
-    r.compatible         = false;
+    r.compatible = false;
     r.major_mismatch.shm = true;
     const auto out = classify_peer_verdict(r);
     EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MajorMismatch);
@@ -418,9 +420,9 @@ TEST(ClassifyPeerVerdictTest, RealMajorAxis_IsMajorMismatch)
 TEST(ClassifyPeerVerdictTest, BuildIdPlusRealMajor_IsMajorMismatch)
 {
     AbiCheckResult r{};
-    r.compatible              = false;
+    r.compatible = false;
     r.major_mismatch.build_id = true;
-    r.major_mismatch.shm      = true;  // a real major axis too → not only-build_id
+    r.major_mismatch.shm = true; // a real major axis too → not only-build_id
     const auto out = classify_peer_verdict(r);
     EXPECT_EQ(out.kind, AbiPeerVerdict::Kind::MajorMismatch);
     // Append order is library, shm, …, build_id → "shm,build_id".
@@ -439,8 +441,8 @@ TEST(ClassifyPeerVerdictTest, BuildIdPlusRealMajor_IsMajorMismatch)
 //   INVALID_REQUEST per §8.7.
 // ============================================================================
 
-using pylabhub::version::to_json_object;
 using pylabhub::version::from_json_object;
+using pylabhub::version::to_json_object;
 
 TEST(AbiFingerprintJsonTest, RoundTrip_Identity)
 {
@@ -448,21 +450,21 @@ TEST(AbiFingerprintJsonTest, RoundTrip_Identity)
     const nlohmann::json j = to_json_object(cur);
     const auto parsed = from_json_object(j);
 
-    EXPECT_EQ(parsed.library_major,       cur.library_major);
-    EXPECT_EQ(parsed.library_minor,       cur.library_minor);
-    EXPECT_EQ(parsed.library_rolling,     cur.library_rolling);
-    EXPECT_EQ(parsed.shm_major,           cur.shm_major);
-    EXPECT_EQ(parsed.shm_minor,           cur.shm_minor);
-    EXPECT_EQ(parsed.broker_proto_major,  cur.broker_proto_major);
-    EXPECT_EQ(parsed.broker_proto_minor,  cur.broker_proto_minor);
-    EXPECT_EQ(parsed.zmq_frame_major,     cur.zmq_frame_major);
-    EXPECT_EQ(parsed.zmq_frame_minor,     cur.zmq_frame_minor);
-    EXPECT_EQ(parsed.script_api_major,    cur.script_api_major);
-    EXPECT_EQ(parsed.script_api_minor,    cur.script_api_minor);
+    EXPECT_EQ(parsed.library_major, cur.library_major);
+    EXPECT_EQ(parsed.library_minor, cur.library_minor);
+    EXPECT_EQ(parsed.library_rolling, cur.library_rolling);
+    EXPECT_EQ(parsed.shm_major, cur.shm_major);
+    EXPECT_EQ(parsed.shm_minor, cur.shm_minor);
+    EXPECT_EQ(parsed.broker_proto_major, cur.broker_proto_major);
+    EXPECT_EQ(parsed.broker_proto_minor, cur.broker_proto_minor);
+    EXPECT_EQ(parsed.zmq_frame_major, cur.zmq_frame_major);
+    EXPECT_EQ(parsed.zmq_frame_minor, cur.zmq_frame_minor);
+    EXPECT_EQ(parsed.script_api_major, cur.script_api_major);
+    EXPECT_EQ(parsed.script_api_minor, cur.script_api_minor);
     EXPECT_EQ(parsed.script_engine_major, cur.script_engine_major);
     EXPECT_EQ(parsed.script_engine_minor, cur.script_engine_minor);
-    EXPECT_EQ(parsed.config_major,        cur.config_major);
-    EXPECT_EQ(parsed.config_minor,        cur.config_minor);
+    EXPECT_EQ(parsed.config_major, cur.config_major);
+    EXPECT_EQ(parsed.config_minor, cur.config_minor);
 }
 
 TEST(AbiFingerprintJsonTest, WireShape_ExactFieldNames)
@@ -519,12 +521,9 @@ TEST(AbiFingerprintJsonTest, NonObjectInput_Throws)
 {
     // Broker's INVALID_REQUEST path — a peer that sends a string or
     // array where an object is expected fails cleanly.
-    EXPECT_THROW(from_json_object(nlohmann::json("not-an-object")),
-                 std::invalid_argument);
-    EXPECT_THROW(from_json_object(nlohmann::json::array({1, 2, 3})),
-                 std::invalid_argument);
-    EXPECT_THROW(from_json_object(nlohmann::json(nullptr)),
-                 std::invalid_argument);
+    EXPECT_THROW(from_json_object(nlohmann::json("not-an-object")), std::invalid_argument);
+    EXPECT_THROW(from_json_object(nlohmann::json::array({1, 2, 3})), std::invalid_argument);
+    EXPECT_THROW(from_json_object(nlohmann::json(nullptr)), std::invalid_argument);
 }
 
 TEST(AbiFingerprintJsonTest, VerifyPeerVersions_FromParsedWire)

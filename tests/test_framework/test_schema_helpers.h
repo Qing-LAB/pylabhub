@@ -14,8 +14,8 @@
 namespace pylabhub::tests
 {
 
-using hub::SchemaSpec;
 using hub::FieldDef;
+using hub::SchemaSpec;
 
 /// Single float32 field — minimal schema for basic tests.
 inline SchemaSpec simple_schema()
@@ -31,9 +31,9 @@ inline SchemaSpec padding_schema()
 {
     SchemaSpec spec;
     spec.has_schema = true;
-    spec.fields.push_back({"ts",    "float64", 1, 0});
-    spec.fields.push_back({"flag",  "uint8",   1, 0});
-    spec.fields.push_back({"count", "int32",   1, 0});
+    spec.fields.push_back({"ts", "float64", 1, 0});
+    spec.fields.push_back({"flag", "uint8", 1, 0});
+    spec.fields.push_back({"count", "int32", 1, 0});
     return spec;
 }
 
@@ -44,11 +44,11 @@ inline SchemaSpec complex_mixed_schema()
     SchemaSpec spec;
     spec.has_schema = true;
     spec.fields.push_back({"timestamp", "float64", 1, 0});
-    spec.fields.push_back({"data",      "float32", 3, 0});
-    spec.fields.push_back({"status",    "uint16",  1, 0});
-    spec.fields.push_back({"raw",       "bytes",   1, 5});
-    spec.fields.push_back({"label",     "string",  1, 16});
-    spec.fields.push_back({"seq",       "int64",   1, 0});
+    spec.fields.push_back({"data", "float32", 3, 0});
+    spec.fields.push_back({"status", "uint16", 1, 0});
+    spec.fields.push_back({"raw", "bytes", 1, 5});
+    spec.fields.push_back({"label", "string", 1, 16});
+    spec.fields.push_back({"seq", "int64", 1, 0});
     return spec;
 }
 
@@ -57,8 +57,8 @@ inline SchemaSpec fz_array_schema()
 {
     SchemaSpec spec;
     spec.has_schema = true;
-    spec.fields.push_back({"version", "uint32",  1, 0});
-    spec.fields.push_back({"values",  "float64", 2, 0});
+    spec.fields.push_back({"version", "uint32", 1, 0});
+    spec.fields.push_back({"values", "float64", 2, 0});
     return spec;
 }
 
@@ -68,11 +68,11 @@ inline SchemaSpec multifield_schema()
 {
     SchemaSpec spec;
     spec.has_schema = true;
-    spec.fields.push_back({"ts",     "float64", 1, 0});
-    spec.fields.push_back({"flag",   "uint8",   1, 0});
-    spec.fields.push_back({"count",  "int32",   1, 0});
+    spec.fields.push_back({"ts", "float64", 1, 0});
+    spec.fields.push_back({"flag", "uint8", 1, 0});
+    spec.fields.push_back({"count", "int32", 1, 0});
     spec.fields.push_back({"values", "float32", 3, 0});
-    spec.fields.push_back({"tag",    "bytes",   1, 8});
+    spec.fields.push_back({"tag", "bytes", 1, 8});
     return spec;
 }
 
@@ -109,22 +109,22 @@ inline SchemaSpec all_types_schema()
     SchemaSpec spec;
     spec.has_schema = true;
     // 8-byte-aligned first (no padding needed at start)
-    spec.fields.push_back({"f64",    "float64", 1, 0});
-    spec.fields.push_back({"i64",    "int64",   1, 0});
-    spec.fields.push_back({"u64",    "uint64",  1, 0});
+    spec.fields.push_back({"f64", "float64", 1, 0});
+    spec.fields.push_back({"i64", "int64", 1, 0});
+    spec.fields.push_back({"u64", "uint64", 1, 0});
     // 4-byte-aligned
-    spec.fields.push_back({"f32",    "float32", 1, 0});
-    spec.fields.push_back({"i32",    "int32",   1, 0});
-    spec.fields.push_back({"u32",    "uint32",  1, 0});
+    spec.fields.push_back({"f32", "float32", 1, 0});
+    spec.fields.push_back({"i32", "int32", 1, 0});
+    spec.fields.push_back({"u32", "uint32", 1, 0});
     // 2-byte-aligned
-    spec.fields.push_back({"i16",    "int16",   1, 0});
-    spec.fields.push_back({"u16",    "uint16",  1, 0});
+    spec.fields.push_back({"i16", "int16", 1, 0});
+    spec.fields.push_back({"u16", "uint16", 1, 0});
     // 1-byte-aligned
-    spec.fields.push_back({"b",      "bool",    1, 0});
-    spec.fields.push_back({"i8",     "int8",    1, 0});
-    spec.fields.push_back({"u8",     "uint8",   1, 0});
-    spec.fields.push_back({"bytes4", "bytes",   1, 4});
-    spec.fields.push_back({"str8",   "string",  1, 8});
+    spec.fields.push_back({"b", "bool", 1, 0});
+    spec.fields.push_back({"i8", "int8", 1, 0});
+    spec.fields.push_back({"u8", "uint8", 1, 0});
+    spec.fields.push_back({"bytes4", "bytes", 1, 4});
+    spec.fields.push_back({"str8", "string", 1, 8});
     return spec;
 }
 

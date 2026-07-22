@@ -63,8 +63,7 @@ class BrokerProtocolTest : public IsolatedProcessTest
 
 TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 {
-    auto w = SpawnWorker(
-        "broker_protocol.heartbeat_keying_producer_vs_consumer_distinct_rows");
+    auto w = SpawnWorker("broker_protocol.heartbeat_keying_producer_vs_consumer_distinct_rows");
     ExpectWorkerOk(w);
 }
 
@@ -100,8 +99,7 @@ TEST_F(BrokerProtocolTest, HeartbeatKeying_ProducerVsConsumer_DistinctRows)
 
 TEST_F(BrokerProtocolTest, BroadcastFanOut_HubQueuePath_FansOutSame)
 {
-    auto w = SpawnWorker(
-        "broker_protocol.broadcast_fan_out_hub_queue_path_fans_out_same");
+    auto w = SpawnWorker("broker_protocol.broadcast_fan_out_hub_queue_path_fans_out_same");
     ExpectWorkerOk(w);
 }
 

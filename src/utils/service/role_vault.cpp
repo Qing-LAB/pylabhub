@@ -26,7 +26,7 @@
 #include <string>
 
 namespace fs = std::filesystem;
-using json   = nlohmann::json;
+using json = nlohmann::json;
 
 namespace pylabhub::utils
 {
@@ -41,9 +41,9 @@ struct RoleVault::Impl
     /// in dtor via `sodium_memzero`.  Replaces the pre-#175
     /// `std::string` members whose destructors are not guaranteed to
     /// zero heap memory.
-    std::array<char, 40>  public_z85{};
-    std::array<char, 40>  secret_z85{};
-    std::string           role_uid_;  ///< Role UID is not secret; std::string OK.
+    std::array<char, 40> public_z85{};
+    std::array<char, 40> secret_z85{};
+    std::string role_uid_; ///< Role UID is not secret; std::string OK.
 
     static constexpr std::size_t kKeyLen = 40;
 
@@ -51,11 +51,9 @@ struct RoleVault::Impl
     {
         namespace sec = pylabhub::utils::security;
         sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(public_z85.data()),
-            public_z85.size()));
+            reinterpret_cast<std::uint8_t *>(public_z85.data()), public_z85.size()));
         sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(secret_z85.data()),
-            secret_z85.size()));
+            reinterpret_cast<std::uint8_t *>(secret_z85.data()), secret_z85.size()));
         // role_uid_ is not secret — no zero needed, std::string dtor
         // releases the heap memory normally.
     }
@@ -74,17 +72,16 @@ struct RoleVault::Impl
 // ============================================================================
 
 RoleVault::RoleVault() : pImpl(std::make_unique<Impl>()) {}
-RoleVault::~RoleVault()                          = default;
-RoleVault::RoleVault(RoleVault &&) noexcept     = default;
+RoleVault::~RoleVault() = default;
+RoleVault::RoleVault(RoleVault &&) noexcept = default;
 RoleVault &RoleVault::operator=(RoleVault &&) noexcept = default;
 
 // ============================================================================
 // RoleVault::create
 // ============================================================================
 
-RoleVault RoleVault::create(const fs::path    &vault_path,
-                               const std::string &role_uid,
-                               const std::string &password)
+RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_uid,
+                            const std::string &password)
 {
     detail::vault_require_sodium();
 
@@ -107,32 +104,26 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
         // world-readable before vault_write lays down 0600 inside.
         namespace sec = pylabhub::utils::security;
         int chmod_err = 0;
-        const auto rc = sec::set_keyfile_mode(
-            vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
+        const auto rc =
+            sec::set_keyfile_mode(vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
         // set_keyfile_mode always populates out_errno on ChmodFailed
         // (chmod failure → errno; bad_alloc fallback → ENOMEM).
         if (rc == sec::SetModeResult::ChmodFailed)
-            throw std::runtime_error(
-                "RoleVault: chmod 0700 failed on vault parent dir '" +
-                vault_path.parent_path().string() + "': " +
-                std::strerror(chmod_err));
+            throw std::runtime_error("RoleVault: chmod 0700 failed on vault parent dir '" +
+                                     vault_path.parent_path().string() +
+                                     "': " + std::strerror(chmod_err));
     }
 
     // Serialize and encrypt payload.
-    const json payload = {
-        {"role_uid",  role_uid},
-        {"public_key", pub_str},
-        {"secret_key", sec_str}
-    };
+    const json payload = {{"role_uid", role_uid}, {"public_key", pub_str}, {"secret_key", sec_str}};
     detail::vault_write(vault_path, payload.dump(), password, role_uid);
 
     RoleVault v;
     if (pub_str.size() != Impl::kKeyLen || sec_str.size() != Impl::kKeyLen)
     {
-        throw std::runtime_error(
-            "RoleVault::create: generated keys have unexpected length");
+        throw std::runtime_error("RoleVault::create: generated keys have unexpected length");
     }
-    v.pImpl->role_uid_     = role_uid;
+    v.pImpl->role_uid_ = role_uid;
     std::memcpy(v.pImpl->public_z85.data(), pub_str.data(), Impl::kKeyLen);
     std::memcpy(v.pImpl->secret_z85.data(), sec_str.data(), Impl::kKeyLen);
     return v;
@@ -142,9 +133,8 @@ RoleVault RoleVault::create(const fs::path    &vault_path,
 // RoleVault::open
 // ============================================================================
 
-RoleVault RoleVault::open(const fs::path    &vault_path,
-                             const std::string &role_uid,
-                             const std::string &password)
+RoleVault RoleVault::open(const fs::path &vault_path, const std::string &role_uid,
+                          const std::string &password)
 {
     detail::vault_require_sodium();
 
@@ -162,9 +152,8 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
         // strings back to `sodium_memzero` via `get_ref<std::string&>`
         // before this scope ends.  See HEP-CORE-0040 §175 post-#175
         // hardening note below.
-        json j = json::parse(
-            reinterpret_cast<const char *>(bytes.data()),
-            reinterpret_cast<const char *>(bytes.data() + bytes.size()));
+        json j = json::parse(reinterpret_cast<const char *>(bytes.data()),
+                             reinterpret_cast<const char *>(bytes.data() + bytes.size()));
 
         // role_uid is not secret — std::string copy is fine.
         v.pImpl->role_uid_ = j.at("role_uid").get<std::string>();
@@ -201,10 +190,10 @@ RoleVault RoleVault::open(const fs::path    &vault_path,
             ~WipeGuard() noexcept
             {
                 namespace sec = pylabhub::utils::security;
-                sec::secure().memzero(std::span<std::uint8_t>(
-                    reinterpret_cast<std::uint8_t *>(p.data()), p.size()));
-                sec::secure().memzero(std::span<std::uint8_t>(
-                    reinterpret_cast<std::uint8_t *>(s.data()), s.size()));
+                sec::secure().memzero(
+                    std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(p.data()), p.size()));
+                sec::secure().memzero(
+                    std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(s.data()), s.size()));
             }
         } wipe_on_exit{pub_ref, sec_ref};
 
@@ -236,7 +225,7 @@ std::string_view RoleVault::secret_key() const noexcept
 {
     return std::string_view(pImpl->secret_z85.data(), Impl::kKeyLen);
 }
-std::string_view RoleVault::role_uid()  const noexcept
+std::string_view RoleVault::role_uid() const noexcept
 {
     return pImpl->role_uid_;
 }

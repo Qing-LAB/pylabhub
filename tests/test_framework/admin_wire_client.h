@@ -41,7 +41,7 @@ class AdminWireClient
         std::string client_pubkey;  ///< ephemeral client CURVE pub (z85).
         std::string client_seckey;  ///< ephemeral client CURVE sec (z85).
         std::string routing_id;     ///< the DEALER's own console routing id.
-        int         rcvtimeo_ms = 2000;
+        int rcvtimeo_ms = 2000;
     };
 
     AdminWireClient(zmq::context_t &ctx, const Config &cfg)
@@ -60,12 +60,9 @@ class AdminWireClient
     /// A parsed typed reply.
     struct Reply
     {
-        std::string    msg_type;
+        std::string msg_type;
         nlohmann::json body;
-        [[nodiscard]] bool is_error() const
-        {
-            return msg_type == std::string(wire::kAdminError);
-        }
+        [[nodiscard]] bool is_error() const { return msg_type == std::string(wire::kAdminError); }
     };
 
     /// Send a typed request and receive the typed reply.  Returns nullopt on
@@ -73,16 +70,15 @@ class AdminWireClient
     std::optional<Reply> request(std::string_view msg_type, nlohmann::json body)
     {
         const std::string corr = "c" + std::to_string(++corr_ctr_);
-        auto out = wire::WireEnvelope::build_dealer_send(routing_id_, msg_type,
-                                                         corr, std::move(body));
+        auto out =
+            wire::WireEnvelope::build_dealer_send(routing_id_, msg_type, corr, std::move(body));
         out.send(dealer_);
 
         zmq::multipart_t in;
         if (!in.recv(dealer_))
             return std::nullopt; // rcvtimeo elapsed
         wire::ParseError perr{};
-        auto env = wire::WireEnvelope::parse_dealer_recv(std::move(in),
-                                                         routing_id_, &perr);
+        auto env = wire::WireEnvelope::parse_dealer_recv(std::move(in), routing_id_, &perr);
         if (!env)
             return std::nullopt;
         return Reply{std::string(env->msg_type()), env->body()};
@@ -92,11 +88,9 @@ class AdminWireClient
     /// Returns true and stores the session id on success.
     bool establish(std::string_view token, std::string_view label)
     {
-        auto r = request(wire::kAdminHelloReq,
-                         nlohmann::json{{"token", std::string(token)},
-                                        {"label", std::string(label)}});
-        if (!r || r->is_error() ||
-            r->msg_type != std::string(wire::kAdminHelloAck))
+        auto r = request(wire::kAdminHelloReq, nlohmann::json{{"token", std::string(token)},
+                                                              {"label", std::string(label)}});
+        if (!r || r->is_error() || r->msg_type != std::string(wire::kAdminHelloAck))
             return false;
         session_id_ = r->body.value("session_id", std::string{});
         return !session_id_.empty();
@@ -107,10 +101,10 @@ class AdminWireClient
     /// (HEP-CORE-0033 §11.0.5).  Each call uses a unique nonce; to test replay
     /// rejection, build the body yourself and call request() twice.
     std::optional<Reply> command(std::string_view msg_type,
-                                 nlohmann::json    body = nlohmann::json::object())
+                                 nlohmann::json body = nlohmann::json::object())
     {
-        body["session_id"]     = session_id_;
-        body["client_nonce"]   = "n" + std::to_string(++nonce_ctr_);
+        body["session_id"] = session_id_;
+        body["client_nonce"] = "n" + std::to_string(++nonce_ctr_);
         body["client_wall_ts"] = now_ms();
         return request(msg_type, std::move(body));
     }
@@ -118,19 +112,18 @@ class AdminWireClient
     /// Current wall clock in ms — for building explicit command bodies.
     static std::uint64_t now_ms()
     {
-        return static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
-                .count());
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count());
     }
 
     [[nodiscard]] const std::string &session_id() const { return session_id_; }
 
   private:
     zmq::socket_t dealer_;
-    std::string   routing_id_;
-    std::string   session_id_;
-    int           corr_ctr_  = 0;
+    std::string routing_id_;
+    std::string session_id_;
+    int corr_ctr_ = 0;
     std::uint64_t nonce_ctr_ = 0;
 };
 

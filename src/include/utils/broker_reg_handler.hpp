@@ -65,7 +65,7 @@ namespace pylabhub::wire
 {
 class WireEnvelope;
 class ProducerRegReqBody;
-}
+} // namespace pylabhub::wire
 
 namespace pylabhub::admission
 {
@@ -79,8 +79,7 @@ struct KnownRolesConfig
 {
     /// Look up the CURVE pubkey registered for a role_uid in
     /// `known_roles`.  Returns empty string when the uid is not present.
-    std::function<std::string(std::string_view role_uid)>
-        lookup_pubkey_for_uid;
+    std::function<std::string(std::string_view role_uid)> lookup_pubkey_for_uid;
 };
 
 /// Broker tunables consumed by the admission gates.  Kept in one struct
@@ -100,7 +99,7 @@ struct BrokerAdmissionConfig
     /// pruned against the trusted broker clock; a replay stays skew-valid
     /// for up to 2*skew after the original).  Was 10'000 — below even 1*skew,
     /// so a skew-valid replay could find its nonce already pruned.
-    std::uint64_t nonce_window_ms{60'000ULL};   ///< I-REPLAY-BOUND
+    std::uint64_t nonce_window_ms{60'000ULL}; ///< I-REPLAY-BOUND
 };
 
 /// Adapter that binds the REG admission pipeline to a specific broker
@@ -114,14 +113,13 @@ class PYLABHUB_UTILS_EXPORT BrokerRegHandler
     /// Constructor binds the callback wiring against long-lived references
     /// (HubState + known_roles config).  Caller guarantees both outlive
     /// this handler.
-    BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
-                     KnownRolesConfig           known_roles,
-                     BrokerAdmissionConfig      config);
+    BrokerRegHandler(::pylabhub::hub::HubState &hub_state, KnownRolesConfig known_roles,
+                     BrokerAdmissionConfig config);
 
-    BrokerRegHandler(const BrokerRegHandler &)            = delete;
+    BrokerRegHandler(const BrokerRegHandler &) = delete;
     BrokerRegHandler &operator=(const BrokerRegHandler &) = delete;
-    BrokerRegHandler(BrokerRegHandler &&)                 = delete;
-    BrokerRegHandler &operator=(BrokerRegHandler &&)      = delete;
+    BrokerRegHandler(BrokerRegHandler &&) = delete;
+    BrokerRegHandler &operator=(BrokerRegHandler &&) = delete;
 
     /// Handle one REG_REQ or CONSUMER_REG_REQ.  Runs the full pipeline:
     ///   1. Pre-mutation gates (§14.5 gates 2-7)
@@ -131,19 +129,18 @@ class PYLABHUB_UTILS_EXPORT BrokerRegHandler
     ///
     /// Caller pattern-matches the outcome to emit REG_ACK / ERROR /
     /// pending-queue-park and to fire the recorded NOTIFY manifest.
-    [[nodiscard]] RegOutcome
-    handle(const ::pylabhub::wire::WireEnvelope &env,
-            const ::pylabhub::wire::ProducerRegReqBody    &body);
+    [[nodiscard]] RegOutcome handle(const ::pylabhub::wire::WireEnvelope &env,
+                                    const ::pylabhub::wire::ProducerRegReqBody &body);
 
   private:
     ::pylabhub::hub::HubState &hub_state_;
-    KnownRolesConfig           known_roles_;
-    BrokerAdmissionConfig      config_;
+    KnownRolesConfig known_roles_;
+    BrokerAdmissionConfig config_;
 
     /// Callbacks bound ONCE at construction — pipeline reuses across
     /// every REG_REQ.  Non-static because they capture `this` /
     /// `hub_state_` / `known_roles_`.
-    AdmissionCallbacks         gate_callbacks_;
+    AdmissionCallbacks gate_callbacks_;
 };
 
-}  // namespace pylabhub::admission
+} // namespace pylabhub::admission

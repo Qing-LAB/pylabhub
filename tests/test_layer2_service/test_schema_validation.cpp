@@ -19,22 +19,23 @@ using json = nlohmann::json;
 // Helpers
 // ============================================================================
 
-static json make_field(const std::string &name, const std::string &type,
-                       uint32_t count = 1, uint32_t length = 0)
+static json make_field(const std::string &name, const std::string &type, uint32_t count = 1,
+                       uint32_t length = 0)
 {
     json f;
     f["name"] = name;
     f["type"] = type;
-    if (count != 1)  f["count"]  = count;
-    if (length != 0) f["length"] = length;
+    if (count != 1)
+        f["count"] = count;
+    if (length != 0)
+        f["length"] = length;
     return f;
 }
 
-static json make_schema(std::initializer_list<json> fields,
-                        const std::string &packing = "aligned")
+static json make_schema(std::initializer_list<json> fields, const std::string &packing = "aligned")
 {
     json s;
-    s["fields"]  = json::array();
+    s["fields"] = json::array();
     s["packing"] = packing;
     for (auto &f : fields)
         s["fields"].push_back(f);
@@ -114,12 +115,18 @@ void expect_parse_error(const json &s, std::string_view needle)
 {
     bool threw = false;
     std::string msg;
-    try { (void)parse_schema_json(s); }
-    catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    try
+    {
+        (void)parse_schema_json(s);
+    }
+    catch (const std::runtime_error &e)
+    {
+        threw = true;
+        msg = e.what();
+    }
     EXPECT_TRUE(threw) << "parse_schema_json must throw runtime_error";
     EXPECT_NE(msg.find(needle), std::string::npos)
-        << "wrong error path; expected substring '" << needle
-        << "', got: " << msg;
+        << "wrong error path; expected substring '" << needle << "', got: " << msg;
 }
 } // namespace
 
@@ -127,7 +134,7 @@ TEST(SchemaValidationTest, ParseError_EmptyFieldsArray)
 {
     json s;
     s["packing"] = "aligned";
-    s["fields"]  = json::array();
+    s["fields"] = json::array();
     expect_parse_error(s, "'fields' array must not be empty");
 }
 
@@ -142,7 +149,7 @@ TEST(SchemaValidationTest, ParseError_MissingFieldName)
 {
     json s;
     s["packing"] = "aligned";
-    s["fields"]  = json::array();
+    s["fields"] = json::array();
     json f;
     f["type"] = "int32";
     // No "name" key
@@ -154,7 +161,7 @@ TEST(SchemaValidationTest, ParseError_MissingFieldType)
 {
     json s;
     s["packing"] = "aligned";
-    s["fields"]  = json::array();
+    s["fields"] = json::array();
     json f;
     f["name"] = "x";
     // No "type" key
@@ -191,7 +198,7 @@ TEST(SchemaValidationTest, ParseError_ExposeAsPresent)
 {
     json s;
     s["expose_as"] = "SomeType";
-    s["fields"]    = json::array({make_field("x", "int32")});
+    s["fields"] = json::array({make_field("x", "int32")});
     expect_parse_error(s, "expose_as is no longer supported");
 }
 
@@ -208,9 +215,8 @@ TEST(SchemaValidationTest, ParseError_InvalidPacking)
 TEST(SchemaValidationTest, SchemaSize_AllNumericTypes)
 {
     // Each numeric type should produce a non-zero size.
-    const char *types[] = {"bool", "int8", "uint8", "int16", "uint16",
-                           "int32", "uint32", "int64", "uint64",
-                           "float32", "float64"};
+    const char *types[] = {"bool",   "int8",  "uint8",  "int16",   "uint16", "int32",
+                           "uint32", "int64", "uint64", "float32", "float64"};
     for (const char *t : types)
     {
         auto s = make_schema({make_field("v", t)});
@@ -265,10 +271,7 @@ TEST(SchemaValidationTest, SchemaSize_EmptySpec_ReturnsZero)
 TEST(SchemaValidationTest, ToFieldDescs_PreservesTypeCountLength)
 {
     std::vector<FieldDef> fields = {
-        {"ts", "float64", 1, 0},
-        {"data", "float32", 4, 0},
-        {"label", "string", 1, 32}
-    };
+        {"ts", "float64", 1, 0}, {"data", "float32", 4, 0}, {"label", "string", 1, 32}};
     auto descs = to_field_descs(fields);
     ASSERT_EQ(descs.size(), 3u);
     EXPECT_EQ(descs[0].type_str, "float64");
@@ -297,18 +300,15 @@ TEST(SchemaValidationTest, FingerprintIncludesPacking_AlignedVsPackedDistinct)
     // Identical fields, different packing → MUST produce different fingerprints.
     // This is the bug HEP-0034 Phase 1 corrects: pre-fix, both produced the
     // same hash, conflating layouts that occupy different memory.
-    auto s_aligned = make_schema({make_field("flag", "bool"),
-                                  make_field("val", "int32")},
-                                 "aligned");
-    auto s_packed  = make_schema({make_field("flag", "bool"),
-                                  make_field("val", "int32")},
-                                 "packed");
+    auto s_aligned =
+        make_schema({make_field("flag", "bool"), make_field("val", "int32")}, "aligned");
+    auto s_packed = make_schema({make_field("flag", "bool"), make_field("val", "int32")}, "packed");
     auto spec_aligned = parse_schema_json(s_aligned);
-    auto spec_packed  = parse_schema_json(s_packed);
+    auto spec_packed = parse_schema_json(s_packed);
 
-    SchemaSpec empty;  // no flexzone
+    SchemaSpec empty; // no flexzone
     const auto h_aligned = compute_schema_hash(spec_aligned, empty);
-    const auto h_packed  = compute_schema_hash(spec_packed,  empty);
+    const auto h_packed = compute_schema_hash(spec_packed, empty);
 
     EXPECT_FALSE(h_aligned.empty());
     EXPECT_FALSE(h_packed.empty());
@@ -321,15 +321,11 @@ TEST(SchemaValidationTest, FingerprintIncludesPacking_FlexzoneAlsoCovered)
 {
     // Slot identical, flexzone packing differs → distinct fingerprints.
     auto slot = make_schema({make_field("x", "int32")}, "aligned");
-    auto fz_a = make_schema({make_field("flag", "bool"),
-                             make_field("val", "int32")},
-                            "aligned");
-    auto fz_p = make_schema({make_field("flag", "bool"),
-                             make_field("val", "int32")},
-                            "packed");
+    auto fz_a = make_schema({make_field("flag", "bool"), make_field("val", "int32")}, "aligned");
+    auto fz_p = make_schema({make_field("flag", "bool"), make_field("val", "int32")}, "packed");
     auto slot_spec = parse_schema_json(slot);
     auto fz_aligned_spec = parse_schema_json(fz_a);
-    auto fz_packed_spec  = parse_schema_json(fz_p);
+    auto fz_packed_spec = parse_schema_json(fz_p);
 
     const auto h_a = compute_schema_hash(slot_spec, fz_aligned_spec);
     const auto h_p = compute_schema_hash(slot_spec, fz_packed_spec);
@@ -340,18 +336,13 @@ TEST(SchemaValidationTest, FingerprintIncludesPacking_FlexzoneAlsoCovered)
 TEST(SchemaValidationTest, FingerprintIncludesPacking_MatchingPackingProducesSameHash)
 {
     // Sanity: same fields + same packing → same hash (deterministic).
-    auto s1 = make_schema({make_field("x", "int32"),
-                           make_field("y", "float64")},
-                          "aligned");
-    auto s2 = make_schema({make_field("x", "int32"),
-                           make_field("y", "float64")},
-                          "aligned");
+    auto s1 = make_schema({make_field("x", "int32"), make_field("y", "float64")}, "aligned");
+    auto s2 = make_schema({make_field("x", "int32"), make_field("y", "float64")}, "aligned");
     auto spec1 = parse_schema_json(s1);
     auto spec2 = parse_schema_json(s2);
 
     SchemaSpec empty;
-    EXPECT_EQ(compute_schema_hash(spec1, empty),
-              compute_schema_hash(spec2, empty));
+    EXPECT_EQ(compute_schema_hash(spec1, empty), compute_schema_hash(spec2, empty));
 }
 
 // ============================================================================
@@ -365,16 +356,14 @@ TEST(SchemaValidationTest, WireForm_HashMatchesSchemaSpecHash)
     // `compute_schema_hash(spec, empty_fz)`.  Without this invariant
     // the broker's Stage-2 verification would always reject producer
     // hashes (broker-2619b17 follow-up).
-    auto s = make_schema({make_field("ts", "float64"),
-                          make_field("v",  "float32")}, "aligned");
+    auto s = make_schema({make_field("ts", "float64"), make_field("v", "float32")}, "aligned");
     auto spec = parse_schema_json(s);
 
     const auto from_spec = compute_schema_hash(spec, SchemaSpec{});
-    const auto from_wire = compute_canonical_hash_from_wire(
-        canonical_fields_str(spec), spec.packing);
+    const auto from_wire =
+        compute_canonical_hash_from_wire(canonical_fields_str(spec), spec.packing);
     EXPECT_EQ(from_spec.size(), from_wire.size());
-    EXPECT_EQ(0, std::memcmp(from_spec.data(), from_wire.data(),
-                              from_wire.size()));
+    EXPECT_EQ(0, std::memcmp(from_spec.data(), from_wire.data(), from_wire.size()));
 }
 
 TEST(SchemaValidationTest, WireForm_FlexzoneIncluded)
@@ -384,25 +373,22 @@ TEST(SchemaValidationTest, WireForm_FlexzoneIncluded)
     // with flexzone NACKs FINGERPRINT_INCONSISTENT (the bug fixed
     // alongside Phase 4a).
     auto slot = make_schema({make_field("x", "int32")}, "aligned");
-    auto fz   = make_schema({make_field("y", "float64")}, "aligned");
+    auto fz = make_schema({make_field("y", "float64")}, "aligned");
     auto slot_spec = parse_schema_json(slot);
-    auto fz_spec   = parse_schema_json(fz);
+    auto fz_spec = parse_schema_json(fz);
 
-    const auto from_spec_slot_only =
-        compute_schema_hash(slot_spec, SchemaSpec{});
-    const auto from_spec_with_fz =
-        compute_schema_hash(slot_spec, fz_spec);
+    const auto from_spec_slot_only = compute_schema_hash(slot_spec, SchemaSpec{});
+    const auto from_spec_with_fz = compute_schema_hash(slot_spec, fz_spec);
     EXPECT_NE(from_spec_slot_only, from_spec_with_fz)
         << "flexzone must be part of the slot+fz fingerprint";
 
     // Wire form: pass slot + flexzone fields → must match
     // compute_schema_hash(slot, fz).
-    const auto from_wire_with_fz = compute_canonical_hash_from_wire(
-        canonical_fields_str(slot_spec), slot_spec.packing,
-        canonical_fields_str(fz_spec),   fz_spec.packing);
-    EXPECT_EQ(0, std::memcmp(from_spec_with_fz.data(),
-                              from_wire_with_fz.data(),
-                              from_wire_with_fz.size()));
+    const auto from_wire_with_fz =
+        compute_canonical_hash_from_wire(canonical_fields_str(slot_spec), slot_spec.packing,
+                                         canonical_fields_str(fz_spec), fz_spec.packing);
+    EXPECT_EQ(0, std::memcmp(from_spec_with_fz.data(), from_wire_with_fz.data(),
+                             from_wire_with_fz.size()));
 }
 
 // ============================================================================
@@ -422,7 +408,7 @@ TEST(SchemaValidationTest, MakeWireFields_NamedSchema_PopulatesId)
     EXPECT_FALSE(w.schema_blds.empty());
     EXPECT_EQ(w.schema_packing, "aligned");
     EXPECT_FALSE(w.schema_hash.empty());
-    EXPECT_EQ(w.schema_hash.size(), 64u);  // 32 bytes hex
+    EXPECT_EQ(w.schema_hash.size(), 64u); // 32 bytes hex
     EXPECT_TRUE(w.flexzone_blds.empty());
     EXPECT_TRUE(w.flexzone_packing.empty());
 }
@@ -443,23 +429,22 @@ TEST(SchemaValidationTest, MakeWireFields_FlexzonePopulated)
 {
     // Slot + flexzone both present → wire fields cover both.
     auto slot = make_schema({make_field("v", "float32")}, "aligned");
-    auto fz   = make_schema({make_field("p", "uint64")},   "packed");
+    auto fz = make_schema({make_field("p", "uint64")}, "packed");
     auto slot_spec = parse_schema_json(slot);
-    auto fz_spec   = parse_schema_json(fz);
+    auto fz_spec = parse_schema_json(fz);
 
     auto w = make_wire_schema_fields(nlohmann::json{}, slot_spec, fz_spec);
     EXPECT_FALSE(w.schema_blds.empty());
-    EXPECT_EQ(w.schema_packing,    "aligned");
+    EXPECT_EQ(w.schema_packing, "aligned");
     EXPECT_FALSE(w.flexzone_blds.empty());
-    EXPECT_EQ(w.flexzone_packing,  "packed");
+    EXPECT_EQ(w.flexzone_packing, "packed");
     // Sanity: the hash matches what compute_canonical_hash_from_wire
     // produces for the same inputs.
-    const auto h_expected = compute_canonical_hash_from_wire(
-        w.schema_blds, w.schema_packing, w.flexzone_blds, w.flexzone_packing);
+    const auto h_expected = compute_canonical_hash_from_wire(w.schema_blds, w.schema_packing,
+                                                             w.flexzone_blds, w.flexzone_packing);
     EXPECT_EQ(w.schema_hash,
               ::pylabhub::format_tools::bytes_to_hex(
-                  {reinterpret_cast<const char *>(h_expected.data()),
-                   h_expected.size()}));
+                  {reinterpret_cast<const char *>(h_expected.data()), h_expected.size()}));
 }
 
 TEST(SchemaValidationTest, MakeWireFields_NoSchema_AllEmpty)
@@ -478,20 +463,20 @@ TEST(SchemaValidationTest, MakeWireFields_NoSchema_AllEmpty)
 TEST(SchemaValidationTest, ApplyProducerFields_AddsKeysWithSchemaPrefix)
 {
     WireSchemaFields w;
-    w.schema_id        = "$lab.x.v1";
-    w.schema_hash      = std::string(64, 'a');
-    w.schema_blds      = "ts:f64:1:0";
-    w.schema_packing   = "aligned";
-    w.flexzone_blds    = "p:u64:1:0";
+    w.schema_id = "$lab.x.v1";
+    w.schema_hash = std::string(64, 'a');
+    w.schema_blds = "ts:f64:1:0";
+    w.schema_packing = "aligned";
+    w.flexzone_blds = "p:u64:1:0";
     w.flexzone_packing = "packed";
 
     json reg;
     apply_producer_schema_fields(reg, w);
-    EXPECT_EQ(reg.value("schema_id",        ""), "$lab.x.v1");
-    EXPECT_EQ(reg.value("schema_hash",      ""), w.schema_hash);
-    EXPECT_EQ(reg.value("schema_blds",      ""), w.schema_blds);
-    EXPECT_EQ(reg.value("schema_packing",   ""), "aligned");
-    EXPECT_EQ(reg.value("flexzone_blds",    ""), "p:u64:1:0");
+    EXPECT_EQ(reg.value("schema_id", ""), "$lab.x.v1");
+    EXPECT_EQ(reg.value("schema_hash", ""), w.schema_hash);
+    EXPECT_EQ(reg.value("schema_blds", ""), w.schema_blds);
+    EXPECT_EQ(reg.value("schema_packing", ""), "aligned");
+    EXPECT_EQ(reg.value("flexzone_blds", ""), "p:u64:1:0");
     EXPECT_EQ(reg.value("flexzone_packing", ""), "packed");
     // No expected_* keys leaked into the producer payload.
     EXPECT_FALSE(reg.contains("expected_schema_id"));
@@ -501,20 +486,20 @@ TEST(SchemaValidationTest, ApplyProducerFields_AddsKeysWithSchemaPrefix)
 TEST(SchemaValidationTest, ApplyConsumerFields_AddsKeysWithExpectedPrefix)
 {
     WireSchemaFields w;
-    w.schema_id        = "$lab.x.v1";
-    w.schema_hash      = std::string(64, 'a');
-    w.schema_blds      = "ts:f64:1:0";
-    w.schema_packing   = "aligned";
-    w.flexzone_blds    = "p:u64:1:0";
+    w.schema_id = "$lab.x.v1";
+    w.schema_hash = std::string(64, 'a');
+    w.schema_blds = "ts:f64:1:0";
+    w.schema_packing = "aligned";
+    w.flexzone_blds = "p:u64:1:0";
     w.flexzone_packing = "packed";
 
     json reg;
     apply_consumer_schema_fields(reg, w);
-    EXPECT_EQ(reg.value("expected_schema_id",      ""), "$lab.x.v1");
-    EXPECT_EQ(reg.value("expected_schema_hash",    ""), w.schema_hash);
-    EXPECT_EQ(reg.value("expected_schema_blds",           ""), w.schema_blds);
-    EXPECT_EQ(reg.value("expected_schema_packing",        ""), "aligned");
-    EXPECT_EQ(reg.value("expected_flexzone_blds",  ""), "p:u64:1:0");
+    EXPECT_EQ(reg.value("expected_schema_id", ""), "$lab.x.v1");
+    EXPECT_EQ(reg.value("expected_schema_hash", ""), w.schema_hash);
+    EXPECT_EQ(reg.value("expected_schema_blds", ""), w.schema_blds);
+    EXPECT_EQ(reg.value("expected_schema_packing", ""), "aligned");
+    EXPECT_EQ(reg.value("expected_flexzone_blds", ""), "p:u64:1:0");
     EXPECT_EQ(reg.value("expected_flexzone_packing", ""), "packed");
     // No producer-side keys leaked into the consumer payload.
     EXPECT_FALSE(reg.contains("schema_id"));

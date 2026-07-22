@@ -18,9 +18,11 @@
 #include <cppzmq/zmq_addon.hpp>
 #include <fmt/format.h>
 
-namespace pylabhub::tests::pattern4 {
+namespace pylabhub::tests::pattern4
+{
 
-namespace {
+namespace
+{
 
 // Broker's canonical error msg_type.  Match BrokerService::send_reply's
 // error envelope — a caller that expected some ACK but got ERROR wants
@@ -43,22 +45,19 @@ std::uint64_t system_wall_now_ms()
 {
     using namespace std::chrono;
     return static_cast<std::uint64_t>(
-        duration_cast<milliseconds>(
-            system_clock::now().time_since_epoch())
-            .count());
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
-} // anon
+} // namespace
 
 struct BrokerWireClient::Impl
 {
     zmq::socket_t dealer;
-    std::string   broker_endpoint;
-    std::string   client_role_uid;
+    std::string broker_endpoint;
+    std::string client_role_uid;
 
     Impl(zmq::context_t &ctx, const Config &cfg)
-        : dealer(ctx, zmq::socket_type::dealer),
-          broker_endpoint(cfg.broker_endpoint),
+        : dealer(ctx, zmq::socket_type::dealer), broker_endpoint(cfg.broker_endpoint),
           client_role_uid(cfg.client_role_uid)
     {
         // Socket policy — match production BRC.
@@ -81,9 +80,8 @@ struct BrokerWireClient::Impl
         // before connect so broker's envelope parse sees a stable
         // Frame 0.
         if (client_role_uid.empty())
-            throw std::runtime_error(
-                "BrokerWireClient: Config::client_role_uid is empty; "
-                "I-DEALER-IDENTITY requires non-empty routing_id.");
+            throw std::runtime_error("BrokerWireClient: Config::client_role_uid is empty; "
+                                     "I-DEALER-IDENTITY requires non-empty routing_id.");
         dealer.set(zmq::sockopt::routing_id, client_role_uid);
 
         // TCP connect is asynchronous; a bad endpoint / server-key
@@ -101,8 +99,7 @@ BrokerWireClient::BrokerWireClient(zmq::context_t &ctx, const Config &cfg)
 
 BrokerWireClient::~BrokerWireClient() = default;
 
-void BrokerWireClient::send(std::string_view      msg_type,
-                             const nlohmann::json &body)
+void BrokerWireClient::send(std::string_view msg_type, const nlohmann::json &body)
 {
     // HEP-CORE-0046 §14 envelope encoder.  If the caller pre-set
     // `body["correlation_id"]` (non-empty string), use it verbatim so
@@ -119,21 +116,20 @@ void BrokerWireClient::send(std::string_view      msg_type,
         corr_id = make_random_hex16();
     ::pylabhub::wire::adapter::EncodeContext ctx;
     ctx.dealer_role_uid = pImpl->client_role_uid;
-    ctx.correlation_id  = corr_id;
+    ctx.correlation_id = corr_id;
 
     std::string nonce_holder;
     if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
     {
-        nonce_holder       = make_random_hex16();
-        ctx.client_nonce   = nonce_holder;
+        nonce_holder = make_random_hex16();
+        ctx.client_nonce = nonce_holder;
         ctx.client_wall_ts = system_wall_now_ms();
     }
     // `send_multipart` throws `zmq::error_t` on SNDTIMEO / socket-in-
     // bad-state — matches BRC.  Contract on the header: this is by
     // design and callers under stress paths should catch or drain
     // between bursts.
-    zmq::multipart_t wire =
-        ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ctx, body);
+    zmq::multipart_t wire = ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ctx, body);
     wire.send(pImpl->dealer);
 }
 
@@ -157,24 +153,23 @@ BrokerWireClient::receive(std::chrono::milliseconds timeout)
     zmq::multipart_t raw;
     if (!raw.recv(pImpl->dealer, ZMQ_DONTWAIT))
     {
-        throw std::runtime_error(
-            "BrokerWireClient::receive: poll reported readable but "
-            "multipart recv returned no message (spurious wake?)");
+        throw std::runtime_error("BrokerWireClient::receive: poll reported readable but "
+                                 "multipart recv returned no message (spurious wake?)");
     }
 
     ::pylabhub::wire::ParseError err = {};
-    auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-        std::move(raw), pImpl->client_role_uid, &err);
+    auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(std::move(raw),
+                                                                     pImpl->client_role_uid, &err);
     if (!env_opt.has_value())
     {
-        throw std::runtime_error(fmt::format(
-            "BrokerWireClient::receive: envelope parse failed "
-            "(ParseError={})", static_cast<int>(err)));
+        throw std::runtime_error(fmt::format("BrokerWireClient::receive: envelope parse failed "
+                                             "(ParseError={})",
+                                             static_cast<int>(err)));
     }
     ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
-    std::string msg_type       = std::string(env.msg_type());
+    std::string msg_type = std::string(env.msg_type());
     std::string correlation_id = std::string(env.correlation_id());
-    nlohmann::json body        = env.body();
+    nlohmann::json body = env.body();
     // Inject correlation_id into body so tests that inspect
     // body["correlation_id"] see the envelope value (matches BRC's
     // legacy-handler compat pattern).
@@ -183,11 +178,10 @@ BrokerWireClient::receive(std::chrono::milliseconds timeout)
     return std::make_pair(std::move(msg_type), std::move(body));
 }
 
-std::optional<nlohmann::json>
-BrokerWireClient::request(std::string_view      req_type,
-                           const nlohmann::json &body,
-                           std::string_view      expect_ack_type,
-                           std::chrono::milliseconds timeout)
+std::optional<nlohmann::json> BrokerWireClient::request(std::string_view req_type,
+                                                        const nlohmann::json &body,
+                                                        std::string_view expect_ack_type,
+                                                        std::chrono::milliseconds timeout)
 {
     const auto start = std::chrono::steady_clock::now();
     send(req_type, body);
@@ -201,8 +195,7 @@ BrokerWireClient::request(std::string_view      req_type,
     {
         const auto elapsed = std::chrono::steady_clock::now() - start;
         const auto remaining =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                timeout - elapsed);
+            std::chrono::duration_cast<std::chrono::milliseconds>(timeout - elapsed);
         if (remaining <= std::chrono::milliseconds{0})
             return std::nullopt;
 

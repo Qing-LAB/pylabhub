@@ -54,16 +54,16 @@ class PYLABHUB_UTILS_EXPORT HubConfig
 
     // ── Accessors ────────────────────────────────────────────────────
 
-    const HubIdentityConfig   &identity()   const;
-    const AuthConfig          &auth()       const;
-    const ScriptConfig        &script()     const;
-    const TimingConfig        &timing()     const;
-    const LoggingConfig       &logging()    const;
-    const HubNetworkConfig    &network()    const;
-    const HubAdminConfig      &admin()      const;
-    const HubBrokerConfig     &broker()     const;
+    const HubIdentityConfig &identity() const;
+    const AuthConfig &auth() const;
+    const ScriptConfig &script() const;
+    const TimingConfig &timing() const;
+    const LoggingConfig &logging() const;
+    const HubNetworkConfig &network() const;
+    const HubAdminConfig &admin() const;
+    const HubBrokerConfig &broker() const;
     const HubFederationConfig &federation() const;
-    const HubStateConfig      &state()      const;
+    const HubStateConfig &state() const;
 
     // ── Vault operations ────────────────────────────────────────────
 
@@ -80,9 +80,9 @@ class PYLABHUB_UTILS_EXPORT HubConfig
 
     // ── Raw JSON / JsonConfig operations ────────────────────────────
 
-    const nlohmann::json         &raw() const;
-    bool                          reload_if_changed();
-    const std::filesystem::path  &base_dir() const;
+    const nlohmann::json &raw() const;
+    bool reload_if_changed();
+    const std::filesystem::path &base_dir() const;
 
     /// The operator-managed known_roles allowlist (HEP-CORE-0035 §4.8),
     /// extracted from the encrypted hub vault by `load_keypair()`.

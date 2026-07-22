@@ -108,8 +108,8 @@ TEST_F(FormatToolsTest, FormattedTime_DashSpacer)
     ASSERT_EQ(formatted.length(), 26u);
 
     // Date-time separators are '-'.
-    EXPECT_EQ(formatted[4],  '-'); // year-month
-    EXPECT_EQ(formatted[7],  '-'); // month-day
+    EXPECT_EQ(formatted[4], '-');  // year-month
+    EXPECT_EQ(formatted[7], '-');  // month-day
     EXPECT_EQ(formatted[10], '-'); // date-time (was ' ' in human form)
     EXPECT_EQ(formatted[13], '-'); // hour-minute (was ':')
     EXPECT_EQ(formatted[16], '-'); // minute-second (was ':')
@@ -146,19 +146,19 @@ TEST_F(FormatToolsTest, FormattedTime_DashAndHumanSameTimestamp)
     // each numeric position must be identical; only separators differ.
     auto now = std::chrono::system_clock::now();
     std::string human = formatted_time(now, /*use_dash_spacer=*/false);
-    std::string dash  = formatted_time(now, /*use_dash_spacer=*/true);
+    std::string dash = formatted_time(now, /*use_dash_spacer=*/true);
 
     ASSERT_EQ(human.length(), 26u);
-    ASSERT_EQ(dash.length(),  26u);
+    ASSERT_EQ(dash.length(), 26u);
 
     // Digits at every non-separator position must match.
-    for (size_t i : {0u, 1u, 2u, 3u,       // YYYY
-                     5u, 6u,               // MM
-                     8u, 9u,               // DD
-                     11u, 12u,             // HH
-                     14u, 15u,             // mm
-                     17u, 18u,             // SS
-                     20u, 21u, 22u, 23u, 24u, 25u})  // uuuuuu
+    for (size_t i : {0u,  1u,  2u,  3u,             // YYYY
+                     5u,  6u,                       // MM
+                     8u,  9u,                       // DD
+                     11u, 12u,                      // HH
+                     14u, 15u,                      // mm
+                     17u, 18u,                      // SS
+                     20u, 21u, 22u, 23u, 24u, 25u}) // uuuuuu
     {
         EXPECT_EQ(human[i], dash[i]) << "mismatch at digit position " << i;
     }

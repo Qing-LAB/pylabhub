@@ -16,7 +16,7 @@
  */
 #include "role_api_raii_workers.h"
 
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
 
@@ -40,8 +40,14 @@ namespace pylabhub::tests::worker::role_api_raii
 namespace
 {
 
-static auto logger_module() { return utils::Logger::GetLifecycleModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 /// #275-S2: `secret` param dropped — fd-source typed factory ignores
 /// `cfg.shared_secret`; HEP-CORE-0041 capability transport authenticates
@@ -49,12 +55,12 @@ static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
 DataBlockConfig make_raii_config()
 {
     DataBlockConfig cfg{};
-    cfg.policy                = DataBlockPolicy::RingBuffer;
-    cfg.consumer_sync_policy  = ConsumerSyncPolicy::Latest_only;
-    cfg.ring_buffer_capacity  = 4;
-    cfg.physical_page_size    = DataBlockPageSize::Size4K;
-    cfg.flex_zone_size        = sizeof(EmptyFlexZone);
-    cfg.checksum_policy       = ChecksumPolicy::None;
+    cfg.policy = DataBlockPolicy::RingBuffer;
+    cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
+    cfg.ring_buffer_capacity = 4;
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.flex_zone_size = sizeof(EmptyFlexZone);
+    cfg.checksum_policy = ChecksumPolicy::None;
     return cfg;
 }
 
@@ -74,7 +80,7 @@ int slot_iterator_fixed_rate_pacing()
             auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // 30 ms period → 5 iter → 4 inter-iter sleeps → ≥ 120 ms.
             producer->mutable_metrics().set_configured_period(30000);
@@ -93,7 +99,7 @@ int slot_iterator_fixed_rate_pacing()
                         ++count;
                         result.content().get().sequence = static_cast<uint64_t>(count);
                         if (count >= 5)
-                            break;  // ~SlotIterator fires auto-publish
+                            break; // ~SlotIterator fires auto-publish
                     }
                     EXPECT_EQ(count, 5);
                 });
@@ -104,8 +110,8 @@ int slot_iterator_fixed_rate_pacing()
             EXPECT_LT(elapsed, std::chrono::milliseconds(2000))
                 << "something stalled far beyond the 4x30ms minimum";
         },
-        "role_api_raii::slot_iterator_fixed_rate_pacing",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_raii::slot_iterator_fixed_rate_pacing", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -122,25 +128,21 @@ int ctx_metrics_pass_through()
             auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             const ContextMetrics *outer_ptr = &producer->metrics();
             const ContextMetrics *inner_ptr = nullptr;
 
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
-                1000ms,
-                [&inner_ptr]
-                (WriteTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
-                {
-                    inner_ptr = &ctx.metrics();
-                });
+                1000ms, [&inner_ptr](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &ctx)
+                { inner_ptr = &ctx.metrics(); });
 
             ASSERT_NE(inner_ptr, nullptr);
             EXPECT_EQ(inner_ptr, outer_ptr)
                 << "ctx.metrics() must alias producer->metrics() Pimpl storage";
         },
-        "role_api_raii::ctx_metrics_pass_through",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_raii::ctx_metrics_pass_through", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -170,7 +172,7 @@ int raii_producer_last_slot_work_us_multi_iter()
             auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
                 2000ms,
@@ -182,8 +184,7 @@ int raii_producer_last_slot_work_us_multi_iter()
                         if (!result.is_ok())
                             continue;
                         std::this_thread::sleep_for(5ms);
-                        result.content().get().sequence =
-                            static_cast<uint64_t>(++count);
+                        result.content().get().sequence = static_cast<uint64_t>(++count);
                         if (count >= 2)
                             break;
                     }
@@ -195,8 +196,8 @@ int raii_producer_last_slot_work_us_multi_iter()
             EXPECT_GE(producer->metrics().last_slot_exec_us_val(), uint64_t{3000})
                 << "RAII multi-iter: last_slot_exec_us should reflect ~5ms body";
         },
-        "role_api_raii::raii_producer_last_slot_work_us_multi_iter",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_raii::raii_producer_last_slot_work_us_multi_iter", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -213,7 +214,7 @@ int raii_producer_metrics_via_slots()
             auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
                 5000ms,
@@ -224,8 +225,7 @@ int raii_producer_metrics_via_slots()
                     {
                         if (!result.is_ok())
                             continue;
-                        result.content().get().sequence =
-                            static_cast<uint64_t>(++count);
+                        result.content().get().sequence = static_cast<uint64_t>(++count);
                         if (count >= 5)
                             break;
                     }
@@ -242,8 +242,8 @@ int raii_producer_metrics_via_slots()
             EXPECT_GE(m.max_iteration_us_val(), m.last_iteration_us_val());
             EXPECT_GT(m.context_elapsed_us_val(), uint64_t{0});
         },
-        "role_api_raii::raii_producer_metrics_via_slots",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_raii::raii_producer_metrics_via_slots", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -261,8 +261,8 @@ int raii_consumer_last_slot_work_us()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             {
                 auto h = producer->acquire_write_slot(1000);
@@ -282,7 +282,7 @@ int raii_consumer_last_slot_work_us()
                         if (!result.is_ok())
                             continue;
                         std::this_thread::sleep_for(2ms);
-                        break;  // RAII: iterator destructor releases handle
+                        break; // RAII: iterator destructor releases handle
                     }
                 });
 
@@ -293,8 +293,8 @@ int raii_consumer_last_slot_work_us()
             EXPECT_GE(consumer->metrics().last_slot_exec_us_val(), uint64_t{1000})
                 << "RAII consumer: last_slot_exec_us should reflect ~2ms body";
         },
-        "role_api_raii::raii_consumer_last_slot_work_us",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "role_api_raii::raii_consumer_last_slot_work_us", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::role_api_raii
@@ -317,8 +317,7 @@ struct RoleApiRaiiWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 const auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_api_raii")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_api_raii")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_api_raii;
@@ -334,9 +333,7 @@ struct RoleApiRaiiWorkerRegistrar
                 if (sc == "raii_consumer_last_slot_work_us")
                     return raii_consumer_last_slot_work_us();
 
-                fmt::print(stderr,
-                           "[role_api_raii] ERROR: unknown scenario '{}'\n",
-                           sc);
+                fmt::print(stderr, "[role_api_raii] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

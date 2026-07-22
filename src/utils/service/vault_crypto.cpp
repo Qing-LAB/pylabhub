@@ -76,8 +76,7 @@ void set_owner_only_permissions(const fs::path &path)
         LocalFree(acl);
     }
 #else
-    fs::permissions(path,
-                    fs::perms::owner_read | fs::perms::owner_write,
+    fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write,
                     fs::perm_options::replace);
 #endif
 }
@@ -120,25 +119,22 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
     //   mode=0600 — owner-only at create time (subject to umask;
     //              followed by an explicit fchmod below to neutralize
     //              any pathological umask that would mask owner bits).
-    const int fd = ::open(path.c_str(),
-                          O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
+    const int fd = ::open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
                           S_IRUSR | S_IWUSR);
     if (fd < 0)
     {
         const int err = errno;
         if (err == EEXIST)
-            throw std::runtime_error(
-                "vault: file already exists at '" + path.string() +
-                "' — refusing to overwrite (atomic O_EXCL guard, "
-                "HEP-CORE-0035 §4.6.1)");
+            throw std::runtime_error("vault: file already exists at '" + path.string() +
+                                     "' — refusing to overwrite (atomic O_EXCL guard, "
+                                     "HEP-CORE-0035 §4.6.1)");
         if (err == ELOOP)
-            throw std::runtime_error(
-                "vault: '" + path.string() + "' is a symbolic link — "
-                "refusing to follow (atomic O_NOFOLLOW guard, "
-                "HEP-CORE-0035 §4.6.1)");
-        throw std::runtime_error(
-            "vault: cannot create '" + path.string() + "': " +
-            std::strerror(err));
+            throw std::runtime_error("vault: '" + path.string() +
+                                     "' is a symbolic link — "
+                                     "refusing to follow (atomic O_NOFOLLOW guard, "
+                                     "HEP-CORE-0035 §4.6.1)");
+        throw std::runtime_error("vault: cannot create '" + path.string() +
+                                 "': " + std::strerror(err));
     }
     // Belt-and-braces: enforce mode 0600 regardless of umask.  Under
     // a normal umask (0022, 0077) the open above already produces
@@ -149,14 +145,13 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
         const int err = errno;
         ::close(fd);
         ::unlink(path.c_str());
-        throw std::runtime_error(
-            "vault: fchmod 0600 failed for '" + path.string() + "': " +
-            std::strerror(err));
+        throw std::runtime_error("vault: fchmod 0600 failed for '" + path.string() +
+                                 "': " + std::strerror(err));
     }
     // Single write(2) — short-write loop is unnecessary for our
     // payload sizes (<4KB typical, <64KB max) but we still guard.
-    const auto    *buf       = data.data();
-    std::size_t    remaining = data.size();
+    const auto *buf = data.data();
+    std::size_t remaining = data.size();
     while (remaining > 0)
     {
         const ssize_t n = ::write(fd, buf, remaining);
@@ -167,11 +162,10 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
             const int err = errno;
             ::close(fd);
             ::unlink(path.c_str());
-            throw std::runtime_error(
-                "vault: write failed for '" + path.string() + "': " +
-                std::strerror(err));
+            throw std::runtime_error("vault: write failed for '" + path.string() +
+                                     "': " + std::strerror(err));
         }
-        buf       += n;
+        buf += n;
         remaining -= static_cast<std::size_t>(n);
     }
     if (::close(fd) != 0)
@@ -180,9 +174,8 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
         // File is on disk with the data we wrote; do NOT unlink on
         // close failure — that could destroy a successful write whose
         // failure was a benign EINTR-during-close (rare but legal).
-        throw std::runtime_error(
-            "vault: close failed for '" + path.string() + "': " +
-            std::strerror(err));
+        throw std::runtime_error("vault: close failed for '" + path.string() +
+                                 "': " + std::strerror(err));
     }
 #endif
 }
@@ -219,7 +212,7 @@ void vault_require_sodium()
 }
 
 std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,
-                                                      const std::string &uid)
+                                                     const std::string &uid)
 {
     namespace sec = pylabhub::utils::security;
     // Salt = BLAKE2b-16(uid): deterministic, per-vault domain separation.
@@ -228,8 +221,7 @@ std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password
     // `derive_pwhash_salt`.  Encapsulates the "16 bytes because
     // Argon2id" reasoning inside the security module — this call
     // site just names the operation.
-    static_assert(kVaultSaltBytes ==
-                  pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes,
+    static_assert(kVaultSaltBytes == pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes,
                   "vault salt size must match SMS's Argon2id salt size");
     uint8_t salt[kVaultSaltBytes]{};
     if (!sec::secure().derive_pwhash_salt(salt, uid))
@@ -238,19 +230,15 @@ std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password
     }
 
     std::array<uint8_t, kVaultKeyBytes> key{};
-    if (!sec::secure().pwhash_argon2id(
-            key.data(), key.size(),
-            password.data(), password.size(),
-            salt))
+    if (!sec::secure().pwhash_argon2id(key.data(), key.size(), password.data(), password.size(),
+                                       salt))
     {
         throw std::runtime_error("vault: Argon2id key derivation failed (insufficient memory?)");
     }
     return key;
 }
 
-void vault_write(const fs::path &path,
-                 const std::string &json_payload,
-                 const std::string &password,
+void vault_write(const fs::path &path, const std::string &json_payload, const std::string &password,
                  const std::string &uid)
 {
     namespace sec = pylabhub::utils::security;
@@ -260,7 +248,8 @@ void vault_write(const fs::path &path,
     struct KeyGuard
     {
         std::array<uint8_t, kVaultKeyBytes> &k;
-        ~KeyGuard() {
+        ~KeyGuard()
+        {
             pylabhub::utils::security::secure().memzero(
                 std::span<std::uint8_t>(k.data(), k.size()));
         }
@@ -275,8 +264,7 @@ void vault_write(const fs::path &path,
     std::vector<uint8_t> ciphertext(clen);
     const std::size_t written = sec::secure().secretbox_encrypt(
         ciphertext.data(), ciphertext.size(),
-        reinterpret_cast<const std::uint8_t *>(json_payload.data()),
-        json_payload.size(),
+        reinterpret_cast<const std::uint8_t *>(json_payload.data()), json_payload.size(),
         std::span<const std::uint8_t, 24>(nonce, kVaultNonceBytes),
         std::span<const std::uint8_t, 32>(key.data(), kVaultKeyBytes));
     if (written == 0)
@@ -292,10 +280,8 @@ void vault_write(const fs::path &path,
     write_secure_file(path, vault_bytes);
 }
 
-std::size_t vault_read_secure(const fs::path           &path,
-                              const std::string        &password,
-                              const std::string        &uid,
-                              std::span<std::byte>      out_buf)
+std::size_t vault_read_secure(const fs::path &path, const std::string &password,
+                              const std::string &uid, std::span<std::byte> out_buf)
 {
     namespace sec = pylabhub::utils::security;
     vault_require_sodium();
@@ -308,27 +294,27 @@ std::size_t vault_read_secure(const fs::path           &path,
         throw std::runtime_error("vault: file too small or corrupted: " + path.string());
     }
 
-    const uint8_t    *nonce      = vault_bytes.data();
-    const uint8_t    *ciphertext = vault_bytes.data() + kVaultNonceBytes;
-    const std::size_t clen       = vault_bytes.size() - kVaultNonceBytes;
-    const std::size_t plain_len  = clen - kVaultMacBytes;
+    const uint8_t *nonce = vault_bytes.data();
+    const uint8_t *ciphertext = vault_bytes.data() + kVaultNonceBytes;
+    const std::size_t clen = vault_bytes.size() - kVaultNonceBytes;
+    const std::size_t plain_len = clen - kVaultMacBytes;
 
-    auto span_as_u8 = std::span<std::uint8_t>(
-        reinterpret_cast<std::uint8_t *>(out_buf.data()), out_buf.size_bytes());
+    auto span_as_u8 = std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(out_buf.data()),
+                                              out_buf.size_bytes());
     if (plain_len > out_buf.size_bytes())
     {
         sec::secure().memzero(span_as_u8);
-        throw std::runtime_error(
-            "vault_read_secure: out_buf too small (need "
-            + std::to_string(plain_len) + " bytes, got "
-            + std::to_string(out_buf.size_bytes()) + "): " + path.string());
+        throw std::runtime_error("vault_read_secure: out_buf too small (need " +
+                                 std::to_string(plain_len) + " bytes, got " +
+                                 std::to_string(out_buf.size_bytes()) + "): " + path.string());
     }
 
     auto key = vault_derive_key(password, uid);
     struct KeyGuard
     {
         std::array<uint8_t, kVaultKeyBytes> &k;
-        ~KeyGuard() {
+        ~KeyGuard()
+        {
             pylabhub::utils::security::secure().memzero(
                 std::span<std::uint8_t>(k.data(), k.size()));
         }
@@ -337,15 +323,14 @@ std::size_t vault_read_secure(const fs::path           &path,
     // Decrypt into the caller's span via SMS Category 1c
     // (HEP-CORE-0043 §5).
     const std::size_t decoded = sec::secure().secretbox_decrypt(
-        span_as_u8.data(), span_as_u8.size(),
-        ciphertext, clen,
+        span_as_u8.data(), span_as_u8.size(), ciphertext, clen,
         std::span<const std::uint8_t, 24>(nonce, kVaultNonceBytes),
         std::span<const std::uint8_t, 32>(key.data(), kVaultKeyBytes));
     if (decoded == 0)
     {
         sec::secure().memzero(span_as_u8);
-        throw std::runtime_error(
-            "vault: decryption failed — wrong password or corrupted file: " + path.string());
+        throw std::runtime_error("vault: decryption failed — wrong password or corrupted file: " +
+                                 path.string());
     }
 
     return decoded;

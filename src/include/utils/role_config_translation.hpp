@@ -63,12 +63,9 @@ namespace pylabhub::scripting
 ///
 /// Pure: no side effects, no broker access, no queue construction.
 /// Safe to call from tests.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-hub::TxQueueOptions
-make_tx_opts(const config::RoleConfig &config,
-             const hub::SchemaSpec    &out_slot_spec,
-             const hub::SchemaSpec    &out_fz_spec,
-             bool                      has_tx_fz);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT hub::TxQueueOptions
+make_tx_opts(const config::RoleConfig &config, const hub::SchemaSpec &out_slot_spec,
+             const hub::SchemaSpec &out_fz_spec, bool has_tx_fz);
 
 /// Pure config→RxQueueOptions translation, shared by Consumer and
 /// Processor-input sides.
@@ -80,11 +77,8 @@ make_tx_opts(const config::RoleConfig &config,
 ///
 /// Inputs mirror `make_tx_opts` but on the input side: `in_slot_spec`,
 /// `in_fz_spec`, `has_rx_fz`.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-hub::RxQueueOptions
-make_rx_opts(const config::RoleConfig &config,
-             const hub::SchemaSpec    &in_slot_spec,
-             const hub::SchemaSpec    &in_fz_spec,
-             bool                      has_rx_fz);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT hub::RxQueueOptions
+make_rx_opts(const config::RoleConfig &config, const hub::SchemaSpec &in_slot_spec,
+             const hub::SchemaSpec &in_fz_spec, bool has_rx_fz);
 
 } // namespace pylabhub::scripting

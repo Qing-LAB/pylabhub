@@ -59,7 +59,7 @@
 //   Tracked in docs/todo/TESTING_TODO.md Round 6b.
 
 #include "datahub_broker_health_workers.h"
-#include "broker_test_harness.h"  // HubHostBrokerHandle + DirectBrokerHandle + BrcHandle + make_reg_opts/make_cons_opts
+#include "broker_test_harness.h" // HubHostBrokerHandle + DirectBrokerHandle + BrcHandle + make_reg_opts/make_cons_opts
 #include "test_entrypoint.h"
 #include "test_process_utils.h"
 #include "shared_test_helpers.h"
@@ -71,10 +71,10 @@
 #include "utils/json_config.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
-#include "utils/security/zap_router.hpp"  // HEP-CORE-0035 §4.2 deny-path observability
+#include "utils/security/zap_router.hpp" // HEP-CORE-0035 §4.2 deny-path observability
 #include "plh_datahub.hpp"
 
-#include <zmq.h>  // zmq_curve_keypair for the deny-path test
+#include <zmq.h> // zmq_curve_keypair for the deny-path test
 
 #include <gtest/gtest.h>
 #include <fmt/core.h>
@@ -103,10 +103,22 @@ using pylabhub::tests::role_keystore_name;
 namespace pylabhub::tests::worker::broker_health
 {
 
-static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
-static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
-static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto file_lock_module()
+{
+    return ::pylabhub::utils::FileLock::GetLifecycleModule();
+}
+static auto json_module()
+{
+    return ::pylabhub::utils::JsonConfig::GetLifecycleModule();
+}
+static auto zmq_module()
+{
+    return ::pylabhub::hub::GetZMQContextModule();
+}
 
 namespace
 {
@@ -128,16 +140,15 @@ nlohmann::json hub_overrides_baseline()
 {
     nlohmann::json j;
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
+    j["admin"]["enabled"] = false;
+    j["script"]["path"] = "";
     return j;
 }
 
-nlohmann::json hub_overrides_with_timeouts(int ready_timeout_ms,
-                                            int pending_timeout_ms)
+nlohmann::json hub_overrides_with_timeouts(int ready_timeout_ms, int pending_timeout_ms)
 {
     nlohmann::json j = hub_overrides_baseline();
-    j["broker"]["ready_timeout_ms"]   = ready_timeout_ms;
+    j["broker"]["ready_timeout_ms"] = ready_timeout_ms;
     j["broker"]["pending_timeout_ms"] = pending_timeout_ms;
     // NOTE on `consumer_liveness_check_interval`: this knob lives on
     // `BrokerService::Config` (`broker_service.hpp:189`) but is NOT
@@ -158,7 +169,7 @@ nlohmann::json hub_overrides_with_timeouts(int ready_timeout_ms,
 // The surviving direct-broker test (ctrl_zap_deny_path) builds its own
 // BrokerService::Config inline.
 
-} // anon
+} // namespace
 
 // producer_gets_closing_notify MIGRATED to tests/test_layer3_pattern4/
 // test_pattern4_broker_health.cpp (task #52 Round 2, "fast_reclaim" profile).
@@ -173,20 +184,20 @@ nlohmann::json hub_overrides_with_timeouts(int ready_timeout_ms,
 int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch_name  = make_test_channel_name("health.consumer_dereg");
+        []()
+        {
+            const std::string ch_name = make_test_channel_name("health.consumer_dereg");
             const std::string prod_uid = "prod." + ch_name;
             const std::string cons_uid = "cons." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid, cons_uid});
             pylabhub::tests::seed_role_identities(curve);
 
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_baseline(), curve, "HealthConsumerDeregHub");
+            auto broker = pylabhub::tests::start_hubhost_broker(hub_overrides_baseline(), curve,
+                                                                "HealthConsumerDeregHub");
 
             BrcHandle prod_bh;
-            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid,
-                          role_keystore_name(prod_uid));
+            prod_bh.start(broker.endpoint, broker.pubkey, prod_uid, role_keystore_name(prod_uid));
             auto reg = prod_bh.brc.register_channel(
                 pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
@@ -197,8 +208,7 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
             BrcHandle cons_bh;
-            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid,
-                          role_keystore_name(cons_uid));
+            cons_bh.start(broker.endpoint, broker.pubkey, cons_uid, role_keystore_name(cons_uid));
             auto cons_reg = cons_bh.brc.register_consumer(
                 pylabhub::tests::make_cons_opts(ch_name, cons_uid), 3000);
             ASSERT_TRUE(cons_reg.has_value());
@@ -211,16 +221,16 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             }
 
             // Wait for broker to reflect consumer_count=0.
-            const auto consumer_count_for = [&](const std::string &name) -> int {
+            const auto consumer_count_for = [&](const std::string &name) -> int
+            {
                 ChannelSnapshot snap = broker.service().query_channel_snapshot();
                 for (const auto &ch : snap.channels)
-                    if (ch.name == name) return ch.consumer_count;
+                    if (ch.name == name)
+                        return ch.consumer_count;
                 return -1;
             };
-            const auto cdeadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (consumer_count_for(ch_name) != 0 &&
-                   std::chrono::steady_clock::now() < cdeadline)
+            const auto cdeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (consumer_count_for(ch_name) != 0 && std::chrono::steady_clock::now() < cdeadline)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -232,9 +242,9 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
             prod_bh.stop();
             broker.stop_and_join();
         },
-        "broker_health.consumer_auto_deregisters",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "broker_health.consumer_auto_deregisters", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        zmq_module());
 }
 
 // producer_auto_deregisters MIGRATED to tests/test_layer3_pattern4/
@@ -263,9 +273,9 @@ int consumer_auto_deregisters(int /*argc*/, char ** /*argv*/)
 int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch_name =
-                make_test_channel_name("health.multi_prod_partial_timeout");
+        []()
+        {
+            const std::string ch_name = make_test_channel_name("health.multi_prod_partial_timeout");
             const std::string prod_a_uid = "prod.a." + ch_name;
             const std::string prod_b_uid = "prod.b." + ch_name;
 
@@ -273,14 +283,15 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
             pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
-                curve, "HealthMultiProdPartialHub");
+                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500), curve,
+                "HealthMultiProdPartialHub");
 
             // Producer A: the survivor.
             std::atomic<bool> a_got_closing{false};
             BrcHandle prod_a;
             prod_a.brc.on_notification(
-                [&](const std::string &type, const nlohmann::json &) {
+                [&](const std::string &type, const nlohmann::json &)
+                {
                     if (type == "CHANNEL_CLOSING_NOTIFY")
                         a_got_closing.store(true);
                 });
@@ -304,27 +315,27 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
 
             // Survivor heartbeats every 100ms; B never again.
             std::atomic<bool> a_stop{false};
-            std::thread a_thread([&] {
-                while (!a_stop.load()) {
-                    prod_a.brc.send_heartbeat(ch_name, prod_a_uid, "producer", {});
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-            });
+            std::thread a_thread(
+                [&]
+                {
+                    while (!a_stop.load())
+                    {
+                        prod_a.brc.send_heartbeat(ch_name, prod_a_uid, "producer", {});
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                });
 
-            const auto producer_count_for =
-                [&](const std::string &name) -> int {
-                ChannelSnapshot snap =
-                    broker.service().query_channel_snapshot();
+            const auto producer_count_for = [&](const std::string &name) -> int
+            {
+                ChannelSnapshot snap = broker.service().query_channel_snapshot();
                 for (const auto &ch : snap.channels)
                     if (ch.name == name)
                         return static_cast<int>(ch.producer_uids.size());
                 return -1;
             };
 
-            const auto deadline = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(5);
-            while (producer_count_for(ch_name) != 1 &&
-                   std::chrono::steady_clock::now() < deadline)
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (producer_count_for(ch_name) != 1 && std::chrono::steady_clock::now() < deadline)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
@@ -341,11 +352,10 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
             prod_b.stop();
             broker.stop_and_join();
         },
-        "broker_health.multi_producer_partial_pending_timeout",
-        logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
+        "broker_health.multi_producer_partial_pending_timeout", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        zmq_module());
 }
-
 
 // Two-snapshot invariant: a presence that demotes Connected→Pending in
 // tick T MUST NOT also be terminated (Pending→Disconnected) in the same
@@ -357,35 +367,36 @@ int multi_producer_partial_pending_timeout(int /*argc*/, char ** /*argv*/)
 int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch_name =
-                make_test_channel_name("health.two_snapshot");
+        []()
+        {
+            const std::string ch_name = make_test_channel_name("health.two_snapshot");
             const std::string prod_uid = "prod." + ch_name;
 
             auto curve = pylabhub::tests::make_curve_setup({prod_uid});
             pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
-                curve, "HealthTwoSnapshotHub");
+                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500), curve,
+                "HealthTwoSnapshotHub");
 
-            std::atomic<bool>                     closing_fired{false};
+            std::atomic<bool> closing_fired{false};
             std::chrono::steady_clock::time_point closing_at{};
-            std::mutex                            t_mu;
+            std::mutex t_mu;
 
             BrcHandle prod;
             prod.brc.on_notification(
-                [&](const std::string &type, const nlohmann::json &) {
-                    if (type == "CHANNEL_CLOSING_NOTIFY") {
+                [&](const std::string &type, const nlohmann::json &)
+                {
+                    if (type == "CHANNEL_CLOSING_NOTIFY")
+                    {
                         std::lock_guard<std::mutex> lk(t_mu);
                         closing_at = std::chrono::steady_clock::now();
                         closing_fired.store(true);
                     }
                 });
-            prod.start(broker.endpoint, broker.pubkey, prod_uid,
-                       role_keystore_name(prod_uid));
-            auto reg = prod.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
+            prod.start(broker.endpoint, broker.pubkey, prod_uid, role_keystore_name(prod_uid));
+            auto reg =
+                prod.brc.register_channel(pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
@@ -404,21 +415,18 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
 
             // Upper bound: NOTIFY must fire by t0 + 3s.
             const auto deadline = t0 + std::chrono::seconds(3);
-            while (!closing_fired.load() &&
-                   std::chrono::steady_clock::now() < deadline)
+            while (!closing_fired.load() && std::chrono::steady_clock::now() < deadline)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
-            ASSERT_TRUE(closing_fired.load())
-                << "CHANNEL_CLOSING_NOTIFY did not fire within 3s";
+            ASSERT_TRUE(closing_fired.load()) << "CHANNEL_CLOSING_NOTIFY did not fire within 3s";
 
             // Lower-bound pin: fire time ≥ 800ms after last heartbeat.
             std::chrono::milliseconds elapsed_at_close{};
             {
                 std::lock_guard<std::mutex> lk(t_mu);
                 elapsed_at_close =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        closing_at - t0);
+                    std::chrono::duration_cast<std::chrono::milliseconds>(closing_at - t0);
             }
             EXPECT_GE(elapsed_at_close, std::chrono::milliseconds(800))
                 << "NOTIFY fired at " << elapsed_at_close.count()
@@ -429,8 +437,7 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
             prod.stop();
             broker.stop_and_join();
         },
-        "broker_health.two_snapshot_invariant",
-        logger_module(), file_lock_module(), json_module(),
+        "broker_health.two_snapshot_invariant", logger_module(), file_lock_module(), json_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
@@ -441,9 +448,9 @@ int two_snapshot_invariant(int /*argc*/, char ** /*argv*/)
 int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
-        []() {
-            const std::string ch_name =
-                make_test_channel_name("health.channel_torn_down");
+        []()
+        {
+            const std::string ch_name = make_test_channel_name("health.channel_torn_down");
             const std::string prod_uid = "prod." + ch_name;
             const std::string cons_uid = "cons." + ch_name;
 
@@ -451,29 +458,28 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
             pylabhub::tests::seed_role_identities(curve);
 
             auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500),
-                curve, "HealthChannelTornDownHub");
+                hub_overrides_with_timeouts(/*ready=*/500, /*pending=*/500), curve,
+                "HealthChannelTornDownHub");
 
             std::atomic<int> closing_count{0};
             std::atomic<int> consumer_died_count{0};
 
             BrcHandle prod;
             prod.brc.on_notification(
-                [&](const std::string &type, const nlohmann::json &) {
+                [&](const std::string &type, const nlohmann::json &)
+                {
                     if (type == "CHANNEL_CLOSING_NOTIFY")
                         closing_count.fetch_add(1);
                     if (type == "CONSUMER_DIED_NOTIFY")
                         consumer_died_count.fetch_add(1);
                 });
-            prod.start(broker.endpoint, broker.pubkey, prod_uid,
-                       role_keystore_name(prod_uid));
-            auto reg = prod.brc.register_channel(
-                pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
+            prod.start(broker.endpoint, broker.pubkey, prod_uid, role_keystore_name(prod_uid));
+            auto reg =
+                prod.brc.register_channel(pylabhub::tests::make_reg_opts(ch_name, prod_uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             BrcHandle cons;
-            cons.start(broker.endpoint, broker.pubkey, cons_uid,
-                       role_keystore_name(cons_uid));
+            cons.start(broker.endpoint, broker.pubkey, cons_uid, role_keystore_name(cons_uid));
             auto creg = cons.brc.register_consumer(
                 pylabhub::tests::make_cons_opts(ch_name, cons_uid), 3000);
             ASSERT_TRUE(creg.has_value());
@@ -484,17 +490,14 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
             prod.brc.send_heartbeat(ch_name, prod_uid, "producer", {});
             cons.brc.send_heartbeat(ch_name, cons_uid, "consumer", {});
 
-            const auto deadline = std::chrono::steady_clock::now() +
-                                  std::chrono::seconds(5);
-            while (closing_count.load() == 0 &&
-                   std::chrono::steady_clock::now() < deadline)
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (closing_count.load() == 0 && std::chrono::steady_clock::now() < deadline)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
 
-            ASSERT_GE(closing_count.load(), 1)
-                << "CHANNEL_CLOSING_NOTIFY did not fire after the "
-                   "last-producer atomic teardown";
+            ASSERT_GE(closing_count.load(), 1) << "CHANNEL_CLOSING_NOTIFY did not fire after the "
+                                                  "last-producer atomic teardown";
 
             // Steady-state window: a buggy migration would fire a
             // stray CONSUMER_DIED_NOTIFY in a later sweep iteration.
@@ -512,8 +515,8 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
             prod.stop();
             broker.stop_and_join();
         },
-        "broker_health.channel_torn_down_consumer_pass2_skipped",
-        logger_module(), file_lock_module(), json_module(),
+        "broker_health.channel_torn_down_consumer_pass2_skipped", logger_module(),
+        file_lock_module(), json_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
@@ -554,7 +557,8 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
 int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
 {
     return run_gtest_worker(
-        []() {
+        []()
+        {
             namespace sec = pylabhub::utils::security;
 
             const std::string deny_uid = "prod.deny.test.uid00000001";
@@ -564,8 +568,7 @@ int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
             // what the BRC will use as its client identity.
             CurveSetup client_setup;
             client_setup.hub = pylabhub::tests::gen_curve_keypair();
-            client_setup.role_keys.emplace(
-                deny_uid, pylabhub::tests::gen_curve_keypair());
+            client_setup.role_keys.emplace(deny_uid, pylabhub::tests::gen_curve_keypair());
             pylabhub::tests::seed_curve_identities(client_setup);
 
             // Step 2: build the broker's CurveSetup with EMPTY
@@ -582,8 +585,7 @@ int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
             // SpawnWorker runs each test in its own subprocess so the
             // counter starts at 0, but reading before-state is the
             // more robust pattern.
-            const auto before_denied =
-                sec::ZapRouter::instance().denied_count();
+            const auto before_denied = sec::ZapRouter::instance().denied_count();
 
             // Step 3: spin up broker via the direct-handle harness.
             // We use `start_direct_broker` rather than HubHost because
@@ -597,27 +599,26 @@ int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
             // by construction.
             BrokerService::Config bcfg;
             bcfg.endpoint = "tcp://127.0.0.1:0";
-            auto broker = pylabhub::tests::start_direct_broker(
-                std::move(bcfg), broker_setup);
+            auto broker = pylabhub::tests::start_direct_broker(std::move(bcfg), broker_setup);
 
             // Step 4: connect a BRC using the seeded client identity.
             // Post-#172 BRC takes `keystore_name`, NOT raw keys.
             BrokerRequestComm brc;
             BrokerRequestComm::Config ccfg;
             ccfg.broker_endpoint = broker.endpoint;
-            ccfg.broker_pubkey   = broker.pubkey;
-            ccfg.role_uid        = deny_uid;
-            ccfg.role_name       = "deny_role";
-            ccfg.keystore_name   = role_keystore_name(deny_uid);
+            ccfg.broker_pubkey = broker.pubkey;
+            ccfg.role_uid = deny_uid;
+            ccfg.role_name = "deny_role";
+            ccfg.keystore_name = role_keystore_name(deny_uid);
             EXPECT_TRUE(brc.connect(ccfg))
                 << "BRC TCP connect should succeed even when ZAP denies; "
                    "the CURVE handshake fails on first send, not on connect.";
 
             // Step 5: attempt REG_REQ — handshake fires, ZAP denies,
             // REG_REQ times out.
-            const auto reg_result = brc.register_channel(
-                pylabhub::tests::make_reg_opts("ch.deny.path", deny_uid),
-                /*timeout_ms=*/1500);
+            const auto reg_result =
+                brc.register_channel(pylabhub::tests::make_reg_opts("ch.deny.path", deny_uid),
+                                     /*timeout_ms=*/1500);
             EXPECT_FALSE(reg_result.has_value())
                 << "register_channel succeeded under deny-all allowlist — "
                    "the ZAP gate did NOT fire.";
@@ -625,18 +626,15 @@ int ctrl_zap_deny_path(int /*argc*/, char ** /*argv*/)
             // Step 6: PATH PIN — the denial fired through ZapRouter.
             // This is what distinguishes a real ZAP deny from a
             // happens-to-time-out failure on some other path.
-            const auto after_denied =
-                sec::ZapRouter::instance().denied_count();
+            const auto after_denied = sec::ZapRouter::instance().denied_count();
             EXPECT_GT(after_denied, before_denied)
-                << "ZapRouter::denied_count() did not increase: "
-                << before_denied << " -> " << after_denied
-                << " — the deny did not come from the ZAP gate.";
+                << "ZapRouter::denied_count() did not increase: " << before_denied << " -> "
+                << after_denied << " — the deny did not come from the ZAP gate.";
 
             brc.disconnect();
             broker.stop_and_join();
         },
-        "broker_health.ctrl_zap_deny_path",
-        logger_module(), file_lock_module(), json_module(),
+        "broker_health.ctrl_zap_deny_path", logger_module(), file_lock_module(), json_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
@@ -654,13 +652,13 @@ struct BrokerHealthWorkerRegistrar
     BrokerHealthWorkerRegistrar()
     {
         register_worker_dispatcher(
-            [](int argc, char **argv) -> int {
+            [](int argc, char **argv) -> int
+            {
                 if (argc < 2)
                     return -1;
                 std::string_view mode = argv[1];
-                const auto       dot  = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "broker_health")
+                const auto dot = mode.find('.');
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "broker_health")
                 {
                     return -1;
                 }
@@ -690,4 +688,4 @@ struct BrokerHealthWorkerRegistrar
 
 static BrokerHealthWorkerRegistrar g_broker_health_registrar; // NOLINT(cert-err58-cpp)
 
-} // anon
+} // namespace

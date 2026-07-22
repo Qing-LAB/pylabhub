@@ -21,8 +21,8 @@ namespace pylabhub::config
 
 struct HubAdminConfig
 {
-    bool        enabled{true};                                  ///< AdminService on/off
-    std::string endpoint{"tcp://127.0.0.1:5600"};               ///< ZMQ endpoint (CURVE-server, §11.1)
+    bool enabled{true};                           ///< AdminService on/off
+    std::string endpoint{"tcp://127.0.0.1:5600"}; ///< ZMQ endpoint (CURVE-server, §11.1)
 
     /// Runtime-only: 64-char hex admin token.  Populated by
     /// `HubConfig::load_keypair()` from the unlocked `HubVault`; NOT
@@ -48,8 +48,8 @@ inline HubAdminConfig parse_hub_admin_config(const nlohmann::json &j)
             throw std::runtime_error("hub: unknown config key 'admin." + k + "'");
     }
 
-    ac.enabled        = sect.value("enabled",        ac.enabled);
-    ac.endpoint       = sect.value("endpoint",       ac.endpoint);
+    ac.enabled = sect.value("enabled", ac.enabled);
+    ac.endpoint = sect.value("endpoint", ac.endpoint);
     return ac;
 }
 

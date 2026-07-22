@@ -12,8 +12,8 @@
 
 #include <algorithm> // for std::find
 #include <array>
-#include <cstddef>   // for nullptr
-#include <cstdint>   // for std::uintptr_t (stack storage)
+#include <cstddef> // for nullptr
+#include <cstdint> // for std::uintptr_t (stack storage)
 
 namespace pylabhub::basics
 {

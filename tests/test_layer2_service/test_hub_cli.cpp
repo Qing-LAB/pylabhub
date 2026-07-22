@@ -25,8 +25,8 @@
 #include <vector>
 
 using pylabhub::hub_cli::HubArgs;
-using pylabhub::hub_cli::ParseResult;
 using pylabhub::hub_cli::parse_hub_args;
+using pylabhub::hub_cli::ParseResult;
 
 namespace
 {
@@ -36,22 +36,23 @@ namespace
 struct ArgVec
 {
     std::vector<std::string> owned;
-    std::vector<char *>      ptrs;
+    std::vector<char *> ptrs;
 
     explicit ArgVec(std::initializer_list<const char *> args)
     {
         owned.reserve(args.size());
-        for (const char *a : args) owned.emplace_back(a);
+        for (const char *a : args)
+            owned.emplace_back(a);
         ptrs.reserve(owned.size());
-        for (auto &s : owned) ptrs.push_back(s.data());
+        for (auto &s : owned)
+            ptrs.push_back(s.data());
     }
-    int    argc() const { return static_cast<int>(ptrs.size()); }
-    char **argv()       { return ptrs.data(); }
+    int argc() const { return static_cast<int>(ptrs.size()); }
+    char **argv() { return ptrs.data(); }
 };
 
-ParseResult run(std::initializer_list<const char *> args,
-                std::ostringstream                  &out,
-                std::ostringstream                  &err)
+ParseResult run(std::initializer_list<const char *> args, std::ostringstream &out,
+                std::ostringstream &err)
 {
     ArgVec av(args);
     return parse_hub_args(av.argc(), av.argv(), out, err);
@@ -74,15 +75,15 @@ TEST(HubCliTest, Help_ExitsZeroAndPrintsUsageToStdout)
     EXPECT_EQ(r.exit_code, 0);
     EXPECT_TRUE(err.str().empty()) << "stderr: " << err.str();
     const auto text = out.str();
-    EXPECT_NE(text.find("Usage:"),        std::string::npos);
-    EXPECT_NE(text.find("--init"),        std::string::npos);
-    EXPECT_NE(text.find("--validate"),    std::string::npos);
-    EXPECT_NE(text.find("--keygen"),      std::string::npos);
+    EXPECT_NE(text.find("Usage:"), std::string::npos);
+    EXPECT_NE(text.find("--init"), std::string::npos);
+    EXPECT_NE(text.find("--validate"), std::string::npos);
+    EXPECT_NE(text.find("--keygen"), std::string::npos);
     EXPECT_NE(text.find("--log-maxsize"), std::string::npos);
     EXPECT_NE(text.find("--log-backups"), std::string::npos);
-    EXPECT_NE(text.find("<hub_dir>"),     std::string::npos);
+    EXPECT_NE(text.find("<hub_dir>"), std::string::npos);
     // Hub binary must NOT advertise --role (single-kind binary).
-    EXPECT_EQ(text.find("--role"),        std::string::npos);
+    EXPECT_EQ(text.find("--role"), std::string::npos);
 }
 
 TEST(HubCliTest, Help_ShortFormMinusH)
@@ -123,8 +124,7 @@ TEST(HubCliTest, InitMode_WithName)
 
 TEST(HubCliTest, InitMode_WithLogOverrides_BothSet)
 {
-    auto r = run({"plh_hub", "--init", "/tmp/h",
-                  "--log-maxsize", "25", "--log-backups", "7"});
+    auto r = run({"plh_hub", "--init", "/tmp/h", "--log-maxsize", "25", "--log-backups", "7"});
     ASSERT_EQ(r.exit_code, -1);
     ASSERT_TRUE(r.args.log_max_size_mb.has_value());
     EXPECT_DOUBLE_EQ(*r.args.log_max_size_mb, 25.0);
@@ -231,8 +231,7 @@ TEST(HubCliTest, ModeExclusion_ValidateAndKeygen_Rejected)
 TEST(HubCliTest, ModeExclusion_AllThree_Rejected)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_hub", "--init", "/tmp/h", "--validate", "--keygen"},
-                 out, err);
+    auto r = run({"plh_hub", "--init", "/tmp/h", "--validate", "--keygen"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("mutually"), std::string::npos);
 }
@@ -276,21 +275,19 @@ TEST(HubCliTest, NameWithKeygen_Rejected)
 TEST(HubCliTest, LogMaxsizeNonNumeric_Rejected)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_hub", "--init", "/tmp/h", "--log-maxsize", "abc"},
-                 out, err);
+    auto r = run({"plh_hub", "--init", "/tmp/h", "--log-maxsize", "abc"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("--log-maxsize"), std::string::npos);
-    EXPECT_NE(err.str().find("number"),        std::string::npos);
+    EXPECT_NE(err.str().find("number"), std::string::npos);
 }
 
 TEST(HubCliTest, LogBackupsNonInteger_Rejected)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_hub", "--init", "/tmp/h", "--log-backups", "xyz"},
-                 out, err);
+    auto r = run({"plh_hub", "--init", "/tmp/h", "--log-backups", "xyz"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("--log-backups"), std::string::npos);
-    EXPECT_NE(err.str().find("integer"),       std::string::npos);
+    EXPECT_NE(err.str().find("integer"), std::string::npos);
 }
 
 // ─── Unknown flags ───────────────────────────────────────────────────────────
@@ -301,7 +298,7 @@ TEST(HubCliTest, UnknownFlag_Rejected)
     auto r = run({"plh_hub", "--bogus"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("Unknown argument"), std::string::npos);
-    EXPECT_NE(err.str().find("--bogus"),          std::string::npos);
+    EXPECT_NE(err.str().find("--bogus"), std::string::npos);
 }
 
 TEST(HubCliTest, RoleFlagRejected_HubIsSingleKind)
@@ -311,7 +308,7 @@ TEST(HubCliTest, RoleFlagRejected_HubIsSingleKind)
     auto r = run({"plh_hub", "/tmp/h", "--role", "producer"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("Unknown argument"), std::string::npos);
-    EXPECT_NE(err.str().find("--role"),           std::string::npos);
+    EXPECT_NE(err.str().find("--role"), std::string::npos);
 }
 
 // ─── Positional / flag interaction ───────────────────────────────────────────
@@ -349,21 +346,18 @@ TEST(HubCliTest, NoArgs_Rejected)
 
 TEST(HubCliTest, FlagOrderDoesNotMatter)
 {
-    auto r1 = run({"plh_hub", "--init", "/tmp/h", "--name", "X",
-                    "--log-maxsize", "20"});
-    auto r2 = run({"plh_hub", "--name", "X", "--log-maxsize", "20",
-                    "--init", "/tmp/h"});
-    auto r3 = run({"plh_hub", "--log-maxsize", "20", "--init", "/tmp/h",
-                    "--name", "X"});
+    auto r1 = run({"plh_hub", "--init", "/tmp/h", "--name", "X", "--log-maxsize", "20"});
+    auto r2 = run({"plh_hub", "--name", "X", "--log-maxsize", "20", "--init", "/tmp/h"});
+    auto r3 = run({"plh_hub", "--log-maxsize", "20", "--init", "/tmp/h", "--name", "X"});
     ASSERT_EQ(r1.exit_code, -1);
     ASSERT_EQ(r2.exit_code, -1);
     ASSERT_EQ(r3.exit_code, -1);
-    EXPECT_EQ(r1.args.hub_dir,    "/tmp/h");
-    EXPECT_EQ(r2.args.hub_dir,    "/tmp/h");
-    EXPECT_EQ(r3.args.hub_dir,    "/tmp/h");
-    EXPECT_EQ(r1.args.init_name,  "X");
-    EXPECT_EQ(r2.args.init_name,  "X");
-    EXPECT_EQ(r3.args.init_name,  "X");
+    EXPECT_EQ(r1.args.hub_dir, "/tmp/h");
+    EXPECT_EQ(r2.args.hub_dir, "/tmp/h");
+    EXPECT_EQ(r3.args.hub_dir, "/tmp/h");
+    EXPECT_EQ(r1.args.init_name, "X");
+    EXPECT_EQ(r2.args.init_name, "X");
+    EXPECT_EQ(r3.args.init_name, "X");
 }
 
 // ─── --add-known-role role enum validation (H-K4) ────────────────────────────
@@ -379,10 +373,9 @@ TEST(HubCliTest, FlagOrderDoesNotMatter)
 TEST(HubCliTest, AddKnownRole_ValidRoleProducer_Accepted)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "alice", "uid.alice", "producer",
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "alice", "uid.alice", "producer",
                   "0123456789012345678901234567890123456789"},
-                  out, err);
+                 out, err);
     ASSERT_EQ(r.exit_code, -1) << "err:\n" << err.str();
     EXPECT_TRUE(r.args.add_known_role_only);
     ASSERT_EQ(r.args.known_role_args.size(), 4u);
@@ -391,71 +384,64 @@ TEST(HubCliTest, AddKnownRole_ValidRoleProducer_Accepted)
 
 TEST(HubCliTest, AddKnownRole_ValidRoleConsumer_Accepted)
 {
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "n", "u", "consumer",
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "n", "u", "consumer",
                   "0123456789012345678901234567890123456789"});
     ASSERT_EQ(r.exit_code, -1);
 }
 
 TEST(HubCliTest, AddKnownRole_ValidRoleProcessor_Accepted)
 {
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "n", "u", "processor",
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "n", "u", "processor",
                   "0123456789012345678901234567890123456789"});
     ASSERT_EQ(r.exit_code, -1);
 }
 
 TEST(HubCliTest, AddKnownRole_ValidRoleAny_Accepted)
 {
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "n", "u", "any",
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "n", "u", "any",
                   "0123456789012345678901234567890123456789"});
     ASSERT_EQ(r.exit_code, -1);
 }
 
 TEST(HubCliTest, AddKnownRole_EmptyRoleAcceptedAsAnySynonym)
 {
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "n", "u", "",
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "n", "u", "",
                   "0123456789012345678901234567890123456789"});
-    ASSERT_EQ(r.exit_code, -1)
-        << "Empty string is the documented synonym for 'any'";
+    ASSERT_EQ(r.exit_code, -1) << "Empty string is the documented synonym for 'any'";
 }
 
 TEST(HubCliTest, AddKnownRole_TypoRole_Rejected)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "alice", "uid.alice", "prodcer",   // typo
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "alice", "uid.alice", "prodcer", // typo
                   "0123456789012345678901234567890123456789"},
-                  out, err);
+                 out, err);
     EXPECT_EQ(r.exit_code, 1);
     // The diagnostic must NAME the bad value and the allowed set so
     // the operator can fix the typo without consulting docs.
     EXPECT_NE(err.str().find("'prodcer'"), std::string::npos)
-        << "diagnostic must quote the bad role value; got:\n" << err.str();
+        << "diagnostic must quote the bad role value; got:\n"
+        << err.str();
     EXPECT_NE(err.str().find("producer"), std::string::npos)
-        << "diagnostic must enumerate the allowed roles; got:\n" << err.str();
+        << "diagnostic must enumerate the allowed roles; got:\n"
+        << err.str();
 }
 
 TEST(HubCliTest, AddKnownRole_CaseSensitive_RejectsCapitalized)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "n", "u", "Producer",    // capital P
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "n", "u", "Producer", // capital P
                   "0123456789012345678901234567890123456789"},
-                  out, err);
-    EXPECT_EQ(r.exit_code, 1)
-        << "the role kind is stored verbatim on the KnownRole entry and "
-           "is case-sensitive; the parser rejects a capitalized typo at "
-           "add time rather than letting it persist into the allowlist.";
+                 out, err);
+    EXPECT_EQ(r.exit_code, 1) << "the role kind is stored verbatim on the KnownRole entry and "
+                                 "is case-sensitive; the parser rejects a capitalized typo at "
+                                 "add time rather than letting it persist into the allowlist.";
     EXPECT_NE(err.str().find("'Producer'"), std::string::npos);
 }
 
 TEST(HubCliTest, AddKnownRole_ArbitraryString_Rejected)
 {
-    auto r = run({"plh_hub", "/tmp/h", "--add-known-role",
-                  "n", "u", "telemetry-sink",
+    auto r = run({"plh_hub", "/tmp/h", "--add-known-role", "n", "u", "telemetry-sink",
                   "0123456789012345678901234567890123456789"});
     EXPECT_EQ(r.exit_code, 1);
 }

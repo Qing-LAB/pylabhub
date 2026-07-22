@@ -14,7 +14,7 @@
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
-#include "../scripting/json_py_helpers.hpp"   // detail::json_to_py (S5)
+#include "../scripting/json_py_helpers.hpp" // detail::json_to_py (S5)
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -33,7 +33,8 @@ py::object ProcessorAPI::flexzone(std::optional<int> side) const
     if (!side.has_value())
         throw std::runtime_error("api.flexzone(): side parameter required for processor "
                                  "(use api.Tx or api.Rx)");
-    if (*side == 0) return tx_flexzone_obj_.has_value() ? *tx_flexzone_obj_ : py::none();
+    if (*side == 0)
+        return tx_flexzone_obj_.has_value() ? *tx_flexzone_obj_ : py::none();
     return rx_flexzone_obj_.has_value() ? *rx_flexzone_obj_ : py::none();
 }
 
@@ -73,14 +74,12 @@ bool ProcessorAPI::is_in_band(const std::string &channel) const
     return base_->is_in_band(channel);
 }
 
-bool ProcessorAPI::band_member_contains(const std::string &channel,
-                                         const std::string &role_uid)
+bool ProcessorAPI::band_member_contains(const std::string &channel, const std::string &role_uid)
 {
     // Bug fix 2026-06-16 (#235): see ConsumerAPI counterpart.  Raw
     // broker reply is `{"members": [...]}`; previous `result->is_array()`
     // check was always false; function silently returned false.
-    const auto members =
-        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
     for (const auto &m : members)
         if (m.value("role_uid", std::string{}) == role_uid)
             return true;
@@ -90,8 +89,7 @@ bool ProcessorAPI::band_member_contains(const std::string &channel,
 int ProcessorAPI::band_member_count(const std::string &channel)
 {
     // Bug fix 2026-06-16 (#235): see ConsumerAPI counterpart.
-    const auto members =
-        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
     int count = 0;
     for (const auto &m : members)
         if (!m.value("role_uid", std::string{}).empty())
@@ -100,7 +98,7 @@ int ProcessorAPI::band_member_count(const std::string &channel)
 }
 
 bool ProcessorAPI::allowed_peer_contains(const std::string &channel,
-                                          const std::string &role_uid) const
+                                         const std::string &role_uid) const
 {
     for (const auto &p : base_->allowed_peers(channel))
         if (p.role_uid == role_uid)
@@ -117,8 +115,7 @@ py::dict ProcessorAPI::metrics() const
 {
     // S5: was `json.loads(j.dump())` round-trip — replaced with the
     // shared fast-path walker (src/scripting/json_py_helpers.hpp).
-    return scripting::detail::json_to_py(base_->snapshot_metrics_json())
-        .cast<py::dict>();
+    return scripting::detail::json_to_py(base_->snapshot_metrics_json()).cast<py::dict>();
 }
 
 py::list ProcessorAPI::allowed_peers(const std::string &channel) const
@@ -147,13 +144,17 @@ py::list ProcessorAPI::consumers(const std::string &channel) const
 uint64_t ProcessorAPI::slot_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->slot_logical_size(
-        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+        side.has_value()
+            ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)}
+            : std::nullopt));
 }
 
 uint64_t ProcessorAPI::flexzone_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->flexzone_logical_size(
-        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+        side.has_value()
+            ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)}
+            : std::nullopt));
 }
 
 static std::optional<scripting::ChannelSide> to_channel_side(std::optional<int> side)
@@ -207,13 +208,13 @@ py::object ProcessorAPI::open_inbox(const std::string &target_uid)
         return py::none();
 
     py::object slot_type = result->spec.fields.empty()
-        ? py::none()
-        : scripting::build_ctypes_struct(result->spec, "InboxSlot");
+                               ? py::none()
+                               : scripting::build_ctypes_struct(result->spec, "InboxSlot");
 
-    py::object handle = py::cast(
-        scripting::InboxHandle(std::move(result->client), std::move(result->spec),
-                               std::move(slot_type), result->item_size),
-        py::return_value_policy::move);
+    py::object handle =
+        py::cast(scripting::InboxHandle(std::move(result->client), std::move(result->spec),
+                                        std::move(slot_type), result->item_size),
+                 py::return_value_policy::move);
     inbox_cache_[target_uid] = handle;
     return handle;
 }
@@ -237,13 +238,13 @@ void ProcessorAPI::clear_inbox_cache()
             // Cleanup path; see ProducerAPI::clear_inbox_cache for the
             // rationale.  Log so broken handles surface; continue with
             // the rest of the cache.
-            LOGGER_WARN("ProcessorAPI: clear_inbox_cache uid='{}' threw: {}",
-                        uid, e.what());
+            LOGGER_WARN("ProcessorAPI: clear_inbox_cache uid='{}' threw: {}", uid, e.what());
         }
         catch (...)
         {
             LOGGER_WARN("ProcessorAPI: clear_inbox_cache uid='{}' "
-                        "threw (non-std exception)", uid);
+                        "threw (non-std exception)",
+                        uid);
         }
     }
     inbox_cache_.clear();
@@ -269,140 +270,124 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_processor, m) // NOLINT
         .def_readwrite("slot", &scripting::PyTxChannel::slot);
 
     py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
-        .def_readonly("data",       &scripting::PyInboxMsg::data)
+        .def_readonly("data", &scripting::PyInboxMsg::data)
         .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
-        .def_readonly("seq",        &scripting::PyInboxMsg::seq);
+        .def_readonly("seq", &scripting::PyInboxMsg::seq);
 
     py::class_<scripting::InboxHandle>(m, "InboxHandle")
-        .def("acquire",  &scripting::InboxHandle::acquire)
-        .def("send",     &scripting::InboxHandle::send,    py::arg("timeout_ms") = 5000)
-        .def("discard",  &scripting::InboxHandle::discard)
+        .def("acquire", &scripting::InboxHandle::acquire)
+        .def("send", &scripting::InboxHandle::send, py::arg("timeout_ms") = 5000)
+        .def("discard", &scripting::InboxHandle::discard)
         .def("is_ready", &scripting::InboxHandle::is_ready)
-        .def("close",    &scripting::InboxHandle::close);
+        .def("close", &scripting::InboxHandle::close);
 
     py::class_<ProcessorAPI>(m, "ProcessorAPI")
-        .def("log",           &ProcessorAPI::log, py::arg("level"), py::arg("msg"))
-        .def("uid",           &ProcessorAPI::uid)
-        .def("name",          &ProcessorAPI::name)
-        .def("in_channel",    &ProcessorAPI::in_channel)
-        .def("out_channel",   &ProcessorAPI::out_channel)
-        .def("log_level",     &ProcessorAPI::log_level)
-        .def("script_dir",    &ProcessorAPI::script_dir)
-        .def("role_dir",      &ProcessorAPI::role_dir)
-        .def("logs_dir",      &ProcessorAPI::logs_dir)
-        .def("run_dir",       &ProcessorAPI::run_dir)
-        .def("stop",          &ProcessorAPI::stop)
-        .def("set_critical_error",   &ProcessorAPI::set_critical_error,
-             py::arg("msg"),
+        .def("log", &ProcessorAPI::log, py::arg("level"), py::arg("msg"))
+        .def("uid", &ProcessorAPI::uid)
+        .def("name", &ProcessorAPI::name)
+        .def("in_channel", &ProcessorAPI::in_channel)
+        .def("out_channel", &ProcessorAPI::out_channel)
+        .def("log_level", &ProcessorAPI::log_level)
+        .def("script_dir", &ProcessorAPI::script_dir)
+        .def("role_dir", &ProcessorAPI::role_dir)
+        .def("logs_dir", &ProcessorAPI::logs_dir)
+        .def("run_dir", &ProcessorAPI::run_dir)
+        .def("stop", &ProcessorAPI::stop)
+        .def("set_critical_error", &ProcessorAPI::set_critical_error, py::arg("msg"),
              "Flag a critical (unrecoverable) error and request shutdown. "
              "msg is REQUIRED — logged at ERROR level by the framework. "
              "stop_reason becomes 'critical_error'.")
-        .def("critical_error",       &ProcessorAPI::critical_error)
-        .def("flexzone",      &ProcessorAPI::flexzone,
-             py::arg("side") = py::none(),
+        .def("critical_error", &ProcessorAPI::critical_error)
+        .def("flexzone", &ProcessorAPI::flexzone, py::arg("side") = py::none(),
              "Flexzone typed view. Processor requires explicit side (api.Tx or api.Rx).")
         .def("update_flexzone_checksum", &ProcessorAPI::update_flexzone_checksum)
-        .def("band_join",         &ProcessorAPI::band_join, py::arg("channel"))
-        .def("band_leave",        &ProcessorAPI::band_leave, py::arg("channel"))
-        .def("band_broadcast",    &ProcessorAPI::band_broadcast,
-             py::arg("channel"), py::arg("body"))
-        .def("band_members",      &ProcessorAPI::band_members, py::arg("channel"))
-        .def("band_member_contains", &ProcessorAPI::band_member_contains,
-             py::arg("channel"), py::arg("role_uid"),
+        .def("band_join", &ProcessorAPI::band_join, py::arg("channel"))
+        .def("band_leave", &ProcessorAPI::band_leave, py::arg("channel"))
+        .def("band_broadcast", &ProcessorAPI::band_broadcast, py::arg("channel"), py::arg("body"))
+        .def("band_members", &ProcessorAPI::band_members, py::arg("channel"))
+        .def("band_member_contains", &ProcessorAPI::band_member_contains, py::arg("channel"),
+             py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the band's "
              "member list.  Raises ValueError on transport failure.")
-        .def("band_member_count", &ProcessorAPI::band_member_count,
-             py::arg("channel"),
+        .def("band_member_count", &ProcessorAPI::band_member_count, py::arg("channel"),
              "Engine-parity inquiry — band member count.  Raises "
              "ValueError on transport failure.")
-        .def("is_in_band",        &ProcessorAPI::is_in_band, py::arg("channel"))
+        .def("is_in_band", &ProcessorAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &ProcessorAPI::script_error_count)
-        .def("in_slots_received",  &ProcessorAPI::in_slots_received)
-        .def("out_slots_written",  &ProcessorAPI::out_slots_written)
-        .def("out_drop_count",     &ProcessorAPI::out_drop_count)
+        .def("in_slots_received", &ProcessorAPI::in_slots_received)
+        .def("out_slots_written", &ProcessorAPI::out_slots_written)
+        .def("out_drop_count", &ProcessorAPI::out_drop_count)
         .def("loop_overrun_count", &ProcessorAPI::loop_overrun_count)
         .def("last_cycle_work_us", &ProcessorAPI::last_cycle_work_us)
-        .def("metrics",            &ProcessorAPI::metrics)
-        .def("allowed_peers",      &ProcessorAPI::allowed_peers,
-             py::arg("channel"),
+        .def("metrics", &ProcessorAPI::metrics)
+        .def("allowed_peers", &ProcessorAPI::allowed_peers, py::arg("channel"),
              "HEP-CORE-0036 §I11 polling surface — snapshot of "
              "authorized peers for the channel.  Processor's TX side "
              "has the same producer-side allowlist semantics as "
              "ProducerAPI.allowed_peers.")
-        .def("producers",          &ProcessorAPI::producers,
-             py::arg("channel"),
+        .def("producers", &ProcessorAPI::producers, py::arg("channel"),
              "HEP-CORE-0028 §6a — live producer role_uid list backed "
              "by phase=live NOTIFY.  Processor's RX side (fan-in "
              "consumer role) observes live producers here.")
-        .def("consumers",          &ProcessorAPI::consumers,
-             py::arg("channel"),
+        .def("consumers", &ProcessorAPI::consumers, py::arg("channel"),
              "HEP-CORE-0028 §6a — live consumer role_uid list, "
              "symmetric with producers().  Processor's TX side "
              "(fan-out / one-to-one producer role) observes live "
              "consumers here.")
-        .def("allowed_peer_contains", &ProcessorAPI::allowed_peer_contains,
-             py::arg("channel"), py::arg("role_uid"),
+        .def("allowed_peer_contains", &ProcessorAPI::allowed_peer_contains, py::arg("channel"),
+             py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the "
              "channel's authorized-peer list.  Served from local cache.")
-        .def("allowed_peer_count", &ProcessorAPI::allowed_peer_count,
-             py::arg("channel"),
+        .def("allowed_peer_count", &ProcessorAPI::allowed_peer_count, py::arg("channel"),
              "Engine-parity inquiry — authorized-peer count.")
-        .def("consumer_count", &ProcessorAPI::consumer_count,
-             py::arg("channel"),
+        .def("consumer_count", &ProcessorAPI::consumer_count, py::arg("channel"),
              "HEP-CORE-0028 §6a — binding-side live consumer count "
              "backed by phase=live NOTIFY.")
-        .def("producer_count", &ProcessorAPI::producer_count,
-             py::arg("channel"),
+        .def("producer_count", &ProcessorAPI::producer_count, py::arg("channel"),
              "HEP-CORE-0028 §6a — binding-side live producer count "
              "backed by phase=live NOTIFY.")
-        .def("is_channel_ready",   &ProcessorAPI::is_channel_ready,
-             py::arg("channel"),
+        .def("is_channel_ready", &ProcessorAPI::is_channel_ready, py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
              "named channel is in the Active state.  For processor, the "
              "channel argument selects the TX side (out_channel) or RX "
              "side (in_channel); each side is queried independently.  "
              "Engine-parity with Lua's api.is_channel_ready.  Read-only.")
-        .def("queue_mechanism",    &ProcessorAPI::queue_mechanism,
-             py::arg("side"),
+        .def("queue_mechanism", &ProcessorAPI::queue_mechanism, py::arg("side"),
              "HEP-CORE-0035 §2 (#194) — direct mechanism accessor; engine "
              "parity with Lua.  See ProducerAPI::queue_mechanism.")
-        .def("slot_logical_size", &ProcessorAPI::slot_logical_size,
-             py::arg("side") = py::none())
+        .def("slot_logical_size", &ProcessorAPI::slot_logical_size, py::arg("side") = py::none())
         .def("flexzone_logical_size", &ProcessorAPI::flexzone_logical_size,
              py::arg("side") = py::none())
-        .def("spinlock",       &ProcessorAPI::spinlock,
-             py::arg("index"), py::arg("side") = py::none())
-        .def("spinlock_count", &ProcessorAPI::spinlock_count,
-             py::arg("side") = py::none())
-        .def_property_readonly_static("Tx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Tx); })
-        .def_property_readonly_static("Rx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Rx); })
+        .def("spinlock", &ProcessorAPI::spinlock, py::arg("index"), py::arg("side") = py::none())
+        .def("spinlock_count", &ProcessorAPI::spinlock_count, py::arg("side") = py::none())
+        .def_property_readonly_static("Tx", [](py::object)
+                                      { return static_cast<int>(scripting::ChannelSide::Tx); })
+        .def_property_readonly_static("Rx", [](py::object)
+                                      { return static_cast<int>(scripting::ChannelSide::Rx); })
         .def("report_metric", &ProcessorAPI::report_metric, py::arg("key"), py::arg("value"))
         .def("report_metrics", &ProcessorAPI::report_metrics, py::arg("kv"))
         .def("clear_custom_metrics", &ProcessorAPI::clear_custom_metrics)
-        .def("open_inbox",         &ProcessorAPI::open_inbox, py::arg("target_uid"))
-        .def("clear_inbox_cache",  &ProcessorAPI::clear_inbox_cache)
-        .def("wait_for_role",      &ProcessorAPI::wait_for_role,
-             py::arg("uid"), py::arg("timeout_ms") = 5000)
-        .def("last_seq",      &ProcessorAPI::last_seq)
-        .def("in_capacity",   &ProcessorAPI::in_capacity)
-        .def("in_policy",     &ProcessorAPI::in_policy)
-        .def("out_capacity",  &ProcessorAPI::out_capacity)
-        .def("out_policy",    &ProcessorAPI::out_policy)
+        .def("open_inbox", &ProcessorAPI::open_inbox, py::arg("target_uid"))
+        .def("clear_inbox_cache", &ProcessorAPI::clear_inbox_cache)
+        .def("wait_for_role", &ProcessorAPI::wait_for_role, py::arg("uid"),
+             py::arg("timeout_ms") = 5000)
+        .def("last_seq", &ProcessorAPI::last_seq)
+        .def("in_capacity", &ProcessorAPI::in_capacity)
+        .def("in_policy", &ProcessorAPI::in_policy)
+        .def("out_capacity", &ProcessorAPI::out_capacity)
+        .def("out_policy", &ProcessorAPI::out_policy)
         .def("set_verify_checksum", &ProcessorAPI::set_verify_checksum, py::arg("enable"))
-        .def("stop_reason",        &ProcessorAPI::stop_reason)
+        .def("stop_reason", &ProcessorAPI::stop_reason)
         .def_readwrite("shared_data", &ProcessorAPI::shared_data_)
         .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"));
 
-    m.def("version_info", []() -> py::str
-    {
-        return pylabhub::version::version_info_json();
-    });
+    m.def("version_info", []() -> py::str { return pylabhub::version::version_info_json(); });
 
     py::class_<scripting::SpinLockPy>(m, "SpinLock")
-        .def("lock",   &scripting::SpinLockPy::lock)
+        .def("lock", &scripting::SpinLockPy::lock)
         .def("unlock", &scripting::SpinLockPy::unlock)
         .def("try_lock_for", &scripting::SpinLockPy::try_lock_for, py::arg("timeout_ms"))
         .def("is_locked_by_current_process", &scripting::SpinLockPy::is_locked_by_current_process)
         .def("__enter__", &scripting::SpinLockPy::enter, py::return_value_policy::reference)
-        .def("__exit__",  &scripting::SpinLockPy::exit);
+        .def("__exit__", &scripting::SpinLockPy::exit);
 }

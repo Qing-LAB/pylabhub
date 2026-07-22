@@ -27,13 +27,13 @@ struct HubNetworkConfig
     /// been an unreachable connect target for roles.  Cross-host
     /// deployments override this in hub.json (HEP-CORE-0033 §6.2).
     std::string broker_endpoint{"tcp://127.0.0.1:5570"};
-    bool        broker_bind{true};                       ///< true → bind, false → connect
-    int32_t     zmq_io_threads{1};                       ///< zmq::context_t IO threads
+    bool broker_bind{true};    ///< true → bind, false → connect
+    int32_t zmq_io_threads{1}; ///< zmq::context_t IO threads
 };
 
 inline HubNetworkConfig parse_hub_network_config(const nlohmann::json &j)
 {
-    HubNetworkConfig nc;  // defaults if section absent
+    HubNetworkConfig nc; // defaults if section absent
     if (!j.contains("network"))
         return nc;
     if (!j["network"].is_object())
@@ -48,12 +48,11 @@ inline HubNetworkConfig parse_hub_network_config(const nlohmann::json &j)
     }
 
     nc.broker_endpoint = sect.value("broker_endpoint", nc.broker_endpoint);
-    nc.broker_bind     = sect.value("broker_bind",     nc.broker_bind);
-    nc.zmq_io_threads  = sect.value("zmq_io_threads",  nc.zmq_io_threads);
+    nc.broker_bind = sect.value("broker_bind", nc.broker_bind);
+    nc.zmq_io_threads = sect.value("zmq_io_threads", nc.zmq_io_threads);
     if (nc.zmq_io_threads < 1)
-        throw std::runtime_error(
-            "hub: 'network.zmq_io_threads' must be >= 1 (got " +
-            std::to_string(nc.zmq_io_threads) + ")");
+        throw std::runtime_error("hub: 'network.zmq_io_threads' must be >= 1 (got " +
+                                 std::to_string(nc.zmq_io_threads) + ")");
     return nc;
 }
 

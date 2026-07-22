@@ -125,7 +125,8 @@ class PYLABHUB_UTILS_EXPORT SharedSpinLock
     static uint64_t get_current_thread_id();
 
     SharedSpinLockState *m_state;
-    char m_name[detail::SPINLOCK_NAME_MAX]; ///< Fixed-size name (no ABI-sensitive std::string in exported class)
+    char m_name[detail::SPINLOCK_NAME_MAX]; ///< Fixed-size name (no ABI-sensitive std::string in
+                                            ///< exported class)
 };
 
 /**

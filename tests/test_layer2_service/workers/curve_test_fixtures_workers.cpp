@@ -37,7 +37,8 @@ namespace curve_fixtures
 int seeds_hub_identity_under_canonical_name()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             auto setup = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::seed_curve_identities(setup);
 
@@ -46,26 +47,27 @@ int seeds_hub_identity_under_canonical_name()
             // symbol — mutation safety against a divergent literal.
             ASSERT_TRUE(secure().keys().has(kHubIdentityName))
                 << "Fixture failed to seed under kHubIdentityName "
-                   "('" << kHubIdentityName << "').  A typo or rename "
+                   "('"
+                << kHubIdentityName
+                << "').  A typo or rename "
                    "in seed_curve_identities() would land "
                    "here before any L3 broker test surfaces it.";
 
             // And the pubkey must round-trip back to setup.hub.public_z85.
-            EXPECT_EQ(secure().keys().pubkey(kHubIdentityName),
-                      setup.hub.public_z85)
+            EXPECT_EQ(secure().keys().pubkey(kHubIdentityName), setup.hub.public_z85)
                 << "Seeded pubkey under kHubIdentityName does not "
                    "match setup.hub.public_z85 — fixture handed the "
                    "wrong half-key or hashed it.";
         },
-        "curve_fixtures::seeds_hub_identity_under_canonical_name",
-        Logger::GetLifecycleModule(),
+        "curve_fixtures::seeds_hub_identity_under_canonical_name", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int seeds_role_identities_under_role_keystore_name()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             const std::string uid_a = "prod.test.curve_fixture.uid_a";
             const std::string uid_b = "cons.test.curve_fixture.uid_b";
             auto setup = pylabhub::tests::make_curve_setup({uid_a, uid_b});
@@ -74,25 +76,20 @@ int seeds_role_identities_under_role_keystore_name()
             // The literal contract: BRC client looks up
             // `role_keystore_name(uid)` ("role." + uid).  Fixture
             // must seed under that exact convention.
-            const std::string name_a =
-                pylabhub::tests::role_keystore_name(uid_a);
-            const std::string name_b =
-                pylabhub::tests::role_keystore_name(uid_b);
+            const std::string name_a = pylabhub::tests::role_keystore_name(uid_a);
+            const std::string name_b = pylabhub::tests::role_keystore_name(uid_b);
 
             ASSERT_TRUE(secure().keys().has(name_a))
-                << "Fixture failed to seed role '" << uid_a
-                << "' under role_keystore_name() ('" << name_a
+                << "Fixture failed to seed role '" << uid_a << "' under role_keystore_name() ('"
+                << name_a
                 << "').  BRC clients would fail their KeyStore lookup "
                    "at start() time instead of at fixture construction.";
             ASSERT_TRUE(secure().keys().has(name_b))
-                << "Fixture failed to seed role '" << uid_b
-                << "' under role_keystore_name() ('" << name_b
-                << "').  Same failure shape as above.";
+                << "Fixture failed to seed role '" << uid_b << "' under role_keystore_name() ('"
+                << name_b << "').  Same failure shape as above.";
 
-            EXPECT_EQ(secure().keys().pubkey(name_a),
-                      setup.role(uid_a).public_z85);
-            EXPECT_EQ(secure().keys().pubkey(name_b),
-                      setup.role(uid_b).public_z85);
+            EXPECT_EQ(secure().keys().pubkey(name_a), setup.role(uid_a).public_z85);
+            EXPECT_EQ(secure().keys().pubkey(name_b), setup.role(uid_b).public_z85);
         },
         "curve_fixtures::seeds_role_identities_under_role_keystore_name",
         Logger::GetLifecycleModule(),
@@ -104,7 +101,8 @@ int seeds_role_identities_under_role_keystore_name()
 int seeded_bytes_match_setup_for_hub_identity()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             auto setup = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::seed_curve_identities(setup);
 
@@ -125,21 +123,20 @@ int seeded_bytes_match_setup_for_hub_identity()
                     seckey_matched = (seckey_z85 == setup.hub.secret_z85);
                 });
 
-            EXPECT_TRUE(seckey_matched)
-                << "Fixture seeded a seckey that does NOT match "
-                   "setup.hub.secret_z85 — suggests pubkey↔seckey swap, "
-                   "truncated copy, or wrong half-key handed to "
-                   "KeyStore::add_identity_from_z85.";
+            EXPECT_TRUE(seckey_matched) << "Fixture seeded a seckey that does NOT match "
+                                           "setup.hub.secret_z85 — suggests pubkey↔seckey swap, "
+                                           "truncated copy, or wrong half-key handed to "
+                                           "KeyStore::add_identity_from_z85.";
         },
-        "curve_fixtures::seeded_bytes_match_setup_for_hub_identity",
-        Logger::GetLifecycleModule(),
+        "curve_fixtures::seeded_bytes_match_setup_for_hub_identity", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int seeded_bytes_match_setup_for_role_identity()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             const std::string uid = "prod.test.curve_fixture.uid_bytes";
             auto setup = pylabhub::tests::make_curve_setup({uid});
             pylabhub::tests::seed_curve_identities(setup);
@@ -164,19 +161,14 @@ int seeded_bytes_match_setup_for_role_identity()
             // for the rationale).
             const std::string name = pylabhub::tests::role_keystore_name(uid);
             bool seckey_matched = false;
-            secure().keys().with_seckey_z85(
-                name,
-                [&](std::string_view seckey_z85)
-                {
-                    seckey_matched = (seckey_z85 == expected);
-                });
+            secure().keys().with_seckey_z85(name, [&](std::string_view seckey_z85)
+                                            { seckey_matched = (seckey_z85 == expected); });
 
-            EXPECT_TRUE(seckey_matched)
-                << "Fixture seeded role '" << uid << "' with bytes "
-                   "that do NOT match setup.role(uid).secret_z85.";
+            EXPECT_TRUE(seckey_matched) << "Fixture seeded role '" << uid
+                                        << "' with bytes "
+                                           "that do NOT match setup.role(uid).secret_z85.";
         },
-        "curve_fixtures::seeded_bytes_match_setup_for_role_identity",
-        Logger::GetLifecycleModule(),
+        "curve_fixtures::seeded_bytes_match_setup_for_role_identity", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -185,7 +177,8 @@ int seeded_bytes_match_setup_for_role_identity()
 int seeds_exactly_the_declared_entries()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             const std::string uid_a = "prod.test.curve_fixture.uid_n1";
             const std::string uid_b = "cons.test.curve_fixture.uid_n2";
             auto setup = pylabhub::tests::make_curve_setup({uid_a, uid_b});
@@ -198,8 +191,7 @@ int seeds_exactly_the_declared_entries()
             // the process's locked memory.
             const std::size_t expected = 1u + setup.role_keys.size();
             EXPECT_EQ(secure().keys().size(), expected)
-                << "Fixture seeded " << secure().keys().size()
-                << " entries; expected " << expected
+                << "Fixture seeded " << secure().keys().size() << " entries; expected " << expected
                 << " (1 hub + " << setup.role_keys.size()
                 << " roles).  An extra silently-seeded entry would "
                    "represent unused locked-memory budget and a "
@@ -208,13 +200,10 @@ int seeds_exactly_the_declared_entries()
 
             // Spot-check the entries we know are correct exist.
             EXPECT_TRUE(secure().keys().has(kHubIdentityName));
-            EXPECT_TRUE(secure().keys().has(
-                pylabhub::tests::role_keystore_name(uid_a)));
-            EXPECT_TRUE(secure().keys().has(
-                pylabhub::tests::role_keystore_name(uid_b)));
+            EXPECT_TRUE(secure().keys().has(pylabhub::tests::role_keystore_name(uid_a)));
+            EXPECT_TRUE(secure().keys().has(pylabhub::tests::role_keystore_name(uid_b)));
         },
-        "curve_fixtures::seeds_exactly_the_declared_entries",
-        Logger::GetLifecycleModule(),
+        "curve_fixtures::seeds_exactly_the_declared_entries", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -233,11 +222,11 @@ struct CurveFixturesRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "curve_fixtures")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "curve_fixtures")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::curve_fixtures;

@@ -81,7 +81,7 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/module_def.hpp"  // ModuleDef
+#include "utils/module_def.hpp" // ModuleDef
 #include "utils/security/peer_admission.hpp"
 
 #include <chrono>
@@ -92,7 +92,7 @@
 namespace pylabhub::utils::security
 {
 
-class ZapDomainHandle;  // RAII handle, defined below.
+class ZapDomainHandle; // RAII handle, defined below.
 
 /// Process-wide ZAP handler singleton.  Lazily registers itself as a
 /// persistent dynamic LifecycleManager module on first
@@ -100,7 +100,7 @@ class ZapDomainHandle;  // RAII handle, defined below.
 /// callers — use `ZapRouter::instance()`.
 class PYLABHUB_UTILS_EXPORT ZapRouter
 {
-public:
+  public:
     /// Process-wide accessor.  Idempotent; the underlying state is
     /// lazily constructed on first call but the LifecycleManager
     /// dynamic module is not registered until `register_domain` runs.
@@ -145,8 +145,7 @@ public:
     /// must surface) or if @p domain is empty.  The non-null contract
     /// on `admission` is enforced by the reference type — callers
     /// cannot pass a null admission.
-    [[nodiscard]] ZapDomainHandle
-    register_domain(std::string domain, PeerAdmission &admission);
+    [[nodiscard]] ZapDomainHandle register_domain(std::string domain, PeerAdmission &admission);
 
     /// **Pump one ZAP request from the inproc REP socket.**
     ///
@@ -191,12 +190,12 @@ public:
     /// happened).  Lifetime-cumulative; resets only on module shutdown.
     [[nodiscard]] std::uint64_t denied_count() const noexcept;
 
-    ZapRouter(const ZapRouter &)            = delete;
+    ZapRouter(const ZapRouter &) = delete;
     ZapRouter &operator=(const ZapRouter &) = delete;
-    ZapRouter(ZapRouter &&)                 = delete;
-    ZapRouter &operator=(ZapRouter &&)      = delete;
+    ZapRouter(ZapRouter &&) = delete;
+    ZapRouter &operator=(ZapRouter &&) = delete;
 
-private:
+  private:
     ZapRouter();
     ~ZapRouter();
 
@@ -204,12 +203,10 @@ private:
     void unregister_domain_(const std::string &domain);
 
     static pylabhub::utils::ModuleDef make_module_def_();
-    static void                       lifecycle_startup_thunk(const char *,
-                                                               void *);
-    static void                       lifecycle_shutdown_thunk(const char *,
-                                                                void *);
-    void                              on_module_startup_();
-    void                              on_module_shutdown_();
+    static void lifecycle_startup_thunk(const char *, void *);
+    static void lifecycle_shutdown_thunk(const char *, void *);
+    void on_module_startup_();
+    void on_module_shutdown_();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -222,7 +219,7 @@ private:
 /// (post-move sentinel).
 class PYLABHUB_UTILS_EXPORT ZapDomainHandle
 {
-public:
+  public:
     /// Default-constructed: not registered to anything.
     ZapDomainHandle() = default;
 
@@ -234,27 +231,23 @@ public:
     /// moved-from handles.
     ~ZapDomainHandle();
 
-    ZapDomainHandle(const ZapDomainHandle &)            = delete;
+    ZapDomainHandle(const ZapDomainHandle &) = delete;
     ZapDomainHandle &operator=(const ZapDomainHandle &) = delete;
 
     /// True iff this handle currently owns a registration.
-    [[nodiscard]] bool is_active() const noexcept
-    {
-        return router_ != nullptr && !domain_.empty();
-    }
+    [[nodiscard]] bool is_active() const noexcept { return router_ != nullptr && !domain_.empty(); }
 
-    [[nodiscard]] const std::string &domain() const noexcept
-    {
-        return domain_;
-    }
+    [[nodiscard]] const std::string &domain() const noexcept { return domain_; }
 
-private:
+  private:
     friend class ZapRouter;
     ZapDomainHandle(ZapRouter *router, std::string domain) noexcept
-        : router_(router), domain_(std::move(domain)) {}
+        : router_(router), domain_(std::move(domain))
+    {
+    }
 
-    ZapRouter   *router_{nullptr};
-    std::string  domain_;
+    ZapRouter *router_{nullptr};
+    std::string domain_;
 };
 
 /// Spawns a single `std::jthread` that loops
@@ -324,21 +317,20 @@ private:
 /// pump thread joins while the ZMQ context is still alive.
 class PYLABHUB_UTILS_EXPORT ZapPumpThread
 {
-public:
+  public:
     /// @param tick How long each `pump_one` call waits for a ZAP
     ///   request before returning to the loop top to check the stop
     ///   flag.  100ms is plenty for any realistic peer-connect rate;
     ///   short enough that test teardown joins quickly.
-    explicit ZapPumpThread(
-        std::chrono::milliseconds tick = std::chrono::milliseconds(100));
+    explicit ZapPumpThread(std::chrono::milliseconds tick = std::chrono::milliseconds(100));
 
     /// Stops the loop and joins the thread.  Idempotent.
     ~ZapPumpThread();
 
-    ZapPumpThread(const ZapPumpThread &)            = delete;
+    ZapPumpThread(const ZapPumpThread &) = delete;
     ZapPumpThread &operator=(const ZapPumpThread &) = delete;
-    ZapPumpThread(ZapPumpThread &&)                 = delete;
-    ZapPumpThread &operator=(ZapPumpThread &&)      = delete;
+    ZapPumpThread(ZapPumpThread &&) = delete;
+    ZapPumpThread &operator=(ZapPumpThread &&) = delete;
 
     // ── Lifecycle module API (AUTH-2 / #162, 2026-06-16) ──────────────
 
@@ -363,7 +355,7 @@ public:
     /// Throws `std::runtime_error` on `LoadModule` failure.
     static void ensure_registered_and_loaded();
 
-private:
+  private:
     // ── Lifecycle thunks (free-function ABI to LifecycleManager) ──────
     static void lifecycle_startup_thunk(const char *name, void *userdata);
     static void lifecycle_shutdown_thunk(const char *name, void *userdata);

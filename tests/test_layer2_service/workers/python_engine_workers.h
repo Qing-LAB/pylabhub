@@ -286,8 +286,7 @@ int supports_multi_state_returns_false(const std::string &dir);
 // releases the GIL by comparing how far a Python sub-thread can
 // advance during a held-GIL C++ sleep vs. a released-GIL C++ sleep
 // of the same duration.
-int release_global_lock_during_wait_lets_subthread_run(
-    const std::string &dir);
+int release_global_lock_during_wait_lets_subthread_run(const std::string &dir);
 
 } // namespace python_engine
 } // namespace pylabhub::tests::worker

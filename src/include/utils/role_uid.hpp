@@ -51,16 +51,18 @@ enum class RoleUidTag : std::uint8_t
     Processor, ///< wire tag "proc"
 };
 
-[[nodiscard]] inline constexpr std::string_view
-tag_string(RoleUidTag t) noexcept
+[[nodiscard]] inline constexpr std::string_view tag_string(RoleUidTag t) noexcept
 {
     switch (t)
     {
-    case RoleUidTag::Producer:  return "prod";
-    case RoleUidTag::Consumer:  return "cons";
-    case RoleUidTag::Processor: return "proc";
+    case RoleUidTag::Producer:
+        return "prod";
+    case RoleUidTag::Consumer:
+        return "cons";
+    case RoleUidTag::Processor:
+        return "proc";
     }
-    return {};  // unreachable; silences compiler
+    return {}; // unreachable; silences compiler
 }
 
 /// Map the runtime `RoleKind` (per-presence: Producer or Consumer) to
@@ -68,11 +70,9 @@ tag_string(RoleUidTag t) noexcept
 /// want to compose a uid for that kind directly.  Note that processor
 /// roles cannot be expressed via `RoleKind`; use `RoleUidTag::Processor`
 /// explicitly with the three-arg `make_role_uid` overload.
-[[nodiscard]] inline constexpr RoleUidTag
-to_uid_tag(RoleKind k) noexcept
+[[nodiscard]] inline constexpr RoleUidTag to_uid_tag(RoleKind k) noexcept
 {
-    return (k == RoleKind::Producer) ? RoleUidTag::Producer
-                                     : RoleUidTag::Consumer;
+    return (k == RoleKind::Producer) ? RoleUidTag::Producer : RoleUidTag::Consumer;
 }
 
 /**
@@ -88,18 +88,16 @@ to_uid_tag(RoleKind k) noexcept
  *         validation, with a diagnostic identifying the offending
  *         (tag, name, unique) triple.
  */
-[[nodiscard]] inline std::string
-make_role_uid(RoleUidTag tag, std::string_view name, std::string_view unique)
+[[nodiscard]] inline std::string make_role_uid(RoleUidTag tag, std::string_view name,
+                                               std::string_view unique)
 {
-    std::string uid = fmt::format("{}.{}.{}",
-                                  tag_string(tag), name, unique);
-    if (!pylabhub::hub::is_valid_identifier(
-            uid, pylabhub::hub::IdentifierKind::RoleUid))
+    std::string uid = fmt::format("{}.{}.{}", tag_string(tag), name, unique);
+    if (!pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
-        throw std::invalid_argument(fmt::format(
-            "make_role_uid: composed uid '{}' fails HEP-CORE-0033 "
-            "§G2.2.0b grammar (tag='{}' name='{}' unique='{}')",
-            uid, tag_string(tag), name, unique));
+        throw std::invalid_argument(
+            fmt::format("make_role_uid: composed uid '{}' fails HEP-CORE-0033 "
+                        "§G2.2.0b grammar (tag='{}' name='{}' unique='{}')",
+                        uid, tag_string(tag), name, unique));
     }
     return uid;
 }
@@ -113,8 +111,8 @@ make_role_uid(RoleUidTag tag, std::string_view name, std::string_view unique)
  * `inst` keeps the human-readable "this is an instance counter"
  * marker so the uid doesn't read as an unstructured number.
  */
-[[nodiscard]] inline std::string
-make_role_uid(RoleUidTag tag, std::string_view name, std::uint32_t instance)
+[[nodiscard]] inline std::string make_role_uid(RoleUidTag tag, std::string_view name,
+                                               std::uint32_t instance)
 {
     return make_role_uid(tag, name, fmt::format("inst{:08}", instance));
 }

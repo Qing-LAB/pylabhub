@@ -9,7 +9,8 @@ SlotDiagnostics::SlotDiagnostics(std::string shm_name, uint32_t slot_index)
 {
     if (!refresh())
     {
-        LOGGER_DEBUG("SlotDiagnostics: Initial refresh failed for slot {} in '{}' (is_valid_=false; see previous log for error code).",
+        LOGGER_DEBUG("SlotDiagnostics: Initial refresh failed for slot {} in '{}' "
+                     "(is_valid_=false; see previous log for error code).",
                      slot_index_, shm_name_);
     }
 }

@@ -82,8 +82,8 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
     si.hStdError = hStderr;
     // Always redirect stdin from NUL so the child process is never interactive,
     // regardless of whether the parent is running in a terminal.
-    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     BOOL ok = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr,
                              /*bInheritHandles*/ TRUE, 0, nullptr, nullptr, &si, &pi);
@@ -165,13 +165,11 @@ static ProcessHandle spawn_worker_process(const std::string &exe_path, const std
 }
 
 #if defined(PLATFORM_WIN64)
-static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe_path,
-                                                          const std::string &mode,
-                                                          const std::vector<std::string> &args,
-                                                          const fs::path &stdout_path,
-                                                          const fs::path &stderr_path,
-                                                          bool redirect_stderr_to_console,
-                                                          HANDLE *out_ready_pipe_read)
+static ProcessHandle
+spawn_worker_process_with_ready_pipe(const std::string &exe_path, const std::string &mode,
+                                     const std::vector<std::string> &args,
+                                     const fs::path &stdout_path, const fs::path &stderr_path,
+                                     bool redirect_stderr_to_console, HANDLE *out_ready_pipe_read)
 {
     *out_ready_pipe_read = NULL;
     HANDLE hRead = NULL;
@@ -212,8 +210,9 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
         hStderr = GetStdHandle(STD_ERROR_HANDLE);
     else
     {
-        hStderr = CreateFileW(stderr_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                              &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        hStderr =
+            CreateFileW(stderr_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hStderr == INVALID_HANDLE_VALUE)
         {
             CloseHandle(hStdout);
@@ -227,8 +226,8 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
     si.hStdError = hStderr;
     // Always redirect stdin from NUL so the child process is never interactive,
     // regardless of whether the parent is running in a terminal.
-    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    si.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
     BOOL ok = CreateProcessW(nullptr, wcmd_buf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr,
                              &si, &pi);
@@ -248,13 +247,11 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
     return pi.hProcess;
 }
 #else
-static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe_path,
-                                                          const std::string &mode,
-                                                          const std::vector<std::string> &args,
-                                                          const fs::path &stdout_path,
-                                                          const fs::path &stderr_path,
-                                                          bool redirect_stderr_to_console,
-                                                          int *out_ready_pipe_read)
+static ProcessHandle
+spawn_worker_process_with_ready_pipe(const std::string &exe_path, const std::string &mode,
+                                     const std::vector<std::string> &args,
+                                     const fs::path &stdout_path, const fs::path &stderr_path,
+                                     bool redirect_stderr_to_console, int *out_ready_pipe_read)
 {
     *out_ready_pipe_read = -1;
     int pipe_fds[2];
@@ -298,8 +295,8 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
             argv.push_back(const_cast<char *>(arg.c_str()));
         argv.push_back(nullptr);
         execv(exe_path.c_str(), argv.data());
-        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(), strerror(errno),
-                errno);
+        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(),
+                strerror(errno), errno);
         _exit(127);
     }
     close(pipe_fds[1]);
@@ -314,13 +311,11 @@ static ProcessHandle spawn_worker_process_with_ready_pipe(const std::string &exe
 //   * Child holds the READ end (blocks on read() inside its worker body
 //     via wait_for_quit_or_safety_timeout()).  `PLH_TEST_QUIT_FD` env
 //     var passes the FD number to the child.
-static ProcessHandle spawn_worker_process_with_quit_pipe(const std::string &exe_path,
-                                                          const std::string &mode,
-                                                          const std::vector<std::string> &args,
-                                                          const fs::path &stdout_path,
-                                                          const fs::path &stderr_path,
-                                                          bool redirect_stderr_to_console,
-                                                          int *out_quit_pipe_write)
+static ProcessHandle
+spawn_worker_process_with_quit_pipe(const std::string &exe_path, const std::string &mode,
+                                    const std::vector<std::string> &args,
+                                    const fs::path &stdout_path, const fs::path &stderr_path,
+                                    bool redirect_stderr_to_console, int *out_quit_pipe_write)
 {
     *out_quit_pipe_write = -1;
     int pipe_fds[2];
@@ -330,7 +325,7 @@ static ProcessHandle spawn_worker_process_with_quit_pipe(const std::string &exe_
     pid_t pid = fork();
     if (pid == 0)
     {
-        close(pipe_fds[1]);  // child closes parent's write end
+        close(pipe_fds[1]); // child closes parent's write end
         std::string fd_str = std::to_string(pipe_fds[0]);
         setenv("PLH_TEST_QUIT_FD", fd_str.c_str(), 1);
 
@@ -363,11 +358,11 @@ static ProcessHandle spawn_worker_process_with_quit_pipe(const std::string &exe_
             argv.push_back(const_cast<char *>(arg.c_str()));
         argv.push_back(nullptr);
         execv(exe_path.c_str(), argv.data());
-        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(), strerror(errno),
-                errno);
+        fprintf(stderr, "[CHILD %d] ERROR: execv failed: %s (errno: %d)\n", getpid(),
+                strerror(errno), errno);
         _exit(127);
     }
-    close(pipe_fds[0]);  // parent closes child's read end
+    close(pipe_fds[0]); // parent closes child's read end
     *out_quit_pipe_write = pipe_fds[1];
     return pid;
 }
@@ -466,12 +461,11 @@ static int wait_for_worker_and_get_exit_code(ProcessHandle handle, int timeout_s
 WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mode,
                              const std::vector<std::string> &args, bool redirect_stderr_to_console,
                              bool with_ready_signal, bool with_quit_signal)
-    : mode_(mode),
-      redirect_stderr_to_console_(redirect_stderr_to_console),
-      with_ready_signal_(with_ready_signal),
-      with_quit_signal_(with_quit_signal)
+    : mode_(mode), redirect_stderr_to_console_(redirect_stderr_to_console),
+      with_ready_signal_(with_ready_signal), with_quit_signal_(with_quit_signal)
 {
-    auto base_name = fs::path(exe_path).filename().string() + "_" + fs::path(mode).filename().string();
+    auto base_name =
+        fs::path(exe_path).filename().string() + "_" + fs::path(mode).filename().string();
     // Sanitize: replace characters invalid in Windows filenames.
     for (char &c : base_name)
     {
@@ -496,9 +490,9 @@ WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mod
         handle_ = spawn_worker_process(exe_path, mode, args, stdout_path_, stderr_path_,
                                        redirect_stderr_to_console_);
 #else
-        handle_ = spawn_worker_process_with_quit_pipe(exe_path, mode, args, stdout_path_,
-                                                      stderr_path_, redirect_stderr_to_console_,
-                                                      &quit_pipe_write_);
+        handle_ =
+            spawn_worker_process_with_quit_pipe(exe_path, mode, args, stdout_path_, stderr_path_,
+                                                redirect_stderr_to_console_, &quit_pipe_write_);
 #endif
     }
     else if (with_ready_signal_)
@@ -513,8 +507,8 @@ WorkerProcess::WorkerProcess(const std::string &exe_path, const std::string &mod
 }
 
 void WorkerProcess::init_with_ready_signal(const std::string &exe_path, const std::string &mode,
-                                            const std::vector<std::string> &args,
-                                            bool redirect_stderr_to_console)
+                                           const std::vector<std::string> &args,
+                                           bool redirect_stderr_to_console)
 {
 #if defined(PLATFORM_WIN64)
     handle_ = spawn_worker_process_with_ready_pipe(exe_path, mode, args, stdout_path_, stderr_path_,
@@ -748,8 +742,8 @@ void expect_worker_ok(const WorkerProcess &proc,
             << "worker did not reach end-of-body for '" << proc.mode()
             << "' — body short-circuited (early return, skip, or unreachable code).";
         EXPECT_THAT(stderr_out, HasSubstr("[WORKER_FINALIZED]"))
-            << "worker did not complete LifecycleGuard finalize for '"
-            << proc.mode() << "' — module shutdown hung or aborted.";
+            << "worker did not complete LifecycleGuard finalize for '" << proc.mode()
+            << "' — module shutdown hung or aborted.";
     }
 
     // expected_error_substrings has MULTISET semantics (established
@@ -773,21 +767,21 @@ void expect_worker_ok(const WorkerProcess &proc,
     if (expected_error_substrings.empty())
     {
         std::istringstream lines(stderr_out);
-        std::string        line;
+        std::string line;
         while (std::getline(lines, line))
         {
             if (line.find("[ERROR ]") != std::string::npos)
-                ADD_FAILURE()
-                    << "Unexpected ERROR-level log in worker stderr "
-                       "(expected_error_substrings was empty):\n  " << line;
+                ADD_FAILURE() << "Unexpected ERROR-level log in worker stderr "
+                                 "(expected_error_substrings was empty):\n  "
+                              << line;
         }
     }
     else
     {
         // Collect all [ERROR ] lines in stderr order.
         std::vector<std::string> error_lines;
-        std::istringstream       lines(stderr_out);
-        std::string              line;
+        std::istringstream lines(stderr_out);
+        std::string line;
         while (std::getline(lines, line))
         {
             if (line.find("[ERROR ]") != std::string::npos)
@@ -800,32 +794,29 @@ void expect_worker_ok(const WorkerProcess &proc,
         std::vector<std::string> remaining = expected_error_substrings;
         for (const auto &err_line : error_lines)
         {
-            auto it = std::find_if(remaining.begin(), remaining.end(),
-                [&](const std::string &sub) {
-                    return err_line.find(sub) != std::string::npos;
-                });
+            auto it = std::find_if(remaining.begin(), remaining.end(), [&](const std::string &sub)
+                                   { return err_line.find(sub) != std::string::npos; });
             if (it != remaining.end())
             {
                 remaining.erase(it);
             }
             else
             {
-                ADD_FAILURE()
-                    << "Unexpected ERROR in worker stderr — no remaining "
-                       "expected substring matches this line (either the "
-                       "error is genuinely unexpected, or the substring "
-                       "list undercounts — each entry consumes exactly "
-                       "one line):\n  " << err_line;
+                ADD_FAILURE() << "Unexpected ERROR in worker stderr — no remaining "
+                                 "expected substring matches this line (either the "
+                                 "error is genuinely unexpected, or the substring "
+                                 "list undercounts — each entry consumes exactly "
+                                 "one line):\n  "
+                              << err_line;
             }
         }
 
         // Leftover substrings = expected errors that never appeared.
         for (const auto &unmatched : remaining)
         {
-            ADD_FAILURE()
-                << "Expected error substring not found in worker stderr (or "
-                   "not as many occurrences as entries in the list): \""
-                << unmatched << "\"";
+            ADD_FAILURE() << "Expected error substring not found in worker stderr (or "
+                             "not as many occurrences as entries in the list): \""
+                          << unmatched << "\"";
         }
     }
     // Always forbid FATAL, PANIC, and worker assertion failure.

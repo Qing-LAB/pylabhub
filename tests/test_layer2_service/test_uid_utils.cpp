@@ -32,32 +32,32 @@ TEST_F(UidUtilsTest, GenerateHubUid_HasPrefixAndIsValidPeerUid)
 {
     auto uid = generate_hub_uid();
     EXPECT_TRUE(uid.starts_with("hub.")) << "uid=" << uid;
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::PeerUid)) << "uid=" << uid;
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::PeerUid))
+        << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateProducerUid_HasPrefixAndIsValidRoleUid)
 {
     auto uid = generate_producer_uid();
     EXPECT_TRUE(uid.starts_with("prod.")) << "uid=" << uid;
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::RoleUid)) << "uid=" << uid;
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::RoleUid))
+        << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateConsumerUid_HasPrefixAndIsValidRoleUid)
 {
     auto uid = generate_consumer_uid();
     EXPECT_TRUE(uid.starts_with("cons.")) << "uid=" << uid;
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::RoleUid)) << "uid=" << uid;
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::RoleUid))
+        << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateProcessorUid_HasPrefixAndIsValidRoleUid)
 {
     auto uid = generate_processor_uid();
     EXPECT_TRUE(uid.starts_with("proc.")) << "uid=" << uid;
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::RoleUid)) << "uid=" << uid;
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::RoleUid))
+        << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateUid_ArbitraryTag)
@@ -80,8 +80,8 @@ TEST_F(UidUtilsTest, GenerateHubUid_WithName_IsValidPeerUid)
     EXPECT_TRUE(uid.starts_with("hub.")) << "uid=" << uid;
     // Sanitized name "myHub" → "myhub" (lowercased)
     EXPECT_NE(uid.find("myhub"), std::string::npos) << "uid=" << uid;
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::PeerUid)) << "uid=" << uid;
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::PeerUid))
+        << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateProducerUid_WithName_IsValidRoleUid)
@@ -89,15 +89,16 @@ TEST_F(UidUtilsTest, GenerateProducerUid_WithName_IsValidRoleUid)
     auto uid = generate_producer_uid("TempSensor");
     EXPECT_TRUE(uid.starts_with("prod.")) << "uid=" << uid;
     EXPECT_NE(uid.find("tempsensor"), std::string::npos) << "uid=" << uid;
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::RoleUid)) << "uid=" << uid;
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::RoleUid))
+        << "uid=" << uid;
 }
 
 TEST_F(UidUtilsTest, GenerateUid_Uniqueness)
 {
     // 100 calls must all produce unique UIDs.
     std::set<std::string> uids;
-    for (int i = 0; i < 100; ++i) uids.insert(generate_hub_uid("test"));
+    for (int i = 0; i < 100; ++i)
+        uids.insert(generate_hub_uid("test"));
     EXPECT_EQ(uids.size(), 100u);
 }
 
@@ -107,11 +108,10 @@ TEST_F(UidUtilsTest, GenerateUid_SuffixHasUidPrefix)
     // letter. The random suffix is prefixed with the `uid` full-word
     // (HEP-0033 §G2.2.0b "Numeric-token prefix convention") — verify
     // by parsing.
-    auto uid   = generate_producer_uid("x");
+    auto uid = generate_producer_uid("x");
     auto parts = pylabhub::hub::parse_role_uid(uid);
     ASSERT_TRUE(parts.has_value()) << "uid=" << uid;
-    EXPECT_TRUE(parts->unique.starts_with("uid"))
-        << "unique=" << parts->unique;
+    EXPECT_TRUE(parts->unique.starts_with("uid")) << "unique=" << parts->unique;
     // 8 hex digits follow the `uid` prefix.
     EXPECT_EQ(parts->unique.size(), 3u + 8u) << "unique=" << parts->unique;
 }
@@ -122,29 +122,29 @@ TEST_F(UidUtilsTest, GenerateUid_SuffixHasUidPrefix)
 
 TEST_F(UidUtilsTest, HasHubPrefix_Valid)
 {
-    EXPECT_TRUE (has_hub_prefix("hub.foo.uidabcd1234"));
+    EXPECT_TRUE(has_hub_prefix("hub.foo.uidabcd1234"));
     EXPECT_FALSE(has_hub_prefix("prod.foo.uid1234abcd"));
-    EXPECT_FALSE(has_hub_prefix("hub"));           // no dot after tag
-    EXPECT_FALSE(has_hub_prefix("hub."));          // nothing after dot
+    EXPECT_FALSE(has_hub_prefix("hub"));  // no dot after tag
+    EXPECT_FALSE(has_hub_prefix("hub.")); // nothing after dot
     EXPECT_FALSE(has_hub_prefix(""));
-    EXPECT_FALSE(has_hub_prefix("HUB.foo.u1"));    // uppercase — case-sensitive
+    EXPECT_FALSE(has_hub_prefix("HUB.foo.u1")); // uppercase — case-sensitive
 }
 
 TEST_F(UidUtilsTest, HasProducerPrefix_Valid)
 {
-    EXPECT_TRUE (has_producer_prefix("prod.temp.uidaabbccdd"));
+    EXPECT_TRUE(has_producer_prefix("prod.temp.uidaabbccdd"));
     EXPECT_FALSE(has_producer_prefix("cons.temp.uidaabbccdd"));
 }
 
 TEST_F(UidUtilsTest, HasConsumerPrefix_Valid)
 {
-    EXPECT_TRUE (has_consumer_prefix("cons.log.uid11223344"));
+    EXPECT_TRUE(has_consumer_prefix("cons.log.uid11223344"));
     EXPECT_FALSE(has_consumer_prefix("proc.log.uid11223344"));
 }
 
 TEST_F(UidUtilsTest, HasProcessorPrefix_Valid)
 {
-    EXPECT_TRUE (has_processor_prefix("proc.node.uid12345678"));
+    EXPECT_TRUE(has_processor_prefix("proc.node.uid12345678"));
     EXPECT_FALSE(has_processor_prefix("prod.node.uid12345678"));
 }
 
@@ -167,8 +167,8 @@ TEST_F(UidUtilsTest, Sanitize_KeepsDigitsAndCollapsesSpecials)
 
 TEST_F(UidUtilsTest, Sanitize_Empty_FallsBackToNode)
 {
-    EXPECT_EQ(detail::sanitize_name_part(""),     "node");
-    EXPECT_EQ(detail::sanitize_name_part("---"),  "node");
+    EXPECT_EQ(detail::sanitize_name_part(""), "node");
+    EXPECT_EQ(detail::sanitize_name_part("---"), "node");
     EXPECT_EQ(detail::sanitize_name_part("!!!!"), "node");
 }
 
@@ -191,7 +191,6 @@ TEST_F(UidUtilsTest, Sanitize_PrependsLetter_WhenStartsWithDigit)
     // so the output is a valid component.
     auto result = detail::sanitize_name_part("123Temp");
     EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(std::isalpha(static_cast<unsigned char>(result.front())))
-        << "result=" << result;
+    EXPECT_TRUE(std::isalpha(static_cast<unsigned char>(result.front()))) << "result=" << result;
     EXPECT_NE(result.find("123temp"), std::string::npos) << "result=" << result;
 }

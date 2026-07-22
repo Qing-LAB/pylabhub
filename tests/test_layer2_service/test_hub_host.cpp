@@ -58,8 +58,7 @@ TEST_F(HubHostTest, Startup_FailsCleanlyOnBusyPort)
 
 TEST_F(HubHostTest, Destructor_CleansUpEvenWithoutExplicitShutdown)
 {
-    auto w = SpawnWorker(
-        "hub_host.destructor_cleans_up_even_without_explicit_shutdown");
+    auto w = SpawnWorker("hub_host.destructor_cleans_up_even_without_explicit_shutdown");
     ExpectWorkerOk(w);
 }
 

@@ -49,19 +49,28 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/engine_host.hpp"     // script_host_traits<ApiT> primary template
+#include "utils/engine_host.hpp" // script_host_traits<ApiT> primary template
 
 #include <memory>
 #include <string>
 #include <string_view>
-#include <variant>                   // std::monostate for the trait specialization
-#include <vector>                    // query_metrics(categories)
+#include <variant> // std::monostate for the trait specialization
+#include <vector>  // query_metrics(categories)
 
-namespace pylabhub::utils        { class ThreadManager; }
-namespace pylabhub::hub_host     { class HubHost; }
-namespace pylabhub::scripting    { class RoleHostCore;
-                                   class ScriptEngine;
-                                   struct IncomingMessage; }
+namespace pylabhub::utils
+{
+class ThreadManager;
+}
+namespace pylabhub::hub_host
+{
+class HubHost;
+}
+namespace pylabhub::scripting
+{
+class RoleHostCore;
+class ScriptEngine;
+struct IncomingMessage;
+} // namespace pylabhub::scripting
 
 namespace pylabhub::hub_host
 {
@@ -71,7 +80,7 @@ namespace pylabhub::hub_host
 /// for individual contracts.
 class PYLABHUB_UTILS_EXPORT HubAPI
 {
-public:
+  public:
     /// EngineHost<HubAPI>::startup_() constructs HubAPI lazily on the
     /// runner's worker thread.  All three params are required:
     ///
@@ -81,15 +90,13 @@ public:
     /// @param short_tag  Always "hub" for the hub-side instantiation;
     ///                  carried verbatim through to log prefixes.
     /// @param uid       Hub instance uid (e.g. "hub.lab1.uid00000001").
-    HubAPI(scripting::RoleHostCore &core,
-           std::string              short_tag,
-           std::string              uid);
+    HubAPI(scripting::RoleHostCore &core, std::string short_tag, std::string uid);
     ~HubAPI();
 
-    HubAPI(const HubAPI &)            = delete;
+    HubAPI(const HubAPI &) = delete;
     HubAPI &operator=(const HubAPI &) = delete;
-    HubAPI(HubAPI &&)                 = delete;
-    HubAPI &operator=(HubAPI &&)      = delete;
+    HubAPI(HubAPI &&) = delete;
+    HubAPI &operator=(HubAPI &&) = delete;
 
     // ── EngineHost contract ───────────────────────────────────────────────
 
@@ -205,8 +212,7 @@ public:
     /// `{"channels", "counters"}`); empty/absent = all categories.
     /// Same JSON shape `metrics()` produces, but with the
     /// `MetricsFilter::categories` set populated from `categories`.
-    [[nodiscard]] nlohmann::json
-    query_metrics(const std::vector<std::string> &categories) const;
+    [[nodiscard]] nlohmann::json query_metrics(const std::vector<std::string> &categories) const;
 
     // ── Control delegates (HEP-CORE-0033 §12.3 control block) ─────────────
     //
@@ -230,9 +236,8 @@ public:
     /// Send a control-plane broadcast frame to all consumers of a
     /// channel.  `data` is optional — empty string by default for
     /// pure control messages.
-    void broadcast_channel(const std::string &channel,
-                            const std::string &message,
-                            const std::string &data = "");
+    void broadcast_channel(const std::string &channel, const std::string &message,
+                           const std::string &data = "");
 
     /// Request hub shutdown.  Sets the host's shutdown flag and wakes
     /// any thread blocked on `host.run_main_loop()` (or an equivalent
@@ -282,8 +287,7 @@ public:
     /// @param data  Optional JSON payload delivered as the callback's
     ///              `data` argument.  Default = empty object.
     /// @throws std::invalid_argument if `name` is not a valid identifier.
-    void post_event(const std::string &name,
-                    const nlohmann::json &data = nlohmann::json::object());
+    void post_event(const std::string &name, const nlohmann::json &data = nlohmann::json::object());
 
     // ── Response augmentation (HEP-CORE-0033 §12.2.2) ─────────────────────
     //
@@ -305,8 +309,7 @@ public:
 
     /// Augment the response for the `query_metrics` admin RPC.
     /// Script callback: `on_query_metrics(api, params, response)`.
-    void augment_query_metrics(const nlohmann::json &params,
-                               nlohmann::json &response);
+    void augment_query_metrics(const nlohmann::json &params, nlohmann::json &response);
 
     /// Augment the response for the `list_roles` admin RPC.
     /// Script callback: `on_list_roles(api, response)`.
@@ -314,14 +317,12 @@ public:
 
     /// Augment the response for the `get_channel` admin RPC.
     /// Script callback: `on_get_channel(api, name, response)`.
-    void augment_get_channel(const std::string &name,
-                             nlohmann::json &response);
+    void augment_get_channel(const std::string &name, nlohmann::json &response);
 
     /// Augment the broker-side reply for a `HUB_TARGETED_MSG` peer wire
     /// frame.  Script callback: `on_peer_message(api, peer_uid, msg, response)`.
     /// Wired into BrokerService via `BrokerService::Config::on_peer_message_augment`.
-    void augment_peer_message(const std::string &peer_uid,
-                              const nlohmann::json &msg,
+    void augment_peer_message(const std::string &peer_uid, const nlohmann::json &msg,
                               nlohmann::json &response);
 
     // ── Host wiring (called once by HubScriptRunner after construction) ───
@@ -357,7 +358,7 @@ public:
     /// engine is owned by EngineHost; HubAPI holds a non-owning pointer.
     void set_engine(scripting::ScriptEngine &engine) noexcept;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -392,8 +393,7 @@ private:
 namespace pylabhub::scripting
 {
 
-template <>
-struct script_host_traits<pylabhub::hub_host::HubAPI>
+template <> struct script_host_traits<pylabhub::hub_host::HubAPI>
 {
     using ConfigT = std::monostate;
     /// `monostate` carries no fields — the hub uid is owned by HubHost,
@@ -403,10 +403,7 @@ struct script_host_traits<pylabhub::hub_host::HubAPI>
     /// reaching into anything that doesn't exist; the uid is overwritten
     /// before startup_() reads it.  Trait contract documented in
     /// `engine_host.hpp`.
-    static std::string uid_from_config(const std::monostate &)
-    {
-        return std::string{};
-    }
+    static std::string uid_from_config(const std::monostate &) { return std::string{}; }
 };
 
 } // namespace pylabhub::scripting

@@ -67,19 +67,16 @@ inline LoggingConfig parse_logging_config(const nlohmann::json &j, const char *t
     const auto &lj = j["logging"];
     if (!lj.is_object())
     {
-        throw std::runtime_error(
-            std::string(tag) + ": 'logging' must be a JSON object");
+        throw std::runtime_error(std::string(tag) + ": 'logging' must be a JSON object");
     }
 
     // Validate keys within the "logging" subobject.
     for (auto it = lj.begin(); it != lj.end(); ++it)
     {
         const auto &k = it.key();
-        if (k != "file_path" && k != "max_size_mb" && k != "backups" &&
-            k != "timestamped")
+        if (k != "file_path" && k != "max_size_mb" && k != "backups" && k != "timestamped")
         {
-            throw std::runtime_error(
-                std::string(tag) + ": unknown config key 'logging." + k + "'");
+            throw std::runtime_error(std::string(tag) + ": unknown config key 'logging." + k + "'");
         }
     }
 
@@ -91,8 +88,7 @@ inline LoggingConfig parse_logging_config(const nlohmann::json &j, const char *t
         const auto mb = lj["max_size_mb"].get<double>();
         if (mb <= 0)
         {
-            throw std::runtime_error(
-                std::string(tag) + ": 'logging.max_size_mb' must be > 0");
+            throw std::runtime_error(std::string(tag) + ": 'logging.max_size_mb' must be > 0");
         }
         lc.max_size_bytes = static_cast<size_t>(mb * 1024.0 * 1024.0);
     }
@@ -111,9 +107,9 @@ inline LoggingConfig parse_logging_config(const nlohmann::json &j, const char *t
         }
         else
         {
-            throw std::runtime_error(
-                std::string(tag) + ": 'logging.backups' must be >= 1 "
-                "(or -1 to keep all files); '0' is invalid");
+            throw std::runtime_error(std::string(tag) +
+                                     ": 'logging.backups' must be >= 1 "
+                                     "(or -1 to keep all files); '0' is invalid");
         }
     }
 

@@ -39,15 +39,15 @@
 #include <string>
 #include <system_error>
 
+using pylabhub::config::LoggingConfig;
+using pylabhub::config::RoleConfig;
 using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::FileLock;
 using pylabhub::utils::JsonConfig;
-using pylabhub::utils::Logger;
 using pylabhub::utils::LifecycleGuard;
+using pylabhub::utils::Logger;
 using pylabhub::utils::MakeModDefList;
 using pylabhub::utils::RoleDirectory;
-using pylabhub::config::LoggingConfig;
-using pylabhub::config::RoleConfig;
 
 namespace fs = std::filesystem;
 
@@ -104,13 +104,12 @@ int roundtrip_defaults_preserved(const std::string &dir, const std::string &role
             EXPECT_TRUE(lc.timestamped);
             EXPECT_TRUE(lc.file_path.empty());
         },
-        "role_logging::roundtrip_defaults_preserved",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::roundtrip_defaults_preserved", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
-int roundtrip_max_size(const std::string &dir, const std::string &role,
-                       double max_size_mb, std::size_t expected_bytes)
+int roundtrip_max_size(const std::string &dir, const std::string &role, double max_size_mb,
+                       std::size_t expected_bytes)
 {
     return run_gtest_worker(
         [&]()
@@ -122,9 +121,8 @@ int roundtrip_max_size(const std::string &dir, const std::string &role,
             auto cfg = RoleConfig::load_from_directory(dir, role.c_str(), get_role_parser(role));
             EXPECT_EQ(cfg.logging().max_size_bytes, expected_bytes);
         },
-        "role_logging::roundtrip_max_size",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::roundtrip_max_size", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int roundtrip_backups(const std::string &dir, const std::string &role, int backups,
@@ -140,13 +138,12 @@ int roundtrip_backups(const std::string &dir, const std::string &role, int backu
             auto cfg = RoleConfig::load_from_directory(dir, role.c_str(), get_role_parser(role));
             EXPECT_EQ(cfg.logging().max_backup_files, expected_count);
         },
-        "role_logging::roundtrip_backups",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::roundtrip_backups", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
-int roundtrip_both(const std::string &dir, const std::string &role, double max_size_mb,
-                   int backups, std::size_t expected_bytes, std::size_t expected_count)
+int roundtrip_both(const std::string &dir, const std::string &role, double max_size_mb, int backups,
+                   std::size_t expected_bytes, std::size_t expected_count)
 {
     return run_gtest_worker(
         [&]()
@@ -154,16 +151,15 @@ int roundtrip_both(const std::string &dir, const std::string &role, double max_s
             register_all_roles_once();
             RoleDirectory::LogInitOverrides ov;
             ov.max_size_mb = max_size_mb;
-            ov.backups     = backups;
+            ov.backups = backups;
             ASSERT_EQ(RoleDirectory::init_directory(dir, role, "X", ov), 0);
             auto cfg = RoleConfig::load_from_directory(dir, role.c_str(), get_role_parser(role));
             EXPECT_EQ(cfg.logging().max_size_bytes, expected_bytes);
             EXPECT_EQ(cfg.logging().max_backup_files, expected_count);
             EXPECT_TRUE(cfg.logging().timestamped);
         },
-        "role_logging::roundtrip_both",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::roundtrip_both", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // Helper: assert `RoleConfig::load_from_directory` throws a
@@ -172,20 +168,23 @@ int roundtrip_both(const std::string &dir, const std::string &role, double max_s
 // distinct runtime_error throw sites for each kind of bad input
 // (logging_config.hpp:70/81/94/114) — type alone could let a regression
 // where check A fails to fire and check B fires instead pass silently.
-static void expect_load_runtime_error(const std::string &dir,
-                                       const std::string &role,
-                                       std::string_view needle)
+static void expect_load_runtime_error(const std::string &dir, const std::string &role,
+                                      std::string_view needle)
 {
-    bool threw = false; std::string msg;
-    try {
-        (void)RoleConfig::load_from_directory(dir, role.c_str(),
-                                              get_role_parser(role));
-    } catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
-    EXPECT_TRUE(threw)
-        << "load_from_directory must throw runtime_error for invalid logging config";
+    bool threw = false;
+    std::string msg;
+    try
+    {
+        (void)RoleConfig::load_from_directory(dir, role.c_str(), get_role_parser(role));
+    }
+    catch (const std::runtime_error &e)
+    {
+        threw = true;
+        msg = e.what();
+    }
+    EXPECT_TRUE(threw) << "load_from_directory must throw runtime_error for invalid logging config";
     EXPECT_NE(msg.find(needle), std::string::npos)
-        << "wrong runtime_error path; expected substring '" << needle
-        << "', got: " << msg;
+        << "wrong runtime_error path; expected substring '" << needle << "', got: " << msg;
 }
 
 int roundtrip_error_backups_zero(const std::string &dir, const std::string &role)
@@ -197,12 +196,10 @@ int roundtrip_error_backups_zero(const std::string &dir, const std::string &role
             RoleDirectory::LogInitOverrides ov;
             ov.backups = 0;
             ASSERT_EQ(RoleDirectory::init_directory(dir, role, "X", ov), 0);
-            expect_load_runtime_error(dir, role,
-                                      "'logging.backups' must be >= 1");
+            expect_load_runtime_error(dir, role, "'logging.backups' must be >= 1");
         },
-        "role_logging::roundtrip_error_backups_zero",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::roundtrip_error_backups_zero", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int roundtrip_error_maxsize_zero(const std::string &dir, const std::string &role)
@@ -214,12 +211,10 @@ int roundtrip_error_maxsize_zero(const std::string &dir, const std::string &role
             RoleDirectory::LogInitOverrides ov;
             ov.max_size_mb = 0.0;
             ASSERT_EQ(RoleDirectory::init_directory(dir, role, "X", ov), 0);
-            expect_load_runtime_error(dir, role,
-                                      "'logging.max_size_mb' must be > 0");
+            expect_load_runtime_error(dir, role, "'logging.max_size_mb' must be > 0");
         },
-        "role_logging::roundtrip_error_maxsize_zero",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::roundtrip_error_maxsize_zero", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── configure_logger_from_config workers ────────────────────────────────────
@@ -231,13 +226,12 @@ int configure_auto_composed_path(const std::string &dir)
         {
             register_all_roles_once();
             ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "X"), 0);
-            auto cfg = RoleConfig::load_from_directory(dir, "producer",
-                                                      get_role_parser("producer"));
+            auto cfg =
+                RoleConfig::load_from_directory(dir, "producer", get_role_parser("producer"));
             const std::string uid = cfg.identity().uid;
 
             std::error_code ec;
-            const bool ok =
-                pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]");
+            const bool ok = pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]");
             ASSERT_TRUE(ok) << "configure_logger_from_config failed: " << ec.message();
 
             LOGGER_INFO("[test] auto-path probe");
@@ -247,9 +241,7 @@ int configure_auto_composed_path(const std::string &dir)
             ASSERT_TRUE(fs::is_directory(logs_dir));
 
             bool found = false;
-            const std::regex re(
-                "^" + uid +
-                R"(-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.\d+\.log$)");
+            const std::regex re("^" + uid + R"(-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.\d+\.log$)");
             for (const auto &ent : fs::directory_iterator(logs_dir))
             {
                 if (std::regex_match(ent.path().filename().string(), re))
@@ -266,9 +258,8 @@ int configure_auto_composed_path(const std::string &dir)
             (void)Logger::instance().set_console();
             Logger::instance().flush();
         },
-        "role_logging::configure_auto_composed_path",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::configure_auto_composed_path", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int configure_rotation_params(const std::string &dir)
@@ -279,25 +270,23 @@ int configure_rotation_params(const std::string &dir)
             register_all_roles_once();
             RoleDirectory::LogInitOverrides ov;
             ov.max_size_mb = 1.0;
-            ov.backups     = 3;
+            ov.backups = 3;
             ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "X", ov), 0);
-            auto cfg = RoleConfig::load_from_directory(dir, "producer",
-                                                      get_role_parser("producer"));
+            auto cfg =
+                RoleConfig::load_from_directory(dir, "producer", get_role_parser("producer"));
 
             EXPECT_EQ(cfg.logging().max_size_bytes, 1ULL * 1024 * 1024);
             EXPECT_EQ(cfg.logging().max_backup_files, 3u);
             EXPECT_TRUE(cfg.logging().timestamped);
 
             std::error_code ec;
-            EXPECT_TRUE(pylabhub::scripting::configure_logger_from_config(cfg, ec,
-                                                                         "[test]"));
+            EXPECT_TRUE(pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]"));
 
             (void)Logger::instance().set_console();
             Logger::instance().flush();
         },
-        "role_logging::configure_rotation_params",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::configure_rotation_params", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int configure_keep_all_sentinel(const std::string &dir)
@@ -309,20 +298,18 @@ int configure_keep_all_sentinel(const std::string &dir)
             RoleDirectory::LogInitOverrides ov;
             ov.backups = -1;
             ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "X", ov), 0);
-            auto cfg = RoleConfig::load_from_directory(dir, "producer",
-                                                      get_role_parser("producer"));
+            auto cfg =
+                RoleConfig::load_from_directory(dir, "producer", get_role_parser("producer"));
             EXPECT_EQ(cfg.logging().max_backup_files, LoggingConfig::kKeepAllBackups);
 
             std::error_code ec;
-            EXPECT_TRUE(pylabhub::scripting::configure_logger_from_config(cfg, ec,
-                                                                         "[test]"));
+            EXPECT_TRUE(pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]"));
 
             (void)Logger::instance().set_console();
             Logger::instance().flush();
         },
-        "role_logging::configure_keep_all_sentinel",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::configure_keep_all_sentinel", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int configure_unwritable_dir(const std::string &dir)
@@ -333,23 +320,20 @@ int configure_unwritable_dir(const std::string &dir)
 #if defined(__unix__) || defined(__APPLE__)
             register_all_roles_once();
             ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "X"), 0);
-            auto cfg = RoleConfig::load_from_directory(dir, "producer",
-                                                      get_role_parser("producer"));
+            auto cfg =
+                RoleConfig::load_from_directory(dir, "producer", get_role_parser("producer"));
 
             const fs::path role_dir(dir);
             const fs::path logs = role_dir / "logs";
             ASSERT_TRUE(fs::remove_all(logs));
-            fs::permissions(role_dir,
-                            fs::perms::owner_read | fs::perms::owner_exec,
+            fs::permissions(role_dir, fs::perms::owner_read | fs::perms::owner_exec,
                             fs::perm_options::replace);
 
             std::error_code ec;
-            const bool ok =
-                pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]");
+            const bool ok = pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]");
 
             // Restore perms so the parent's rm -r can succeed.
-            fs::permissions(role_dir, fs::perms::owner_all,
-                            fs::perm_options::replace);
+            fs::permissions(role_dir, fs::perms::owner_all, fs::perm_options::replace);
 
             EXPECT_FALSE(ok);
             EXPECT_TRUE(ec) << "expected non-empty error_code on pre-flight failure";
@@ -361,9 +345,8 @@ int configure_unwritable_dir(const std::string &dir)
             GTEST_SKIP() << "POSIX-only permission test";
 #endif
         },
-        "role_logging::configure_unwritable_dir",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::configure_unwritable_dir", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int configure_explicit_file_path(const std::string &dir)
@@ -379,20 +362,19 @@ int configure_explicit_file_path(const std::string &dir)
             {
                 std::ifstream in(role_dir / "producer.json");
                 nlohmann::json j = nlohmann::json::parse(in);
-                j["logging"]["file_path"]  = explicit_log.string();
+                j["logging"]["file_path"] = explicit_log.string();
                 j["logging"]["timestamped"] = false;
                 in.close();
                 std::ofstream out(role_dir / "producer.json");
                 out << j.dump(2);
             }
 
-            auto cfg = RoleConfig::load_from_directory(dir, "producer",
-                                                      get_role_parser("producer"));
+            auto cfg =
+                RoleConfig::load_from_directory(dir, "producer", get_role_parser("producer"));
             EXPECT_EQ(cfg.logging().file_path, explicit_log.string());
 
             std::error_code ec;
-            ASSERT_TRUE(pylabhub::scripting::configure_logger_from_config(cfg, ec,
-                                                                         "[test]"))
+            ASSERT_TRUE(pylabhub::scripting::configure_logger_from_config(cfg, ec, "[test]"))
                 << ec.message();
 
             LOGGER_INFO("[test] explicit-path probe");
@@ -404,9 +386,8 @@ int configure_explicit_file_path(const std::string &dir)
             (void)Logger::instance().set_console();
             Logger::instance().flush();
         },
-        "role_logging::configure_explicit_file_path",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_logging::configure_explicit_file_path", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 } // namespace role_logging
@@ -417,8 +398,14 @@ int configure_explicit_file_path(const std::string &dir)
 namespace
 {
 
-int parse_int_arg(const char *s) { return std::stoi(s); }
-double parse_double_arg(const char *s) { return std::stod(s); }
+int parse_int_arg(const char *s)
+{
+    return std::stoi(s);
+}
+double parse_double_arg(const char *s)
+{
+    return std::stod(s);
+}
 std::size_t parse_size_arg(const char *s)
 {
     return static_cast<std::size_t>(std::stoull(s));
@@ -435,18 +422,18 @@ struct RoleLoggingWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_logging")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_logging")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_logging;
 
                 // All scenarios take at least <dir> as argv[2].
-                auto need = [&](int n) -> bool {
-                    if (argc < n) {
-                        fmt::print(stderr,
-                                   "role_logging.{}: expected {} args, got {}\n",
-                                   sc, n - 2, argc - 2);
+                auto need = [&](int n) -> bool
+                {
+                    if (argc < n)
+                    {
+                        fmt::print(stderr, "role_logging.{}: expected {} args, got {}\n", sc, n - 2,
+                                   argc - 2);
                         return false;
                     }
                     return true;
@@ -455,18 +442,14 @@ struct RoleLoggingWorkerRegistrar
                 if (sc == "roundtrip_defaults_preserved" && need(4))
                     return roundtrip_defaults_preserved(argv[2], argv[3]);
                 if (sc == "roundtrip_max_size" && need(6))
-                    return roundtrip_max_size(argv[2], argv[3],
-                                              parse_double_arg(argv[4]),
+                    return roundtrip_max_size(argv[2], argv[3], parse_double_arg(argv[4]),
                                               parse_size_arg(argv[5]));
                 if (sc == "roundtrip_backups" && need(6))
-                    return roundtrip_backups(argv[2], argv[3],
-                                             parse_int_arg(argv[4]),
+                    return roundtrip_backups(argv[2], argv[3], parse_int_arg(argv[4]),
                                              parse_size_arg(argv[5]));
                 if (sc == "roundtrip_both" && need(8))
-                    return roundtrip_both(argv[2], argv[3],
-                                          parse_double_arg(argv[4]),
-                                          parse_int_arg(argv[5]),
-                                          parse_size_arg(argv[6]),
+                    return roundtrip_both(argv[2], argv[3], parse_double_arg(argv[4]),
+                                          parse_int_arg(argv[5]), parse_size_arg(argv[6]),
                                           parse_size_arg(argv[7]));
                 if (sc == "roundtrip_error_backups_zero" && need(4))
                     return roundtrip_error_backups_zero(argv[2], argv[3]);
@@ -484,8 +467,7 @@ struct RoleLoggingWorkerRegistrar
                 if (sc == "configure_explicit_file_path" && need(3))
                     return configure_explicit_file_path(argv[2]);
 
-                fmt::print(stderr,
-                           "[role_logging] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[role_logging] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

@@ -27,82 +27,70 @@ class HubLuaIntegrationTest : public IsolatedProcessTest
 
 TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.real_lua_script_on_init_on_stop_fire_and_log");
+    auto w = SpawnWorker("hub_lua_integration.real_lua_script_on_init_on_stop_fire_and_log");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, ScriptSyntaxError_StartupThrows)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.script_syntax_error_startup_throws");
+    auto w = SpawnWorker("hub_lua_integration.script_syntax_error_startup_throws");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, OnTick_FiresPeriodically_WhenIdle)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.on_tick_fires_periodically_when_idle");
+    auto w = SpawnWorker("hub_lua_integration.on_tick_fires_periodically_when_idle");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, OnTick_CatchUp_FixedRateWithCompensation)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.on_tick_catch_up_fixed_rate_with_compensation");
+    auto w = SpawnWorker("hub_lua_integration.on_tick_catch_up_fixed_rate_with_compensation");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, ReadAccessors_AllReachable_FromOnInit)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.read_accessors_all_reachable_from_on_init");
+    auto w = SpawnWorker("hub_lua_integration.read_accessors_all_reachable_from_on_init");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, RequestShutdown_FromOnInit_WakesMainLoop)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.request_shutdown_from_on_init_wakes_main_loop");
+    auto w = SpawnWorker("hub_lua_integration.request_shutdown_from_on_init_wakes_main_loop");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest,
        EventObservers_ChannelRegistration_FiresOnChannelOpenedAndOnRoleRegistered)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.event_observers_channel_registration_"
-        "fires_on_channel_opened_and_on_role_registered");
+    auto w = SpawnWorker("hub_lua_integration.event_observers_channel_registration_"
+                         "fires_on_channel_opened_and_on_role_registered");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, EventObserver_ConsumerRegistration_FiresOnConsumerAdded)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.event_observer_consumer_registration_"
-        "fires_on_consumer_added");
+    auto w = SpawnWorker("hub_lua_integration.event_observer_consumer_registration_"
+                         "fires_on_consumer_added");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, PostEvent_FromOnInit_FiresOnAppCallback)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.post_event_from_on_init_fires_on_app_callback");
+    auto w = SpawnWorker("hub_lua_integration.post_event_from_on_init_fires_on_app_callback");
     ExpectWorkerOk(w);
 }
 
-TEST_F(HubLuaIntegrationTest,
-       Augment_QueryMetrics_FromAdminThreadCallSite_MutatesResponse)
+TEST_F(HubLuaIntegrationTest, Augment_QueryMetrics_FromAdminThreadCallSite_MutatesResponse)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.augment_query_metrics_from_admin_thread_"
-        "call_site_mutates_response");
+    auto w = SpawnWorker("hub_lua_integration.augment_query_metrics_from_admin_thread_"
+                         "call_site_mutates_response");
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubLuaIntegrationTest, Augment_NullReturn_KeepsDefaultResponse)
 {
-    auto w = SpawnWorker(
-        "hub_lua_integration.augment_null_return_keeps_default_response");
+    auto w = SpawnWorker("hub_lua_integration.augment_null_return_keeps_default_response");
     ExpectWorkerOk(w);
 }

@@ -73,17 +73,16 @@
 
 using pylabhub::hub::ChecksumPolicy;
 using pylabhub::hub::ConsumerSyncPolicy;
+using pylabhub::hub::datablock_layout_total_size;
 using pylabhub::hub::DataBlockConfig;
 using pylabhub::hub::DataBlockPageSize;
 using pylabhub::hub::DataBlockPolicy;
 using pylabhub::hub::SchemaFieldDesc;
 using pylabhub::hub::ShmQueue;
-using pylabhub::hub::datablock_layout_total_size;
 
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-    pylabhub::hub::GetDataBlockModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                             pylabhub::hub::GetDataBlockModule())
 
 namespace
 {
@@ -95,7 +94,7 @@ std::vector<SchemaFieldDesc> slot_schema()
 {
     SchemaFieldDesc field;
     field.type_str = "int32";
-    field.count    = 1;
+    field.count = 1;
     return {field};
 }
 
@@ -106,7 +105,7 @@ std::vector<SchemaFieldDesc> fz_schema_512b()
 {
     SchemaFieldDesc field;
     field.type_str = "uint8";
-    field.count    = 512;
+    field.count = 512;
     return {field};
 }
 
@@ -117,13 +116,13 @@ std::vector<SchemaFieldDesc> fz_schema_512b()
 DataBlockConfig make_config(size_t item_size, size_t fz_size, ChecksumPolicy chk)
 {
     DataBlockConfig cfg;
-    cfg.logical_unit_size    = item_size;
-    cfg.flex_zone_size       = fz_size;
+    cfg.logical_unit_size = item_size;
+    cfg.flex_zone_size = fz_size;
     cfg.ring_buffer_capacity = kRingCapacity;
-    cfg.physical_page_size   = DataBlockPageSize::Size4K;
-    cfg.policy               = DataBlockPolicy::RingBuffer;
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.checksum_policy      = chk;
+    cfg.checksum_policy = chk;
     return cfg;
 }
 
@@ -131,8 +130,7 @@ DataBlockConfig make_config(size_t item_size, size_t fz_size, ChecksumPolicy chk
 // schema pair.  Mirrors `ShmQueue::create_writer_standby`'s internal
 // layout computation.
 size_t compute_layout_size(const std::vector<SchemaFieldDesc> &slot_s,
-                            const std::vector<SchemaFieldDesc> &fz_s,
-                            ChecksumPolicy chk)
+                           const std::vector<SchemaFieldDesc> &fz_s, ChecksumPolicy chk)
 {
     auto [_, item_size] = pylabhub::hub::compute_field_layout(slot_s, "aligned");
     size_t fz_size = 0;
@@ -151,7 +149,8 @@ class ShmQueueContractTest : public ::testing::Test
     {
         for (int fd : owned_fds_)
         {
-            if (fd >= 0) ::close(fd);
+            if (fd >= 0)
+                ::close(fd);
         }
     }
 
@@ -161,16 +160,16 @@ class ShmQueueContractTest : public ::testing::Test
         return fd;
     }
 
-    int make_sized_memfd(const char *label,
-                          const std::vector<SchemaFieldDesc> &slot_s,
-                          const std::vector<SchemaFieldDesc> &fz_s,
-                          ChecksumPolicy chk = ChecksumPolicy::None)
+    int make_sized_memfd(const char *label, const std::vector<SchemaFieldDesc> &slot_s,
+                         const std::vector<SchemaFieldDesc> &fz_s,
+                         ChecksumPolicy chk = ChecksumPolicy::None)
     {
         const size_t total = compute_layout_size(slot_s, fz_s, chk);
         EXPECT_GT(total, 0u);
         const int memfd = ::memfd_create(label, MFD_CLOEXEC);
         EXPECT_GE(memfd, 0) << "memfd_create failed: errno=" << errno;
-        if (memfd < 0) return -1;
+        if (memfd < 0)
+            return -1;
         track_fd(memfd);
         EXPECT_EQ(0, ::ftruncate(memfd, static_cast<off_t>(total)))
             << "ftruncate failed: errno=" << errno;
@@ -190,17 +189,17 @@ class ShmQueueContractTest : public ::testing::Test
         char dummy = 'X';
         struct iovec iov{};
         iov.iov_base = &dummy;
-        iov.iov_len  = 1;
+        iov.iov_len = 1;
         char cmsgbuf_out[CMSG_SPACE(sizeof(int))] = {};
         struct msghdr out{};
-        out.msg_iov        = &iov;
-        out.msg_iovlen     = 1;
-        out.msg_control    = cmsgbuf_out;
+        out.msg_iov = &iov;
+        out.msg_iovlen = 1;
+        out.msg_control = cmsgbuf_out;
         out.msg_controllen = sizeof(cmsgbuf_out);
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&out);
-        cmsg->cmsg_level     = SOL_SOCKET;
-        cmsg->cmsg_type      = SCM_RIGHTS;
-        cmsg->cmsg_len       = CMSG_LEN(sizeof(int));
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
         std::memcpy(CMSG_DATA(cmsg), &src_fd, sizeof(int));
         EXPECT_EQ(1, ::sendmsg(sv[0], &out, 0));
         // recv
@@ -208,12 +207,12 @@ class ShmQueueContractTest : public ::testing::Test
         char in_dummy = 0;
         struct iovec in_iov{};
         in_iov.iov_base = &in_dummy;
-        in_iov.iov_len  = 1;
+        in_iov.iov_len = 1;
         char cmsgbuf_in[CMSG_SPACE(sizeof(int))] = {};
         struct msghdr in{};
-        in.msg_iov        = &in_iov;
-        in.msg_iovlen     = 1;
-        in.msg_control    = cmsgbuf_in;
+        in.msg_iov = &in_iov;
+        in.msg_iovlen = 1;
+        in.msg_control = cmsgbuf_in;
         in.msg_controllen = sizeof(cmsgbuf_in);
         EXPECT_EQ(1, ::recvmsg(sv[1], &in, 0));
         struct cmsghdr *icmsg = CMSG_FIRSTHDR(&in);
@@ -238,16 +237,13 @@ class ShmQueueContractTest : public ::testing::Test
 TEST_F(ShmQueueContractTest, ShmQueueNoFlexzone)
 {
     const std::string chan = "shm-queue-no-flexzone";
-    const int memfd_w = make_sized_memfd(
-        "plh_l2_noflex_w", slot_schema(), /*fz_schema=*/{});
+    const int memfd_w = make_sized_memfd("plh_l2_noflex_w", slot_schema(), /*fz_schema=*/{});
     ASSERT_GE(memfd_w, 0);
 
     auto q_write = ShmQueue::create_writer_standby(
         chan, slot_schema(), "aligned",
-        /*fz_schema=*/{}, /*fz_packing=*/"",
-        kRingCapacity, DataBlockPageSize::Size4K,
-        DataBlockPolicy::RingBuffer,
-        ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
+        /*fz_schema=*/{}, /*fz_packing=*/"", kRingCapacity, DataBlockPageSize::Size4K,
+        DataBlockPolicy::RingBuffer, ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
     ASSERT_NE(q_write, nullptr);
     ASSERT_TRUE(q_write->set_shm_capability_fd(memfd_w));
     ASSERT_TRUE(q_write->start());
@@ -275,17 +271,14 @@ TEST_F(ShmQueueContractTest, ShmQueueNoFlexzone)
 TEST_F(ShmQueueContractTest, ShmQueueFlexzoneBidirectional)
 {
     const std::string chan = "shm-queue-flex-bidi";
-    const auto        fz   = fz_schema_512b();
+    const auto fz = fz_schema_512b();
 
-    const int memfd_w = make_sized_memfd(
-        "plh_l2_flexbi_w", slot_schema(), fz);
+    const int memfd_w = make_sized_memfd("plh_l2_flexbi_w", slot_schema(), fz);
     ASSERT_GE(memfd_w, 0);
 
     auto q_write = ShmQueue::create_writer_standby(
-        chan, slot_schema(), "aligned", fz, "aligned",
-        kRingCapacity, DataBlockPageSize::Size4K,
-        DataBlockPolicy::RingBuffer,
-        ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
+        chan, slot_schema(), "aligned", fz, "aligned", kRingCapacity, DataBlockPageSize::Size4K,
+        DataBlockPolicy::RingBuffer, ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
     ASSERT_NE(q_write, nullptr);
     ASSERT_TRUE(q_write->set_shm_capability_fd(memfd_w));
     ASSERT_TRUE(q_write->start());
@@ -315,9 +308,7 @@ TEST_F(ShmQueueContractTest, ShmQueueFlexzoneBidirectional)
     // the forward-direction sentinel above.
     static const char kReply[] = "reader_to_writer";
     std::memcpy(static_cast<char *>(rfz) + 64, kReply, sizeof(kReply));
-    EXPECT_EQ(std::memcmp(static_cast<char *>(wfz) + 64,
-                          kReply, sizeof(kReply)),
-              0);
+    EXPECT_EQ(std::memcmp(static_cast<char *>(wfz) + 64, kReply, sizeof(kReply)), 0);
 }
 
 // ─── Test 3: VerifyChecksumMismatch ──────────────────────────────────
@@ -334,16 +325,13 @@ TEST_F(ShmQueueContractTest, ShmQueueVerifyChecksumMismatch)
 {
     const std::string chan = "shm-queue-verify-chksum";
 
-    const int memfd_w = make_sized_memfd(
-        "plh_l2_chksum_w", slot_schema(), /*fz_schema=*/{});
+    const int memfd_w = make_sized_memfd("plh_l2_chksum_w", slot_schema(), /*fz_schema=*/{});
     ASSERT_GE(memfd_w, 0);
 
     auto q_write = ShmQueue::create_writer_standby(
         chan, slot_schema(), "aligned",
-        /*fz_schema=*/{}, /*fz_packing=*/"",
-        kRingCapacity, DataBlockPageSize::Size4K,
-        DataBlockPolicy::RingBuffer,
-        ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
+        /*fz_schema=*/{}, /*fz_packing=*/"", kRingCapacity, DataBlockPageSize::Size4K,
+        DataBlockPolicy::RingBuffer, ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
     ASSERT_NE(q_write, nullptr);
     ASSERT_TRUE(q_write->set_shm_capability_fd(memfd_w));
     ASSERT_TRUE(q_write->start());
@@ -369,9 +357,8 @@ TEST_F(ShmQueueContractTest, ShmQueueVerifyChecksumMismatch)
 
     // Reader refuses the invalid slot.
     const void *bad = q_read->read_acquire(std::chrono::milliseconds{50});
-    EXPECT_EQ(bad, nullptr)
-        << "read_acquire must return nullptr on slot_valid=0 with "
-        << "verify_checksum enabled (HEP-CORE-0002 slot-gate contract)";
+    EXPECT_EQ(bad, nullptr) << "read_acquire must return nullptr on slot_valid=0 with "
+                            << "verify_checksum enabled (HEP-CORE-0002 slot-gate contract)";
 
     // Writer enables checksum stamping; next slot passes verification.
     q_write->set_checksum_options(/*slot=*/true, /*fz=*/false);
@@ -382,8 +369,7 @@ TEST_F(ShmQueueContractTest, ShmQueueVerifyChecksumMismatch)
     q_write->write_commit();
 
     const void *good = q_read->read_acquire(std::chrono::milliseconds{100});
-    ASSERT_NE(good, nullptr)
-        << "read_acquire must succeed once writer stamps checksum";
+    ASSERT_NE(good, nullptr) << "read_acquire must succeed once writer stamps checksum";
     int32_t observed = 0;
     std::memcpy(&observed, good, sizeof(observed));
     EXPECT_EQ(observed, 0x0badf00d);
@@ -407,13 +393,11 @@ TEST_F(ShmQueueContractTest, DataBlockProducerRemapStubsThrow)
 {
     // Compute a DataBlockConfig identical to what ShmQueue would compute
     // for slot_schema() with no flexzone + ChecksumPolicy::None.
-    auto [_, item_size] =
-        pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
-    const DataBlockConfig cfg =
-        make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
+    auto [_, item_size] = pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
+    const DataBlockConfig cfg = make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
 
-    auto p = pylabhub::tests::helper::make_fd_backed_producer(
-        "shm-queue-remap-stubs", DataBlockPolicy::RingBuffer, cfg);
+    auto p = pylabhub::tests::helper::make_fd_backed_producer("shm-queue-remap-stubs",
+                                                              DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(p.producer, nullptr);
     auto &producer = p.producer;
 
@@ -425,8 +409,8 @@ TEST_F(ShmQueueContractTest, DataBlockProducerRemapStubsThrow)
     // the throw contract on that stub; suppressing the warning here
     // matches the shape of the retired L3 test.
     {
-        bool         threw = false;
-        std::string  msg;
+        bool threw = false;
+        std::string msg;
         try
         {
             (void)producer->request_structure_remap(std::nullopt, std::nullopt);
@@ -434,18 +418,17 @@ TEST_F(ShmQueueContractTest, DataBlockProducerRemapStubsThrow)
         catch (const std::runtime_error &e)
         {
             threw = true;
-            msg   = e.what();
+            msg = e.what();
         }
         EXPECT_TRUE(threw);
-        EXPECT_NE(msg.find("DataBlockProducer::request_structure_remap"),
-                  std::string::npos)
+        EXPECT_NE(msg.find("DataBlockProducer::request_structure_remap"), std::string::npos)
             << "wrong runtime_error path; what(): " << msg;
     }
 
     // commit_structure_remap — symmetric stub.
     {
-        bool         threw = false;
-        std::string  msg;
+        bool threw = false;
+        std::string msg;
         try
         {
             producer->commit_structure_remap(0, std::nullopt, std::nullopt);
@@ -453,11 +436,10 @@ TEST_F(ShmQueueContractTest, DataBlockProducerRemapStubsThrow)
         catch (const std::runtime_error &e)
         {
             threw = true;
-            msg   = e.what();
+            msg = e.what();
         }
         EXPECT_TRUE(threw);
-        EXPECT_NE(msg.find("DataBlockProducer::commit_structure_remap"),
-                  std::string::npos)
+        EXPECT_NE(msg.find("DataBlockProducer::commit_structure_remap"), std::string::npos)
             << "wrong runtime_error path; what(): " << msg;
     }
 #pragma GCC diagnostic pop
@@ -479,13 +461,11 @@ TEST_F(ShmQueueContractTest, DataBlockProducerRemapStubsThrow)
 //   crashing.
 TEST_F(ShmQueueContractTest, DataBlockGetMetricsFromFd)
 {
-    auto [_, item_size] =
-        pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
-    const DataBlockConfig cfg =
-        make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
+    auto [_, item_size] = pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
+    const DataBlockConfig cfg = make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
 
-    auto p = pylabhub::tests::helper::make_fd_backed_producer(
-        "shm-queue-metrics-fd", DataBlockPolicy::RingBuffer, cfg);
+    auto p = pylabhub::tests::helper::make_fd_backed_producer("shm-queue-metrics-fd",
+                                                              DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(p.producer, nullptr);
 
     // Produce two slots so total_slots_written reflects a live counter,
@@ -504,8 +484,7 @@ TEST_F(ShmQueueContractTest, DataBlockGetMetricsFromFd)
 
     // ── Success: read metrics via the observation fd ─────────────────
     DataBlockMetrics m{};
-    const int rc = ::datablock_get_metrics_from_fd(
-        p.transport->borrow_fd(), &m);
+    const int rc = ::datablock_get_metrics_from_fd(p.transport->borrow_fd(), &m);
     EXPECT_EQ(rc, 0) << "datablock_get_metrics_from_fd should succeed on a "
                      << "live memfd-backed DataBlock";
     EXPECT_GE(m.total_slots_written, 2u)
@@ -517,8 +496,7 @@ TEST_F(ShmQueueContractTest, DataBlockGetMetricsFromFd)
     EXPECT_EQ(::datablock_get_metrics_from_fd(-1, &m_bad), -1);
 
     // ── Error: null out pointer ─────────────────────────────────────
-    EXPECT_EQ(::datablock_get_metrics_from_fd(
-                  p.transport->borrow_fd(), nullptr), -1);
+    EXPECT_EQ(::datablock_get_metrics_from_fd(p.transport->borrow_fd(), nullptr), -1);
 
     // ── Error: non-DataBlock fd (memfd with no valid header) ────────
     const int garbage_fd = ::memfd_create("plh_l2_garbage", MFD_CLOEXEC);
@@ -545,13 +523,11 @@ TEST_F(ShmQueueContractTest, DataBlockGetMetricsFromFd)
 //   (c) ABI: garbage memfd is refused (magic OR layout hash fails).
 TEST_F(ShmQueueContractTest, DataBlockObserverHandle_HeaderOnlyIsolation)
 {
-    auto [_, item_size] =
-        pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
-    const DataBlockConfig cfg =
-        make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
+    auto [_, item_size] = pylabhub::hub::compute_field_layout(slot_schema(), "aligned");
+    const DataBlockConfig cfg = make_config(item_size, /*fz_size=*/0, ChecksumPolicy::None);
 
-    auto p = pylabhub::tests::helper::make_fd_backed_producer(
-        "shm-queue-observer", DataBlockPolicy::RingBuffer, cfg);
+    auto p = pylabhub::tests::helper::make_fd_backed_producer("shm-queue-observer",
+                                                              DataBlockPolicy::RingBuffer, cfg);
     ASSERT_NE(p.producer, nullptr);
 
     // Do a write so the header has non-init state.
@@ -567,15 +543,12 @@ TEST_F(ShmQueueContractTest, DataBlockObserverHandle_HeaderOnlyIsolation)
     }
 
     // (a) Success — observer handle exposes the atomic header.
-    auto obs = pylabhub::hub::open_datablock_for_observer_from_fd(
-        p.transport->borrow_fd());
+    auto obs = pylabhub::hub::open_datablock_for_observer_from_fd(p.transport->borrow_fd());
     ASSERT_NE(obs, nullptr);
     ASSERT_NE(obs->header(), nullptr);
 
-    const uint32_t magic = obs->header()->magic_number.load(
-        std::memory_order_acquire);
-    EXPECT_NE(magic, 0u)
-        << "Observer must read the atomic magic_number field";
+    const uint32_t magic = obs->header()->magic_number.load(std::memory_order_acquire);
+    EXPECT_NE(magic, 0u) << "Observer must read the atomic magic_number field";
 
     // (b) Isolation — total DataBlock region is strictly larger than
     // the header we mapped.  Design invariant: observer's mmap is
@@ -589,13 +562,11 @@ TEST_F(ShmQueueContractTest, DataBlockObserverHandle_HeaderOnlyIsolation)
     // memfd fails is_header_magic_valid before validate_header_layout_hash
     // can run; both gates are protective.  This subtest pins the
     // combined refusal, not a specific gate.
-    const int garbage_fd = ::memfd_create("plh_l2_obs_garbage",
-                                            MFD_CLOEXEC);
+    const int garbage_fd = ::memfd_create("plh_l2_obs_garbage", MFD_CLOEXEC);
     ASSERT_GE(garbage_fd, 0);
     track_fd(garbage_fd);
     ASSERT_EQ(0, ::ftruncate(garbage_fd,
-                              static_cast<off_t>(sizeof(pylabhub::hub::SharedMemoryHeader) + 4096)));
+                             static_cast<off_t>(sizeof(pylabhub::hub::SharedMemoryHeader) + 4096)));
     auto bad = pylabhub::hub::open_datablock_for_observer_from_fd(garbage_fd);
-    EXPECT_EQ(bad, nullptr)
-        << "Observer factory must reject a memfd whose header is invalid";
+    EXPECT_EQ(bad, nullptr) << "Observer factory must reject a memfd whose header is invalid";
 }

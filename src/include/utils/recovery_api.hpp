@@ -46,16 +46,16 @@ extern "C"
      */
     typedef struct
     {
-        uint64_t slot_id;          ///< Monotonic ID of the slot.
-        uint32_t slot_index;       ///< Physical index in the ring buffer.
-        uint8_t slot_state;        ///< Current state (FREE, WRITING, etc.). See @ref SlotState.
-        uint64_t write_lock;       ///< PID of the process holding the write lock (0 if none).
-        uint32_t reader_count;     ///< Number of active readers.
-        uint64_t write_generation; ///< Incremented on each write cycle.
-        uint8_t writer_waiting;    ///< 1 if a writer is blocked for readers to drain.
-        bool is_stuck;             ///< Heuristic: true if the slot appears to be stuck.
-        uint64_t
-            stuck_duration_ms; ///< Always 0 — not yet implemented (requires acquire timestamp in SharedSpinLockState).
+        uint64_t slot_id;           ///< Monotonic ID of the slot.
+        uint32_t slot_index;        ///< Physical index in the ring buffer.
+        uint8_t slot_state;         ///< Current state (FREE, WRITING, etc.). See @ref SlotState.
+        uint64_t write_lock;        ///< PID of the process holding the write lock (0 if none).
+        uint32_t reader_count;      ///< Number of active readers.
+        uint64_t write_generation;  ///< Incremented on each write cycle.
+        uint8_t writer_waiting;     ///< 1 if a writer is blocked for readers to drain.
+        bool is_stuck;              ///< Heuristic: true if the slot appears to be stuck.
+        uint64_t stuck_duration_ms; ///< Always 0 — not yet implemented (requires acquire timestamp
+                                    ///< in SharedSpinLockState).
     } SlotDiagnostic;
 
     /**
@@ -79,12 +79,12 @@ extern "C"
      */
     typedef enum
     {
-        DIAGNOSE_OK            =  0, ///< Success — output struct was filled.
-        DIAGNOSE_INVALID_ARGS  = -1, ///< Null pointer or other invalid argument.
-        DIAGNOSE_INTERNAL_ERR  = -2, ///< Internal error (e.g., failed to access SHM).
+        DIAGNOSE_OK = 0,             ///< Success — output struct was filled.
+        DIAGNOSE_INVALID_ARGS = -1,  ///< Null pointer or other invalid argument.
+        DIAGNOSE_INTERNAL_ERR = -2,  ///< Internal error (e.g., failed to access SHM).
         DIAGNOSE_INVALID_INDEX = -3, ///< slot_index is out of range for this DataBlock.
-        DIAGNOSE_RUNTIME_ERR   = -4, ///< std::runtime_error during SHM access.
-        DIAGNOSE_UNEXPECTED    = -5  ///< Any other unexpected exception.
+        DIAGNOSE_RUNTIME_ERR = -4,   ///< std::runtime_error during SHM access.
+        DIAGNOSE_UNEXPECTED = -5     ///< Any other unexpected exception.
     } DiagnoseError;
 
     // --- Diagnostics ---
@@ -96,9 +96,8 @@ extern "C"
      * @param out Pointer to a SlotDiagnostic struct to be filled.
      * @return DIAGNOSE_OK (0) on success; a negative DiagnoseError code on failure.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_diagnose_slot(const char *shm_name,
-                                                                          uint32_t slot_index,
-                                                                          SlotDiagnostic *out);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    datablock_diagnose_slot(const char *shm_name, uint32_t slot_index, SlotDiagnostic *out);
 
     /**
      * @brief Gets diagnostic information for all slots in a DataBlock.
@@ -108,10 +107,9 @@ extern "C"
      * @param out_count Pointer to a size_t that will store the number of slots written.
      * @return DIAGNOSE_OK (0) on success; a negative DiagnoseError code on failure.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_diagnose_all_slots(const char *shm_name,
-                                                                               SlotDiagnostic *out_array,
-                                                                               size_t array_capacity,
-                                                                               size_t *out_count);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    datablock_diagnose_all_slots(const char *shm_name, SlotDiagnostic *out_array,
+                                 size_t array_capacity, size_t *out_count);
 
     /**
      * @brief Checks if a process with the given PID is currently alive.
@@ -130,8 +128,8 @@ extern "C"
      * @param force If true, bypasses safety checks (e.g., if a live process holds a lock).
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_slot(
-        const char *shm_name, uint32_t slot_index, bool force);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult
+    datablock_force_reset_slot(const char *shm_name, uint32_t slot_index, bool force);
 
     /**
      * @brief Forcefully resets the state of all slots in a DataBlock.
@@ -140,8 +138,8 @@ extern "C"
      * @param force If true, bypasses safety checks for each slot.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_force_reset_all_slots(
-        const char *shm_name, bool force);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult
+    datablock_force_reset_all_slots(const char *shm_name, bool force);
 
     /**
      * @brief Releases readers that are presumed to be zombies (i.e., dead processes).
@@ -150,8 +148,8 @@ extern "C"
      * @param force If true, clears the reader count regardless of other checks.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_readers(
-        const char *shm_name, uint32_t slot_index, bool force);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult
+    datablock_release_zombie_readers(const char *shm_name, uint32_t slot_index, bool force);
 
     /**
      * @brief Releases a writer that is presumed to be a zombie (i.e., a dead process).
@@ -159,16 +157,16 @@ extern "C"
      * @param slot_index The physical index of the slot to clean up.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_release_zombie_writer(
-        const char *shm_name, uint32_t slot_index);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult
+    datablock_release_zombie_writer(const char *shm_name, uint32_t slot_index);
 
     /**
      * @brief Scans the consumer heartbeat table and cleans up any dead consumers.
      * @param shm_name The name of the shared memory DataBlock.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_cleanup_dead_consumers(
-        const char *shm_name);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult
+    datablock_cleanup_dead_consumers(const char *shm_name);
 
     /**
      * @brief Validates the integrity of the DataBlock's control structures and checksums.
@@ -176,38 +174,38 @@ extern "C"
      * @param repair If true, attempts to recalculate invalid checksums.
      * @return A `RecoveryResult` code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult datablock_validate_integrity(
-        const char *shm_name, bool repair);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT RecoveryResult
+    datablock_validate_integrity(const char *shm_name, bool repair);
 
     // --- Metrics (name-based; same surface as slot_rw_get_metrics / slot_rw_reset_metrics) ---
 
     /**
      * @brief Retrieves current metrics and state snapshot for a DataBlock by name.
-     * 
+     *
      * Opens the DataBlock in read-only diagnostic mode and retrieves comprehensive metrics:
      * - State snapshot: commit_index, slot_count
      * - Writer/reader metrics: timeouts, contention, races, validation failures
      * - Error tracking: timestamps, error codes, sequences
      * - Performance: total slots/bytes written and read
-     * 
+     *
      * This is a name-based convenience wrapper around slot_rw_get_metrics() for external
      * diagnostics and monitoring tools that don't have direct Producer/Consumer handles.
-     * 
+     *
      * @param shm_name The name of the shared memory DataBlock (must not be null).
      * @param out_metrics Pointer to a DataBlockMetrics struct to fill (must not be null).
      * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
-     * 
+     *
      * @note This is a C API function - no exceptions, returns error codes.
      * @note Opens and closes the DataBlock internally - not for hot path use.
      * @note For active producers/consumers, use DataBlockProducer::get_metrics() or
      *       DataBlockConsumer::get_metrics() instead (more efficient).
-     * 
+     *
      * @par Example
      * @code
      * DataBlockMetrics metrics;
      * if (datablock_get_metrics("my_datablock", &metrics) == 0) {
      *     printf("Commit index: %llu\n", metrics.commit_index);
-     *     printf("Total commits: %llu (has_commits: %s)\n", 
+     *     printf("Total commits: %llu (has_commits: %s)\n",
      *            metrics.total_slots_written,
      *            metrics.total_slots_written > 0 ? "yes" : "no");
      *     printf("Writer timeouts: %llu\n", metrics.writer_timeout_count);
@@ -215,8 +213,8 @@ extern "C"
      * }
      * @endcode
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_get_metrics(const char *shm_name,
-                                                                       DataBlockMetrics *out_metrics);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    datablock_get_metrics(const char *shm_name, DataBlockMetrics *out_metrics);
 
     /**
      * @brief Fd-source sibling of `datablock_get_metrics` — reads
@@ -258,19 +256,20 @@ extern "C"
 
     /**
      * @brief Resets metrics for a DataBlock by name.
-     * 
+     *
      * Resets all metric counters to zero while preserving state fields (commit_index, slot_count).
      * Opens the DataBlock in read-write diagnostic mode to perform the reset.
-     * 
+     *
      * @param shm_name The name of the shared memory DataBlock (must not be null).
      * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
-     * 
+     *
      * @warning Use cautiously - resets diagnostic history.
      * @note Opens and closes the DataBlock internally.
      */
     PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_reset_metrics(const char *shm_name);
 
-    // --- Identity (name-based; same surface as slot_rw_get_channel_identity / slot_rw_list_consumers) ---
+    // --- Identity (name-based; same surface as slot_rw_get_channel_identity /
+    // slot_rw_list_consumers) ---
 
     /**
      * @brief Reads the channel identity block for a DataBlock by name.
@@ -282,8 +281,8 @@ extern "C"
      * @param out       Pointer to a plh_channel_identity_t struct to fill (must not be null).
      * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_get_channel_identity(
-        const char *shm_name, plh_channel_identity_t *out);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    datablock_get_channel_identity(const char *shm_name, plh_channel_identity_t *out);
 
     /**
      * @brief Lists active consumers registered in a DataBlock's heartbeat table by name.
@@ -296,9 +295,9 @@ extern "C"
      * @param out_count       Set to the number of entries written (must not be null).
      * @return 0 on success, -1 on error (invalid args, DataBlock not found, open failed).
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int datablock_list_consumers(
-        const char *shm_name, plh_consumer_identity_t *out_array, int array_capacity,
-        int *out_count);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    datablock_list_consumers(const char *shm_name, plh_consumer_identity_t *out_array,
+                             int array_capacity, int *out_count);
 
 #ifdef __cplusplus
 }

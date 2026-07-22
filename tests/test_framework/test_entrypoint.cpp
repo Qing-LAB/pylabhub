@@ -28,7 +28,7 @@
 #include "plh_base.hpp"
 #include "utils/thread_manager.hpp"
 
-#include <cstdlib>       // getenv / setenv / unsetenv
+#include <cstdlib> // getenv / setenv / unsetenv
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -107,40 +107,36 @@ int main(int argc, char **argv)
     // argv or GTEST_OUTPUT env), so ctest / IDE integrations that
     // configure their own output path continue to work.
     std::vector<std::string> augmented_argv_owner;
-    std::vector<char*>       augmented_argv;
+    std::vector<char *> augmented_argv;
     {
         bool caller_set_output = (::getenv("GTEST_OUTPUT") != nullptr);
         for (int i = 1; !caller_set_output && i < argc; ++i)
         {
             const std::string a = argv[i];
-            if (a == "--gtest_output" ||
-                a.rfind("--gtest_output=", 0) == 0)
+            if (a == "--gtest_output" || a.rfind("--gtest_output=", 0) == 0)
             {
                 caller_set_output = true;
             }
         }
         if (!caller_set_output && !g_self_exe_path.empty())
         {
-            namespace fs      = std::filesystem;
+            namespace fs = std::filesystem;
             fs::path exe_path = g_self_exe_path;
-            fs::path exe_dir  = exe_path.parent_path();
-            fs::path build_dir = exe_dir.has_parent_path()
-                                     ? exe_dir.parent_path().parent_path()
-                                     : exe_dir;
+            fs::path exe_dir = exe_path.parent_path();
+            fs::path build_dir =
+                exe_dir.has_parent_path() ? exe_dir.parent_path().parent_path() : exe_dir;
             fs::path xml_dir = build_dir / "Testing" / "gtest";
             std::error_code ec;
             fs::create_directories(xml_dir, ec);
-            const std::string base =
-                exe_path.filename().string() + "-pid" +
-                std::to_string(static_cast<long long>(::getpid())) + ".xml";
+            const std::string base = exe_path.filename().string() + "-pid" +
+                                     std::to_string(static_cast<long long>(::getpid())) + ".xml";
             const fs::path xml_path = xml_dir / base;
             // Copy argv into owned storage, then append the flag.
             for (int i = 0; i < argc; ++i)
             {
                 augmented_argv_owner.emplace_back(argv[i]);
             }
-            augmented_argv_owner.emplace_back(
-                "--gtest_output=xml:" + xml_path.string());
+            augmented_argv_owner.emplace_back("--gtest_output=xml:" + xml_path.string());
             for (auto &s : augmented_argv_owner)
             {
                 augmented_argv.push_back(s.data());
@@ -148,11 +144,11 @@ int main(int argc, char **argv)
             argc = static_cast<int>(augmented_argv.size());
             argv = augmented_argv.data();
             fmt::print(stderr,
-                        "[test_entrypoint] gtest XML output -> {} "
-                        "(caller did not set --gtest_output; injected "
-                        "for evidence preservation per docs/README/"
-                        "README_testing.md § MANDATORY)\n",
-                        xml_path.string());
+                       "[test_entrypoint] gtest XML output -> {} "
+                       "(caller did not set --gtest_output; injected "
+                       "for evidence preservation per docs/README/"
+                       "README_testing.md § MANDATORY)\n",
+                       xml_path.string());
         }
     }
 
@@ -182,16 +178,13 @@ int main(int argc, char **argv)
         }
         void OnTestEnd(const ::testing::TestInfo &info) override
         {
-            const auto current =
-                pylabhub::utils::ThreadManager::process_detached_count();
+            const auto current = pylabhub::utils::ThreadManager::process_detached_count();
             if (current > baseline_)
             {
                 const auto leaked = current - baseline_;
-                ADD_FAILURE_AT(info.file() ? info.file() : "<unknown>",
-                               info.line())
-                    << "ThreadManager detached " << leaked
-                    << " thread(s) during test '" << info.test_suite_name()
-                    << "." << info.name()
+                ADD_FAILURE_AT(info.file() ? info.file() : "<unknown>", info.line())
+                    << "ThreadManager detached " << leaked << " thread(s) during test '"
+                    << info.test_suite_name() << "." << info.name()
                     << "'. See ERROR log entries tagged [ThreadManager:*]"
                        " for the owner+name of each leaked thread. A test"
                        " that deliberately exercises the timeout path must"

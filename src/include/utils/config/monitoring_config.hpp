@@ -14,8 +14,8 @@ namespace pylabhub::config
 
 struct MonitoringConfig
 {
-    size_t ctrl_queue_max_depth{256};   ///< Max depth of ctrl send queue before oldest dropped.
-    int    peer_dead_timeout_ms{30000}; ///< Peer silence timeout (ms). 0=disabled.
+    size_t ctrl_queue_max_depth{256}; ///< Max depth of ctrl send queue before oldest dropped.
+    int peer_dead_timeout_ms{30000};  ///< Peer silence timeout (ms). 0=disabled.
 };
 
 /// Parse monitoring fields from a JSON config object.

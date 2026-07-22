@@ -130,22 +130,22 @@ namespace pylabhub::utils::security
 /// in `tests/test_framework/curve_test_setup.h` (e.g.
 /// `role_keystore_name(uid)`); they are NOT production names and MUST
 /// NOT be used by lib code.
-inline constexpr std::string_view kHubIdentityName  = "hub_identity";
+inline constexpr std::string_view kHubIdentityName = "hub_identity";
 inline constexpr std::string_view kRoleIdentityName = "role_identity";
 
 class PYLABHUB_UTILS_EXPORT KeyStore
 {
-public:
+  public:
     /// Destroys all stored LockedKey instances (each `sodium_memzero` +
     /// `sodium_free`).  Defined in `.cpp` so `Impl` is complete at the
     /// dtor site (canonical pImpl per `IMPLEMENTATION_GUIDANCE §"pImpl
     /// Idiom"`).
     ~KeyStore();
 
-    KeyStore(const KeyStore &)            = delete;
+    KeyStore(const KeyStore &) = delete;
     KeyStore &operator=(const KeyStore &) = delete;
-    KeyStore(KeyStore &&)                 = delete;
-    KeyStore &operator=(KeyStore &&)      = delete;
+    KeyStore(KeyStore &&) = delete;
+    KeyStore &operator=(KeyStore &&) = delete;
 
     // ── Writes (exclusive lock) ──────────────────────────────────────
 
@@ -188,8 +188,7 @@ public:
     ///
     /// Throws `std::runtime_error` if `name` already present, if
     /// libzmq CSPRNG init fails, or if `sodium_malloc` fails.
-    [[nodiscard]] std::string
-    generate_and_add_identity(std::string_view name);
+    [[nodiscard]] std::string generate_and_add_identity(std::string_view name);
 
     /// Convenience: insert an identity keypair given the two Z85
     /// halves separately.  Internally Z85-decodes both halves into a
@@ -207,9 +206,8 @@ public:
     /// either half is not exactly 40 chars (Z85 of 32 raw bytes), if
     /// `zmq_z85_decode` fails (malformed Z85), or if `sodium_malloc`
     /// fails.
-    void add_identity_from_z85(std::string_view name,
-                                std::string_view pub_z85,
-                                std::string_view sec_z85);
+    void add_identity_from_z85(std::string_view name, std::string_view pub_z85,
+                               std::string_view sec_z85);
 
     /// Insert raw secret bytes (HEP-0038 script vault_save).
     /// `plaintext` zeroed before return.  Caller-side name validation
@@ -258,8 +256,7 @@ public:
     /// Throws `std::out_of_range` if `name` is absent or refers to a
     /// raw entry.  Rethrows anything thrown by `use` after releasing
     /// the shared lock.
-    void with_seckey(std::string_view                          name,
-                     std::function<void(std::string_view)>     use) const;
+    void with_seckey(std::string_view name, std::function<void(std::string_view)> use) const;
 
     /// Invoke `use` with the **Z85 SECRET key (40 ASCII chars)** for
     /// an identity entry — the on-disk / on-the-wire form per
@@ -274,8 +271,7 @@ public:
     /// `curve_secretkey` Z85-string set, human-readable log lines).
     ///
     /// Same threading semantics as `with_seckey`.
-    void with_seckey_z85(std::string_view                          name,
-                          std::function<void(std::string_view)>     use) const;
+    void with_seckey_z85(std::string_view name, std::function<void(std::string_view)> use) const;
 
     /// Combined keypair accessor — invokes `use(pubkey_z85, seckey_z85)`
     /// with BOTH halves of an identity entry, encoded as Z85.  One
@@ -289,16 +285,14 @@ public:
     /// absent or refers to a raw entry.
     void with_keypair_z85(
         std::string_view name,
-        std::function<void(std::string_view /*pubkey*/,
-                           std::string_view /*seckey*/)> use) const;
+        std::function<void(std::string_view /*pubkey*/, std::string_view /*seckey*/)> use) const;
 
     /// HEP-0038 raw-secret access (`api.vault_load`).  Span lifetime
     /// is until `remove()` or KeyStore dtor; script bindings MUST
     /// materialize the bytes into a script-owned buffer before
     /// returning to the script, not pass the span to script code.
     /// Throws `std::out_of_range` if `name` is absent.
-    [[nodiscard]] std::span<const std::byte>
-    lookup_raw(std::string_view name) const;
+    [[nodiscard]] std::span<const std::byte> lookup_raw(std::string_view name) const;
 
     /// Existence check (tests; production uses `pubkey()` /
     /// `with_seckey()` and lets the throw signal).
@@ -307,7 +301,7 @@ public:
     /// Number of stored secrets.  Snapshot under shared lock.
     [[nodiscard]] std::size_t size() const noexcept;
 
-private:
+  private:
     /// Private default ctor — F8 discipline.  KeyStore is a MEMBER
     /// of `SecureSubsystem::Impl` (HEP-CORE-0043 §2.2); the ONLY
     /// construction path is `SecureSubsystem::Impl`'s member-init

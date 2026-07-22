@@ -15,16 +15,16 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/role_api_base.hpp"
-#include "utils/role_config_translation.hpp"   // make_tx_opts / make_rx_opts
+#include "utils/role_config_translation.hpp" // make_tx_opts / make_rx_opts
 #include "utils/role_host_core.hpp"
-#include "utils/role_host_helpers.hpp"          // setup_inbox_facility
-#include "utils/schema_utils.hpp"               // compute_schema_size
-#include "utils/data_block.hpp"                 // datablock_layout_total_size + DataBlockConfig
-#include "utils/security/attach_protocol.hpp"   // AttachProtocolAcceptor + ObserverPubkeyAccessor
-#include "utils/security/key_store.hpp"         // secure().keys() + kRoleIdentityName
+#include "utils/role_host_helpers.hpp"        // setup_inbox_facility
+#include "utils/schema_utils.hpp"             // compute_schema_size
+#include "utils/data_block.hpp"               // datablock_layout_total_size + DataBlockConfig
+#include "utils/security/attach_protocol.hpp" // AttachProtocolAcceptor + ObserverPubkeyAccessor
+#include "utils/security/key_store.hpp"       // secure().keys() + kRoleIdentityName
 #include "utils/security/shm_attach_orchestrator.hpp"
 #include "utils/security/shm_capability_channel.hpp"
-#include "utils/thread_manager.hpp"             // ThreadManager::SlotContext
+#include "utils/thread_manager.hpp" // ThreadManager::SlotContext
 
 #include <algorithm>
 #include <functional>
@@ -32,17 +32,14 @@
 #include <span>
 #include <utility>
 
-#include <unistd.h>     // ::getuid
+#include <unistd.h> // ::getuid
 
 namespace pylabhub::scripting
 {
 
-RoleHostFrame::RoleHostFrame(config::RoleConfig    config,
-                              std::atomic<bool>    *shutdown_flag,
-                              RoleHostFrameConfig   frame_cfg)
-    : RoleHostBase(frame_cfg.short_tag,
-                   std::move(config),
-                   shutdown_flag),
+RoleHostFrame::RoleHostFrame(config::RoleConfig config, std::atomic<bool> *shutdown_flag,
+                             RoleHostFrameConfig frame_cfg)
+    : RoleHostBase(frame_cfg.short_tag, std::move(config), shutdown_flag),
       frame_cfg_(std::move(frame_cfg))
 {
 }
@@ -63,8 +60,7 @@ RoleHostFrame::~RoleHostFrame() = default;
 // concrete role hosts override only when their presence shape doesn't fit
 // the default mapping (future N-input router, etc.).
 
-void RoleHostFrame::wire_api_for_presences_(
-    const std::vector<scripting::Presence> &presences)
+void RoleHostFrame::wire_api_for_presences_(const std::vector<scripting::Presence> &presences)
 {
     auto &api_ref = api();
 
@@ -72,8 +68,10 @@ void RoleHostFrame::wire_api_for_presences_(
     const scripting::Presence *prod = nullptr;
     for (const auto &p : presences)
     {
-        if (p.role_kind == scripting::RoleKind::Consumer)      cons = &p;
-        else if (p.role_kind == scripting::RoleKind::Producer) prod = &p;
+        if (p.role_kind == scripting::RoleKind::Consumer)
+            cons = &p;
+        else if (p.role_kind == scripting::RoleKind::Producer)
+            prod = &p;
     }
 
     if (cons && prod)
@@ -109,9 +107,9 @@ void RoleHostFrame::wire_api_for_presences_(
 
 bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
 {
-    auto       &core_   = this->core();
+    auto &core_ = this->core();
     const auto &config_ = this->config();
-    auto       &api_ref = this->api();
+    auto &api_ref = this->api();
 
     inbox_cfg_ = config_.inbox();
 
@@ -135,8 +133,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         {
             if (tx_presence)
             {
-                LOGGER_ERROR("[{}] multiple tx presences not yet supported",
-                             frame_cfg_.short_tag);
+                LOGGER_ERROR("[{}] multiple tx presences not yet supported", frame_cfg_.short_tag);
                 return false;
             }
             tx_presence = &p;
@@ -146,13 +143,11 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     // ── 2. Inbox setup (optional, independent of queue building) ──
     if (inbox_cfg_.has_inbox())
     {
-        auto inbox_result = setup_inbox_facility(
-            inbox_spec, inbox_cfg_, config_.checksum().policy,
-            frame_cfg_.short_tag.c_str(), api_ref.uid());
+        auto inbox_result = setup_inbox_facility(inbox_spec, inbox_cfg_, config_.checksum().policy,
+                                                 frame_cfg_.short_tag.c_str(), api_ref.uid());
         if (!inbox_result)
         {
-            LOGGER_ERROR("[{}] setup_inbox_facility failed",
-                         frame_cfg_.short_tag);
+            LOGGER_ERROR("[{}] setup_inbox_facility failed", frame_cfg_.short_tag);
             return false;
         }
         inbox_queue_ = std::move(inbox_result->queue);
@@ -162,19 +157,17 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
     std::optional<hub::TxQueueOptions> tx_opts;
     std::optional<hub::RxQueueOptions> rx_opts;
     if (tx_presence)
-        tx_opts.emplace(make_tx_opts(
-            config_, tx_presence->slot_spec, tx_presence->fz_spec,
-            tx_presence->fz_spec.has_schema));
+        tx_opts.emplace(make_tx_opts(config_, tx_presence->slot_spec, tx_presence->fz_spec,
+                                     tx_presence->fz_spec.has_schema));
     if (rx_presence)
-        rx_opts.emplace(make_rx_opts(
-            config_, rx_presence->slot_spec, rx_presence->fz_spec,
-            rx_presence->fz_spec.has_schema));
+        rx_opts.emplace(make_rx_opts(config_, rx_presence->slot_spec, rx_presence->fz_spec,
+                                     rx_presence->fz_spec.has_schema));
 
     // ── 4. Build queues (Rx first, then Tx — normalized order) ──
     if (rx_opts && !api_ref.build_rx_queue(*rx_opts))
     {
-        LOGGER_ERROR("[{}] build_rx_queue failed for channel '{}'",
-                     frame_cfg_.short_tag, config_.in_channel());
+        LOGGER_ERROR("[{}] build_rx_queue failed for channel '{}'", frame_cfg_.short_tag,
+                     config_.in_channel());
         return false;
     }
     if (tx_opts)
@@ -186,17 +179,16 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         // No-op for ZMQ TX channels (default impl returns true).
         if (!prepare_tx_capability_(*tx_opts, config_.out_channel()))
         {
-            LOGGER_ERROR(
-                "[{}] prepare_tx_capability_ failed for channel '{}' "
-                "— SHM L1 transport setup refused (HEP-CORE-0041 §6.1 + "
-                "1i-mig-2)",
-                frame_cfg_.short_tag, config_.out_channel());
+            LOGGER_ERROR("[{}] prepare_tx_capability_ failed for channel '{}' "
+                         "— SHM L1 transport setup refused (HEP-CORE-0041 §6.1 + "
+                         "1i-mig-2)",
+                         frame_cfg_.short_tag, config_.out_channel());
             return false;
         }
         if (!api_ref.build_tx_queue(*tx_opts))
         {
-            LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'",
-                         frame_cfg_.short_tag, config_.out_channel());
+            LOGGER_ERROR("[{}] build_tx_queue failed for channel '{}'", frame_cfg_.short_tag,
+                         config_.out_channel());
             return false;
         }
     }
@@ -219,8 +211,7 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         api_ref.reset_tx_queue_metrics();
 
     // ── 6. Configured period (role-level) ──
-    core_.set_configured_period(
-        static_cast<uint64_t>(config_.timing().period_us));
+    core_.set_configured_period(static_cast<uint64_t>(config_.timing().period_us));
 
     // ── 6.5 Flexzone introspection cache on RoleAPIBase ──
     // Populate exactly once, after build_*_queue succeeds.  Per side:
@@ -233,33 +224,27 @@ bool RoleHostFrame::setup_infrastructure_(const hub::SchemaSpec &inbox_spec)
         RoleAPIBase::FlexzoneInfoCache fz_info;
         if (tx_presence)
         {
-            fz_info.has_tx_fz        = tx_presence->fz_spec.has_schema;
-            fz_info.tx_logical_size  =
-                hub::compute_schema_size(tx_presence->fz_spec,
-                                         tx_presence->fz_spec.packing);
-            fz_info.tx_physical_size =
-                hub::align_to_physical_page(fz_info.tx_logical_size);
+            fz_info.has_tx_fz = tx_presence->fz_spec.has_schema;
+            fz_info.tx_logical_size =
+                hub::compute_schema_size(tx_presence->fz_spec, tx_presence->fz_spec.packing);
+            fz_info.tx_physical_size = hub::align_to_physical_page(fz_info.tx_logical_size);
         }
         if (rx_presence)
         {
-            fz_info.has_rx_fz        = rx_presence->fz_spec.has_schema;
-            fz_info.rx_logical_size  =
-                hub::compute_schema_size(rx_presence->fz_spec,
-                                         rx_presence->fz_spec.packing);
-            fz_info.rx_physical_size =
-                hub::align_to_physical_page(fz_info.rx_logical_size);
+            fz_info.has_rx_fz = rx_presence->fz_spec.has_schema;
+            fz_info.rx_logical_size =
+                hub::compute_schema_size(rx_presence->fz_spec, rx_presence->fz_spec.packing);
+            fz_info.rx_physical_size = hub::align_to_physical_page(fz_info.rx_logical_size);
         }
         api_ref.set_flexzone_info_cache_(fz_info);
     }
 
     // ── 7. Startup log lines (per direction) ──
     if (rx_presence)
-        LOGGER_INFO("[{}] rx on channel '{}' (shm={})",
-                    frame_cfg_.short_tag, config_.in_channel(),
+        LOGGER_INFO("[{}] rx on channel '{}' (shm={})", frame_cfg_.short_tag, config_.in_channel(),
                     api_ref.rx_has_shm());
     if (tx_presence)
-        LOGGER_INFO("[{}] tx on channel '{}' (shm={})",
-                    frame_cfg_.short_tag, config_.out_channel(),
+        LOGGER_INFO("[{}] tx on channel '{}' (shm={})", frame_cfg_.short_tag, config_.out_channel(),
                     api_ref.tx_has_shm());
 
     return true;
@@ -376,7 +361,7 @@ void RoleHostFrame::teardown_infrastructure_()
 // No-op for ZMQ TX (returns true with opts unchanged).
 
 bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
-                                            const std::string   &tx_channel)
+                                           const std::string &tx_channel)
 {
     if (!tx_opts.has_shm || tx_opts.data_transport != "shm")
         return true;
@@ -399,21 +384,20 @@ bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
         fz_size = hub::align_to_physical_page(raw_fz_size);
     }
     hub::DataBlockConfig cfg;
-    cfg.logical_unit_size    = item_size;
-    cfg.flex_zone_size       = fz_size;
+    cfg.logical_unit_size = item_size;
+    cfg.flex_zone_size = fz_size;
     cfg.ring_buffer_capacity = tx_opts.shm_config.ring_buffer_capacity;
-    cfg.physical_page_size   = tx_opts.shm_config.physical_page_size;
-    cfg.policy               = tx_opts.shm_config.policy;
+    cfg.physical_page_size = tx_opts.shm_config.physical_page_size;
+    cfg.policy = tx_opts.shm_config.policy;
     cfg.consumer_sync_policy = tx_opts.shm_config.consumer_sync_policy;
-    cfg.checksum_policy      = tx_opts.shm_config.checksum_policy;
+    cfg.checksum_policy = tx_opts.shm_config.checksum_policy;
     const size_t total = hub::datablock_layout_total_size(cfg);
     if (total == 0)
     {
-        LOGGER_ERROR(
-            "[{}] prepare_tx_capability_: datablock_layout_total_size "
-            "returned 0 for channel '{}' (item_size={}, fz_size={}) — "
-            "schema/config invariants violated",
-            frame_cfg_.short_tag, tx_channel, item_size, fz_size);
+        LOGGER_ERROR("[{}] prepare_tx_capability_: datablock_layout_total_size "
+                     "returned 0 for channel '{}' (item_size={}, fz_size={}) — "
+                     "schema/config invariants violated",
+                     frame_cfg_.short_tag, tx_channel, item_size, fz_size);
         return false;
     }
 
@@ -421,30 +405,26 @@ bool RoleHostFrame::prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
     shm_transport_ = sec::create_shm_capability_producer(total);
     if (!shm_transport_)
     {
-        LOGGER_ERROR(
-            "[{}] prepare_tx_capability_: create_shm_capability_producer "
-            "failed for channel '{}' (size={}, HEP-CORE-0041 §6.3 L1)",
-            frame_cfg_.short_tag, tx_channel, total);
+        LOGGER_ERROR("[{}] prepare_tx_capability_: create_shm_capability_producer "
+                     "failed for channel '{}' (size={}, HEP-CORE-0041 §6.3 L1)",
+                     frame_cfg_.short_tag, tx_channel, total);
         return false;
     }
 
     const auto endpoint = sec::default_shm_capability_endpoint(tx_channel);
     if (!shm_transport_->bind_endpoint(endpoint))
     {
-        LOGGER_ERROR(
-            "[{}] prepare_tx_capability_: bind_endpoint('{}') failed "
-            "for channel '{}' (HEP-CORE-0041 §5.1 L1)",
-            frame_cfg_.short_tag, endpoint, tx_channel);
+        LOGGER_ERROR("[{}] prepare_tx_capability_: bind_endpoint('{}') failed "
+                     "for channel '{}' (HEP-CORE-0041 §5.1 L1)",
+                     frame_cfg_.short_tag, endpoint, tx_channel);
         shm_transport_.reset();
         return false;
     }
 
     tx_opts.shm_capability_fd = shm_transport_->borrow_fd();
-    LOGGER_INFO(
-        "[{}] event=ShmCapabilityTransportBound channel='{}' endpoint='{}' "
-        "size={} fd={} (HEP-CORE-0041 1i-mig)",
-        frame_cfg_.short_tag, tx_channel, endpoint, total,
-        tx_opts.shm_capability_fd);
+    LOGGER_INFO("[{}] event=ShmCapabilityTransportBound channel='{}' endpoint='{}' "
+                "size={} fd={} (HEP-CORE-0041 1i-mig)",
+                frame_cfg_.short_tag, tx_channel, endpoint, total, tx_opts.shm_capability_fd);
     return true;
 }
 
@@ -511,7 +491,7 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     }
 
     auto &api_ref = this->api();
-    const std::string tx_ch        = this->config().out_channel();
+    const std::string tx_ch = this->config().out_channel();
     const std::string producer_uid = api_ref.uid();
 
     // HEP-CORE-0041 §D1(d) observer pubkey accessor (task #317 C.2.b).
@@ -521,17 +501,15 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     // shared_mutex — thread-safe.  Empty return → observer handshakes
     // rejected with a clear diagnostic; broker's SHM metrics path
     // falls back to the heartbeat source.
-    sec::ObserverPubkeyAccessor observer_pubkey_accessor =
-        [&api_ref]() -> std::string {
-            return api_ref.broker_observer_pubkey_z85();
-        };
+    sec::ObserverPubkeyAccessor observer_pubkey_accessor = [&api_ref]() -> std::string
+    { return api_ref.broker_observer_pubkey_z85(); };
 
     try
     {
         shm_acceptor_ = std::make_unique<sec::AttachProtocolAcceptor>(
             *shm_transport_,
-            ::getuid(),  // SO_PEERCRED uid sanity (HEP-0036 §I8)
-            std::string(sec::kRoleIdentityName),  // KeyStore name — SMS reads it
+            ::getuid(),                          // SO_PEERCRED uid sanity (HEP-0036 §I8)
+            std::string(sec::kRoleIdentityName), // KeyStore name — SMS reads it
             std::move(observer_pubkey_accessor));
     }
     catch (const std::exception &e)
@@ -544,12 +522,12 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
 
     // CacheLookup: the role's local script-observable cache
     // (HEP-CORE-0036 §I11.1 — one cache scripts read).
-    sec::ShmAttachOrchestrator::CacheLookup cache_lookup =
-        [&api_ref, tx_ch](const std::string &pk) {
-            const auto peers = api_ref.allowed_peers(tx_ch);
-            return std::any_of(peers.begin(), peers.end(),
-                [&](const auto &p) { return p.pubkey == pk; });
-        };
+    sec::ShmAttachOrchestrator::CacheLookup cache_lookup = [&api_ref, tx_ch](const std::string &pk)
+    {
+        const auto peers = api_ref.allowed_peers(tx_ch);
+        return std::any_of(peers.begin(), peers.end(),
+                           [&](const auto &p) { return p.pubkey == pk; });
+    };
 
     // BrokerQuery: route through RoleAPIBase::consumer_attach, which
     // finds the right BRC for this channel and runs the sync
@@ -567,17 +545,15 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     // somehow missed (future regression), the request would still
     // time out before quiescence expires.
     sec::ShmAttachOrchestrator::BrokerQuery broker_query =
-        [&api_ref, tx_ch, producer_uid](
-            const std::string &consumer_pk,
-            const std::string &consumer_role_uid) {
-            return api_ref.consumer_attach(
-                tx_ch, consumer_pk, consumer_role_uid,
-                producer_uid, /*timeout_ms=*/2000);
-        };
+        [&api_ref, tx_ch, producer_uid](const std::string &consumer_pk,
+                                        const std::string &consumer_role_uid)
+    {
+        return api_ref.consumer_attach(tx_ch, consumer_pk, consumer_role_uid, producer_uid,
+                                       /*timeout_ms=*/2000);
+    };
 
-    sec::ShmAttachOrchestrator::Config cfg{
-        tx_ch, producer_uid,
-        std::move(cache_lookup), std::move(broker_query)};
+    sec::ShmAttachOrchestrator::Config cfg{tx_ch, producer_uid, std::move(cache_lookup),
+                                           std::move(broker_query)};
 
     try
     {
@@ -616,33 +592,36 @@ bool RoleHostFrame::spawn_shm_auth_listener_()
     // the entire while-loop is the critical region.
     const bool spawned = api_ref.thread_manager().spawn(
         "shm_accept_loop",
-        [this](pylabhub::utils::ThreadManager::SlotContext &ctx) {
-            ctx.with_active_loop([&] {
-                while (!ctx.shutdown_requested())
+        [this](pylabhub::utils::ThreadManager::SlotContext &ctx)
+        {
+            ctx.with_active_loop(
+                [&]
                 {
-                    if (!shm_orchestrator_) break;
-                    // Per-iteration isolation (HEP-CORE-0041
-                    // 1i-mig-2c H2): the orchestrator catches
-                    // handshake-level errors internally, but
-                    // post-broker-query paths (LOGGER allocation,
-                    // send_capability edge cases) can still
-                    // escape.  Catch + continue keeps the loop
-                    // alive across one bad attach.
-                    try
+                    while (!ctx.shutdown_requested())
                     {
-                        (void)shm_orchestrator_->accept_and_serve_one(
-                            std::chrono::milliseconds(100));
+                        if (!shm_orchestrator_)
+                            break;
+                        // Per-iteration isolation (HEP-CORE-0041
+                        // 1i-mig-2c H2): the orchestrator catches
+                        // handshake-level errors internally, but
+                        // post-broker-query paths (LOGGER allocation,
+                        // send_capability edge cases) can still
+                        // escape.  Catch + continue keeps the loop
+                        // alive across one bad attach.
+                        try
+                        {
+                            (void)shm_orchestrator_->accept_and_serve_one(
+                                std::chrono::milliseconds(100));
+                        }
+                        catch (const std::exception &e)
+                        {
+                            LOGGER_WARN("[{}] shm_accept_loop iteration threw "
+                                        "'{}' — continuing (HEP-CORE-0041 §9 "
+                                        "D4 per-attach isolation)",
+                                        frame_cfg_.short_tag, e.what());
+                        }
                     }
-                    catch (const std::exception &e)
-                    {
-                        LOGGER_WARN(
-                            "[{}] shm_accept_loop iteration threw "
-                            "'{}' — continuing (HEP-CORE-0041 §9 "
-                            "D4 per-attach isolation)",
-                            frame_cfg_.short_tag, e.what());
-                    }
-                }
-            });
+                });
         });
     if (!spawned)
     {

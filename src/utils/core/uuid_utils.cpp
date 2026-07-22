@@ -22,18 +22,16 @@ std::string generate_uuid4()
     pylabhub::utils::security::secure().random_bytes(bytes, sizeof(bytes));
 
     // RFC 4122 §4.4 — set version and variant nibbles.
-    bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0FU) | 0x40U);  // version = 4
-    bytes[8] = static_cast<uint8_t>((bytes[8] & 0x3FU) | 0x80U);  // variant = 10xx
+    bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version = 4
+    bytes[8] = static_cast<uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant = 10xx
 
     char buf[37];
     std::snprintf(buf, sizeof(buf),
                   "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-"
                   "%02x%02x%02x%02x%02x%02x",
-                  bytes[0], bytes[1], bytes[2],  bytes[3],
-                  bytes[4], bytes[5],
-                  bytes[6], bytes[7],
-                  bytes[8], bytes[9],
-                  bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+                  bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                  bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                  bytes[15]);
     return std::string{buf};
 }
 
@@ -58,9 +56,7 @@ bool is_valid_uuid4(const std::string &s)
 
     // Variant nibble in {8, 9, a, b} at position 19 (upper or lower case)
     const char v = s[19];
-    if (v != '8' && v != '9' &&
-        v != 'a' && v != 'b' &&
-        v != 'A' && v != 'B')
+    if (v != '8' && v != '9' && v != 'a' && v != 'b' && v != 'A' && v != 'B')
     {
         return false;
     }

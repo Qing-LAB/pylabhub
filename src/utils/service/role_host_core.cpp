@@ -46,7 +46,6 @@ std::vector<IncomingMessage> RoleHostCore::drain_messages()
     return msgs;
 }
 
-
 void RoleHostCore::notify_incoming() noexcept
 {
     incoming_cv_.notify_all();
@@ -72,9 +71,8 @@ RoleHostCore::get_inbox_entry(const std::string &target_uid) const
     return std::nullopt;
 }
 
-std::optional<RoleHostCore::InboxCacheEntry>
-RoleHostCore::open_inbox(const std::string &target_uid,
-                                   InboxCreator creator)
+std::optional<RoleHostCore::InboxCacheEntry> RoleHostCore::open_inbox(const std::string &target_uid,
+                                                                      InboxCreator creator)
 {
     std::lock_guard lk(inbox_cache_mu_);
 
@@ -108,8 +106,7 @@ void RoleHostCore::clear_inbox_cache()
 // Shared script data
 // ============================================================================
 
-std::optional<RoleHostCore::StateValue>
-RoleHostCore::get_shared_data(const std::string &key) const
+std::optional<RoleHostCore::StateValue> RoleHostCore::get_shared_data(const std::string &key) const
 {
     std::shared_lock lk(shared_data_mu_);
     auto it = shared_data_.find(key);

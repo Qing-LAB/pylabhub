@@ -10,7 +10,7 @@
 #include "hub_config_workers.h"
 
 #include "utils/config/hub_config.hpp"
-#include "utils/config/hub_state_config.hpp"  // for kInfiniteGrace sentinel
+#include "utils/config/hub_state_config.hpp" // for kInfiniteGrace sentinel
 #include "utils/file_lock.hpp"
 #include "utils/hub_directory.hpp"
 #include "utils/hub_vault.hpp"
@@ -69,9 +69,8 @@ fs::path write_hub_json(const std::string &dir, const nlohmann::json &content)
 nlohmann::json minimal_hub_json(const std::string &uid = "hub.test.uid00000001")
 {
     return {
-        {"hub", {{"uid", uid},
-                  {"name", "TestHub"},
-                  {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
+        {"hub",
+         {{"uid", uid}, {"name", "TestHub"}, {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"loop_timing", "max_rate"},
     };
 }
@@ -80,43 +79,47 @@ nlohmann::json minimal_hub_json(const std::string &uid = "hub.test.uid00000001")
 nlohmann::json full_hub_json()
 {
     return {
-        {"hub", {
-            {"uid", "hub.full.uid00000002"},
-            {"name", "FullHub"},
-            {"log_level", "warn"},
-            {"auth", {{"keyfile", "vault/hub.full.uid00000002.vault"}}},
-        }},
+        {"hub",
+         {
+             {"uid", "hub.full.uid00000002"},
+             {"name", "FullHub"},
+             {"log_level", "warn"},
+             {"auth", {{"keyfile", "vault/hub.full.uid00000002.vault"}}},
+         }},
         {"script", {{"type", "python"}, {"path", "."}}},
         {"stop_on_script_error", true},
         {"loop_timing", "fixed_rate"},
         {"target_period_ms", 1000},
         {"logging", {{"file_path", ""}, {"max_size_mb", 20}, {"backups", 3}}},
-        {"network", {
-            {"broker_endpoint", "tcp://0.0.0.0:5571"},
-            {"broker_bind", true},
-            {"zmq_io_threads", 2},
-        }},
-        {"admin", {
-            {"enabled", true},
-            {"endpoint", "tcp://127.0.0.1:5601"},
-        }},
-        {"broker", {
-            {"heartbeat_interval_ms",    250},
-            {"ready_miss_heartbeats",     12},
-            {"pending_miss_heartbeats",    8},
-            {"ready_timeout_ms",        4000},  // explicit override
-        }},
-        {"federation", {
-            {"enabled", true},
-            {"forward_timeout_ms", 1500},
-            {"peers", nlohmann::json::array({
-                {{"uid", "hub.peer.uidaabbccdd"},
-                 {"endpoint", "tcp://10.0.0.2:5570"},
-                 {"pubkey", ""}},
-            })},
-        }},
-        {"state", {{"disconnected_grace_ms", 30000},
-                    {"max_disconnected_entries", 500}}},
+        {"network",
+         {
+             {"broker_endpoint", "tcp://0.0.0.0:5571"},
+             {"broker_bind", true},
+             {"zmq_io_threads", 2},
+         }},
+        {"admin",
+         {
+             {"enabled", true},
+             {"endpoint", "tcp://127.0.0.1:5601"},
+         }},
+        {"broker",
+         {
+             {"heartbeat_interval_ms", 250},
+             {"ready_miss_heartbeats", 12},
+             {"pending_miss_heartbeats", 8},
+             {"ready_timeout_ms", 4000}, // explicit override
+         }},
+        {"federation",
+         {
+             {"enabled", true},
+             {"forward_timeout_ms", 1500},
+             {"peers", nlohmann::json::array({
+                           {{"uid", "hub.peer.uidaabbccdd"},
+                            {"endpoint", "tcp://10.0.0.2:5570"},
+                            {"pubkey", ""}},
+                       })},
+         }},
+        {"state", {{"disconnected_grace_ms", 30000}, {"max_disconnected_entries", 500}}},
     };
 }
 
@@ -127,15 +130,16 @@ nlohmann::json full_hub_json()
 int load_full(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             write_hub_json(dir, full_hub_json());
             auto cfg = HubConfig::load_from_directory(dir);
 
-            EXPECT_EQ(cfg.identity().uid,        "hub.full.uid00000002");
-            EXPECT_EQ(cfg.identity().name,       "FullHub");
-            EXPECT_EQ(cfg.identity().log_level,  "warn");
-            EXPECT_EQ(cfg.auth().keyfile,        "vault/hub.full.uid00000002.vault");
+            EXPECT_EQ(cfg.identity().uid, "hub.full.uid00000002");
+            EXPECT_EQ(cfg.identity().name, "FullHub");
+            EXPECT_EQ(cfg.identity().log_level, "warn");
+            EXPECT_EQ(cfg.auth().keyfile, "vault/hub.full.uid00000002.vault");
 
             EXPECT_EQ(cfg.network().broker_endpoint, "tcp://0.0.0.0:5571");
             EXPECT_TRUE(cfg.network().broker_bind);
@@ -144,9 +148,9 @@ int load_full(const char *tmpdir)
             EXPECT_TRUE(cfg.admin().enabled);
             EXPECT_EQ(cfg.admin().endpoint, "tcp://127.0.0.1:5601");
 
-            EXPECT_EQ(cfg.broker().heartbeat_interval_ms,     250);
-            EXPECT_EQ(cfg.broker().ready_miss_heartbeats,      12u);
-            EXPECT_EQ(cfg.broker().pending_miss_heartbeats,     8u);
+            EXPECT_EQ(cfg.broker().heartbeat_interval_ms, 250);
+            EXPECT_EQ(cfg.broker().ready_miss_heartbeats, 12u);
+            EXPECT_EQ(cfg.broker().pending_miss_heartbeats, 8u);
             ASSERT_TRUE(cfg.broker().ready_timeout_ms.has_value());
             EXPECT_EQ(*cfg.broker().ready_timeout_ms, 4000);
             EXPECT_FALSE(cfg.broker().pending_timeout_ms.has_value());
@@ -157,15 +161,14 @@ int load_full(const char *tmpdir)
             EXPECT_EQ(cfg.federation().peers[0].uid, "hub.peer.uidaabbccdd");
             EXPECT_EQ(cfg.federation().peers[0].endpoint, "tcp://10.0.0.2:5570");
 
-            EXPECT_EQ(cfg.state().disconnected_grace_ms,    30000);
-            EXPECT_EQ(cfg.state().max_disconnected_entries,   500);
+            EXPECT_EQ(cfg.state().disconnected_grace_ms, 30000);
+            EXPECT_EQ(cfg.state().max_disconnected_entries, 500);
 
             // Timing — full config sets fixed_rate at 1000 ms.
             // HEP-CORE-0033 Phase 7 Commit B: hub script tick uses
             // the same TimingConfig + parser as role data loops.
-            EXPECT_EQ(cfg.timing().loop_timing,
-                      ::pylabhub::LoopTimingPolicy::FixedRate);
-            EXPECT_EQ(cfg.timing().period_us, 1000.0 * 1000.0);  // 1000 ms in µs
+            EXPECT_EQ(cfg.timing().loop_timing, ::pylabhub::LoopTimingPolicy::FixedRate);
+            EXPECT_EQ(cfg.timing().period_us, 1000.0 * 1000.0); // 1000 ms in µs
 
             // base_dir() returns the directory containing hub.json.
             EXPECT_EQ(cfg.base_dir(), fs::path(dir));
@@ -173,8 +176,7 @@ int load_full(const char *tmpdir)
             // raw() returns the JSON we wrote.
             EXPECT_EQ(cfg.raw().at("hub").at("name").get<std::string>(), "FullHub");
         },
-        "hub_config::load_full",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "hub_config::load_full", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
@@ -183,7 +185,8 @@ int load_full(const char *tmpdir)
 int load_minimal(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             write_hub_json(dir, minimal_hub_json());
             auto cfg = HubConfig::load_from_directory(dir);
@@ -196,10 +199,8 @@ int load_minimal(const char *tmpdir)
             EXPECT_TRUE(cfg.admin().enabled);
             EXPECT_EQ(cfg.admin().endpoint, "tcp://127.0.0.1:5600");
 
-            EXPECT_EQ(cfg.broker().heartbeat_interval_ms,
-                      ::pylabhub::kDefaultHeartbeatIntervalMs);
-            EXPECT_EQ(cfg.broker().ready_miss_heartbeats,
-                      ::pylabhub::kDefaultReadyMissHeartbeats);
+            EXPECT_EQ(cfg.broker().heartbeat_interval_ms, ::pylabhub::kDefaultHeartbeatIntervalMs);
+            EXPECT_EQ(cfg.broker().ready_miss_heartbeats, ::pylabhub::kDefaultReadyMissHeartbeats);
             EXPECT_EQ(cfg.broker().pending_miss_heartbeats,
                       ::pylabhub::kDefaultPendingMissHeartbeats);
             EXPECT_FALSE(cfg.broker().ready_timeout_ms.has_value());
@@ -210,15 +211,13 @@ int load_minimal(const char *tmpdir)
             EXPECT_EQ(cfg.federation().forward_timeout_ms, 2000);
 
             // Timing — minimal config sets max_rate (no period field).
-            EXPECT_EQ(cfg.timing().loop_timing,
-                      ::pylabhub::LoopTimingPolicy::MaxRate);
+            EXPECT_EQ(cfg.timing().loop_timing, ::pylabhub::LoopTimingPolicy::MaxRate);
             EXPECT_EQ(cfg.timing().period_us, 0.0);
 
-            EXPECT_EQ(cfg.state().disconnected_grace_ms,    60000);
-            EXPECT_EQ(cfg.state().max_disconnected_entries,  1000);
+            EXPECT_EQ(cfg.state().disconnected_grace_ms, 60000);
+            EXPECT_EQ(cfg.state().max_disconnected_entries, 1000);
         },
-        "hub_config::load_minimal",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "hub_config::load_minimal", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
@@ -227,23 +226,26 @@ int load_minimal(const char *tmpdir)
 int strict_unknown_top_level(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["bogus_top_level"] = 7;
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for unknown top-level key";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("unknown config key"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("bogus_top_level"));
             }
         },
-        "hub_config::strict_unknown_top_level",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::strict_unknown_top_level", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── strict_unknown_in_section ───────────────────────────────────────────────
@@ -251,23 +253,26 @@ int strict_unknown_top_level(const char *tmpdir)
 int strict_unknown_in_section(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["admin"] = {{"enabled", true}, {"bogus_admin_key", 1}};
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for unknown admin sub-key";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 // Diagnostic must qualify the path so the operator can find it.
                 EXPECT_THAT(ex.what(), testing::HasSubstr("admin.bogus_admin_key"));
             }
         },
-        "hub_config::strict_unknown_in_section",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::strict_unknown_in_section", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── section_not_object ──────────────────────────────────────────────────────
@@ -275,23 +280,26 @@ int strict_unknown_in_section(const char *tmpdir)
 int section_not_object(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["network"] = "this is not an object";
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for non-object 'network'";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("'network'"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("must be an object"));
             }
         },
-        "hub_config::section_not_object",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::section_not_object", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── auth_missing_auth_throws ────────────────────────────────────────────────
@@ -299,24 +307,26 @@ int section_not_object(const char *tmpdir)
 int auth_missing_auth_throws(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["hub"].erase("auth");
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for missing hub.auth";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("missing required 'hub.auth' object"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("missing required 'hub.auth' object"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0033"));
             }
         },
-        "hub_config::auth_missing_auth_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::auth_missing_auth_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── auth_missing_keyfile_throws ─────────────────────────────────────────────
@@ -324,24 +334,26 @@ int auth_missing_auth_throws(const char *tmpdir)
 int auth_missing_keyfile_throws(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
-            j["hub"]["auth"] = nlohmann::json::object();  // present, empty
+            j["hub"]["auth"] = nlohmann::json::object(); // present, empty
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for missing hub.auth.keyfile";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("missing required 'hub.auth.keyfile'"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("missing required 'hub.auth.keyfile'"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0033"));
             }
         },
-        "hub_config::auth_missing_keyfile_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::auth_missing_keyfile_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── auth_empty_keyfile_throws ───────────────────────────────────────────────
@@ -350,18 +362,21 @@ int auth_missing_keyfile_throws(const char *tmpdir)
 int auth_empty_keyfile_throws(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["hub"]["auth"]["keyfile"] = "";
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for empty hub.auth.keyfile";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("must be a non-empty path string"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("must be a non-empty path string"));
                 // The shared parser cites BOTH source HEPs (HEP-CORE-0024
                 // §3.4 for roles + HEP-CORE-0033 §7.1 for hub).  Pin both
                 // — the hub-side message MUST include the hub-side cite,
@@ -370,9 +385,8 @@ int auth_empty_keyfile_throws(const char *tmpdir)
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0033"));
             }
         },
-        "hub_config::auth_empty_keyfile_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::auth_empty_keyfile_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── auth_keyfile_wrong_type_throws ──────────────────────────────────────────
@@ -381,23 +395,25 @@ int auth_empty_keyfile_throws(const char *tmpdir)
 int auth_keyfile_wrong_type_throws(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
-            j["hub"]["auth"]["keyfile"] = 42;  // not a string
+            j["hub"]["auth"]["keyfile"] = 42; // not a string
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for non-string keyfile";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("'hub.auth.keyfile' must be a string"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("'hub.auth.keyfile' must be a string"));
             }
         },
-        "hub_config::auth_keyfile_wrong_type_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::auth_keyfile_wrong_type_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── auth_not_object_throws ──────────────────────────────────────────────────
@@ -406,23 +422,25 @@ int auth_keyfile_wrong_type_throws(const char *tmpdir)
 int auth_not_object_throws(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["hub"]["auth"] = "should-be-an-object";
             write_hub_json(dir, j);
 
-            try {
+            try
+            {
                 HubConfig::load_from_directory(dir);
                 FAIL() << "Expected std::runtime_error for non-object hub.auth";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("'hub.auth' must be a JSON object"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("'hub.auth' must be a JSON object"));
             }
         },
-        "hub_config::auth_not_object_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::auth_not_object_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -434,12 +452,12 @@ int auth_not_object_throws(const char *tmpdir)
 int load_keypair_refuses_loose_file_mode(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             // Real vault at the configured path (mode 0600 + parent 0700).
             const fs::path vault_path = fs::path(dir) / "vault" / "hub.test.uid00000001.vault";
-            (void) pylabhub::utils::HubVault::create(
-                vault_path, "hub.test.uid00000001", "l2-pw");
+            (void)pylabhub::utils::HubVault::create(vault_path, "hub.test.uid00000001", "l2-pw");
 
             auto j = minimal_hub_json();
             j["hub"]["auth"]["keyfile"] = vault_path.string();
@@ -449,19 +467,21 @@ int load_keypair_refuses_loose_file_mode(const char *tmpdir)
             ::chmod(vault_path.c_str(), 0644);
 
             auto cfg = HubConfig::load_from_directory(dir);
-            try {
-                (void) cfg.load_keypair("l2-pw");
+            try
+            {
+                (void)cfg.load_keypair("l2-pw");
                 FAIL() << "Expected load_keypair to refuse 0644 vault file";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
                 // Pin file (NOT dir) + exact target mode.
                 EXPECT_THAT(ex.what(), testing::HasSubstr("vault file"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("chmod 0600"));
             }
         },
-        "hub_config::load_keypair_refuses_loose_file_mode",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::load_keypair_refuses_loose_file_mode", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── load_keypair_refuses_loose_parent_dir_mode ──────────────────────────────
@@ -470,11 +490,11 @@ int load_keypair_refuses_loose_file_mode(const char *tmpdir)
 int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             const fs::path vault_path = fs::path(dir) / "vault" / "hub.test.uid00000002.vault";
-            (void) pylabhub::utils::HubVault::create(
-                vault_path, "hub.test.uid00000002", "l2-pw");
+            (void)pylabhub::utils::HubVault::create(vault_path, "hub.test.uid00000002", "l2-pw");
 
             auto j = minimal_hub_json("hub.test.uid00000002");
             j["hub"]["auth"]["keyfile"] = vault_path.string();
@@ -483,19 +503,21 @@ int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
             ::chmod(vault_path.parent_path().c_str(), 0755);
 
             auto cfg = HubConfig::load_from_directory(dir);
-            try {
-                (void) cfg.load_keypair("l2-pw");
+            try
+            {
+                (void)cfg.load_keypair("l2-pw");
                 FAIL() << "Expected load_keypair to refuse 0755 parent dir";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
                 // Pin dir (NOT file) + exact target mode.
                 EXPECT_THAT(ex.what(), testing::HasSubstr("vault directory"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("chmod 0700"));
             }
         },
-        "hub_config::load_keypair_refuses_loose_parent_dir_mode",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::load_keypair_refuses_loose_parent_dir_mode", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 #endif
 
@@ -511,14 +533,14 @@ int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
 int uid_empty_rejected(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             // Omit hub.uid; provide just hub.name.  Previously the
             // parser auto-generated a uid here; the new contract
             // (HEP-0033 §6.3 revised) hard-errors instead.
             const nlohmann::json j = {
-                {"hub", {{"name", "MyHub"},
-                          {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
+                {"hub", {{"name", "MyHub"}, {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
                 {"loop_timing", "max_rate"},
             };
             write_hub_json(dir, j);
@@ -539,9 +561,8 @@ int uid_empty_rejected(const char *tmpdir)
                     << "diagnostic should cite HEP-CORE-0033; got: " << msg;
             }
         },
-        "hub_config::uid_empty_rejected",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::uid_empty_rejected", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── state_grace_sentinel ────────────────────────────────────────────────────
@@ -549,19 +570,18 @@ int uid_empty_rejected(const char *tmpdir)
 int state_grace_sentinel(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto j = minimal_hub_json();
             j["state"] = {{"disconnected_grace_ms", -1}};
             write_hub_json(dir, j);
 
             auto cfg = HubConfig::load_from_directory(dir);
-            EXPECT_EQ(cfg.state().disconnected_grace_ms,
-                      pylabhub::config::kInfiniteGrace);
+            EXPECT_EQ(cfg.state().disconnected_grace_ms, pylabhub::config::kInfiniteGrace);
         },
-        "hub_config::state_grace_sentinel",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::state_grace_sentinel", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── load_from_directory ─────────────────────────────────────────────────────
@@ -569,21 +589,21 @@ int state_grace_sentinel(const char *tmpdir)
 int load_from_directory(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             auto path = write_hub_json(dir, minimal_hub_json("hub.dir.uid00000003"));
 
             // Both factories should produce equivalent state.
             auto by_path = HubConfig::load(path.string());
-            auto by_dir  = HubConfig::load_from_directory(dir);
+            auto by_dir = HubConfig::load_from_directory(dir);
 
             EXPECT_EQ(by_path.identity().uid, by_dir.identity().uid);
             EXPECT_EQ(by_path.base_dir(), by_dir.base_dir());
             EXPECT_EQ(by_path.base_dir(), fs::path(dir));
         },
-        "hub_config::load_from_directory",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::load_from_directory", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── reload_if_changed ───────────────────────────────────────────────────────
@@ -591,7 +611,8 @@ int load_from_directory(const char *tmpdir)
 int reload_if_changed(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
             write_hub_json(dir, minimal_hub_json("hub.rel.uid00000004"));
             auto cfg = HubConfig::load_from_directory(dir);
@@ -611,9 +632,8 @@ int reload_if_changed(const char *tmpdir)
             EXPECT_TRUE(cfg.reload_if_changed());
             EXPECT_EQ(cfg.identity().name, "RenamedHub");
         },
-        "hub_config::reload_if_changed",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::reload_if_changed", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── init_template_loads_via_hubconfig ───────────────────────────────────────
@@ -621,12 +641,12 @@ int reload_if_changed(const char *tmpdir)
 int init_template_loads_via_hubconfig(const char *tmpdir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const std::string dir = tmpdir;
 
             // 1. HubDirectory::init_directory writes the template.
-            const int rc = pylabhub::utils::HubDirectory::init_directory(
-                dir, "RoundTripHub");
+            const int rc = pylabhub::utils::HubDirectory::init_directory(dir, "RoundTripHub");
             ASSERT_EQ(rc, 0);
 
             // 2. HubConfig::load_from_directory must parse it without throwing.
@@ -639,16 +659,13 @@ int init_template_loads_via_hubconfig(const char *tmpdir)
             EXPECT_FALSE(cfg.identity().uid.empty());
             EXPECT_EQ(cfg.network().broker_endpoint, "tcp://127.0.0.1:5570");
             EXPECT_TRUE(cfg.network().broker_bind);
-            EXPECT_EQ(cfg.broker().heartbeat_interval_ms,
-                      ::pylabhub::kDefaultHeartbeatIntervalMs);
-            EXPECT_EQ(cfg.broker().ready_miss_heartbeats,
-                      ::pylabhub::kDefaultReadyMissHeartbeats);
+            EXPECT_EQ(cfg.broker().heartbeat_interval_ms, ::pylabhub::kDefaultHeartbeatIntervalMs);
+            EXPECT_EQ(cfg.broker().ready_miss_heartbeats, ::pylabhub::kDefaultReadyMissHeartbeats);
             EXPECT_FALSE(cfg.federation().enabled);
             EXPECT_EQ(cfg.state().disconnected_grace_ms, 60000);
         },
-        "hub_config::init_template_loads_via_hubconfig",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "hub_config::init_template_loads_via_hubconfig", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 } // namespace hub_config
@@ -672,41 +689,52 @@ struct HubConfigWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "hub_config")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "hub_config")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
 
-                if (argc <= 2) {
-                    fmt::print(stderr,
-                               "hub_config.{}: missing required <dir> arg\n", sc);
+                if (argc <= 2)
+                {
+                    fmt::print(stderr, "hub_config.{}: missing required <dir> arg\n", sc);
                     return 1;
                 }
                 const char *dir = argv[2];
 
                 using namespace pylabhub::tests::worker::hub_config;
-                if (sc == "load_full")                 return load_full(dir);
-                if (sc == "load_minimal")              return load_minimal(dir);
-                if (sc == "strict_unknown_top_level")  return strict_unknown_top_level(dir);
-                if (sc == "strict_unknown_in_section") return strict_unknown_in_section(dir);
-                if (sc == "section_not_object")        return section_not_object(dir);
-                if (sc == "auth_missing_auth_throws")  return auth_missing_auth_throws(dir);
+                if (sc == "load_full")
+                    return load_full(dir);
+                if (sc == "load_minimal")
+                    return load_minimal(dir);
+                if (sc == "strict_unknown_top_level")
+                    return strict_unknown_top_level(dir);
+                if (sc == "strict_unknown_in_section")
+                    return strict_unknown_in_section(dir);
+                if (sc == "section_not_object")
+                    return section_not_object(dir);
+                if (sc == "auth_missing_auth_throws")
+                    return auth_missing_auth_throws(dir);
                 if (sc == "auth_missing_keyfile_throws")
                     return auth_missing_keyfile_throws(dir);
-                if (sc == "auth_empty_keyfile_throws") return auth_empty_keyfile_throws(dir);
+                if (sc == "auth_empty_keyfile_throws")
+                    return auth_empty_keyfile_throws(dir);
                 if (sc == "auth_keyfile_wrong_type_throws")
                     return auth_keyfile_wrong_type_throws(dir);
-                if (sc == "auth_not_object_throws")    return auth_not_object_throws(dir);
+                if (sc == "auth_not_object_throws")
+                    return auth_not_object_throws(dir);
 #if !defined(_WIN32) && !defined(_WIN64)
                 if (sc == "load_keypair_refuses_loose_file_mode")
                     return load_keypair_refuses_loose_file_mode(dir);
                 if (sc == "load_keypair_refuses_loose_parent_dir_mode")
                     return load_keypair_refuses_loose_parent_dir_mode(dir);
 #endif
-                if (sc == "uid_empty_rejected")        return uid_empty_rejected(dir);
-                if (sc == "state_grace_sentinel")      return state_grace_sentinel(dir);
-                if (sc == "load_from_directory")       return load_from_directory(dir);
-                if (sc == "reload_if_changed")         return reload_if_changed(dir);
+                if (sc == "uid_empty_rejected")
+                    return uid_empty_rejected(dir);
+                if (sc == "state_grace_sentinel")
+                    return state_grace_sentinel(dir);
+                if (sc == "load_from_directory")
+                    return load_from_directory(dir);
+                if (sc == "reload_if_changed")
+                    return reload_if_changed(dir);
                 if (sc == "init_template_loads_via_hubconfig")
                     return init_template_loads_via_hubconfig(dir);
                 fmt::print(stderr, "hub_config: unknown scenario '{}'\n", sc);

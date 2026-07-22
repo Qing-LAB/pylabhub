@@ -25,7 +25,7 @@ namespace pylabhub::config
 struct ChecksumConfig
 {
     hub::ChecksumPolicy policy{hub::ChecksumPolicy::Enforced}; ///< Default: auto checksum.
-    bool flexzone{true};  ///< Checksum flexzone if present. SHM-specific; ZMQ ignores.
+    bool flexzone{true}; ///< Checksum flexzone if present. SHM-specific; ZMQ ignores.
 };
 
 /// Parse checksum fields from a JSON config object.
@@ -53,9 +53,8 @@ inline ChecksumConfig parse_checksum_config(const nlohmann::json &j, const char 
         }
         else
         {
-            throw std::runtime_error(
-                std::string(tag) + ": invalid 'checksum': '" + val +
-                "' (expected 'enforced', 'manual', or 'none')");
+            throw std::runtime_error(std::string(tag) + ": invalid 'checksum': '" + val +
+                                     "' (expected 'enforced', 'manual', or 'none')");
         }
     }
     // Default: Enforced (safety first).
@@ -70,9 +69,12 @@ inline const char *checksum_policy_to_string(hub::ChecksumPolicy p) noexcept
 {
     switch (p)
     {
-        case hub::ChecksumPolicy::Enforced: return "enforced";
-        case hub::ChecksumPolicy::Manual:   return "manual";
-        case hub::ChecksumPolicy::None:     return "none";
+    case hub::ChecksumPolicy::Enforced:
+        return "enforced";
+    case hub::ChecksumPolicy::Manual:
+        return "manual";
+    case hub::ChecksumPolicy::None:
+        return "none";
     }
     return "enforced";
 }
@@ -80,8 +82,14 @@ inline const char *checksum_policy_to_string(hub::ChecksumPolicy p) noexcept
 /// Convert wire string to ChecksumPolicy enum.
 inline hub::ChecksumPolicy string_to_checksum_policy(const std::string &s) noexcept
 {
-    if (s == "manual") { return hub::ChecksumPolicy::Manual; }
-    if (s == "none")   { return hub::ChecksumPolicy::None; }
+    if (s == "manual")
+    {
+        return hub::ChecksumPolicy::Manual;
+    }
+    if (s == "none")
+    {
+        return hub::ChecksumPolicy::None;
+    }
     return hub::ChecksumPolicy::Enforced; // default
 }
 

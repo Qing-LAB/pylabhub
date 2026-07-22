@@ -28,7 +28,11 @@ class RotatingFileSink : public Sink, private BaseFileSink
 {
   public:
     /// Rotation strategy.
-    enum class Mode { Numeric, Timestamped };
+    enum class Mode
+    {
+        Numeric,
+        Timestamped
+    };
 
     /**
      * @brief Constructs a new RotatingFileSink (Numeric mode — legacy).
@@ -69,11 +73,11 @@ class RotatingFileSink : public Sink, private BaseFileSink
     /// Scan directory for `<basename>-*.log`, delete oldest past max_backups.
     void prune_timestamped_backups_();
 
-    std::filesystem::path m_base_filepath;  ///< Template path (constructor arg).
+    std::filesystem::path m_base_filepath; ///< Template path (constructor arg).
     size_t m_max_file_size_bytes;
     size_t m_max_backup_files;
     size_t m_current_size_bytes;
-    Mode   m_mode{Mode::Numeric};
+    Mode m_mode{Mode::Numeric};
 };
 
 } // namespace pylabhub::utils

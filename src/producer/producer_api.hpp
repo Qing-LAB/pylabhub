@@ -37,22 +37,20 @@ class ProducerAPI
 {
   public:
     /// Construct with a fully-wired RoleAPIBase (owned by role host).
-    explicit ProducerAPI(scripting::RoleAPIBase &base)
-        : base_(&base)
-    {}
+    explicit ProducerAPI(scripting::RoleAPIBase &base) : base_(&base) {}
 
     // ── C++ host setters ─────────────────────────────────────────────────────
 
     // ── Python-accessible — identity / environment ───────────────────────────
 
-    [[nodiscard]] const std::string &uid()        const noexcept { return base_->uid(); }
-    [[nodiscard]] const std::string &name()       const noexcept { return base_->name(); }
-    [[nodiscard]] const std::string &channel()    const noexcept { return base_->channel(); }
-    [[nodiscard]] const std::string &log_level()  const noexcept { return base_->log_level(); }
+    [[nodiscard]] const std::string &uid() const noexcept { return base_->uid(); }
+    [[nodiscard]] const std::string &name() const noexcept { return base_->name(); }
+    [[nodiscard]] const std::string &channel() const noexcept { return base_->channel(); }
+    [[nodiscard]] const std::string &log_level() const noexcept { return base_->log_level(); }
     [[nodiscard]] const std::string &script_dir() const noexcept { return base_->script_dir(); }
-    [[nodiscard]] const std::string &role_dir()   const noexcept { return base_->role_dir(); }
-    [[nodiscard]] std::string        logs_dir()   const { return base_->logs_dir(); }
-    [[nodiscard]] std::string        run_dir()    const { return base_->run_dir(); }
+    [[nodiscard]] const std::string &role_dir() const noexcept { return base_->role_dir(); }
+    [[nodiscard]] std::string logs_dir() const { return base_->logs_dir(); }
+    [[nodiscard]] std::string run_dir() const { return base_->run_dir(); }
 
     void log(const std::string &level, const std::string &msg) { base_->log(level, msg); }
     void stop() { base_->stop(); }
@@ -73,10 +71,10 @@ class ProducerAPI
     /// error or transport failure.  Drops the protocol-level error_code
     /// for scripts that just want a boolean.  Per HEP-CORE-0007 §12.3,
     /// the underlying `RoleAPIBase::band_leave` exposes the full body.
-    bool band_leave(const std::string &channel) {
+    bool band_leave(const std::string &channel)
+    {
         auto resp = base_->band_leave(channel);
-        return resp.has_value() &&
-               resp->value("status", std::string{}) == "success";
+        return resp.has_value() && resp->value("status", std::string{}) == "success";
     }
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
@@ -89,15 +87,13 @@ class ProducerAPI
     /// pattern) and Lua (band_member_contains / _count).  Pythonic
     /// shape: returns bool / int; raises py::value_error on transport
     /// failure instead of returning the C-API -1 sentinel.
-    bool band_member_contains(const std::string &channel,
-                              const std::string &role_uid);
-    int  band_member_count(const std::string &channel);
+    bool band_member_contains(const std::string &channel, const std::string &role_uid);
+    int band_member_count(const std::string &channel);
 
     /// Allowed-peer inquiry helpers — engine-parity with Native +
     /// Lua.  Served from the local push-cache; no broker round-trip.
-    bool allowed_peer_contains(const std::string &channel,
-                               const std::string &role_uid) const;
-    int  allowed_peer_count(const std::string &channel) const;
+    bool allowed_peer_contains(const std::string &channel, const std::string &role_uid) const;
+    int allowed_peer_count(const std::string &channel) const;
 
     /// HEP-CORE-0028 §6a + HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY
     /// (lines 1834-1838) — binding-side live-peer count backed by the
@@ -117,13 +113,22 @@ class ProducerAPI
 
     // ── Python-accessible — diagnostics ──────────────────────────────────────
 
-    [[nodiscard]] uint64_t script_error_count() const noexcept { return base_->script_error_count(); }
-    [[nodiscard]] uint64_t out_slots_written()  const noexcept { return base_->out_slots_written(); }
-    [[nodiscard]] uint64_t out_drop_count()     const noexcept { return base_->out_drop_count(); }
-    [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return base_->loop_overrun_count(); }
-    [[nodiscard]] size_t      out_capacity()    const noexcept { return base_->out_capacity(); }
-    [[nodiscard]] std::string out_policy()      const { return base_->out_policy(); }
-    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept { return base_->last_cycle_work_us(); }
+    [[nodiscard]] uint64_t script_error_count() const noexcept
+    {
+        return base_->script_error_count();
+    }
+    [[nodiscard]] uint64_t out_slots_written() const noexcept { return base_->out_slots_written(); }
+    [[nodiscard]] uint64_t out_drop_count() const noexcept { return base_->out_drop_count(); }
+    [[nodiscard]] uint64_t loop_overrun_count() const noexcept
+    {
+        return base_->loop_overrun_count();
+    }
+    [[nodiscard]] size_t out_capacity() const noexcept { return base_->out_capacity(); }
+    [[nodiscard]] std::string out_policy() const { return base_->out_policy(); }
+    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept
+    {
+        return base_->last_cycle_work_us();
+    }
     [[nodiscard]] py::dict metrics() const;
 
     /// HEP-CORE-0036 §I11 polling surface — snapshot of authorized
@@ -163,21 +168,25 @@ class ProducerAPI
     /// negotiated mechanism name ("Curve" / "Plaintext" / "Uninitialized").
     [[nodiscard]] std::string queue_mechanism(int side) const
     {
-        const auto cs = (side == 0) ? scripting::ChannelSide::Tx
-                                    : scripting::ChannelSide::Rx;
-        return std::string{pylabhub::hub::mechanism_name(
-            base_->queue_mechanism(cs))};
+        const auto cs = (side == 0) ? scripting::ChannelSide::Tx : scripting::ChannelSide::Rx;
+        return std::string{pylabhub::hub::mechanism_name(base_->queue_mechanism(cs))};
     }
 
     // ── Python-accessible — custom metrics ───────────────────────────────────
 
     void report_metric(const std::string &key, double value) { base_->report_metric(key, value); }
-    void report_metrics(const std::unordered_map<std::string, double> &kv) { base_->report_metrics(kv); }
+    void report_metrics(const std::unordered_map<std::string, double> &kv)
+    {
+        base_->report_metrics(kv);
+    }
     void clear_custom_metrics() { base_->clear_custom_metrics(); }
 
     // ── Internal — metrics snapshot ──────────────────────────────────────────
 
-    [[nodiscard]] nlohmann::json snapshot_metrics_json() const { return base_->snapshot_metrics_json(); }
+    [[nodiscard]] nlohmann::json snapshot_metrics_json() const
+    {
+        return base_->snapshot_metrics_json();
+    }
 
     // ── Python-accessible — shutdown diagnostics ─────────────────────────────
 
@@ -194,11 +203,12 @@ class ProducerAPI
     void set_tx_flexzone(std::optional<py::object> obj) { tx_flexzone_obj_ = std::move(obj); }
 
   private:
-    scripting::RoleAPIBase  *base_;
+    scripting::RoleAPIBase *base_;
     std::optional<py::object> tx_flexzone_obj_;
 
     std::unordered_map<std::string, py::object> inbox_cache_;
-public:
+
+  public:
     py::object shared_data_{py::none()};
 };
 

@@ -47,8 +47,7 @@ class RoleHostBaseLifecycleTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_rhb_" + std::string(prefix) + "_" +
-                      std::to_string(::getpid()) + "_" +
+                     ("plh_l2_rhb_" + std::string(prefix) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)));
         paths_to_clean_.push_back(p);
         return p.string();
@@ -79,7 +78,7 @@ class RoleHostBaseLifecycleTest : public IsolatedProcessTest
 TEST_F(RoleHostBaseLifecycleTest, Construct_NotRunning_NotLoaded)
 {
     auto dir = unique_dir("construct");
-    auto w   = SpawnWorker("role_host_base.construct_not_running", {dir});
+    auto w = SpawnWorker("role_host_base.construct_not_running", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -88,7 +87,7 @@ TEST_F(RoleHostBaseLifecycleTest, Construct_NotRunning_NotLoaded)
 TEST_F(RoleHostBaseLifecycleTest, StartupRun_WorkerEntersLoop_ShutdownJoinsCleanly)
 {
     auto dir = unique_dir("run_shutdown");
-    auto w   = SpawnWorker("role_host_base.startup_run_shutdown", {dir});
+    auto w = SpawnWorker("role_host_base.startup_run_shutdown", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -97,7 +96,7 @@ TEST_F(RoleHostBaseLifecycleTest, StartupRun_WorkerEntersLoop_ShutdownJoinsClean
 TEST_F(RoleHostBaseLifecycleTest, StartupFailure_ReadyFalse_ApiReset_NotRunning)
 {
     auto dir = unique_dir("ready_false");
-    auto w   = SpawnWorker("role_host_base.startup_ready_false", {dir});
+    auto w = SpawnWorker("role_host_base.startup_ready_false", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -106,7 +105,7 @@ TEST_F(RoleHostBaseLifecycleTest, StartupFailure_ReadyFalse_ApiReset_NotRunning)
 TEST_F(RoleHostBaseLifecycleTest, ValidateMode_ReadyThenExitsWithoutLoop)
 {
     auto dir = unique_dir("validate");
-    auto w   = SpawnWorker("role_host_base.validate_mode", {dir});
+    auto w = SpawnWorker("role_host_base.validate_mode", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -115,7 +114,7 @@ TEST_F(RoleHostBaseLifecycleTest, ValidateMode_ReadyThenExitsWithoutLoop)
 TEST_F(RoleHostBaseLifecycleTest, Shutdown_Idempotent)
 {
     auto dir = unique_dir("idempotent");
-    auto w   = SpawnWorker("role_host_base.shutdown_idempotent", {dir});
+    auto w = SpawnWorker("role_host_base.shutdown_idempotent", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -124,7 +123,7 @@ TEST_F(RoleHostBaseLifecycleTest, Shutdown_Idempotent)
 TEST_F(RoleHostBaseLifecycleTest, ShutdownBeforeStartup_Harmless)
 {
     auto dir = unique_dir("before_startup");
-    auto w   = SpawnWorker("role_host_base.shutdown_before_startup", {dir});
+    auto w = SpawnWorker("role_host_base.shutdown_before_startup", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -147,8 +146,7 @@ TEST_F(RoleHostBaseLifecycleTest, DtorContract_MissingShutdown_Aborts)
 TEST_F(RoleHostBaseLifecycleTest, VirtualShutdown_Override_ForwardsToBase)
 {
     auto dir = unique_dir("ovr_ok");
-    auto w   = SpawnWorker("role_host_base.virtual_shutdown_override_forwards",
-                           {dir});
+    auto w = SpawnWorker("role_host_base.virtual_shutdown_override_forwards", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -184,7 +182,7 @@ TEST_F(RoleHostBaseLifecycleTest, StartupAfterShutdown_Aborts)
 TEST_F(RoleHostBaseLifecycleTest, ExternalShutdownFlag_PropagatesToCore)
 {
     auto dir = unique_dir("ext_flag");
-    auto w   = SpawnWorker("role_host_base.external_shutdown_flag", {dir});
+    auto w = SpawnWorker("role_host_base.external_shutdown_flag", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -193,7 +191,7 @@ TEST_F(RoleHostBaseLifecycleTest, ExternalShutdownFlag_PropagatesToCore)
 TEST_F(RoleHostBaseLifecycleTest, Accessors_ConfigAndRoleTag)
 {
     auto dir = unique_dir("accessors");
-    auto w   = SpawnWorker("role_host_base.accessors_config_and_short_tag", {dir});
+    auto w = SpawnWorker("role_host_base.accessors_config_and_short_tag", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -202,7 +200,6 @@ TEST_F(RoleHostBaseLifecycleTest, Accessors_ConfigAndRoleTag)
 TEST_F(RoleHostBaseLifecycleTest, WaitForWakeup_HonoursTimeoutWithoutHang)
 {
     auto dir = unique_dir("wakeup");
-    auto w   = SpawnWorker("role_host_base.wait_for_wakeup_honours_timeout",
-                           {dir});
+    auto w = SpawnWorker("role_host_base.wait_for_wakeup_honours_timeout", {dir});
     ExpectWorkerOk(w);
 }

@@ -46,9 +46,8 @@ static bool win32_sid_has_access(const fs::path &path, WELL_KNOWN_SID_TYPE sid_t
 
     PACL dacl = nullptr;
     PSECURITY_DESCRIPTOR sd = nullptr;
-    if (GetNamedSecurityInfoW(path.wstring().c_str(), SE_FILE_OBJECT,
-                              DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr,
-                              &sd) != ERROR_SUCCESS)
+    if (GetNamedSecurityInfoW(path.wstring().c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                              nullptr, nullptr, &dacl, nullptr, &sd) != ERROR_SUCCESS)
         return false;
 
     TRUSTEE_W trustee{};
@@ -62,8 +61,8 @@ static bool win32_sid_has_access(const fs::path &path, WELL_KNOWN_SID_TYPE sid_t
     return (granted & desired_access) == desired_access;
 }
 #endif
-using pylabhub::utils::HubVault;
 using pylabhub::utils::generate_uuid4;
+using pylabhub::utils::HubVault;
 
 namespace
 {
@@ -102,18 +101,17 @@ bool is_valid_hex_token(std::string_view s)
 
 class HubVaultTest : public ::testing::Test
 {
-protected:
+  protected:
     fs::path hub_dir_;
-    fs::path vault_path_;  // Canonical default: hub_dir_/vault/hub.vault.
-                           // Mirrors what hub_config.cpp computes via
-                           // resolve_keyfile_path() at runtime.
+    fs::path vault_path_; // Canonical default: hub_dir_/vault/hub.vault.
+                          // Mirrors what hub_config.cpp computes via
+                          // resolve_keyfile_path() at runtime.
     std::string hub_uid_;
 
     void SetUp() override
     {
         hub_uid_ = generate_uuid4();
-        hub_dir_ = fs::temp_directory_path() /
-                   ("pylabhub_vault_test_" + hub_uid_.substr(0, 8));
+        hub_dir_ = fs::temp_directory_path() / ("pylabhub_vault_test_" + hub_uid_.substr(0, 8));
         vault_path_ = hub_dir_ / "vault" / "hub.vault";
         fs::create_directories(hub_dir_);
     }
@@ -220,11 +218,11 @@ TEST_F(HubVaultTest, TwoCreatesProduceDifferentKeypairs)
 TEST_F(HubVaultTest, OpenWithCorrectPasswordReturnsMatchingSecrets)
 {
     HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
-    HubVault opened  = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault opened = HubVault::open(vault_path_, hub_uid_, kPassword);
 
     EXPECT_EQ(created.broker_curve_public_key(), opened.broker_curve_public_key());
     EXPECT_EQ(created.broker_curve_secret_key(), opened.broker_curve_secret_key());
-    EXPECT_EQ(created.admin_token(),             opened.admin_token());
+    EXPECT_EQ(created.admin_token(), opened.admin_token());
 }
 
 TEST_F(HubVaultTest, OpenWithWrongPasswordThrows)
@@ -301,7 +299,7 @@ TEST_F(HubVaultTest, VaultFileDoesNotContainPlaintextSecrets)
 
     std::ifstream ifs(hub_dir_ / "vault" / "hub.vault", std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
-                                 std::istreambuf_iterator<char>());
+                                std::istreambuf_iterator<char>());
 
     EXPECT_EQ(raw_bytes.find(v.broker_curve_public_key()), std::string::npos)
         << "Broker public key appears in plaintext in hub.vault — encryption is not working!";
@@ -320,7 +318,7 @@ TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
 
     const std::string expected_pubkey{created.broker_curve_public_key()};
     const std::string expected_seckey{created.broker_curve_secret_key()};
-    const std::string expected_token {created.admin_token()};
+    const std::string expected_token{created.admin_token()};
 
     // Simulate a new process opening the vault (discard the in-memory object).
     HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
@@ -349,11 +347,13 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
     HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword);
 
     // Opening vault A with uid_b (wrong salt) must fail.
-    EXPECT_THROW(HubVault::open(dir_a / "vault" / "hub.vault", uid_b, kPassword), std::runtime_error)
+    EXPECT_THROW(HubVault::open(dir_a / "vault" / "hub.vault", uid_b, kPassword),
+                 std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
 
     // Opening vault B with uid_a must also fail.
-    EXPECT_THROW(HubVault::open(dir_b / "vault" / "hub.vault", uid_a, kPassword), std::runtime_error)
+    EXPECT_THROW(HubVault::open(dir_b / "vault" / "hub.vault", uid_a, kPassword),
+                 std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
 }
 
@@ -378,10 +378,13 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // the operator-friendly fs::exists() pre-check that fires in
     // the config-layer keygen flow.  Both layers must continue to
     // refuse; both messages must continue to reference the contract.
-    try {
-        (void) HubVault::create(vault_path_, hub_uid_, kPassword);
+    try
+    {
+        (void)HubVault::create(vault_path_, hub_uid_, kPassword);
         FAIL() << "Second create against existing vault must refuse atomically";
-    } catch (const std::runtime_error &ex) {
+    }
+    catch (const std::runtime_error &ex)
+    {
         const std::string msg = ex.what();
         EXPECT_NE(msg.find("HEP-CORE-0035"), std::string::npos)
             << "atomic-layer message must cite HEP-CORE-0035; got: " << msg;
@@ -416,16 +419,14 @@ TEST_F(HubVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
     fs::create_symlink(target, vault_path_);
     ASSERT_TRUE(fs::is_symlink(vault_path_));
 
-    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword),
-                 std::runtime_error)
+    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword), std::runtime_error)
         << "Create against a symlink at vault_path must refuse atomically";
 
     // Symlink and target both untouched — the refusal happened at
     // open(2) with EEXIST/ELOOP before any write attempt.
     EXPECT_TRUE(fs::is_symlink(vault_path_));
     std::ifstream check(target);
-    std::string content((std::istreambuf_iterator<char>(check)),
-                         std::istreambuf_iterator<char>{});
+    std::string content((std::istreambuf_iterator<char>(check)), std::istreambuf_iterator<char>{});
     EXPECT_EQ(content, "would receive redirected secret")
         << "symlink target must remain untouched by refused create";
 }
@@ -442,14 +443,12 @@ TEST_F(HubVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 
     namespace fs = std::filesystem;
     const auto file_status = fs::status(vault_path_);
-    EXPECT_EQ(static_cast<unsigned>(file_status.permissions()) & 0777,
-              0600u)
+    EXPECT_EQ(static_cast<unsigned>(file_status.permissions()) & 0777, 0600u)
         << "vault file mode must be 0600 even with umask 0 — atomic-at-create"
            " + fchmod normalize";
 
     const auto dir_status = fs::status(vault_path_.parent_path());
-    EXPECT_EQ(static_cast<unsigned>(dir_status.permissions()) & 0777,
-              0700u)
+    EXPECT_EQ(static_cast<unsigned>(dir_status.permissions()) & 0777, 0700u)
         << "vault parent dir mode must be 0700 even with umask 0 — "
            "set_keyfile_mode(VaultDir) enforces it post-create";
 }
@@ -479,8 +478,7 @@ TEST_F(HubVaultTest, PublishPublicKeyWritesCorrectContent)
     ASSERT_TRUE(fs::exists(pubkey_path)) << "hub.pubkey not written";
 
     std::ifstream ifs(pubkey_path);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                         std::istreambuf_iterator<char>());
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     EXPECT_EQ(content, v.broker_curve_public_key())
         << "hub.pubkey content does not match vault public key";
 }
@@ -500,9 +498,9 @@ TEST_F(HubVaultTest, PublishPublicKeyHasWorldReadablePermissions)
 #else
     const fs::perms p = fs::status(pubkey_path).permissions();
     // Must be 0644: owner rw, group r, others r.
-    EXPECT_NE(p & fs::perms::owner_read,  fs::perms::none) << "owner_read should be set";
+    EXPECT_NE(p & fs::perms::owner_read, fs::perms::none) << "owner_read should be set";
     EXPECT_NE(p & fs::perms::owner_write, fs::perms::none) << "owner_write should be set";
-    EXPECT_NE(p & fs::perms::group_read,  fs::perms::none) << "group_read should be set";
+    EXPECT_NE(p & fs::perms::group_read, fs::perms::none) << "group_read should be set";
     EXPECT_NE(p & fs::perms::others_read, fs::perms::none) << "others_read should be set";
     EXPECT_EQ(p & fs::perms::others_write, fs::perms::none) << "others_write should be off";
 #endif

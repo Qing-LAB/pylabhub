@@ -22,45 +22,41 @@ namespace pylabhub::processor
 namespace
 {
 
-nlohmann::json processor_config_template(const std::string &uid,
-                                           const std::string &name)
+nlohmann::json processor_config_template(const std::string &uid, const std::string &name)
 {
     nlohmann::json j;
 
-    j["processor"]["uid"]       = uid;
-    j["processor"]["name"]      = name;
+    j["processor"]["uid"] = uid;
+    j["processor"]["name"] = name;
     j["processor"]["log_level"] = "info";
     // Canonical default vault path per HEP-CORE-0024 §3.4 (finalized
     // 2026-05-31).  See producer_init.cpp for full rationale; the
     // §3.4.1 SECURITY WARNING applies symmetrically here.
-    j["processor"]["auth"]["keyfile"] =
-        "vault/" + std::string(uid) + ".vault";
+    j["processor"]["auth"]["keyfile"] = "vault/" + std::string(uid) + ".vault";
 
-    j["loop_timing"]  = "max_rate";
-    j["in_hub_dir"]   = "<replace with input hub directory path>";
-    j["out_hub_dir"]  = "<replace with output hub directory path>";
-    j["in_channel"]   = "lab.source.channel";
-    j["out_channel"]  = "lab.output.channel";
+    j["loop_timing"] = "max_rate";
+    j["in_hub_dir"] = "<replace with input hub directory path>";
+    j["out_hub_dir"] = "<replace with output hub directory path>";
+    j["in_channel"] = "lab.source.channel";
+    j["out_channel"] = "lab.output.channel";
 
-    j["in_transport"]       = "shm";
-    j["out_transport"]      = "shm";
-    j["in_shm_enabled"]     = true;
-    j["out_shm_enabled"]    = true;
+    j["in_transport"] = "shm";
+    j["out_transport"] = "shm";
+    j["in_shm_enabled"] = true;
+    j["out_shm_enabled"] = true;
     j["out_shm_slot_count"] = 4;
 
     // HEP-CORE-0034 §6.2 — packing is required (no silent default).
     j["in_slot_schema"]["packing"] = "aligned";
-    j["in_slot_schema"]["fields"]  = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
+    j["in_slot_schema"]["fields"] =
+        nlohmann::json::array({nlohmann::json{{"name", "value"}, {"type", "float32"}}});
     j["out_slot_schema"]["packing"] = "aligned";
-    j["out_slot_schema"]["fields"]  = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
+    j["out_slot_schema"]["fields"] =
+        nlohmann::json::array({nlohmann::json{{"name", "value"}, {"type", "float32"}}});
     j["out_flexzone_schema"] = nullptr;
 
-    j["checksum"]             = "enforced";
-    j["flexzone_checksum"]    = true;
+    j["checksum"] = "enforced";
+    j["flexzone_checksum"] = true;
     j["stop_on_script_error"] = false;
 
     j["script"]["path"] = ".";
@@ -84,15 +80,15 @@ void processor_on_init(const utils::RoleDirectory &rd, const std::string &name)
         if (!out)
             throw std::runtime_error(fmt::format("cannot write '{}'", init_py.string()));
         fmt::print(out,
-            "\"\"\"Processor: {} — package entry point.\n"
-            "\n"
-            "Re-exports callbacks from callbacks.py. Edit callbacks.py to\n"
-            "implement your data-transformation logic.\n"
-            "\"\"\"\n"
-            "from .callbacks import on_init, on_process, on_stop\n"
-            "\n"
-            "__all__ = [\"on_init\", \"on_process\", \"on_stop\"]\n",
-            name);
+                   "\"\"\"Processor: {} — package entry point.\n"
+                   "\n"
+                   "Re-exports callbacks from callbacks.py. Edit callbacks.py to\n"
+                   "implement your data-transformation logic.\n"
+                   "\"\"\"\n"
+                   "from .callbacks import on_init, on_process, on_stop\n"
+                   "\n"
+                   "__all__ = [\"on_init\", \"on_process\", \"on_stop\"]\n",
+                   name);
     }
 
     // callbacks.py
@@ -100,37 +96,36 @@ void processor_on_init(const utils::RoleDirectory &rd, const std::string &name)
         std::ofstream out(callbacks_py);
         if (!out)
             throw std::runtime_error(fmt::format("cannot write '{}'", callbacks_py.string()));
-        fmt::print(out,
-            "\"\"\"Processor callbacks — edit this file.\"\"\"\n"
-            "import pylabhub_processor as proc\n"
-            "\n"
-            "\n"
-            "def on_init(api: proc.ProcessorAPI) -> None:\n"
-            "    \"\"\"Called once before the processing loop starts.\"\"\"\n"
-            "    api.log('info', f\"on_init: uid={{api.uid()}}\")\n"
-            "\n"
-            "\n"
-            "def on_process(rx, tx, messages, api: proc.ProcessorAPI) -> bool:\n"
-            "    \"\"\"\n"
-            "    Called for each input slot.\n"
-            "\n"
-            "    rx.slot:  ctypes/numpy read-only view of the input SHM slot.\n"
-            "    tx.slot:  ctypes/numpy writable view of the output SHM slot.\n"
-            "    messages: list of (sender: str, data: bytes) from ZMQ.\n"
-            "    api:      ProcessorAPI — log, broadcast, stop, metrics, etc.\n"
-            "              api.flexzone(side) for input/output flexzone.\n"
-            "\n"
-            "    Return True to commit the output slot.\n"
-            "    Return False to discard without publishing.\n"
-            "    \"\"\"\n"
-            "    # TODO: replace with real transformation\n"
-            "    tx.slot.value = rx.slot.value\n"
-            "    return True\n"
-            "\n"
-            "\n"
-            "def on_stop(api: proc.ProcessorAPI) -> None:\n"
-            "    \"\"\"Called once after the processing loop exits.\"\"\"\n"
-            "    api.log('info', f\"on_stop: uid={{api.uid()}}\")\n");
+        fmt::print(out, "\"\"\"Processor callbacks — edit this file.\"\"\"\n"
+                        "import pylabhub_processor as proc\n"
+                        "\n"
+                        "\n"
+                        "def on_init(api: proc.ProcessorAPI) -> None:\n"
+                        "    \"\"\"Called once before the processing loop starts.\"\"\"\n"
+                        "    api.log('info', f\"on_init: uid={{api.uid()}}\")\n"
+                        "\n"
+                        "\n"
+                        "def on_process(rx, tx, messages, api: proc.ProcessorAPI) -> bool:\n"
+                        "    \"\"\"\n"
+                        "    Called for each input slot.\n"
+                        "\n"
+                        "    rx.slot:  ctypes/numpy read-only view of the input SHM slot.\n"
+                        "    tx.slot:  ctypes/numpy writable view of the output SHM slot.\n"
+                        "    messages: list of (sender: str, data: bytes) from ZMQ.\n"
+                        "    api:      ProcessorAPI — log, broadcast, stop, metrics, etc.\n"
+                        "              api.flexzone(side) for input/output flexzone.\n"
+                        "\n"
+                        "    Return True to commit the output slot.\n"
+                        "    Return False to discard without publishing.\n"
+                        "    \"\"\"\n"
+                        "    # TODO: replace with real transformation\n"
+                        "    tx.slot.value = rx.slot.value\n"
+                        "    return True\n"
+                        "\n"
+                        "\n"
+                        "def on_stop(api: proc.ProcessorAPI) -> None:\n"
+                        "    \"\"\"Called once after the processing loop exits.\"\"\"\n"
+                        "    api.log('info', f\"on_stop: uid={{api.uid()}}\")\n");
     }
 }
 
@@ -151,12 +146,10 @@ void register_processor_init()
 namespace
 {
 
-std::unique_ptr<scripting::RoleHostBase> make_processor_host(
-    config::RoleConfig config,
-    std::atomic<bool> *shutdown_flag)
+std::unique_ptr<scripting::RoleHostBase> make_processor_host(config::RoleConfig config,
+                                                             std::atomic<bool> *shutdown_flag)
 {
-    return std::make_unique<ProcessorRoleHost>(
-        std::move(config), shutdown_flag);
+    return std::make_unique<ProcessorRoleHost>(std::move(config), shutdown_flag);
 }
 
 } // namespace

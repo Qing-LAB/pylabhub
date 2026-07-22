@@ -25,10 +25,7 @@ namespace pylabhub::utils
 
 // ── ConfigState (must precede defaulted special members) ──────────────────────
 
-RoleDirectory::RoleDirectory(std::filesystem::path base) noexcept
-    : base_(std::move(base))
-{
-}
+RoleDirectory::RoleDirectory(std::filesystem::path base) noexcept : base_(std::move(base)) {}
 RoleDirectory::~RoleDirectory() = default;
 RoleDirectory::RoleDirectory(RoleDirectory &&) noexcept = default;
 RoleDirectory &RoleDirectory::operator=(RoleDirectory &&) noexcept = default;
@@ -54,9 +51,8 @@ RoleDirectory RoleDirectory::create(const std::filesystem::path &base)
         std::error_code ec;
         fs::create_directories(p, ec);
         if (ec)
-            throw std::runtime_error(
-                "RoleDirectory: cannot create directory '" + p.string() +
-                "': " + ec.message());
+            throw std::runtime_error("RoleDirectory: cannot create directory '" + p.string() +
+                                     "': " + ec.message());
     };
 
     make_dir(base / "logs");
@@ -70,9 +66,7 @@ RoleDirectory RoleDirectory::create(const std::filesystem::path &base)
     if (::chmod(vp.c_str(), 0700) != 0)
     {
         // Non-fatal: vault was created; warn but don't abort.
-        std::fprintf(stderr,
-                     "[role_dir] Warning: could not set 0700 on vault '%s'\n",
-                     vp.c_str());
+        std::fprintf(stderr, "[role_dir] Warning: could not set 0700 on vault '%s'\n", vp.c_str());
     }
 #endif
 
@@ -82,34 +76,30 @@ RoleDirectory RoleDirectory::create(const std::filesystem::path &base)
 // ── Path helpers ───────────────────────────────────────────────────────────────
 
 std::filesystem::path RoleDirectory::script_entry(std::string_view script_path,
-                                                   std::string_view type) const
+                                                  std::string_view type) const
 {
     namespace fs = std::filesystem;
 
     const fs::path sp(script_path);
-    const fs::path resolved = sp.is_absolute()
-                              ? sp
-                              : fs::weakly_canonical(base_ / sp);
+    const fs::path resolved = sp.is_absolute() ? sp : fs::weakly_canonical(base_ / sp);
 
     // Python: __init__.py (package convention)
     // Lua:    init.lua   (LuaRocks/LÖVE community convention)
-    const char* entry = (type == "lua") ? "init.lua" : "__init__.py";
+    const char *entry = (type == "lua") ? "init.lua" : "__init__.py";
     return resolved / "script" / type / entry;
 }
 
 // ── Hub reference resolution ───────────────────────────────────────────────────
 
-std::optional<std::filesystem::path> RoleDirectory::resolve_hub_dir(
-    std::string_view hub_dir_value) const
+std::optional<std::filesystem::path>
+RoleDirectory::resolve_hub_dir(std::string_view hub_dir_value) const
 {
     if (hub_dir_value.empty())
         return std::nullopt;
 
     namespace fs = std::filesystem;
     const fs::path p(hub_dir_value);
-    return p.is_absolute()
-           ? fs::weakly_canonical(p)
-           : fs::weakly_canonical(base_ / p);
+    return p.is_absolute() ? fs::weakly_canonical(p) : fs::weakly_canonical(base_ / p);
 }
 
 std::string RoleDirectory::hub_broker_endpoint(const std::filesystem::path &hub_dir)
@@ -117,8 +107,8 @@ std::string RoleDirectory::hub_broker_endpoint(const std::filesystem::path &hub_
     const auto hub_json = hub_dir / "hub.json";
     std::ifstream f(hub_json);
     if (!f.is_open())
-        throw std::runtime_error(
-            "RoleDirectory: cannot open hub.json at '" + hub_json.string() + "'");
+        throw std::runtime_error("RoleDirectory: cannot open hub.json at '" + hub_json.string() +
+                                 "'");
 
     const auto hj = nlohmann::json::parse(f);
 
@@ -131,13 +121,11 @@ std::string RoleDirectory::hub_broker_endpoint(const std::filesystem::path &hub_
     if (hj.contains("network") && hj["network"].is_object() &&
         hj["network"].contains("broker_endpoint"))
         return hj["network"]["broker_endpoint"].get<std::string>();
-    if (hj.contains("hub") && hj["hub"].is_object() &&
-        hj["hub"].contains("broker_endpoint"))
+    if (hj.contains("hub") && hj["hub"].is_object() && hj["hub"].contains("broker_endpoint"))
         return hj["hub"]["broker_endpoint"].get<std::string>();
 
-    throw std::runtime_error(
-        "RoleDirectory: '" + hub_json.string() +
-        "' has neither 'network.broker_endpoint' nor 'hub.broker_endpoint'");
+    throw std::runtime_error("RoleDirectory: '" + hub_json.string() +
+                             "' has neither 'network.broker_endpoint' nor 'hub.broker_endpoint'");
 }
 
 std::string RoleDirectory::hub_broker_pubkey(const std::filesystem::path &hub_dir)
@@ -155,15 +143,14 @@ std::string RoleDirectory::hub_broker_pubkey(const std::filesystem::path &hub_di
 // ── Security diagnostics ──────────────────────────────────────────────────────
 
 void RoleDirectory::warn_if_keyfile_in_role_dir(const std::filesystem::path &role_base,
-                                                  const std::string           &keyfile)
+                                                const std::string &keyfile)
 {
     // Containment check (canonicalize both, component-wise prefix
     // compare) lives in the shared security utility next to
     // `resolve_keyfile_path`; the threat-model narrative below is
     // role-specific and stays here.
     std::string canonicalize_err;
-    if (!pylabhub::utils::security::keyfile_inside_base_dir(
-            keyfile, role_base, &canonicalize_err))
+    if (!pylabhub::utils::security::keyfile_inside_base_dir(keyfile, role_base, &canonicalize_err))
     {
         // If the predicate failed to canonicalize (typically because
         // a parent component is unreadable), the co-location warning
@@ -204,10 +191,8 @@ void RoleDirectory::warn_if_keyfile_in_role_dir(const std::filesystem::path &rol
 bool RoleDirectory::has_standard_layout() const
 {
     namespace fs = std::filesystem;
-    return fs::is_directory(base_ / "logs") &&
-           fs::is_directory(base_ / "run") &&
-           fs::is_directory(base_ / "vault") &&
-           fs::is_directory(base_ / "script" / "python");
+    return fs::is_directory(base_ / "logs") && fs::is_directory(base_ / "run") &&
+           fs::is_directory(base_ / "vault") && fs::is_directory(base_ / "script" / "python");
 }
 
 // ── Role registration — internal storage (HEP-0024 §10) ─────────────────────
@@ -244,7 +229,7 @@ std::unordered_map<std::string, RoleInitEntry> &registry()
 
 struct RoleDirectory::RoleRegistrationBuilder::Impl
 {
-    std::string  role_type;
+    std::string role_type;
     RoleInitEntry entry;
     bool committed{false};
 };
@@ -261,7 +246,8 @@ RoleDirectory::RoleRegistrationBuilder::~RoleRegistrationBuilder()
         commit();
 }
 
-RoleDirectory::RoleRegistrationBuilder::RoleRegistrationBuilder(RoleRegistrationBuilder &&) noexcept = default;
+RoleDirectory::RoleRegistrationBuilder::RoleRegistrationBuilder(
+    RoleRegistrationBuilder &&) noexcept = default;
 RoleDirectory::RoleRegistrationBuilder &
 RoleDirectory::RoleRegistrationBuilder::operator=(RoleRegistrationBuilder &&) noexcept = default;
 
@@ -286,16 +272,14 @@ RoleDirectory::RoleRegistrationBuilder::role_label(std::string label)
     return *this;
 }
 
-RoleDirectory::RoleRegistrationBuilder &
-RoleDirectory::RoleRegistrationBuilder::config_template(
+RoleDirectory::RoleRegistrationBuilder &RoleDirectory::RoleRegistrationBuilder::config_template(
     std::function<nlohmann::json(const std::string &, const std::string &)> fn)
 {
     impl_->entry.config_template = std::move(fn);
     return *this;
 }
 
-RoleDirectory::RoleRegistrationBuilder &
-RoleDirectory::RoleRegistrationBuilder::on_init(
+RoleDirectory::RoleRegistrationBuilder &RoleDirectory::RoleRegistrationBuilder::on_init(
     std::function<void(const RoleDirectory &, const std::string &)> fn)
 {
     impl_->entry.on_init = std::move(fn);
@@ -314,18 +298,15 @@ void RoleDirectory::RoleRegistrationBuilder::commit()
 
 // ── register_role — returns builder ──────────────────────────────────────────
 
-RoleDirectory::RoleRegistrationBuilder
-RoleDirectory::register_role(const std::string &role_type)
+RoleDirectory::RoleRegistrationBuilder RoleDirectory::register_role(const std::string &role_type)
 {
     return RoleRegistrationBuilder(role_type);
 }
 
 // ── init_directory ───────────────────────────────────────────────────────────
 
-int RoleDirectory::init_directory(const std::filesystem::path &dir,
-                                   const std::string &role_type,
-                                   const std::string &name,
-                                   const LogInitOverrides &log)
+int RoleDirectory::init_directory(const std::filesystem::path &dir, const std::string &role_type,
+                                  const std::string &name, const LogInitOverrides &log)
 {
     namespace fs = std::filesystem;
 
@@ -336,7 +317,8 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         auto it = registry().find(role_type);
         if (it == registry().end())
         {
-            fmt::print(stderr, "init_directory: error: unknown role '{}' — "
+            fmt::print(stderr,
+                       "init_directory: error: unknown role '{}' — "
                        "not registered via RoleDirectory::register_role()\n",
                        role_type);
             return 1;
@@ -349,7 +331,8 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
     const fs::path json_path = target_dir / info.config_filename;
     if (fs::exists(json_path))
     {
-        fmt::print(stderr, "init_directory: error: {} already exists at '{}'. "
+        fmt::print(stderr,
+                   "init_directory: error: {} already exists at '{}'. "
                    "Remove it first or choose a different directory.\n",
                    info.config_filename, json_path.string());
         return 1;
@@ -371,7 +354,7 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
     if (name.empty())
     {
         fmt::print(stderr, "init_directory: error: role name is required — "
-                   "caller must resolve name before calling init_directory()\n");
+                           "caller must resolve name before calling init_directory()\n");
         return 1;
     }
 
@@ -393,12 +376,10 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         if (log.backups.has_value())
             j["logging"]["backups"] = *log.backups;
 
-
         std::ofstream out(json_path);
         if (!out)
         {
-            fmt::print(stderr, "init_directory: error: cannot write '{}'\n",
-                       json_path.string());
+            fmt::print(stderr, "init_directory: error: cannot write '{}'\n", json_path.string());
             return 1;
         }
         out << j.dump(2) << "\n";
@@ -420,8 +401,7 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
         }
         catch (const std::exception &e)
         {
-            fmt::print(stderr, "init_directory: error in post-init callback: {}\n",
-                       e.what());
+            fmt::print(stderr, "init_directory: error in post-init callback: {}\n", e.what());
             return 1;
         }
     }
@@ -431,8 +411,7 @@ int RoleDirectory::init_directory(const std::filesystem::path &dir,
                "  uid    : {}\n"
                "  name   : {}\n"
                "  config : {}\n",
-               info.role_label, role_dir.base().string(),
-               uid, name, json_path.string());
+               info.role_label, role_dir.base().string(), uid, name, json_path.string());
 
     return 0;
 }

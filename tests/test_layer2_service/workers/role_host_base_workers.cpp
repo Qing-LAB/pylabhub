@@ -69,16 +69,15 @@ class TestRoleHost : public RoleHostBase
     /// should construct one in its own worker_main_ via either
     /// scripting::create_engine or by directly instantiating a stub
     /// engine type (e.g., a NativeEngine derived class).
-    TestRoleHost(RoleConfig cfg,
-                 std::atomic<bool> *shutdown_flag, bool report_ready = true,
+    TestRoleHost(RoleConfig cfg, std::atomic<bool> *shutdown_flag, bool report_ready = true,
                  bool run_after_ready = true)
-        : RoleHostBase("test", std::move(cfg), shutdown_flag),
-          report_ready_(report_ready), run_after_ready_(run_after_ready)
+        : RoleHostBase("test", std::move(cfg), shutdown_flag), report_ready_(report_ready),
+          run_after_ready_(run_after_ready)
     {
     }
     ~TestRoleHost() override { shutdown_(); }
 
-    std::atomic<int>  worker_calls{0};
+    std::atomic<int> worker_calls{0};
     std::atomic<bool> worker_entered_loop{false};
     std::atomic<bool> worker_exited_cleanly{false};
 
@@ -118,12 +117,11 @@ class TestRoleHost : public RoleHostBase
 class NoShutdownHost : public RoleHostBase
 {
   public:
-    NoShutdownHost(RoleConfig cfg,
-                   std::atomic<bool> *shutdown_flag)
+    NoShutdownHost(RoleConfig cfg, std::atomic<bool> *shutdown_flag)
         : RoleHostBase("no_sd", std::move(cfg), shutdown_flag)
     {
     }
-    ~NoShutdownHost() override = default;  // deliberately no shutdown_()
+    ~NoShutdownHost() override = default; // deliberately no shutdown_()
 
   protected:
     void worker_main_() override
@@ -137,8 +135,7 @@ class NoShutdownHost : public RoleHostBase
 class OverridingShutdownHost : public RoleHostBase
 {
   public:
-    OverridingShutdownHost(RoleConfig cfg,
-                           std::atomic<bool> *shutdown_flag)
+    OverridingShutdownHost(RoleConfig cfg, std::atomic<bool> *shutdown_flag)
         : RoleHostBase("ovr", std::move(cfg), shutdown_flag)
     {
     }
@@ -168,8 +165,7 @@ class OverridingShutdownHost : public RoleHostBase
 class ForgetfulShutdownHost : public RoleHostBase
 {
   public:
-    ForgetfulShutdownHost(RoleConfig cfg,
-                          std::atomic<bool> *shutdown_flag)
+    ForgetfulShutdownHost(RoleConfig cfg, std::atomic<bool> *shutdown_flag)
         : RoleHostBase("forget", std::move(cfg), shutdown_flag)
     {
     }
@@ -209,11 +205,9 @@ RoleConfig build_config(const std::string &dir)
 }
 
 /// Waits up to @p timeout_ms for @p pred to become true (yield-spin).
-template <typename F>
-bool wait_for(F pred, int timeout_ms = 500)
+template <typename F> bool wait_for(F pred, int timeout_ms = 500)
 {
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (!pred())
     {
         if (std::chrono::steady_clock::now() >= deadline)
@@ -234,15 +228,13 @@ int construct_not_running(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown);
+            TestRoleHost host(build_config(dir), &shutdown);
             EXPECT_FALSE(host.is_running());
             EXPECT_FALSE(host.script_load_ok());
             EXPECT_EQ(host.short_tag(), "test");
         },
-        "role_host_base::construct_not_running",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::construct_not_running", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int startup_run_shutdown(const std::string &dir)
@@ -252,8 +244,7 @@ int startup_run_shutdown(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            auto host = std::make_unique<TestRoleHost>(
-                build_config(dir), &shutdown);
+            auto host = std::make_unique<TestRoleHost>(build_config(dir), &shutdown);
 
             host->startup_();
             EXPECT_TRUE(host->script_load_ok());
@@ -267,9 +258,8 @@ int startup_run_shutdown(const std::string &dir)
             EXPECT_FALSE(host->is_running());
             EXPECT_TRUE(host->worker_exited_cleanly.load());
         },
-        "role_host_base::startup_run_shutdown",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::startup_run_shutdown", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int startup_ready_false(const std::string &dir)
@@ -279,8 +269,7 @@ int startup_ready_false(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown,
+            TestRoleHost host(build_config(dir), &shutdown,
                               /*report_ready=*/false,
                               /*run_after_ready=*/false);
             host.startup_();
@@ -288,9 +277,8 @@ int startup_ready_false(const std::string &dir)
             EXPECT_FALSE(host.is_running());
             EXPECT_EQ(host.worker_calls.load(), 1);
         },
-        "role_host_base::startup_ready_false",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::startup_ready_false", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int validate_mode(const std::string &dir)
@@ -300,8 +288,7 @@ int validate_mode(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown,
+            TestRoleHost host(build_config(dir), &shutdown,
                               /*report_ready=*/true,
                               /*run_after_ready=*/false);
             host.startup_();
@@ -311,9 +298,8 @@ int validate_mode(const std::string &dir)
             ASSERT_TRUE(wait_for([&]() { return host.worker_exited_cleanly.load(); }));
             EXPECT_FALSE(host.worker_entered_loop.load());
         },
-        "role_host_base::validate_mode",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::validate_mode", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int shutdown_idempotent(const std::string &dir)
@@ -323,17 +309,15 @@ int shutdown_idempotent(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown);
+            TestRoleHost host(build_config(dir), &shutdown);
             host.startup_();
             host.shutdown_();
             host.shutdown_();
             host.shutdown_();
             EXPECT_FALSE(host.is_running());
         },
-        "role_host_base::shutdown_idempotent",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::shutdown_idempotent", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int shutdown_before_startup(const std::string &dir)
@@ -343,15 +327,13 @@ int shutdown_before_startup(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown);
+            TestRoleHost host(build_config(dir), &shutdown);
             host.shutdown_();
             EXPECT_FALSE(host.is_running());
             EXPECT_EQ(host.worker_calls.load(), 0);
         },
-        "role_host_base::shutdown_before_startup",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::shutdown_before_startup", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int virtual_shutdown_override_forwards(const std::string &dir)
@@ -361,16 +343,14 @@ int virtual_shutdown_override_forwards(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            OverridingShutdownHost host(build_config(dir),
-                              &shutdown);
+            OverridingShutdownHost host(build_config(dir), &shutdown);
             host.startup_();
             host.shutdown_();
             EXPECT_EQ(host.derived_shutdown_calls.load(), 1);
             EXPECT_FALSE(host.is_running());
         },
-        "role_host_base::virtual_shutdown_override_forwards",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::virtual_shutdown_override_forwards", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int external_shutdown_flag(const std::string &dir)
@@ -380,8 +360,7 @@ int external_shutdown_flag(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            auto host = std::make_unique<TestRoleHost>(
-                build_config(dir), &shutdown);
+            auto host = std::make_unique<TestRoleHost>(build_config(dir), &shutdown);
             host->startup_();
             ASSERT_TRUE(wait_for([&]() { return host->worker_entered_loop.load(); }));
 
@@ -389,9 +368,8 @@ int external_shutdown_flag(const std::string &dir)
             host->shutdown_();
             EXPECT_TRUE(host->worker_exited_cleanly.load());
         },
-        "role_host_base::external_shutdown_flag",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::external_shutdown_flag", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int accessors_config_and_short_tag(const std::string &dir)
@@ -401,14 +379,12 @@ int accessors_config_and_short_tag(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown);
+            TestRoleHost host(build_config(dir), &shutdown);
             EXPECT_EQ(host.short_tag(), "test");
             EXPECT_EQ(&host.config(), &host.config());
         },
-        "role_host_base::accessors_config_and_short_tag",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::accessors_config_and_short_tag", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int wait_for_wakeup_honours_timeout(const std::string &dir)
@@ -418,22 +394,18 @@ int wait_for_wakeup_honours_timeout(const std::string &dir)
         {
             register_producer_once();
             std::atomic<bool> shutdown{false};
-            TestRoleHost host(build_config(dir),
-                              &shutdown);
+            TestRoleHost host(build_config(dir), &shutdown);
             host.startup_();
 
             const auto t0 = std::chrono::steady_clock::now();
             host.wait_for_wakeup(20);
             const auto elapsed = std::chrono::steady_clock::now() - t0;
 
-            EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
-                          .count(),
-                      500);
+            EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 500);
             host.shutdown_();
         },
-        "role_host_base::wait_for_wakeup_honours_timeout",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_host_base::wait_for_wakeup_honours_timeout", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Abort workers ───────────────────────────────────────────────────────────
@@ -451,8 +423,7 @@ int dtor_missing_shutdown_aborts(const std::string &dir)
     register_producer_once();
     std::atomic<bool> shutdown{false};
     {
-        NoShutdownHost host(build_config(dir),
-                              &shutdown);
+        NoShutdownHost host(build_config(dir), &shutdown);
         host.startup_();
         // Dropping host here → base dtor sees missing flag → PLH_PANIC → abort.
     }
@@ -469,8 +440,7 @@ int virtual_shutdown_no_base_aborts(const std::string &dir)
     register_producer_once();
     std::atomic<bool> shutdown{false};
     {
-        ForgetfulShutdownHost host(build_config(dir),
-                              &shutdown);
+        ForgetfulShutdownHost host(build_config(dir), &shutdown);
         host.startup_();
         // dtor → derived shutdown_ (no-op) → base dtor → PLH_PANIC → abort.
     }
@@ -492,8 +462,7 @@ int startup_after_shutdown_aborts(const std::string &dir)
     register_producer_once();
     std::atomic<bool> shutdown{false};
     {
-        TestRoleHost host(build_config(dir),
-                              &shutdown);
+        TestRoleHost host(build_config(dir), &shutdown);
         host.startup_();
         host.shutdown_();
         // Re-startup on a ShutDown host → CAS sees ShutDown → PLH_PANIC.
@@ -522,8 +491,7 @@ struct RoleHostBaseWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_host_base")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_host_base")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_host_base;
@@ -557,8 +525,7 @@ struct RoleHostBaseWorkerRegistrar
                 if (sc == "startup_after_shutdown_aborts")
                     return startup_after_shutdown_aborts(dir);
 
-                fmt::print(stderr,
-                           "[role_host_base] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[role_host_base] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

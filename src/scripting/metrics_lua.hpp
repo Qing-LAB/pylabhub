@@ -29,27 +29,31 @@ namespace pylabhub::scripting
 inline void queue_metrics_to_lua(lua_State *L, const hub::QueueMetrics &m)
 {
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define X(field) lua_pushinteger(L, static_cast<lua_Integer>(m.field)); lua_setfield(L, -2, #field);
+#define X(field)                                                                                   \
+    lua_pushinteger(L, static_cast<lua_Integer>(m.field));                                         \
+    lua_setfield(L, -2, #field);
     PYLABHUB_QUEUE_METRICS_FIELDS(X)
 #undef X
 }
 
 /// Populate the Lua table at stack top with all loop metrics fields.
-inline void loop_metrics_to_lua(lua_State *L,
-                                const RoleHostCore::LoopMetricsSnapshot &m)
+inline void loop_metrics_to_lua(lua_State *L, const RoleHostCore::LoopMetricsSnapshot &m)
 {
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define X(field) lua_pushinteger(L, static_cast<lua_Integer>(m.field)); lua_setfield(L, -2, #field);
+#define X(field)                                                                                   \
+    lua_pushinteger(L, static_cast<lua_Integer>(m.field));                                         \
+    lua_setfield(L, -2, #field);
     PYLABHUB_LOOP_METRICS_FIELDS(X)
 #undef X
 }
 
 /// Populate the Lua table at stack top with all inbox metrics fields.
-inline void inbox_metrics_to_lua(lua_State *L,
-                                 const hub::InboxQueue::InboxMetricsSnapshot &m)
+inline void inbox_metrics_to_lua(lua_State *L, const hub::InboxQueue::InboxMetricsSnapshot &m)
 {
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define X(field) lua_pushinteger(L, static_cast<lua_Integer>(m.field)); lua_setfield(L, -2, #field);
+#define X(field)                                                                                   \
+    lua_pushinteger(L, static_cast<lua_Integer>(m.field));                                         \
+    lua_setfield(L, -2, #field);
     PYLABHUB_INBOX_METRICS_FIELDS(X)
 #undef X
 }

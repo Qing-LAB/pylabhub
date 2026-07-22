@@ -15,11 +15,11 @@
  *     pubkeys, brokers, or allowlists.
  *
  *   - **L2 (lives elsewhere — see HEP-0041 §9 D4 attach sequence) —
- *     auth orchestration.**  crypto_box challenge-response (HEP-CORE-0041 §5.5; the pre-1c signed-nonce model was cryptographically broken and was retired in the 2026-06-17 §9 D4 amendment), SO_PEERCRED
- *     sanity check, broker CONSUMER_ATTACH_REQ_SHM pre-confirm,
- *     cache-vs-broker divergence WARN.  Uses L1 for the actual fd
- *     handoff but knows nothing about which OS primitive backs the
- *     transport.
+ *     auth orchestration.**  crypto_box challenge-response (HEP-CORE-0041 §5.5; the pre-1c
+ * signed-nonce model was cryptographically broken and was retired in the 2026-06-17 §9 D4
+ * amendment), SO_PEERCRED sanity check, broker CONSUMER_ATTACH_REQ_SHM pre-confirm, cache-vs-broker
+ * divergence WARN.  Uses L1 for the actual fd handoff but knows nothing about which OS primitive
+ * backs the transport.
  *
  * The split prevents the per-platform backend code (memfd / SHM_ANON /
  * CreateFileMapping) from each having to duplicate the auth flow, and
@@ -59,7 +59,7 @@
  *      Amendment 2026-06-16 (the supersession that motivates this module).
  */
 
-#include "plh_platform.hpp"  // PYLABHUB_IS_WINDOWS / PYLABHUB_IS_POSIX; pulls in <windows.h> on Win64
+#include "plh_platform.hpp" // PYLABHUB_IS_WINDOWS / PYLABHUB_IS_POSIX; pulls in <windows.h> on Win64
 #include "pylabhub_utils_export.h"
 
 #include <chrono>
@@ -71,7 +71,7 @@
 #include <string_view>
 
 #if defined(PYLABHUB_IS_POSIX)
-#    include <sys/types.h>  // pid_t, uid_t, gid_t — POSIX peer-cred triple
+#include <sys/types.h> // pid_t, uid_t, gid_t — POSIX peer-cred triple
 #endif
 
 namespace pylabhub::utils::security
@@ -103,7 +103,7 @@ namespace pylabhub::utils::security
 /// buffer protocol on top of `data()` per HEP-CORE-0002).
 class PYLABHUB_UTILS_EXPORT IShmCapabilityProducer
 {
-public:
+  public:
     /// Per-peer credentials surfaced after `accept_one()`.
     ///
     /// **Ownership.**  The caller owns the peer-side resource handle
@@ -140,10 +140,10 @@ public:
         // public structs do not drag <windows.h> through; the .cpp
         // casts back to `HANDLE` internally.  Caller must `CloseHandle`
         // to release.
-        void          *peer_pipe_handle{nullptr};
-        unsigned long  peer_pid{0};
+        void *peer_pipe_handle{nullptr};
+        unsigned long peer_pid{0};
 #else
-        int   peer_socket_fd{-1};
+        int peer_socket_fd{-1};
         pid_t pid{};
         uid_t uid{};
         gid_t gid{};
@@ -152,10 +152,10 @@ public:
 
     virtual ~IShmCapabilityProducer() = default;
 
-    IShmCapabilityProducer(const IShmCapabilityProducer &)            = delete;
+    IShmCapabilityProducer(const IShmCapabilityProducer &) = delete;
     IShmCapabilityProducer &operator=(const IShmCapabilityProducer &) = delete;
-    IShmCapabilityProducer(IShmCapabilityProducer &&)                 = delete;
-    IShmCapabilityProducer &operator=(IShmCapabilityProducer &&)      = delete;
+    IShmCapabilityProducer(IShmCapabilityProducer &&) = delete;
+    IShmCapabilityProducer &operator=(IShmCapabilityProducer &&) = delete;
 
     /// Bind a listener at the given filesystem path (POSIX Unix
     /// socket) / pipe name (Windows).  Idempotent — calling twice
@@ -198,8 +198,7 @@ public:
     /// because `DuplicateHandle` needs an open `OpenProcess` handle
     /// to the target, not the pipe).
 #if defined(PYLABHUB_IS_WINDOWS)
-    virtual bool send_capability(void          *peer_pipe_handle,
-                                 unsigned long  peer_pid) = 0;
+    virtual bool send_capability(void *peer_pipe_handle, unsigned long peer_pid) = 0;
 #else
     virtual bool send_capability(int peer_socket_fd) = 0;
 #endif
@@ -228,7 +227,7 @@ public:
     [[nodiscard]] virtual int borrow_fd() const noexcept = 0;
 #endif
 
-protected:
+  protected:
     IShmCapabilityProducer() = default;
 };
 
@@ -240,13 +239,13 @@ protected:
 /// dispatch reasons as the producer.
 class PYLABHUB_UTILS_EXPORT IShmCapabilityConsumer
 {
-public:
+  public:
     virtual ~IShmCapabilityConsumer() = default;
 
-    IShmCapabilityConsumer(const IShmCapabilityConsumer &)            = delete;
+    IShmCapabilityConsumer(const IShmCapabilityConsumer &) = delete;
     IShmCapabilityConsumer &operator=(const IShmCapabilityConsumer &) = delete;
-    IShmCapabilityConsumer(IShmCapabilityConsumer &&)                 = delete;
-    IShmCapabilityConsumer &operator=(IShmCapabilityConsumer &&)      = delete;
+    IShmCapabilityConsumer(IShmCapabilityConsumer &&) = delete;
+    IShmCapabilityConsumer &operator=(IShmCapabilityConsumer &&) = delete;
 
     /// Consumer-side RW view of the segment received from the
     /// producer.  Span is stable until destruction.
@@ -263,7 +262,7 @@ public:
     [[nodiscard]] virtual int borrow_fd() const noexcept = 0;
 #endif
 
-protected:
+  protected:
     IShmCapabilityConsumer() = default;
 };
 
@@ -282,8 +281,7 @@ create_shm_capability_producer(size_t bytes);
 ///
 /// Throws `std::runtime_error` until task #249 lands the backend.
 PYLABHUB_UTILS_EXPORT std::unique_ptr<IShmCapabilityConsumer>
-attach_shm_capability_consumer(const std::string       &endpoint,
-                               std::chrono::milliseconds timeout);
+attach_shm_capability_consumer(const std::string &endpoint, std::chrono::milliseconds timeout);
 
 /// HEP-CORE-0041 1i-mig-4 (#272) — recv the SHM fd via `SCM_RIGHTS`
 /// on an ALREADY-CONNECTED + POST-§5.5-HANDSHAKE socket fd.  Takes
@@ -313,9 +311,7 @@ attach_shm_capability_consumer(const std::string       &endpoint,
 /// timeout.  Throws `std::runtime_error` on non-Linux platforms
 /// until the per-platform backends (#259/#260/#261) ship.
 PYLABHUB_UTILS_EXPORT std::unique_ptr<IShmCapabilityConsumer>
-attach_shm_capability_consumer_from_socket(
-    int                       socket_fd,
-    std::chrono::milliseconds timeout);
+attach_shm_capability_consumer_from_socket(int socket_fd, std::chrono::milliseconds timeout);
 
 /// HEP-CORE-0041 substep 1g (#254) — compute the canonical per-user
 /// runtime endpoint string for a SHM channel's capability transport.
@@ -366,7 +362,6 @@ default_shm_capability_endpoint(std::string_view channel_name);
 /// CONSUMER_REG_ACK).  The L1 backend's `bind_endpoint` /
 /// `attach_shm_capability_consumer` strip the scheme before the
 /// kernel syscall — `sockaddr_un::sun_path` is the bare path.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
-strip_unix_scheme(std::string_view endpoint);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string strip_unix_scheme(std::string_view endpoint);
 
 } // namespace pylabhub::utils::security

@@ -25,11 +25,7 @@ LuaState LuaState::create()
     return s;
 }
 
-LuaState::LuaState(lua_State *L) noexcept
-    : L_(L)
-    , owner_(std::this_thread::get_id())
-{
-}
+LuaState::LuaState(lua_State *L) noexcept : L_(L), owner_(std::this_thread::get_id()) {}
 
 LuaState::~LuaState()
 {
@@ -42,9 +38,7 @@ LuaState::~LuaState()
 }
 
 LuaState::LuaState(LuaState &&other) noexcept
-    : L_(other.L_)
-    , ref_ffi_cast_(other.ref_ffi_cast_)
-    , owner_(other.owner_)
+    : L_(other.L_), ref_ffi_cast_(other.ref_ffi_cast_), owner_(other.owner_)
 {
     other.L_ = nullptr;
     other.ref_ffi_cast_ = LUA_NOREF;
@@ -75,7 +69,8 @@ LuaState &LuaState::operator=(LuaState &&other) noexcept
 
 void LuaState::apply_sandbox()
 {
-    if (!L_) return;
+    if (!L_)
+        return;
 
     // Disable dangerous globals.
     static const char *const disabled[] = {"dofile", "loadfile", "io", nullptr};
@@ -89,8 +84,8 @@ void LuaState::apply_sandbox()
     lua_getglobal(L_, "os");
     if (lua_istable(L_, -1))
     {
-        static const char *const disabled_os[] = {
-            "execute", "exit", "remove", "rename", "tmpname", "setlocale", nullptr};
+        static const char *const disabled_os[] = {"execute", "exit",      "remove", "rename",
+                                                  "tmpname", "setlocale", nullptr};
         for (int i = 0; disabled_os[i]; ++i)
         {
             lua_pushnil(L_);
@@ -111,7 +106,8 @@ void LuaState::apply_sandbox()
 
 void LuaState::add_package_path(const std::string &path)
 {
-    if (!L_) return;
+    if (!L_)
+        return;
 
     lua_getglobal(L_, "package");
     lua_getfield(L_, -1, "path");
@@ -125,7 +121,8 @@ void LuaState::add_package_path(const std::string &path)
 
 void LuaState::cache_ffi_cast()
 {
-    if (!L_) return;
+    if (!L_)
+        return;
 
     lua_getglobal(L_, "require");
     lua_pushstring(L_, "ffi");
@@ -148,7 +145,8 @@ void LuaState::cache_ffi_cast()
 
 bool LuaState::load_script(const std::filesystem::path &path, const char *tag)
 {
-    if (!L_) return false;
+    if (!L_)
+        return false;
 
     if (luaL_loadfile(L_, path.string().c_str()) != LUA_OK)
     {
@@ -177,7 +175,8 @@ bool LuaState::load_script(const std::filesystem::path &path, const char *tag)
 
 bool LuaState::register_ffi_type(const std::string &cdef_str, const char *tag)
 {
-    if (!L_) return false;
+    if (!L_)
+        return false;
 
     lua_getglobal(L_, "require");
     lua_pushstring(L_, "ffi");
@@ -205,7 +204,8 @@ bool LuaState::register_ffi_type(const std::string &cdef_str, const char *tag)
 
 size_t LuaState::ffi_sizeof(const char *type_name) const
 {
-    if (!L_) return 0;
+    if (!L_)
+        return 0;
 
     lua_getglobal(L_, "require");
     lua_pushstring(L_, "ffi");
@@ -244,7 +244,8 @@ bool LuaState::push_slot_view_readonly(const void *data, size_t size, const char
 
 bool LuaState::push_ffi_cast_(void *data, const char *type_name, bool readonly)
 {
-    if (!L_) return false;
+    if (!L_)
+        return false;
 
     // Fast path: use cached ffi.cast reference.
     if (ref_ffi_cast_ != LUA_NOREF)
@@ -371,7 +372,8 @@ bool LuaState::is_ref_callable(int r) const
 
 bool LuaState::pcall(int nargs, int nresults, const char *tag)
 {
-    if (!L_) return false;
+    if (!L_)
+        return false;
 
     if (lua_pcall(L_, nargs, nresults, 0) != LUA_OK)
     {

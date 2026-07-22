@@ -53,9 +53,9 @@ namespace pylabhub::hub_cli
  */
 struct HubArgs
 {
-    std::string config_path;    ///< --config <path>
-    std::string hub_dir;        ///< positional <hub_dir> or --init [dir]
-    std::string init_name;      ///< --name <name>  (for --init)
+    std::string config_path; ///< --config <path>
+    std::string hub_dir;     ///< positional <hub_dir> or --init [dir]
+    std::string init_name;   ///< --name <name>  (for --init)
 
     /// --log-maxsize <MB>. **Init-only.** Writes `logging.max_size_mb`
     /// into the generated JSON. Empty → use `LoggingConfig` default (10).
@@ -65,10 +65,10 @@ struct HubArgs
     /// the generated JSON. `-1` = keep all files. Empty → default (5).
     std::optional<int> log_backups;
 
-    bool validate_only{false};  ///< --validate
-    bool keygen_only{false};    ///< --keygen
-    bool init_only{false};      ///< --init
-    bool skeleton_only{false};  ///< --skeleton (HEP-CORE-0033 §6.5 layout-only path)
+    bool validate_only{false}; ///< --validate
+    bool keygen_only{false};   ///< --keygen
+    bool init_only{false};     ///< --init
+    bool skeleton_only{false}; ///< --skeleton (HEP-CORE-0033 §6.5 layout-only path)
 
     /// --uid <value>. Hub UID supplied at the CLI boundary.  Resolved
     /// by `cli::get_required_uid` against env / TTY prompt per
@@ -122,7 +122,7 @@ struct HubArgs
 struct ParseResult
 {
     HubArgs args;
-    int     exit_code = -1;
+    int exit_code = -1;
 };
 
 namespace detail
@@ -138,53 +138,51 @@ namespace detail
 /// KnownRole struct's `role` field doc: `empty = "any"`.
 inline bool is_valid_known_role_kind(std::string_view r)
 {
-    return r.empty() ||
-           r == "producer" || r == "consumer" ||
-           r == "processor" || r == "any";
+    return r.empty() || r == "producer" || r == "consumer" || r == "processor" || r == "any";
 }
 
 inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
 {
-    os  << "Usage:\n"
-        << "  " << prog << " --init [<hub_dir>]      # Create hub directory\n"
-        << "  " << prog << " <hub_dir>                # Run from directory\n"
-        << "  " << prog << " --config <path.json> [--validate | --keygen]\n\n"
-        << "Modes (at most one; default is run):\n"
-        << "  --init [dir]       Create hub directory with config template; exit 0\n"
-        << "  --validate         Validate config + script; exit 0 on success\n"
-        << "  --keygen           Generate hub vault (broker keypair + admin token); exit 0\n"
-        << "\n"
-        << "Known-roles allowlist (PeerAdmission Phase B; HEP-CORE-0035 §4.8):\n"
-        << "  The allowlist lives INSIDE the encrypted hub vault; every command\n"
-        << "  below unlocks it with the master password (PYLABHUB_HUB_PASSWORD or\n"
-        << "  interactive prompt) and re-encrypts on change.\n"
-        << "  --add-known-role <name> <uid> <role> <pubkey_z85>\n"
-        << "                     Add a role to the vault allowlist; exit 0.\n"
-        << "                     <role> ∈ {producer, consumer, processor, any}.\n"
-        << "                     <pubkey_z85> is the 40-char Z85-encoded CURVE pubkey\n"
-        << "                     (obtain via `plh_role --print-pubkey`).\n"
-        << "                     Re-add with same <uid> rotates the pubkey (no error).\n"
-        << "  --revoke-known-role <uid>\n"
-        << "                     Remove the entry matching <uid>; exit 0 even if absent.\n"
-        << "  --list-known-roles Print the allowlist in tabular form; exit 0.\n"
-        << "  --migrate-known-roles\n"
-        << "                     One-shot: import a legacy plaintext\n"
-        << "                     <hub_dir>/vault/known_roles.json into the vault and\n"
-        << "                     delete it (the hub refuses to start while it exists).\n"
-        << "\n"
-        << "Common options:\n"
-        << "  <hub_dir>          Hub directory containing hub.json\n"
-        << "  --config <path>    Path to hub JSON config file\n"
-        << "  --name <name>      Hub name for --init (skips interactive prompt)\n"
-        << "\n"
-        << "Init-only options (write into generated logging config):\n"
-        << "  --log-maxsize <MB> Rotate when a log file reaches this size (default 10)\n"
-        << "  --log-backups <N>  Keep N rotated files (default 5; -1 = keep all)\n"
-        << "\n"
-        << "  --help             Show this message\n"
-        << "\n"
-        << "Log destination at run time is always <hub_dir>/logs/<uid>-<ts>.log\n"
-        << "(composed from config; not configurable via CLI).\n";
+    os << "Usage:\n"
+       << "  " << prog << " --init [<hub_dir>]      # Create hub directory\n"
+       << "  " << prog << " <hub_dir>                # Run from directory\n"
+       << "  " << prog << " --config <path.json> [--validate | --keygen]\n\n"
+       << "Modes (at most one; default is run):\n"
+       << "  --init [dir]       Create hub directory with config template; exit 0\n"
+       << "  --validate         Validate config + script; exit 0 on success\n"
+       << "  --keygen           Generate hub vault (broker keypair + admin token); exit 0\n"
+       << "\n"
+       << "Known-roles allowlist (PeerAdmission Phase B; HEP-CORE-0035 §4.8):\n"
+       << "  The allowlist lives INSIDE the encrypted hub vault; every command\n"
+       << "  below unlocks it with the master password (PYLABHUB_HUB_PASSWORD or\n"
+       << "  interactive prompt) and re-encrypts on change.\n"
+       << "  --add-known-role <name> <uid> <role> <pubkey_z85>\n"
+       << "                     Add a role to the vault allowlist; exit 0.\n"
+       << "                     <role> ∈ {producer, consumer, processor, any}.\n"
+       << "                     <pubkey_z85> is the 40-char Z85-encoded CURVE pubkey\n"
+       << "                     (obtain via `plh_role --print-pubkey`).\n"
+       << "                     Re-add with same <uid> rotates the pubkey (no error).\n"
+       << "  --revoke-known-role <uid>\n"
+       << "                     Remove the entry matching <uid>; exit 0 even if absent.\n"
+       << "  --list-known-roles Print the allowlist in tabular form; exit 0.\n"
+       << "  --migrate-known-roles\n"
+       << "                     One-shot: import a legacy plaintext\n"
+       << "                     <hub_dir>/vault/known_roles.json into the vault and\n"
+       << "                     delete it (the hub refuses to start while it exists).\n"
+       << "\n"
+       << "Common options:\n"
+       << "  <hub_dir>          Hub directory containing hub.json\n"
+       << "  --config <path>    Path to hub JSON config file\n"
+       << "  --name <name>      Hub name for --init (skips interactive prompt)\n"
+       << "\n"
+       << "Init-only options (write into generated logging config):\n"
+       << "  --log-maxsize <MB> Rotate when a log file reaches this size (default 10)\n"
+       << "  --log-backups <N>  Keep N rotated files (default 5; -1 = keep all)\n"
+       << "\n"
+       << "  --help             Show this message\n"
+       << "\n"
+       << "Log destination at run time is always <hub_dir>/logs/<uid>-<ts>.log\n"
+       << "(composed from config; not configurable via CLI).\n";
 }
 
 } // namespace detail
@@ -204,14 +202,14 @@ inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
  * @param err_stream  Where parse-error messages are written.  Defaults to std::cerr.
  * @return ParseResult — see field doc.
  */
-inline ParseResult parse_hub_args(int argc, char *argv[],
-                                  std::ostream &out_stream = std::cout,
+inline ParseResult parse_hub_args(int argc, char *argv[], std::ostream &out_stream = std::cout,
                                   std::ostream &err_stream = std::cerr)
 {
     ParseResult result;
-    HubArgs    &args = result.args;
+    HubArgs &args = result.args;
 
-    auto fail_with_usage = [&](std::string_view prefix) -> ParseResult & {
+    auto fail_with_usage = [&](std::string_view prefix) -> ParseResult &
+    {
         err_stream << prefix;
         detail::print_hub_usage(argv[0], err_stream);
         result.exit_code = 1;
@@ -264,7 +262,10 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         }
         else if (arg == "--log-maxsize" && i + 1 < argc)
         {
-            try { args.log_max_size_mb = std::stod(argv[++i]); }
+            try
+            {
+                args.log_max_size_mb = std::stod(argv[++i]);
+            }
             catch (const std::exception &)
             {
                 err_stream << "Error: --log-maxsize expects a number (MB)\n";
@@ -274,7 +275,10 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         }
         else if (arg == "--log-backups" && i + 1 < argc)
         {
-            try { args.log_backups = std::stoi(argv[++i]); }
+            try
+            {
+                args.log_backups = std::stoi(argv[++i]);
+            }
             catch (const std::exception &)
             {
                 err_stream << "Error: --log-backups expects an integer "
@@ -295,9 +299,8 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         {
             // Expect exactly 4 positionals after: name, uid, role, pubkey.
             if (i + 4 >= argc)
-                return fail_with_usage(
-                    "Error: --add-known-role requires 4 args: "
-                    "<name> <uid> <role> <pubkey_z85>\n\n");
+                return fail_with_usage("Error: --add-known-role requires 4 args: "
+                                       "<name> <uid> <role> <pubkey_z85>\n\n");
             // H-K4: enum-validate <role> at the input boundary.  An
             // arbitrary string here (e.g. typo'd "prodcer") would
             // persist into the allowlist and silently never match the
@@ -306,11 +309,10 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
             const std::string_view role_arg(argv[i + 3]);
             if (!detail::is_valid_known_role_kind(role_arg))
             {
-                err_stream
-                    << "Error: --add-known-role <role> must be one of "
-                       "{producer, consumer, processor, any} (empty also "
-                       "accepted, meaning 'any'); got '"
-                    << role_arg << "'\n\n";
+                err_stream << "Error: --add-known-role <role> must be one of "
+                              "{producer, consumer, processor, any} (empty also "
+                              "accepted, meaning 'any'); got '"
+                           << role_arg << "'\n\n";
                 detail::print_hub_usage(argv[0], err_stream);
                 result.exit_code = 1;
                 return result;
@@ -327,8 +329,7 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         else if (arg == "--revoke-known-role")
         {
             if (i + 1 >= argc)
-                return fail_with_usage(
-                    "Error: --revoke-known-role requires 1 arg: <uid>\n\n");
+                return fail_with_usage("Error: --revoke-known-role requires 1 arg: <uid>\n\n");
             args.revoke_known_role_only = true;
             args.known_role_args.assign({std::string(argv[i + 1])});
             i += 1;
@@ -344,8 +345,7 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
         else if (arg[0] != '-')
         {
             if (!args.hub_dir.empty())
-                return fail_with_usage(
-                    "Error: multiple positional arguments not supported\n\n");
+                return fail_with_usage("Error: multiple positional arguments not supported\n\n");
             args.hub_dir = std::string(arg);
         }
         else
@@ -358,39 +358,33 @@ inline ParseResult parse_hub_args(int argc, char *argv[],
     }
 
     // ── Mode exclusion: at most one mode flag ──────────────────────────
-    const int mode_count = static_cast<int>(args.init_only) +
-                           static_cast<int>(args.skeleton_only) +
-                           static_cast<int>(args.validate_only) +
-                           static_cast<int>(args.keygen_only) +
-                           static_cast<int>(args.add_known_role_only) +
-                           static_cast<int>(args.revoke_known_role_only) +
-                           static_cast<int>(args.list_known_roles_only);
+    const int mode_count =
+        static_cast<int>(args.init_only) + static_cast<int>(args.skeleton_only) +
+        static_cast<int>(args.validate_only) + static_cast<int>(args.keygen_only) +
+        static_cast<int>(args.add_known_role_only) + static_cast<int>(args.revoke_known_role_only) +
+        static_cast<int>(args.list_known_roles_only);
     if (mode_count > 1)
-        return fail_with_usage(
-            "Error: mode flags (--init, --skeleton, --validate, --keygen, "
-            "--add-known-role, --revoke-known-role, --list-known-roles) "
-            "are mutually exclusive (at most one mode).\n\n");
+        return fail_with_usage("Error: mode flags (--init, --skeleton, --validate, --keygen, "
+                               "--add-known-role, --revoke-known-role, --list-known-roles) "
+                               "are mutually exclusive (at most one mode).\n\n");
 
     // ── Init/skeleton-only flags must not appear outside those modes ───
     const bool init_or_skeleton = args.init_only || args.skeleton_only;
     if (!init_or_skeleton &&
         (args.log_max_size_mb.has_value() || args.log_backups.has_value() ||
-         !args.init_name.empty() || !args.hub_uid.empty() ||
-         !args.vault_path.empty()))
-        return fail_with_usage(
-            "Error: --name, --uid, --vault-path, --log-maxsize, and "
-            "--log-backups are only valid with --init or --skeleton.\n\n");
+         !args.init_name.empty() || !args.hub_uid.empty() || !args.vault_path.empty()))
+        return fail_with_usage("Error: --name, --uid, --vault-path, --log-maxsize, and "
+                               "--log-backups are only valid with --init or --skeleton.\n\n");
 
     // ── Required positional for non-init/skeleton modes ────────────────
     // The known-role ops need hub_dir (to locate
     // <hub_dir>/vault/known_roles.json); all other run modes need it
     // too.  Only --init / --skeleton can synthesize a new hub_dir.
     if (!init_or_skeleton && args.config_path.empty() && args.hub_dir.empty())
-        return fail_with_usage(
-            "Error: specify a hub directory, --init, --skeleton, "
-            "or --config <path>\n\n");
+        return fail_with_usage("Error: specify a hub directory, --init, --skeleton, "
+                               "or --config <path>\n\n");
 
-    return result;  // exit_code stays -1 → caller proceeds
+    return result; // exit_code stays -1 → caller proceeds
 }
 
 } // namespace pylabhub::hub_cli

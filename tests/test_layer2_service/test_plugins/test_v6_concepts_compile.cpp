@@ -23,14 +23,12 @@ namespace
 
 /// Noexcept visitor with the right arg shape — must satisfy
 /// AllowedPeerVisitor.
-inline constexpr auto good_allowed_peer_visitor =
-    [](const plh_allowed_peer_t *) noexcept {};
+inline constexpr auto good_allowed_peer_visitor = [](const plh_allowed_peer_t *) noexcept {};
 
 static_assert(plh::AllowedPeerVisitor<decltype(good_allowed_peer_visitor)>,
               "AllowedPeerVisitor must accept a noexcept lambda of the right shape");
 
-inline constexpr auto good_band_member_visitor =
-    [](const plh_band_member_t *) noexcept {};
+inline constexpr auto good_band_member_visitor = [](const plh_band_member_t *) noexcept {};
 
 static_assert(plh::BandMemberVisitor<decltype(good_band_member_visitor)>,
               "BandMemberVisitor must accept a noexcept lambda of the right shape");
@@ -40,14 +38,12 @@ static_assert(plh::BandMemberVisitor<decltype(good_band_member_visitor)>,
 /// Same arg shape but no `noexcept` — must NOT satisfy the concept,
 /// because HEP-CORE-0028 §4.8 mandates noexcept visitors at the C ABI
 /// boundary.
-inline constexpr auto throwing_allowed_peer_visitor =
-    [](const plh_allowed_peer_t *) {};
+inline constexpr auto throwing_allowed_peer_visitor = [](const plh_allowed_peer_t *) {};
 
 static_assert(!plh::AllowedPeerVisitor<decltype(throwing_allowed_peer_visitor)>,
               "AllowedPeerVisitor must REJECT a visitor that can throw");
 
-inline constexpr auto throwing_band_member_visitor =
-    [](const plh_band_member_t *) {};
+inline constexpr auto throwing_band_member_visitor = [](const plh_band_member_t *) {};
 
 static_assert(!plh::BandMemberVisitor<decltype(throwing_band_member_visitor)>,
               "BandMemberVisitor must REJECT a visitor that can throw");
@@ -56,8 +52,7 @@ static_assert(!plh::BandMemberVisitor<decltype(throwing_band_member_visitor)>,
 
 /// A band visitor taking the allowed-peer arg type should not satisfy
 /// AllowedPeerVisitor — the concept must enforce the typed-arg contract.
-inline constexpr auto wrong_shape_visitor =
-    [](const plh_band_member_t *) noexcept {};
+inline constexpr auto wrong_shape_visitor = [](const plh_band_member_t *) noexcept {};
 
 static_assert(!plh::AllowedPeerVisitor<decltype(wrong_shape_visitor)>,
               "AllowedPeerVisitor must REJECT a visitor with the wrong arg type");

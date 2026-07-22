@@ -11,10 +11,10 @@
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
-#include "plh_platform.hpp"   // platform::get_pid()
+#include "plh_platform.hpp" // platform::get_pid()
 #include "utils/logger.hpp"
 #include "utils/wire_adapter.hpp"
-#include "utils/wire_bodies.hpp"   // WireBodyError
+#include "utils/wire_bodies.hpp" // WireBodyError
 #include "utils/wire_envelope.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/zmq_poll_loop.hpp"
@@ -69,9 +69,7 @@ std::uint64_t system_wall_now_ms()
 {
     using namespace std::chrono;
     return static_cast<std::uint64_t>(
-        duration_cast<milliseconds>(
-            system_clock::now().time_since_epoch())
-            .count());
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
 } // anonymous namespace
@@ -91,34 +89,34 @@ namespace
 /// `client_nonce` + `client_wall_ts` — per I-REPLAY-BOUND.
 struct SendCmd
 {
-    std::string    msg_type;
-    std::string    correlation_id;
-    std::string    client_nonce;
-    std::uint64_t  client_wall_ts{0};
+    std::string msg_type;
+    std::string correlation_id;
+    std::string client_nonce;
+    std::uint64_t client_wall_ts{0};
     nlohmann::json payload;
 };
 
 /// Request-reply: send 5 frames, wait for matching reply.
 struct RequestCmd
 {
-    std::string              msg_type;
+    std::string msg_type;
     /// Expected reply msg_types (e.g. ["REG_ACK"] or ["DISC_ACK", "DISC_PENDING"]).
     /// Any reply matching one of these is accepted as a response for this request.
     std::vector<std::string> expected_acks;
     /// Non-empty per I-CORRELATION-STABLE — the wire authority for reply
     /// matching.  Broker echoes it in Frame 3 of the ACK; BRC's
     /// pending_requests map keys on this value.
-    std::string              correlation_id;
+    std::string correlation_id;
     /// Set for REG-family REQs per I-REPLAY-BOUND.  Empty on other types.
-    std::string              client_nonce;
-    std::uint64_t            client_wall_ts{0};
-    nlohmann::json           payload;
+    std::string client_nonce;
+    std::uint64_t client_wall_ts{0};
+    nlohmann::json payload;
 
     // Signaling: broker thread sets result and notifies.
-    std::mutex                        mu;
-    std::condition_variable           cv;
-    bool                              done{false};
-    std::optional<nlohmann::json>     result;
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done{false};
+    std::optional<nlohmann::json> result;
     /// Set by the CALLER thread on client-side timeout.  Read by
     /// the CTRL thread's poll_recv: if a late broker reply arrives
     /// AFTER `abandoned=true`, the reply is dropped (as if it never
@@ -128,7 +126,7 @@ struct RequestCmd
     /// fan-in loop review fix (2026-07-02).  Atomic because the
     /// timeout write and the poll_recv read are on different threads
     /// with no other synchronization.
-    std::atomic<bool>                 abandoned{false};
+    std::atomic<bool> abandoned{false};
     /// Steady instant the CALLER marked this request abandoned.  Written on
     /// the caller thread immediately BEFORE the `abandoned` release-store, so
     /// a ctrl-thread acquire-load of `abandoned==true` is guaranteed to see
@@ -144,14 +142,12 @@ struct RequestCmd
 /// special-casing.
 struct InstallPeriodicTaskCmd
 {
-    std::function<void()>     action;
-    int                       interval_ms{0};
+    std::function<void()> action;
+    int interval_ms{0};
     std::function<uint64_t()> get_iteration; // optional (nullptr = time-only)
 };
 
-using BrokerCommand = std::variant<SendCmd,
-                                    std::shared_ptr<RequestCmd>,
-                                    InstallPeriodicTaskCmd>;
+using BrokerCommand = std::variant<SendCmd, std::shared_ptr<RequestCmd>, InstallPeriodicTaskCmd>;
 
 // ── Wire-boundary ACK/NOTIFY body-shape validation (task #45) ─────────
 //
@@ -179,8 +175,7 @@ using BrokerCommand = std::variant<SendCmd,
 // Returns nullopt on validation pass (or unknown msg_type — pass-through).
 // Returns the WireBodyError message on validation failure.
 [[nodiscard]] std::optional<std::string>
-validate_wire_body_for_msg_type(std::string_view msg_type,
-                                 const nlohmann::json &body) noexcept
+validate_wire_body_for_msg_type(std::string_view msg_type, const nlohmann::json &body) noexcept
 {
     namespace wb = ::pylabhub::wire;
     try
@@ -189,7 +184,7 @@ validate_wire_body_for_msg_type(std::string_view msg_type,
         // We only validate; caller still gets its own JSON copy.
         if (msg_type == "REG_ACK")
         {
-            (void) wb::RegAckBody(nlohmann::json(body));
+            (void)wb::RegAckBody(nlohmann::json(body));
         }
         else if (msg_type == "CONSUMER_REG_ACK")
         {
@@ -197,47 +192,47 @@ validate_wire_body_for_msg_type(std::string_view msg_type,
             // HEP-CORE-0046 §14.3): CONSUMER_REG_ACK carries producers[]
             // + data_transport per HEP-CORE-0036 §5b/§6.4, not
             // initial_allowlist.
-            (void) wb::ConsumerRegAckBody(nlohmann::json(body));
+            (void)wb::ConsumerRegAckBody(nlohmann::json(body));
         }
         else if (msg_type == "DEREG_ACK" || msg_type == "CONSUMER_DEREG_ACK")
         {
-            (void) wb::DeregAckBody(nlohmann::json(body));
+            (void)wb::DeregAckBody(nlohmann::json(body));
         }
         else if (msg_type == "ENDPOINT_UPDATE_ACK")
         {
-            (void) wb::EndpointUpdateAckBody(nlohmann::json(body));
+            (void)wb::EndpointUpdateAckBody(nlohmann::json(body));
         }
         else if (msg_type == "GET_CHANNEL_AUTH_ACK")
         {
-            (void) wb::GetChannelAuthAckBody(nlohmann::json(body));
+            (void)wb::GetChannelAuthAckBody(nlohmann::json(body));
         }
         else if (msg_type == "CHANNEL_AUTH_APPLIED_ACK")
         {
-            (void) wb::ChannelAuthAppliedAckBody(nlohmann::json(body));
+            (void)wb::ChannelAuthAppliedAckBody(nlohmann::json(body));
         }
         else if (msg_type == "DISC_ACK")
         {
-            (void) wb::DiscAckBody(nlohmann::json(body));
+            (void)wb::DiscAckBody(nlohmann::json(body));
         }
         else if (msg_type == "CHANNEL_AUTH_CHANGED_NOTIFY")
         {
-            (void) wb::ChannelAuthChangedNotifyBody(nlohmann::json(body));
+            (void)wb::ChannelAuthChangedNotifyBody(nlohmann::json(body));
         }
         else if (msg_type == "CHANNEL_CLOSING_NOTIFY")
         {
-            (void) wb::ChannelClosingNotifyBody(nlohmann::json(body));
+            (void)wb::ChannelClosingNotifyBody(nlohmann::json(body));
         }
         else if (msg_type == "CONSUMER_DIED_NOTIFY")
         {
-            (void) wb::ConsumerDiedNotifyBody(nlohmann::json(body));
+            (void)wb::ConsumerDiedNotifyBody(nlohmann::json(body));
         }
         else if (msg_type == "BAND_JOIN_NOTIFY")
         {
-            (void) wb::BandJoinNotifyBody(nlohmann::json(body));
+            (void)wb::BandJoinNotifyBody(nlohmann::json(body));
         }
         else if (msg_type == "BAND_LEAVE_NOTIFY")
         {
-            (void) wb::BandLeaveNotifyBody(nlohmann::json(body));
+            (void)wb::BandLeaveNotifyBody(nlohmann::json(body));
         }
         // Unknown msg_type → no contract to check; pass through.
         // Adding coverage = new body class + new arm here.
@@ -260,11 +255,11 @@ struct BrokerRequestComm::Impl
     // DEALER socket + monitor.
     std::optional<zmq::socket_t> dealer;
     std::optional<zmq::socket_t> monitor_sock;
-    std::string                  monitor_endpoint;
+    std::string monitor_endpoint;
     // Broker endpoint cached from Config for log lines (esp. the
     // terminal-disconnect WARN — operators reading multi-hub roles
     // need to know WHICH broker just died).  Set once at init.
-    std::string                  broker_endpoint;
+    std::string broker_endpoint;
 
     // Inproc PAIR for wake-up.
     std::optional<zmq::socket_t> signal_read;
@@ -341,10 +336,8 @@ struct BrokerRequestComm::Impl
     /// into the body per I-REPLAY-BOUND before serializing.  Callers
     /// generate `correlation_id` (and the triple for REG-family) at the
     /// REQ construction site; SendCmd / RequestCmd carry them here.
-    void send_message(const std::string    &msg_type,
-                      const std::string    &correlation_id,
-                      const std::string    &client_nonce,
-                      std::uint64_t         client_wall_ts,
+    void send_message(const std::string &msg_type, const std::string &correlation_id,
+                      const std::string &client_nonce, std::uint64_t client_wall_ts,
                       const nlohmann::json &payload)
     {
         if (!dealer)
@@ -368,18 +361,16 @@ struct BrokerRequestComm::Impl
         {
             ::pylabhub::wire::adapter::EncodeContext ctx;
             ctx.dealer_role_uid = role_uid;
-            ctx.correlation_id  = correlation_id;
-            ctx.client_nonce    = client_nonce;
-            ctx.client_wall_ts  = client_wall_ts;
+            ctx.correlation_id = correlation_id;
+            ctx.client_nonce = client_nonce;
+            ctx.client_wall_ts = client_wall_ts;
             zmq::multipart_t wire =
-                ::pylabhub::wire::adapter::encode_dealer_send(
-                    msg_type, ctx, payload);
+                ::pylabhub::wire::adapter::encode_dealer_send(msg_type, ctx, payload);
             wire.send(*dealer);
         }
         catch (const zmq::error_t &e)
         {
-            LOGGER_WARN("BrokerRequestComm: send '{}' failed: {}",
-                        msg_type, e.what());
+            LOGGER_WARN("BrokerRequestComm: send '{}' failed: {}", msg_type, e.what());
         }
         catch (const ::pylabhub::wire::WireBodyError &e)
         {
@@ -387,8 +378,8 @@ struct BrokerRequestComm::Impl
             // (empty correlation_id on a non-NOTIFY, missing security
             // triple on a REG-family REQ) — log LOUD and let the caller
             // observe the missing reply as a timeout.
-            LOGGER_ERROR("BrokerRequestComm: envelope encoder rejected '{}': {}",
-                         msg_type, e.what());
+            LOGGER_ERROR("BrokerRequestComm: envelope encoder rejected '{}': {}", msg_type,
+                         e.what());
         }
     }
 
@@ -409,8 +400,8 @@ struct BrokerRequestComm::Impl
             // 4-frame envelope on DEALER receive (libzmq strips Frame 0
             // during routing per WireEnvelope::parse_dealer_recv contract).
             ::pylabhub::wire::ParseError err = {};
-            auto env_opt = ::pylabhub::wire::WireEnvelope::parse_dealer_recv(
-                std::move(msg), role_uid, &err);
+            auto env_opt =
+                ::pylabhub::wire::WireEnvelope::parse_dealer_recv(std::move(msg), role_uid, &err);
             if (!env_opt.has_value())
             {
                 LOGGER_WARN("BrokerRequestComm[{}]: envelope parse rejected "
@@ -419,7 +410,7 @@ struct BrokerRequestComm::Impl
                 continue;
             }
             ::pylabhub::wire::WireEnvelope env = std::move(*env_opt);
-            const std::string msg_type       = std::string(env.msg_type());
+            const std::string msg_type = std::string(env.msg_type());
             const std::string correlation_id = std::string(env.correlation_id());
             // Materialize a mutable body copy + inject the envelope
             // correlation_id so legacy handlers reading
@@ -490,13 +481,11 @@ struct BrokerRequestComm::Impl
             // (unexpected ACK or ERROR with an unknown correlation_id).
             // Count + WARN so the drop is observable.
             const bool is_reply_shape =
-                (msg_type.size() >= 4 &&
-                 msg_type.compare(msg_type.size() - 4, 4, "_ACK") == 0) ||
+                (msg_type.size() >= 4 && msg_type.compare(msg_type.size() - 4, 4, "_ACK") == 0) ||
                 msg_type == "ERROR";
             if (is_reply_shape)
             {
-                unmatched_replies_count.fetch_add(
-                    1, std::memory_order_relaxed);
+                unmatched_replies_count.fetch_add(1, std::memory_order_relaxed);
                 LOGGER_WARN("BrokerRequestComm: received unexpected "
                             "reply-shape message with no pending "
                             "request: type='{}' corr_id='{}' (HEP-0007 "
@@ -508,8 +497,7 @@ struct BrokerRequestComm::Impl
             // Unsolicited notification — dispatch to callback.
             LOGGER_INFO("[brc/{}] event=BrcNotifyReceived type='{}' "
                         "role_uid='{}' has_callback={}",
-                        role_name, msg_type, role_uid,
-                        on_notification_cb ? "true" : "false");
+                        role_name, msg_type, role_uid, on_notification_cb ? "true" : "false");
             if (on_notification_cb)
                 on_notification_cb(msg_type, body);
         }
@@ -551,8 +539,7 @@ struct BrokerRequestComm::Impl
         {
             const auto *data = static_cast<const uint8_t *>(ev_msg.data());
             const uint16_t event_id =
-                static_cast<uint16_t>(data[0]) |
-                (static_cast<uint16_t>(data[1]) << 8);
+                static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
             if (event_id == ZMQ_EVENT_DISCONNECTED)
             {
                 // Audit S1 (2026-05-18) — pylabhub policy:
@@ -581,9 +568,8 @@ struct BrokerRequestComm::Impl
 
     void drain_command_queue()
     {
-        cmd_queue.drain([this](BrokerCommand &cmd) {
-            std::visit([this](auto &c) { handle_command(c); }, cmd);
-        });
+        cmd_queue.drain([this](BrokerCommand &cmd)
+                        { std::visit([this](auto &c) { handle_command(c); }, cmd); });
     }
 
     /// Remove timed-out (abandoned) pending_requests entries whose retention
@@ -602,16 +588,15 @@ struct BrokerRequestComm::Impl
     {
         if (pending_requests.empty())
             return;
-        const auto now   = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
         const auto grace = std::chrono::milliseconds{abandoned_reap_grace_ms};
-        size_t     reaped = 0;
+        size_t reaped = 0;
         for (auto it = pending_requests.begin(); it != pending_requests.end();)
         {
             const auto &req = it->second;
             // abandoned (acquire) synchronizes-with the caller's release-store,
             // so abandoned_at is visible whenever this reads true.
-            if (req->abandoned.load(std::memory_order_acquire) &&
-                (now - req->abandoned_at) > grace)
+            if (req->abandoned.load(std::memory_order_acquire) && (now - req->abandoned_at) > grace)
             {
                 it = pending_requests.erase(it);
                 ++reaped;
@@ -624,15 +609,15 @@ struct BrokerRequestComm::Impl
         if (reaped > 0)
         {
             reaped_abandoned_count.fetch_add(reaped, std::memory_order_relaxed);
-            LOGGER_INFO("[brc/{}] event=BrcReapAbandoned reaped={} remaining={}",
-                        role_name, reaped, pending_requests.size());
+            LOGGER_INFO("[brc/{}] event=BrcReapAbandoned reaped={} remaining={}", role_name, reaped,
+                        pending_requests.size());
         }
     }
 
     void handle_command(SendCmd &cmd)
     {
-        send_message(cmd.msg_type, cmd.correlation_id,
-                     cmd.client_nonce, cmd.client_wall_ts, cmd.payload);
+        send_message(cmd.msg_type, cmd.correlation_id, cmd.client_nonce, cmd.client_wall_ts,
+                     cmd.payload);
     }
 
     void handle_command(std::shared_ptr<RequestCmd> &cmd)
@@ -642,8 +627,8 @@ struct BrokerRequestComm::Impl
         // caller-side sanity list (e.g. DISC accepts DISC_ACK or
         // DISC_PENDING) but the wire uses correlation_id alone.
         pending_requests[cmd->correlation_id] = cmd;
-        send_message(cmd->msg_type, cmd->correlation_id,
-                     cmd->client_nonce, cmd->client_wall_ts, cmd->payload);
+        send_message(cmd->msg_type, cmd->correlation_id, cmd->client_nonce, cmd->client_wall_ts,
+                     cmd->payload);
     }
 
     void handle_command(InstallPeriodicTaskCmd &cmd)
@@ -656,33 +641,28 @@ struct BrokerRequestComm::Impl
                         "no active poll loop");
             return;
         }
-        active_loop_periodic_tasks->emplace_back(
-            std::move(cmd.action), cmd.interval_ms, std::move(cmd.get_iteration));
+        active_loop_periodic_tasks->emplace_back(std::move(cmd.action), cmd.interval_ms,
+                                                 std::move(cmd.get_iteration));
     }
 
     /// Submit a request-reply and block until reply or timeout.
     /// Single expected ack — convenience wrapper.
-    std::optional<nlohmann::json> do_request(
-        const std::string &msg_type,
-        const std::string &expected_ack,
-        nlohmann::json payload,
-        int timeout_ms)
+    std::optional<nlohmann::json> do_request(const std::string &msg_type,
+                                             const std::string &expected_ack,
+                                             nlohmann::json payload, int timeout_ms)
     {
-        return do_request_multi(msg_type, {expected_ack},
-                                std::move(payload), timeout_ms);
+        return do_request_multi(msg_type, {expected_ack}, std::move(payload), timeout_ms);
     }
 
     /// Submit a request-reply accepting one of several reply types.
     /// Used by DISC_REQ which may reply with DISC_ACK or DISC_PENDING.
-    std::optional<nlohmann::json> do_request_multi(
-        const std::string &msg_type,
-        std::vector<std::string> expected_acks,
-        nlohmann::json payload,
-        int timeout_ms)
+    std::optional<nlohmann::json> do_request_multi(const std::string &msg_type,
+                                                   std::vector<std::string> expected_acks,
+                                                   nlohmann::json payload, int timeout_ms)
     {
         auto req = std::make_shared<RequestCmd>();
-        req->msg_type       = msg_type;
-        req->expected_acks  = std::move(expected_acks);
+        req->msg_type = msg_type;
+        req->expected_acks = std::move(expected_acks);
         // Caller-provided `payload["correlation_id"]` (if a non-empty
         // string) wins; otherwise generate a fresh 32-hex value.
         // Non-empty per I-CORRELATION-STABLE.  Tests that pin a
@@ -698,16 +678,15 @@ struct BrokerRequestComm::Impl
                 if (it != payload.end() && it->is_string())
                     caller_corr = it->get<std::string>();
             }
-            req->correlation_id = caller_corr.empty()
-                ? make_random_hex16()
-                : std::move(caller_corr);
+            req->correlation_id =
+                caller_corr.empty() ? make_random_hex16() : std::move(caller_corr);
         }
         // Security triple for REG-family REQs per I-REPLAY-BOUND.  The
         // encoder validates non-empty nonce + non-zero wall_ts and
         // stamps them into the body before serializing.
         if (::pylabhub::wire::adapter::msg_type_carries_security_triple(msg_type))
         {
-            req->client_nonce   = make_random_hex16();
+            req->client_nonce = make_random_hex16();
             req->client_wall_ts = system_wall_now_ms();
         }
         req->payload = std::move(payload);
@@ -715,8 +694,7 @@ struct BrokerRequestComm::Impl
         cmd_queue.push(req);
 
         std::unique_lock<std::mutex> lk(req->mu);
-        if (!req->cv.wait_for(lk, std::chrono::milliseconds{timeout_ms},
-                              [&] { return req->done; }))
+        if (!req->cv.wait_for(lk, std::chrono::milliseconds{timeout_ms}, [&] { return req->done; }))
         {
             LOGGER_WARN("BrokerRequestComm: {} timed out after {}ms "
                         "(corr_id='{}')",
@@ -745,9 +723,7 @@ struct BrokerRequestComm::Impl
 // Lifecycle
 // ============================================================================
 
-BrokerRequestComm::BrokerRequestComm()
-    : pImpl(std::make_unique<Impl>())
-{}
+BrokerRequestComm::BrokerRequestComm() : pImpl(std::make_unique<Impl>()) {}
 
 BrokerRequestComm::~BrokerRequestComm()
 {
@@ -779,9 +755,8 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // `utils/zmq_socket_policy.hpp`.  Subsystem-specific options
         // (CURVE, ROUTING_ID, HWMs, etc.) are set below.
         pImpl->dealer.emplace(ctx, zmq::socket_type::dealer);
-        ::pylabhub::utils::apply_socket_policy(
-            *pImpl->dealer,
-            ::pylabhub::utils::ZmqSocketRole::TcpConnect);
+        ::pylabhub::utils::apply_socket_policy(*pImpl->dealer,
+                                               ::pylabhub::utils::ZmqSocketRole::TcpConnect);
 
         // CurveZMQ — unconditional per HEP-CORE-0035 §2.  All three
         // fields are required; the broker's CTRL ROUTER will reject
@@ -793,16 +768,14 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // HEP-CORE-0040 §172: read the role's CURVE identity on-site
         // from secure().keys() by the caller-supplied keystore_name.
         // Absence → refuse the connect (loud, not silent).
-        if (cfg.broker_pubkey.empty()
-         || cfg.keystore_name.empty()
-         || !pylabhub::utils::security::sodium_ready()
-         || !pylabhub::utils::security::secure().keys().has(cfg.keystore_name))
+        if (cfg.broker_pubkey.empty() || cfg.keystore_name.empty() ||
+            !pylabhub::utils::security::sodium_ready() ||
+            !pylabhub::utils::security::secure().keys().has(cfg.keystore_name))
         {
-            LOGGER_ERROR(
-                "BrokerRequestComm: broker_pubkey empty or KeyStore entry "
-                "'{}' absent (HEP-CORE-0035 §2; HEP-CORE-0040 §172).  "
-                "Refusing to connect to {} without CURVE.",
-                cfg.keystore_name, cfg.broker_endpoint);
+            LOGGER_ERROR("BrokerRequestComm: broker_pubkey empty or KeyStore entry "
+                         "'{}' absent (HEP-CORE-0035 §2; HEP-CORE-0040 §172).  "
+                         "Refusing to connect to {} without CURVE.",
+                         cfg.keystore_name, cfg.broker_endpoint);
             pImpl->dealer.reset();
             return false;
         }
@@ -815,17 +788,12 @@ bool BrokerRequestComm::connect(const Config &cfg)
         LOGGER_INFO("BrokerRequestComm::connect: CURVE configured — "
                     "serverkey='{}' client_pubkey='{}' "
                     "(KeyStore['{}']) endpoint='{}'",
-                    cfg.broker_pubkey,
-                    ks.pubkey(cfg.keystore_name),
-                    cfg.keystore_name,
+                    cfg.broker_pubkey, ks.pubkey(cfg.keystore_name), cfg.keystore_name,
                     cfg.broker_endpoint);
         pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
-        pImpl->dealer->set(zmq::sockopt::curve_publickey,
-                           ks.pubkey(cfg.keystore_name));
-        ks.with_seckey(cfg.keystore_name,
-            [&](std::string_view sec) {
-                pImpl->dealer->set(zmq::sockopt::curve_secretkey, sec);
-            });
+        pImpl->dealer->set(zmq::sockopt::curve_publickey, ks.pubkey(cfg.keystore_name));
+        ks.with_seckey(cfg.keystore_name, [&](std::string_view sec)
+                       { pImpl->dealer->set(zmq::sockopt::curve_secretkey, sec); });
 
         // I-DEALER-IDENTITY (HEP-CORE-0046 §8.1):
         //   the DEALER MUST set ZMQ_ROUTING_ID to its owning role's
@@ -840,9 +808,8 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // loud, matching the no-CURVE-without-config discipline above.
         if (cfg.role_uid.empty())
         {
-            LOGGER_ERROR(
-                "BrokerRequestComm: role_uid empty; refusing to connect "
-                "(I-DEALER-IDENTITY §8.1 requires routing_id = role_uid).");
+            LOGGER_ERROR("BrokerRequestComm: role_uid empty; refusing to connect "
+                         "(I-DEALER-IDENTITY §8.1 requires routing_id = role_uid).");
             pImpl->dealer.reset();
             return false;
         }
@@ -855,7 +822,7 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // §"Role-side ZMQ socket policy".)
 
         pImpl->dealer->connect(cfg.broker_endpoint);
-        pImpl->broker_endpoint = cfg.broker_endpoint;  // cache for log lines
+        pImpl->broker_endpoint = cfg.broker_endpoint; // cache for log lines
 
         // Socket monitor for ZMQ_EVENT_DISCONNECTED.
         //
@@ -871,11 +838,9 @@ bool BrokerRequestComm::connect(const Config &cfg)
         // polling, so the raw call is the correct primitive here.  (Same
         // reason at the detach call in disconnect().)
         static std::atomic<int> s_monitor_id{0};
-        pImpl->monitor_endpoint = fmt::format(
-            "inproc://broker-req-monitor-{}",
-            s_monitor_id.fetch_add(1, std::memory_order_relaxed));
-        if (zmq_socket_monitor(pImpl->dealer->handle(),
-                               pImpl->monitor_endpoint.c_str(),
+        pImpl->monitor_endpoint = fmt::format("inproc://broker-req-monitor-{}",
+                                              s_monitor_id.fetch_add(1, std::memory_order_relaxed));
+        if (zmq_socket_monitor(pImpl->dealer->handle(), pImpl->monitor_endpoint.c_str(),
                                ZMQ_EVENT_DISCONNECTED) == 0)
         {
             pImpl->monitor_sock.emplace(ctx, zmq::socket_type::pair);
@@ -885,9 +850,8 @@ bool BrokerRequestComm::connect(const Config &cfg)
 
         // Inproc PAIR for command queue wake-up.
         static std::atomic<int> s_signal_id{0};
-        std::string sig_addr = fmt::format(
-            "inproc://broker-req-signal-{}",
-            s_signal_id.fetch_add(1, std::memory_order_relaxed));
+        std::string sig_addr = fmt::format("inproc://broker-req-signal-{}",
+                                           s_signal_id.fetch_add(1, std::memory_order_relaxed));
         pImpl->signal_read.emplace(ctx, zmq::socket_type::pair);
         pImpl->signal_write.emplace(ctx, zmq::socket_type::pair);
         pImpl->signal_read->set(zmq::sockopt::linger, 0);
@@ -897,17 +861,19 @@ bool BrokerRequestComm::connect(const Config &cfg)
 
         // Wire MonitoredQueue push → signal socket.
         auto *sig_w = &(*pImpl->signal_write);
-        pImpl->cmd_queue.set_on_push_signal([sig_w] {
-            zmq::message_t wake("W", 1);
-            try
+        pImpl->cmd_queue.set_on_push_signal(
+            [sig_w]
             {
-                sig_w->send(wake, zmq::send_flags::dontwait);
-            }
-            catch (const zmq::error_t &)
-            {
-                // Signal socket full — poll loop will drain on next cycle.
-            }
-        });
+                zmq::message_t wake("W", 1);
+                try
+                {
+                    sig_w->send(wake, zmq::send_flags::dontwait);
+                }
+                catch (const zmq::error_t &)
+                {
+                    // Signal socket full — poll loop will drain on next cycle.
+                }
+            });
 
         pImpl->role_uid = cfg.role_uid;
         pImpl->role_name = cfg.role_name;
@@ -915,8 +881,7 @@ bool BrokerRequestComm::connect(const Config &cfg)
         pImpl->connected.store(true, std::memory_order_release);
         pImpl->stop_requested.store(false, std::memory_order_release);
 
-        LOGGER_INFO("BrokerRequestComm: connected to {} (CurveZMQ)",
-                    cfg.broker_endpoint);
+        LOGGER_INFO("BrokerRequestComm: connected to {} (CurveZMQ)", cfg.broker_endpoint);
         return true;
     }
     catch (const zmq::error_t &e)
@@ -960,10 +925,14 @@ bool BrokerRequestComm::reconnect_disabled() const noexcept
     // terminal (HEP-CORE-0023 §2.5.3).  Read the live socket
     // option (rather than echoing a stored config value) so the
     // assertion is true END-TO-END including any libzmq quirks.
-    if (!pImpl || !pImpl->dealer) return false;
-    try {
+    if (!pImpl || !pImpl->dealer)
+        return false;
+    try
+    {
         return pImpl->dealer->get(zmq::sockopt::reconnect_ivl) == -1;
-    } catch (...) {
+    }
+    catch (...)
+    {
         return false;
     }
 }
@@ -986,16 +955,15 @@ void BrokerRequestComm::on_hub_dead(std::function<void()> cb)
 // Periodic tasks
 // ============================================================================
 
-void BrokerRequestComm::set_periodic_task(std::function<void()> action,
-                                              int interval_ms,
-                                              std::function<uint64_t()> get_iteration)
+void BrokerRequestComm::set_periodic_task(std::function<void()> action, int interval_ms,
+                                          std::function<uint64_t()> get_iteration)
 {
     // All installs (pre-startup + post-startup, e.g. heartbeat scheduled
     // after REG_ACK heartbeat-cadence negotiation per HEP-CORE-0023 §2.5)
     // flow through the cmd queue.  The handler runs on the ctrl thread and
     // appends directly into the active poll-loop's periodic_tasks vector.
-    pImpl->cmd_queue.push(InstallPeriodicTaskCmd{
-        std::move(action), interval_ms, std::move(get_iteration)});
+    pImpl->cmd_queue.push(
+        InstallPeriodicTaskCmd{std::move(action), interval_ms, std::move(get_iteration)});
 }
 
 // ============================================================================
@@ -1011,10 +979,8 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     }
 
     scripting::ZmqPollLoop loop{
-        [this, &should_run] {
-            return should_run() &&
-                   !pImpl->stop_requested.load(std::memory_order_acquire);
-        },
+        [this, &should_run]
+        { return should_run() && !pImpl->stop_requested.load(std::memory_order_acquire); },
         "broker"};
 
     // Poll the DEALER socket for incoming broker messages.  Also
@@ -1022,12 +988,11 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     // wakes the poll — keeps the side-effect for the heartbeat-acks
     // path; the monitor-socket-as-poll-item below is the authoritative
     // hub-dead detector for idle periods (no DEALER traffic).
-    loop.sockets.push_back(
-        {zmq::socket_ref(zmq::from_handle, pImpl->dealer->handle()),
-         [this] {
-             pImpl->recv_and_dispatch();
-             pImpl->check_monitor();
-         }});
+    loop.sockets.push_back({zmq::socket_ref(zmq::from_handle, pImpl->dealer->handle()), [this]
+                            {
+                                pImpl->recv_and_dispatch();
+                                pImpl->check_monitor();
+                            }});
 
     // Poll the socket-monitor PAIR socket as a first-class poll item
     // so ZMQ_EVENT_DISCONNECTED is delivered to on_hub_dead promptly
@@ -1040,16 +1005,14 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     // wakes the poll itself on disconnect.
     if (pImpl->monitor_sock)
     {
-        loop.sockets.push_back(
-            {zmq::socket_ref(zmq::from_handle, pImpl->monitor_sock->handle()),
-             [this] { pImpl->check_monitor(); }});
+        loop.sockets.push_back({zmq::socket_ref(zmq::from_handle, pImpl->monitor_sock->handle()),
+                                [this] { pImpl->check_monitor(); }});
     }
 
     // Signal socket for command queue wake-up.
     if (pImpl->signal_read)
     {
-        loop.signal_socket =
-            zmq::socket_ref(zmq::from_handle, pImpl->signal_read->handle());
+        loop.signal_socket = zmq::socket_ref(zmq::from_handle, pImpl->signal_read->handle());
         loop.drain_commands = [this] { pImpl->drain_command_queue(); };
     }
 
@@ -1070,10 +1033,8 @@ void BrokerRequestComm::run_poll_loop(std::function<bool()> should_run)
     // for the whole loop lifetime — rather than via InstallPeriodicTaskCmd,
     // because it must run pre-REG_ACK too (a request can time out during
     // registration).  See reap_abandoned_requests().
-    loop.periodic_tasks.emplace_back(
-        [this] { pImpl->reap_abandoned_requests(); },
-        Impl::kReapIntervalMs,
-        nullptr);
+    loop.periodic_tasks.emplace_back([this] { pImpl->reap_abandoned_requests(); },
+                                     Impl::kReapIntervalMs, nullptr);
 
     loop.run();
 
@@ -1115,8 +1076,7 @@ void BrokerRequestComm::stop() noexcept
     {
         try
         {
-            pImpl->signal_write->send(zmq::message_t("S", 1),
-                                      zmq::send_flags::dontwait);
+            pImpl->signal_write->send(zmq::message_t("S", 1), zmq::send_flags::dontwait);
         }
         catch (...)
         {
@@ -1134,10 +1094,8 @@ void BrokerRequestComm::stop() noexcept
 // Fire-and-forget messages
 // ============================================================================
 
-void BrokerRequestComm::send_heartbeat(const std::string &channel,
-                                           const std::string &role_uid,
-                                           const std::string &role_type,
-                                           const nlohmann::json &metrics)
+void BrokerRequestComm::send_heartbeat(const std::string &channel, const std::string &role_uid,
+                                       const std::string &role_type, const nlohmann::json &metrics)
 {
     // HEP-CORE-0019 §4.1 / HEP-CORE-0023 §2.5.2 / HEP-CORE-0033 §18
     // (Phase 6 per-presence wire format).  The `role_uid` and
@@ -1153,15 +1111,15 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel,
     // missing or zero.
     nlohmann::json payload;
     payload["channel_name"] = channel;
-    payload["role_uid"]     = role_uid;
-    payload["role_type"]    = role_type;
+    payload["role_uid"] = role_uid;
+    payload["role_type"] = role_type;
     payload["producer_pid"] = pylabhub::platform::get_pid();
     if (!metrics.empty())
         payload["metrics"] = metrics;
     SendCmd cmd;
-    cmd.msg_type       = "HEARTBEAT_NOTIFY";
+    cmd.msg_type = "HEARTBEAT_NOTIFY";
     cmd.correlation_id = make_random_hex16();
-    cmd.payload        = std::move(payload);
+    cmd.payload = std::move(payload);
     pImpl->cmd_queue.push(std::move(cmd));
 }
 
@@ -1176,10 +1134,8 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel,
 // `CHANNEL_NOTIFY_REQ` on the wire (relay path).  See HEP-CORE-0030
 // §9.1 for the channel-bound-vs-band-bound coexistence rationale.
 
-void BrokerRequestComm::send_broadcast(const std::string &target,
-                                            const std::string &sender_uid,
-                                            const std::string &msg,
-                                            const std::string &data)
+void BrokerRequestComm::send_broadcast(const std::string &target, const std::string &sender_uid,
+                                       const std::string &msg, const std::string &data)
 {
     nlohmann::json payload;
     payload["target_channel"] = target;
@@ -1187,26 +1143,25 @@ void BrokerRequestComm::send_broadcast(const std::string &target,
     payload["message"] = msg;
     payload["data"] = data;
     SendCmd cmd;
-    cmd.msg_type       = "CHANNEL_BROADCAST_SEND_NOTIFY";
+    cmd.msg_type = "CHANNEL_BROADCAST_SEND_NOTIFY";
     cmd.correlation_id = make_random_hex16();
-    cmd.payload        = std::move(payload);
+    cmd.payload = std::move(payload);
     pImpl->cmd_queue.push(std::move(cmd));
 }
 
 void BrokerRequestComm::send_checksum_error(const nlohmann::json &report)
 {
     SendCmd cmd;
-    cmd.msg_type       = "CHECKSUM_ERROR_REPORT";
+    cmd.msg_type = "CHECKSUM_ERROR_REPORT";
     cmd.correlation_id = make_random_hex16();
-    cmd.payload        = report;
+    cmd.payload = report;
     pImpl->cmd_queue.push(std::move(cmd));
 }
 
 std::optional<nlohmann::json>
 BrokerRequestComm::send_endpoint_update(const std::string &channel,
-                                         const std::string &endpoint_type,
-                                         const std::string &endpoint,
-                                         int timeout_ms)
+                                        const std::string &endpoint_type,
+                                        const std::string &endpoint, int timeout_ms)
 {
     // Sync REQ/REP per HEP-CORE-0007 §12.2.1 + HEP-CORE-0021 §16.3.
     // Broker handler (broker_service.cpp:handle_endpoint_update_req)
@@ -1217,42 +1172,37 @@ BrokerRequestComm::send_endpoint_update(const std::string &channel,
     // arrive at the broker before the producer's update had been
     // applied.  See header doc for the caller contract.
     nlohmann::json payload;
-    payload["channel_name"]  = channel;
+    payload["channel_name"] = channel;
     payload["endpoint_type"] = endpoint_type;
-    payload["endpoint"]      = endpoint;
-    return pImpl->do_request("ENDPOINT_UPDATE_REQ", "ENDPOINT_UPDATE_ACK",
-                              std::move(payload), timeout_ms);
+    payload["endpoint"] = endpoint;
+    return pImpl->do_request("ENDPOINT_UPDATE_REQ", "ENDPOINT_UPDATE_ACK", std::move(payload),
+                             timeout_ms);
 }
 
 // ============================================================================
 // Request-reply methods
 // ============================================================================
 
-std::optional<nlohmann::json>
-BrokerRequestComm::register_channel(const nlohmann::json &opts, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::register_channel(const nlohmann::json &opts,
+                                                                  int timeout_ms)
 {
-    return pImpl->do_request( "REG_REQ", "REG_ACK", opts, timeout_ms);
+    return pImpl->do_request("REG_REQ", "REG_ACK", opts, timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::get_channel_auth(const std::string &channel,
-                                     const std::string &role_uid,
-                                     int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::get_channel_auth(const std::string &channel,
+                                                                  const std::string &role_uid,
+                                                                  int timeout_ms)
 {
     nlohmann::json opts;
     opts["channel_name"] = channel;
-    opts["role_uid"]     = role_uid;
-    return pImpl->do_request("GET_CHANNEL_AUTH_REQ", "GET_CHANNEL_AUTH_ACK",
-                             opts, timeout_ms);
+    opts["role_uid"] = role_uid;
+    return pImpl->do_request("GET_CHANNEL_AUTH_REQ", "GET_CHANNEL_AUTH_ACK", opts, timeout_ms);
 }
 
 std::optional<nlohmann::json>
-BrokerRequestComm::channel_auth_applied(const std::string &channel,
-                                         const std::string &role_uid,
-                                         std::string_view   role_type,
-                                         std::uint64_t      applied_version,
-                                         std::uint64_t      instance_id,
-                                         int                timeout_ms)
+BrokerRequestComm::channel_auth_applied(const std::string &channel, const std::string &role_uid,
+                                        std::string_view role_type, std::uint64_t applied_version,
+                                        std::uint64_t instance_id, int timeout_ms)
 {
     // HEP-CORE-0042 §5.5.2 wire.  Single wire; broker discriminates
     // producer vs consumer branch on `role_type` per HEP-CORE-0036
@@ -1264,15 +1214,14 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel,
     // preserves the ack echo semantics for any older broker that
     // hasn't taken the §5.5.2 amendment.
     nlohmann::json opts;
-    opts["channel_name"]      = channel;
-    opts["role_uid"]          = role_uid;
+    opts["channel_name"] = channel;
+    opts["role_uid"] = role_uid;
     opts["producer_role_uid"] = role_uid;
-    opts["role_type"]         = std::string(role_type);
-    opts["applied_version"]   = applied_version;
-    opts["instance_id"]       = instance_id;
-    auto reply = pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ",
-                                    "CHANNEL_AUTH_APPLIED_ACK",
-                                    opts, timeout_ms);
+    opts["role_type"] = std::string(role_type);
+    opts["applied_version"] = applied_version;
+    opts["instance_id"] = instance_id;
+    auto reply =
+        pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ", "CHANNEL_AUTH_APPLIED_ACK", opts, timeout_ms);
     // HEP-CORE-0042 Phase 3 review-B fix (2026-07-02) — DEFENSIVE
     // reply-content verification (see consumer_attach_zmq for full
     // rationale).  If the broker's `CHANNEL_AUTH_APPLIED_ACK` echoes
@@ -1282,59 +1231,50 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel,
     // pending_requests slot.
     if (reply.has_value())
     {
-        const auto echoed_channel =
-            reply->value("channel_name", std::string{});
+        const auto echoed_channel = reply->value("channel_name", std::string{});
         if (!echoed_channel.empty() && echoed_channel != channel)
         {
-            LOGGER_WARN(
-                "BrokerRequestComm::channel_auth_applied('{}', role_type="
-                "'{}'): reply echoed channel_name='{}' — cross-wire "
-                "suspected; treating as no-reply (broker will re-drive "
-                "via next NOTIFY per §5.5.2)",
-                channel, role_type, echoed_channel);
+            LOGGER_WARN("BrokerRequestComm::channel_auth_applied('{}', role_type="
+                        "'{}'): reply echoed channel_name='{}' — cross-wire "
+                        "suspected; treating as no-reply (broker will re-drive "
+                        "via next NOTIFY per §5.5.2)",
+                        channel, role_type, echoed_channel);
             return std::nullopt;
         }
     }
     return reply;
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::check_peer_ready(const std::string &channel,
-                                     const std::string &role_uid,
-                                     const std::string &pubkey_z85,
-                                     int                timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::check_peer_ready(const std::string &channel,
+                                                                  const std::string &role_uid,
+                                                                  const std::string &pubkey_z85,
+                                                                  int timeout_ms)
 {
     // HEP-CORE-0036 §6.6.3 wire.  Dialing-side role's readiness pull.
     nlohmann::json opts;
     opts["channel_name"] = channel;
-    opts["role_uid"]     = role_uid;
-    opts["pubkey_z85"]   = pubkey_z85;
-    auto reply = pImpl->do_request("CHECK_PEER_READY_REQ",
-                                    "CHECK_PEER_READY_ACK",
-                                    opts, timeout_ms);
+    opts["role_uid"] = role_uid;
+    opts["pubkey_z85"] = pubkey_z85;
+    auto reply =
+        pImpl->do_request("CHECK_PEER_READY_REQ", "CHECK_PEER_READY_ACK", opts, timeout_ms);
     if (reply.has_value())
     {
-        const auto echoed_channel =
-            reply->value("channel_name", std::string{});
+        const auto echoed_channel = reply->value("channel_name", std::string{});
         if (!echoed_channel.empty() && echoed_channel != channel)
         {
-            LOGGER_WARN(
-                "BrokerRequestComm::check_peer_ready('{}'): reply echoed "
-                "channel_name='{}' — cross-wire suspected; treating as "
-                "no-reply",
-                channel, echoed_channel);
+            LOGGER_WARN("BrokerRequestComm::check_peer_ready('{}'): reply echoed "
+                        "channel_name='{}' — cross-wire suspected; treating as "
+                        "no-reply",
+                        channel, echoed_channel);
             return std::nullopt;
         }
     }
     return reply;
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::consumer_attach_zmq(const std::string &channel,
-                                        const std::string &consumer_role_uid,
-                                        const std::string &consumer_pubkey,
-                                        const std::string &producer_role_uid,
-                                        int                timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::consumer_attach_zmq(
+    const std::string &channel, const std::string &consumer_role_uid,
+    const std::string &consumer_pubkey, const std::string &producer_role_uid, int timeout_ms)
 {
     // HEP-CORE-0042 §5.5.1 wire shape.  `role_uid` on the wire is a
     // sibling-BRC-method naming convention (`get_channel_auth`,
@@ -1344,13 +1284,12 @@ BrokerRequestComm::consumer_attach_zmq(const std::string &channel,
     // sibling helps future §6.2.1 wire-format audits catch drift
     // between the two per-transport branches.
     nlohmann::json opts;
-    opts["channel_name"]      = channel;
+    opts["channel_name"] = channel;
     opts["consumer_role_uid"] = consumer_role_uid;
-    opts["consumer_pubkey"]   = consumer_pubkey;
+    opts["consumer_pubkey"] = consumer_pubkey;
     opts["producer_role_uid"] = producer_role_uid;
-    auto reply = pImpl->do_request("CONSUMER_ATTACH_REQ_ZMQ",
-                                    "CONSUMER_ATTACH_ACK_ZMQ",
-                                    opts, timeout_ms);
+    auto reply =
+        pImpl->do_request("CONSUMER_ATTACH_REQ_ZMQ", "CONSUMER_ATTACH_ACK_ZMQ", opts, timeout_ms);
     // HEP-CORE-0042 Phase 3 review-B fix (2026-07-02) — DEFENSIVE
     // reply-content verification.  BRC's `pending_requests` map keys
     // by msg_type only; under fan-in (§7.1 loop calls this method
@@ -1367,18 +1306,16 @@ BrokerRequestComm::consumer_attach_zmq(const std::string &channel,
     // as follow-up.
     if (reply.has_value())
     {
-        const auto echoed_uid =
-            reply->value("producer_role_uid", std::string{});
+        const auto echoed_uid = reply->value("producer_role_uid", std::string{});
         if (echoed_uid != producer_role_uid)
         {
-            LOGGER_WARN(
-                "BrokerRequestComm::consumer_attach_zmq('{}','{}'): reply "
-                "echoed producer_role_uid='{}' but expected '{}' — likely "
-                "fan-in cross-wire (BRC msg_type-only keying + slow "
-                "broker reply after client-side timeout).  Treating as "
-                "timeout; §7.1 loop will synthesize a §5.6 timeout "
-                "reason.",
-                channel, producer_role_uid, echoed_uid, producer_role_uid);
+            LOGGER_WARN("BrokerRequestComm::consumer_attach_zmq('{}','{}'): reply "
+                        "echoed producer_role_uid='{}' but expected '{}' — likely "
+                        "fan-in cross-wire (BRC msg_type-only keying + slow "
+                        "broker reply after client-side timeout).  Treating as "
+                        "timeout; §7.1 loop will synthesize a §5.6 timeout "
+                        "reason.",
+                        channel, producer_role_uid, echoed_uid, producer_role_uid);
             return std::nullopt;
         }
     }
@@ -1386,41 +1323,37 @@ BrokerRequestComm::consumer_attach_zmq(const std::string &channel,
 }
 
 std::optional<nlohmann::json>
-BrokerRequestComm::consumer_attach(const std::string &channel,
-                                   const std::string &consumer_pubkey,
+BrokerRequestComm::consumer_attach(const std::string &channel, const std::string &consumer_pubkey,
                                    const std::string &consumer_role_uid,
-                                   const std::string &producer_role_uid,
-                                   int                timeout_ms)
+                                   const std::string &producer_role_uid, int timeout_ms)
 {
     nlohmann::json opts;
-    opts["channel_name"]      = channel;
-    opts["consumer_pubkey"]   = consumer_pubkey;
+    opts["channel_name"] = channel;
+    opts["consumer_pubkey"] = consumer_pubkey;
     opts["consumer_role_uid"] = consumer_role_uid;
-    opts["role_uid"]          = producer_role_uid;
-    return pImpl->do_request("CONSUMER_ATTACH_REQ_SHM", "CONSUMER_ATTACH_ACK_SHM",
-                             opts, timeout_ms);
+    opts["role_uid"] = producer_role_uid;
+    return pImpl->do_request("CONSUMER_ATTACH_REQ_SHM", "CONSUMER_ATTACH_ACK_SHM", opts,
+                             timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::discover_channel(const std::string &channel,
-                                        const nlohmann::json &opts,
-                                        int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::discover_channel(const std::string &channel,
+                                                                  const nlohmann::json &opts,
+                                                                  int timeout_ms)
 {
     // HEP-CORE-0023 §2.2: DISC_REQ may reply with DISC_ACK (Ready),
     // DISC_PENDING (retry), or ERROR (CHANNEL_NOT_FOUND). Loop on PENDING
     // until Ready or overall timeout; ERROR/CHANNEL_NOT_FOUND: retry briefly
     // (producer may register later) within our timeout budget.
     constexpr int kRetryIntervalMs = 100;
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds(timeout_ms);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
 
     while (true)
     {
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline)
         {
-            LOGGER_WARN("BrokerRequestComm: discover_channel('{}') overall timeout ({}ms)",
-                        channel, timeout_ms);
+            LOGGER_WARN("BrokerRequestComm: discover_channel('{}') overall timeout ({}ms)", channel,
+                        timeout_ms);
             return std::nullopt;
         }
         const int remaining_ms = static_cast<int>(
@@ -1430,9 +1363,8 @@ BrokerRequestComm::discover_channel(const std::string &channel,
         nlohmann::json payload = opts;
         payload["channel_name"] = channel;
 
-        auto result = pImpl->do_request_multi(
-            "DISC_REQ", {"DISC_ACK", "DISC_PENDING"},
-            std::move(payload), per_attempt_ms);
+        auto result = pImpl->do_request_multi("DISC_REQ", {"DISC_ACK", "DISC_PENDING"},
+                                              std::move(payload), per_attempt_ms);
 
         if (!result.has_value())
         {
@@ -1444,7 +1376,7 @@ BrokerRequestComm::discover_channel(const std::string &channel,
 
         const std::string status = result->value("status", "");
         if (status == "success")
-            return result;      // DISC_ACK — channel Ready
+            return result; // DISC_ACK — channel Ready
 
         if (status == "pending")
         {
@@ -1455,20 +1387,19 @@ BrokerRequestComm::discover_channel(const std::string &channel,
         }
 
         // Unexpected status — treat as failure.
-        LOGGER_WARN("BrokerRequestComm: DISC_REQ unexpected status='{}' for '{}'",
-                    status, channel);
+        LOGGER_WARN("BrokerRequestComm: DISC_REQ unexpected status='{}' for '{}'", status, channel);
         return std::nullopt;
     }
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::register_consumer(const nlohmann::json &opts, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::register_consumer(const nlohmann::json &opts,
+                                                                   int timeout_ms)
 {
-    return pImpl->do_request( "CONSUMER_REG_REQ", "CONSUMER_REG_ACK", opts, timeout_ms);
+    return pImpl->do_request("CONSUMER_REG_REQ", "CONSUMER_REG_ACK", opts, timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::deregister_channel(const std::string &channel,
+                                                                    int timeout_ms)
 {
     // broker_proto 2→3: `role_uid` REQUIRED on the wire so the broker
     // can resolve the target producer by (pid, uid) tuple instead of
@@ -1477,64 +1408,61 @@ BrokerRequestComm::deregister_channel(const std::string &channel, int timeout_ms
     // reuse across role restarts.
     nlohmann::json payload;
     payload["channel_name"] = channel;
-    payload["role_uid"]     = pImpl->role_uid;
+    payload["role_uid"] = pImpl->role_uid;
     payload["producer_pid"] = static_cast<uint64_t>(::getpid());
-    return pImpl->do_request("DEREG_REQ", "DEREG_ACK",
-                             std::move(payload), timeout_ms);
+    return pImpl->do_request("DEREG_REQ", "DEREG_ACK", std::move(payload), timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::deregister_consumer(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::deregister_consumer(const std::string &channel,
+                                                                     int timeout_ms)
 {
     // broker_proto 2→3: same as DEREG_REQ — `role_uid` REQUIRED on the
     // wire so the broker resolves the target consumer by (pid, uid)
     // tuple.  Closes the analogous race for multi-consumer channels.
     nlohmann::json payload;
     payload["channel_name"] = channel;
-    payload["role_uid"]     = pImpl->role_uid;
+    payload["role_uid"] = pImpl->role_uid;
     payload["consumer_pid"] = static_cast<uint64_t>(::getpid());
-    return pImpl->do_request("CONSUMER_DEREG_REQ", "CONSUMER_DEREG_ACK",
-                             std::move(payload), timeout_ms);
+    return pImpl->do_request("CONSUMER_DEREG_REQ", "CONSUMER_DEREG_ACK", std::move(payload),
+                             timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::query_role_presence(const std::string &uid, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::query_role_presence(const std::string &uid,
+                                                                     int timeout_ms)
 {
     // HEP-CORE-0007 §"ROLE_PRESENCE_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ; old `uid` form retired
     // 2026-05-09 as part of the protocol-doc-vs-code unification).
     nlohmann::json payload;
     payload["role_uid"] = uid;
-    return pImpl->do_request("ROLE_PRESENCE_REQ", "ROLE_PRESENCE_ACK",
-                             std::move(payload), timeout_ms);
+    return pImpl->do_request("ROLE_PRESENCE_REQ", "ROLE_PRESENCE_ACK", std::move(payload),
+                             timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::query_role_info(const std::string &uid, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::query_role_info(const std::string &uid,
+                                                                 int timeout_ms)
 {
     // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ;
     // old `uid` form retired 2026-05-09).
     nlohmann::json payload;
     payload["role_uid"] = uid;
-    return pImpl->do_request( "ROLE_INFO_REQ", "ROLE_INFO_ACK",
-                      std::move(payload), timeout_ms);
+    return pImpl->do_request("ROLE_INFO_REQ", "ROLE_INFO_ACK", std::move(payload), timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::list_channels(int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::list_channels(int timeout_ms)
 {
-    return pImpl->do_request("CHANNEL_LIST_REQ", "CHANNEL_LIST_ACK",
-                             nlohmann::json::object(), timeout_ms);
+    return pImpl->do_request("CHANNEL_LIST_REQ", "CHANNEL_LIST_ACK", nlohmann::json::object(),
+                             timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::query_shm_info(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::query_shm_info(const std::string &channel,
+                                                                int timeout_ms)
 {
     nlohmann::json payload;
     payload["channel"] = channel;
-    return pImpl->do_request( "SHM_BLOCK_QUERY_REQ", "SHM_BLOCK_QUERY_ACK",
-                      std::move(payload), timeout_ms);
+    return pImpl->do_request("SHM_BLOCK_QUERY_REQ", "SHM_BLOCK_QUERY_ACK", std::move(payload),
+                             timeout_ms);
 }
 
 // ============================================================================
@@ -1547,29 +1475,24 @@ BrokerRequestComm::query_shm_info(const std::string &channel, int timeout_ms)
 // completes that rename on the wire.  Broker proto bumped 3→4 to
 // signal the break.
 
-std::optional<nlohmann::json>
-BrokerRequestComm::band_join(const std::string &band, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::band_join(const std::string &band, int timeout_ms)
 {
     nlohmann::json payload;
     payload["band"] = band;
     payload["role_uid"] = pImpl->role_uid;
     payload["role_name"] = pImpl->role_name;
-    return pImpl->do_request("BAND_JOIN_REQ", "BAND_JOIN_ACK",
-                             std::move(payload), timeout_ms);
+    return pImpl->do_request("BAND_JOIN_REQ", "BAND_JOIN_ACK", std::move(payload), timeout_ms);
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::band_leave(const std::string &band, int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::band_leave(const std::string &band, int timeout_ms)
 {
     nlohmann::json payload;
     payload["band"] = band;
     payload["role_uid"] = pImpl->role_uid;
-    return pImpl->do_request("BAND_LEAVE_REQ", "BAND_LEAVE_ACK",
-                             std::move(payload), timeout_ms);
+    return pImpl->do_request("BAND_LEAVE_REQ", "BAND_LEAVE_ACK", std::move(payload), timeout_ms);
 }
 
-void BrokerRequestComm::band_broadcast(const std::string &band,
-                                           const nlohmann::json &body)
+void BrokerRequestComm::band_broadcast(const std::string &band, const nlohmann::json &body)
 {
     // broker_proto 4→5 (audit R3.5b, 2026-05-19): sender wire key
     // renamed `sender_uid` → `role_uid` — uniform with all other
@@ -1581,20 +1504,19 @@ void BrokerRequestComm::band_broadcast(const std::string &band,
     payload["role_uid"] = pImpl->role_uid;
     payload["body"] = body;
     SendCmd cmd;
-    cmd.msg_type       = "BAND_BROADCAST_SEND_NOTIFY";
+    cmd.msg_type = "BAND_BROADCAST_SEND_NOTIFY";
     cmd.correlation_id = make_random_hex16();
-    cmd.payload        = std::move(payload);
+    cmd.payload = std::move(payload);
     pImpl->cmd_queue.push(std::move(cmd));
 }
 
-std::optional<nlohmann::json>
-BrokerRequestComm::band_members(const std::string &band,
-                                    int timeout_ms)
+std::optional<nlohmann::json> BrokerRequestComm::band_members(const std::string &band,
+                                                              int timeout_ms)
 {
     nlohmann::json payload;
     payload["band"] = band;
-    return pImpl->do_request("BAND_MEMBERS_REQ", "BAND_MEMBERS_ACK",
-                             std::move(payload), timeout_ms);
+    return pImpl->do_request("BAND_MEMBERS_REQ", "BAND_MEMBERS_ACK", std::move(payload),
+                             timeout_ms);
 }
 
 } // namespace pylabhub::hub

@@ -216,8 +216,7 @@ class LuaState
     /** Assert that the current thread is the owner (debug builds only). */
     void assert_owner() const
     {
-        assert(std::this_thread::get_id() == owner_ &&
-               "LuaState accessed from non-owning thread");
+        assert(std::this_thread::get_id() == owner_ && "LuaState accessed from non-owning thread");
     }
 
     /** Transfer ownership to the current thread (call after moving to a new thread). */

@@ -1,6 +1,7 @@
 /**
  * @file test_recovery_api.cpp
- * @brief Layer 3 tests for recovery_api, integrity_validator, slot_diagnostics, slot_recovery, heartbeat_manager.
+ * @brief Layer 3 tests for recovery_api, integrity_validator, slot_diagnostics, slot_recovery,
+ * heartbeat_manager.
  *
  * Spawns worker subprocesses that create DataBlocks and exercise the recovery/diagnostics APIs.
  */

@@ -62,20 +62,19 @@ namespace
 constexpr auto kBrokerProtocolSafetyTimeout = std::chrono::seconds{60};
 
 // Bind-retry parameters per README_testing.md § "Bind robustness".
-constexpr int  kBindMaxAttempts    = 4;
+constexpr int kBindMaxAttempts = 4;
 constexpr auto kBindInitialBackoff = std::chrono::milliseconds{10};
 
-}  // namespace
+} // namespace
 
-int pattern4_broker_protocol_broker(const char *temp_dir_arg,
-                                    const char *profile_arg)
+int pattern4_broker_protocol_broker(const char *temp_dir_arg, const char *profile_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
-            const fs::path    temp_dir = temp_dir_arg;
-            const std::string profile  = profile_arg ? profile_arg : "default";
-            const auto        setup =
-                read_pattern4_setup(temp_dir / "setup.json");
+        [&]()
+        {
+            const fs::path temp_dir = temp_dir_arg;
+            const std::string profile = profile_arg ? profile_arg : "default";
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
 
             // HEP-CORE-0040 §172: seed KeyStore with hub identity + all
             // role identities.  seed_curve_identities is idempotent for
@@ -99,8 +98,8 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                 // reg_ack_heartbeat_block_honors_custom_config — the
                 // REG_ACK heartbeat block must echo these negotiated
                 // values (HEP-CORE-0023 §2.5.1).
-                cfg.heartbeat_interval      = std::chrono::milliseconds{250};
-                cfg.ready_miss_heartbeats   = 12;
+                cfg.heartbeat_interval = std::chrono::milliseconds{250};
+                cfg.ready_miss_heartbeats = 12;
                 cfg.pending_miss_heartbeats = 8;
             }
             else if (profile == "checksum_notify")
@@ -108,15 +107,14 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                 // checksum_error_report_forwarded_to_producer — broker
                 // forwards CHECKSUM_ERROR_REPORT as CHANNEL_EVENT_NOTIFY
                 // rather than attempting repair (HEP-CORE-0019 Cat2).
-                cfg.checksum_repair_policy =
-                    pylabhub::broker::ChecksumRepairPolicy::NotifyOnly;
+                cfg.checksum_repair_policy = pylabhub::broker::ChecksumRepairPolicy::NotifyOnly;
             }
             else if (profile == "fast_reclaim")
             {
                 // producer_gets_closing_notify — short ready+pending
                 // timeouts so a silent producer is demoted → terminated →
                 // CHANNEL_CLOSING_NOTIFY well within the test window.
-                cfg.ready_timeout_override   = std::chrono::milliseconds{500};
+                cfg.ready_timeout_override = std::chrono::milliseconds{500};
                 cfg.pending_timeout_override = std::chrono::milliseconds{500};
             }
             else if (profile == "long_reclaim")
@@ -124,7 +122,7 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                 // producer_auto_deregisters — long timeouts so the test
                 // verifies an explicit DEREG fired (channel reusable
                 // immediately), not that a sweep evicted the channel.
-                cfg.ready_timeout_override   = std::chrono::milliseconds{15000};
+                cfg.ready_timeout_override = std::chrono::milliseconds{15000};
                 cfg.pending_timeout_override = std::chrono::milliseconds{15000};
             }
             else if (profile == "consumer_timeout")
@@ -133,7 +131,7 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                 // sole consumer-liveness mechanism; short ready/pending
                 // so a silent consumer is reclaimed within the test
                 // window.
-                cfg.ready_timeout_override   = std::chrono::milliseconds{500};
+                cfg.ready_timeout_override = std::chrono::milliseconds{500};
                 cfg.pending_timeout_override = std::chrono::milliseconds{500};
             }
             else
@@ -147,24 +145,23 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
             }
 
             std::promise<std::string> ready_promise;
-            auto                      ready_future = ready_promise.get_future();
-            cfg.on_ready = [&ready_promise](const std::string &ep,
-                                             const std::string &pk) {
+            auto ready_future = ready_promise.get_future();
+            cfg.on_ready = [&ready_promise](const std::string &ep, const std::string &pk)
+            {
                 LOGGER_INFO("Pattern4BrokerProtocol: bound endpoint='{}' "
                             "pubkey='{}'",
                             ep, pk);
                 ready_promise.set_value(ep);
             };
 
-            pylabhub::hub::HubState                          state;
+            pylabhub::hub::HubState state;
             std::unique_ptr<pylabhub::broker::BrokerService> broker;
             auto backoff = kBindInitialBackoff;
             for (int attempt = 1; attempt <= kBindMaxAttempts; ++attempt)
             {
                 try
                 {
-                    broker = std::make_unique<
-                        pylabhub::broker::BrokerService>(cfg, state);
+                    broker = std::make_unique<pylabhub::broker::BrokerService>(cfg, state);
                     break;
                 }
                 catch (const zmq::error_t &e)
@@ -174,8 +171,7 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                         LOGGER_WARN("Pattern4BrokerProtocol: bind EADDRINUSE on "
                                     "endpoint='{}' — retrying in {}ms "
                                     "(attempt {}/{})",
-                                    cfg.endpoint, backoff.count(),
-                                    attempt, kBindMaxAttempts);
+                                    cfg.endpoint, backoff.count(), attempt, kBindMaxAttempts);
                         std::this_thread::sleep_for(backoff);
                         backoff *= 5;
                         continue;
@@ -183,23 +179,20 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
                     throw;
                 }
             }
-            ASSERT_TRUE(broker)
-                << "Pattern4BrokerProtocol: failed to bind after "
-                << kBindMaxAttempts << " attempts on '" << cfg.endpoint << "'";
+            ASSERT_TRUE(broker) << "Pattern4BrokerProtocol: failed to bind after "
+                                << kBindMaxAttempts << " attempts on '" << cfg.endpoint << "'";
 
             std::thread broker_thread([&] { broker->run(); });
 
-            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}),
-                      std::future_status::ready)
+            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}), std::future_status::ready)
                 << "Pattern4BrokerProtocol: on_ready callback did not fire "
                    "within 2s";
 
             LOGGER_INFO("Pattern4BrokerProtocol: waiting on quit-signal pipe "
                         "(safety timeout {} s)",
                         kBrokerProtocolSafetyTimeout.count());
-            const auto wait_result =
-                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
-                    kBrokerProtocolSafetyTimeout);
+            const auto wait_result = pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
+                kBrokerProtocolSafetyTimeout);
             switch (wait_result)
             {
             case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
@@ -222,12 +215,10 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
             broker_thread.join();
             LOGGER_INFO("Pattern4BrokerProtocol: exiting cleanly");
         },
-        "pattern4_broker_protocol.broker",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_broker_protocol.broker", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // (Removed 2026-07-17: the `dying_consumer` worker + `DeadConsumerDetected`
@@ -238,18 +229,20 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg,
 
 int dispatch_pattern4_broker_protocol(int argc, char **argv)
 {
-    if (argc < 2) return -1;
+    if (argc < 2)
+        return -1;
     const std::string mode = argv[1];
-    const auto        dot  = mode.find('.');
-    if (dot == std::string::npos) return -1;
-    const std::string module   = mode.substr(0, dot);
+    const auto dot = mode.find('.');
+    if (dot == std::string::npos)
+        return -1;
+    const std::string module = mode.substr(0, dot);
     const std::string scenario = mode.substr(dot + 1);
-    if (module != "pattern4_broker_protocol") return -1;
+    if (module != "pattern4_broker_protocol")
+        return -1;
 
     if (argc < 3)
     {
-        std::fprintf(stderr,
-                     "pattern4_broker_protocol.%s: missing <temp_dir> arg\n",
+        std::fprintf(stderr, "pattern4_broker_protocol.%s: missing <temp_dir> arg\n",
                      scenario.c_str());
         return 1;
     }
@@ -259,9 +252,7 @@ int dispatch_pattern4_broker_protocol(int argc, char **argv)
     if (scenario == "broker")
         return pattern4_broker_protocol_broker(temp_dir, profile);
 
-    std::fprintf(stderr,
-                 "pattern4_broker_protocol: unknown scenario '%s'\n",
-                 scenario.c_str());
+    std::fprintf(stderr, "pattern4_broker_protocol: unknown scenario '%s'\n", scenario.c_str());
     return 1;
 }
 
@@ -275,4 +266,4 @@ struct Pattern4BrokerProtocolRegistrar
 
 static Pattern4BrokerProtocolRegistrar g_pattern4_broker_protocol_registrar;
 
-}  // namespace pylabhub::tests::pattern4
+} // namespace pylabhub::tests::pattern4

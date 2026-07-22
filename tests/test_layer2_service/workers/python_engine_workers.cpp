@@ -57,12 +57,12 @@
 #include "python_engine_workers.h"
 
 #include "python_engine.hpp"
-#include "python_interpreter_module.hpp"      // ensure_python_interpreter_loaded
+#include "python_interpreter_module.hpp" // ensure_python_interpreter_loaded
 #include "utils/engine_module_params.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
-#include "utils/script_engine_factory.hpp"    // PythonGilLease
+#include "utils/script_engine_factory.hpp" // PythonGilLease
 
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -70,7 +70,7 @@
 #include "test_schema_helpers.h"
 #include "test_sync_utils.h"
 
-#include <pybind11/pybind11.h>                 // py::gil_scoped_acquire (direct, see helper below)
+#include <pybind11/pybind11.h> // py::gil_scoped_acquire (direct, see helper below)
 
 #include <fmt/core.h>
 #include <gtest/gtest.h>
@@ -98,10 +98,10 @@ using pylabhub::scripting::RoleHostCore;
 using pylabhub::tests::all_types_schema;
 using pylabhub::tests::complex_mixed_schema;
 using pylabhub::tests::fz_array_schema;
-using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::tests::multifield_schema;
 using pylabhub::tests::padding_schema;
 using pylabhub::tests::simple_schema;
+using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 
 namespace pylabhub::tests::worker
@@ -175,14 +175,17 @@ void write_script(const fs::path &dir, const std::string &content)
 /// Produces a fresh RoleAPIBase wired to the given core.  Mirrors
 /// the original fixture's make_api helper.  uid is role-tagged so
 /// Python scripts can distinguish between role contexts if needed.
-std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
-                                      const std::string &tag = "prod")
+std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core, const std::string &tag = "prod")
 {
     std::string uid;
-    if (tag == "prod") uid = "prod.testengine.uid00000001";
-    else if (tag == "cons") uid = "cons.testengine.uid00000001";
-    else if (tag == "proc") uid = "proc.testengine.uid00000001";
-    else                    uid = "TEST-" + tag + "-00000001";
+    if (tag == "prod")
+        uid = "prod.testengine.uid00000001";
+    else if (tag == "cons")
+        uid = "cons.testengine.uid00000001";
+    else if (tag == "proc")
+        uid = "proc.testengine.uid00000001";
+    else
+        uid = "TEST-" + tag + "-00000001";
     auto api = std::make_unique<RoleAPIBase>(core, tag, uid);
     api->set_name("TestEngine");
     api->set_channel("test.channel");
@@ -195,9 +198,9 @@ std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
 /// defaults: required callback, API tag, default slot registrations.
 enum class RoleKind
 {
-    Producer,   ///< on_produce, tag "prod", register OutSlotFrame
-    Consumer,   ///< on_consume, tag "cons", register InSlotFrame
-    Processor,  ///< on_process, tag "proc", register InSlotFrame + OutSlotFrame
+    Producer,  ///< on_produce, tag "prod", register OutSlotFrame
+    Consumer,  ///< on_consume, tag "cons", register InSlotFrame
+    Processor, ///< on_process, tag "proc", register InSlotFrame + OutSlotFrame
 };
 
 /// Composes set_python_venv + initialize + load_script +
@@ -205,33 +208,37 @@ enum class RoleKind
 /// Lua's setup_role_engine in:
 ///   (a) engine.set_python_venv("") call before initialize
 ///   (b) script package path is <dir>/script/python/, not just <dir>
-bool setup_role_engine(PythonEngine &engine, RoleHostCore &core,
-                       const fs::path &dir,
-                       std::unique_ptr<RoleAPIBase> &api_out,
-                       RoleKind kind)
+bool setup_role_engine(PythonEngine &engine, RoleHostCore &core, const fs::path &dir,
+                       std::unique_ptr<RoleAPIBase> &api_out, RoleKind kind)
 {
-    const char *required_cb  = nullptr;
-    const char *tag          = nullptr;
-    bool        register_in  = false;
-    bool        register_out = false;
+    const char *required_cb = nullptr;
+    const char *tag = nullptr;
+    bool register_in = false;
+    bool register_out = false;
     switch (kind)
     {
-        case RoleKind::Producer:
-            required_cb = "on_produce"; tag = "prod";
-            register_out = true;                       break;
-        case RoleKind::Consumer:
-            required_cb = "on_consume"; tag = "cons";
-            register_in = true;                        break;
-        case RoleKind::Processor:
-            required_cb = "on_process"; tag = "proc";
-            register_in = true;  register_out = true;  break;
+    case RoleKind::Producer:
+        required_cb = "on_produce";
+        tag = "prod";
+        register_out = true;
+        break;
+    case RoleKind::Consumer:
+        required_cb = "on_consume";
+        tag = "cons";
+        register_in = true;
+        break;
+    case RoleKind::Processor:
+        required_cb = "on_process";
+        tag = "proc";
+        register_in = true;
+        register_out = true;
+        break;
     }
 
     engine.set_python_venv("");
     if (!engine.initialize("test", &core))
         return false;
-    if (!engine.load_script(dir / "script" / "python", "__init__.py",
-                             required_cb))
+    if (!engine.load_script(dir / "script" / "python", "__init__.py", required_cb))
         return false;
     auto spec = simple_schema();
     if (register_in && !engine.register_slot_type(spec, "InSlotFrame", "aligned"))
@@ -246,8 +253,8 @@ bool setup_role_engine(PythonEngine &engine, RoleHostCore &core,
 /// `py_source`, sets up a PythonEngine for the given role, calls
 /// body(engine, core), finalizes.
 template <typename F>
-int script_worker(const std::string &dir, const char *scenario_name,
-                  RoleKind kind, const std::string &py_source, F &&body)
+int script_worker(const std::string &dir, const char *scenario_name, RoleKind kind,
+                  const std::string &py_source, F &&body)
 {
     return run_python_gtest_worker(
         [&]()
@@ -255,8 +262,8 @@ int script_worker(const std::string &dir, const char *scenario_name,
             const fs::path script_dir(dir);
             write_script(script_dir, py_source);
 
-            RoleHostCore  core;
-            PythonEngine  engine;
+            RoleHostCore core;
+            PythonEngine engine;
             std::unique_ptr<RoleAPIBase> api;
             ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, kind));
 
@@ -271,22 +278,19 @@ template <typename F>
 int produce_worker_with_script(const std::string &dir, const char *name,
                                const std::string &py_source, F &&body)
 {
-    return script_worker(dir, name, RoleKind::Producer,
-                         py_source, std::forward<F>(body));
+    return script_worker(dir, name, RoleKind::Producer, py_source, std::forward<F>(body));
 }
 template <typename F>
 int consume_worker_with_script(const std::string &dir, const char *name,
                                const std::string &py_source, F &&body)
 {
-    return script_worker(dir, name, RoleKind::Consumer,
-                         py_source, std::forward<F>(body));
+    return script_worker(dir, name, RoleKind::Consumer, py_source, std::forward<F>(body));
 }
 template <typename F>
 int process_worker_with_script(const std::string &dir, const char *name,
                                const std::string &py_source, F &&body)
 {
-    return script_worker(dir, name, RoleKind::Processor,
-                         py_source, std::forward<F>(body));
+    return script_worker(dir, name, RoleKind::Processor, py_source, std::forward<F>(body));
 }
 
 /// Fill the role-agnostic fields of an EngineModuleParams that every
@@ -294,18 +298,15 @@ int process_worker_with_script(const std::string &dir, const char *name,
 /// tag, script_dir (with /script/python suffix), entry_point, and
 /// required_callback.  Each test still sets its own schema/packing
 /// fields directly — the bits that legitimately differ per test.
-inline void fill_base_params(pylabhub::scripting::EngineModuleParams &params,
-                             PythonEngine                           &engine,
-                             RoleAPIBase                            *api,
-                             const fs::path                         &script_dir,
-                             std::string                             tag,
-                             std::string                             required_callback)
+inline void fill_base_params(pylabhub::scripting::EngineModuleParams &params, PythonEngine &engine,
+                             RoleAPIBase *api, const fs::path &script_dir, std::string tag,
+                             std::string required_callback)
 {
-    params.engine            = &engine;
-    params.api               = api;
-    params.tag               = std::move(tag);
-    params.script_dir        = script_dir / "script" / "python";
-    params.entry_point       = "__init__.py";
+    params.engine = &engine;
+    params.api = api;
+    params.tag = std::move(tag);
+    params.script_dir = script_dir / "script" / "python";
+    params.entry_point = "__init__.py";
     params.required_callback = std::move(required_callback);
 }
 
@@ -331,7 +332,8 @@ int full_lifecycle(const std::string &dir)
     // role-specific C++ wrapper (ProducerAPI/ConsumerAPI/ProcessorAPI)
     // that exposes report_metric as a pybind11 method.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -344,11 +346,10 @@ def on_stop(api):
     api.report_metric("on_stop_called", 1.0)
 )PY");
 
-            RoleHostCore  core;
-            PythonEngine  engine;
+            RoleHostCore core;
+            PythonEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             auto before = core.custom_metrics_snapshot();
             EXPECT_EQ(before.count("on_init_called"), 0u);
@@ -385,9 +386,10 @@ int initialize_and_finalize_succeeds(const std::string &dir)
     // (no venv activation), per PythonEngine's set_python_venv
     // inline at python_engine.hpp.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            (void)script_dir;  // no script loaded
+            (void)script_dir; // no script loaded
 
             RoleHostCore core;
             PythonEngine engine;
@@ -395,8 +397,7 @@ int initialize_and_finalize_succeeds(const std::string &dir)
             ASSERT_TRUE(engine.initialize("test", &core));
             engine.finalize();
         },
-        "python_engine::initialize_and_finalize_succeeds",
-        Logger::GetLifecycleModule());
+        "python_engine::initialize_and_finalize_succeeds", Logger::GetLifecycleModule());
 }
 
 // ── Type registration ──────────────────────────────────────────────────────
@@ -404,22 +405,21 @@ int initialize_and_finalize_succeeds(const std::string &dir)
 int register_slot_type_sizeof_correct(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u)
                 << "simple_schema is a single float32 field";
 
@@ -429,42 +429,38 @@ int register_slot_type_sizeof_correct(const std::string &dir)
             ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
-        "python_engine::register_slot_type_sizeof_correct",
-        Logger::GetLifecycleModule());
+        "python_engine::register_slot_type_sizeof_correct", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_multi_field(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             SchemaSpec spec;
             spec.has_schema = true;
             spec.fields.push_back({"x", "float32", 1, 0});
             spec.fields.push_back({"y", "float32", 1, 0});
             spec.fields.push_back({"z", "float32", 1, 0});
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u)
-                << "3 x float32 = 12 bytes";
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u) << "3 x float32 = 12 bytes";
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
-        "python_engine::register_slot_type_multi_field",
-        Logger::GetLifecycleModule());
+        "python_engine::register_slot_type_multi_field", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_packed_packing(const std::string &dir)
@@ -488,26 +484,25 @@ int register_slot_type_packed_packing(const std::string &dir)
     // bool+int32 combination so that a compute_schema_size drift
     // for this schema would surface.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             SchemaSpec spec;
             spec.has_schema = true;
-            spec.fields.push_back({"flag", "bool",  1, 0});
-            spec.fields.push_back({"val",  "int32", 1, 0});
+            spec.fields.push_back({"flag", "bool", 1, 0});
+            spec.fields.push_back({"val", "int32", 1, 0});
 
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "packed"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "packed"));
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u)
                 << "packed: bool(1) + int32(4) = 5 — hand-verified "
                    "anchor for this schema";
@@ -529,30 +524,28 @@ int register_slot_type_packed_packing(const std::string &dir)
                    "packing than the original slot";
             engine.finalize();
         },
-        "python_engine::register_slot_type_packed_packing",
-        Logger::GetLifecycleModule());
+        "python_engine::register_slot_type_packed_packing", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_has_schema_false_returns_false(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             SchemaSpec spec;
             spec.has_schema = false;
-            EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                    "aligned"));
+            EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             // Additional invariant: a failed registration must not
             // leave the engine wedged.  build_api still succeeds
@@ -594,22 +587,21 @@ int register_slot_type_all_supported_types(const std::string &dir)
     // guards against per-packing layout bugs; this test guards
     // against per-type-dispatcher bugs.  No need to test both.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = all_types_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"))
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
                 << "every scalar type in all_types_schema must build a "
                    "ctypes struct — a missing dispatcher branch for any "
                    "scalar type would fail here";
@@ -622,8 +614,7 @@ int register_slot_type_all_supported_types(const std::string &dir)
             ASSERT_TRUE(engine.build_api(*api));
             engine.finalize();
         },
-        "python_engine::register_slot_type_all_supported_types",
-        Logger::GetLifecycleModule());
+        "python_engine::register_slot_type_all_supported_types", Logger::GetLifecycleModule());
 }
 
 // ── Alias creation ─────────────────────────────────────────────────────────
@@ -631,94 +622,86 @@ int register_slot_type_all_supported_types(const std::string &dir)
 int alias_slot_frame_producer(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
-            EXPECT_EQ(engine.type_sizeof("SlotFrame"),
-                      engine.type_sizeof("OutSlotFrame"))
+            EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"))
                 << "producer build_api must expose OutSlotFrame under "
                    "the role-agnostic 'SlotFrame' alias";
             EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
 
             engine.finalize();
         },
-        "python_engine::alias_slot_frame_producer",
-        Logger::GetLifecycleModule());
+        "python_engine::alias_slot_frame_producer", Logger::GetLifecycleModule());
 }
 
 int alias_slot_frame_consumer(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_consume(rx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_consume(rx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_consume"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_consume"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
             auto api = make_api(core, "cons");
             ASSERT_TRUE(engine.build_api(*api));
 
-            EXPECT_EQ(engine.type_sizeof("SlotFrame"),
-                      engine.type_sizeof("InSlotFrame"))
+            EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"))
                 << "consumer build_api must expose InSlotFrame under "
                    "the role-agnostic 'SlotFrame' alias";
             EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
 
             engine.finalize();
         },
-        "python_engine::alias_slot_frame_consumer",
-        Logger::GetLifecycleModule());
+        "python_engine::alias_slot_frame_consumer", Logger::GetLifecycleModule());
 }
 
 int alias_no_alias_processor(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_process(rx, tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_process(rx, tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_process"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_process"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core, "proc");
             ASSERT_TRUE(engine.build_api(*api));
@@ -732,66 +715,60 @@ int alias_no_alias_processor(const std::string &dir)
 
             engine.finalize();
         },
-        "python_engine::alias_no_alias_processor",
-        Logger::GetLifecycleModule());
+        "python_engine::alias_no_alias_processor", Logger::GetLifecycleModule());
 }
 
 int alias_flex_frame_producer(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
-            EXPECT_EQ(engine.type_sizeof("FlexFrame"),
-                      engine.type_sizeof("OutFlexFrame"))
+            EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"))
                 << "producer with registered OutFlexFrame must expose "
                    "'FlexFrame' alias";
             EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u);
 
             engine.finalize();
         },
-        "python_engine::alias_flex_frame_producer",
-        Logger::GetLifecycleModule());
+        "python_engine::alias_flex_frame_producer", Logger::GetLifecycleModule());
 }
 
 int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 {
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             // Deliberately NO OutFlexFrame registered.
 
             auto api = make_api(core);
@@ -805,8 +782,7 @@ int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 
             engine.finalize();
         },
-        "python_engine::alias_producer_no_fz_no_flex_frame_alias",
-        Logger::GetLifecycleModule());
+        "python_engine::alias_producer_no_fz_no_flex_frame_alias", Logger::GetLifecycleModule());
 }
 
 // ── Engine-internal dispatcher contract (chunk 1 gap-fill) ─────────────────
@@ -832,11 +808,11 @@ int supports_multi_state_returns_false(const std::string &dir)
     // to pin that the property is STRUCTURAL (not dependent on
     // role/script/schema state).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
 
             RoleHostCore core;
             PythonEngine engine;
@@ -852,12 +828,11 @@ int supports_multi_state_returns_false(const std::string &dir)
                    "not state-dependent";
 
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -870,8 +845,7 @@ int supports_multi_state_returns_false(const std::string &dir)
 
             engine.finalize();
         },
-        "python_engine::supports_multi_state_returns_false",
-        Logger::GetLifecycleModule());
+        "python_engine::supports_multi_state_returns_false", Logger::GetLifecycleModule());
 }
 
 // ── invoke_produce (chunk 2) ───────────────────────────────────────────────
@@ -912,15 +886,14 @@ def on_produce(tx, msgs, api):
         tx.slot.value = 42.0
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_FLOAT_EQ(buf, 42.0f);
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "commit path must not emit script errors";
+            EXPECT_EQ(engine.script_error_count(), 0u) << "commit path must not emit script errors";
         });
 }
 
@@ -942,11 +915,11 @@ def on_produce(tx, msgs, api):
     # deliberately do NOT touch tx.slot; return False
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            float buf = 777.0f;  // sentinel — Python script doesn't write
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
+            float buf = 777.0f; // sentinel — Python script doesn't write
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_FLOAT_EQ(buf, 777.0f)
                 << "engine must not write buf on Discard when Python didn't";
@@ -968,11 +941,11 @@ int invoke_produce_none_return_is_error(const std::string &dir)
 def on_produce(tx, msgs, api):
     pass  # no explicit return -> None -> error
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Error)
                 << "missing return is an error — must be explicit True/False";
             EXPECT_EQ(engine.script_error_count(), 1u);
@@ -999,7 +972,8 @@ def on_produce(tx, msgs, api):
     assert tx.slot is None, "expected None slot"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             auto result = engine.invoke_produce(InvokeTx{nullptr, 0}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
@@ -1012,21 +986,21 @@ def on_produce(tx, msgs, api):
 
 int invoke_produce_script_error(const std::string &dir)
 {
-    return produce_worker_with_script(
-        dir, "python_engine::invoke_produce_script_error",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::invoke_produce_script_error",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     raise RuntimeError("intentional error")
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            float buf = 0.0f;
-            std::vector<IncomingMessage> msgs;
-            EXPECT_EQ(engine.script_error_count(), 0u);
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
-            EXPECT_EQ(result, InvokeResult::Error);
-            EXPECT_EQ(engine.script_error_count(), 1u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          float buf = 0.0f;
+                                          std::vector<IncomingMessage> msgs;
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                          auto result = engine.invoke_produce(
+                                              InvokeTx{&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(result, InvokeResult::Error);
+                                          EXPECT_EQ(engine.script_error_count(), 1u);
+                                      });
 }
 
 int invoke_produce_wrong_return_type_is_error(const std::string &dir)
@@ -1043,13 +1017,12 @@ int invoke_produce_wrong_return_type_is_error(const std::string &dir)
 def on_produce(tx, msgs, api):
     return 42
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
-            EXPECT_EQ(result, InvokeResult::Error)
-                << "returning an int must be Error, not Commit";
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, InvokeResult::Error) << "returning an int must be Error, not Commit";
             EXPECT_EQ(engine.script_error_count(), 1u);
         });
 }
@@ -1064,13 +1037,12 @@ int invoke_produce_wrong_return_string_is_error(const std::string &dir)
 def on_produce(tx, msgs, api):
     return "ok"
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
-            EXPECT_EQ(result, InvokeResult::Error)
-                << "returning a str must be Error, not Commit";
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, InvokeResult::Error) << "returning a str must be Error, not Commit";
             EXPECT_EQ(engine.script_error_count(), 1u);
         });
 }
@@ -1121,11 +1093,11 @@ def on_consume(rx, msgs, api):
         f"expected value ~99.5, got {rx.slot.value}"
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float data = 99.5f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)},
-                                                 msgs);
+            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit)
                 << "on_consume returning True must map to Commit even though "
                    "the data loop currently ignores the return value";
@@ -1146,7 +1118,8 @@ def on_consume(rx, msgs, api):
     assert rx.slot is None, "expected None"
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             auto result = engine.invoke_consume(InvokeRx{nullptr, 0}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
@@ -1161,20 +1134,20 @@ int invoke_consume_script_error_detected(const std::string &dir)
     // checked script_error_count == 1).  Also asserts result == Error,
     // i.e. the engine translated the raised exception to Error, not
     // just bumped the counter and left the result indeterminate.
-    return consume_worker_with_script(
-        dir, "python_engine::invoke_consume_script_error_detected",
-        R"PY(
+    return consume_worker_with_script(dir, "python_engine::invoke_consume_script_error_detected",
+                                      R"PY(
 def on_consume(rx, msgs, api):
     raise RuntimeError("consume error")
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            float data = 1.0f;
-            std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)},
-                                                 msgs);
-            EXPECT_EQ(result, InvokeResult::Error);
-            EXPECT_EQ(engine.script_error_count(), 1u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          float data = 1.0f;
+                                          std::vector<IncomingMessage> msgs;
+                                          auto result = engine.invoke_consume(
+                                              InvokeRx{&data, sizeof(data)}, msgs);
+                                          EXPECT_EQ(result, InvokeResult::Error);
+                                          EXPECT_EQ(engine.script_error_count(), 1u);
+                                      });
 }
 
 int invoke_consume_rx_slot_is_read_only(const std::string &dir)
@@ -1225,19 +1198,18 @@ def on_consume(rx, msgs, api):
     rx.slot.value = 777.0
     return True  # unreachable if the write raises
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float data = 99.5f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)},
-                                                 msgs);
+            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
 
             // Four coupled assertions that together pin the design:
             //
             //  (a) buf unchanged — the read-only invariant.
-            EXPECT_FLOAT_EQ(data, 99.5f)
-                << "rx.slot write must NOT propagate to the underlying "
-                   "C buffer.  data==777.0 here would indicate the "
-                   "__setattr__ override was bypassed.";
+            EXPECT_FLOAT_EQ(data, 99.5f) << "rx.slot write must NOT propagate to the underlying "
+                                            "C buffer.  data==777.0 here would indicate the "
+                                            "__setattr__ override was bypassed.";
 
             //  (b) the library signals Error — loud, observable result.
             EXPECT_EQ(result, InvokeResult::Error)
@@ -1293,19 +1265,18 @@ def on_process(rx, tx, msgs, api):
         return True
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            float in_data  = 21.0f;
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
+            float in_data = 21.0f;
             float out_data = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{&in_data, sizeof(in_data)},
-                InvokeTx{&out_data, sizeof(out_data)}, msgs);
+            auto result = engine.invoke_process(InvokeRx{&in_data, sizeof(in_data)},
+                                                InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_FLOAT_EQ(out_data, 42.0f)
                 << "Python computed tx.slot.value = rx.slot.value * 2.0";
-            EXPECT_FLOAT_EQ(in_data, 21.0f)
-                << "rx.slot is read-only — input buffer must not be "
-                   "mutated by the dual-slot dispatch path";
+            EXPECT_FLOAT_EQ(in_data, 21.0f) << "rx.slot is read-only — input buffer must not be "
+                                               "mutated by the dual-slot dispatch path";
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
 }
@@ -1325,11 +1296,10 @@ def on_process(rx, tx, msgs, api):
     assert tx.slot is None, "expected None output (backpressure)"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{nullptr, 0},
-                InvokeTx{nullptr, 0}, msgs);
+            auto result = engine.invoke_process(InvokeRx{nullptr, 0}, InvokeTx{nullptr, 0}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Python `assert both None` must have passed; failure "
@@ -1356,15 +1326,14 @@ def on_process(rx, tx, msgs, api):
     assert tx.slot is None, "expected None output (backpressure)"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float in_data = 10.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{&in_data, sizeof(in_data)},
-                InvokeTx{nullptr, 0}, msgs);
+            auto result = engine.invoke_process(InvokeRx{&in_data, sizeof(in_data)},
+                                                InvokeTx{nullptr, 0}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
-            EXPECT_FLOAT_EQ(in_data, 10.0f)
-                << "rx is still read-only in the rx-only-no-tx path";
+            EXPECT_FLOAT_EQ(in_data, 10.0f) << "rx is still read-only in the rx-only-no-tx path";
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
 }
@@ -1392,22 +1361,20 @@ def on_process(rx, tx, msgs, api):
     tx.slot.value = 3.25    # unreachable
     return True             # unreachable
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            float in_data  = 99.5f;
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
+            float in_data = 99.5f;
             float out_data = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{&in_data, sizeof(in_data)},
-                InvokeTx{&out_data, sizeof(out_data)}, msgs);
+            auto result = engine.invoke_process(InvokeRx{&in_data, sizeof(in_data)},
+                                                InvokeTx{&out_data, sizeof(out_data)}, msgs);
 
             // Four coupled assertions pinning the design contract:
-            EXPECT_FLOAT_EQ(in_data, 99.5f)
-                << "rx.slot write must NOT propagate to the underlying "
-                   "rx buffer.";
-            EXPECT_EQ(result, InvokeResult::Error)
-                << "rx write in invoke_process must surface as "
-                   "InvokeResult::Error, same loud contract as "
-                   "invoke_consume.";
+            EXPECT_FLOAT_EQ(in_data, 99.5f) << "rx.slot write must NOT propagate to the underlying "
+                                               "rx buffer.";
+            EXPECT_EQ(result, InvokeResult::Error) << "rx write in invoke_process must surface as "
+                                                      "InvokeResult::Error, same loud contract as "
+                                                      "invoke_consume.";
             EXPECT_EQ(engine.script_error_count(), 1u);
             // tx never written because the AttributeError aborted the
             // callback on the preceding line.
@@ -1471,7 +1438,8 @@ def on_produce(tx, msgs, api):
     assert msgs[1].get("code") == 0, msgs[1].get("code")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
 
             IncomingMessage m1;
@@ -1482,12 +1450,11 @@ def on_produce(tx, msgs, api):
             IncomingMessage m2;
             m2.event = "channel_closing";
             m2.details["reason"] = "voluntary";
-            m2.details["code"]   = 0;
+            m2.details["code"] = 0;
             msgs.push_back(std::move(m2));
 
             float buf = 0.0f;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "a failing Python assert here indicates either #msgs "
@@ -1517,11 +1484,11 @@ def on_produce(tx, msgs, api):
     assert any_seen is False, "empty msgs should yield no entries"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            std::vector<IncomingMessage> msgs;  // empty
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
+            std::vector<IncomingMessage> msgs; // empty
             float buf = 0.0f;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1555,18 +1522,18 @@ def on_produce(tx, msgs, api):
     assert data == b"pong", f"data expected b'pong', got {data!r}"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             IncomingMessage m;
-            m.event = "";  // data message — empty event triggers bare/tuple projection
+            m.event = ""; // data message — empty event triggers bare/tuple projection
             m.sender = std::string("\xCA\xFE", 2);
             for (char c : std::string{"pong"})
                 m.data.push_back(static_cast<std::byte>(c));
             msgs.push_back(std::move(m));
 
             float buf = 0.0f;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "a failing Python assert here indicates the "
@@ -1603,12 +1570,13 @@ def on_consume(rx, msgs, api):
     assert msgs[1]["event"] == "channel_closing"
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             // Data message.
             IncomingMessage dm;
-            dm.sender = "sender-id";  // consumer drops sender in projection
-            dm.data   = {std::byte{0x41}, std::byte{0x42}};  // "AB"
+            dm.sender = "sender-id";                      // consumer drops sender in projection
+            dm.data = {std::byte{0x41}, std::byte{0x42}}; // "AB"
             msgs.push_back(std::move(dm));
             // Event message.
             IncomingMessage em;
@@ -1658,9 +1626,8 @@ int api_version_info_returns_json_string(const std::string &dir)
     //   - "version" substring (pins the schema key, not just "some
     //     JSON")
     //   - result == Discard (return-value dispatch)
-    return produce_worker_with_script(
-        dir, "python_engine::api_version_info_returns_json_string",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::api_version_info_returns_json_string",
+                                      R"PY(
 import pylabhub_producer
 
 def on_produce(tx, msgs, api):
@@ -1676,14 +1643,15 @@ def on_produce(tx, msgs, api):
         f"version_info should contain 'script_api_major' key: {info!r}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            float buf = 0.0f;
-            std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
-            EXPECT_EQ(result, InvokeResult::Discard);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          float buf = 0.0f;
+                                          std::vector<IncomingMessage> msgs;
+                                          auto result = engine.invoke_produce(
+                                              InvokeTx{&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(result, InvokeResult::Discard);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int wrong_role_module_import_raises_error(const std::string &dir)
@@ -1704,16 +1672,15 @@ int wrong_role_module_import_raises_error(const std::string &dir)
 def on_produce(tx, msgs, api):
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             // Engine set up as producer.  Consumer + processor must fail.
             auto r1 = engine.eval("__import__('pylabhub_consumer')");
-            EXPECT_EQ(r1.status,
-                      pylabhub::scripting::InvokeStatus::ScriptError)
+            EXPECT_EQ(r1.status, pylabhub::scripting::InvokeStatus::ScriptError)
                 << "importing pylabhub_consumer from producer must fail";
 
             auto r2 = engine.eval("__import__('pylabhub_processor')");
-            EXPECT_EQ(r2.status,
-                      pylabhub::scripting::InvokeStatus::ScriptError)
+            EXPECT_EQ(r2.status, pylabhub::scripting::InvokeStatus::ScriptError)
                 << "importing pylabhub_processor from producer must fail";
 
             // Both failures should have bumped the counter.
@@ -1733,16 +1700,15 @@ def on_produce(tx, msgs, api):
     api.stop()
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             EXPECT_FALSE(core.is_shutdown_requested());
 
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
-            EXPECT_TRUE(core.is_shutdown_requested())
-                << "api.stop() must set shutdown_requested";
+            EXPECT_TRUE(core.is_shutdown_requested()) << "api.stop() must set shutdown_requested";
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
 }
@@ -1780,20 +1746,19 @@ def on_produce(tx, msgs, api):
         f"post-state: stop_reason must be 'critical_error', got {api.stop_reason()!r}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             EXPECT_FALSE(core.is_critical_error());
             EXPECT_FALSE(core.is_shutdown_requested());
 
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_TRUE(core.is_critical_error())
                 << "api.set_critical_error() must set critical_error_";
-            EXPECT_TRUE(core.is_shutdown_requested())
-                << "api.set_critical_error() must also set "
-                   "shutdown_requested_";
+            EXPECT_TRUE(core.is_shutdown_requested()) << "api.set_critical_error() must also set "
+                                                         "shutdown_requested_";
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "the in-script assertions must have all passed";
         });
@@ -1827,7 +1792,8 @@ def on_produce(tx, msgs, api):
         f"stop_reason mismatch: expected {_expected!r}, got {got!r}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             // Execute once per enum value.  Set _expected via eval()
             // before each invoke; eval+invoke share the same
             // interpreter state so the global persists.
@@ -1837,26 +1803,23 @@ def on_produce(tx, msgs, api):
                 const char *expected;
             };
             const Case cases[] = {
-                {RoleHostCore::StopReason::Normal,        "normal"},
-                {RoleHostCore::StopReason::PeerDead,      "peer_dead"},
-                {RoleHostCore::StopReason::HubDead,       "hub_dead"},
+                {RoleHostCore::StopReason::Normal, "normal"},
+                {RoleHostCore::StopReason::PeerDead, "peer_dead"},
+                {RoleHostCore::StopReason::HubDead, "hub_dead"},
                 {RoleHostCore::StopReason::CriticalError, "critical_error"},
             };
             for (const auto &c : cases)
             {
                 core.set_stop_reason(c.reason);
                 // Set _expected via eval in the script module.
-                engine.eval(std::string("_set_expected('") + c.expected
-                            + "')");
+                engine.eval(std::string("_set_expected('") + c.expected + "')");
 
                 float buf = 0.0f;
                 std::vector<IncomingMessage> msgs;
-                auto result = engine.invoke_produce(
-                    InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(result, InvokeResult::Discard);
                 EXPECT_EQ(engine.script_error_count(), 0u)
-                    << "stop_reason mismatch for enum value → "
-                    << c.expected;
+                    << "stop_reason mismatch for enum value → " << c.expected;
             }
         });
 }
@@ -1909,23 +1872,23 @@ def on_produce(tx, msgs, api):
         assert api.loop_overrun_count() == 3, api.loop_overrun_count()
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
 
             // Phase 1: all zero.
             engine.eval("_next_phase()");
-            auto r1 = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                             msgs);
+            auto r1 = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r1, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            // Mutate core counters.  test_set_* is a backdoor surface
-            // gated by `defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)`
-            // — absent in Release builds (HEP-CORE-0032 §3.2).  The
-            // calling TEST_F SKIPs in NDEBUG so this worker function
-            // is never invoked in Release; the #if here keeps the
-            // worker .cpp itself compiling.
+        // Mutate core counters.  test_set_* is a backdoor surface
+        // gated by `defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)`
+        // — absent in Release builds (HEP-CORE-0032 §3.2).  The
+        // calling TEST_F SKIPs in NDEBUG so this worker function
+        // is never invoked in Release; the #if here keeps the
+        // worker .cpp itself compiling.
 #if !defined(NDEBUG)
             core.test_set_out_slots_written(42);
             core.test_set_out_drop_count(7);
@@ -1936,8 +1899,7 @@ def on_produce(tx, msgs, api):
 
             // Phase 2: read-back from callback.
             engine.eval("_next_phase()");
-            auto r2 = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                             msgs);
+            auto r2 = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r2, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1962,7 +1924,8 @@ def on_consume(rx, msgs, api):
         assert api.in_slots_received() == 15, api.in_slots_received()
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
 
             engine.eval("_next_phase()");
@@ -1971,7 +1934,7 @@ def on_consume(rx, msgs, api):
             EXPECT_EQ(engine.script_error_count(), 0u);
 
 #if !defined(NDEBUG)
-            core.test_set_in_slots_received(15);  // backdoor — see HEP-CORE-0032 §3.2
+            core.test_set_in_slots_received(15); // backdoor — see HEP-CORE-0032 §3.2
 #endif
 
             engine.eval("_next_phase()");
@@ -2007,7 +1970,8 @@ def _flip_to_check():
     global _in_check_mode
     _in_check_mode = True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
 
@@ -2023,8 +1987,7 @@ def _flip_to_check():
             // invocation is itself a successful (non-raising) Discard,
             // so the counter stays at 5.
             engine.eval("_flip_to_check()");
-            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                            msgs);
+            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 5u)
                 << "successful check invocation must NOT bump counter";
@@ -2047,7 +2010,8 @@ int stop_on_script_error_sets_shutdown_on_error(const std::string &dir)
     // we need true for this test.  Mirrors the Lua equivalent at
     // lua_engine_workers.cpp.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -2058,15 +2022,14 @@ def on_produce(tx, msgs, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir / "script" / "python",
-                                            "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
-            api->set_stop_on_script_error(true);  // ← key difference
+            api->set_stop_on_script_error(true); // ← key difference
             ASSERT_TRUE(engine.build_api(*api));
 
             EXPECT_FALSE(core.is_shutdown_requested());
@@ -2098,8 +2061,7 @@ def on_produce(tx, msgs, api):
 
             engine.finalize();
         },
-        "python_engine::stop_on_script_error_sets_shutdown_on_error",
-        Logger::GetLifecycleModule());
+        "python_engine::stop_on_script_error_sets_shutdown_on_error", Logger::GetLifecycleModule());
 }
 
 int metrics_all_loop_fields_anchored_values(const std::string &dir)
@@ -2113,9 +2075,8 @@ int metrics_all_loop_fields_anchored_values(const std::string &dir)
     // A regression adding/removing/renaming a loop field must be
     // loud.  Type-checks all 5 as int + anchors each to a specific
     // non-default value from C++.
-    return produce_worker_with_script(
-        dir, "python_engine::metrics_all_loop_fields_anchored_values",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::metrics_all_loop_fields_anchored_values",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     m = api.metrics()
     assert "loop" in m, f"'loop' group missing from metrics: {list(m.keys())}"
@@ -2145,22 +2106,25 @@ def on_produce(tx, msgs, api):
         f"unexpected loop fields (update test): {sorted(unexpected)}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
-            // Seed all 5 loop fields from C++ before the invoke.
-            for (int i = 0; i < 5; ++i) core.inc_iteration_count();
-            core.inc_loop_overrun();
-            core.inc_loop_overrun();
-            core.set_last_cycle_work_us(999);
-            core.set_configured_period(10000);
-            for (int i = 0; i < 17; ++i) core.inc_acquire_retry();
+                                      [](PythonEngine &engine, RoleHostCore &core)
+                                      {
+                                          // Seed all 5 loop fields from C++ before the invoke.
+                                          for (int i = 0; i < 5; ++i)
+                                              core.inc_iteration_count();
+                                          core.inc_loop_overrun();
+                                          core.inc_loop_overrun();
+                                          core.set_last_cycle_work_us(999);
+                                          core.set_configured_period(10000);
+                                          for (int i = 0; i < 17; ++i)
+                                              core.inc_acquire_retry();
 
-            float buf = 0.0f;
-            std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
-            EXPECT_EQ(result, InvokeResult::Discard);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                          float buf = 0.0f;
+                                          std::vector<IncomingMessage> msgs;
+                                          auto result = engine.invoke_produce(
+                                              InvokeTx{&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(result, InvokeResult::Discard);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
@@ -2200,11 +2164,11 @@ def on_produce(tx, msgs, api):
         f"got {sorted(role_got)}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -2238,7 +2202,8 @@ def on_produce(tx, msgs, api):
     assert sec == 2, f"script_error_count expected 2, got {sec}"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
 
@@ -2251,10 +2216,8 @@ def on_produce(tx, msgs, api):
 
             // Phase 3: read back via api.metrics().
             engine.eval("_next_phase()");
-            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                            msgs);
-            EXPECT_EQ(r, InvokeResult::Discard)
-                << "the readback invocation must succeed";
+            auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(r, InvokeResult::Discard) << "the readback invocation must succeed";
             EXPECT_EQ(engine.script_error_count(), 2u)
                 << "readback invocation did not raise — counter stays at 2";
         });
@@ -2279,19 +2242,18 @@ int load_script_missing_file(const std::string &dir)
     // script from '<dir>': <exc>".  Pin that ERROR fragment at
     // parent level.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            EXPECT_FALSE(engine.load_script(
-                script_dir / "nonexistent" / "path",
-                "__init__.py", "on_produce"));
+            EXPECT_FALSE(engine.load_script(script_dir / "nonexistent" / "path", "__init__.py",
+                                            "on_produce"));
             engine.finalize();
         },
-        "python_engine::load_script_missing_file",
-        Logger::GetLifecycleModule());
+        "python_engine::load_script_missing_file", Logger::GetLifecycleModule());
 }
 
 int load_script_missing_required_callback(const std::string &dir)
@@ -2301,7 +2263,8 @@ int load_script_missing_required_callback(const std::string &dir)
     // (python_engine.cpp) when required_callback is absent.
     // Pin the exact fragment at parent level.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_init(api):
@@ -2312,13 +2275,11 @@ def on_init(api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            EXPECT_FALSE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            EXPECT_FALSE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
             engine.finalize();
         },
-        "python_engine::load_script_missing_required_callback",
-        Logger::GetLifecycleModule());
+        "python_engine::load_script_missing_required_callback", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_bad_field_type(const std::string &dir)
@@ -2340,37 +2301,33 @@ int register_slot_type_bad_field_type(const std::string &dir)
     // Log fragment: "register_slot_type('OutSlotFrame') failed:
     // <exc>" from python_engine.cpp.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return True\n");
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             hub::SchemaSpec bad_spec;
             bad_spec.has_schema = true;
             hub::FieldDef f;
-            f.name     = "x";
-            f.type_str = "complex128";  // unsupported type
-            f.count    = 1;
-            f.length   = 0;
+            f.name = "x";
+            f.type_str = "complex128"; // unsupported type
+            f.count = 1;
+            f.length = 0;
             bad_spec.fields.push_back(f);
 
-            EXPECT_FALSE(engine.register_slot_type(bad_spec,
-                                                    "OutSlotFrame",
-                                                    "aligned"))
+            EXPECT_FALSE(engine.register_slot_type(bad_spec, "OutSlotFrame", "aligned"))
                 << "bad field type must fail via the build_ctypes_type_ "
                    "exception path, not the canonical-name check";
             engine.finalize();
         },
-        "python_engine::register_slot_type_bad_field_type",
-        Logger::GetLifecycleModule());
+        "python_engine::register_slot_type_bad_field_type", Logger::GetLifecycleModule());
 }
 
 int load_script_syntax_error(const std::string &dir)
@@ -2381,23 +2338,21 @@ int load_script_syntax_error(const std::string &dir)
     // '<dir>': <exc>" where <exc> includes "SyntaxError".  Pin the
     // "SyntaxError" fragment.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             // Missing colon after signature → SyntaxError.
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api)\n"
-                         "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api)\n"
+                                     "    return True\n");
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            EXPECT_FALSE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            EXPECT_FALSE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
             engine.finalize();
         },
-        "python_engine::load_script_syntax_error",
-        Logger::GetLifecycleModule());
+        "python_engine::load_script_syntax_error", Logger::GetLifecycleModule());
 }
 
 int has_callback(const std::string &dir)
@@ -2414,7 +2369,8 @@ int has_callback(const std::string &dir)
     // This test pins that contract so a regression restricting
     // Python to canonical-only would surface.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -2431,9 +2387,8 @@ def user_helper():
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             // Canonical callbacks — presence reflects what the script
             // actually defines.
@@ -2455,48 +2410,47 @@ def user_helper():
 
             engine.finalize();
         },
-        "python_engine::has_callback",
-        Logger::GetLifecycleModule());
+        "python_engine::has_callback", Logger::GetLifecycleModule());
 }
 
 int invoke_on_init_script_error(const std::string &dir)
 {
     // Strengthened vs V2 (EXPECT_GE → EXPECT_EQ == 1u, + ERROR text).
-    return produce_worker_with_script(
-        dir, "python_engine::invoke_on_init_script_error",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::invoke_on_init_script_error",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     return True
 
 def on_init(api):
     raise RuntimeError("init exploded")
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            EXPECT_EQ(engine.script_error_count(), 0u);
-            engine.invoke_on_init();
-            EXPECT_EQ(engine.script_error_count(), 1u)
-                << "on_init raising exactly once must set count to 1";
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                          engine.invoke_on_init();
+                                          EXPECT_EQ(engine.script_error_count(), 1u)
+                                              << "on_init raising exactly once must set count to 1";
+                                      });
 }
 
 int invoke_on_stop_script_error(const std::string &dir)
 {
     // Strengthened vs V2 (EXPECT_GE → EXPECT_EQ == 1u, + ERROR text).
-    return produce_worker_with_script(
-        dir, "python_engine::invoke_on_stop_script_error",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::invoke_on_stop_script_error",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     return True
 
 def on_stop(api):
     raise RuntimeError("stop exploded")
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            EXPECT_EQ(engine.script_error_count(), 0u);
-            engine.invoke_on_stop();
-            EXPECT_EQ(engine.script_error_count(), 1u)
-                << "on_stop raising exactly once must set count to 1";
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                          engine.invoke_on_stop();
+                                          EXPECT_EQ(engine.script_error_count(), 1u)
+                                              << "on_stop raising exactly once must set count to 1";
+                                      });
 }
 
 int invoke_on_inbox_script_error(const std::string &dir)
@@ -2525,7 +2479,8 @@ int invoke_on_inbox_script_error(const std::string &dir)
     //       "inbox exploded" ERROR substring pinning at the parent
     //       level would miss.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -2555,15 +2510,12 @@ def on_inbox(msg, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -2575,8 +2527,7 @@ def on_inbox(msg, api):
             // zero page), data.value would be 0.0 and the assert
             // would fire.
             float inbox_data = 3.25f;
-            engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data),
-                                     "SENDER-00000001", 42});
+            engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "SENDER-00000001", 42});
             EXPECT_EQ(engine.script_error_count(), 1u)
                 << "on_inbox raising exactly once must set count to 1";
 
@@ -2591,8 +2542,7 @@ def on_inbox(msg, api):
 
             engine.finalize();
         },
-        "python_engine::invoke_on_inbox_script_error",
-        Logger::GetLifecycleModule());
+        "python_engine::invoke_on_inbox_script_error", Logger::GetLifecycleModule());
 }
 
 // ── State + slot + inbox (chunk 9) ─────────────────────────────────────────
@@ -2646,13 +2596,13 @@ def on_produce(tx, msgs, api):
         tx.slot.value = float(call_count)
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             for (size_t i = 1; i <= 4; ++i)
             {
                 float buf = 0.0f;
-                auto  r   = engine.invoke_produce(
-                    InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto r = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(r, InvokeResult::Commit);
                 EXPECT_FLOAT_EQ(buf, static_cast<float>(i))
                     << "call_count must be " << i << " on iteration " << i
@@ -2711,7 +2661,8 @@ int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir)
     // engine test here pins the engine's interface contract
     // independent of the queue backing.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -2760,9 +2711,8 @@ def on_produce(tx, msgs, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             // Adversarial-padding slot schema (padding_schema):
             //   ts    float64   @  0 (8)         ← aligned, no pre-pad
@@ -2780,8 +2730,7 @@ def on_produce(tx, msgs, api):
             // read-back would see count=0 (or whatever noise lives in
             // the padding bytes).
             auto slot_spec = padding_schema();
-            ASSERT_TRUE(engine.register_slot_type(slot_spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(slot_spec, "OutSlotFrame", "aligned"));
 
             // Adversarial-padding flex schema (complex_mixed_schema):
             //   timestamp float64    @  0 (8)
@@ -2800,19 +2749,16 @@ def on_produce(tx, msgs, api):
             // the L2 guard path (api.flexzone returns None) is what
             // we want to exercise alongside the complex registration.
             auto flex_spec = complex_mixed_schema();
-            ASSERT_TRUE(engine.register_slot_type(flex_spec, "OutFlexFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(flex_spec, "OutFlexFrame", "aligned"));
 
-            const size_t slot_sz =
-                pylabhub::hub::compute_schema_size(slot_spec, "aligned");
+            const size_t slot_sz = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
             ASSERT_EQ(slot_sz, 16u);
             // Sanity: engine's ctypes sizeof must agree with
             // compute_schema_size under the padding schema — any
             // divergence here would make the in-script field assign
             // land outside the buffer.
             ASSERT_EQ(engine.type_sizeof("OutSlotFrame"), slot_sz);
-            ASSERT_EQ(pylabhub::hub::compute_schema_size(flex_spec, "aligned"),
-                      56u);
+            ASSERT_EQ(pylabhub::hub::compute_schema_size(flex_spec, "aligned"), 56u);
             ASSERT_EQ(engine.type_sizeof("OutFlexFrame"), 56u);
 
             auto api = make_api(core);
@@ -2821,8 +2767,7 @@ def on_produce(tx, msgs, api):
             // 16-byte buffer matching the adversarial slot layout.
             std::vector<std::byte> slot_buf(slot_sz, std::byte{0});
             std::vector<IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                InvokeTx{slot_buf.data(), slot_buf.size()}, msgs);
+            auto r = engine.invoke_produce(InvokeTx{slot_buf.data(), slot_buf.size()}, msgs);
             EXPECT_EQ(r, InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "any in-script assert failure (hasattr fz, "
@@ -2834,20 +2779,17 @@ def on_produce(tx, msgs, api):
             // padding schema.  If the padding builder were broken,
             // these would read the wrong bytes (zero from the
             // interior pad, or noise from an adjacent field).
-            double  ts    = 0.0;
-            uint8_t flag  = 0;
+            double ts = 0.0;
+            uint8_t flag = 0;
             int32_t count = 0;
-            std::memcpy(&ts,    slot_buf.data() +  0, sizeof(ts));
-            std::memcpy(&flag,  slot_buf.data() +  8, sizeof(flag));
+            std::memcpy(&ts, slot_buf.data() + 0, sizeof(ts));
+            std::memcpy(&flag, slot_buf.data() + 8, sizeof(flag));
             std::memcpy(&count, slot_buf.data() + 12, sizeof(count));
-            EXPECT_DOUBLE_EQ(ts, 42.5)
-                << "tx.slot.ts must round-trip to offset 0 (float64)";
-            EXPECT_EQ(flag, 7u)
-                << "tx.slot.flag must round-trip to offset 8 (uint8)";
-            EXPECT_EQ(count, -3)
-                << "tx.slot.count must round-trip to offset 12 — the "
-                   "3-byte pad (offset 9..11) between flag and count "
-                   "is the padding regression guard";
+            EXPECT_DOUBLE_EQ(ts, 42.5) << "tx.slot.ts must round-trip to offset 0 (float64)";
+            EXPECT_EQ(flag, 7u) << "tx.slot.flag must round-trip to offset 8 (uint8)";
+            EXPECT_EQ(count, -3) << "tx.slot.count must round-trip to offset 12 — the "
+                                    "3-byte pad (offset 9..11) between flag and count "
+                                    "is the padding regression guard";
 
             engine.finalize();
         },
@@ -2888,7 +2830,8 @@ int invoke_on_inbox_typed_data(const std::string &dir)
     //   (4) Read-only enforcement — one per field — catches any
     //       regression that unwrapped the read-only guard.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             // Inbox schema: multifield_schema (adversarial padding,
             // 40 bytes aligned):
@@ -2969,21 +2912,17 @@ def on_inbox(msg, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             // Producer requires OutSlotFrame.  Kept simple here; the
             // adversarial padding belongs on the inbox path (the
             // subject of this test).
-            ASSERT_TRUE(engine.register_slot_type(simple_schema(),
-                                                  "OutSlotFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(simple_schema(), "OutSlotFrame", "aligned"));
 
             // InboxFrame: adversarial multifield_schema (40 bytes).
             auto inbox_spec = multifield_schema();
-            ASSERT_TRUE(engine.register_slot_type(inbox_spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(inbox_spec, "InboxFrame", "aligned"));
 
             // Also register OutFlexFrame with a distinct complex spec
             // (fz_array_schema: uint32 + float64[2] = 24 bytes).
@@ -2993,17 +2932,14 @@ def on_inbox(msg, api):
             // would surface as either wrong size or wrong layout on
             // msg.data.
             auto flex_spec = fz_array_schema();
-            ASSERT_TRUE(engine.register_slot_type(flex_spec, "OutFlexFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(flex_spec, "OutFlexFrame", "aligned"));
 
-            const size_t inbox_sz =
-                pylabhub::hub::compute_schema_size(inbox_spec, "aligned");
+            const size_t inbox_sz = pylabhub::hub::compute_schema_size(inbox_spec, "aligned");
             ASSERT_EQ(inbox_sz, 40u);
             ASSERT_EQ(engine.type_sizeof("InboxFrame"), inbox_sz);
             // Distinct flex size proves name-keying under the combo.
             ASSERT_EQ(engine.type_sizeof("OutFlexFrame"), 24u);
-            ASSERT_NE(engine.type_sizeof("InboxFrame"),
-                      engine.type_sizeof("OutFlexFrame"));
+            ASSERT_NE(engine.type_sizeof("InboxFrame"), engine.type_sizeof("OutFlexFrame"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -3013,19 +2949,19 @@ def on_inbox(msg, api):
             // memcpy (not a packed struct literal) so the test is not
             // itself dependent on the host compiler's struct layout.
             std::vector<std::byte> inbox_buf(inbox_sz, std::byte{0});
-            const double  ts     = 77.0;
-            const uint8_t flag   = 3;
-            const int32_t count  = -42;
-            const float   vals[3] = {1.5f, 2.5f, 3.5f};
-            const char    tag[8] = {'A','B','C','D','E','F','G','H'};
-            std::memcpy(inbox_buf.data() +  0, &ts,    sizeof(ts));
-            std::memcpy(inbox_buf.data() +  8, &flag,  sizeof(flag));
+            const double ts = 77.0;
+            const uint8_t flag = 3;
+            const int32_t count = -42;
+            const float vals[3] = {1.5f, 2.5f, 3.5f};
+            const char tag[8] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'};
+            std::memcpy(inbox_buf.data() + 0, &ts, sizeof(ts));
+            std::memcpy(inbox_buf.data() + 8, &flag, sizeof(flag));
             std::memcpy(inbox_buf.data() + 12, &count, sizeof(count));
-            std::memcpy(inbox_buf.data() + 16, vals,   sizeof(vals));
-            std::memcpy(inbox_buf.data() + 28, tag,    sizeof(tag));
+            std::memcpy(inbox_buf.data() + 16, vals, sizeof(vals));
+            std::memcpy(inbox_buf.data() + 28, tag, sizeof(tag));
 
-            engine.invoke_on_inbox({inbox_buf.data(), inbox_buf.size(),
-                                     "prod.sender.uid00000001", 7});
+            engine.invoke_on_inbox(
+                {inbox_buf.data(), inbox_buf.size(), "prod.sender.uid00000001", 7});
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Python-side asserts (ctypes.Structure, each field "
                    "at its padded offset, sender_uid, seq, read-only "
@@ -3034,8 +2970,7 @@ def on_inbox(msg, api):
 
             engine.finalize();
         },
-        "python_engine::invoke_on_inbox_typed_data",
-        Logger::GetLifecycleModule());
+        "python_engine::invoke_on_inbox_typed_data", Logger::GetLifecycleModule());
 }
 
 int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
@@ -3071,19 +3006,18 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
     //       both.  Using distinct specs + distinct expected sizes
     //       turns a false-positive test into a real one.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "def on_produce(tx, msgs, api):\n"
-                         "    return False\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    return False\n");
 
             RoleHostCore core;
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             // Three canonical type buckets, each with a distinct
             // adversarial-padding spec from test_schema_helpers.h.
@@ -3105,25 +3039,19 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
             //   OutFlexFrame ← multifield_schema   (40 bytes)
             //     float64 + uint8 + 3-byte pad + int32 + float32[3]
             //     + bytes[8] + 4-byte trailing pad = 40 bytes aligned.
-            auto slot_spec  = padding_schema();
+            auto slot_spec = padding_schema();
             auto inbox_spec = complex_mixed_schema();
-            auto flex_spec  = multifield_schema();
-            ASSERT_TRUE(engine.register_slot_type(slot_spec,  "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(inbox_spec, "InboxFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(flex_spec,  "OutFlexFrame",
-                                                   "aligned"));
+            auto flex_spec = multifield_schema();
+            ASSERT_TRUE(engine.register_slot_type(slot_spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(inbox_spec, "InboxFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(flex_spec, "OutFlexFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
-            const size_t slot_expected =
-                pylabhub::hub::compute_schema_size(slot_spec,  "aligned");
-            const size_t inbox_expected =
-                pylabhub::hub::compute_schema_size(inbox_spec, "aligned");
-            const size_t flex_expected =
-                pylabhub::hub::compute_schema_size(flex_spec,  "aligned");
+            const size_t slot_expected = pylabhub::hub::compute_schema_size(slot_spec, "aligned");
+            const size_t inbox_expected = pylabhub::hub::compute_schema_size(inbox_spec, "aligned");
+            const size_t flex_expected = pylabhub::hub::compute_schema_size(flex_spec, "aligned");
 
             // (1) Canonical agreement — engine ctypes sizeof must
             //     match compute_schema_size under adversarial padding
@@ -3132,32 +3060,28 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
             //     missed the trailing struct-alignment pad would
             //     diverge on at least one of these three.
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), slot_expected);
-            EXPECT_EQ(engine.type_sizeof("InboxFrame"),   inbox_expected);
+            EXPECT_EQ(engine.type_sizeof("InboxFrame"), inbox_expected);
             EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), flex_expected);
 
             // (2) Exact layout values — pin the multi-field padding
             //     math so a regression in compute_schema_size itself
             //     would fail here (defence in depth: (1) agrees the
             //     two sources, (2) grounds both against a constant).
-            EXPECT_EQ(slot_expected,  16u)
+            EXPECT_EQ(slot_expected, 16u)
                 << "padding_schema: float64 + uint8 + 3pad + int32 = 16 bytes";
             EXPECT_EQ(inbox_expected, 56u)
                 << "complex_mixed_schema: f64 + f32[3] + u16 + bytes[5] + "
                    "string[16] + 5pad + i64 = 56 bytes";
-            EXPECT_EQ(flex_expected,  40u)
-                << "multifield_schema: f64 + u8 + 3pad + i32 + f32[3] + "
-                   "bytes[8] + 4pad = 40 bytes";
+            EXPECT_EQ(flex_expected, 40u) << "multifield_schema: f64 + u8 + 3pad + i32 + f32[3] + "
+                                             "bytes[8] + 4pad = 40 bytes";
 
             // (3) Name-keyed storage — ALL three sizes must be
             //     pairwise distinct (16 / 56 / 40).  A "last type
             //     wins" or shared-Structure regression would fold two
             //     or more to the same value.
-            EXPECT_NE(engine.type_sizeof("OutSlotFrame"),
-                      engine.type_sizeof("InboxFrame"));
-            EXPECT_NE(engine.type_sizeof("OutSlotFrame"),
-                      engine.type_sizeof("OutFlexFrame"));
-            EXPECT_NE(engine.type_sizeof("InboxFrame"),
-                      engine.type_sizeof("OutFlexFrame"))
+            EXPECT_NE(engine.type_sizeof("OutSlotFrame"), engine.type_sizeof("InboxFrame"));
+            EXPECT_NE(engine.type_sizeof("OutSlotFrame"), engine.type_sizeof("OutFlexFrame"));
+            EXPECT_NE(engine.type_sizeof("InboxFrame"), engine.type_sizeof("OutFlexFrame"))
                 << "all three type_sizeof values must be distinct — "
                    "any collapse means the engine's type map is "
                    "storing a shared Structure across names";
@@ -3174,17 +3098,13 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
             //     A regression where "packed" is silently ignored
             //     and the builder falls back to aligned would
             //     return 40.
-            ASSERT_TRUE(engine.register_slot_type(flex_spec, "InFlexFrame",
-                                                   "packed"));
-            const size_t flex_packed =
-                pylabhub::hub::compute_schema_size(flex_spec, "packed");
-            EXPECT_EQ(flex_packed, 33u)
-                << "packed multifield_schema drops 3+4 pad bytes = 33";
+            ASSERT_TRUE(engine.register_slot_type(flex_spec, "InFlexFrame", "packed"));
+            const size_t flex_packed = pylabhub::hub::compute_schema_size(flex_spec, "packed");
+            EXPECT_EQ(flex_packed, 33u) << "packed multifield_schema drops 3+4 pad bytes = 33";
             EXPECT_EQ(engine.type_sizeof("InFlexFrame"), flex_packed)
                 << "engine must honour packing arg — sizeof(packed) "
                    "must equal compute_schema_size(\"packed\")";
-            EXPECT_LT(engine.type_sizeof("InFlexFrame"),
-                      engine.type_sizeof("OutFlexFrame"))
+            EXPECT_LT(engine.type_sizeof("InFlexFrame"), engine.type_sizeof("OutFlexFrame"))
                 << "packed layout must be strictly smaller than "
                    "aligned for multifield_schema — pins that the "
                    "packing arg is honoured end-to-end";
@@ -3204,7 +3124,8 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
     // assertion-free script body below), script_error_count would be
     // >= 2 and the EQ assertion would fail loudly.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -3218,21 +3139,18 @@ def on_inbox(msg, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             // Deliberately NO InboxFrame registration.
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
             float raw = 1.0f;
-            engine.invoke_on_inbox({&raw, sizeof(raw),
-                                     "cons.sender.uid00000001", 1});
+            engine.invoke_on_inbox({&raw, sizeof(raw), "cons.sender.uid00000001", 1});
             EXPECT_EQ(engine.script_error_count(), 1u)
                 << "missing InboxFrame must increment script_error_count "
                    "by EXACTLY 1 — more would mean the guard cascaded or "
@@ -3240,8 +3158,7 @@ def on_inbox(msg, api):
 
             engine.finalize();
         },
-        "python_engine::invoke_on_inbox_missing_type_reports_error",
-        Logger::GetLifecycleModule());
+        "python_engine::invoke_on_inbox_missing_type_reports_error", Logger::GetLifecycleModule());
 }
 
 int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir)
@@ -3261,19 +3178,18 @@ int invoke_produce_discard_on_false_but_python_wrote_slot(const std::string &dir
     // they'd get stale data.  Mirrors the Lua gap-fill
     // invoke_produce_discard_on_false_but_lua_wrote_slot.
     return produce_worker_with_script(
-        dir,
-        "python_engine::invoke_produce_discard_on_false_but_python_wrote_slot",
+        dir, "python_engine::invoke_produce_discard_on_false_but_python_wrote_slot",
         R"PY(
 def on_produce(tx, msgs, api):
     if tx.slot is not None:
         tx.slot.value = 42.0
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)},
-                                                 msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard)
                 << "explicit `return False` must yield Discard";
             EXPECT_FLOAT_EQ(buf, 42.0f)
@@ -3318,7 +3234,8 @@ def on_heartbeat():
     global heartbeat_ran
     heartbeat_ran = True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_TRUE(engine.invoke("on_heartbeat"))
                 << "invoke of an existing no-arg function must return true";
 
@@ -3328,10 +3245,10 @@ def on_heartbeat():
             // compare against a JSON bool directly.
             auto r = engine.eval("heartbeat_ran");
             EXPECT_EQ(r.status, pylabhub::scripting::InvokeStatus::Ok);
-            EXPECT_EQ(r.value, true)
-                << "on_heartbeat must have set heartbeat_ran=True — "
-                   "invoke() returned true but dispatch did not run "
-                   "the function (got eval result: " << r.value << ")";
+            EXPECT_EQ(r.value, true) << "on_heartbeat must have set heartbeat_ran=True — "
+                                        "invoke() returned true but dispatch did not run "
+                                        "the function (got eval result: "
+                                     << r.value << ")";
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
 }
@@ -3349,7 +3266,8 @@ int invoke_non_existent_function_returns_false(const std::string &dir)
     return produce_worker_with_script(
         dir, "python_engine::invoke_non_existent_function_returns_false",
         "def on_produce(tx, msgs, api):\n    return True\n",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_FALSE(engine.invoke("no_such_function"));
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "NotFound dispatch must NOT increment "
@@ -3367,28 +3285,26 @@ int invoke_empty_name_returns_false(const std::string &dir)
     // at python_engine.cpp:626) rather than relying on
     // getattr("") throwing — both paths return false, but the
     // former costs no GIL acquire.
-    return produce_worker_with_script(
-        dir, "python_engine::invoke_empty_name_returns_false",
-        "def on_produce(tx, msgs, api):\n    return True\n",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            EXPECT_FALSE(engine.invoke(""));
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "empty-name dispatch must NOT increment "
-                   "script_error_count — early guard, not a script "
-                   "runtime failure";
-        });
+    return produce_worker_with_script(dir, "python_engine::invoke_empty_name_returns_false",
+                                      "def on_produce(tx, msgs, api):\n    return True\n",
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          EXPECT_FALSE(engine.invoke(""));
+                                          EXPECT_EQ(engine.script_error_count(), 0u)
+                                              << "empty-name dispatch must NOT increment "
+                                                 "script_error_count — early guard, not a script "
+                                                 "runtime failure";
+                                      });
 }
 
-int invoke_script_error_returns_false_and_increments_errors(
-    const std::string &dir)
+int invoke_script_error_returns_false_and_increments_errors(const std::string &dir)
 {
     // Directly maps to V2 — strengthened only by pinning the
     // ERROR-log substring at the parent level (caller passes
     // expected_error_substrings = {"intentional test error"}).  V2
     // already checked false return + count == 1.
     return produce_worker_with_script(
-        dir,
-        "python_engine::invoke_script_error_returns_false_and_increments_errors",
+        dir, "python_engine::invoke_script_error_returns_false_and_increments_errors",
         R"PY(
 def on_produce(tx, msgs, api):
     return True
@@ -3396,7 +3312,8 @@ def on_produce(tx, msgs, api):
 def bad_func():
     raise RuntimeError("intentional test error")
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             EXPECT_FALSE(engine.invoke("bad_func"))
                 << "invoke of a function that raises must return false";
             EXPECT_EQ(core.script_error_count(), 1u)
@@ -3435,15 +3352,18 @@ def on_heartbeat():
     global call_count
     call_count += 1
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             using pylabhub::tests::helper::poll_until;
             std::atomic<bool> done{false};
             bool result = false;
 
-            std::thread t([&] {
-                result = engine.invoke("on_heartbeat");
-                done.store(true, std::memory_order_release);
-            });
+            std::thread t(
+                [&]
+                {
+                    result = engine.invoke("on_heartbeat");
+                    done.store(true, std::memory_order_release);
+                });
 
             // Queue-dispatch pin — wait for the thread to push its
             // request onto the dispatch queue (observable via the
@@ -3454,9 +3374,9 @@ def on_heartbeat():
             // regression made invoke() execute synchronously from
             // the non-owner thread, the thread would complete before
             // ever enqueueing and the poll would time out.
-            ASSERT_TRUE(poll_until(
-                [&] { return engine.pending_script_engine_request_count() == 1; },
-                std::chrono::seconds{1}))
+            ASSERT_TRUE(poll_until([&]
+                                   { return engine.pending_script_engine_request_count() == 1; },
+                                   std::chrono::seconds{1}))
                 << "non-owner invoke was expected to enqueue a "
                    "request; queue depth stayed at 0 past timeout";
             EXPECT_FALSE(done.load(std::memory_order_acquire))
@@ -3466,8 +3386,7 @@ def on_heartbeat():
 
             // Owner drains via hot-path invokes.  Bounded loop with
             // timeout to detect deadlock.
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!done.load(std::memory_order_acquire))
             {
                 ASSERT_LT(std::chrono::steady_clock::now(), deadline)
@@ -3487,9 +3406,9 @@ def on_heartbeat():
             // nlohmann::json — compare against a JSON integer.
             auto r = engine.eval("call_count");
             EXPECT_EQ(r.status, pylabhub::scripting::InvokeStatus::Ok);
-            EXPECT_EQ(r.value, 1)
-                << "on_heartbeat must have run exactly once — got "
-                   "call_count=" << r.value;
+            EXPECT_EQ(r.value, 1) << "on_heartbeat must have run exactly once — got "
+                                     "call_count="
+                                  << r.value;
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
 }
@@ -3506,8 +3425,7 @@ int invoke_from_non_owner_thread_finalize_unblocks(const std::string &dir)
     // false return.  The count pins the "drain all" contract of
     // finalize_engine_ at python_engine.cpp:537-540.
     return produce_worker_with_script(
-        dir,
-        "python_engine::invoke_from_non_owner_thread_finalize_unblocks",
+        dir, "python_engine::invoke_from_non_owner_thread_finalize_unblocks",
         R"PY(
 def on_produce(tx, msgs, api):
     return True
@@ -3515,7 +3433,8 @@ def on_produce(tx, msgs, api):
 def slow_func():
     pass
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             using pylabhub::tests::helper::poll_until;
             constexpr int kPending = 3;
             std::atomic<int> false_returns{0};
@@ -3524,14 +3443,15 @@ def slow_func():
             threads.reserve(kPending);
             for (int i = 0; i < kPending; ++i)
             {
-                threads.emplace_back([&] {
-                    // Must block (queue not drained) — then return
-                    // false when finalize cancels.
-                    bool r = engine.invoke("slow_func");
-                    if (!r)
-                        false_returns.fetch_add(1,
-                                                std::memory_order_acq_rel);
-                });
+                threads.emplace_back(
+                    [&]
+                    {
+                        // Must block (queue not drained) — then return
+                        // false when finalize cancels.
+                        bool r = engine.invoke("slow_func");
+                        if (!r)
+                            false_returns.fetch_add(1, std::memory_order_acq_rel);
+                    });
             }
 
             // Use the engine's status probe to wait for ALL 3
@@ -3543,19 +3463,23 @@ def slow_func():
             // out and the test fails loudly instead of silently
             // passing via the wrong path.
             ASSERT_TRUE(poll_until(
-                [&] { return engine.pending_script_engine_request_count()
-                         == static_cast<size_t>(kPending); },
+                [&]
+                {
+                    return engine.pending_script_engine_request_count() ==
+                           static_cast<size_t>(kPending);
+                },
                 std::chrono::seconds{2}))
                 << "expected " << kPending << " queued invokes, got "
                 << engine.pending_script_engine_request_count();
 
             engine.finalize();
-            for (auto &t : threads) t.join();
+            for (auto &t : threads)
+                t.join();
 
             EXPECT_EQ(false_returns.load(), kPending)
                 << "finalize must cancel ALL pending invokes, not "
-                   "just one — got " << false_returns.load()
-                << " false returns of " << kPending << " expected";
+                   "just one — got "
+                << false_returns.load() << " false returns of " << kPending << " expected";
         });
 }
 
@@ -3584,35 +3508,37 @@ def on_heartbeat():
     global call_count
     call_count += 1
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            constexpr int kThreads        = 4;
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
+            constexpr int kThreads = 4;
             constexpr int kCallsPerThread = 10;
-            constexpr int kExpected       = kThreads * kCallsPerThread;
+            constexpr int kExpected = kThreads * kCallsPerThread;
 
             std::atomic<int> success_count{0};
             std::vector<std::thread> threads;
             for (int i = 0; i < kThreads; ++i)
             {
-                threads.emplace_back([&] {
-                    for (int j = 0; j < kCallsPerThread; ++j)
-                        if (engine.invoke("on_heartbeat"))
-                            success_count.fetch_add(
-                                1, std::memory_order_relaxed);
-                });
+                threads.emplace_back(
+                    [&]
+                    {
+                        for (int j = 0; j < kCallsPerThread; ++j)
+                            if (engine.invoke("on_heartbeat"))
+                                success_count.fetch_add(1, std::memory_order_relaxed);
+                    });
             }
 
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
             while (success_count.load(std::memory_order_relaxed) < kExpected)
             {
                 ASSERT_LT(std::chrono::steady_clock::now(), deadline)
-                    << "Timeout: only " << success_count.load()
-                    << " of " << kExpected << " invokes completed";
+                    << "Timeout: only " << success_count.load() << " of " << kExpected
+                    << " invokes completed";
                 std::vector<IncomingMessage> msgs;
                 engine.invoke_produce({nullptr, 0}, msgs);
                 std::this_thread::yield();
             }
-            for (auto &t : threads) t.join();
+            for (auto &t : threads)
+                t.join();
 
             EXPECT_EQ(success_count.load(), kExpected);
 
@@ -3622,9 +3548,8 @@ def on_heartbeat():
             // not short-circuited somehow.
             auto r = engine.eval("call_count");
             EXPECT_EQ(r.status, pylabhub::scripting::InvokeStatus::Ok);
-            EXPECT_EQ(r.value, kExpected)
-                << "on_heartbeat must have run exactly " << kExpected
-                << " times — got call_count=" << r.value;
+            EXPECT_EQ(r.value, kExpected) << "on_heartbeat must have run exactly " << kExpected
+                                          << " times — got call_count=" << r.value;
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "concurrent queued invokes must not increment "
                    "script_error_count";
@@ -3648,7 +3573,8 @@ int invoke_after_finalize_returns_false(const std::string &dir)
     //       completes immediately (is_accepting() returns false
     //       before ever touching the queue).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -3661,8 +3587,7 @@ def on_heartbeat():
             RoleHostCore core;
             PythonEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                            RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
             engine.finalize();
 
             // (1) Owner-thread path.
@@ -3671,17 +3596,13 @@ def on_heartbeat():
 
             // (2) Non-owner-thread path.
             bool non_owner_result = true; // expect false
-            std::thread t([&] {
-                non_owner_result = engine.invoke("on_heartbeat");
-            });
+            std::thread t([&] { non_owner_result = engine.invoke("on_heartbeat"); });
             t.join();
-            EXPECT_FALSE(non_owner_result)
-                << "non-owner-thread invoke after finalize must "
-                   "also return false — the is_accepting() guard at "
-                   "python_engine.cpp:569 covers both paths";
+            EXPECT_FALSE(non_owner_result) << "non-owner-thread invoke after finalize must "
+                                              "also return false — the is_accepting() guard at "
+                                              "python_engine.cpp:569 covers both paths";
         },
-        "python_engine::invoke_after_finalize_returns_false",
-        Logger::GetLifecycleModule());
+        "python_engine::invoke_after_finalize_returns_false", Logger::GetLifecycleModule());
 }
 
 int invoke_with_args_calls_function(const std::string &dir)
@@ -3732,22 +3653,21 @@ def no_arg_fn(**kwargs):
     assert len(kwargs) == 0, f"expected no kwargs, got {kwargs}"
     empty_call_count += 1
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             // (1) + (3) multi-type args reach the callee.
             nlohmann::json args = {
-                {"name",  "test"},
+                {"name", "test"},
                 {"count", 42},
-                {"flag",  true},
+                {"flag", true},
             };
             EXPECT_TRUE(engine.invoke("greet", args));
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             auto r_name = engine.eval("last_kwargs_name");
-            EXPECT_EQ(r_name.status,
-                      pylabhub::scripting::InvokeStatus::Ok);
-            EXPECT_EQ(r_name.value, "test")
-                << "kwargs['name'] must reach the callee — pins "
-                   "fn(**args) expansion on the args-overload path";
+            EXPECT_EQ(r_name.status, pylabhub::scripting::InvokeStatus::Ok);
+            EXPECT_EQ(r_name.value, "test") << "kwargs['name'] must reach the callee — pins "
+                                               "fn(**args) expansion on the args-overload path";
             auto r_count = engine.eval("last_kwargs_count");
             EXPECT_EQ(r_count.value, 42);
             auto r_flag = engine.eval("last_kwargs_flag");
@@ -3755,15 +3675,13 @@ def no_arg_fn(**kwargs):
 
             // (2) Empty-args dispatch must still call the function.
             EXPECT_TRUE(engine.invoke("no_arg_fn", nlohmann::json::object()));
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "empty-dict args → in-script assert on "
-                   "len(kwargs)==0 must have passed";
+            EXPECT_EQ(engine.script_error_count(), 0u) << "empty-dict args → in-script assert on "
+                                                          "len(kwargs)==0 must have passed";
 
             auto r_count2 = engine.eval("empty_call_count");
-            EXPECT_EQ(r_count2.value, 1)
-                << "no_arg_fn must have run exactly once under the "
-                   "empty-args branch (execute_direct_'s "
-                   "args.empty() path)";
+            EXPECT_EQ(r_count2.value, 1) << "no_arg_fn must have run exactly once under the "
+                                            "empty-args branch (execute_direct_'s "
+                                            "args.empty() path)";
         });
 }
 
@@ -3795,25 +3713,27 @@ def greet(**kwargs):
     last_kwargs_name  = kwargs.get("name",  "")
     last_kwargs_count = kwargs.get("count", 0)
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             using pylabhub::tests::helper::poll_until;
             std::atomic<bool> done{false};
-            bool              result = false;
+            bool result = false;
 
-            std::thread t([&] {
-                nlohmann::json args = {{"name", "queued"}, {"count", 99}};
-                result = engine.invoke("greet", args);
-                done.store(true, std::memory_order_release);
-            });
+            std::thread t(
+                [&]
+                {
+                    nlohmann::json args = {{"name", "queued"}, {"count", 99}};
+                    result = engine.invoke("greet", args);
+                    done.store(true, std::memory_order_release);
+                });
 
             // Queue the request, verify it enqueued, then drain.
-            ASSERT_TRUE(poll_until(
-                [&] { return engine.pending_script_engine_request_count() == 1; },
-                std::chrono::seconds{1}))
+            ASSERT_TRUE(poll_until([&]
+                                   { return engine.pending_script_engine_request_count() == 1; },
+                                   std::chrono::seconds{1}))
                 << "non-owner invoke(name, args) did not enqueue";
 
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             while (!done.load(std::memory_order_acquire))
             {
                 ASSERT_LT(std::chrono::steady_clock::now(), deadline);
@@ -3854,81 +3774,81 @@ int eval_returns_scalar_result(const std::string &dir)
     //
     // This body pins all six paths, plus one negative test (empty
     // code → InvokeStatus::NotFound, distinct from ScriptError).
-    return produce_worker_with_script(
-        dir, "python_engine::eval_returns_scalar_result",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::eval_returns_scalar_result",
+                                      R"PY(
 # Module-level names for the namespace-reachability eval case.
 my_magic_number = 2026
 
 def on_produce(tx, msgs, api):
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            using pylabhub::scripting::InvokeStatus;
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          using pylabhub::scripting::InvokeStatus;
 
-            // (1) int → json number
-            auto r_int = engine.eval("42");
-            EXPECT_EQ(r_int.status, InvokeStatus::Ok);
-            EXPECT_EQ(r_int.value, 42);
+                                          // (1) int → json number
+                                          auto r_int = engine.eval("42");
+                                          EXPECT_EQ(r_int.status, InvokeStatus::Ok);
+                                          EXPECT_EQ(r_int.value, 42);
 
-            // (2) string → json string
-            auto r_str = engine.eval("'hello'");
-            EXPECT_EQ(r_str.status, InvokeStatus::Ok);
-            EXPECT_EQ(r_str.value, "hello");
+                                          // (2) string → json string
+                                          auto r_str = engine.eval("'hello'");
+                                          EXPECT_EQ(r_str.status, InvokeStatus::Ok);
+                                          EXPECT_EQ(r_str.value, "hello");
 
-            // (3) bool → json bool
-            auto r_bool = engine.eval("True");
-            EXPECT_EQ(r_bool.status, InvokeStatus::Ok);
-            EXPECT_EQ(r_bool.value, true);
+                                          // (3) bool → json bool
+                                          auto r_bool = engine.eval("True");
+                                          EXPECT_EQ(r_bool.status, InvokeStatus::Ok);
+                                          EXPECT_EQ(r_bool.value, true);
 
-            // (4) float → json number (double)
-            auto r_float = engine.eval("3.25");
-            EXPECT_EQ(r_float.status, InvokeStatus::Ok);
-            EXPECT_EQ(r_float.value, 3.25);
+                                          // (4) float → json number (double)
+                                          auto r_float = engine.eval("3.25");
+                                          EXPECT_EQ(r_float.status, InvokeStatus::Ok);
+                                          EXPECT_EQ(r_float.value, 3.25);
 
-            // (5) None → json null — nlohmann::json null compares
-            //     equal to nullptr.
-            auto r_none = engine.eval("None");
-            EXPECT_EQ(r_none.status, InvokeStatus::Ok);
-            EXPECT_TRUE(r_none.value.is_null())
-                << "eval('None') must produce json null; got "
-                << r_none.value;
+                                          // (5) None → json null — nlohmann::json null compares
+                                          //     equal to nullptr.
+                                          auto r_none = engine.eval("None");
+                                          EXPECT_EQ(r_none.status, InvokeStatus::Ok);
+                                          EXPECT_TRUE(r_none.value.is_null())
+                                              << "eval('None') must produce json null; got "
+                                              << r_none.value;
 
-            // (6) list → json array (recursive py_to_json path).
-            auto r_list = engine.eval("[1, 2, 3]");
-            EXPECT_EQ(r_list.status, InvokeStatus::Ok);
-            ASSERT_TRUE(r_list.value.is_array());
-            EXPECT_EQ(r_list.value.size(), 3u);
-            EXPECT_EQ(r_list.value[0], 1);
-            EXPECT_EQ(r_list.value[2], 3);
+                                          // (6) list → json array (recursive py_to_json path).
+                                          auto r_list = engine.eval("[1, 2, 3]");
+                                          EXPECT_EQ(r_list.status, InvokeStatus::Ok);
+                                          ASSERT_TRUE(r_list.value.is_array());
+                                          EXPECT_EQ(r_list.value.size(), 3u);
+                                          EXPECT_EQ(r_list.value[0], 1);
+                                          EXPECT_EQ(r_list.value[2], 3);
 
-            // (7) dict → json object.
-            auto r_dict = engine.eval("{'a': 1, 'b': 'x'}");
-            EXPECT_EQ(r_dict.status, InvokeStatus::Ok);
-            ASSERT_TRUE(r_dict.value.is_object());
-            EXPECT_EQ(r_dict.value["a"], 1);
-            EXPECT_EQ(r_dict.value["b"], "x");
+                                          // (7) dict → json object.
+                                          auto r_dict = engine.eval("{'a': 1, 'b': 'x'}");
+                                          EXPECT_EQ(r_dict.status, InvokeStatus::Ok);
+                                          ASSERT_TRUE(r_dict.value.is_object());
+                                          EXPECT_EQ(r_dict.value["a"], 1);
+                                          EXPECT_EQ(r_dict.value["b"], "x");
 
-            // (8) Module namespace reachability — my_magic_number
-            //     is defined in the script.  eval_direct_ uses
-            //     module_.attr("__dict__") as globals, so module-
-            //     level names MUST resolve.  A regression that
-            //     swapped to a fresh dict would raise NameError.
-            auto r_mod = engine.eval("my_magic_number");
-            EXPECT_EQ(r_mod.status, InvokeStatus::Ok);
-            EXPECT_EQ(r_mod.value, 2026);
+                                          // (8) Module namespace reachability — my_magic_number
+                                          //     is defined in the script.  eval_direct_ uses
+                                          //     module_.attr("__dict__") as globals, so module-
+                                          //     level names MUST resolve.  A regression that
+                                          //     swapped to a fresh dict would raise NameError.
+                                          auto r_mod = engine.eval("my_magic_number");
+                                          EXPECT_EQ(r_mod.status, InvokeStatus::Ok);
+                                          EXPECT_EQ(r_mod.value, 2026);
 
-            // (9) Empty code → NotFound (distinct from ScriptError).
-            //     Pins eval_direct_'s early empty check at
-            //     python_engine.cpp:679-680.
-            auto r_empty = engine.eval("");
-            EXPECT_EQ(r_empty.status, InvokeStatus::NotFound)
-                << "eval('') must return NotFound (not ScriptError, "
-                   "not Ok) — pins the early empty-code guard";
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "scalar evals + empty-code NotFound must not "
-                   "increment script_error_count";
-        });
+                                          // (9) Empty code → NotFound (distinct from ScriptError).
+                                          //     Pins eval_direct_'s early empty check at
+                                          //     python_engine.cpp:679-680.
+                                          auto r_empty = engine.eval("");
+                                          EXPECT_EQ(r_empty.status, InvokeStatus::NotFound)
+                                              << "eval('') must return NotFound (not ScriptError, "
+                                                 "not Ok) — pins the early empty-code guard";
+                                          EXPECT_EQ(engine.script_error_count(), 0u)
+                                              << "scalar evals + empty-code NotFound must not "
+                                                 "increment script_error_count";
+                                      });
 }
 
 int eval_error_returns_empty(const std::string &dir)
@@ -3948,32 +3868,32 @@ int eval_error_returns_empty(const std::string &dir)
     // translator at python_engine.cpp:693 (on_python_error_) is
     // producing the Python exception class name in the ERROR line
     // — not just a generic "eval failed" placeholder.
-    return produce_worker_with_script(
-        dir, "python_engine::eval_error_returns_empty",
-        "def on_produce(tx, msgs, api):\n    return True\n",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            using pylabhub::scripting::InvokeStatus;
+    return produce_worker_with_script(dir, "python_engine::eval_error_returns_empty",
+                                      "def on_produce(tx, msgs, api):\n    return True\n",
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          using pylabhub::scripting::InvokeStatus;
 
-            // (1) NameError — undefined variable.
-            auto r1 = engine.eval("undefined_variable_xyz");
-            EXPECT_EQ(r1.status, InvokeStatus::ScriptError);
-            EXPECT_EQ(engine.script_error_count(), 1u)
-                << "NameError in eval must increment by exactly 1";
+                                          // (1) NameError — undefined variable.
+                                          auto r1 = engine.eval("undefined_variable_xyz");
+                                          EXPECT_EQ(r1.status, InvokeStatus::ScriptError);
+                                          EXPECT_EQ(engine.script_error_count(), 1u)
+                                              << "NameError in eval must increment by exactly 1";
 
-            // (2) SyntaxError — malformed expression.  py::eval uses
-            //     Py_eval_input so statements (like `x = 1`) also
-            //     parse as syntax errors, which is what we want here.
-            auto r2 = engine.eval("1 2 3 invalid");
-            EXPECT_EQ(r2.status, InvokeStatus::ScriptError);
-            EXPECT_EQ(engine.script_error_count(), 2u)
-                << "second eval error must increment to 2 — no "
-                   "accumulation bug or double-count";
+                                          // (2) SyntaxError — malformed expression.  py::eval uses
+                                          //     Py_eval_input so statements (like `x = 1`) also
+                                          //     parse as syntax errors, which is what we want here.
+                                          auto r2 = engine.eval("1 2 3 invalid");
+                                          EXPECT_EQ(r2.status, InvokeStatus::ScriptError);
+                                          EXPECT_EQ(engine.script_error_count(), 2u)
+                                              << "second eval error must increment to 2 — no "
+                                                 "accumulation bug or double-count";
 
-            // (3) ZeroDivisionError — distinct runtime error path.
-            auto r3 = engine.eval("1 / 0");
-            EXPECT_EQ(r3.status, InvokeStatus::ScriptError);
-            EXPECT_EQ(engine.script_error_count(), 3u);
-        });
+                                          // (3) ZeroDivisionError — distinct runtime error path.
+                                          auto r3 = engine.eval("1 / 0");
+                                          EXPECT_EQ(r3.status, InvokeStatus::ScriptError);
+                                          EXPECT_EQ(engine.script_error_count(), 3u);
+                                      });
 }
 
 int shared_data_persists_across_callbacks(const std::string &dir)
@@ -4052,7 +3972,8 @@ def get_meta_seen():
 def get_id_matches():
     return id(_api_ref.shared_data) == _api_ref.shared_data["_id_at_init"]
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             using pylabhub::scripting::InvokeStatus;
 
             engine.invoke_on_init();
@@ -4092,10 +4013,9 @@ def get_id_matches():
             //     not copy-on-read.
             auto r_id = engine.eval("get_id_matches()");
             EXPECT_EQ(r_id.status, InvokeStatus::Ok);
-            EXPECT_EQ(r_id.value, true)
-                << "api.shared_data must be the SAME dict across "
-                   "callbacks — the id(dict) captured in on_init "
-                   "must match id(dict) observed post-on_produce";
+            EXPECT_EQ(r_id.value, true) << "api.shared_data must be the SAME dict across "
+                                           "callbacks — the id(dict) captured in on_init "
+                                           "must match id(dict) observed post-on_produce";
 
             // (5) on_stop sees accumulated state — pins that
             //     shared_data is NOT cleared before on_stop runs.
@@ -4124,8 +4044,7 @@ namespace
 /// the live value, (b) total invoke count matches sequence length.
 template <typename Drive>
 void run_core_live_read_test(PythonEngine &engine, RoleHostCore &core,
-                             const std::vector<int64_t> &expected_sequence,
-                             Drive &&drive)
+                             const std::vector<int64_t> &expected_sequence, Drive &&drive)
 {
     std::vector<IncomingMessage> msgs;
     float buf = 0.0f;
@@ -4141,8 +4060,7 @@ void run_core_live_read_test(PythonEngine &engine, RoleHostCore &core,
     // S4 pin: script saw exactly N invocations.
     auto r = engine.eval("_call");
     EXPECT_EQ(r.value, static_cast<int64_t>(expected_sequence.size()))
-        << "script must have been invoked "
-        << expected_sequence.size() << " times";
+        << "script must have been invoked " << expected_sequence.size() << " times";
 }
 
 /// Shared script source for the live-read pattern.  The placeholders
@@ -4165,18 +4083,18 @@ def on_produce(tx, msgs, api):
 )PY";
 
 /// Build the live-read script body with the given accessor + sequence.
-std::string build_live_read_script(const char *accessor,
-                                   const std::vector<int64_t> &seq)
+std::string build_live_read_script(const char *accessor, const std::vector<int64_t> &seq)
 {
     std::string seq_str;
     for (size_t i = 0; i < seq.size(); ++i)
     {
-        if (i > 0) seq_str += ", ";
+        if (i > 0)
+            seq_str += ", ";
         seq_str += std::to_string(seq[i]);
     }
     std::string src = kLiveReadScriptTemplate;
-    auto replace_first = [&src](const std::string &needle,
-                                 const std::string &value) {
+    auto replace_first = [&src](const std::string &needle, const std::string &value)
+    {
         size_t pos = src.find(needle);
         if (pos != std::string::npos)
             src.replace(pos, needle.size(), value);
@@ -4194,23 +4112,24 @@ int api_loop_overrun_count_reads_from_core(const std::string &dir)
     // invoke must see LIVE count from RoleHostCore, not a cached
     // build_api-time snapshot.  Script owns its expected sequence;
     // C++ drives core-state progression.
-    return produce_worker_with_script(
-        dir, "python_engine::api_loop_overrun_count_reads_from_core",
-        build_live_read_script("loop_overrun_count", {3, 7}),
-        [](PythonEngine &engine, RoleHostCore &core) {
-            run_core_live_read_test(
-                engine, core, {3, 7},
-                [](RoleHostCore &c, size_t i, int64_t target) {
-                    // Increment until we reach `target`.  For i==0 this
-                    // starts from 0 (3 increments → 3); for i==1 this
-                    // continues from 3 (4 increments → 7).
-                    const int64_t current =
-                        static_cast<int64_t>(c.loop_overrun_count());
-                    for (int64_t k = current; k < target; ++k)
-                        c.inc_loop_overrun();
-                    (void)i;
-                });
-        });
+    return produce_worker_with_script(dir, "python_engine::api_loop_overrun_count_reads_from_core",
+                                      build_live_read_script("loop_overrun_count", {3, 7}),
+                                      [](PythonEngine &engine, RoleHostCore &core)
+                                      {
+                                          run_core_live_read_test(
+                                              engine, core, {3, 7},
+                                              [](RoleHostCore &c, size_t i, int64_t target)
+                                              {
+                                                  // Increment until we reach `target`.  For i==0
+                                                  // this starts from 0 (3 increments → 3); for i==1
+                                                  // this continues from 3 (4 increments → 7).
+                                                  const int64_t current =
+                                                      static_cast<int64_t>(c.loop_overrun_count());
+                                                  for (int64_t k = current; k < target; ++k)
+                                                      c.inc_loop_overrun();
+                                                  (void)i;
+                                              });
+                                      });
 }
 
 int api_last_cycle_work_us_reads_from_core(const std::string &dir)
@@ -4221,13 +4140,11 @@ int api_last_cycle_work_us_reads_from_core(const std::string &dir)
     return produce_worker_with_script(
         dir, "python_engine::api_last_cycle_work_us_reads_from_core",
         build_live_read_script("last_cycle_work_us", {12345, 99999}),
-        [](PythonEngine &engine, RoleHostCore &core) {
-            run_core_live_read_test(
-                engine, core, {12345, 99999},
-                [](RoleHostCore &c, size_t, int64_t target) {
-                    c.set_last_cycle_work_us(
-                        static_cast<uint64_t>(target));
-                });
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
+            run_core_live_read_test(engine, core, {12345, 99999},
+                                    [](RoleHostCore &c, size_t, int64_t target)
+                                    { c.set_last_cycle_work_us(static_cast<uint64_t>(target)); });
         });
 }
 
@@ -4250,7 +4167,8 @@ int api_identity_accessors_return_correct_values(const std::string &dir)
     // role_api_base.cpp:678-686.  Empty-role_dir fall-through case
     // is covered by api_environment_strings_logs_dir_run_dir.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -4277,8 +4195,7 @@ def on_produce(tx, msgs, api):
             RoleHostCore core;
             PythonEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                            RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
             // Set role_dir BEFORE invoking (build_api already done by
             // setup_role_engine — role_dir is read live per-call).
             api->set_role_dir("/tmp/role_dir_test");
@@ -4318,7 +4235,8 @@ int api_environment_strings_logs_dir_run_dir(const std::string &dir)
     // the C++ side sets for role_dir, the expected derivation
     // follows.  No cross-language magic string to keep in sync.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 _call = 0
@@ -4348,8 +4266,7 @@ def on_produce(tx, msgs, api):
             RoleHostCore core;
             PythonEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                            RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
@@ -4374,8 +4291,7 @@ def on_produce(tx, msgs, api):
 
             engine.finalize();
         },
-        "python_engine::api_environment_strings_logs_dir_run_dir",
-        Logger::GetLifecycleModule());
+        "python_engine::api_environment_strings_logs_dir_run_dir", Logger::GetLifecycleModule());
 }
 
 int api_report_metrics_non_dict_arg_is_error(const std::string &dir)
@@ -4385,23 +4301,23 @@ int api_report_metrics_non_dict_arg_is_error(const std::string &dir)
     // Strict EQ to 1 pins "exactly one error from the type mismatch,
     // no cascading follow-on errors."  Parent test also pins the
     // ERROR log substring at the ExpectWorkerOk level.
-    return produce_worker_with_script(
-        dir,
-        "python_engine::api_report_metrics_non_dict_arg_is_error",
-        R"PY(
+    return produce_worker_with_script(dir,
+                                      "python_engine::api_report_metrics_non_dict_arg_is_error",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     api.report_metrics(42)  # int, not dict — must raise TypeError
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            std::vector<IncomingMessage> msgs;
-            float buf = 0.0f;
-            engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(engine.script_error_count(), 1u)
-                << "report_metrics(non-dict) must increment error "
-                   "count by EXACTLY 1 — any other value indicates "
-                   "a cascade or silent-swallow regression";
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          std::vector<IncomingMessage> msgs;
+                                          float buf = 0.0f;
+                                          engine.invoke_produce({&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(engine.script_error_count(), 1u)
+                                              << "report_metrics(non-dict) must increment error "
+                                                 "count by EXACTLY 1 — any other value indicates "
+                                                 "a cascade or silent-swallow regression";
+                                      });
 }
 
 // ── Custom metrics (chunk 13) ──────────────────────────────────────────────
@@ -4425,8 +4341,7 @@ int api_custom_metrics_report_and_read_in_metrics(const std::string &dir)
     //   call 1 — report + verify via Python-side api.metrics().
     //   call 2 — cross-invoke persistence: values from call 1 still visible.
     return produce_worker_with_script(
-        dir,
-        "python_engine::api_custom_metrics_report_and_read_in_metrics",
+        dir, "python_engine::api_custom_metrics_report_and_read_in_metrics",
         R"PY(
 _call = 0
 
@@ -4459,7 +4374,8 @@ def on_produce(tx, msgs, api):
     _call += 1
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
 
@@ -4537,7 +4453,8 @@ def on_produce(tx, msgs, api):
         f"old keys must not survive clear, got: {list(m3['custom'].keys())}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -4546,9 +4463,8 @@ def on_produce(tx, msgs, api):
             // C++-side verification: after all three phases, only the
             // "revived" key survives.
             const auto snap = core.custom_metrics_snapshot();
-            EXPECT_EQ(snap.size(), 1u)
-                << "core snapshot must have exactly 1 entry (revived) "
-                   "after the report → clear → re-report cycle";
+            EXPECT_EQ(snap.size(), 1u) << "core snapshot must have exactly 1 entry (revived) "
+                                          "after the report → clear → re-report cycle";
             auto it = snap.find("revived");
             ASSERT_NE(it, snap.end()) << "core snapshot missing 'revived'";
             EXPECT_DOUBLE_EQ(it->second, 7.0);
@@ -4579,7 +4495,8 @@ def on_produce(tx, msgs, api):
         f"{list(m['custom'].keys())}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -4587,13 +4504,11 @@ def on_produce(tx, msgs, api):
 
             // C++-side: snapshot must contain exactly the final value.
             const auto snap = core.custom_metrics_snapshot();
-            EXPECT_EQ(snap.size(), 1u)
-                << "core snapshot must have exactly 1 entry — 4 reports "
-                   "of the same key must overwrite, not accumulate";
+            EXPECT_EQ(snap.size(), 1u) << "core snapshot must have exactly 1 entry — 4 reports "
+                                          "of the same key must overwrite, not accumulate";
             auto it = snap.find("x");
             ASSERT_NE(it, snap.end());
-            EXPECT_DOUBLE_EQ(it->second, 999.0)
-                << "final value must be 999.0 (last report wins)";
+            EXPECT_DOUBLE_EQ(it->second, 999.0) << "final value must be 999.0 (last report wins)";
         });
 }
 
@@ -4645,7 +4560,8 @@ def on_produce(tx, msgs, api):
         f"storage normalised -0.0 to +0.0")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -4658,8 +4574,7 @@ def on_produce(tx, msgs, api):
             auto it_pos = snap.find("pos_zero");
             ASSERT_NE(it_pos, snap.end()) << "core snapshot missing 'pos_zero'";
             EXPECT_EQ(it_pos->second, 0.0);
-            EXPECT_FALSE(std::signbit(it_pos->second))
-                << "+0.0 sign bit must be clear";
+            EXPECT_FALSE(std::signbit(it_pos->second)) << "+0.0 sign bit must be clear";
             auto it_neg = snap.find("neg_zero");
             ASSERT_NE(it_neg, snap.end()) << "core snapshot missing 'neg_zero'";
             EXPECT_EQ(it_neg->second, 0.0);
@@ -4732,7 +4647,8 @@ def on_produce(tx, msgs, api):
     api.report_metric("sentinel", 42.0)
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -4746,10 +4662,9 @@ def on_produce(tx, msgs, api):
             // produced a metric.  A pybind11 bug that partially
             // applied a rejected dict would show > 1 entry here.
             const auto snap = core.custom_metrics_snapshot();
-            EXPECT_EQ(snap.size(), 1u)
-                << "exactly 1 entry expected (the 'sentinel' from the "
-                   "final valid call) — any more means a rejected "
-                   "report_metrics partially updated the core";
+            EXPECT_EQ(snap.size(), 1u) << "exactly 1 entry expected (the 'sentinel' from the "
+                                          "final valid call) — any more means a rejected "
+                                          "report_metrics partially updated the core";
             auto it = snap.find("sentinel");
             ASSERT_NE(it, snap.end()) << "sentinel entry missing";
             EXPECT_DOUBLE_EQ(it->second, 42.0);
@@ -4767,9 +4682,8 @@ int api_producer_queue_state_without_queue(const std::string &dir)
     // sequences, they do not track a read cursor.  The method lives
     // on ConsumerAPI (consumer test) and ProcessorAPI (processor
     // dual-defaults test) only.
-    return produce_worker_with_script(
-        dir, "python_engine::api_producer_queue_state_without_queue",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::api_producer_queue_state_without_queue",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     cap = api.out_capacity()
     pol = api.out_policy()
@@ -4779,12 +4693,13 @@ def on_produce(tx, msgs, api):
     assert pol == "", f"expected out_policy=='', got {pol!r}"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            std::vector<IncomingMessage> msgs;
-            float buf = 0.0f;
-            engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          std::vector<IncomingMessage> msgs;
+                                          float buf = 0.0f;
+                                          engine.invoke_produce({&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int api_consumer_queue_state_without_queue(const std::string &dir)
@@ -4792,9 +4707,8 @@ int api_consumer_queue_state_without_queue(const std::string &dir)
     // V2 parity with same type-assertion strengthening as the
     // producer test.  Consumer surface: in_capacity, in_policy,
     // last_seq.
-    return consume_worker_with_script(
-        dir, "python_engine::api_consumer_queue_state_without_queue",
-        R"PY(
+    return consume_worker_with_script(dir, "python_engine::api_consumer_queue_state_without_queue",
+                                      R"PY(
 def on_consume(rx, msgs, api):
     cap = api.in_capacity()
     pol = api.in_policy()
@@ -4807,12 +4721,13 @@ def on_consume(rx, msgs, api):
     assert seq == 0, f"last_seq: {seq}"
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            std::vector<IncomingMessage> msgs;
-            float buf = 1.0f;
-            engine.invoke_consume(InvokeRx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          std::vector<IncomingMessage> msgs;
+                                          float buf = 1.0f;
+                                          engine.invoke_consume(InvokeRx{&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int api_processor_queue_state_dual_defaults(const std::string &dir)
@@ -4820,9 +4735,8 @@ int api_processor_queue_state_dual_defaults(const std::string &dir)
     // V2 parity: processor exposes BOTH in_ and out_ queue accessors.
     // All 5 values (in_capacity, in_policy, out_capacity, out_policy,
     // last_seq) must default to zero/empty when no queue is wired.
-    return process_worker_with_script(
-        dir, "python_engine::api_processor_queue_state_dual_defaults",
-        R"PY(
+    return process_worker_with_script(dir, "python_engine::api_processor_queue_state_dual_defaults",
+                                      R"PY(
 def on_process(rx, tx, msgs, api):
     assert api.in_capacity()  == 0, f"in_capacity={api.in_capacity()}"
     assert api.in_policy()    == "", f"in_policy={api.in_policy()!r}"
@@ -4831,13 +4745,14 @@ def on_process(rx, tx, msgs, api):
     assert api.last_seq()     == 0, f"last_seq={api.last_seq()}"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{nullptr, 0}, InvokeTx{nullptr, 0}, msgs);
-            EXPECT_EQ(result, InvokeResult::Discard);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          std::vector<IncomingMessage> msgs;
+                                          auto result = engine.invoke_process(
+                                              InvokeRx{nullptr, 0}, InvokeTx{nullptr, 0}, msgs);
+                                          EXPECT_EQ(result, InvokeResult::Discard);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int api_processor_channels_in_out(const std::string &dir)
@@ -4855,7 +4770,8 @@ int api_processor_channels_in_out(const std::string &dir)
     // not set out_channel by default, and the test-channel defaults
     // do not match the values the script asserts against.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_process(rx, tx, msgs, api):
@@ -4878,12 +4794,11 @@ def on_process(rx, tx, msgs, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_process"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_process"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
             ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core, "proc");
@@ -4891,19 +4806,17 @@ def on_process(rx, tx, msgs, api):
             api->set_out_channel("sensor.output");
             ASSERT_TRUE(engine.build_api(*api));
 
-            float in_data  = 1.0f;
+            float in_data = 1.0f;
             float out_data = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{&in_data,  sizeof(in_data)},
-                InvokeTx{&out_data, sizeof(out_data)}, msgs);
+            auto result = engine.invoke_process(InvokeRx{&in_data, sizeof(in_data)},
+                                                InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             engine.finalize();
         },
-        "python_engine::api_processor_channels_in_out",
-        Logger::GetLifecycleModule());
+        "python_engine::api_processor_channels_in_out", Logger::GetLifecycleModule());
 }
 
 int api_open_inbox_without_broker(const std::string &dir)
@@ -4923,7 +4836,8 @@ def on_produce(tx, msgs, api):
             f"api.open_inbox({uid!r}) without broker expected None, got {r!r}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             auto result = engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -4937,21 +4851,21 @@ def on_produce(tx, msgs, api):
 int api_spinlock_count_without_shm(const std::string &dir)
 {
     // V2 parity.  Without SHM wired, spinlock_count() must be 0.
-    return produce_worker_with_script(
-        dir, "python_engine::api_spinlock_count_without_shm",
-        R"PY(
+    return produce_worker_with_script(dir, "python_engine::api_spinlock_count_without_shm",
+                                      R"PY(
 def on_produce(tx, msgs, api):
     c = api.spinlock_count()
     assert isinstance(c, int), f"spinlock_count must be int, got {type(c)}"
     assert c == 0, f"spinlock_count: {c}"
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
-            std::vector<IncomingMessage> msgs;
-            float buf = 0.0f;
-            engine.invoke_produce({&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                      [](PythonEngine &engine, RoleHostCore & /*core*/)
+                                      {
+                                          std::vector<IncomingMessage> msgs;
+                                          float buf = 0.0f;
+                                          engine.invoke_produce({&buf, sizeof(buf)}, msgs);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int api_spinlock_without_shm_is_error(const std::string &dir)
@@ -4975,7 +4889,8 @@ def on_produce(tx, msgs, api):
             f"ValueError raised but message doesn't mention 'spinlock': {e}")
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -4999,7 +4914,8 @@ int api_as_numpy_array_field(const std::string &dir)
     // Depends on numpy being importable in the staged Python
     // environment — GTEST_SKIP if not.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"PY(
 def on_produce(tx, msgs, api):
@@ -5031,9 +4947,8 @@ def on_produce(tx, msgs, api):
             PythonEngine engine;
             engine.set_python_venv("");
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(
-                script_dir / "script" / "python",
-                "__init__.py", "on_produce"));
+            ASSERT_TRUE(
+                engine.load_script(script_dir / "script" / "python", "__init__.py", "on_produce"));
             ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
@@ -5042,8 +4957,7 @@ def on_produce(tx, msgs, api):
             // 20-byte buffer: header (4) + values[4] (16) = 20.
             std::vector<std::byte> slot(20, std::byte{0});
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                InvokeTx{slot.data(), slot.size()}, msgs);
+            auto result = engine.invoke_produce(InvokeTx{slot.data(), slot.size()}, msgs);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             if (result == InvokeResult::Discard)
@@ -5057,18 +4971,17 @@ def on_produce(tx, msgs, api):
             // stride confirms as_numpy view hit the right bytes.
             float header = 0.0f;
             float values[4] = {};
-            std::memcpy(&header,  slot.data() + 0,  sizeof(header));
-            std::memcpy(values,   slot.data() + 4,  sizeof(values));
-            EXPECT_FLOAT_EQ(header,    99.0f) << "tx.slot.header direct write";
-            EXPECT_FLOAT_EQ(values[0],  1.0f) << "numpy slice values[0]";
-            EXPECT_FLOAT_EQ(values[1],  2.0f);
-            EXPECT_FLOAT_EQ(values[2],  3.0f);
-            EXPECT_FLOAT_EQ(values[3],  4.0f) << "numpy slice values[3]";
+            std::memcpy(&header, slot.data() + 0, sizeof(header));
+            std::memcpy(values, slot.data() + 4, sizeof(values));
+            EXPECT_FLOAT_EQ(header, 99.0f) << "tx.slot.header direct write";
+            EXPECT_FLOAT_EQ(values[0], 1.0f) << "numpy slice values[0]";
+            EXPECT_FLOAT_EQ(values[1], 2.0f);
+            EXPECT_FLOAT_EQ(values[2], 3.0f);
+            EXPECT_FLOAT_EQ(values[3], 4.0f) << "numpy slice values[3]";
 
             engine.finalize();
         },
-        "python_engine::api_as_numpy_array_field",
-        Logger::GetLifecycleModule());
+        "python_engine::api_as_numpy_array_field", Logger::GetLifecycleModule());
 }
 
 int api_as_numpy_non_array_field_throws(const std::string &dir)
@@ -5103,7 +5016,8 @@ def on_produce(tx, msgs, api):
         api.report_metric("test_passed", 1)
     return False
 )PY",
-        [](PythonEngine &engine, RoleHostCore &core) {
+        [](PythonEngine &engine, RoleHostCore &core)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
             engine.invoke_produce({&buf, sizeof(buf)}, msgs);
@@ -5111,9 +5025,9 @@ def on_produce(tx, msgs, api):
 
             const auto snap = core.custom_metrics_snapshot();
             auto it_avail = snap.find("numpy_available");
-            ASSERT_NE(it_avail, snap.end())
-                << "numpy_available flag must be set by the script";
-            if (it_avail->second == 0.0) {
+            ASSERT_NE(it_avail, snap.end()) << "numpy_available flag must be set by the script";
+            if (it_avail->second == 0.0)
+            {
                 GTEST_SKIP() << "numpy not available in staged Python";
             }
             auto it_passed = snap.find("test_passed");
@@ -5176,7 +5090,8 @@ def get_init_ran():
 def get_stop_ran():
     return _api_ref.shared_data.get("stop_ran", False)
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             using pylabhub::scripting::InvokeStatus;
 
             engine.invoke_on_init();
@@ -5202,9 +5117,9 @@ def get_stop_ran():
             ASSERT_TRUE(r3.value.is_array());
             ASSERT_EQ(r3.value.size(), 2u);
             EXPECT_EQ(r3.value[0], "init");
-            EXPECT_EQ(r3.value[1], "stop")
-                << "callback order regression: expected [init, stop], "
-                   "got " << r3.value;
+            EXPECT_EQ(r3.value[1], "stop") << "callback order regression: expected [init, stop], "
+                                              "got "
+                                           << r3.value;
         });
 }
 
@@ -5217,30 +5132,27 @@ int full_startup_producer_slot_only(const std::string &dir)
     // Also pins shutdown idempotency via two consecutive shutdowns
     // with no assertion failure.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                "def on_produce(tx, msgs, api):\n"
-                "    tx.slot.value = 77.0\n"
-                "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    tx.slot.value = 77.0\n"
+                                     "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "prod", "on_produce");
+            fill_base_params(params, engine, api.get(), script_dir, "prod", "on_produce");
             params.out_slot_spec = simple_schema();
-            params.out_packing   = "aligned";
+            params.out_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             const size_t expected =
-                pylabhub::hub::compute_schema_size(params.out_slot_spec,
-                                                   params.out_packing);
+                pylabhub::hub::compute_schema_size(params.out_slot_spec, params.out_packing);
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), expected)
                 << "SlotFrame alias must resolve to the same size as "
@@ -5249,8 +5161,7 @@ int full_startup_producer_slot_only(const std::string &dir)
 
             float buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_FLOAT_EQ(buf, 77.0f);
 
@@ -5258,8 +5169,7 @@ int full_startup_producer_slot_only(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_producer_slot_only",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_producer_slot_only", Logger::GetLifecycleModule());
 }
 
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
@@ -5272,23 +5182,22 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
     // Cross-checks engine-type-size against compute_schema_size for the
     // FlexFrame alias (the slot-only variant only checks > 0).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                "def on_produce(tx, msgs, api):\n"
-                "    tx.slot.value = 10.0\n"
-                "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    tx.slot.value = 10.0\n"
+                                     "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "prod", "on_produce");
+            fill_base_params(params, engine, api.get(), script_dir, "prod", "on_produce");
             params.out_slot_spec = simple_schema();
-            params.out_fz_spec   = simple_schema();
-            params.out_packing   = "aligned";
+            params.out_fz_spec = simple_schema();
+            params.out_packing = "aligned";
 
             // Populate the FlexzoneInfoCache (see file header BYPASS
             // PATTERN).  Mirror what RoleHostFrame::setup_infrastructure_
@@ -5296,20 +5205,19 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
             // align_to_physical_page(logical).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = params.out_fz_spec.has_schema;
-                fz_info.tx_logical_size  = pylabhub::hub::compute_schema_size(
-                    params.out_fz_spec, params.out_packing);
+                fz_info.has_tx_fz = params.out_fz_spec.has_schema;
+                fz_info.tx_logical_size =
+                    pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing);
                 fz_info.tx_physical_size =
                     pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
                 api->set_flexzone_info_cache_(fz_info);
             }
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
-            const size_t logical_fz = pylabhub::hub::compute_schema_size(
-                params.out_fz_spec, params.out_packing);
+            const size_t logical_fz =
+                pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing);
             EXPECT_GT(engine.type_sizeof("OutSlotFrame"), 0u);
             EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), logical_fz);
             EXPECT_EQ(engine.type_sizeof("FlexFrame"), logical_fz)
@@ -5324,16 +5232,14 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
 
             float slot_buf = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
+            auto result = engine.invoke_produce(InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_FLOAT_EQ(slot_buf, 10.0f);
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_producer_slot_and_flexzone",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_producer_slot_and_flexzone", Logger::GetLifecycleModule());
 }
 
 int full_startup_consumer(const std::string &dir)
@@ -5350,33 +5256,32 @@ int full_startup_consumer(const std::string &dir)
     //       (from_buffer view, not from_buffer_copy or a stale
     //       pointer).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir,
-                "def on_consume(rx, msgs, api):\n"
-                "    assert rx.slot is not None, 'expected slot'\n"
-                "    # Round-trip pin: C++ pre-filled 42.0; script\n"
-                "    # must see that exact value through rx.slot.\n"
-                "    assert abs(rx.slot.value - 42.0) < 1e-6, (\n"
-                "        f'rx.slot.value expected 42.0, got {rx.slot.value}')\n"
-                "    return True\n");
+                         "def on_consume(rx, msgs, api):\n"
+                         "    assert rx.slot is not None, 'expected slot'\n"
+                         "    # Round-trip pin: C++ pre-filled 42.0; script\n"
+                         "    # must see that exact value through rx.slot.\n"
+                         "    assert abs(rx.slot.value - 42.0) < 1e-6, (\n"
+                         "        f'rx.slot.value expected 42.0, got {rx.slot.value}')\n"
+                         "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "cons");
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "cons", "on_consume");
+            fill_base_params(params, engine, api.get(), script_dir, "cons", "on_consume");
             params.in_slot_spec = simple_schema();
-            params.in_packing   = "aligned";
+            params.in_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
-            const size_t expected = pylabhub::hub::compute_schema_size(
-                params.in_slot_spec, params.in_packing);
+            const size_t expected =
+                pylabhub::hub::compute_schema_size(params.in_slot_spec, params.in_packing);
             EXPECT_EQ(engine.type_sizeof("InSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), expected)
                 << "SlotFrame alias must resolve to InSlotFrame on a "
@@ -5385,8 +5290,7 @@ int full_startup_consumer(const std::string &dir)
             // Sentinel value the script reads back through rx.slot.
             float data = 42.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_consume(
-                InvokeRx{&data, sizeof(data)}, msgs);
+            auto result = engine.invoke_consume(InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "script must have read 42.0 back through rx.slot.value "
@@ -5395,8 +5299,7 @@ int full_startup_consumer(const std::string &dir)
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_consumer",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_consumer", Logger::GetLifecycleModule());
 }
 
 int full_startup_processor(const std::string &dir)
@@ -5407,33 +5310,31 @@ int full_startup_processor(const std::string &dir)
     // key pin: SlotFrame is NOT an alias on processor (dual-slot role
     // has distinct In/OutSlotFrame, disambiguated by direction).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                "def on_process(rx, tx, msgs, api):\n"
-                "    if rx.slot is not None and tx.slot is not None:\n"
-                "        tx.slot.value = rx.slot.value * 2.0\n"
-                "    return True\n");
+            write_script(script_dir, "def on_process(rx, tx, msgs, api):\n"
+                                     "    if rx.slot is not None and tx.slot is not None:\n"
+                                     "        tx.slot.value = rx.slot.value * 2.0\n"
+                                     "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "proc");
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "proc", "on_process");
-            params.in_slot_spec  = simple_schema();
+            fill_base_params(params, engine, api.get(), script_dir, "proc", "on_process");
+            params.in_slot_spec = simple_schema();
             params.out_slot_spec = simple_schema();
-            params.in_packing    = "aligned";
-            params.out_packing   = "aligned";
+            params.in_packing = "aligned";
+            params.out_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
-            const size_t expected = pylabhub::hub::compute_schema_size(
-                params.in_slot_spec, params.in_packing);
-            EXPECT_EQ(engine.type_sizeof("InSlotFrame"),  expected);
+            const size_t expected =
+                pylabhub::hub::compute_schema_size(params.in_slot_spec, params.in_packing);
+            EXPECT_EQ(engine.type_sizeof("InSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u)
                 << "Processor has NO SlotFrame alias — dual-slot roles "
@@ -5443,18 +5344,15 @@ int full_startup_processor(const std::string &dir)
             float in_data = 5.0f;
             float out_data = 0.0f;
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                InvokeRx{&in_data,  sizeof(in_data)},
-                InvokeTx{&out_data, sizeof(out_data)}, msgs);
+            auto result = engine.invoke_process(InvokeRx{&in_data, sizeof(in_data)},
+                                                InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
-            EXPECT_FLOAT_EQ(out_data, 10.0f)
-                << "process 2x transformation: in=5 → out=10";
+            EXPECT_FLOAT_EQ(out_data, 10.0f) << "process 2x transformation: in=5 → out=10";
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_processor",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_processor", Logger::GetLifecycleModule());
 }
 
 // ── SlotLogicalSize + FlexzoneLogicalSize + multifield + band (chunk 16) ──
@@ -5465,9 +5363,8 @@ namespace
 // `api.slot_logical_size()` to Python via set_out_slot_spec on core.
 // Returns after assertions; caller handles the worker harness.
 template <typename Body>
-void run_slot_logical_size_case(
-    const fs::path &script_dir, const char *script,
-    SchemaSpec spec, const std::string &packing, Body &&body)
+void run_slot_logical_size_case(const fs::path &script_dir, const char *script, SchemaSpec spec,
+                                const std::string &packing, Body &&body)
 {
     write_script(script_dir, script);
 
@@ -5476,19 +5373,16 @@ void run_slot_logical_size_case(
     auto api = make_api(core, "prod");
 
     spec.packing = packing;
-    const size_t logical =
-        pylabhub::hub::compute_schema_size(spec, packing);
+    const size_t logical = pylabhub::hub::compute_schema_size(spec, packing);
     core.set_out_slot_spec(SchemaSpec{spec}, logical);
 
     pylabhub::scripting::EngineModuleParams params;
-    fill_base_params(params, engine, api.get(),
-                     script_dir, "prod", "on_produce");
-    params.out_slot_spec     = spec;
-    params.out_packing       = packing;
+    fill_base_params(params, engine, api.get(), script_dir, "prod", "on_produce");
+    params.out_slot_spec = spec;
+    params.out_packing = packing;
 
     engine.set_python_venv("");
-    ASSERT_NO_THROW(
-        pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+    ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
     // Canonical cross-check that applies to every case.
     EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), logical);
@@ -5508,7 +5402,8 @@ int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
     // == 16) into the shared helper so all 3 SlotLogicalSize variants
     // enforce it consistently.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             run_slot_logical_size_case(
                 fs::path(dir),
                 "def on_produce(tx, msgs, api):\n"
@@ -5517,7 +5412,8 @@ int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
                 "    assert sz == 16, f'expected 16, got {sz}'\n"
                 "    return False\n",
                 padding_schema(), "aligned",
-                [](PythonEngine &engine, RoleHostCore &, size_t logical) {
+                [](PythonEngine &engine, RoleHostCore &, size_t logical)
+                {
                     EXPECT_EQ(logical, 16u);
                     std::vector<std::byte> buf(logical, std::byte{0});
                     std::vector<IncomingMessage> msgs;
@@ -5528,8 +5424,7 @@ int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
                     EXPECT_EQ(engine.script_error_count(), 0u);
                 });
         },
-        "python_engine::slot_logical_size_aligned_padding_sensitive",
-        Logger::GetLifecycleModule());
+        "python_engine::slot_logical_size_aligned_padding_sensitive", Logger::GetLifecycleModule());
 }
 
 int slot_logical_size_packed_no_padding(const std::string &dir)
@@ -5540,24 +5435,25 @@ int slot_logical_size_packed_no_padding(const std::string &dir)
     // A regression where the "packed" flag was ignored would return
     // 16, and the in-script assertion would fire.
     return run_python_gtest_worker(
-        [&]() {
-            run_slot_logical_size_case(
-                fs::path(dir),
-                "def on_produce(tx, msgs, api):\n"
-                "    sz = api.slot_logical_size()\n"
-                "    assert sz == 13, f'expected 13 (packed), got {sz}'\n"
-                "    return False\n",
-                padding_schema(), "packed",
-                [](PythonEngine &engine, RoleHostCore &, size_t logical) {
-                    EXPECT_EQ(logical, 13u);
-                    std::vector<std::byte> buf(16, std::byte{0});
-                    std::vector<IncomingMessage> msgs;
-                    engine.invoke_produce(InvokeTx{buf.data(), buf.size()}, msgs);
-                    EXPECT_EQ(engine.script_error_count(), 0u);
-                });
+        [&]()
+        {
+            run_slot_logical_size_case(fs::path(dir),
+                                       "def on_produce(tx, msgs, api):\n"
+                                       "    sz = api.slot_logical_size()\n"
+                                       "    assert sz == 13, f'expected 13 (packed), got {sz}'\n"
+                                       "    return False\n",
+                                       padding_schema(), "packed",
+                                       [](PythonEngine &engine, RoleHostCore &, size_t logical)
+                                       {
+                                           EXPECT_EQ(logical, 13u);
+                                           std::vector<std::byte> buf(16, std::byte{0});
+                                           std::vector<IncomingMessage> msgs;
+                                           engine.invoke_produce(InvokeTx{buf.data(), buf.size()},
+                                                                 msgs);
+                                           EXPECT_EQ(engine.script_error_count(), 0u);
+                                       });
         },
-        "python_engine::slot_logical_size_packed_no_padding",
-        Logger::GetLifecycleModule());
+        "python_engine::slot_logical_size_packed_no_padding", Logger::GetLifecycleModule());
 }
 
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
@@ -5569,24 +5465,25 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
     // boundary padding (float64 + float32[3] + uint16 + bytes[5] +
     // string[16] + 5-byte pad + int64).
     return run_python_gtest_worker(
-        [&]() {
-            run_slot_logical_size_case(
-                fs::path(dir),
-                "def on_produce(tx, msgs, api):\n"
-                "    sz = api.slot_logical_size()\n"
-                "    assert sz == 56, f'expected 56, got {sz}'\n"
-                "    return False\n",
-                complex_mixed_schema(), "aligned",
-                [](PythonEngine &engine, RoleHostCore &, size_t logical) {
-                    EXPECT_EQ(logical, 56u);
-                    std::vector<std::byte> buf(logical, std::byte{0});
-                    std::vector<IncomingMessage> msgs;
-                    engine.invoke_produce(InvokeTx{buf.data(), buf.size()}, msgs);
-                    EXPECT_EQ(engine.script_error_count(), 0u);
-                });
+        [&]()
+        {
+            run_slot_logical_size_case(fs::path(dir),
+                                       "def on_produce(tx, msgs, api):\n"
+                                       "    sz = api.slot_logical_size()\n"
+                                       "    assert sz == 56, f'expected 56, got {sz}'\n"
+                                       "    return False\n",
+                                       complex_mixed_schema(), "aligned",
+                                       [](PythonEngine &engine, RoleHostCore &, size_t logical)
+                                       {
+                                           EXPECT_EQ(logical, 56u);
+                                           std::vector<std::byte> buf(logical, std::byte{0});
+                                           std::vector<IncomingMessage> msgs;
+                                           engine.invoke_produce(InvokeTx{buf.data(), buf.size()},
+                                                                 msgs);
+                                           EXPECT_EQ(engine.script_error_count(), 0u);
+                                       });
         },
-        "python_engine::slot_logical_size_complex_mixed_aligned",
-        Logger::GetLifecycleModule());
+        "python_engine::slot_logical_size_complex_mixed_aligned", Logger::GetLifecycleModule());
 }
 
 // L2 BYPASS — see file header `L2 BYPASS PATTERN` for details.
@@ -5608,71 +5505,67 @@ int flexzone_logical_size_array_fields(const std::string &dir)
     // EXPECT_GE assertion below (physical >= 24) implicitly pins
     // that the page-alignment invariant holds on the populated cache.
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir,
-                "def on_produce(tx, msgs, api):\n"
-                "    slot_sz = api.slot_logical_size()\n"
-                "    fz_sz   = api.flexzone_logical_size()\n"
-                "    assert slot_sz == 16, f'slot: expected 16, got {slot_sz}'\n"
-                "    assert fz_sz   == 24, f'fz: expected 24, got {fz_sz}'\n"
-                "    assert slot_sz != fz_sz, (\n"
-                "        'slot and fz must report distinct sizes; if they '\n"
-                "        'match, the two accessors may be reading the '\n"
-                "        'same underlying field')\n"
-                "    return False\n");
+                         "def on_produce(tx, msgs, api):\n"
+                         "    slot_sz = api.slot_logical_size()\n"
+                         "    fz_sz   = api.flexzone_logical_size()\n"
+                         "    assert slot_sz == 16, f'slot: expected 16, got {slot_sz}'\n"
+                         "    assert fz_sz   == 24, f'fz: expected 24, got {fz_sz}'\n"
+                         "    assert slot_sz != fz_sz, (\n"
+                         "        'slot and fz must report distinct sizes; if they '\n"
+                         "        'match, the two accessors may be reading the '\n"
+                         "        'same underlying field')\n"
+                         "    return False\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
-            auto slot_spec = padding_schema();   slot_spec.packing = "aligned";
-            auto fz_spec   = fz_array_schema();  fz_spec.packing   = "aligned";
+            auto slot_spec = padding_schema();
+            slot_spec.packing = "aligned";
+            auto fz_spec = fz_array_schema();
+            fz_spec.packing = "aligned";
 
-            core.set_out_slot_spec(
-                SchemaSpec{slot_spec},
-                pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
+            core.set_out_slot_spec(SchemaSpec{slot_spec},
+                                   pylabhub::hub::compute_schema_size(slot_spec, "aligned"));
 
             // Populate the FlexzoneInfoCache (see file header BYPASS PATTERN).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = fz_spec.has_schema;
-                fz_info.tx_logical_size  = pylabhub::hub::compute_schema_size(
-                    fz_spec, fz_spec.packing);
+                fz_info.has_tx_fz = fz_spec.has_schema;
+                fz_info.tx_logical_size =
+                    pylabhub::hub::compute_schema_size(fz_spec, fz_spec.packing);
                 fz_info.tx_physical_size =
                     pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
                 api->set_flexzone_info_cache_(fz_info);
             }
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "prod", "on_produce");
+            fill_base_params(params, engine, api.get(), script_dir, "prod", "on_produce");
             params.out_slot_spec = slot_spec;
-            params.out_fz_spec   = fz_spec;
-            params.out_packing   = "aligned";
+            params.out_fz_spec = fz_spec;
+            params.out_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             EXPECT_EQ(core.out_slot_logical_size(), 16u);
-            EXPECT_GE(api->flexzone_physical_size(
-                          pylabhub::scripting::ChannelSide::Tx),
-                      24u)
+            EXPECT_GE(api->flexzone_physical_size(pylabhub::scripting::ChannelSide::Tx), 24u)
                 << "page-aligned physical size must bound logical 24";
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
             EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), 24u);
 
             std::vector<std::byte> slot_buf(16, std::byte{0});
             std::vector<IncomingMessage> msgs;
-            engine.invoke_produce(
-                InvokeTx{slot_buf.data(), slot_buf.size()}, msgs);
+            engine.invoke_produce(InvokeTx{slot_buf.data(), slot_buf.size()}, msgs);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::flexzone_logical_size_array_fields",
-        Logger::GetLifecycleModule());
+        "python_engine::flexzone_logical_size_array_fields", Logger::GetLifecycleModule());
 }
 
 namespace
@@ -5685,7 +5578,7 @@ namespace
 //   total = 16 bytes
 struct PaddingSchemaLayout
 {
-    double  ts;
+    double ts;
     uint8_t flag;
     uint8_t pad[3];
     int32_t count;
@@ -5702,42 +5595,42 @@ int full_startup_producer_multifield(const std::string &dir)
     // misaligned ctypes Structure could write into pad bytes,
     // corrupting them from their initial 0 state).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                "def on_produce(tx, msgs, api):\n"
-                "    tx.slot.ts    = 1.23456789\n"
-                "    tx.slot.flag  = 0xAB\n"
-                "    tx.slot.count = -42\n"
-                "    return True\n");
+            write_script(script_dir, "def on_produce(tx, msgs, api):\n"
+                                     "    tx.slot.ts    = 1.23456789\n"
+                                     "    tx.slot.flag  = 0xAB\n"
+                                     "    tx.slot.count = -42\n"
+                                     "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
-            auto spec = padding_schema(); spec.packing = "aligned";
+            auto spec = padding_schema();
+            spec.packing = "aligned";
             core.set_out_slot_spec(SchemaSpec{spec},
-                pylabhub::hub::compute_schema_size(spec, "aligned"));
+                                   pylabhub::hub::compute_schema_size(spec, "aligned"));
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "prod", "on_produce");
+            fill_base_params(params, engine, api.get(), script_dir, "prod", "on_produce");
             params.out_slot_spec = spec;
-            params.out_packing   = "aligned";
+            params.out_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
 
             // Initialize pad bytes to a sentinel — a misaligned write
             // would overwrite them.
             PaddingSchemaLayout buf{};
-            buf.pad[0] = 0xDE; buf.pad[1] = 0xAD; buf.pad[2] = 0xBE;
+            buf.pad[0] = 0xDE;
+            buf.pad[1] = 0xAD;
+            buf.pad[2] = 0xBE;
 
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -5753,8 +5646,7 @@ int full_startup_producer_multifield(const std::string &dir)
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_producer_multifield",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_producer_multifield", Logger::GetLifecycleModule());
 }
 
 int full_startup_consumer_multifield(const std::string &dir)
@@ -5763,46 +5655,47 @@ int full_startup_consumer_multifield(const std::string &dir)
     // V2 parity — already covers the key round-trip (read each of ts,
     // flag, count at its correct offset).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir,
-                "def on_consume(rx, msgs, api):\n"
-                "    assert abs(rx.slot.ts - 9.87) < 0.001, f'ts={rx.slot.ts}'\n"
-                "    assert rx.slot.flag == 0xCD, f'flag={rx.slot.flag}'\n"
-                "    assert rx.slot.count == 100, f'count={rx.slot.count}'\n"
-                "    return True\n");
+                         "def on_consume(rx, msgs, api):\n"
+                         "    assert abs(rx.slot.ts - 9.87) < 0.001, f'ts={rx.slot.ts}'\n"
+                         "    assert rx.slot.flag == 0xCD, f'flag={rx.slot.flag}'\n"
+                         "    assert rx.slot.count == 100, f'count={rx.slot.count}'\n"
+                         "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "cons");
 
-            auto spec = padding_schema(); spec.packing = "aligned";
+            auto spec = padding_schema();
+            spec.packing = "aligned";
             core.set_in_slot_spec(SchemaSpec{spec},
-                pylabhub::hub::compute_schema_size(spec, "aligned"));
+                                  pylabhub::hub::compute_schema_size(spec, "aligned"));
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "cons", "on_consume");
+            fill_base_params(params, engine, api.get(), script_dir, "cons", "on_consume");
             params.in_slot_spec = spec;
-            params.in_packing   = "aligned";
+            params.in_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             PaddingSchemaLayout buf{};
-            buf.ts = 9.87; buf.flag = 0xCD; buf.count = 100;
+            buf.ts = 9.87;
+            buf.flag = 0xCD;
+            buf.count = 100;
 
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_consumer_multifield",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_consumer_multifield", Logger::GetLifecycleModule());
 }
 
 int full_startup_processor_multifield(const std::string &dir)
@@ -5811,45 +5704,48 @@ int full_startup_processor_multifield(const std::string &dir)
     // pad-byte pin on tx buffer (same as producer test — misaligned
     // ctypes writes would corrupt pad bytes).
     return run_python_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                "def on_process(rx, tx, msgs, api):\n"
-                "    tx.slot.ts    = rx.slot.ts\n"
-                "    tx.slot.flag  = rx.slot.flag\n"
-                "    tx.slot.count = rx.slot.count * 2\n"
-                "    return True\n");
+            write_script(script_dir, "def on_process(rx, tx, msgs, api):\n"
+                                     "    tx.slot.ts    = rx.slot.ts\n"
+                                     "    tx.slot.flag  = rx.slot.flag\n"
+                                     "    tx.slot.count = rx.slot.count * 2\n"
+                                     "    return True\n");
 
             PythonEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "proc");
 
-            auto spec = padding_schema(); spec.packing = "aligned";
+            auto spec = padding_schema();
+            spec.packing = "aligned";
             const size_t sz = pylabhub::hub::compute_schema_size(spec, "aligned");
-            core.set_in_slot_spec(SchemaSpec{spec},  sz);
+            core.set_in_slot_spec(SchemaSpec{spec}, sz);
             core.set_out_slot_spec(SchemaSpec{spec}, sz);
 
             pylabhub::scripting::EngineModuleParams params;
-            fill_base_params(params, engine, api.get(),
-                             script_dir, "proc", "on_process");
-            params.in_slot_spec  = spec;
+            fill_base_params(params, engine, api.get(), script_dir, "proc", "on_process");
+            params.in_slot_spec = spec;
             params.out_slot_spec = spec;
-            params.in_packing    = "aligned";
-            params.out_packing   = "aligned";
+            params.in_packing = "aligned";
+            params.out_packing = "aligned";
 
             engine.set_python_venv("");
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             PaddingSchemaLayout in_buf{};
             PaddingSchemaLayout out_buf{};
-            in_buf.ts = 1.23456789; in_buf.flag = 0xAB; in_buf.count = -42;
-            out_buf.pad[0] = 0xBE; out_buf.pad[1] = 0xEF; out_buf.pad[2] = 0xED;
+            in_buf.ts = 1.23456789;
+            in_buf.flag = 0xAB;
+            in_buf.count = -42;
+            out_buf.pad[0] = 0xBE;
+            out_buf.pad[1] = 0xEF;
+            out_buf.pad[2] = 0xED;
 
             std::vector<IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf)},
-                InvokeTx{&out_buf, sizeof(out_buf)}, msgs);
+            auto result =
+                engine.invoke_process(pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf)},
+                                      InvokeTx{&out_buf, sizeof(out_buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -5862,8 +5758,7 @@ int full_startup_processor_multifield(const std::string &dir)
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
         },
-        "python_engine::full_startup_processor_multifield",
-        Logger::GetLifecycleModule());
+        "python_engine::full_startup_processor_multifield", Logger::GetLifecycleModule());
 }
 
 int api_band_all_methods_graceful_no_broker(const std::string &dir)
@@ -5903,11 +5798,11 @@ def on_produce(tx, msgs, api):
     assert r is None, f"band_members expected None, got {r!r}"
     return True
 )PY",
-        [](PythonEngine &engine, RoleHostCore & /*core*/) {
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<IncomingMessage> msgs;
             float buf = 0.0f;
-            auto result = engine.invoke_produce(
-                InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Commit)
                 << "all 4 band_* methods must return gracefully without "
                    "a broker — any raise would make on_produce return "
@@ -5933,8 +5828,7 @@ def on_produce(tx, msgs, api):
 // the held_delta and the test fails with a specific diagnostic.
 // ============================================================================
 
-int release_global_lock_during_wait_lets_subthread_run(
-    const std::string & /*dir*/)
+int release_global_lock_during_wait_lets_subthread_run(const std::string & /*dir*/)
 {
     return run_python_gtest_worker(
         [&]()
@@ -5990,14 +5884,14 @@ time.sleep(0.05)
             // the test clean.
             py::exec("running = False\nt.join(timeout=1.0)", ns);
 
-            const int held_delta     = counter_after_held    - counter_after_warmup;
+            const int held_delta = counter_after_held - counter_after_warmup;
             const int released_delta = counter_after_released - counter_after_held;
 
             // Apparatus check: the C++ sleeps actually slept ~100 ms.
-            const auto held_dur_ms = std::chrono::duration_cast<
-                std::chrono::milliseconds>(t_held - t0).count();
-            const auto released_dur_ms = std::chrono::duration_cast<
-                std::chrono::milliseconds>(t_released - t_held).count();
+            const auto held_dur_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(t_held - t0).count();
+            const auto released_dur_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(t_released - t_held).count();
             EXPECT_GE(held_dur_ms, 100)
                 << "control sleep_for ran too short: " << held_dur_ms << "ms";
             EXPECT_GE(released_dur_ms, 100)
@@ -6011,18 +5905,18 @@ time.sleep(0.05)
             // CPython's eval-breaker only fires while running Python
             // bytecode, which `std::this_thread::sleep_for` is not.
             EXPECT_LT(held_delta, 5)
-                << "Sub-thread advanced unexpectedly while GIL was held: "
-                << held_delta << " ticks (expected ~0).  Either the GIL "
-                "is not actually held or the test apparatus is broken.";
+                << "Sub-thread advanced unexpectedly while GIL was held: " << held_delta
+                << " ticks (expected ~0).  Either the GIL "
+                   "is not actually held or the test apparatus is broken.";
 
             // Releasing the GIL for 100 ms with the sub-thread sleeping
             // 5 ms per tick: theoretical 20, real-world 10–18 once
             // scheduler overhead is accounted for.  Bound is generous
             // to keep the test stable on busy CI machines.
             EXPECT_GT(released_delta, 10)
-                << "Sub-thread did not advance enough during GIL release: "
-                << released_delta << " ticks (expected >10).  "
-                "EngineGlobalLockRelease may be a no-op.";
+                << "Sub-thread did not advance enough during GIL release: " << released_delta
+                << " ticks (expected >10).  "
+                   "EngineGlobalLockRelease may be a no-op.";
 
             // Cross-check: the released path must produce a
             // qualitatively bigger delta than the held path.  Catches
@@ -6030,12 +5924,12 @@ time.sleep(0.05)
             // (e.g., a test environment where threading is broken).
             EXPECT_GT(released_delta, held_delta * 5)
                 << "GIL release did not produce a meaningful difference "
-                   "(held=" << held_delta << ", released="
-                << released_delta << ").  EngineGlobalLockRelease "
-                "appears non-functional.";
+                   "(held="
+                << held_delta << ", released=" << released_delta
+                << ").  EngineGlobalLockRelease "
+                   "appears non-functional.";
         },
-        "release_global_lock_during_wait_lets_subthread_run",
-        Logger::GetLifecycleModule());
+        "release_global_lock_during_wait_lets_subthread_run", Logger::GetLifecycleModule());
 }
 
 } // namespace python_engine
@@ -6057,15 +5951,14 @@ struct PythonEngineWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "python_engine")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "python_engine")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::python_engine;
 
-                if (argc <= 2) {
-                    fmt::print(stderr,
-                               "python_engine.{}: missing <dir> arg\n", sc);
+                if (argc <= 2)
+                {
+                    fmt::print(stderr, "python_engine.{}: missing <dir> arg\n", sc);
                     return 1;
                 }
                 const std::string dir = argv[2];
@@ -6294,9 +6187,7 @@ struct PythonEngineWorkerRegistrar
                 if (sc == "invoke_on_inbox_missing_type_reports_error")
                     return invoke_on_inbox_missing_type_reports_error(dir);
 
-                fmt::print(stderr,
-                           "[python_engine] ERROR: unknown scenario '{}'\n",
-                           sc);
+                fmt::print(stderr, "[python_engine] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

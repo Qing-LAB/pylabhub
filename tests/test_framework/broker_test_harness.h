@@ -67,16 +67,16 @@ namespace pylabhub::tests
 /// that want to control teardown timing.
 struct DirectBrokerHandle
 {
-    std::unique_ptr<pylabhub::hub::HubState>          hub_state;
-    std::unique_ptr<pylabhub::broker::BrokerService>  service;
-    std::thread                                        thread;
-    std::string                                        endpoint;
-    std::string                                        pubkey;
+    std::unique_ptr<pylabhub::hub::HubState> hub_state;
+    std::unique_ptr<pylabhub::broker::BrokerService> service;
+    std::thread thread;
+    std::string endpoint;
+    std::string pubkey;
 
-    DirectBrokerHandle()                                = default;
-    DirectBrokerHandle(const DirectBrokerHandle &)      = delete;
+    DirectBrokerHandle() = default;
+    DirectBrokerHandle(const DirectBrokerHandle &) = delete;
     DirectBrokerHandle &operator=(const DirectBrokerHandle &) = delete;
-    DirectBrokerHandle(DirectBrokerHandle &&) noexcept  = default;
+    DirectBrokerHandle(DirectBrokerHandle &&) noexcept = default;
     DirectBrokerHandle &operator=(DirectBrokerHandle &&) noexcept = default;
     ~DirectBrokerHandle();
 
@@ -87,9 +87,8 @@ struct DirectBrokerHandle
 /// applies the caller's `cfg` (timeouts, policies, etc.) on top.  The
 /// returned handle is ready for use — `endpoint` and `pubkey` are
 /// populated from the broker's on_ready callback before this returns.
-[[nodiscard]] DirectBrokerHandle
-start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
-                    const CurveSetup &setup);
+[[nodiscard]] DirectBrokerHandle start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
+                                                     const CurveSetup &setup);
 
 // ─── HubHost broker — full production assembly ───────────────────────────────
 
@@ -98,15 +97,15 @@ start_direct_broker(pylabhub::broker::BrokerService::Config cfg,
 /// `host->shutdown()` and removes the temp dir.
 struct HubHostBrokerHandle
 {
-    std::filesystem::path                            hub_dir;
-    std::unique_ptr<pylabhub::hub_host::HubHost>     host;
-    std::string                                       endpoint;
-    std::string                                       pubkey;
+    std::filesystem::path hub_dir;
+    std::unique_ptr<pylabhub::hub_host::HubHost> host;
+    std::string endpoint;
+    std::string pubkey;
 
-    HubHostBrokerHandle()                                   = default;
-    HubHostBrokerHandle(const HubHostBrokerHandle &)        = delete;
+    HubHostBrokerHandle() = default;
+    HubHostBrokerHandle(const HubHostBrokerHandle &) = delete;
     HubHostBrokerHandle &operator=(const HubHostBrokerHandle &) = delete;
-    HubHostBrokerHandle(HubHostBrokerHandle &&) noexcept    = default;
+    HubHostBrokerHandle(HubHostBrokerHandle &&) noexcept = default;
     HubHostBrokerHandle &operator=(HubHostBrokerHandle &&) noexcept = default;
     ~HubHostBrokerHandle();
 
@@ -159,8 +158,7 @@ struct HubHostBrokerHandle
 ///   - `hub_name` is passed to `HubDirectory::init_directory`
 ///     (operator-visible hub label); the uid is auto-derived.
 [[nodiscard]] HubHostBrokerHandle
-start_hubhost_broker(const nlohmann::json &j_overrides,
-                     const CurveSetup &setup,
+start_hubhost_broker(const nlohmann::json &j_overrides, const CurveSetup &setup,
                      std::string_view hub_name = "HarnessTestHub");
 
 // ─── BRC client — BrokerRequestComm + poll-loop thread ───────────────────────
@@ -187,14 +185,14 @@ start_hubhost_broker(const nlohmann::json &j_overrides,
 struct BrcHandle
 {
     pylabhub::hub::BrokerRequestComm brc;
-    std::atomic<bool>                 running{true};
-    std::thread                       thread;
+    std::atomic<bool> running{true};
+    std::thread thread;
 
-    BrcHandle()                              = default;
-    BrcHandle(const BrcHandle &)             = delete;
-    BrcHandle &operator=(const BrcHandle &)  = delete;
-    BrcHandle(BrcHandle &&)                  = delete;
-    BrcHandle &operator=(BrcHandle &&)       = delete;
+    BrcHandle() = default;
+    BrcHandle(const BrcHandle &) = delete;
+    BrcHandle &operator=(const BrcHandle &) = delete;
+    BrcHandle(BrcHandle &&) = delete;
+    BrcHandle &operator=(BrcHandle &&) = delete;
     ~BrcHandle();
 
     /// Connect a BRC to a HubHost broker.  Caller is responsible for
@@ -207,8 +205,7 @@ struct BrcHandle
     /// HEP-CORE-0040 §172: the role keypair lives only in locked
     /// memory; this signature passes a NAME, not bytes.
     void start(const std::string &endpoint, const std::string &server_pubkey,
-               const std::string &role_uid,
-               const std::string &keystore_name);
+               const std::string &role_uid, const std::string &keystore_name);
     void stop();
 };
 
@@ -233,17 +230,14 @@ struct BrcHandle
 // `producer_pid` / `consumer_pid` default to `::getpid()` — the common case.
 // Tests that need to pin a specific pid (e.g. dereg-pid-mismatch assertions
 // in broker_consumer_workers.cpp) pass it explicitly.
-[[nodiscard]] nlohmann::json make_reg_opts(
-    const std::string &channel,
-    const std::string &role_uid,
-    std::optional<uint64_t> producer_pid = std::nullopt,
-    const std::string &channel_topology  = {});
+[[nodiscard]] nlohmann::json make_reg_opts(const std::string &channel, const std::string &role_uid,
+                                           std::optional<uint64_t> producer_pid = std::nullopt,
+                                           const std::string &channel_topology = {});
 
-[[nodiscard]] nlohmann::json make_cons_opts(
-    const std::string &channel,
-    const std::string &consumer_uid,
-    std::optional<uint64_t> consumer_pid = std::nullopt,
-    const std::string &channel_topology  = {});
+[[nodiscard]] nlohmann::json make_cons_opts(const std::string &channel,
+                                            const std::string &consumer_uid,
+                                            std::optional<uint64_t> consumer_pid = std::nullopt,
+                                            const std::string &channel_topology = {});
 
 // Negative-path overload — caller supplies the wire `zmq_pubkey`
 // explicitly so the test can inject a value that DOES NOT match the
@@ -254,16 +248,14 @@ struct BrcHandle
 //
 // Happy-path tests should use the keystore-derived overload above —
 // it can't accidentally diverge from the broker's known_roles record.
-[[nodiscard]] nlohmann::json make_reg_opts_with_explicit_pubkey(
-    const std::string &channel,
-    const std::string &role_uid,
-    const std::string &zmq_pubkey,
-    std::optional<uint64_t> producer_pid = std::nullopt);
+[[nodiscard]] nlohmann::json
+make_reg_opts_with_explicit_pubkey(const std::string &channel, const std::string &role_uid,
+                                   const std::string &zmq_pubkey,
+                                   std::optional<uint64_t> producer_pid = std::nullopt);
 
-[[nodiscard]] nlohmann::json make_cons_opts_with_explicit_pubkey(
-    const std::string &channel,
-    const std::string &consumer_uid,
-    const std::string &zmq_pubkey,
-    std::optional<uint64_t> consumer_pid = std::nullopt);
+[[nodiscard]] nlohmann::json
+make_cons_opts_with_explicit_pubkey(const std::string &channel, const std::string &consumer_uid,
+                                    const std::string &zmq_pubkey,
+                                    std::optional<uint64_t> consumer_pid = std::nullopt);
 
 } // namespace pylabhub::tests

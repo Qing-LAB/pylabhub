@@ -34,9 +34,9 @@
 #include <string>
 #include <thread>
 
+using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 using pylabhub::utils::ThreadManager;
-using pylabhub::tests::helper::run_gtest_worker;
 using namespace std::chrono_literals;
 
 namespace pylabhub::tests::worker
@@ -51,14 +51,17 @@ namespace thread_manager_active_loop
 int old_overload_flag_set_after_body_return()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "old_overload");
 
             auto stop = std::make_shared<std::atomic<bool>>(false);
-            ASSERT_TRUE(tm.spawn("worker", [stop]() {
-                while (!stop->load(std::memory_order_acquire))
-                    std::this_thread::sleep_for(2ms);
-            }));
+            ASSERT_TRUE(tm.spawn("worker",
+                                 [stop]()
+                                 {
+                                     while (!stop->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                 }));
 
             EXPECT_FALSE(tm.is_active_loop_exited("worker"))
                 << "Flag must be false while body is running";
@@ -77,20 +80,22 @@ int old_overload_flag_set_after_body_return()
 int new_overload_early_mark_observable_before_body_return()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "early_mark");
 
-            auto exit_loop    = std::make_shared<std::atomic<bool>>(false);
+            auto exit_loop = std::make_shared<std::atomic<bool>>(false);
             auto release_body = std::make_shared<std::atomic<bool>>(false);
 
             ASSERT_TRUE(tm.spawn("worker",
-                [exit_loop, release_body](ThreadManager::SlotContext &ctx) {
-                    while (!exit_loop->load(std::memory_order_acquire))
-                        std::this_thread::sleep_for(2ms);
-                    ctx.mark_active_loop_exited();
-                    while (!release_body->load(std::memory_order_acquire))
-                        std::this_thread::sleep_for(2ms);
-                }));
+                                 [exit_loop, release_body](ThreadManager::SlotContext &ctx)
+                                 {
+                                     while (!exit_loop->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                     ctx.mark_active_loop_exited();
+                                     while (!release_body->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                 }));
 
             EXPECT_FALSE(tm.is_active_loop_exited("worker"));
 
@@ -100,15 +105,12 @@ int new_overload_early_mark_observable_before_body_return()
             EXPECT_TRUE(tm.wait_for_active_loop_exit("worker", 500ms))
                 << "Flag must be observable as soon as thread marks it";
             const auto elapsed = std::chrono::steady_clock::now() - t0;
-            EXPECT_LT(elapsed, 100ms)
-                << "Flag observation should be prompt (well under timeout)";
+            EXPECT_LT(elapsed, 100ms) << "Flag observation should be prompt (well under timeout)";
 
-            EXPECT_EQ(tm.active_count(), 1u)
-                << "Body has not yet returned; slot still tracked";
+            EXPECT_EQ(tm.active_count(), 1u) << "Body has not yet returned; slot still tracked";
 
             release_body->store(true, std::memory_order_release);
-            EXPECT_EQ(tm.drain(), 0u)
-                << "After release, body returns and drain completes cleanly";
+            EXPECT_EQ(tm.drain(), 0u) << "After release, body returns and drain completes cleanly";
         },
         "thread_manager_active_loop::new_overload_early_mark_observable_before_body_return",
         Logger::GetLifecycleModule());
@@ -117,7 +119,8 @@ int new_overload_early_mark_observable_before_body_return()
 int is_active_loop_exited_unknown_name_returns_false()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "unknown");
             EXPECT_FALSE(tm.is_active_loop_exited("nonexistent"));
         },
@@ -128,14 +131,14 @@ int is_active_loop_exited_unknown_name_returns_false()
 int wait_for_active_loop_exit_unknown_name_returns_false_fast()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "wait_unknown");
 
             const auto t0 = std::chrono::steady_clock::now();
             EXPECT_FALSE(tm.wait_for_active_loop_exit("nonexistent", 500ms));
             const auto elapsed = std::chrono::steady_clock::now() - t0;
-            EXPECT_LT(elapsed, 50ms)
-                << "Unknown name must return false immediately (no polling)";
+            EXPECT_LT(elapsed, 50ms) << "Unknown name must return false immediately (no polling)";
         },
         "thread_manager_active_loop::wait_for_active_loop_exit_unknown_name_returns_false_fast",
         Logger::GetLifecycleModule());
@@ -144,22 +147,23 @@ int wait_for_active_loop_exit_unknown_name_returns_false_fast()
 int wait_for_active_loop_exit_timeout_returns_false()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "wait_timeout");
 
             auto stop = std::make_shared<std::atomic<bool>>(false);
             ASSERT_TRUE(tm.spawn("worker",
-                [stop](ThreadManager::SlotContext &) {
-                    while (!stop->load(std::memory_order_acquire))
-                        std::this_thread::sleep_for(2ms);
-                }));
+                                 [stop](ThreadManager::SlotContext &)
+                                 {
+                                     while (!stop->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                 }));
 
             const auto t0 = std::chrono::steady_clock::now();
             EXPECT_FALSE(tm.wait_for_active_loop_exit("worker", 100ms));
             const auto elapsed = std::chrono::steady_clock::now() - t0;
             EXPECT_GE(elapsed, 100ms) << "Must wait for the full timeout";
-            EXPECT_LT(elapsed, 200ms)
-                << "Must not over-wait beyond timeout + poll granularity";
+            EXPECT_LT(elapsed, 200ms) << "Must not over-wait beyond timeout + poll granularity";
 
             stop->store(true, std::memory_order_release);
             EXPECT_EQ(tm.drain(), 0u);
@@ -171,18 +175,20 @@ int wait_for_active_loop_exit_timeout_returns_false()
 int mark_active_loop_exited_idempotent()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "idempotent");
 
             auto release = std::make_shared<std::atomic<bool>>(false);
             ASSERT_TRUE(tm.spawn("worker",
-                [release](ThreadManager::SlotContext &ctx) {
-                    ctx.mark_active_loop_exited();
-                    ctx.mark_active_loop_exited();
-                    ctx.mark_active_loop_exited();
-                    while (!release->load(std::memory_order_acquire))
-                        std::this_thread::sleep_for(2ms);
-                }));
+                                 [release](ThreadManager::SlotContext &ctx)
+                                 {
+                                     ctx.mark_active_loop_exited();
+                                     ctx.mark_active_loop_exited();
+                                     ctx.mark_active_loop_exited();
+                                     while (!release->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                 }));
 
             EXPECT_TRUE(tm.wait_for_active_loop_exit("worker", 500ms));
             release->store(true, std::memory_order_release);
@@ -195,14 +201,13 @@ int mark_active_loop_exited_idempotent()
 int drain_fast_path_already_exited()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager::reset_process_detached_count_for_testing();
             ThreadManager tm("test", "fast_path");
 
-            ASSERT_TRUE(tm.spawn("quick",
-                [](ThreadManager::SlotContext &ctx) {
-                    ctx.mark_active_loop_exited();
-                }));
+            ASSERT_TRUE(tm.spawn("quick", [](ThreadManager::SlotContext &ctx)
+                                 { ctx.mark_active_loop_exited(); }));
 
             std::this_thread::sleep_for(50ms);
 
@@ -214,8 +219,7 @@ int drain_fast_path_already_exited()
             EXPECT_LT(elapsed, 100ms)
                 << "Fast path: active_loop_exited already set, no Stage 1 polling";
         },
-        "thread_manager_active_loop::drain_fast_path_already_exited",
-        Logger::GetLifecycleModule());
+        "thread_manager_active_loop::drain_fast_path_already_exited", Logger::GetLifecycleModule());
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -227,24 +231,28 @@ int drain_fast_path_already_exited()
 int drain_stuck_in_active_loop_detaches_with_active_loop_diagnostic()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager::reset_process_detached_count_for_testing();
             ThreadManager tm("test", "stuck_active");
 
-            auto stop            = std::make_shared<std::atomic<bool>>(false);
+            auto stop = std::make_shared<std::atomic<bool>>(false);
             auto entered_bracket = std::make_shared<std::atomic<bool>>(false);
-            auto exited_bracket  = std::make_shared<std::atomic<bool>>(false);
+            auto exited_bracket = std::make_shared<std::atomic<bool>>(false);
 
             ThreadManager::SpawnOptions opts;
             opts.join_timeout = 100ms;
-            ASSERT_TRUE(tm.spawn("stuck",
-                [stop, entered_bracket, exited_bracket](
-                    ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered_bracket->store(true, std::memory_order_release);
-                        while (!stop->load(std::memory_order_acquire))
-                            std::this_thread::sleep_for(2ms);
-                    });
+            ASSERT_TRUE(tm.spawn(
+                "stuck",
+                [stop, entered_bracket, exited_bracket](ThreadManager::SlotContext &ctx)
+                {
+                    ctx.with_active_loop(
+                        [&]
+                        {
+                            entered_bracket->store(true, std::memory_order_release);
+                            while (!stop->load(std::memory_order_acquire))
+                                std::this_thread::sleep_for(2ms);
+                        });
                     exited_bracket->store(true, std::memory_order_release);
                 },
                 opts));
@@ -256,9 +264,9 @@ int drain_stuck_in_active_loop_detaches_with_active_loop_diagnostic()
             ASSERT_TRUE(entered_bracket->load(std::memory_order_acquire))
                 << "Thread never entered with_active_loop bracket";
 
-            const auto t0       = std::chrono::steady_clock::now();
+            const auto t0 = std::chrono::steady_clock::now();
             const auto detached = tm.drain();
-            const auto elapsed  = std::chrono::steady_clock::now() - t0;
+            const auto elapsed = std::chrono::steady_clock::now() - t0;
 
             EXPECT_EQ(detached, 1u) << "Stuck thread detached after timeout";
             EXPECT_EQ(ThreadManager::process_detached_count(), 1u);
@@ -275,22 +283,24 @@ int drain_stuck_in_active_loop_detaches_with_active_loop_diagnostic()
             // Clear detach counter before LifecycleGuard's leak check.
             ThreadManager::reset_process_detached_count_for_testing();
         },
-        "thread_manager_active_loop::drain_stuck_in_active_loop",
-        Logger::GetLifecycleModule());
+        "thread_manager_active_loop::drain_stuck_in_active_loop", Logger::GetLifecycleModule());
 }
 
 int drain_stuck_in_post_loop_detaches_with_post_loop_diagnostic()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager::reset_process_detached_count_for_testing();
             ThreadManager tm("test", "stuck_postloop");
 
             auto release_body = std::make_shared<std::atomic<bool>>(false);
             ThreadManager::SpawnOptions opts;
             opts.join_timeout = 100ms;
-            ASSERT_TRUE(tm.spawn("postloop",
-                [release_body](ThreadManager::SlotContext &ctx) {
+            ASSERT_TRUE(tm.spawn(
+                "postloop",
+                [release_body](ThreadManager::SlotContext &ctx)
+                {
                     ctx.mark_active_loop_exited();
                     while (!release_body->load(std::memory_order_acquire))
                         std::this_thread::sleep_for(2ms);
@@ -301,12 +311,11 @@ int drain_stuck_in_post_loop_detaches_with_post_loop_diagnostic()
             ASSERT_TRUE(tm.is_active_loop_exited("postloop"))
                 << "Body should have marked active_loop_exited before drain";
 
-            const auto t0       = std::chrono::steady_clock::now();
+            const auto t0 = std::chrono::steady_clock::now();
             const auto detached = tm.drain();
-            const auto elapsed  = std::chrono::steady_clock::now() - t0;
+            const auto elapsed = std::chrono::steady_clock::now() - t0;
 
-            EXPECT_EQ(detached, 1u)
-                << "Post-loop-stuck thread detached after Stage 2 timeout";
+            EXPECT_EQ(detached, 1u) << "Post-loop-stuck thread detached after Stage 2 timeout";
             EXPECT_EQ(ThreadManager::process_detached_count(), 1u);
             EXPECT_LT(elapsed, 150ms)
                 << "Stage 1 fast path: drain should finish in ~Stage 2 time only";
@@ -316,8 +325,7 @@ int drain_stuck_in_post_loop_detaches_with_post_loop_diagnostic()
 
             ThreadManager::reset_process_detached_count_for_testing();
         },
-        "thread_manager_active_loop::drain_stuck_in_post_loop",
-        Logger::GetLifecycleModule());
+        "thread_manager_active_loop::drain_stuck_in_post_loop", Logger::GetLifecycleModule());
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -328,23 +336,27 @@ int drain_stuck_in_post_loop_detaches_with_post_loop_diagnostic()
 int with_active_loop_bracket_toggles_in_active_loop()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "bracket_toggles");
 
-            auto release         = std::make_shared<std::atomic<bool>>(false);
+            auto release = std::make_shared<std::atomic<bool>>(false);
             auto entered_bracket = std::make_shared<std::atomic<bool>>(false);
-            auto exited_bracket  = std::make_shared<std::atomic<bool>>(false);
+            auto exited_bracket = std::make_shared<std::atomic<bool>>(false);
 
-            ASSERT_TRUE(tm.spawn("worker",
-                [release, entered_bracket, exited_bracket](
-                    ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered_bracket->store(true, std::memory_order_release);
-                        while (!release->load(std::memory_order_acquire))
-                            std::this_thread::sleep_for(2ms);
-                    });
-                    exited_bracket->store(true, std::memory_order_release);
-                }));
+            ASSERT_TRUE(
+                tm.spawn("worker",
+                         [release, entered_bracket, exited_bracket](ThreadManager::SlotContext &ctx)
+                         {
+                             ctx.with_active_loop(
+                                 [&]
+                                 {
+                                     entered_bracket->store(true, std::memory_order_release);
+                                     while (!release->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                 });
+                             exited_bracket->store(true, std::memory_order_release);
+                         }));
 
             const auto enter_dl = std::chrono::steady_clock::now() + 1s;
             while (!entered_bracket->load(std::memory_order_acquire) &&
@@ -373,20 +385,21 @@ int with_active_loop_bracket_toggles_in_active_loop()
 int with_active_loop_skips_body_if_shutdown_requested_before_entry()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "skip_body");
 
             auto start_gate = std::make_shared<std::atomic<bool>>(false);
-            auto body_ran   = std::make_shared<std::atomic<bool>>(false);
+            auto body_ran = std::make_shared<std::atomic<bool>>(false);
 
             ASSERT_TRUE(tm.spawn("worker",
-                [start_gate, body_ran](ThreadManager::SlotContext &ctx) {
-                    while (!start_gate->load(std::memory_order_acquire))
-                        std::this_thread::sleep_for(2ms);
-                    ctx.with_active_loop([&] {
-                        body_ran->store(true, std::memory_order_release);
-                    });
-                }));
+                                 [start_gate, body_ran](ThreadManager::SlotContext &ctx)
+                                 {
+                                     while (!start_gate->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                     ctx.with_active_loop(
+                                         [&] { body_ran->store(true, std::memory_order_release); });
+                                 }));
 
             EXPECT_TRUE(tm.request_shutdown("worker"));
             start_gate->store(true, std::memory_order_release);
@@ -396,25 +409,30 @@ int with_active_loop_skips_body_if_shutdown_requested_before_entry()
                 << "with_active_loop must skip body when shutdown_requested is "
                    "set at entry";
         },
-        "thread_manager_active_loop::with_active_loop_skips_body_if_shutdown_requested_before_entry",
+        "thread_manager_active_loop::with_active_loop_skips_body_if_shutdown_requested_before_"
+        "entry",
         Logger::GetLifecycleModule());
 }
 
 int with_active_loop_raii_reset_on_exception()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "raii_throw");
 
             auto entered = std::make_shared<std::atomic<bool>>(false);
 
             ASSERT_TRUE(tm.spawn("thrower",
-                [entered](ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered->store(true, std::memory_order_release);
-                        throw std::runtime_error("simulated bracket throw");
-                    });
-                }));
+                                 [entered](ThreadManager::SlotContext &ctx)
+                                 {
+                                     ctx.with_active_loop(
+                                         [&]
+                                         {
+                                             entered->store(true, std::memory_order_release);
+                                             throw std::runtime_error("simulated bracket throw");
+                                         });
+                                 }));
 
             const auto dl = std::chrono::steady_clock::now() + 1s;
             while (!entered->load(std::memory_order_acquire) &&
@@ -433,21 +451,26 @@ int with_active_loop_raii_reset_on_exception()
 int shutdown_requested_thread_side_poll_observes_flag()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "thread_poll");
 
-            auto saw_shutdown    = std::make_shared<std::atomic<bool>>(false);
+            auto saw_shutdown = std::make_shared<std::atomic<bool>>(false);
             auto entered_bracket = std::make_shared<std::atomic<bool>>(false);
 
             ASSERT_TRUE(tm.spawn("worker",
-                [saw_shutdown, entered_bracket](ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered_bracket->store(true, std::memory_order_release);
-                        while (!ctx.shutdown_requested())
-                            std::this_thread::sleep_for(2ms);
-                        saw_shutdown->store(true, std::memory_order_release);
-                    });
-                }));
+                                 [saw_shutdown, entered_bracket](ThreadManager::SlotContext &ctx)
+                                 {
+                                     ctx.with_active_loop(
+                                         [&]
+                                         {
+                                             entered_bracket->store(true,
+                                                                    std::memory_order_release);
+                                             while (!ctx.shutdown_requested())
+                                                 std::this_thread::sleep_for(2ms);
+                                             saw_shutdown->store(true, std::memory_order_release);
+                                         });
+                                 }));
 
             const auto enter_dl = std::chrono::steady_clock::now() + 1s;
             while (!entered_bracket->load(std::memory_order_acquire) &&
@@ -476,7 +499,8 @@ int shutdown_requested_thread_side_poll_observes_flag()
 int request_shutdown_unknown_name_returns_false()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "unknown_signal");
             EXPECT_FALSE(tm.request_shutdown("nonexistent"));
         },
@@ -487,21 +511,26 @@ int request_shutdown_unknown_name_returns_false()
 int request_shutdown_all_flips_closing_and_rejects_new_spawn()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "shutdown_all");
 
-            auto saw_shutdown    = std::make_shared<std::atomic<bool>>(false);
+            auto saw_shutdown = std::make_shared<std::atomic<bool>>(false);
             auto entered_bracket = std::make_shared<std::atomic<bool>>(false);
 
             ASSERT_TRUE(tm.spawn("worker",
-                [saw_shutdown, entered_bracket](ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered_bracket->store(true, std::memory_order_release);
-                        while (!ctx.shutdown_requested())
-                            std::this_thread::sleep_for(2ms);
-                        saw_shutdown->store(true, std::memory_order_release);
-                    });
-                }));
+                                 [saw_shutdown, entered_bracket](ThreadManager::SlotContext &ctx)
+                                 {
+                                     ctx.with_active_loop(
+                                         [&]
+                                         {
+                                             entered_bracket->store(true,
+                                                                    std::memory_order_release);
+                                             while (!ctx.shutdown_requested())
+                                                 std::this_thread::sleep_for(2ms);
+                                             saw_shutdown->store(true, std::memory_order_release);
+                                         });
+                                 }));
 
             const auto enter_dl = std::chrono::steady_clock::now() + 1s;
             while (!entered_bracket->load(std::memory_order_acquire) &&
@@ -512,8 +541,7 @@ int request_shutdown_all_flips_closing_and_rejects_new_spawn()
             EXPECT_EQ(tm.request_shutdown_all(), 1u)
                 << "Should report the one existing slot's flag was newly set";
 
-            EXPECT_FALSE(tm.spawn("late",
-                [](ThreadManager::SlotContext &) {}))
+            EXPECT_FALSE(tm.spawn("late", [](ThreadManager::SlotContext &) {}))
                 << "spawn() after request_shutdown_all must be rejected";
 
             const auto saw_dl = std::chrono::steady_clock::now() + 1s;
@@ -530,15 +558,17 @@ int request_shutdown_all_flips_closing_and_rejects_new_spawn()
 int wait_for_quiescence_default_safe_threads_pass_instantly()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "default_safe");
 
             auto release = std::make_shared<std::atomic<bool>>(false);
             ASSERT_TRUE(tm.spawn("worker",
-                [release](ThreadManager::SlotContext &) {
-                    while (!release->load(std::memory_order_acquire))
-                        std::this_thread::sleep_for(2ms);
-                }));
+                                 [release](ThreadManager::SlotContext &)
+                                 {
+                                     while (!release->load(std::memory_order_acquire))
+                                         std::this_thread::sleep_for(2ms);
+                                 }));
 
             EXPECT_EQ(tm.wait_for_quiescence(1s), 0u);
 
@@ -552,23 +582,27 @@ int wait_for_quiescence_default_safe_threads_pass_instantly()
 int wait_for_quiescence_excludes_calling_thread()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             ThreadManager tm("test", "self_exclude");
 
-            auto wait_done   = std::make_shared<std::atomic<bool>>(false);
+            auto wait_done = std::make_shared<std::atomic<bool>>(false);
             auto wait_result = std::make_shared<std::atomic<std::size_t>>(99);
-            auto entered     = std::make_shared<std::atomic<bool>>(false);
+            auto entered = std::make_shared<std::atomic<bool>>(false);
 
-            ASSERT_TRUE(tm.spawn("self",
-                [&tm, wait_done, wait_result, entered](
-                    ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered->store(true, std::memory_order_release);
-                        const auto r = tm.wait_for_quiescence(50ms);
-                        wait_result->store(r, std::memory_order_release);
-                        wait_done->store(true, std::memory_order_release);
-                    });
-                }));
+            ASSERT_TRUE(
+                tm.spawn("self",
+                         [&tm, wait_done, wait_result, entered](ThreadManager::SlotContext &ctx)
+                         {
+                             ctx.with_active_loop(
+                                 [&]
+                                 {
+                                     entered->store(true, std::memory_order_release);
+                                     const auto r = tm.wait_for_quiescence(50ms);
+                                     wait_result->store(r, std::memory_order_release);
+                                     wait_done->store(true, std::memory_order_release);
+                                 });
+                         }));
 
             const auto dl = std::chrono::steady_clock::now() + 2s;
             while (!wait_done->load(std::memory_order_acquire) &&
@@ -602,7 +636,8 @@ struct ThreadManagerActiveLoopRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
                 if (dot == std::string_view::npos ||
@@ -648,7 +683,8 @@ struct ThreadManagerActiveLoopRegistrar
 
                 fmt::print(stderr,
                            "[thread_manager_active_loop] ERROR: "
-                           "unknown scenario '{}'\n", sc);
+                           "unknown scenario '{}'\n",
+                           sc);
                 return 1;
             });
     }

@@ -74,11 +74,11 @@ namespace pylabhub::hub
  *
  * Thread Safety: Not thread-safe. Each thread uses its own context and iterator.
  */
-template <typename DataBlockT, bool IsWrite>
-class SlotIterator
+template <typename DataBlockT, bool IsWrite> class SlotIterator
 {
   public:
-    using SlotRefType = std::conditional_t<IsWrite, WriteSlotRef<DataBlockT>, ReadSlotRef<DataBlockT>>;
+    using SlotRefType =
+        std::conditional_t<IsWrite, WriteSlotRef<DataBlockT>, ReadSlotRef<DataBlockT>>;
     using ResultType = Result<SlotRefType, SlotAcquireError>;
     using HandleType = std::conditional_t<IsWrite, SlotWriteHandle, SlotConsumeHandle>;
 
@@ -102,7 +102,8 @@ class SlotIterator
      *        TransactionContext::slots() — do not set manually.
      */
     SlotIterator(DataBlockProducer *handle, std::chrono::milliseconds timeout,
-                 SlotWriteHandle **ctx_write_slot_ptr = nullptr) requires IsWrite
+                 SlotWriteHandle **ctx_write_slot_ptr = nullptr)
+        requires IsWrite
         : m_handle(handle), m_timeout(timeout), m_done(false),
           m_ctx_write_slot_ptr(ctx_write_slot_ptr)
     {
@@ -113,7 +114,8 @@ class SlotIterator
      * @param handle Consumer handle
      * @param timeout Timeout for each slot acquisition attempt
      */
-    SlotIterator(DataBlockConsumer *handle, std::chrono::milliseconds timeout) requires(!IsWrite)
+    SlotIterator(DataBlockConsumer *handle, std::chrono::milliseconds timeout)
+        requires(!IsWrite)
         : m_handle(handle), m_timeout(timeout), m_done(false)
     {
     }
@@ -165,12 +167,9 @@ class SlotIterator
 
     // Move constructor: nullify source's ctx pointer to prevent double-clear
     SlotIterator(SlotIterator &&other) noexcept
-        : m_handle(other.m_handle),
-          m_timeout(other.m_timeout),
-          m_current_result(std::move(other.m_current_result)),
-          m_done(other.m_done),
-          m_first_acquired(other.m_first_acquired),
-          m_last_acquire_(other.m_last_acquire_),
+        : m_handle(other.m_handle), m_timeout(other.m_timeout),
+          m_current_result(std::move(other.m_current_result)), m_done(other.m_done),
+          m_first_acquired(other.m_first_acquired), m_last_acquire_(other.m_last_acquire_),
           m_current_slot(std::move(other.m_current_slot))
     {
         if constexpr (IsWrite)
@@ -255,13 +254,14 @@ class SlotIterator
 
         // Auto-heartbeat: update liveness signal between iterations (at start of each ++).
         // Covers slot-acquisition spin (timeout/retry). User code inside the loop body is
-        // NOT covered — call ctx.update_heartbeat() if the body may run longer than the stale threshold.
+        // NOT covered — call ctx.update_heartbeat() if the body may run longer than the stale
+        // threshold.
         if (m_handle)
         {
             m_handle->update_heartbeat();
         }
 
-        apply_loop_policy_sleep_();  // FixedRate pacing (HEP-CORE-0008 Pass 3)
+        apply_loop_policy_sleep_(); // FixedRate pacing (HEP-CORE-0008 Pass 3)
 
         try
         {
@@ -371,7 +371,8 @@ class SlotIterator
      * Clears ctx's raw slot pointer before acquiring (old slot is about to be replaced).
      * After successful acquisition, sets ctx's pointer to the new slot handle.
      */
-    void acquire_next_slot() requires IsWrite
+    void acquire_next_slot()
+        requires IsWrite
     {
         if (!m_handle)
         {
@@ -402,7 +403,7 @@ class SlotIterator
                 *m_ctx_write_slot_ptr = m_current_slot.get();
             }
             m_current_result = ResultType::ok(SlotRefType(m_current_slot.get()));
-            m_last_acquire_ = ContextMetrics::Clock::now();  // FixedRate anchor (Pass 3)
+            m_last_acquire_ = ContextMetrics::Clock::now(); // FixedRate anchor (Pass 3)
         }
         else
         {
@@ -419,7 +420,8 @@ class SlotIterator
      * next with_transaction call. On exception paths the iterator is destroyed directly (not via
      * operator++) and the slot is released without marking, preserving it for exception recovery.
      */
-    void acquire_next_slot() requires(!IsWrite)
+    void acquire_next_slot()
+        requires(!IsWrite)
     {
         if (!m_handle)
         {
@@ -447,7 +449,7 @@ class SlotIterator
             // Success - wrap in SlotRef
             m_current_slot = std::move(slot_handle);
             m_current_result = ResultType::ok(SlotRefType(m_current_slot.get()));
-            m_last_acquire_ = ContextMetrics::Clock::now();  // FixedRate anchor (Pass 3)
+            m_last_acquire_ = ContextMetrics::Clock::now(); // FixedRate anchor (Pass 3)
         }
         else
         {
@@ -465,7 +467,8 @@ class SlotIterator
     mutable ResultType m_current_result; ///< mutable so const operator* can return non-const ref
     bool m_done;
     bool m_first_acquired = false;
-    ContextMetrics::Clock::time_point m_last_acquire_{};  ///< FixedRate sleep anchor (HEP-CORE-0008 Pass 3)
+    ContextMetrics::Clock::time_point
+        m_last_acquire_{}; ///< FixedRate sleep anchor (HEP-CORE-0008 Pass 3)
 
     // Pointer-to-pointer into TransactionContext::m_current_write_slot (non-owning).
     // Enables ctx.publish() to access the current slot handle. Set by TransactionContext::slots().

@@ -113,8 +113,7 @@ fs::path unique_temp_dir(const char *tag)
 {
     static std::atomic<int> ctr{0};
     fs::path d = fs::temp_directory_path() /
-                 ("plh_l3_lua_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
+                 ("plh_l3_lua_" + std::string(tag) + "_" + std::to_string(::getpid()) + "_" +
                   std::to_string(ctr.fetch_add(1)));
     fs::remove_all(d);
     return d;
@@ -156,11 +155,11 @@ fs::path make_lua_hub_dir(const char *tag, const std::string &lua_body,
         j = json::parse(f);
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["type"]             = "lua";
-    j["script"]["path"]             = ".";
-    j["loop_timing"]                = loop_timing;
-    j["target_period_ms"]           = target_period_ms;
+    j["admin"]["enabled"] = false;
+    j["script"]["type"] = "lua";
+    j["script"]["path"] = ".";
+    j["loop_timing"] = loop_timing;
+    j["target_period_ms"] = target_period_ms;
     {
         std::ofstream f(dir / "hub.json");
         f << j.dump(2);
@@ -177,15 +176,16 @@ fs::path make_lua_hub_dir(const char *tag, const std::string &lua_body,
 /// Run host.run_main_loop on a watchdog future.  Returns true if it
 /// returned within @p timeout (something actually called
 /// request_shutdown — proves the script-side callback executed).
-bool run_main_loop_with_watchdog(HubHost &host,
-                                  std::chrono::milliseconds timeout)
+bool run_main_loop_with_watchdog(HubHost &host, std::chrono::milliseconds timeout)
 {
-    auto fut = std::async(std::launch::async,
-                           [&host]() { host.run_main_loop(); });
+    auto fut = std::async(std::launch::async, [&host]() { host.run_main_loop(); });
     return fut.wait_for(timeout) == std::future_status::ready;
 }
 
-void flush_logger() { Logger::instance().flush(); }
+void flush_logger()
+{
+    Logger::instance().flush();
+}
 
 json make_reg_opts(const std::string &channel, const std::string &uid)
 {
@@ -193,20 +193,18 @@ json make_reg_opts(const std::string &channel, const std::string &uid)
     // role_type / data_transport / zmq_pubkey post-#290.  The pubkey is
     // read from the seeded KeyStore identity (HEP-CORE-0040 §172).
     namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = uid,
-            .role_name  = "L3TestProducer",
-            .role_type  = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = std::string{sec::secure().keys().pubkey(
-                pylabhub::tests::role_keystore_name(uid))},
-            .shm_capability_endpoint =
-                sec::default_shm_capability_endpoint(channel),
-        });
+    auto opts = pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+        .channel = channel,
+        .role_uid = uid,
+        .role_name = "L3TestProducer",
+        .role_type = "producer",
+        .has_shm = true,
+        .is_zmq_transport = false,
+        .zmq_node_endpoint = {},
+        .zmq_pubkey =
+            std::string{sec::secure().keys().pubkey(pylabhub::tests::role_keystore_name(uid))},
+        .shm_capability_endpoint = sec::default_shm_capability_endpoint(channel),
+    });
     opts["producer_pid"] = ::getpid();
     return opts;
 }
@@ -215,16 +213,15 @@ json make_reg_opts(const std::string &channel, const std::string &uid)
 json make_cons_opts(const std::string &channel, const std::string &uid)
 {
     namespace sec = pylabhub::utils::security;
-    auto opts = pylabhub::hub::build_consumer_reg_payload(
-        pylabhub::hub::ConsumerRegInputs{
-            .channel        = channel,
-            .role_uid       = uid,
-            .role_name      = "L3TestConsumer",
-            .role_type      = "consumer",
-            .data_transport = "zmq",
-            .zmq_pubkey     = std::string{sec::secure().keys().pubkey(
-                pylabhub::tests::role_keystore_name(uid))},
-        });
+    auto opts = pylabhub::hub::build_consumer_reg_payload(pylabhub::hub::ConsumerRegInputs{
+        .channel = channel,
+        .role_uid = uid,
+        .role_name = "L3TestConsumer",
+        .role_type = "consumer",
+        .data_transport = "zmq",
+        .zmq_pubkey =
+            std::string{sec::secure().keys().pubkey(pylabhub::tests::role_keystore_name(uid))},
+    });
     opts["consumer_pid"] = ::getpid();
     return opts;
 }
@@ -265,12 +262,11 @@ void remove_tree(const fs::path &p)
 /// top of each worker body so the factory registry is populated
 /// before `HubScriptRunner::worker_main_` step 0 reaches
 /// `pylabhub::scripting::create_engine` (HEP-CORE-0011).
-#define PLH_LUA_INT_MODS                                                       \
-    Logger::GetLifecycleModule(),                                              \
-    FileLock::GetLifecycleModule(),                                            \
-    JsonConfig::GetLifecycleModule(),                                          \
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
-    pylabhub::hub::GetZMQContextModule()
+#define PLH_LUA_INT_MODS                                                                           \
+    Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),                                  \
+        JsonConfig::GetLifecycleModule(),                                                          \
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                          \
+        pylabhub::hub::GetZMQContextModule()
 
 } // namespace
 
@@ -279,7 +275,8 @@ void remove_tree(const fs::path &p)
 int real_lua_script_on_init_on_stop_fire_and_log()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -292,21 +289,19 @@ int real_lua_script_on_init_on_stop_fire_and_log()
             //                   closure is callable + json_to_lua
             //                   round-trips the broker's empty-state
             //                   metrics without errors)
-            const std::string lua_body =
-                "function on_init(api)\n"
-                "    local m = api.metrics()  -- callable, no error\n"
-                "    api.log(\"info\", \"HUB_INIT uid=\" .. api.uid())\n"
-                "end\n"
-                "function on_stop(api)\n"
-                "    api.log(\"info\", \"HUB_STOP uid=\" .. api.uid())\n"
-                "end\n";
+            const std::string lua_body = "function on_init(api)\n"
+                                         "    local m = api.metrics()  -- callable, no error\n"
+                                         "    api.log(\"info\", \"HUB_INIT uid=\" .. api.uid())\n"
+                                         "end\n"
+                                         "function on_stop(api)\n"
+                                         "    api.log(\"info\", \"HUB_STOP uid=\" .. api.uid())\n"
+                                         "end\n";
 
             const fs::path dir = make_lua_hub_dir("oninit", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
             const std::string expected_uid = cfg.identity().uid;
-            ASSERT_FALSE(expected_uid.empty())
-                << "init_directory must have generated a hub uid";
+            ASSERT_FALSE(expected_uid.empty()) << "init_directory must have generated a hub uid";
 
             // BRC-less path — see `write_known_roles` doc-block above
             // for the contract.  This test only exercises in-process
@@ -324,12 +319,14 @@ int real_lua_script_on_init_on_stop_fire_and_log()
             // sub-second slowdown.
             const auto t_startup = std::chrono::steady_clock::now();
             ASSERT_NO_THROW(host.startup());
-            const auto startup_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t_startup).count();
+            const auto startup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - t_startup)
+                                        .count();
             EXPECT_LT(startup_ms, 1500)
                 << "host.startup() with real LuaEngine must complete in "
-                   "<1500 ms; took " << startup_ms << " ms — regression "
+                   "<1500 ms; took "
+                << startup_ms
+                << " ms — regression "
                    "in engine init / load_script / build_api / on_init paths";
             EXPECT_TRUE(host.is_running());
 
@@ -348,25 +345,26 @@ int real_lua_script_on_init_on_stop_fire_and_log()
                 << log;
             ASSERT_NE(pos_stop, std::string::npos)
                 << "missing on_stop log marker — script's on_stop never "
-                   "fired.  Log:\n" << log;
-            EXPECT_LT(pos_init, pos_stop)
-                << "on_init must appear before on_stop in the log";
+                   "fired.  Log:\n"
+                << log;
+            EXPECT_LT(pos_init, pos_stop) << "on_init must appear before on_stop in the log";
 
             const std::string init_line_marker = "HUB_INIT uid=" + expected_uid;
             EXPECT_NE(log.find(init_line_marker), std::string::npos)
-                << "api:uid() must return cfg.identity().uid; expected:\n  "
-                << init_line_marker << "\nLog:\n" << log;
+                << "api:uid() must return cfg.identity().uid; expected:\n  " << init_line_marker
+                << "\nLog:\n"
+                << log;
 
             EXPECT_NE(log.find("[hub/" + expected_uid + "]"), std::string::npos)
                 << "HubAPI::log() must emit lines with prefix "
-                   "[hub/<uid>]; not found in:\n" << log;
+                   "[hub/<uid>]; not found in:\n"
+                << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::real_lua_script_on_init_on_stop_fire_and_log",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::real_lua_script_on_init_on_stop_fire_and_log", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #2 ────────────────────────────────────────────────────────────────
@@ -374,7 +372,8 @@ int real_lua_script_on_init_on_stop_fire_and_log()
 int script_syntax_error_startup_throws()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             // Two ERROR lines are expected on this path; declare them
@@ -384,10 +383,9 @@ int script_syntax_error_startup_throws()
             log_cap.ExpectLogError("engine.load_script");
             pylabhub::scripting::init_scripting();
 
-            const std::string broken_lua =
-                "function on_init(api)\n"
-                "    this is not valid lua syntax\n"
-                "end\n";
+            const std::string broken_lua = "function on_init(api)\n"
+                                           "    this is not valid lua syntax\n"
+                                           "end\n";
 
             const fs::path dir = make_lua_hub_dir("syntax", broken_lua);
 
@@ -411,10 +409,10 @@ int script_syntax_error_startup_throws()
             catch (const std::runtime_error &e)
             {
                 const std::string what = e.what();
-                EXPECT_NE(what.find("script runner failed to start"),
-                          std::string::npos)
+                EXPECT_NE(what.find("script runner failed to start"), std::string::npos)
                     << "expected runtime_error mentioning the runner-startup "
-                       "failure; got: " << what;
+                       "failure; got: "
+                    << what;
             }
             catch (const std::exception &e)
             {
@@ -427,8 +425,7 @@ int script_syntax_error_startup_throws()
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::script_syntax_error_startup_throws",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::script_syntax_error_startup_throws", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #3 ────────────────────────────────────────────────────────────────
@@ -436,7 +433,8 @@ int script_syntax_error_startup_throws()
 int on_tick_fires_periodically_when_idle()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -444,13 +442,11 @@ int on_tick_fires_periodically_when_idle()
             // T1 — baseline contract: idle hub fires on_tick once per
             // period via the timeout-driven wake.  FixedRate at 100 ms;
             // run for 550 ms; expect 4-6 ticks.
-            const std::string lua_body =
-                "function on_tick()\n"
-                "    api.log('info', 'TICK_IDLE')\n"
-                "end\n";
+            const std::string lua_body = "function on_tick()\n"
+                                         "    api.log('info', 'TICK_IDLE')\n"
+                                         "end\n";
 
-            const fs::path dir = make_lua_hub_dir(
-                "tick_idle", lua_body, "fixed_rate", 100);
+            const fs::path dir = make_lua_hub_dir("tick_idle", lua_body, "fixed_rate", 100);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
 
@@ -472,23 +468,24 @@ int on_tick_fires_periodically_when_idle()
             const std::string log = read_log_file(log_cap.log_path());
             const int tick_count = count_markers(log, "TICK_IDLE");
 
-            EXPECT_GE(tick_count, 4)
-                << "expected >= 4 on_tick markers in 550 ms with "
-                   "period=100 ms; got " << tick_count
-                << " — regression in deadline-driven tick (timeout path) "
-                   "or loop init.\nLog:\n" << log;
-            EXPECT_LE(tick_count, 6)
-                << "expected <= 6 on_tick markers in 550 ms with "
-                   "period=100 ms; got " << tick_count
-                << " — regression in deadline advancement (over-firing)."
-                   "\nLog:\n" << log;
+            EXPECT_GE(tick_count, 4) << "expected >= 4 on_tick markers in 550 ms with "
+                                        "period=100 ms; got "
+                                     << tick_count
+                                     << " — regression in deadline-driven tick (timeout path) "
+                                        "or loop init.\nLog:\n"
+                                     << log;
+            EXPECT_LE(tick_count, 6) << "expected <= 6 on_tick markers in 550 ms with "
+                                        "period=100 ms; got "
+                                     << tick_count
+                                     << " — regression in deadline advancement (over-firing)."
+                                        "\nLog:\n"
+                                     << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::on_tick_fires_periodically_when_idle",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::on_tick_fires_periodically_when_idle", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #4 ────────────────────────────────────────────────────────────────
@@ -496,7 +493,8 @@ int on_tick_fires_periodically_when_idle()
 int on_tick_catch_up_fixed_rate_with_compensation()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -529,9 +527,8 @@ int on_tick_catch_up_fixed_rate_with_compensation()
                 "    end\n"
                 "end\n";
 
-            const fs::path dir = make_lua_hub_dir(
-                "tick_catchup", lua_body,
-                "fixed_rate_with_compensation", 100);
+            const fs::path dir =
+                make_lua_hub_dir("tick_catchup", lua_body, "fixed_rate_with_compensation", 100);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
 
@@ -553,37 +550,37 @@ int on_tick_catch_up_fixed_rate_with_compensation()
             const std::string log = read_log_file(log_cap.log_path());
             const int tick_count = count_markers(log, "TICK_CATCHUP");
 
-            EXPECT_GE(tick_count, 6)
-                << "expected >= 6 on_tick markers (stalled #1 + >=4 "
-                   "catch-up + >=1 normal); got " << tick_count
-                << " — regression in FRWithComp catch-up: deadline "
-                   "likely being advanced on non-tick iterations again, "
-                   "swallowing missed slots.\nLog:\n" << log;
-            EXPECT_LE(tick_count, 12)
-                << "expected <= 12 on_tick markers; got " << tick_count
-                << " — regression in catch-up termination: deadline "
-                   "isn't advancing past `now` after the burst, so "
-                   "on_tick keeps firing every iteration even at "
-                   "normal pace.\nLog:\n" << log;
+            EXPECT_GE(tick_count, 6) << "expected >= 6 on_tick markers (stalled #1 + >=4 "
+                                        "catch-up + >=1 normal); got "
+                                     << tick_count
+                                     << " — regression in FRWithComp catch-up: deadline "
+                                        "likely being advanced on non-tick iterations again, "
+                                        "swallowing missed slots.\nLog:\n"
+                                     << log;
+            EXPECT_LE(tick_count, 12) << "expected <= 12 on_tick markers; got " << tick_count
+                                      << " — regression in catch-up termination: deadline "
+                                         "isn't advancing past `now` after the burst, so "
+                                         "on_tick keeps firing every iteration even at "
+                                         "normal pace.\nLog:\n"
+                                      << log;
 
             const auto stall_done = log.find("TICK_STALL_DONE");
-            ASSERT_NE(stall_done, std::string::npos)
-                << "stalled tick #1 never completed";
+            ASSERT_NE(stall_done, std::string::npos) << "stalled tick #1 never completed";
 
             const std::string post_stall = log.substr(stall_done);
             const int post_stall_ticks = count_markers(post_stall, "TICK_CATCHUP");
-            EXPECT_GE(post_stall_ticks, 5)
-                << "expected >= 5 ticks after stall_done (catch-up "
-                   "burst + normal); got " << post_stall_ticks
-                << " — regression in catch-up: deadline not walking "
-                   "the grid forward.\nLog after stall:\n" << post_stall;
+            EXPECT_GE(post_stall_ticks, 5) << "expected >= 5 ticks after stall_done (catch-up "
+                                              "burst + normal); got "
+                                           << post_stall_ticks
+                                           << " — regression in catch-up: deadline not walking "
+                                              "the grid forward.\nLog after stall:\n"
+                                           << post_stall;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::on_tick_catch_up_fixed_rate_with_compensation",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::on_tick_catch_up_fixed_rate_with_compensation", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #5 ────────────────────────────────────────────────────────────────
@@ -591,7 +588,8 @@ int on_tick_catch_up_fixed_rate_with_compensation()
 int read_accessors_all_reachable_from_on_init()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -696,15 +694,15 @@ end
                     << "missing binding marker '" << m
                     << "' — HubAPI read accessor failed to bind, "
                        "returned wrong type, or the Lua test code "
-                       "mistyped it.\nLog:\n" << log;
+                       "mistyped it.\nLog:\n"
+                    << log;
             }
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::read_accessors_all_reachable_from_on_init",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::read_accessors_all_reachable_from_on_init", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #6 ────────────────────────────────────────────────────────────────
@@ -712,7 +710,8 @@ end
 int request_shutdown_from_on_init_wakes_main_loop()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -744,33 +743,34 @@ end
             const auto t_begin = std::chrono::steady_clock::now();
             std::thread main_thread([&host]() { host.run_main_loop(); });
             main_thread.join();
-            const auto elapsed_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t_begin).count();
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - t_begin)
+                                        .count();
 
-            EXPECT_LT(elapsed_ms, 2000)
-                << "run_main_loop must wake within 2 s of startup (the "
-                   "script's on_init calls api.request_shutdown which "
-                   "should set the host shutdown flag immediately).  "
-                   "took " << elapsed_ms << " ms — regression in "
-                   "HubAPI::request_shutdown delegation.";
+            EXPECT_LT(elapsed_ms, 2000) << "run_main_loop must wake within 2 s of startup (the "
+                                           "script's on_init calls api.request_shutdown which "
+                                           "should set the host shutdown flag immediately).  "
+                                           "took "
+                                        << elapsed_ms
+                                        << " ms — regression in "
+                                           "HubAPI::request_shutdown delegation.";
 
             host.shutdown();
             EXPECT_FALSE(host.is_running());
 
             const std::string log = read_log_file(log_cap.log_path());
-            EXPECT_NE(log.find("BEFORE_SHUTDOWN"), std::string::npos)
-                << "on_init never ran; log:\n" << log;
+            EXPECT_NE(log.find("BEFORE_SHUTDOWN"), std::string::npos) << "on_init never ran; log:\n"
+                                                                      << log;
             EXPECT_NE(log.find("AFTER_SHUTDOWN_REQUEST"), std::string::npos)
                 << "api.request_shutdown raised an error before "
-                   "returning, or Lua aborted the script; log:\n" << log;
+                   "returning, or Lua aborted the script; log:\n"
+                << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::request_shutdown_from_on_init_wakes_main_loop",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::request_shutdown_from_on_init_wakes_main_loop", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #7 ────────────────────────────────────────────────────────────────
@@ -778,7 +778,8 @@ end
 int event_observers_channel_registration_fires_on_channel_opened_and_on_role_registered()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -798,8 +799,7 @@ function on_role_registered(ri)
 end
 )LUA";
 
-            const fs::path dir = make_lua_hub_dir(
-                "evt_chan_role", lua_body, "fixed_rate", 100);
+            const fs::path dir = make_lua_hub_dir("evt_chan_role", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.8 — seed only the
             // producer's `role.<uid>` identity; the hub's own
@@ -823,24 +823,20 @@ end
             pylabhub::hub::BrokerRequestComm brc;
             pylabhub::hub::BrokerRequestComm::Config bcfg;
             bcfg.broker_endpoint = host.broker_endpoint();
-            bcfg.broker_pubkey   = host.broker_pubkey();
-            bcfg.role_uid        = prod_uid;
-            bcfg.keystore_name   = pylabhub::tests::role_keystore_name(prod_uid);
+            bcfg.broker_pubkey = host.broker_pubkey();
+            bcfg.role_uid = prod_uid;
+            bcfg.keystore_name = pylabhub::tests::role_keystore_name(prod_uid);
             ASSERT_TRUE(brc.connect(bcfg));
 
             std::atomic<bool> running{true};
-            std::thread brc_thread([&brc, &running] {
-                brc.run_poll_loop([&running] { return running.load(); });
-            });
+            std::thread brc_thread([&brc, &running]
+                                   { brc.run_poll_loop([&running] { return running.load(); }); });
 
-            auto reg = brc.register_channel(
-                make_reg_opts("lab.evt.channel", prod_uid), 3000);
-            ASSERT_TRUE(reg.has_value())
-                << "register_channel failed — broker rejected the "
-                   "REG_REQ; events never reach the script.";
+            auto reg = brc.register_channel(make_reg_opts("lab.evt.channel", prod_uid), 3000);
+            ASSERT_TRUE(reg.has_value()) << "register_channel failed — broker rejected the "
+                                            "REG_REQ; events never reach the script.";
 
-            ASSERT_TRUE(run_main_loop_with_watchdog(
-                host, std::chrono::seconds{5}))
+            ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
                 << "watchdog expired — neither on_channel_opened nor "
                    "on_role_registered invoked request_shutdown.  "
                    "Chain broker→HubState._on_*→subscriber→"
@@ -857,14 +853,14 @@ end
 
             const std::string log = read_log_file(log_cap.log_path());
             EXPECT_NE(log.find("INIT_RAN"), std::string::npos);
-            EXPECT_NE(log.find("CHANNEL_OPENED name=lab.evt.channel"),
-                      std::string::npos)
+            EXPECT_NE(log.find("CHANNEL_OPENED name=lab.evt.channel"), std::string::npos)
                 << "on_channel_opened details wrong; "
-                   "channel_to_json regression.\n" << log;
-            EXPECT_NE(log.find("ROLE_REGISTERED uid=prod.l3test.uid12345678"),
-                      std::string::npos)
+                   "channel_to_json regression.\n"
+                << log;
+            EXPECT_NE(log.find("ROLE_REGISTERED uid=prod.l3test.uid12345678"), std::string::npos)
                 << "on_role_registered details wrong; "
-                   "role_to_json regression.\n" << log;
+                   "role_to_json regression.\n"
+                << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
@@ -880,7 +876,8 @@ end
 int event_observer_consumer_registration_fires_on_consumer_added()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -896,8 +893,7 @@ function on_consumer_added(d)
 end
 )LUA";
 
-            const fs::path dir = make_lua_hub_dir(
-                "evt_cons_add", lua_body, "fixed_rate", 100);
+            const fs::path dir = make_lua_hub_dir("evt_cons_add", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.8 — seed only the
             // two BRC `role.<uid>` identities; the hub's own hub_identity
@@ -920,18 +916,17 @@ end
             pylabhub::hub::BrokerRequestComm prod_brc;
             pylabhub::hub::BrokerRequestComm::Config bcfg;
             bcfg.broker_endpoint = host.broker_endpoint();
-            bcfg.broker_pubkey   = host.broker_pubkey();
-            bcfg.role_uid        = prod_uid;
-            bcfg.keystore_name   = pylabhub::tests::role_keystore_name(prod_uid);
+            bcfg.broker_pubkey = host.broker_pubkey();
+            bcfg.role_uid = prod_uid;
+            bcfg.keystore_name = pylabhub::tests::role_keystore_name(prod_uid);
             ASSERT_TRUE(prod_brc.connect(bcfg));
             std::atomic<bool> prod_running{true};
-            std::thread prod_thread([&prod_brc, &prod_running] {
-                prod_brc.run_poll_loop(
-                    [&prod_running] { return prod_running.load(); });
-            });
+            std::thread prod_thread(
+                [&prod_brc, &prod_running]
+                { prod_brc.run_poll_loop([&prod_running] { return prod_running.load(); }); });
 
-            auto prod_reg = prod_brc.register_channel(
-                make_reg_opts("lab.cons.channel", prod_uid), 3000);
+            auto prod_reg =
+                prod_brc.register_channel(make_reg_opts("lab.cons.channel", prod_uid), 3000);
             ASSERT_TRUE(prod_reg.has_value()) << "producer REG_REQ failed";
             // R6 producer-kLive gate — see HEP-CORE-0036 §5.2.
             prod_brc.send_heartbeat("lab.cons.channel", prod_uid, "producer", {});
@@ -939,41 +934,42 @@ end
             pylabhub::hub::BrokerRequestComm cons_brc;
             pylabhub::hub::BrokerRequestComm::Config cbcfg;
             cbcfg.broker_endpoint = host.broker_endpoint();
-            cbcfg.broker_pubkey   = host.broker_pubkey();
-            cbcfg.role_uid        = cons_uid;
-            cbcfg.keystore_name   = pylabhub::tests::role_keystore_name(cons_uid);
+            cbcfg.broker_pubkey = host.broker_pubkey();
+            cbcfg.role_uid = cons_uid;
+            cbcfg.keystore_name = pylabhub::tests::role_keystore_name(cons_uid);
             ASSERT_TRUE(cons_brc.connect(cbcfg));
             std::atomic<bool> cons_running{true};
-            std::thread cons_thread([&cons_brc, &cons_running] {
-                cons_brc.run_poll_loop(
-                    [&cons_running] { return cons_running.load(); });
-            });
+            std::thread cons_thread(
+                [&cons_brc, &cons_running]
+                { cons_brc.run_poll_loop([&cons_running] { return cons_running.load(); }); });
 
-            auto cons_reg = cons_brc.register_consumer(
-                make_cons_opts("lab.cons.channel", cons_uid), 3000);
-            ASSERT_TRUE(cons_reg.has_value())
-                << "consumer CONSUMER_REG_REQ failed";
+            auto cons_reg =
+                cons_brc.register_consumer(make_cons_opts("lab.cons.channel", cons_uid), 3000);
+            ASSERT_TRUE(cons_reg.has_value()) << "consumer CONSUMER_REG_REQ failed";
 
-            ASSERT_TRUE(run_main_loop_with_watchdog(
-                host, std::chrono::seconds{5}))
+            ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
                 << "watchdog expired — on_consumer_added never "
                    "invoked request_shutdown.\n"
                 << read_log_file(log_cap.log_path());
 
-            cons_running.store(false); cons_brc.stop();
-            cons_thread.join(); cons_brc.disconnect();
-            prod_running.store(false); prod_brc.stop();
-            prod_thread.join(); prod_brc.disconnect();
+            cons_running.store(false);
+            cons_brc.stop();
+            cons_thread.join();
+            cons_brc.disconnect();
+            prod_running.store(false);
+            prod_brc.stop();
+            prod_thread.join();
+            prod_brc.disconnect();
             host.shutdown();
             flush_logger();
 
             const std::string log = read_log_file(log_cap.log_path());
-            EXPECT_NE(
-                log.find("CONSUMER_ADDED ch=lab.cons.channel "
-                         "role=cons.l3.uid12345678"),
-                std::string::npos)
+            EXPECT_NE(log.find("CONSUMER_ADDED ch=lab.cons.channel "
+                               "role=cons.l3.uid12345678"),
+                      std::string::npos)
                 << "on_consumer_added details (channel + role_uid) "
-                   "wrong; log:\n" << log;
+                   "wrong; log:\n"
+                << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
@@ -989,7 +985,8 @@ end
 int post_event_from_on_init_fires_on_app_callback()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -1005,8 +1002,7 @@ function on_app_user_event(args)
     api.request_shutdown()
 end
 )LUA";
-            const fs::path dir = make_lua_hub_dir(
-                "post_event", lua_body, "fixed_rate", 100);
+            const fs::path dir = make_lua_hub_dir("post_event", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // BRC-less path — see `write_known_roles` doc-block above
             // for the contract.  This test only exercises in-process
@@ -1019,8 +1015,7 @@ end
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
 
-            ASSERT_TRUE(run_main_loop_with_watchdog(
-                host, std::chrono::seconds{5}))
+            ASSERT_TRUE(run_main_loop_with_watchdog(host, std::chrono::seconds{5}))
                 << "watchdog expired — on_app_user_event never fired."
                 << "  Either api.post_event didn't enqueue, or the "
                    "worker didn't dispatch the app_<name>-prefixed "
@@ -1032,18 +1027,17 @@ end
             flush_logger();
 
             const std::string log = read_log_file(log_cap.log_path());
-            EXPECT_NE(log.find("APP_EVENT seq=42 msg=hello"),
-                      std::string::npos)
+            EXPECT_NE(log.find("APP_EVENT seq=42 msg=hello"), std::string::npos)
                 << "on_app_user_event fired but the args payload was "
                    "wrong — json_to_lua / dispatch_event regression.  "
-                   "Log:\n" << log;
+                   "Log:\n"
+                << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::post_event_from_on_init_fires_on_app_callback",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::post_event_from_on_init_fires_on_app_callback", PLH_LUA_INT_MODS);
 }
 
 // ─── Test #10 ───────────────────────────────────────────────────────────────
@@ -1051,7 +1045,8 @@ end
 int augment_query_metrics_from_admin_thread_call_site_mutates_response()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -1066,8 +1061,7 @@ function on_query_metrics(args)
     return args.response
 end
 )LUA";
-            const fs::path dir = make_lua_hub_dir(
-                "augment_qm", lua_body, "fixed_rate", 100);
+            const fs::path dir = make_lua_hub_dir("augment_qm", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // BRC-less path — see `write_known_roles` doc-block above
             // for the contract.  This test only exercises in-process
@@ -1081,16 +1075,14 @@ end
             ASSERT_NO_THROW(host.startup());
 
             auto *api = host.hub_api();
-            ASSERT_NE(api, nullptr)
-                << "hub_api() returned null after startup — EngineHost "
-                   "lazy-construction did not complete";
+            ASSERT_NE(api, nullptr) << "hub_api() returned null after startup — EngineHost "
+                                       "lazy-construction did not complete";
 
-            json params   = {{"x", 7}};
+            json params = {{"x", 7}};
             json response = {{"baseline", "kept-or-mutated"}};
             api->augment_query_metrics(params, response);
 
-            EXPECT_EQ(response.value("augmented_field", std::string{}),
-                      "sentinel-99")
+            EXPECT_EQ(response.value("augmented_field", std::string{}), "sentinel-99")
                 << "augment_query_metrics did NOT mutate response — "
                    "script's return value was either ignored, or "
                    "on_query_metrics never fired.  Response:\n"
@@ -1098,9 +1090,9 @@ end
             EXPECT_EQ(response.value("echo_x", -999), 7)
                 << "params field 'x' did not round-trip into the "
                    "script's args.params; json_to_lua regression.  "
-                   "Response:\n" << response.dump(2);
-            EXPECT_EQ(response.value("baseline", std::string{}),
-                      "kept-or-mutated")
+                   "Response:\n"
+                << response.dump(2);
+            EXPECT_EQ(response.value("baseline", std::string{}), "kept-or-mutated")
                 << "script lost the baseline field — should have "
                    "preserved it via args.response.";
 
@@ -1110,7 +1102,8 @@ end
             const std::string log = read_log_file(log_cap.log_path());
             EXPECT_NE(log.find("AUGMENT_RAN params=7"), std::string::npos)
                 << "on_query_metrics fired but params didn't carry "
-                   "x=7; log:\n" << log;
+                   "x=7; log:\n"
+                << log;
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
@@ -1126,7 +1119,8 @@ end
 int augment_null_return_keeps_default_response()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             pylabhub::scripting::init_scripting();
@@ -1142,8 +1136,7 @@ function on_query_metrics(args)
     -- intentionally no `return` -> nil
 end
 )LUA";
-            const fs::path dir = make_lua_hub_dir(
-                "augment_nil", lua_body, "fixed_rate", 100);
+            const fs::path dir = make_lua_hub_dir("augment_nil", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
             // BRC-less path — see `write_known_roles` doc-block above
             // for the contract.  This test only exercises in-process
@@ -1159,18 +1152,20 @@ end
             auto *api = host.hub_api();
             ASSERT_NE(api, nullptr);
 
-            json params   = json::object();
+            json params = json::object();
             json response = {{"default", true}};
             api->augment_query_metrics(params, response);
 
             EXPECT_EQ(response.value("default", false), true)
                 << "default response was lost despite nil-return "
-                   "contract.  Response:\n" << response.dump(2);
+                   "contract.  Response:\n"
+                << response.dump(2);
             EXPECT_EQ(response.contains("would_have_been"), false)
                 << "in-place mutation leaked into the response "
                    "despite the script returning nil — contract "
                    "violation: only `return` should publish changes.  "
-                   "Response:\n" << response.dump(2);
+                   "Response:\n"
+                << response.dump(2);
 
             host.shutdown();
             flush_logger();
@@ -1185,8 +1180,7 @@ end
             log_cap.Uninstall();
             remove_tree(dir);
         },
-        "hub_lua_integration::augment_null_return_keeps_default_response",
-        PLH_LUA_INT_MODS);
+        "hub_lua_integration::augment_null_return_keeps_default_response", PLH_LUA_INT_MODS);
 }
 
 } // namespace hub_lua_integration
@@ -1204,11 +1198,11 @@ struct HubLuaIntegrationRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "hub_lua_integration")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "hub_lua_integration")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::hub_lua_integration;

@@ -30,7 +30,7 @@ using pylabhub::utils::ReplayGuard;
 
 namespace
 {
-constexpr std::uint64_t kSkewMs   = 30'000;
+constexpr std::uint64_t kSkewMs = 30'000;
 constexpr std::uint64_t kWindowMs = 2 * kSkewMs; // the #67 invariant: >= 2*skew
 
 // A ReplayGuard whose clock reads a mutable `now`, so tests advance time
@@ -39,7 +39,7 @@ constexpr std::uint64_t kWindowMs = 2 * kSkewMs; // the #67 invariant: >= 2*skew
 struct FakeClockGuard
 {
     std::uint64_t now{1'000'000ULL};
-    ReplayGuard   g{[this] { return now; }};
+    ReplayGuard g{[this] { return now; }};
 };
 } // namespace
 

@@ -32,7 +32,7 @@
 #include "shared_test_helpers.h"
 #include "test_sync_utils.h"
 #include "broker_test_harness.h"
-#include "curve_test_setup.h"   // role_keystore_name
+#include "curve_test_setup.h" // role_keystore_name
 
 #include "utils/broker_request_comm.hpp"
 #include "utils/logger.hpp"
@@ -55,11 +55,26 @@ using namespace pylabhub;
 using namespace pylabhub::hub;
 using namespace pylabhub::broker;
 
-static auto logger_module()    { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto file_lock_module() { return ::pylabhub::utils::FileLock::GetLifecycleModule(); }
-static auto json_module()      { return ::pylabhub::utils::JsonConfig::GetLifecycleModule(); }
-static auto hub_module()       { return ::pylabhub::hub::GetDataBlockModule(); }
-static auto zmq_module()       { return ::pylabhub::hub::GetZMQContextModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto file_lock_module()
+{
+    return ::pylabhub::utils::FileLock::GetLifecycleModule();
+}
+static auto json_module()
+{
+    return ::pylabhub::utils::JsonConfig::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
+static auto zmq_module()
+{
+    return ::pylabhub::hub::GetZMQContextModule();
+}
 
 // ============================================================================
 // Test-fixture broker setup
@@ -81,12 +96,12 @@ nlohmann::json brc_hub_overrides()
 {
     return nlohmann::json{
         {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
-        {"admin",   {{"enabled", false}}},
-        {"script",  {{"path", ""}}},
+        {"admin", {{"enabled", false}}},
+        {"script", {{"path", ""}}},
     };
 }
 
-} // anon namespace
+} // namespace
 
 // ============================================================================
 // Worker functions
@@ -94,9 +109,10 @@ nlohmann::json brc_hub_overrides()
 
 int connect_and_heartbeat()
 {
-    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-                                          hub_module(), zmq_module());
+    auto mods =
+        utils::MakeModDefList(logger_module(), file_lock_module(), json_module(),
+                              ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                              hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.brc.uid00000001";
@@ -107,21 +123,18 @@ int connect_and_heartbeat()
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
-    cfg.broker_pubkey   = broker.pubkey;
-    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-    cfg.role_uid        = uid;
+    cfg.broker_pubkey = broker.pubkey;
+    cfg.keystore_name = pylabhub::tests::role_keystore_name(uid);
+    cfg.role_uid = uid;
     EXPECT_TRUE(ch.connect(cfg));
     EXPECT_TRUE(ch.is_connected());
 
     std::atomic<bool> running{true};
-    std::thread poll_thread([&] {
-        ch.run_poll_loop([&] { return running.load(); });
-    });
+    std::thread poll_thread([&] { ch.run_poll_loop([&] { return running.load(); }); });
 
     // Wire-format probe: per HEP-CORE-0019 §4.1 (Phase 6),
     // HEARTBEAT_NOTIFY requires (channel, uid, role_type).
-    ch.send_heartbeat("test_channel", "prod.test.uid00000001", "producer",
-                      {{"test_key", 42}});
+    ch.send_heartbeat("test_channel", "prod.test.uid00000001", "producer", {{"test_key", 42}});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
     running.store(false);
@@ -136,9 +149,10 @@ int connect_and_heartbeat()
 
 int register_and_discover()
 {
-    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-                                          hub_module(), zmq_module());
+    auto mods =
+        utils::MakeModDefList(logger_module(), file_lock_module(), json_module(),
+                              ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                              hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.test.uid00000001";
@@ -149,15 +163,13 @@ int register_and_discover()
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
-    cfg.broker_pubkey   = broker.pubkey;
-    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-    cfg.role_uid        = uid;
+    cfg.broker_pubkey = broker.pubkey;
+    cfg.keystore_name = pylabhub::tests::role_keystore_name(uid);
+    cfg.role_uid = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<bool> running{true};
-    std::thread poll_thread([&] {
-        ch.run_poll_loop([&] { return running.load(); });
-    });
+    std::thread poll_thread([&] { ch.run_poll_loop([&] { return running.load(); }); });
 
     // Register a channel.
     auto reg_opts = pylabhub::hub::build_producer_reg_payload(
@@ -165,12 +177,12 @@ int register_and_discover()
         // mirrors production (HEP-CORE-0041 §5.1).  Endpoint string
         // only; no L2 listener bound here.
         pylabhub::hub::ProducerRegInputs{
-            .channel    = "test_ch",
-            .role_uid   = "prod.test.uid00000001",
-            .role_name  = "test_producer",
-            .role_type   = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
+            .channel = "test_ch",
+            .role_uid = "prod.test.uid00000001",
+            .role_name = "test_producer",
+            .role_type = "producer",
+            .has_shm = true,
+            .is_zmq_transport = false,
             .zmq_node_endpoint = {},
             .zmq_pubkey = curve.role(uid).public_z85,
             .shm_capability_endpoint =
@@ -191,7 +203,7 @@ int register_and_discover()
 
     // Discover the channel.
     nlohmann::json disc_opts;
-    disc_opts["role_uid"]  = "cons.test.uid00000001";
+    disc_opts["role_uid"] = "cons.test.uid00000001";
     disc_opts["role_name"] = "test_consumer";
 
     auto disc_result = ch.discover_channel("test_ch", disc_opts, 5000);
@@ -221,9 +233,10 @@ int register_and_discover()
 
 int role_presence()
 {
-    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-                                          hub_module(), zmq_module());
+    auto mods =
+        utils::MakeModDefList(logger_module(), file_lock_module(), json_module(),
+                              ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                              hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.my.uid00000042";
@@ -234,15 +247,13 @@ int role_presence()
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
-    cfg.broker_pubkey   = broker.pubkey;
-    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-    cfg.role_uid        = uid;
+    cfg.broker_pubkey = broker.pubkey;
+    cfg.keystore_name = pylabhub::tests::role_keystore_name(uid);
+    cfg.role_uid = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<bool> running{true};
-    std::thread poll_thread([&] {
-        ch.run_poll_loop([&] { return running.load(); });
-    });
+    std::thread poll_thread([&] { ch.run_poll_loop([&] { return running.load(); }); });
 
     // Not present yet.  Post-Bucket-C: query_role_presence returns
     // optional<json>; "present" is the response body field that signals
@@ -258,19 +269,18 @@ int role_presence()
 
     // Register a channel so a role exists.  #281 (2026-06-23):
     // `data_transport` REQUIRED — SHM wire shape (HEP-CORE-0041 §5.1).
-    auto reg_opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = "presence_ch",
-            .role_uid   = "prod.my.uid00000042",
-            .role_name  = "my_producer",
-            .role_type   = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = curve.role(uid).public_z85,
-            .shm_capability_endpoint =
-                pylabhub::utils::security::default_shm_capability_endpoint("presence_ch"),
-        });
+    auto reg_opts = pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+        .channel = "presence_ch",
+        .role_uid = "prod.my.uid00000042",
+        .role_name = "my_producer",
+        .role_type = "producer",
+        .has_shm = true,
+        .is_zmq_transport = false,
+        .zmq_node_endpoint = {},
+        .zmq_pubkey = curve.role(uid).public_z85,
+        .shm_capability_endpoint =
+            pylabhub::utils::security::default_shm_capability_endpoint("presence_ch"),
+    });
 
     auto reg = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg.has_value());
@@ -293,9 +303,10 @@ int role_presence()
 
 int notification_dispatch()
 {
-    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-                                          hub_module(), zmq_module());
+    auto mods =
+        utils::MakeModDefList(logger_module(), file_lock_module(), json_module(),
+                              ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                              hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.notify.uid00000001";
@@ -306,38 +317,37 @@ int notification_dispatch()
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
-    cfg.broker_pubkey   = broker.pubkey;
-    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-    cfg.role_uid        = uid;
+    cfg.broker_pubkey = broker.pubkey;
+    cfg.keystore_name = pylabhub::tests::role_keystore_name(uid);
+    cfg.role_uid = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<int> notify_count{0};
     std::string last_notify_type;
-    ch.on_notification([&](const std::string &type, const nlohmann::json &) {
-        last_notify_type = type;
-        notify_count.fetch_add(1);
-    });
+    ch.on_notification(
+        [&](const std::string &type, const nlohmann::json &)
+        {
+            last_notify_type = type;
+            notify_count.fetch_add(1);
+        });
 
     std::atomic<bool> running{true};
-    std::thread poll_thread([&] {
-        ch.run_poll_loop([&] { return running.load(); });
-    });
+    std::thread poll_thread([&] { ch.run_poll_loop([&] { return running.load(); }); });
 
     // Register a channel.  #281 (2026-06-23): `data_transport` REQUIRED
     // — SHM wire shape (HEP-CORE-0041 §5.1).
-    auto reg_opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = "notify_ch",
-            .role_uid   = "prod.notify.uid00000001",
-            .role_name  = "notify_producer",
-            .role_type   = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = curve.role(uid).public_z85,
-            .shm_capability_endpoint =
-                pylabhub::utils::security::default_shm_capability_endpoint("notify_ch"),
-        });
+    auto reg_opts = pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+        .channel = "notify_ch",
+        .role_uid = "prod.notify.uid00000001",
+        .role_name = "notify_producer",
+        .role_type = "producer",
+        .has_shm = true,
+        .is_zmq_transport = false,
+        .zmq_node_endpoint = {},
+        .zmq_pubkey = curve.role(uid).public_z85,
+        .shm_capability_endpoint =
+            pylabhub::utils::security::default_shm_capability_endpoint("notify_ch"),
+    });
 
     auto reg = ch.register_channel(reg_opts, 5000);
     EXPECT_TRUE(reg.has_value());
@@ -345,9 +355,8 @@ int notification_dispatch()
     // Request broker to close the channel → should trigger CHANNEL_CLOSING_NOTIFY.
     broker.service().request_close_channel("notify_ch");
 
-    bool got = pylabhub::tests::helper::poll_until(
-        [&] { return notify_count.load() > 0; },
-        std::chrono::seconds{3});
+    bool got = pylabhub::tests::helper::poll_until([&] { return notify_count.load() > 0; },
+                                                   std::chrono::seconds{3});
     EXPECT_TRUE(got) << "CHANNEL_CLOSING_NOTIFY never received";
     if (got)
     {
@@ -367,9 +376,10 @@ int notification_dispatch()
 // must remove it after the retention grace so the map cannot grow unbounded.
 int reap_abandoned_on_dead_broker()
 {
-    auto mods = utils::MakeModDefList(logger_module(), file_lock_module(),
-                                          json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-                                          hub_module(), zmq_module());
+    auto mods =
+        utils::MakeModDefList(logger_module(), file_lock_module(), json_module(),
+                              ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                              hub_module(), zmq_module());
     utils::LifecycleGuard guard(std::move(mods));
 
     const std::string uid = "prod.reap.uid00000001";
@@ -380,9 +390,9 @@ int reap_abandoned_on_dead_broker()
     BrokerRequestComm ch;
     BrokerRequestComm::Config cfg;
     cfg.broker_endpoint = broker.endpoint;
-    cfg.broker_pubkey   = broker.pubkey;
-    cfg.keystore_name   = pylabhub::tests::role_keystore_name(uid);
-    cfg.role_uid        = uid;
+    cfg.broker_pubkey = broker.pubkey;
+    cfg.keystore_name = pylabhub::tests::role_keystore_name(uid);
+    cfg.role_uid = uid;
     // Shrink the retention grace so the reaper fires within the test window
     // (production default is 10s ≈ 2× heartbeat).  Cadence is a fixed 1s, so a
     // 200ms grace means an abandoned entry is reaped on the first tick after
@@ -391,9 +401,7 @@ int reap_abandoned_on_dead_broker()
     EXPECT_TRUE(ch.connect(cfg));
 
     std::atomic<bool> running{true};
-    std::thread poll_thread([&] {
-        ch.run_poll_loop([&] { return running.load(); });
-    });
+    std::thread poll_thread([&] { ch.run_poll_loop([&] { return running.load(); }); });
 
     EXPECT_EQ(ch.reaped_abandoned(), 0u);
 
@@ -406,16 +414,15 @@ int reap_abandoned_on_dead_broker()
     // Short-timeout request against the now-dead broker → times out → the
     // ctrl thread marks the entry abandoned.
     auto resp = ch.list_channels(/*timeout_ms=*/300);
-    EXPECT_FALSE(resp.has_value())
-        << "request must time out with the broker gone";
+    EXPECT_FALSE(resp.has_value()) << "request must time out with the broker gone";
 
     // The reaper (ctrl thread, 1s cadence, 200ms grace) must remove the
     // abandoned entry.  Poll the production counter — poll_until, not sleep.
     const bool reaped = pylabhub::tests::helper::poll_until(
         [&] { return ch.reaped_abandoned() >= 1; }, std::chrono::seconds{5});
-    EXPECT_TRUE(reaped)
-        << "reaper must remove the never-answered abandoned request; "
-           "reaped_abandoned=" << ch.reaped_abandoned();
+    EXPECT_TRUE(reaped) << "reaper must remove the never-answered abandoned request; "
+                           "reaped_abandoned="
+                        << ch.reaped_abandoned();
 
     running.store(false);
     ch.stop();
@@ -439,8 +446,7 @@ struct BrokerReqChannelWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "broker_req")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "broker_req")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
 

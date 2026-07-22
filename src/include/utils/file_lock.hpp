@@ -116,7 +116,6 @@
 namespace pylabhub::utils
 {
 
-
 // Forward-declare the implementation struct for the Pimpl idiom.
 struct FileLockImpl;
 
@@ -215,9 +214,9 @@ class PYLABHUB_UTILS_EXPORT FileLock
      * if (auto lock = FileLock::try_lock(path, false, false)) { ... }
      * @endcode
      */
-    [[nodiscard]] static std::optional<FileLock>
-    try_lock(const std::filesystem::path &path, bool is_directory = false,
-             bool blocking = true) noexcept;
+    [[nodiscard]] static std::optional<FileLock> try_lock(const std::filesystem::path &path,
+                                                          bool is_directory = false,
+                                                          bool blocking = true) noexcept;
 
     /**
      * @brief Attempts to acquire a lock within a given time.

@@ -84,11 +84,11 @@
  * socket. The shared ZMQ context is NOT closed here.
  */
 #include "utils/hub_queue.hpp"
-#include "utils/hub_state.hpp"                // ChannelTopology (for topology-parametric factories)
+#include "utils/hub_state.hpp" // ChannelTopology (for topology-parametric factories)
 #include "utils/schema_field_layout.hpp"
-#include "utils/security/curve_keypair.hpp"   // Z85PublicKey strong type
-#include "utils/security/key_store.hpp"       // kRoleIdentityName canonical default
-#include "utils/security/peer_admission.hpp"  // PeerAdmission base + PeerAllowlist
+#include "utils/security/curve_keypair.hpp"  // Z85PublicKey strong type
+#include "utils/security/key_store.hpp"      // kRoleIdentityName canonical default
+#include "utils/security/peer_admission.hpp" // PeerAdmission base + PeerAllowlist
 
 #include <array>
 #include <cstdint>
@@ -210,12 +210,11 @@ struct ProducerPeer
  * broker glue uses this to drive `set_peer_allowlist` on the
  * producer-side queue from the broker thread.
  */
-class PYLABHUB_UTILS_EXPORT ZmqQueue final
-    : public QueueReader,
-      public QueueWriter,
-      public pylabhub::utils::security::PeerAdmission
+class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
+                                             public QueueWriter,
+                                             public pylabhub::utils::security::PeerAdmission
 {
-public:
+  public:
     // ── Factories (HEP-CORE-0040 §8.4 — CURVE unconditional) ────────────────
     //
     // Canonical CURVE-wired entry points per HEP-CORE-0035 §2 + §4.6.5
@@ -263,16 +262,12 @@ public:
     // from outside this class.
 
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    pull_from(const std::string& endpoint,
-            ::pylabhub::utils::security::Z85PublicKey server_pubkey,
-            std::vector<ZmqSchemaField> schema,
-            std::string packing,
-            std::string_view identity_key_name =
-                ::pylabhub::utils::security::kRoleIdentityName,
-            bool bind = false,
-            size_t max_buffer_depth = kZmqDefaultBufferDepth,
-            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
-            std::string instance_id = {});
+    pull_from(const std::string &endpoint, ::pylabhub::utils::security::Z85PublicKey server_pubkey,
+              std::vector<ZmqSchemaField> schema, std::string packing,
+              std::string_view identity_key_name = ::pylabhub::utils::security::kRoleIdentityName,
+              bool bind = false, size_t max_buffer_depth = kZmqDefaultBufferDepth,
+              std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
+              std::string instance_id = {});
 
     /// `server_pubkey` is the peer's CURVE identity pubkey — needed
     /// when the writer is DIALING (fan-in producer PUSH-connect).
@@ -283,18 +278,12 @@ public:
     /// `apply_master_approval(REG_ACK)` sets the same field from
     /// `initial_allowlist[0]` on the DIALING wire path.
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    push_to(const std::string& endpoint,
-            std::vector<ZmqSchemaField> schema,
-            std::string packing,
-            std::string_view identity_key_name =
-                ::pylabhub::utils::security::kRoleIdentityName,
-            std::string zap_domain = {},
-            bool bind = true,
-            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt,
-            int sndhwm = 0,
+    push_to(const std::string &endpoint, std::vector<ZmqSchemaField> schema, std::string packing,
+            std::string_view identity_key_name = ::pylabhub::utils::security::kRoleIdentityName,
+            std::string zap_domain = {}, bool bind = true,
+            std::optional<std::array<uint8_t, 8>> schema_tag = std::nullopt, int sndhwm = 0,
             size_t send_buffer_depth = kZmqDefaultBufferDepth,
-            OverflowPolicy overflow_policy = OverflowPolicy::Drop,
-            int send_retry_interval_ms = 10,
+            OverflowPolicy overflow_policy = OverflowPolicy::Drop, int send_retry_interval_ms = 10,
             std::string instance_id = {},
             ::pylabhub::utils::security::Z85PublicKey server_pubkey = {});
 
@@ -328,13 +317,12 @@ public:
     {
         std::string endpoint;
         ::pylabhub::utils::security::Z85PublicKey server_pubkey{};
-        std::vector<ZmqSchemaField>    schema;
-        std::string                    packing;
-        std::string_view               identity_key_name =
-            ::pylabhub::utils::security::kRoleIdentityName;
-        size_t                         max_buffer_depth = kZmqDefaultBufferDepth;
+        std::vector<ZmqSchemaField> schema;
+        std::string packing;
+        std::string_view identity_key_name = ::pylabhub::utils::security::kRoleIdentityName;
+        size_t max_buffer_depth = kZmqDefaultBufferDepth;
         std::optional<std::array<uint8_t, 8>> schema_tag;
-        std::string                    instance_id;
+        std::string instance_id;
     };
 
     /// Options passed to `create_writer` — the producer-side queue.
@@ -350,19 +338,18 @@ public:
     /// `curve_serverkey`.  Ignored on BINDING sides.
     struct TxCreateOptions
     {
-        std::string                    endpoint;
+        std::string endpoint;
         ::pylabhub::utils::security::Z85PublicKey server_pubkey{};
-        std::vector<ZmqSchemaField>    schema;
-        std::string                    packing;
-        std::string_view               identity_key_name =
-            ::pylabhub::utils::security::kRoleIdentityName;
-        std::string                    zap_domain;
+        std::vector<ZmqSchemaField> schema;
+        std::string packing;
+        std::string_view identity_key_name = ::pylabhub::utils::security::kRoleIdentityName;
+        std::string zap_domain;
         std::optional<std::array<uint8_t, 8>> schema_tag;
-        int                            sndhwm = 0;
-        size_t                         send_buffer_depth = kZmqDefaultBufferDepth;
-        OverflowPolicy                 overflow_policy = OverflowPolicy::Drop;
-        int                            send_retry_interval_ms = 10;
-        std::string                    instance_id;
+        int sndhwm = 0;
+        size_t send_buffer_depth = kZmqDefaultBufferDepth;
+        OverflowPolicy overflow_policy = OverflowPolicy::Drop;
+        int send_retry_interval_ms = 10;
+        std::string instance_id;
     };
 
     /// Construct the consumer-side ZMQ queue for `topology`.
@@ -375,8 +362,7 @@ public:
     ///   `opts.server_pubkey` is the producer's identity pubkey.
     ///   Subscribes to empty topic (all messages) on start().
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    create_reader(pylabhub::hub::ChannelTopology topology,
-                  RxCreateOptions                opts);
+    create_reader(pylabhub::hub::ChannelTopology topology, RxCreateOptions opts);
 
     /// Construct the producer-side ZMQ queue for `topology`.
     /// - `OneToOne`: PUSH bind (producer is BINDING).
@@ -385,10 +371,9 @@ public:
     ///   + ZAP wiring as `OneToOne`; caller seeds allowlist via
     ///   `set_peer_allowlist()` after `start()`.
     [[nodiscard]] static std::unique_ptr<ZmqQueue>
-    create_writer(pylabhub::hub::ChannelTopology topology,
-                  TxCreateOptions                opts);
+    create_writer(pylabhub::hub::ChannelTopology topology, TxCreateOptions opts);
 
-private:
+  private:
     // ─── Internal plaintext queue builders ─────────────────────────────────
     //
     // The public `pull_from` / `push_to` factories above wire CURVE on
@@ -402,29 +387,18 @@ private:
     /// Pattern is FIXED at construction — no two-step init after
     /// `build_plaintext_*_` returns.
     [[nodiscard]] static std::unique_ptr<QueueReader>
-    build_plaintext_reader_(const std::string& endpoint,
-                            std::vector<ZmqSchemaField> schema,
-                            std::string packing,
-                            bool bind, size_t max_buffer_depth,
+    build_plaintext_reader_(const std::string &endpoint, std::vector<ZmqSchemaField> schema,
+                            std::string packing, bool bind, size_t max_buffer_depth,
                             std::optional<std::array<uint8_t, 8>> schema_tag,
-                            std::string instance_id,
-                            bool is_pubsub = false);
+                            std::string instance_id, bool is_pubsub = false);
 
-    [[nodiscard]] static std::unique_ptr<QueueWriter>
-    build_plaintext_writer_(const std::string& endpoint,
-                            std::vector<ZmqSchemaField> schema,
-                            std::string packing,
-                            bool bind,
-                            std::optional<std::array<uint8_t, 8>> schema_tag,
-                            int sndhwm,
-                            size_t send_buffer_depth,
-                            OverflowPolicy overflow_policy,
-                            int send_retry_interval_ms,
-                            std::string instance_id,
-                            bool is_pubsub = false);
+    [[nodiscard]] static std::unique_ptr<QueueWriter> build_plaintext_writer_(
+        const std::string &endpoint, std::vector<ZmqSchemaField> schema, std::string packing,
+        bool bind, std::optional<std::array<uint8_t, 8>> schema_tag, int sndhwm,
+        size_t send_buffer_depth, OverflowPolicy overflow_policy, int send_retry_interval_ms,
+        std::string instance_id, bool is_pubsub = false);
 
-public:
-
+  public:
     // ── PeerAdmission overrides (`PeerAdmission` interface) ────────────────────────────
     //
     // On the PUSH/bind side: storage backed by PortableAtomicSharedPtr
@@ -436,12 +410,11 @@ public:
     // peer_allowlist_snapshot returns nullopt.  is_peer_allowed
     // returns false unconditionally (no inbound handshakes to gate).
 
-    bool set_peer_allowlist(
-        pylabhub::utils::security::PeerAllowlist allowlist) override;
+    bool set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist) override;
     [[nodiscard]] std::optional<pylabhub::utils::security::PeerAllowlist>
     peer_allowlist_snapshot() const override;
-    [[nodiscard]] bool is_peer_allowed(
-        const pylabhub::utils::security::PeerIdentity& peer) const override;
+    [[nodiscard]] bool
+    is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const override;
 
     // ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
     //
@@ -490,13 +463,13 @@ public:
     /// Append a producer to this queue's peer set.  Idempotent on
     /// `role_uid` collision (existing entry overwritten in place).
     /// Returns true on success; false on PUSH side or null impl.
-    bool add_producer_peer(const ProducerPeer& peer);
+    bool add_producer_peer(const ProducerPeer &peer);
 
     /// Remove a producer from this queue's peer set by `role_uid`.
     /// Returns true if a peer was removed; false otherwise (not found
     /// or PUSH side).  Per HEP-CORE-0036 I5 "revocation is forward-
     /// looking": frames already received are not discarded.
-    bool remove_producer_peer(const std::string& role_uid);
+    bool remove_producer_peer(const std::string &role_uid);
 
     /// Number of producer peers currently tracked.  Returns 0 on PUSH
     /// side or null impl.  Diagnostic + test observability.
@@ -514,7 +487,7 @@ public:
     /// artifacts" — queue state unchanged, returns true.  Malformed
     /// JSON (array entry missing a required field) returns false
     /// with a logged reason; queue state is unchanged.
-    bool apply_master_approval(const nlohmann::json& artifacts) noexcept override;
+    bool apply_master_approval(const nlohmann::json &artifacts) noexcept override;
 
     /// HEP-CORE-0036 §6.6.3 — deferred dial for the fan-in DIALING
     /// producer.  Called by the role host AFTER `wait_for_peer_ready`
@@ -538,10 +511,9 @@ public:
     ///
     /// Returns `false` on: cancellation, timeout, permanent oracle
     /// error, or `start()` failure.
-    bool finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
-                          std::uint64_t                          timeout_ms,
-                          const std::function<bool()>           &is_cancelled,
-                          const char                            *log_tag) noexcept override;
+    bool finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle, std::uint64_t timeout_ms,
+                          const std::function<bool()> &is_cancelled,
+                          const char *log_tag) noexcept override;
 
     /// HEP-CORE-0036 §I9.1 — expose our CURVE client-side identity
     /// pubkey to the role-side finalize glue.  Reads
@@ -582,17 +554,17 @@ public:
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     ~ZmqQueue() override;
-    ZmqQueue(ZmqQueue&&) noexcept;
-    ZmqQueue& operator=(ZmqQueue&&) noexcept;
-    ZmqQueue(const ZmqQueue&) = delete;
-    ZmqQueue& operator=(const ZmqQueue&) = delete;
+    ZmqQueue(ZmqQueue &&) noexcept;
+    ZmqQueue &operator=(ZmqQueue &&) noexcept;
+    ZmqQueue(const ZmqQueue &) = delete;
+    ZmqQueue &operator=(const ZmqQueue &) = delete;
 
     // ── QueueReader interface — reading ────────────────────────────────────────
 
     /** Pops one item from the internal buffer; blocks up to @p timeout. */
-    const void* read_acquire(std::chrono::milliseconds timeout) noexcept override;
+    const void *read_acquire(std::chrono::milliseconds timeout) noexcept override;
     /** No-op — item is already consumed from the internal buffer. */
-    void        read_release() noexcept override;
+    void read_release() noexcept override;
     /**
      * @brief Returns the wire frame seq of the most recently decoded frame.
      *
@@ -603,7 +575,7 @@ public:
     uint64_t last_seq() const noexcept override;
 
     /** ZMQ recv buffer depth (max_buffer_depth configured at construction). */
-    size_t      capacity()    const override;
+    size_t capacity() const override;
     /** Returns "zmq_pull_ring_N" where N = max_buffer_depth. */
     std::string policy_info() const override;
 
@@ -613,14 +585,15 @@ public:
      * @brief Acquire the internal send buffer.
      *
      * Drop policy: returns nullptr immediately if send buffer is full (data_drop_count()++).
-     * Block policy: waits up to @p timeout for space; returns nullptr on timeout (data_drop_count()++).
+     * Block policy: waits up to @p timeout for space; returns nullptr on timeout
+     * (data_drop_count()++).
      * @p timeout is ignored for Drop policy.
      */
-    void* write_acquire(std::chrono::milliseconds timeout) noexcept override;
+    void *write_acquire(std::chrono::milliseconds timeout) noexcept override;
     /** Enqueues buffer to the internal send ring; send_thread_ delivers asynchronously. */
-    void  write_commit() noexcept override;
+    void write_commit() noexcept override;
     /** Discards the write buffer without sending. */
-    void  write_discard() noexcept override;
+    void write_discard() noexcept override;
     /** ZMQ send buffer depth (send_buffer_depth configured at construction). */
     // capacity() — shared implementation; returns mode-appropriate depth.
     /** Returns "zmq_push_drop" or "zmq_push_block" depending on overflow_policy. */
@@ -628,8 +601,8 @@ public:
 
     // ── Shared metadata (both QueueReader and QueueWriter) ────────────────────
 
-    size_t      item_size()     const noexcept override;
-    std::string name()          const override;
+    size_t item_size() const noexcept override;
+    std::string name() const override;
 
     /**
      * @brief Returns the actual bound endpoint after start().
@@ -653,17 +626,17 @@ public:
     // Prefer metrics() for a unified snapshot.
 
     /** PULL: items dropped because the internal recv ring was full (oldest discarded). */
-    [[nodiscard]] uint64_t recv_overflow_count()    const noexcept;
+    [[nodiscard]] uint64_t recv_overflow_count() const noexcept;
     /** PULL: frames rejected (bad magic, schema tag mismatch, field type/size error). */
     [[nodiscard]] uint64_t recv_frame_error_count() const noexcept;
     /** PULL: sequence number gaps (frames lost between PUSH and PULL). */
-    [[nodiscard]] uint64_t recv_gap_count()         const noexcept;
+    [[nodiscard]] uint64_t recv_gap_count() const noexcept;
     /** PUSH: frames permanently dropped (zmq_send error during stop drain). */
-    [[nodiscard]] uint64_t send_drop_count()        const noexcept;
+    [[nodiscard]] uint64_t send_drop_count() const noexcept;
     /** PUSH: EAGAIN retries by send_thread_ (ZMQ HWM temporarily exceeded). */
-    [[nodiscard]] uint64_t send_retry_count()       const noexcept;
+    [[nodiscard]] uint64_t send_retry_count() const noexcept;
     /** PUSH: write_acquire() returned nullptr (send buffer full, Drop/Block timeout). */
-    [[nodiscard]] uint64_t data_drop_count()          const noexcept;
+    [[nodiscard]] uint64_t data_drop_count() const noexcept;
 
     /** Unified metrics snapshot — timing (D2+D3) + transport counters. */
     QueueMetrics metrics() const noexcept override;
@@ -708,7 +681,7 @@ public:
     /// task #279 (2026-06-22).
     [[nodiscard]] Mechanism mechanism() const noexcept override;
 
-private:
+  private:
     explicit ZmqQueue(std::unique_ptr<ZmqQueueImpl> impl);
     std::unique_ptr<ZmqQueueImpl> pImpl;
 };

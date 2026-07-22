@@ -129,14 +129,10 @@ template <typename ApiT> struct script_host_traits;
 template <> struct script_host_traits<RoleAPIBase>
 {
     using ConfigT = config::RoleConfig;
-    static std::string uid_from_config(const ConfigT &c)
-    {
-        return c.identity().uid;
-    }
+    static std::string uid_from_config(const ConfigT &c) { return c.identity().uid; }
 };
 
-template <typename ApiT>
-class PYLABHUB_UTILS_EXPORT EngineHost
+template <typename ApiT> class PYLABHUB_UTILS_EXPORT EngineHost
 {
   public:
     /// Convenience alias for the per-ApiT config type carried by the
@@ -190,9 +186,8 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// resolution at the binary's link step pulls in the static-lib
     /// definition, while pylabhub-utils consumers that never link
     /// scripting see no libpython dependency.
-    EngineHost(std::string_view short_tag,
-                ConfigT config,
-                std::atomic<bool> *shutdown_flag = nullptr);
+    EngineHost(std::string_view short_tag, ConfigT config,
+               std::atomic<bool> *shutdown_flag = nullptr);
 
     /// Pure virtual — EngineHost is abstract. Every derived class must
     /// declare its own destructor and call @ref shutdown_ as the FIRST
@@ -221,10 +216,10 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// `EngineHost::shutdown_()`) is surfaced loudly.
     virtual ~EngineHost() = 0;
 
-    EngineHost(const EngineHost &)            = delete;
+    EngineHost(const EngineHost &) = delete;
     EngineHost &operator=(const EngineHost &) = delete;
-    EngineHost(EngineHost &&)                 = delete;
-    EngineHost &operator=(EngineHost &&)      = delete;
+    EngineHost(EngineHost &&) = delete;
+    EngineHost &operator=(EngineHost &&) = delete;
 
     // ── Configuration ────────────────────────────────────────────────────
 
@@ -247,7 +242,6 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     void set_uid(std::string uid) noexcept { uid_ = std::move(uid); }
 
   public:
-
     // ── Start / Stop  (not a LifecycleGuard module) ─────────────────────
 
     /// Spawn worker thread via api_->thread_manager(); block until ready
@@ -284,10 +278,10 @@ class PYLABHUB_UTILS_EXPORT EngineHost
 
     // ── Queries (called from main thread) ────────────────────────────────
 
-    [[nodiscard]] bool is_running()     const noexcept { return core_.is_running(); }
+    [[nodiscard]] bool is_running() const noexcept { return core_.is_running(); }
     [[nodiscard]] bool script_load_ok() const noexcept { return core_.is_script_load_ok(); }
-    [[nodiscard]] const ConfigT            &config()   const noexcept { return config_; }
-    [[nodiscard]] std::string_view          short_tag() const noexcept { return short_tag_; }
+    [[nodiscard]] const ConfigT &config() const noexcept { return config_; }
+    [[nodiscard]] std::string_view short_tag() const noexcept { return short_tag_; }
 
     /// Block until wakeup (shutdown, incoming message, or timeout).
     void wait_for_wakeup(int timeout_ms) { core_.wait_for_incoming(timeout_ms); }
@@ -295,21 +289,18 @@ class PYLABHUB_UTILS_EXPORT EngineHost
   protected:
     // ── Accessors for derived class hooks ────────────────────────────────
 
-    RoleHostCore         &core()          noexcept { return core_; }
-    const RoleHostCore   &core()    const noexcept { return core_; }
-    ScriptEngine         &engine()        noexcept { return *engine_; }
-    bool                  has_engine() const noexcept { return engine_ != nullptr; }
-    ApiT                 &api()           noexcept { return *api_; }
-    bool                  has_api() const noexcept { return api_ != nullptr; }
+    RoleHostCore &core() noexcept { return core_; }
+    const RoleHostCore &core() const noexcept { return core_; }
+    ScriptEngine &engine() noexcept { return *engine_; }
+    bool has_engine() const noexcept { return engine_ != nullptr; }
+    ApiT &api() noexcept { return *api_; }
+    bool has_api() const noexcept { return api_ != nullptr; }
 
     /// Install the script engine.  Must be called from `worker_main_`
     /// Step 0 (the worker thread that will become the GIL holder for
     /// any Python engine).  Per HEP-CORE-0011 §"Engine Construction
     /// Lifecycle" (2026-05-07).
-    void set_engine_(std::unique_ptr<ScriptEngine> engine) noexcept
-    {
-        engine_ = std::move(engine);
-    }
+    void set_engine_(std::unique_ptr<ScriptEngine> engine) noexcept { engine_ = std::move(engine); }
 
     /// Valid only while @ref startup_ is in progress or the worker is
     /// active. Derived classes set the result from the worker thread
@@ -317,7 +308,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     ///
     /// For custom worker threads, call @c api().thread_manager().spawn(...)
     /// directly — no short-form accessor is provided.
-    std::promise<bool>   &ready_promise() noexcept { return ready_promise_; }
+    std::promise<bool> &ready_promise() noexcept { return ready_promise_; }
 
     // ── Virtual hook (derived must implement) ────────────────────────────
 
@@ -332,7 +323,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     virtual void worker_main_() = 0;
 
   private:
-    std::string                    short_tag_;
+    std::string short_tag_;
     /// Host instance uid — captured at construction (not derived from
     /// `config_`).  Used for diagnostics + as the uid arg to ApiT's
     /// ctor.  Storing it separately decouples EngineHost from any
@@ -341,22 +332,22 @@ class PYLABHUB_UTILS_EXPORT EngineHost
     /// `cfg.identity().uid` and pass it explicitly.  See HEP-CORE-0033
     /// Phase 7 Option E (single config owner per layer; subsystems read
     /// through the owner — runner reads HubConfig via host backref).
-    std::string                    uid_;
-    ConfigT                        config_;
+    std::string uid_;
+    ConfigT config_;
     /// Engine instance — constructed in derived `worker_main_` Step 0
     /// via `set_engine_(scripting::create_engine(config_.script()))`,
     /// not by the EngineHost ctor.  See HEP-CORE-0011 §"Engine
     /// Construction Lifecycle" for the rationale (worker thread must
     /// be the GIL holder for Python engines).
-    std::unique_ptr<ScriptEngine>  engine_;
-    RoleHostCore                   core_;
+    std::unique_ptr<ScriptEngine> engine_;
+    RoleHostCore core_;
 
     // Constructed in startup_() so the worker thread can live under this
     // api's ThreadManager. Dropped in shutdown_() → ThreadManager dtor
     // bounded-joins every host-scope thread.
-    std::unique_ptr<ApiT>          api_;
+    std::unique_ptr<ApiT> api_;
 
-    std::promise<bool>             ready_promise_;
+    std::promise<bool> ready_promise_;
 
     /// Start/stop run-state FSM.  Transitions are monotonic:
     /// `Constructed → Running → ShutDown`.  Once `ShutDown`, this
@@ -383,7 +374,7 @@ class PYLABHUB_UTILS_EXPORT EngineHost
         Running,
         ShutDown,
     };
-    std::atomic<Phase>             phase_{Phase::Constructed};
+    std::atomic<Phase> phase_{Phase::Constructed};
 };
 
 // ── Backward-compatible alias for the role-side instantiation ───────────────
@@ -449,11 +440,7 @@ using RoleHostBase = EngineHost<RoleAPIBase>;
  *        slot, so calling `drain()` here would self-detach
  *        (HEP-CORE-0031 §4.2).
  */
-void do_role_teardown(
-    ScriptEngine          &engine,
-    RoleAPIBase           &api,
-    RoleHostCore          &core,
-    bool                   has_api,
-    std::function<void()>  teardown_infrastructure);
+void do_role_teardown(ScriptEngine &engine, RoleAPIBase &api, RoleHostCore &core, bool has_api,
+                      std::function<void()> teardown_infrastructure);
 
 } // namespace pylabhub::scripting

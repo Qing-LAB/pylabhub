@@ -17,7 +17,7 @@
  * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "processor_role_host.hpp"
-#include "utils/script_engine_factory.hpp"  // scripting::create_engine — worker_main_ Step 0
+#include "utils/script_engine_factory.hpp" // scripting::create_engine — worker_main_ Step 0
 #include "utils/thread_manager.hpp"
 #include "service/cycle_ops.hpp"
 #include "service/data_loop.hpp"
@@ -32,10 +32,10 @@
 #include "utils/role_config_translation.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
-#include "utils/role_handler.hpp"     // Wave-B M7: handler-mode startup
-#include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
-#include "utils/security/shm_capability_channel.hpp"  // HEP-CORE-0041 §5.1: default endpoint helper
-#include "utils/role_presence.hpp"    // Wave-B M7: Presence + RoleKind
+#include "utils/role_handler.hpp"                    // Wave-B M7: handler-mode startup
+#include "utils/security/key_store.hpp"              // HEP-CORE-0040 §173: identity pubkey
+#include "utils/security/shm_capability_channel.hpp" // HEP-CORE-0041 §5.1: default endpoint helper
+#include "utils/role_presence.hpp"                   // Wave-B M7: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 
 #include <algorithm>
@@ -55,15 +55,14 @@ using Clock = std::chrono::steady_clock;
 // Constructor / Destructor
 // ============================================================================
 
-ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config,
-                                       std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostFrame(std::move(config),
-                                shutdown_flag,
-                                // HEP-CORE-0036 §5b.10: short_tag derived
-                                // once from role_type via short_role_tag().
-                                { /*role_type=*/        "processor",
-                                  /*short_tag=*/        std::string(pylabhub::hub::short_role_tag("processor")),
-                                  /*required_callback=*/"on_process" })
+ProcessorRoleHost::ProcessorRoleHost(config::RoleConfig config, std::atomic<bool> *shutdown_flag)
+    : scripting::RoleHostFrame(
+          std::move(config), shutdown_flag,
+          // HEP-CORE-0036 §5b.10: short_tag derived
+          // once from role_type via short_role_tag().
+          {/*role_type=*/"processor",
+           /*short_tag=*/std::string(pylabhub::hub::short_role_tag("processor")),
+           /*required_callback=*/"on_process"})
 {
     // Engine constructed in worker_main_ Step 0 — see HEP-CORE-0011
     // §"Engine Construction Lifecycle".
@@ -97,19 +96,20 @@ void ProcessorRoleHost::worker_main_()
     // Step 0: construct engine on this worker thread (HEP-CORE-0011
     // §"Engine Construction Lifecycle").  GIL is held via the lease
     // above iff Python is configured.
-    auto       &core_        = core();
-    const auto &config_      = config();
-    auto       &promise_ref  = ready_promise();
+    auto &core_ = core();
+    const auto &config_ = config();
+    auto &promise_ref = ready_promise();
     set_engine_(scripting::create_engine(config_.script()));
     if (!has_engine())
     {
         LOGGER_ERROR("[proc] scripting::create_engine returned null for "
-                     "script.type='{}'", config_.script().type);
+                     "script.type='{}'",
+                     config_.script().type);
         promise_ref.set_value(false);
         return;
     }
-    auto       &engine_ref   = engine();
-    auto       &api_ref      = api();
+    auto &engine_ref = engine();
+    auto &api_ref = api();
 
     const auto &sc = config_.script();
 
@@ -131,9 +131,9 @@ void ProcessorRoleHost::worker_main_()
     // per-presence (each presence resolves only against its own
     // hub's schemas dir).  See the override comment on
     // `build_presences_` for details.
-    const std::filesystem::path base_path =
-        sc.path.empty() ? std::filesystem::current_path()
-                        : std::filesystem::weakly_canonical(sc.path);
+    const std::filesystem::path base_path = sc.path.empty()
+                                                ? std::filesystem::current_path()
+                                                : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
     try
@@ -149,12 +149,14 @@ void ProcessorRoleHost::worker_main_()
     // Processor's build_presences_ returns two presences: one
     // Consumer-kind (in side) + one Producer-kind (out side).  Look
     // them up by role_kind so this code is order-independent.
-    const scripting::Presence *in_presence  = nullptr;
+    const scripting::Presence *in_presence = nullptr;
     const scripting::Presence *out_presence = nullptr;
     for (const auto &p : presences_)
     {
-        if (p.role_kind == scripting::RoleKind::Consumer) in_presence  = &p;
-        else if (p.role_kind == scripting::RoleKind::Producer) out_presence = &p;
+        if (p.role_kind == scripting::RoleKind::Consumer)
+            in_presence = &p;
+        else if (p.role_kind == scripting::RoleKind::Producer)
+            out_presence = &p;
     }
     if (!in_presence || !out_presence)
     {
@@ -164,9 +166,9 @@ void ProcessorRoleHost::worker_main_()
     }
     // Local refs into the canonical presences — used by wire-emission
     // readers + params + slot-size storage on core below.
-    in_slot_spec_  = in_presence->slot_spec;
+    in_slot_spec_ = in_presence->slot_spec;
     out_slot_spec_ = out_presence->slot_spec;
-    const hub::SchemaSpec &in_fz_local  = in_presence->fz_spec;
+    const hub::SchemaSpec &in_fz_local = in_presence->fz_spec;
     const hub::SchemaSpec &out_fz_local = out_presence->fz_spec;
 
     // ── Step 1b: Inbox schema (role-level, not per-channel) ──────────────────
@@ -178,7 +180,8 @@ void ProcessorRoleHost::worker_main_()
     if (config_.inbox().has_inbox())
     {
         std::vector<std::string> schema_dirs;
-        auto add_schema_dir = [&schema_dirs](const std::string &hub_dir) {
+        auto add_schema_dir = [&schema_dirs](const std::string &hub_dir)
+        {
             if (hub_dir.empty())
                 return;
             const std::string d = (std::filesystem::path(hub_dir) / "schemas").string();
@@ -189,8 +192,8 @@ void ProcessorRoleHost::worker_main_()
         add_schema_dir(config_.out_hub().hub_dir);
         try
         {
-            inbox_spec_local = hub::resolve_schema(
-                config_.inbox().schema_json, false, "proc", schema_dirs);
+            inbox_spec_local =
+                hub::resolve_schema(config_.inbox().schema_json, false, "proc", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -203,10 +206,8 @@ void ProcessorRoleHost::worker_main_()
     // Packing is schema-driven (was transport-level `zmq_packing` pre-2026-04-20).
     // Input and output sides can have different packings; each is sourced from
     // its own schema spec.
-    const std::string in_packing =
-        in_slot_spec_.has_schema ? in_slot_spec_.packing : "aligned";
-    const std::string out_packing =
-        out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
+    const std::string in_packing = in_slot_spec_.has_schema ? in_slot_spec_.packing : "aligned";
+    const std::string out_packing = out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
 
     // Compute and store slot logical sizes on core (infrastructure-authoritative).
     // Flexzone sizes live on RoleAPIBase::FlexzoneInfoCache, populated by
@@ -234,15 +235,14 @@ void ProcessorRoleHost::worker_main_()
     // sequence.  `set_inbox_queue` stays AFTER setup_infrastructure_
     // because the inbox queue object is created there.
     api_ref.set_name(config_.identity().name);
-    wire_api_for_presences_(presences_);  // sets channel + out_channel from presences_
+    wire_api_for_presences_(presences_); // sets channel + out_channel from presences_
     api_ref.set_log_level(config_.identity().log_level);
     api_ref.set_script_dir(script_dir.string());
     api_ref.set_role_dir(config_.base_dir().string());
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_strict_abi_mismatch(config_.startup().strict_abi_mismatch);
-    api_ref.set_shm_require_mutual_auth(
-        config_.startup().shm_require_mutual_auth);
+    api_ref.set_shm_require_mutual_auth(config_.startup().shm_require_mutual_auth);
     api_ref.set_engine(&engine_ref);
 
     // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
@@ -268,23 +268,23 @@ void ProcessorRoleHost::worker_main_()
     engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, config_.identity().uid);
 
     scripting::EngineModuleParams params;
-    params.engine             = &engine_ref;
-    params.api                = &api_ref;
-    params.tag                = "proc";
-    params.script_dir         = script_dir;
+    params.engine = &engine_ref;
+    params.api = &api_ref;
+    params.tag = "proc";
+    params.script_dir = script_dir;
     // Audit B12 (2026-05-21): see producer_role_host.cpp comment.
-    params.entry_point        = (sc.type == "lua")    ? "init.lua"
-                              : (sc.type == "native") ? "plugin.so"
-                                                      : "__init__.py";
-    params.required_callback  = "on_process";
-    params.in_slot_spec       = in_slot_spec_;
-    params.out_slot_spec      = out_slot_spec_;
-    params.in_fz_spec         = in_fz_local;
-    params.out_fz_spec        = out_fz_local;
-    params.inbox_spec         = inbox_spec_local;
-    params.in_packing         = in_packing;
-    params.out_packing        = out_packing;
-    params.module_name        = engine_module_name_;
+    params.entry_point = (sc.type == "lua")      ? "init.lua"
+                         : (sc.type == "native") ? "plugin.so"
+                                                 : "__init__.py";
+    params.required_callback = "on_process";
+    params.in_slot_spec = in_slot_spec_;
+    params.out_slot_spec = out_slot_spec_;
+    params.in_fz_spec = in_fz_local;
+    params.out_fz_spec = out_fz_local;
+    params.inbox_spec = inbox_spec_local;
+    params.in_packing = in_packing;
+    params.out_packing = out_packing;
+    params.module_name = engine_module_name_;
 
     try
     {
@@ -331,23 +331,23 @@ void ProcessorRoleHost::worker_main_()
     // routing is the M8 payoff that this commit unlocks.)
     core_.set_running(true);
     {
-        const auto &id  = config_.identity();
+        const auto &id = config_.identity();
         const auto &shm = config_.out_shm();
-        const auto &tr  = config_.out_transport();
+        const auto &tr = config_.out_transport();
 
         // 6a — Build 2-presence list: consumer (in_channel on in_hub)
         // + producer (out_channel on out_hub).
         std::vector<scripting::Presence> presences;
         {
             scripting::Presence cons;
-            cons.hub       = config_.in_hub();
-            cons.channel   = config_.in_channel();
+            cons.hub = config_.in_hub();
+            cons.channel = config_.in_channel();
             cons.role_kind = scripting::RoleKind::Consumer;
             presences.push_back(std::move(cons));
 
             scripting::Presence prod;
-            prod.hub       = config_.out_hub();
-            prod.channel   = config_.out_channel();
+            prod.hub = config_.out_hub();
+            prod.channel = config_.out_channel();
             prod.role_kind = scripting::RoleKind::Producer;
             presences.push_back(std::move(prod));
         }
@@ -355,13 +355,12 @@ void ProcessorRoleHost::worker_main_()
         // HEP-CORE-0040 §173: CURVE keypair lives in `secure().keys()`.
         // RoleHandler dedups connections; single-hub processor → 1 BRC,
         // dual-hub → 2.
-        auto handler = std::make_unique<scripting::RoleHandler>(
-            std::move(presences));
+        auto handler = std::make_unique<scripting::RoleHandler>(std::move(presences));
 
         if (!api_ref.start_handler_threads(std::move(handler)))
         {
             LOGGER_ERROR("[proc] start_handler_threads failed");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -372,36 +371,35 @@ void ProcessorRoleHost::worker_main_()
         nlohmann::json prod_reg;
         {
             hub::ProducerRegInputs reg_in;
-            reg_in.channel           = config_.out_channel();
-            reg_in.role_uid          = id.uid;
-            reg_in.role_name         = id.name;
-            reg_in.role_type          = "processor";
-            reg_in.has_shm           = shm.enabled;
-            reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
+            reg_in.channel = config_.out_channel();
+            reg_in.role_uid = id.uid;
+            reg_in.role_name = id.name;
+            reg_in.role_type = "processor";
+            reg_in.has_shm = shm.enabled;
+            reg_in.is_zmq_transport = (tr.transport == config::Transport::Zmq);
             reg_in.zmq_node_endpoint = tr.zmq_endpoint;
             // 2026-07-08 topology migration — processor's producer side
             // declares its output-channel topology.  Config authority:
             // HEP-CORE-0018 §5.3.
-            reg_in.channel_topology  = config_.out_channel_topology();
+            reg_in.channel_topology = config_.out_channel_topology();
             // HEP-CORE-0036 §4.1 — producer-side identity pubkey is
             // REQUIRED on REG_REQ; processor uses its own role's
             // CURVE client pubkey (same vault-loaded value as the BRC).
-            reg_in.zmq_pubkey        = std::string(
-                pylabhub::utils::security::secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
+            reg_in.zmq_pubkey = std::string(pylabhub::utils::security::secure().keys().pubkey(
+                pylabhub::utils::security::kRoleIdentityName));
             // HEP-CORE-0041 §5.1 (substep 1g #254) — same as producer
             // role host: SHM out-channels publish a capability-transport
             // endpoint so the broker can echo it to authorized consumers.
             if (reg_in.has_shm && !reg_in.is_zmq_transport)
             {
                 reg_in.shm_capability_endpoint =
-                    pylabhub::utils::security::default_shm_capability_endpoint(
-                        reg_in.channel);
+                    pylabhub::utils::security::default_shm_capability_endpoint(reg_in.channel);
             }
             prod_reg = hub::build_producer_reg_payload(reg_in);
         }
         const auto &pf_for_wire = config_.role_data<ProcessorFields>();
-        const auto out_wire = hub::make_wire_schema_fields(
-            pf_for_wire.out_slot_schema_json, out_slot_spec_, out_fz_local);
+        const auto out_wire = hub::make_wire_schema_fields(pf_for_wire.out_slot_schema_json,
+                                                           out_slot_spec_, out_fz_local);
         hub::apply_producer_schema_fields(prod_reg, out_wire);
         api_ref.append_inbox_to_reg(prod_reg, inbox_cfg_);
 
@@ -411,26 +409,25 @@ void ProcessorRoleHost::worker_main_()
         // (HEP-CORE-0036 §6.5) so the broker can populate the
         // channel-scope auth allowlist.
         hub::ConsumerRegInputs cons_reg_in;
-        cons_reg_in.channel   = config_.in_channel();
-        cons_reg_in.role_uid  = id.uid;
+        cons_reg_in.channel = config_.in_channel();
+        cons_reg_in.role_uid = id.uid;
         cons_reg_in.role_name = id.name;
         cons_reg_in.role_type = "processor";
         // Processor's consuming side transport → wire `data_transport`
         // per HEP-CORE-0036 §5b.4.
         cons_reg_in.data_transport =
-            (config_.in_transport().transport ==
-                 pylabhub::config::Transport::Zmq)
+            (config_.in_transport().transport == pylabhub::config::Transport::Zmq)
                 ? std::string{"zmq"}
                 : std::string{"shm"};
-        cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::
-                                              secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
+        cons_reg_in.zmq_pubkey = std::string(pylabhub::utils::security::secure().keys().pubkey(
+            pylabhub::utils::security::kRoleIdentityName));
         // 2026-07-08 topology migration — processor's consumer side
         // declares its input-channel topology.  Config authority:
         // HEP-CORE-0018 §5.4.
         cons_reg_in.channel_topology = config_.in_channel_topology();
         auto cons_reg = hub::build_consumer_reg_payload(cons_reg_in);
-        const auto in_wire = hub::make_wire_schema_fields(
-            pf_for_wire.in_slot_schema_json, in_slot_spec_, in_fz_local);
+        const auto in_wire = hub::make_wire_schema_fields(pf_for_wire.in_slot_schema_json,
+                                                          in_slot_spec_, in_fz_local);
         hub::apply_consumer_schema_fields(cons_reg, in_wire);
         api_ref.append_inbox_to_reg(cons_reg, inbox_cfg_);
 
@@ -446,12 +443,11 @@ void ProcessorRoleHost::worker_main_()
         // registration).  Either DEREG side cleans up via
         // do_role_teardown presence-walk.
         auto prod_result = api_ref.register_producer_channel(prod_reg);
-        if (!prod_result.has_value() ||
-            prod_result->value("status", std::string{}) != "success")
+        if (!prod_result.has_value() || prod_result->value("status", std::string{}) != "success")
         {
             LOGGER_ERROR("[proc] Output producer registration failed — "
                          "aborting role startup");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -463,22 +459,22 @@ void ProcessorRoleHost::worker_main_()
         {
             LOGGER_ERROR("[proc] apply_producer_reg_ack failed — "
                          "Tx queue did not reach Active state");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
         {
             auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*prod_result);
-            if (m.has_value()) hub_max = m;
+            if (m.has_value())
+                hub_max = m;
         }
 
         auto cons_result = api_ref.register_consumer(cons_reg);
-        if (!cons_result.has_value() ||
-            cons_result->value("status", std::string{}) != "success")
+        if (!cons_result.has_value() || cons_result->value("status", std::string{}) != "success")
         {
             LOGGER_ERROR("[proc] Input consumer registration failed — "
                          "aborting role startup");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -490,17 +486,17 @@ void ProcessorRoleHost::worker_main_()
         {
             LOGGER_ERROR("[proc] apply_consumer_reg_ack failed — "
                          "Rx queue did not reach Active state");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
         {
             auto m = scripting::RoleAPIBase::extract_hub_heartbeat_max(*cons_result);
-            if (m.has_value()) hub_max = m;  // consumer's wins (legacy parity)
+            if (m.has_value())
+                hub_max = m; // consumer's wins (legacy parity)
         }
 
-        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
-                                   hub_max);
+        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms, hub_max);
 
         // Step 6d.1 — HEP-CORE-0036 §I9.1 topology-agnostic finalize.
         // Processor has two channels (in + out); call for each so the
@@ -510,33 +506,27 @@ void ProcessorRoleHost::worker_main_()
         // which surfaces on the processor's OUT side when the
         // processor's output channel is fan-in.  Uniform call per
         // channel; the queue decides no-op vs poll.
-        auto is_cancelled = [&core_]() -> bool {
-            return core_.is_shutdown_requested() ||
-                   core_.is_critical_error() ||
+        auto is_cancelled = [&core_]() -> bool
+        {
+            return core_.is_shutdown_requested() || core_.is_critical_error() ||
                    core_.is_process_exit_requested();
         };
-        if (!api_ref.finalize_channel_connect(
-                config_.in_channel(),
-                config_.timing().init_timeout_ms,
-                is_cancelled))
+        if (!api_ref.finalize_channel_connect(config_.in_channel(),
+                                              config_.timing().init_timeout_ms, is_cancelled))
         {
-            LOGGER_ERROR(
-                "[proc] Startup: finalize_channel_connect('{}') on IN "
-                "side failed — aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
-                config_.in_channel());
+            LOGGER_ERROR("[proc] Startup: finalize_channel_connect('{}') on IN "
+                         "side failed — aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                         config_.in_channel());
             teardown_infrastructure_();
             promise_ref.set_value(false);
             return;
         }
-        if (!api_ref.finalize_channel_connect(
-                config_.out_channel(),
-                config_.timing().init_timeout_ms,
-                is_cancelled))
+        if (!api_ref.finalize_channel_connect(config_.out_channel(),
+                                              config_.timing().init_timeout_ms, is_cancelled))
         {
-            LOGGER_ERROR(
-                "[proc] Startup: finalize_channel_connect('{}') on OUT "
-                "side failed — aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
-                config_.out_channel());
+            LOGGER_ERROR("[proc] Startup: finalize_channel_connect('{}') on OUT "
+                         "side failed — aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                         config_.out_channel());
             teardown_infrastructure_();
             promise_ref.set_value(false);
             return;
@@ -551,7 +541,7 @@ void ProcessorRoleHost::worker_main_()
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[proc]"))
         {
             LOGGER_ERROR("[proc] Startup coordination failed — required roles not available");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -568,7 +558,7 @@ void ProcessorRoleHost::worker_main_()
     // shm_transport_ is null (ZMQ OUT channels).
     if (shm_transport_ && !spawn_shm_auth_listener_())
     {
-        teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+        teardown_infrastructure_(); // H3b — unwind L1 socket + queues
         promise_ref.set_value(false);
         return;
     }
@@ -585,25 +575,20 @@ void ProcessorRoleHost::worker_main_()
     else
     {
         const auto &tc_loop = config_.timing();
-        const bool drop_mode =
-            (config_.out_transport().zmq_overflow_policy == "drop");
-        ProcessorCycleOps ops(api_ref, engine_ref, core_,
-                              sc.stop_on_script_error,
-                              drop_mode);
+        const bool drop_mode = (config_.out_transport().zmq_overflow_policy == "drop");
+        ProcessorCycleOps ops(api_ref, engine_ref, core_, sc.stop_on_script_error, drop_mode);
         scripting::LoopConfig lcfg;
-        lcfg.period_us                   = tc_loop.period_us;
-        lcfg.loop_timing                 = tc_loop.loop_timing;
+        lcfg.period_us = tc_loop.period_us;
+        lcfg.loop_timing = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
-        lcfg.release_global_lock_during_wait =
-            engine_ref.release_global_lock_during_wait();
-        lcfg.init_timeout_ms             = tc_loop.init_timeout_ms;
+        lcfg.release_global_lock_during_wait = engine_ref.release_global_lock_during_wait();
+        lcfg.init_timeout_ms = tc_loop.init_timeout_ms;
         scripting::run_data_loop(api_ref, core_, lcfg, ops, engine_ref);
     }
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).
-    scripting::do_role_teardown(
-        engine_ref, api_ref, core_, has_api(),
-        [this] { teardown_infrastructure_(); });
+    scripting::do_role_teardown(engine_ref, api_ref, core_, has_api(),
+                                [this] { teardown_infrastructure_(); });
 }
 
 // ============================================================================
@@ -619,24 +604,20 @@ void ProcessorRoleHost::worker_main_()
 // because `zmq_buffer_depth` is ignored on the SHM path; the change
 // eliminates a pre-existing inconsistency.
 
-hub::RxQueueOptions
-ProcessorRoleHost::make_rx_opts(const config::RoleConfig &config,
-                                 const hub::SchemaSpec    &in_slot_spec,
-                                 const hub::SchemaSpec    &in_fz_spec,
-                                 bool                      has_rx_fz)
+hub::RxQueueOptions ProcessorRoleHost::make_rx_opts(const config::RoleConfig &config,
+                                                    const hub::SchemaSpec &in_slot_spec,
+                                                    const hub::SchemaSpec &in_fz_spec,
+                                                    bool has_rx_fz)
 {
-    return scripting::make_rx_opts(config, in_slot_spec, in_fz_spec,
-                                    has_rx_fz);
+    return scripting::make_rx_opts(config, in_slot_spec, in_fz_spec, has_rx_fz);
 }
 
-hub::TxQueueOptions
-ProcessorRoleHost::make_tx_opts(const config::RoleConfig &config,
-                                 const hub::SchemaSpec    &out_slot_spec,
-                                 const hub::SchemaSpec    &out_fz_spec,
-                                 bool                      has_tx_fz)
+hub::TxQueueOptions ProcessorRoleHost::make_tx_opts(const config::RoleConfig &config,
+                                                    const hub::SchemaSpec &out_slot_spec,
+                                                    const hub::SchemaSpec &out_fz_spec,
+                                                    bool has_tx_fz)
 {
-    return scripting::make_tx_opts(config, out_slot_spec, out_fz_spec,
-                                    has_tx_fz);
+    return scripting::make_tx_opts(config, out_slot_spec, out_fz_spec, has_tx_fz);
 }
 
 // ============================================================================
@@ -677,33 +658,27 @@ ProcessorRoleHost::build_presences_(const config::RoleConfig &c) const
 {
     const auto &fields = c.role_data<ProcessorFields>();
 
-    auto build_one = [](const config::HubRefConfig &hub_cfg,
-                        const std::string &channel,
-                        scripting::RoleKind kind,
-                        const nlohmann::json &slot_json,
-                        const nlohmann::json &fz_json) {
+    auto build_one = [](const config::HubRefConfig &hub_cfg, const std::string &channel,
+                        scripting::RoleKind kind, const nlohmann::json &slot_json,
+                        const nlohmann::json &fz_json)
+    {
         scripting::Presence p;
-        p.hub       = hub_cfg;
-        p.channel   = channel;
+        p.hub = hub_cfg;
+        p.channel = channel;
         p.role_kind = kind;
         std::vector<std::string> schema_dirs;
         if (!p.hub.hub_dir.empty())
-            schema_dirs.push_back(
-                (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
+            schema_dirs.push_back((std::filesystem::path(p.hub.hub_dir) / "schemas").string());
         p.slot_spec = hub::resolve_schema(slot_json, false, "proc", schema_dirs);
-        p.fz_spec   = hub::resolve_schema(fz_json,   true,  "proc", schema_dirs);
+        p.fz_spec = hub::resolve_schema(fz_json, true, "proc", schema_dirs);
         return p;
     };
 
     std::vector<scripting::Presence> v;
-    v.push_back(build_one(c.in_hub(), c.in_channel(),
-                          scripting::RoleKind::Consumer,
-                          fields.in_slot_schema_json,
-                          fields.in_flexzone_schema_json));
-    v.push_back(build_one(c.out_hub(), c.out_channel(),
-                          scripting::RoleKind::Producer,
-                          fields.out_slot_schema_json,
-                          fields.out_flexzone_schema_json));
+    v.push_back(build_one(c.in_hub(), c.in_channel(), scripting::RoleKind::Consumer,
+                          fields.in_slot_schema_json, fields.in_flexzone_schema_json));
+    v.push_back(build_one(c.out_hub(), c.out_channel(), scripting::RoleKind::Producer,
+                          fields.out_slot_schema_json, fields.out_flexzone_schema_json));
     return v;
 }
 
@@ -711,6 +686,5 @@ ProcessorRoleHost::build_presences_(const config::RoleConfig &c) const
 // RoleHostFrame default impls.  prepare_ was identical to the producer's;
 // promoted to the frame in 1i-mig-M3.5 (#266) so both subclasses share
 // the canonical body.  Log prefix derives from frame_cfg_.short_tag.
-
 
 } // namespace pylabhub::processor

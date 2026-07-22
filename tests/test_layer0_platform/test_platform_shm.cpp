@@ -1,6 +1,7 @@
 /**
  * @file test_platform_shm.cpp
- * @brief Layer 0 tests for platform shared memory API (shm_create, shm_attach, shm_close, shm_unlink).
+ * @brief Layer 0 tests for platform shared memory API (shm_create, shm_attach, shm_close,
+ * shm_unlink).
  *
  * Part 0 of DATAHUB_AND_MESSAGEHUB_TEST_PLAN_AND_REVIEW.md: foundational APIs used by DataBlock.
  * These tests must run on all supported platforms (Windows, Linux, macOS, FreeBSD).
@@ -127,7 +128,8 @@ TEST(PlatformShmTest, ShmUnlink_AfterClose_AttachFails)
     shm_unlink(name.c_str());
 
     ShmHandle h2 = shm_attach(name.c_str());
-    EXPECT_EQ(h2.base, nullptr) << "After unlink, attach should fail (POSIX); on Windows name may still be valid until refcount drops.";
+    EXPECT_EQ(h2.base, nullptr) << "After unlink, attach should fail (POSIX); on Windows name may "
+                                   "still be valid until refcount drops.";
 }
 
 // ============================================================================

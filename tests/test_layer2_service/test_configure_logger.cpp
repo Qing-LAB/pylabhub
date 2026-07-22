@@ -45,8 +45,7 @@ class ConfigureLoggerTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_cfl_" + std::string(label) + "_" +
-                      std::to_string(::getpid()) + "_" +
+                     ("plh_l2_cfl_" + std::string(label) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)));
         paths_to_clean_.push_back(p);
         return p.string();
@@ -62,7 +61,7 @@ class ConfigureLoggerTest : public IsolatedProcessTest
 TEST_F(ConfigureLoggerTest, AutoComposedPath_FileAppearsUnderLogsDir)
 {
     auto dir = make_role_dir("autopath");
-    auto w   = SpawnWorker("role_logging.configure_auto_composed_path", {dir});
+    auto w = SpawnWorker("role_logging.configure_auto_composed_path", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -71,14 +70,14 @@ TEST_F(ConfigureLoggerTest, AutoComposedPath_FileAppearsUnderLogsDir)
 TEST_F(ConfigureLoggerTest, RotationParams_FlowFromConfig)
 {
     auto dir = make_role_dir("rotparams");
-    auto w   = SpawnWorker("role_logging.configure_rotation_params", {dir});
+    auto w = SpawnWorker("role_logging.configure_rotation_params", {dir});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ConfigureLoggerTest, RotationParams_KeepAllSentinel)
 {
     auto dir = make_role_dir("keepall");
-    auto w   = SpawnWorker("role_logging.configure_keep_all_sentinel", {dir});
+    auto w = SpawnWorker("role_logging.configure_keep_all_sentinel", {dir});
     ExpectWorkerOk(w);
 }
 
@@ -87,7 +86,7 @@ TEST_F(ConfigureLoggerTest, RotationParams_KeepAllSentinel)
 TEST_F(ConfigureLoggerTest, Error_UnwritableDir_ErrorCodeSet)
 {
     auto dir = make_role_dir("unwritable");
-    auto w   = SpawnWorker("role_logging.configure_unwritable_dir", {dir});
+    auto w = SpawnWorker("role_logging.configure_unwritable_dir", {dir});
     // Logger emits ONE expected [ERROR ] line when the rotating sink cannot
     // be attached — it's the behaviour under test. Declare it so the harness
     // does not fail the worker on "stderr contains ERROR".
@@ -101,6 +100,6 @@ TEST_F(ConfigureLoggerTest, Error_UnwritableDir_ErrorCodeSet)
 TEST_F(ConfigureLoggerTest, ExplicitFilePath_UsedInsteadOfAutoCompose)
 {
     auto dir = make_role_dir("explicit_path");
-    auto w   = SpawnWorker("role_logging.configure_explicit_file_path", {dir});
+    auto w = SpawnWorker("role_logging.configure_explicit_file_path", {dir});
     ExpectWorkerOk(w);
 }

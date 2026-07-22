@@ -54,7 +54,7 @@ namespace
 
 class Pattern4SmokeTest : public IsolatedProcessTest
 {
-protected:
+  protected:
     void TearDown() override
     {
         for (const auto &p : paths_to_clean_)
@@ -85,7 +85,7 @@ TEST_F(Pattern4SmokeTest, BrokerBindsAndRoleConnects)
 
     // ── 1. Parent: per-test temp dir + setup bundle on disk ──
     const fs::path temp_dir = make_test_temp_dir("broker_binds_and_role_connects");
-    const auto setup        = make_pattern4_setup({"role.x"});
+    const auto setup = make_pattern4_setup({"role.x"});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     // ── 2. Spawn subprocesses with quit-signal pipes ──
@@ -94,10 +94,8 @@ TEST_F(Pattern4SmokeTest, BrokerBindsAndRoleConnects)
     // fixed self-timeout, so the test exits as soon as the parent has
     // observed everything it needs.  See README_testing.md § "Pattern 4
     // — Termination via quit-signal pipe" for the canonical pattern.
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                            {temp_dir.string()});
-    auto role   = SpawnWorkerWithQuitSignal("pattern4_smoke.role_x",
-                                            {temp_dir.string()});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    auto role = SpawnWorkerWithQuitSignal("pattern4_smoke.role_x", {temp_dir.string()});
 
     // ── 3. Expected sequence — broker binds, role connects ──
     //
@@ -105,9 +103,8 @@ TEST_F(Pattern4SmokeTest, BrokerBindsAndRoleConnects)
     // The smoke test path is fast (no REG_REQ); kMidTimeoutMs covers
     // subprocess startup + LifecycleGuard init + CURVE handshake on
     // a busy CI worker.
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-               std::chrono::milliseconds{kMidTimeoutMs});
-    expect_log(role,   "Pattern4Role[role.x]: BRC connected",
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
+    expect_log(role, "Pattern4Role[role.x]: BRC connected",
                std::chrono::milliseconds{kLongTimeoutMs});
 
     // ── 4. Parent-driven termination via quit-signal pipes ──

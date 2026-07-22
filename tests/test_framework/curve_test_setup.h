@@ -46,7 +46,7 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/security/key_store.hpp"
-#include "utils/security/known_roles.hpp"   // pylabhub::broker::KnownRole
+#include "utils/security/known_roles.hpp" // pylabhub::broker::KnownRole
 #include "utils/security/secure_subsystem.hpp"
 
 #include <zmq.h>
@@ -93,16 +93,15 @@ inline CurveKeypair gen_curve_keypair()
 /// a CURVE pubkey.  Default role-name / role-side are reasonable
 /// for the common producer-side fixture; override at the call site
 /// when the test exercises a consumer-only or "any"-side scenario.
-inline pylabhub::broker::KnownRole
-make_known_role(const std::string &role_uid,
-                const std::string &pubkey_z85,
-                const std::string &role_name = "test.role",
-                const std::string &role      = "producer")
+inline pylabhub::broker::KnownRole make_known_role(const std::string &role_uid,
+                                                   const std::string &pubkey_z85,
+                                                   const std::string &role_name = "test.role",
+                                                   const std::string &role = "producer")
 {
     pylabhub::broker::KnownRole kr;
-    kr.name       = role_name;
-    kr.uid        = role_uid;
-    kr.role       = role;
+    kr.name = role_name;
+    kr.uid = role_uid;
+    kr.role = role;
     kr.pubkey_z85 = pubkey_z85;
     return kr;
 }
@@ -116,7 +115,7 @@ make_known_role(const std::string &role_uid,
 /// for the BRC client construction.
 struct CurveSetup
 {
-    CurveKeypair                       hub;
+    CurveKeypair hub;
     std::map<std::string, CurveKeypair> role_keys;
 
     /// Lookup helper with an explicit assertion so a test that
@@ -161,8 +160,7 @@ inline CurveSetup make_curve_setup(const std::vector<std::string> &role_uids)
 /// `secure().keys()` under `"hub_identity"`.  Callers MUST call
 /// `seed_curve_identities(setup)` (which seeds `"hub_identity"` from
 /// `setup.hub`) BEFORE building the `BrokerService` instance.
-inline void apply_curve_to(pylabhub::broker::BrokerService::Config &cfg,
-                           const CurveSetup &setup)
+inline void apply_curve_to(pylabhub::broker::BrokerService::Config &cfg, const CurveSetup &setup)
 {
     for (const auto &[uid, kp] : setup.role_keys)
     {
@@ -176,8 +174,7 @@ inline void apply_curve_to(pylabhub::broker::BrokerService::Config &cfg,
 /// per-uid names under this `"role." + uid` convention.  Use it
 /// for `BRC::Config::keystore_name` and (post-#158) the
 /// `identity_key_name` parameter on the ZmqQueue `*_curve` factories.
-[[nodiscard]] inline std::string
-role_keystore_name(const std::string &uid)
+[[nodiscard]] inline std::string role_keystore_name(const std::string &uid)
 {
     return "role." + uid;
 }
@@ -190,11 +187,10 @@ role_keystore_name(const std::string &uid)
 ///
 /// Used by tests that need an ad-hoc identity in addition to the
 /// setup-driven ones from `seed_curve_identities`.
-inline void
-add_curve_identity(std::string_view name, const CurveKeypair &kp)
+inline void add_curve_identity(std::string_view name, const CurveKeypair &kp)
 {
-    pylabhub::utils::security::secure().keys().add_identity_from_z85(
-        name, kp.public_z85, kp.secret_z85);
+    pylabhub::utils::security::secure().keys().add_identity_from_z85(name, kp.public_z85,
+                                                                     kp.secret_z85);
 }
 
 /// Seed the canonical CURVE identities from a `CurveSetup` into the
@@ -210,8 +206,7 @@ add_curve_identity(std::string_view name, const CurveKeypair &kp)
 /// the LifecycleGuard is up and before constructing any code that
 /// reads identity entries by name (`BrokerService`, `BrokerRequestComm`,
 /// CURVE-wired `ZmqQueue`).
-inline void
-seed_curve_identities(const CurveSetup &setup)
+inline void seed_curve_identities(const CurveSetup &setup)
 {
     add_curve_identity(pylabhub::utils::security::kHubIdentityName, setup.hub);
     for (const auto &[uid, kp] : setup.role_keys)
@@ -230,8 +225,7 @@ seed_curve_identities(const CurveSetup &setup)
 /// on the duplicate.  `setup.hub` is unused in that flow — the vault
 /// mints its own keypair and `broker_pubkey()` surfaces it.  Role
 /// clients still need their keystore entries, which this seeds.
-inline void
-seed_role_identities(const CurveSetup &setup)
+inline void seed_role_identities(const CurveSetup &setup)
 {
     for (const auto &[uid, kp] : setup.role_keys)
     {

@@ -19,7 +19,7 @@ std::string mkerr(const char *field, const char *want)
     s += want;
     return s;
 }
-}  // namespace
+} // namespace
 
 std::string read_string(const nlohmann::json &body, const char *field)
 {
@@ -34,7 +34,8 @@ std::string read_string(const nlohmann::json &body, const char *field)
 std::string read_string_or_empty(const nlohmann::json &body, const char *field)
 {
     auto it = body.find(field);
-    if (it == body.end()) return {};
+    if (it == body.end())
+        return {};
     if (!it->is_string())
     {
         throw WireBodyError(mkerr(field, "present but not string"));
@@ -65,7 +66,8 @@ std::uint64_t read_u64(const nlohmann::json &body, const char *field)
 std::uint64_t read_u64_or_zero(const nlohmann::json &body, const char *field)
 {
     auto it = body.find(field);
-    if (it == body.end()) return 0;
+    if (it == body.end())
+        return 0;
     if (!it->is_number_unsigned())
     {
         throw WireBodyError(mkerr(field, "present but not unsigned number"));
@@ -93,11 +95,21 @@ void require(const nlohmann::json &body, const char *field, JsonKind kind)
     bool ok = false;
     switch (kind)
     {
-        case JsonKind::String: ok = it->is_string(); break;
-        case JsonKind::U32:    ok = it->is_number_unsigned(); break;
-        case JsonKind::U64:    ok = it->is_number_unsigned(); break;
-        case JsonKind::Object: ok = it->is_object(); break;
-        case JsonKind::Array:  ok = it->is_array(); break;
+    case JsonKind::String:
+        ok = it->is_string();
+        break;
+    case JsonKind::U32:
+        ok = it->is_number_unsigned();
+        break;
+    case JsonKind::U64:
+        ok = it->is_number_unsigned();
+        break;
+    case JsonKind::Object:
+        ok = it->is_object();
+        break;
+    case JsonKind::Array:
+        ok = it->is_array();
+        break;
     }
     if (!ok)
     {
@@ -109,19 +121,29 @@ void require(const nlohmann::json &body, const char *field, JsonKind kind)
 // includes it the type MUST match.  Missing is allowed; wrong-typed
 // is rejected — the "when non-empty" pattern from HEP-CORE-0023
 // §2.5.4 (role_name grammar validation) generalized.
-void validate_if_present(const nlohmann::json &body, const char *field,
-                          JsonKind kind)
+void validate_if_present(const nlohmann::json &body, const char *field, JsonKind kind)
 {
     auto it = body.find(field);
-    if (it == body.end()) return;  // absent → OK per contract
+    if (it == body.end())
+        return; // absent → OK per contract
     bool ok = false;
     switch (kind)
     {
-        case JsonKind::String: ok = it->is_string(); break;
-        case JsonKind::U32:    ok = it->is_number_unsigned(); break;
-        case JsonKind::U64:    ok = it->is_number_unsigned(); break;
-        case JsonKind::Object: ok = it->is_object(); break;
-        case JsonKind::Array:  ok = it->is_array(); break;
+    case JsonKind::String:
+        ok = it->is_string();
+        break;
+    case JsonKind::U32:
+        ok = it->is_number_unsigned();
+        break;
+    case JsonKind::U64:
+        ok = it->is_number_unsigned();
+        break;
+    case JsonKind::Object:
+        ok = it->is_object();
+        break;
+    case JsonKind::Array:
+        ok = it->is_array();
+        break;
     }
     if (!ok)
     {
@@ -144,7 +166,7 @@ void require_security_triple(const nlohmann::json &body)
     require(body, "client_wall_ts", JsonKind::U64);
 }
 
-}  // namespace pylabhub::wire::detail
+} // namespace pylabhub::wire::detail
 
 namespace pylabhub::wire
 {
@@ -176,12 +198,12 @@ ProducerRegReqBody::ProducerRegReqBody(nlohmann::json body)
     // pattern) — role_uid already embeds a name component via
     // HEP-CORE-0033 §G2.2.0b grammar, so role_name is a redundant
     // display-only label.  Accessor returns empty string when absent.
-    d::require(body_, "channel_name",     d::JsonKind::String);
-    d::require(body_, "role_uid",         d::JsonKind::String);
-    d::require(body_, "role_type",        d::JsonKind::String);
-    d::require(body_, "data_transport",   d::JsonKind::String);
-    d::require(body_, "zmq_pubkey",       d::JsonKind::String);
-    d::require(body_, "abi_fingerprint",  d::JsonKind::Object);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "role_type", d::JsonKind::String);
+    d::require(body_, "data_transport", d::JsonKind::String);
+    d::require(body_, "zmq_pubkey", d::JsonKind::String);
+    d::require(body_, "abi_fingerprint", d::JsonKind::Object);
     // Validate-if-present: role_name is OPTIONAL per HEP-CORE-0046
     // §7.1 required-field table; when present it MUST be a string
     // per HEP-CORE-0023 §2.5.4 grammar (further identifier-grammar
@@ -203,12 +225,12 @@ ConsumerRegReqBody::ConsumerRegReqBody(nlohmann::json body)
     body_ = std::move(body);
     // role_name OPTIONAL — see ProducerRegReqBody ctor for rationale
     // (HEP-CORE-0046 §7.1 + HEP-CORE-0023 §2.5.4).
-    d::require(body_, "channel_name",     d::JsonKind::String);
-    d::require(body_, "role_uid",         d::JsonKind::String);
-    d::require(body_, "role_type",        d::JsonKind::String);
-    d::require(body_, "data_transport",   d::JsonKind::String);
-    d::require(body_, "zmq_pubkey",       d::JsonKind::String);
-    d::require(body_, "abi_fingerprint",  d::JsonKind::Object);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "role_type", d::JsonKind::String);
+    d::require(body_, "data_transport", d::JsonKind::String);
+    d::require(body_, "zmq_pubkey", d::JsonKind::String);
+    d::require(body_, "abi_fingerprint", d::JsonKind::Object);
     // Validate-if-present: role_name is OPTIONAL per HEP-CORE-0046
     // §7.1 required-field table; parallel to ProducerRegReqBody.
     d::validate_if_present(body_, "role_name", d::JsonKind::String);
@@ -218,19 +240,19 @@ ConsumerRegReqBody::ConsumerRegReqBody(nlohmann::json body)
 EndpointUpdateReqBody::EndpointUpdateReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "channel_name",  d::JsonKind::String);
+    d::require(body_, "channel_name", d::JsonKind::String);
     d::require(body_, "endpoint_type", d::JsonKind::String);
-    d::require(body_, "endpoint",      d::JsonKind::String);
+    d::require(body_, "endpoint", d::JsonKind::String);
     d::require_security_triple(body_);
 }
 
 ChannelAuthAppliedReqBody::ChannelAuthAppliedReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "channel_name",     d::JsonKind::String);
-    d::require(body_, "role_uid",         d::JsonKind::String);
-    d::require(body_, "applied_version",  d::JsonKind::U64);
-    d::require(body_, "instance_id",      d::JsonKind::U64);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "applied_version", d::JsonKind::U64);
+    d::require(body_, "instance_id", d::JsonKind::U64);
     d::require_security_triple(body_);
 }
 
@@ -238,18 +260,18 @@ DeregReqBody::DeregReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
-    d::require(body_, "role_uid",     d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
     d::require_security_triple(body_);
 }
 
 RegAckBody::RegAckBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "status",                d::JsonKind::String);
-    d::require(body_, "channel_name",          d::JsonKind::String);
-    d::require(body_, "heartbeat",             d::JsonKind::Object);
-    d::require(body_, "initial_allowlist",     d::JsonKind::Array);
-    d::require(body_, "broker_abi_fingerprint",d::JsonKind::Object);
+    d::require(body_, "status", d::JsonKind::String);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::require(body_, "heartbeat", d::JsonKind::Object);
+    d::require(body_, "initial_allowlist", d::JsonKind::Array);
+    d::require(body_, "broker_abi_fingerprint", d::JsonKind::Object);
     d::require_envelope_hash(body_);
 }
 
@@ -262,12 +284,12 @@ RegAckBody::RegAckBody(nlohmann::json body)
 ConsumerRegAckBody::ConsumerRegAckBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "status",                d::JsonKind::String);
-    d::require(body_, "channel_name",          d::JsonKind::String);
-    d::require(body_, "data_transport",        d::JsonKind::String);
-    d::require(body_, "heartbeat",             d::JsonKind::Object);
-    d::require(body_, "producers",             d::JsonKind::Array);
-    d::require(body_, "broker_abi_fingerprint",d::JsonKind::Object);
+    d::require(body_, "status", d::JsonKind::String);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::require(body_, "data_transport", d::JsonKind::String);
+    d::require(body_, "heartbeat", d::JsonKind::Object);
+    d::require(body_, "producers", d::JsonKind::Array);
+    d::require(body_, "broker_abi_fingerprint", d::JsonKind::Object);
     d::require_envelope_hash(body_);
 }
 
@@ -282,14 +304,14 @@ GetChannelAuthReqBody::GetChannelAuthReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
-    d::require(body_, "role_uid",     d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
 GetChannelAuthAckBody::GetChannelAuthAckBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "status",    d::JsonKind::String);
+    d::require(body_, "status", d::JsonKind::String);
     d::require(body_, "allowlist", d::JsonKind::Array);
     d::require_envelope_hash(body_);
 }
@@ -316,8 +338,8 @@ HeartbeatNotifyBody::HeartbeatNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
-    d::require(body_, "role_uid",     d::JsonKind::String);
-    d::require(body_, "role_type",    d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "role_type", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
@@ -339,9 +361,9 @@ ChannelAuthChangedNotifyBody::ChannelAuthChangedNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
-    d::require(body_, "role_uid",     d::JsonKind::String);
-    d::require(body_, "role_type",    d::JsonKind::String);
-    d::require(body_, "phase",        d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "role_type", d::JsonKind::String);
+    d::require(body_, "phase", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
@@ -356,15 +378,15 @@ ConsumerDiedNotifyBody::ConsumerDiedNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
-    d::require(body_, "role_uid",     d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
 BandJoinNotifyBody::BandJoinNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "band",      d::JsonKind::String);
-    d::require(body_, "role_uid",  d::JsonKind::String);
+    d::require(body_, "band", d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
     d::require(body_, "role_name", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
@@ -372,8 +394,8 @@ BandJoinNotifyBody::BandJoinNotifyBody(nlohmann::json body)
 BandLeaveNotifyBody::BandLeaveNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "band",      d::JsonKind::String);
-    d::require(body_, "role_uid",  d::JsonKind::String);
+    d::require(body_, "band", d::JsonKind::String);
+    d::require(body_, "role_uid", d::JsonKind::String);
     d::require(body_, "role_name", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
@@ -413,7 +435,7 @@ AdminCloseChannelReqBody::AdminCloseChannelReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
-    d::require(body_, "channel",    d::JsonKind::String);
+    d::require(body_, "channel", d::JsonKind::String);
     d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
@@ -435,7 +457,7 @@ AdminNamedReqBody::AdminNamedReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
-    d::require(body_, "name",       d::JsonKind::String);
+    d::require(body_, "name", d::JsonKind::String);
     d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
@@ -443,8 +465,8 @@ AdminBroadcastChannelReqBody::AdminBroadcastChannelReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
-    d::require(body_, "channel",    d::JsonKind::String);
-    d::require(body_, "message",    d::JsonKind::String);
+    d::require(body_, "channel", d::JsonKind::String);
+    d::require(body_, "message", d::JsonKind::String);
     d::validate_if_present(body_, "data", d::JsonKind::String);
     d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
@@ -453,7 +475,7 @@ AdminQueryMetricsReqBody::AdminQueryMetricsReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "session_id", d::JsonKind::String);
-    d::require(body_, "filter",     d::JsonKind::Object); // {} = all categories
+    d::require(body_, "filter", d::JsonKind::Object); // {} = all categories
     d::require_security_triple(body_); // + client_nonce/client_wall_ts (in-session replay)
 }
 
@@ -474,9 +496,9 @@ AdminStatusAckBody::AdminStatusAckBody(nlohmann::json body)
 AdminErrorBody::AdminErrorBody(nlohmann::json body)
 {
     body_ = std::move(body);
-    d::require(body_, "code",    d::JsonKind::String);
+    d::require(body_, "code", d::JsonKind::String);
     d::require(body_, "message", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
-}  // namespace pylabhub::wire
+} // namespace pylabhub::wire

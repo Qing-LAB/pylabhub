@@ -37,7 +37,7 @@ int lifecycle_module_uninstalls_on_finalize()
     return pylabhub::tests::helper::run_worker_bare(
         [&]()
         {
-            std::atomic<bool>   shutdown{false};
+            std::atomic<bool> shutdown{false};
             SignalHandlerConfig cfg{"test-binary", 5, false, true};
             InteractiveSignalHandler handler(cfg, &shutdown);
             handler.install();
@@ -47,8 +47,7 @@ int lifecycle_module_uninstalls_on_finalize()
                 LifecycleGuard guard(MakeModDefList(Logger::GetLifecycleModule()));
 
                 auto mod = handler.make_lifecycle_module();
-                ASSERT_TRUE(LifecycleManager::instance().register_dynamic_module(
-                    std::move(mod)));
+                ASSERT_TRUE(LifecycleManager::instance().register_dynamic_module(std::move(mod)));
                 ASSERT_TRUE(LifecycleManager::instance().load_module(
                     "SignalHandler", std::source_location::current()));
 
@@ -77,8 +76,7 @@ struct SignalHandlerWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "signal_handler")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "signal_handler")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::signal_handler;
@@ -86,8 +84,7 @@ struct SignalHandlerWorkerRegistrar
                 if (sc == "lifecycle_module_uninstalls_on_finalize")
                     return lifecycle_module_uninstalls_on_finalize();
 
-                fmt::print(stderr,
-                           "[signal_handler] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[signal_handler] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

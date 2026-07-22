@@ -10,7 +10,7 @@
  */
 
 #include "utils/json_fwd.hpp"
-#include "utils/security/secure_subsystem.hpp"  // secure() surface
+#include "utils/security/secure_subsystem.hpp" // secure() surface
 
 #include <stdexcept>
 #include <string>
@@ -65,41 +65,39 @@ inline AuthConfig parse_auth_config(const nlohmann::json &j, std::string_view ro
     AuthConfig ac;
     const auto sect_name = std::string(role_type);
     if (!j.contains(sect_name) || !j[sect_name].is_object())
-        return ac;  // outer-section absence is handled by the section's own parser.
+        return ac; // outer-section absence is handled by the section's own parser.
 
     const auto &sect = j[sect_name];
     if (!sect.contains("auth"))
-        throw std::runtime_error(
-            sect_name + ": missing required '" + sect_name + ".auth' object. "
-            "Add `\"auth\": { \"keyfile\": \"<path-to-vault>\" }` — the vault "
-            "is required (see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
+        throw std::runtime_error(sect_name + ": missing required '" + sect_name +
+                                 ".auth' object. "
+                                 "Add `\"auth\": { \"keyfile\": \"<path-to-vault>\" }` — the vault "
+                                 "is required (see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
     if (!sect["auth"].is_object())
-        throw std::runtime_error(
-            sect_name + ": '" + sect_name + ".auth' must be a JSON object.");
+        throw std::runtime_error(sect_name + ": '" + sect_name + ".auth' must be a JSON object.");
 
     const auto &a = sect["auth"];
     for (auto it = a.begin(); it != a.end(); ++it)
     {
         if (it.key() != "keyfile")
-            throw std::runtime_error(
-                sect_name + ": unknown config key '" + sect_name +
-                ".auth." + it.key() + "'");
+            throw std::runtime_error(sect_name + ": unknown config key '" + sect_name + ".auth." +
+                                     it.key() + "'");
     }
     if (!a.contains("keyfile"))
-        throw std::runtime_error(
-            sect_name + ": missing required '" + sect_name + ".auth.keyfile' "
-            "field. Set it to the path of the on-disk vault file "
-            "(see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
+        throw std::runtime_error(sect_name + ": missing required '" + sect_name +
+                                 ".auth.keyfile' "
+                                 "field. Set it to the path of the on-disk vault file "
+                                 "(see HEP-CORE-0024 §3.4 / HEP-CORE-0033 §7.1).");
     if (!a["keyfile"].is_string())
-        throw std::runtime_error(
-            sect_name + ": '" + sect_name + ".auth.keyfile' must be a string.");
+        throw std::runtime_error(sect_name + ": '" + sect_name +
+                                 ".auth.keyfile' must be a string.");
     ac.keyfile = a["keyfile"].get<std::string>();
     if (ac.keyfile.empty())
-        throw std::runtime_error(
-            sect_name + ": '" + sect_name + ".auth.keyfile' must be a "
-            "non-empty path string. pylabhub does not support a no-vault "
-            "operation mode — secret material is required (see HEP-CORE-0024 "
-            "§3.4 / HEP-CORE-0033 §7.1).");
+        throw std::runtime_error(sect_name + ": '" + sect_name +
+                                 ".auth.keyfile' must be a "
+                                 "non-empty path string. pylabhub does not support a no-vault "
+                                 "operation mode — secret material is required (see HEP-CORE-0024 "
+                                 "§3.4 / HEP-CORE-0033 §7.1).");
     return ac;
 }
 

@@ -59,7 +59,7 @@ TEST(PortableAtomicSharedPtrTest, ConcurrentLoadStoreObservesConsistentPayloads)
     PortableAtomicSharedPtr<Payload> ptr;
 
     constexpr int iterations = 20000;
-    const int     reader_count = std::max(2, pylabhub::tests::helper::get_stress_num_readers());
+    const int reader_count = std::max(2, pylabhub::tests::helper::get_stress_num_readers());
 
     // Synchronization:
     //   1. All readers signal ready, then spin on `go`.
@@ -68,11 +68,11 @@ TEST(PortableAtomicSharedPtrTest, ConcurrentLoadStoreObservesConsistentPayloads)
     //   4. Writer pauses at the midpoint until at least one reader has confirmed
     //      a non-null read. This feedback barrier guarantees non_null_reads > 0
     //      without relying on scheduling timing.
-    std::atomic<int>  readers_ready{0};
+    std::atomic<int> readers_ready{0};
     std::atomic<bool> go{false};
     std::atomic<bool> writer_done{false};
     std::atomic<bool> invariant_ok{true};
-    std::atomic<int>  non_null_reads{0};
+    std::atomic<int> non_null_reads{0};
 
     std::vector<std::thread> readers;
     readers.reserve(static_cast<size_t>(reader_count));
@@ -121,8 +121,7 @@ TEST(PortableAtomicSharedPtrTest, ConcurrentLoadStoreObservesConsistentPayloads)
 
             for (int i = 1; i <= iterations; ++i)
             {
-                ptr.store(std::make_shared<Payload>(Payload{i, i * 2}),
-                          std::memory_order_release);
+                ptr.store(std::make_shared<Payload>(Payload{i, i * 2}), std::memory_order_release);
 
                 // Feedback barrier at midpoint: pause until at least one reader
                 // has observed a non-null value. This guarantees non_null_reads > 0

@@ -48,7 +48,7 @@ namespace pylabhub::utils
  */
 class PYLABHUB_UTILS_EXPORT HubVault
 {
-public:
+  public:
     /**
      * @brief Create a new vault file at the operator-supplied path.
      *
@@ -72,8 +72,7 @@ public:
      * @param password    Master password. Empty string is allowed (dev mode).
      * @throws std::runtime_error on crypto or I/O failure.
      */
-    static HubVault create(const std::filesystem::path &vault_path,
-                           const std::string &hub_uid,
+    static HubVault create(const std::filesystem::path &vault_path, const std::string &hub_uid,
                            const std::string &password);
 
     /**
@@ -87,8 +86,7 @@ public:
      *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
-    static HubVault open(const std::filesystem::path &vault_path,
-                         const std::string &hub_uid,
+    static HubVault open(const std::filesystem::path &vault_path, const std::string &hub_uid,
                          const std::string &password);
 
     /// Broker CurveZMQ secret key (Z85, 40 chars).  View points into
@@ -136,8 +134,8 @@ public:
     /// `known_roles` document reflects any `set_known_roles()` call.
     /// @param password  Master password (same one that `open()` used).
     /// @throws std::runtime_error on crypto or I/O failure.
-    void save(const std::filesystem::path &vault_path,
-              const std::string &hub_uid, const std::string &password) const;
+    void save(const std::filesystem::path &vault_path, const std::string &hub_uid,
+              const std::string &password) const;
 
     /**
      * @brief Write the broker public key to <hub_dir>/hub.pubkey.
@@ -153,7 +151,7 @@ public:
     HubVault(const HubVault &) = delete;
     HubVault &operator=(const HubVault &) = delete;
 
-private:
+  private:
     HubVault();
     struct Impl;
     std::unique_ptr<Impl> pImpl;

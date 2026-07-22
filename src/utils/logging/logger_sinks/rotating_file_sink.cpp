@@ -12,21 +12,22 @@
 namespace pylabhub::utils
 {
 
-RotatingFileSink::RotatingFileSink(const std::filesystem::path &base_filepath,
-                                   size_t max_file_size_bytes, size_t max_backup_files,  // NOLINT(bugprone-easily-swappable-parameters) order: size then count
-                                   bool use_flock)
-    : RotatingFileSink(base_filepath, max_file_size_bytes, max_backup_files,
-                       use_flock, Mode::Numeric)
+RotatingFileSink::RotatingFileSink(
+    const std::filesystem::path &base_filepath, size_t max_file_size_bytes,
+    size_t max_backup_files, // NOLINT(bugprone-easily-swappable-parameters) order: size then count
+    bool use_flock)
+    : RotatingFileSink(base_filepath, max_file_size_bytes, max_backup_files, use_flock,
+                       Mode::Numeric)
 {
 }
 
-RotatingFileSink::RotatingFileSink(const std::filesystem::path &base_filepath,
-                                   size_t max_file_size_bytes, size_t max_backup_files,  // NOLINT(bugprone-easily-swappable-parameters)
-                                   bool use_flock, Mode mode)
+RotatingFileSink::RotatingFileSink(
+    const std::filesystem::path &base_filepath, size_t max_file_size_bytes,
+    size_t max_backup_files, // NOLINT(bugprone-easily-swappable-parameters)
+    bool use_flock, Mode mode)
     : m_base_filepath(base_filepath),
       m_max_file_size_bytes(max_file_size_bytes > 0 ? max_file_size_bytes : 1),
-      m_max_backup_files(max_backup_files), m_current_size_bytes(0),
-      m_mode(mode)
+      m_max_backup_files(max_backup_files), m_current_size_bytes(0), m_mode(mode)
 {
     const std::filesystem::path initial_path =
         (m_mode == Mode::Timestamped) ? compose_timestamped_path_() : base_filepath;
@@ -62,8 +63,8 @@ std::filesystem::path RotatingFileSink::compose_timestamped_path_() const
     // filenames — the ctor's initial open() would fail visibly.
     const std::string stem = m_base_filepath.stem().string();
 
-    const std::string ts = pylabhub::format_tools::formatted_time(
-        std::chrono::system_clock::now(), /*use_dash_spacer=*/true);
+    const std::string ts = pylabhub::format_tools::formatted_time(std::chrono::system_clock::now(),
+                                                                  /*use_dash_spacer=*/true);
     // ts shape: "YYYY-MM-DD-HH-MM-SS.uuuuuu" (26 chars).
 
     return m_base_filepath.parent_path() / (stem + "-" + ts + ".log");
@@ -87,13 +88,13 @@ void RotatingFileSink::prune_timestamped_backups_()
     // unrelated short files with a similar prefix cannot be mistakenly
     // matched and pruned.
     constexpr size_t kTimestampLen = 26;
-    constexpr size_t kExtLen       = 4;      // ".log"
+    constexpr size_t kExtLen = 4; // ".log"
     const size_t expected_suffix_len = kTimestampLen + kExtLen;
 
     std::error_code ec;
     if (!fs::is_directory(dir, ec))
         return;
-    ec.clear();  // Don't carry state from is_directory into the iterator.
+    ec.clear(); // Don't carry state from is_directory into the iterator.
 
     // Collect all <stem>-*.log files in the directory.
     std::vector<fs::path> candidates;
@@ -102,8 +103,7 @@ void RotatingFileSink::prune_timestamped_backups_()
         if (!entry.is_regular_file())
             continue;
         const std::string name = entry.path().filename().string();
-        if (name.rfind(prefix, 0) == 0 &&
-            name.size() == prefix.size() + expected_suffix_len &&
+        if (name.rfind(prefix, 0) == 0 && name.size() == prefix.size() + expected_suffix_len &&
             name.substr(name.size() - kExtLen) == ".log")
         {
             candidates.push_back(entry.path());
@@ -165,8 +165,8 @@ std::string RotatingFileSink::description() const
 {
     const char *mode_str = (m_mode == Mode::Timestamped) ? "timestamped" : "numeric";
     return fmt::format("RotatingFile: base='{}' active='{}' max_size={} max_files={} mode={}",
-                       m_base_filepath.string(), path().string(),
-                       m_max_file_size_bytes, m_max_backup_files, mode_str);
+                       m_base_filepath.string(), path().string(), m_max_file_size_bytes,
+                       m_max_backup_files, mode_str);
 }
 
 void RotatingFileSink::rotate()
@@ -193,12 +193,11 @@ void RotatingFileSink::rotate_timestamped_()
         constexpr int kSystemLevel = 5; // L_SYSTEM
         auto formatted_message = pylabhub::utils::Sink::format_logmsg(
             LogMessage{
-                .timestamp  = std::chrono::system_clock::now(),
+                .timestamp = std::chrono::system_clock::now(),
                 .process_id = pylabhub::platform::get_pid(),
-                .thread_id  = pylabhub::platform::get_native_thread_id(),
-                .level      = kSystemLevel,
-                .body       = pylabhub::format_tools::make_buffer(
-                    "--- Log rotated (timestamped) ---"),
+                .thread_id = pylabhub::platform::get_native_thread_id(),
+                .level = kSystemLevel,
+                .body = pylabhub::format_tools::make_buffer("--- Log rotated (timestamped) ---"),
             },
             /*sync_flag=*/false);
         BaseFileSink::fwrite(formatted_message);
@@ -210,8 +209,8 @@ void RotatingFileSink::rotate_timestamped_()
     }
     catch (const std::system_error &e)
     {
-        PLH_DEBUG("Logger Error: Failed to open new timestamped log '{}': {}",
-                  new_path.string(), e.what());
+        PLH_DEBUG("Logger Error: Failed to open new timestamped log '{}': {}", new_path.string(),
+                  e.what());
         m_current_size_bytes = 0;
     }
 }
@@ -330,7 +329,7 @@ void RotatingFileSink::rotate_numeric_()
     try
     {
         open(base_path, m_use_flock);
-        m_current_size_bytes = 0; // Reset size for the new file.
+        m_current_size_bytes = 0;       // Reset size for the new file.
         constexpr int kSystemLevel = 5; // L_SYSTEM
         auto formatted_message = pylabhub::utils::Sink::format_logmsg(
             LogMessage{

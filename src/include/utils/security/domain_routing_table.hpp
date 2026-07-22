@@ -56,14 +56,14 @@ namespace pylabhub::utils::security
 
 class PYLABHUB_UTILS_EXPORT DomainRoutingTable
 {
-public:
+  public:
     DomainRoutingTable();
     ~DomainRoutingTable();
 
-    DomainRoutingTable(const DomainRoutingTable &)            = delete;
+    DomainRoutingTable(const DomainRoutingTable &) = delete;
     DomainRoutingTable &operator=(const DomainRoutingTable &) = delete;
-    DomainRoutingTable(DomainRoutingTable &&)                 = delete;
-    DomainRoutingTable &operator=(DomainRoutingTable &&)      = delete;
+    DomainRoutingTable(DomainRoutingTable &&) = delete;
+    DomainRoutingTable &operator=(DomainRoutingTable &&) = delete;
 
     /// Register `(domain, &admission)`.  Returns true on insert; false
     /// if `domain` is empty OR is already registered (idempotent — no
@@ -72,8 +72,7 @@ public:
     ///
     /// Non-null contract on `admission` is enforced by the reference
     /// parameter — callers cannot pass a null admission.
-    [[nodiscard]] bool register_domain(std::string    domain,
-                                       PeerAdmission &admission);
+    [[nodiscard]] bool register_domain(std::string domain, PeerAdmission &admission);
 
     /// Remove `domain`.  Idempotent — silent no-op if `domain` is
     /// absent or empty.  Caller MUST run before the admission referent
@@ -127,16 +126,14 @@ public:
     ///         Otherwise `fn`'s `bool` result (or `false` if `fn`
     ///         threw).
     template <class Fn>
-    [[nodiscard]] std::optional<bool>
-    with_admission(const std::string &domain,
-                   const void        *reentrance_key,
-                   Fn                &&fn) const
+    [[nodiscard]] std::optional<bool> with_admission(const std::string &domain,
+                                                     const void *reentrance_key, Fn &&fn) const
     {
         std::optional<bool> decision;
         std::shared_lock<std::shared_mutex> lk(mu_);
         if (auto it = map_.find(domain); it != map_.end())
         {
-            PeerAdmission &admission = it->second;  // ref-wrapper → T&
+            PeerAdmission &admission = it->second; // ref-wrapper → T&
             pylabhub::basics::RecursionGuard guard(reentrance_key);
             try
             {
@@ -159,16 +156,14 @@ public:
     /// For tests + diagnostics: count of currently-registered domains.
     [[nodiscard]] std::size_t size() const noexcept;
 
-private:
+  private:
     // Non-templated logger calls live in the .cpp to keep `<fmt>` /
     // `utils/logger.hpp` out of the public header.  The template
     // `with_admission` only references the function declarations.
-    static void log_admission_threw_(const std::string &domain,
-                                     const char        *what);
+    static void log_admission_threw_(const std::string &domain, const char *what);
     static void log_admission_threw_unknown_(const std::string &domain);
 
-    std::unordered_map<std::string,
-                       std::reference_wrapper<PeerAdmission>> map_;
+    std::unordered_map<std::string, std::reference_wrapper<PeerAdmission>> map_;
     mutable std::shared_mutex mu_;
 };
 

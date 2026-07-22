@@ -27,27 +27,28 @@
 #include <system_error>
 #include <vector>
 
-#if defined(PYLABHUB_PLATFORM_LINUX) || defined(PYLABHUB_PLATFORM_FREEBSD) || defined(PYLABHUB_PLATFORM_APPLE)
-#    include <fcntl.h>
-#    include <poll.h>
-#    include <sys/mman.h>
-#    include <sys/socket.h>
-#    include <time.h>       // clock_gettime — #321 atomic-rename bind (2026-07-03)
-#    include <fcntl.h>      // AT_FDCWD — #321 fix (renameat2 RENAME_NOREPLACE)
-#    include <sys/syscall.h> // SYS_renameat2 — Linux 3.15+ (2014)
-#    include <linux/fs.h>   // RENAME_NOREPLACE flag
-#    include <sys/stat.h>
-#    include <sys/types.h>
-#    include <sys/un.h>
-#    include <unistd.h>
+#if defined(PYLABHUB_PLATFORM_LINUX) || defined(PYLABHUB_PLATFORM_FREEBSD) ||                      \
+    defined(PYLABHUB_PLATFORM_APPLE)
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <time.h>        // clock_gettime — #321 atomic-rename bind (2026-07-03)
+#include <fcntl.h>       // AT_FDCWD — #321 fix (renameat2 RENAME_NOREPLACE)
+#include <sys/syscall.h> // SYS_renameat2 — Linux 3.15+ (2014)
+#include <linux/fs.h>    // RENAME_NOREPLACE flag
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <unistd.h>
 #endif
 
 #if defined(PYLABHUB_PLATFORM_FREEBSD)
-#    include <sys/ucred.h>     // xucred (FreeBSD-specific)
+#include <sys/ucred.h> // xucred (FreeBSD-specific)
 #endif
 
 #if defined(PYLABHUB_PLATFORM_APPLE)
-#    include <sys/random.h>    // getentropy for the anonymous-shm name trick
+#include <sys/random.h> // getentropy for the anonymous-shm name trick
 #endif
 
 // <windows.h> already pulled in by plh_platform.hpp on Windows builds.
@@ -58,12 +59,10 @@ namespace pylabhub::utils::security
 // HEP-CORE-0041 §5.1 — see header docstring.  Cross-platform: every
 // backend that uses an AF_UNIX-style filesystem path needs the bare
 // path, not the canonical URI form.
-std::string
-strip_unix_scheme(std::string_view endpoint)
+std::string strip_unix_scheme(std::string_view endpoint)
 {
     constexpr std::string_view kScheme = "unix://";
-    if (endpoint.size() >= kScheme.size() &&
-        endpoint.substr(0, kScheme.size()) == kScheme)
+    if (endpoint.size() >= kScheme.size() && endpoint.substr(0, kScheme.size()) == kScheme)
     {
         return std::string{endpoint.substr(kScheme.size())};
     }
@@ -79,32 +78,32 @@ namespace
 /// shape so the throw-point and the syscall failure are both surfaced for
 /// debugging.  Keeping `errno` capture immediately at the call site is the
 /// load-bearing discipline — later cleanup paths clobber errno.
-[[nodiscard]] std::runtime_error
-make_errno_error(const char *side, const char *what, int captured_errno)
+[[nodiscard]] std::runtime_error make_errno_error(const char *side, const char *what,
+                                                  int captured_errno)
 {
-    return std::runtime_error(std::string{"ShmCapability"} + side + ": " + what +
-                              ": " + std::strerror(captured_errno));
+    return std::runtime_error(std::string{"ShmCapability"} + side + ": " + what + ": " +
+                              std::strerror(captured_errno));
 }
 
 /// Producer-side anonymous-SHM + Unix-socket listener.
 class MemfdProducer final : public IShmCapabilityProducer
 {
-public:
+  public:
     explicit MemfdProducer(size_t bytes);
     ~MemfdProducer() override;
 
-    bool                        bind_endpoint(const std::string &endpoint) override;
+    bool bind_endpoint(const std::string &endpoint) override;
     std::optional<AcceptedPeer> accept_one(std::chrono::milliseconds timeout) override;
-    bool                        send_capability(int peer_socket_fd) override;
-    std::span<std::byte>        data() override;
-    [[nodiscard]] size_t        size() const noexcept override;
-    [[nodiscard]] int           borrow_fd() const noexcept override { return anon_fd_; }
+    bool send_capability(int peer_socket_fd) override;
+    std::span<std::byte> data() override;
+    [[nodiscard]] size_t size() const noexcept override;
+    [[nodiscard]] int borrow_fd() const noexcept override { return anon_fd_; }
 
-private:
-    int         anon_fd_{-1};
-    int         listen_fd_{-1};
-    void       *mmap_base_{nullptr};
-    size_t      mmap_size_{0};
+  private:
+    int anon_fd_{-1};
+    int listen_fd_{-1};
+    void *mmap_base_{nullptr};
+    size_t mmap_size_{0};
     std::string bound_path_;
 };
 
@@ -131,8 +130,7 @@ MemfdProducer::MemfdProducer(size_t bytes)
         throw make_errno_error("Producer", "ftruncate failed", captured);
     }
 
-    void *base = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        anon_fd_, /*offset=*/0);
+    void *base = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, anon_fd_, /*offset=*/0);
     if (base == MAP_FAILED)
     {
         const int captured = errno;
@@ -165,8 +163,7 @@ MemfdProducer::~MemfdProducer()
     }
 }
 
-bool
-MemfdProducer::bind_endpoint(const std::string &endpoint)
+bool MemfdProducer::bind_endpoint(const std::string &endpoint)
 {
     if (endpoint.empty())
     {
@@ -207,19 +204,15 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // `ENOENT`/`EACCES` if the parent setup did not take.
     try
     {
-        const std::filesystem::path parent =
-            std::filesystem::path{sock_path}.parent_path();
+        const std::filesystem::path parent = std::filesystem::path{sock_path}.parent_path();
         if (!parent.empty())
         {
             std::error_code ec;
             std::filesystem::create_directories(parent, ec);
             if (!ec)
             {
-                std::filesystem::permissions(
-                    parent,
-                    std::filesystem::perms::owner_all,
-                    std::filesystem::perm_options::replace,
-                    ec);
+                std::filesystem::permissions(parent, std::filesystem::perms::owner_all,
+                                             std::filesystem::perm_options::replace, ec);
             }
         }
     }
@@ -259,9 +252,7 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
             ::close(sock);
             return false;
         }
-        const int rc = ::connect(probe,
-                                  reinterpret_cast<const sockaddr *>(&addr),
-                                  sizeof(addr));
+        const int rc = ::connect(probe, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr));
         const int captured_errno = errno;
         ::close(probe);
         if (rc == 0)
@@ -307,7 +298,7 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     const std::string temp_path =
         sock_path + ".tmp-" + std::to_string(::getpid()) + "-" +
         std::to_string(static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ULL +
-                        static_cast<uint64_t>(ts.tv_nsec));
+                       static_cast<uint64_t>(ts.tv_nsec));
     if (temp_path.size() >= sizeof(addr.sun_path))
     {
         // Temp name overflows sun_path.  Extremely unlikely given
@@ -320,8 +311,7 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     std::memcpy(temp_addr.sun_path, temp_path.c_str(), temp_path.size());
     temp_addr.sun_path[temp_path.size()] = '\0';
 
-    if (::bind(sock, reinterpret_cast<const sockaddr *>(&temp_addr),
-                sizeof(temp_addr)) == -1)
+    if (::bind(sock, reinterpret_cast<const sockaddr *>(&temp_addr), sizeof(temp_addr)) == -1)
     {
         ::close(sock);
         return false;
@@ -343,7 +333,7 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // a live listener even in the same-channel-name misconfig case).
     if (target_needs_unlink)
     {
-        ::unlink(sock_path.c_str());  // best-effort; racer may have won
+        ::unlink(sock_path.c_str()); // best-effort; racer may have won
     }
 
     // Atomic move into the target path.  Uses renameat2(2) with
@@ -360,14 +350,14 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
     // Linux 3.15+ (2014) is required for renameat2; the syscall
     // interface is used directly rather than the glibc wrapper so we
     // don't depend on glibc >= 2.28.
-    if (::syscall(SYS_renameat2, AT_FDCWD, temp_path.c_str(), AT_FDCWD,
-                   sock_path.c_str(), RENAME_NOREPLACE) == -1)
+    if (::syscall(SYS_renameat2, AT_FDCWD, temp_path.c_str(), AT_FDCWD, sock_path.c_str(),
+                  RENAME_NOREPLACE) == -1)
     {
         // EEXIST → another process won the bind race; refuse rather
         // than clobber.  Any other errno → unexpected rename failure.
         // Both cases surface as bind_endpoint() returning false; the
         // caller's diagnostic points at the endpoint contention.
-        ::unlink(temp_path.c_str());  // best-effort cleanup
+        ::unlink(temp_path.c_str()); // best-effort cleanup
         ::close(sock);
         return false;
     }
@@ -379,7 +369,7 @@ MemfdProducer::bind_endpoint(const std::string &endpoint)
         return false;
     }
 
-    listen_fd_  = sock;
+    listen_fd_ = sock;
     // Store the stripped path: the dtor unlinks `bound_path_`, and the
     // kernel-side cleanup needs the bare filesystem path.
     bound_path_ = sock_path;
@@ -391,9 +381,8 @@ MemfdProducer::accept_one(std::chrono::milliseconds timeout)
 {
     if (listen_fd_ == -1)
     {
-        throw std::runtime_error(
-            "ShmCapabilityProducer::accept_one: not bound — "
-            "call bind_endpoint() first.");
+        throw std::runtime_error("ShmCapabilityProducer::accept_one: not bound — "
+                                 "call bind_endpoint() first.");
     }
 
     pollfd pfd{listen_fd_, POLLIN, 0};
@@ -429,18 +418,19 @@ MemfdProducer::accept_one(std::chrono::milliseconds timeout)
     for (;;)
     {
         peer = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
-        if (peer >= 0) break;
+        if (peer >= 0)
+            break;
         const int captured = errno;
-        if (captured == EINTR) continue;
-        throw make_errno_error("Producer::accept_one", "accept4 failed",
-                                captured);
+        if (captured == EINTR)
+            continue;
+        throw make_errno_error("Producer::accept_one", "accept4 failed", captured);
     }
 
     AcceptedPeer result{};
     result.peer_socket_fd = peer;
 
-    ucred           cred{};
-    socklen_t       cred_len = sizeof(cred);
+    ucred cred{};
+    socklen_t cred_len = sizeof(cred);
     if (::getsockopt(peer, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) == 0)
     {
         result.pid = cred.pid;
@@ -454,8 +444,7 @@ MemfdProducer::accept_one(std::chrono::milliseconds timeout)
     return result;
 }
 
-bool
-MemfdProducer::send_capability(int peer_socket_fd)
+bool MemfdProducer::send_capability(int peer_socket_fd)
 {
     if (anon_fd_ == -1 || peer_socket_fd < 0)
     {
@@ -465,25 +454,25 @@ MemfdProducer::send_capability(int peer_socket_fd)
     // SCM_RIGHTS requires at least one byte of regular payload — a kernel
     // quirk; sendmsg() with zero iov bytes drops the ancillary data
     // silently on some kernels.  The byte itself is meaningless.
-    char   iov_byte = 0;
-    iovec  iov{&iov_byte, 1};
+    char iov_byte = 0;
+    iovec iov{&iov_byte, 1};
     msghdr msg{};
-    msg.msg_iov    = &iov;
+    msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
 
     union
     {
-        char     buf[CMSG_SPACE(sizeof(int))];
-        cmsghdr  align;
+        char buf[CMSG_SPACE(sizeof(int))];
+        cmsghdr align;
     } u{};
     std::memset(u.buf, 0, sizeof(u.buf));
-    msg.msg_control    = u.buf;
+    msg.msg_control = u.buf;
     msg.msg_controllen = sizeof(u.buf);
 
-    cmsghdr *cmsg    = CMSG_FIRSTHDR(&msg);
+    cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type  = SCM_RIGHTS;
-    cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
     std::memcpy(CMSG_DATA(cmsg), &anon_fd_, sizeof(int));
 
     // EINTR retry: a signal delivered while sendmsg is in flight
@@ -504,14 +493,12 @@ MemfdProducer::send_capability(int peer_socket_fd)
     return sent == 1;
 }
 
-std::span<std::byte>
-MemfdProducer::data()
+std::span<std::byte> MemfdProducer::data()
 {
     return {static_cast<std::byte *>(mmap_base_), mmap_size_};
 }
 
-size_t
-MemfdProducer::size() const noexcept
+size_t MemfdProducer::size() const noexcept
 {
     return mmap_size_;
 }
@@ -532,16 +519,16 @@ MemfdProducer::size() const noexcept
 ///      before return on every path.
 class MemfdConsumer final : public IShmCapabilityConsumer
 {
-public:
+  public:
     MemfdConsumer(const std::string &endpoint, std::chrono::milliseconds timeout);
     MemfdConsumer(int socket_fd, std::chrono::milliseconds timeout);
     ~MemfdConsumer() override;
 
     std::span<std::byte> data() override;
     [[nodiscard]] size_t size() const noexcept override;
-    [[nodiscard]] int    borrow_fd() const noexcept override { return received_fd_; }
+    [[nodiscard]] int borrow_fd() const noexcept override { return received_fd_; }
 
-private:
+  private:
     /// Poll + recvmsg + fstat + mmap on an already-connected socket.
     /// Takes ownership of `sock_fd` (closes it before return on every
     /// path: success, timeout, recv failure, exception).  Stores the
@@ -549,19 +536,16 @@ private:
     /// std::runtime_error on any failure.  `diag_tag` is appended to
     /// the timeout error message for caller-side observability (e.g.
     /// "from 'unix:///run/.../shmcap-foo.sock'" or "from socket").
-    void recv_and_mmap_owning_socket_(int                       sock_fd,
-                                      std::chrono::milliseconds timeout,
-                                      const std::string        &diag_tag);
+    void recv_and_mmap_owning_socket_(int sock_fd, std::chrono::milliseconds timeout,
+                                      const std::string &diag_tag);
 
-    int    received_fd_{-1};
-    void  *mmap_base_{nullptr};
+    int received_fd_{-1};
+    void *mmap_base_{nullptr};
     size_t mmap_size_{0};
 };
 
-void
-MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
-                                            std::chrono::milliseconds timeout,
-                                            const std::string        &diag_tag)
+void MemfdConsumer::recv_and_mmap_owning_socket_(int sock_fd, std::chrono::milliseconds timeout,
+                                                 const std::string &diag_tag)
 {
     // RAII close for the AF_UNIX socket: the kernel duplicates the
     // capability fd into our process table during recvmsg, so after
@@ -571,34 +555,37 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
     struct SockCloser
     {
         int fd;
-        ~SockCloser() { if (fd >= 0) ::close(fd); }
+        ~SockCloser()
+        {
+            if (fd >= 0)
+                ::close(fd);
+        }
     } closer{sock_fd};
 
     pollfd pfd{sock_fd, POLLIN, 0};
     const int n = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
     if (n == 0)
     {
-        throw std::runtime_error(
-            "ShmCapabilityConsumer: timeout waiting for capability fd " +
-            diag_tag);
+        throw std::runtime_error("ShmCapabilityConsumer: timeout waiting for capability fd " +
+                                 diag_tag);
     }
     if (n == -1)
     {
         throw make_errno_error("Consumer", "poll failed", errno);
     }
 
-    char   iov_byte = 0;
-    iovec  iov{&iov_byte, 1};
+    char iov_byte = 0;
+    iovec iov{&iov_byte, 1};
     msghdr msg{};
-    msg.msg_iov    = &iov;
+    msg.msg_iov = &iov;
     msg.msg_iovlen = 1;
     union
     {
-        char     buf[CMSG_SPACE(sizeof(int))];
-        cmsghdr  align;
+        char buf[CMSG_SPACE(sizeof(int))];
+        cmsghdr align;
     } u{};
     std::memset(u.buf, 0, sizeof(u.buf));
-    msg.msg_control    = u.buf;
+    msg.msg_control = u.buf;
     msg.msg_controllen = sizeof(u.buf);
 
     // EINTR retry — symmetric with the producer-side sendmsg loop
@@ -622,8 +609,7 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
     {
         throw std::runtime_error(
             "ShmCapabilityConsumer: recvmsg returned " + std::to_string(got) +
-            " (expected 1 byte of regular payload + cmsg): " +
-            std::strerror(recv_errno));
+            " (expected 1 byte of regular payload + cmsg): " + std::strerror(recv_errno));
     }
 
     // Fail closed on a truncated control message.  MSG_CTRUNC means the
@@ -634,14 +620,12 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
     // silently accept the first fd of it.  REVIEW-C (#276), 2026-07-16.
     if (msg.msg_flags & MSG_CTRUNC)
     {
-        throw std::runtime_error(
-            "ShmCapabilityConsumer: truncated ancillary data (MSG_CTRUNC) — "
-            "malformed/multi-fd SCM_RIGHTS message from producer.");
+        throw std::runtime_error("ShmCapabilityConsumer: truncated ancillary data (MSG_CTRUNC) — "
+                                 "malformed/multi-fd SCM_RIGHTS message from producer.");
     }
 
     cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-    if (cmsg == nullptr || cmsg->cmsg_level != SOL_SOCKET ||
-        cmsg->cmsg_type != SCM_RIGHTS ||
+    if (cmsg == nullptr || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
         cmsg->cmsg_len != CMSG_LEN(sizeof(int)))
     {
         throw std::runtime_error(
@@ -652,8 +636,7 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
     std::memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
     if (fd < 0)
     {
-        throw std::runtime_error(
-            "ShmCapabilityConsumer: received invalid fd from producer.");
+        throw std::runtime_error("ShmCapabilityConsumer: received invalid fd from producer.");
     }
 
     struct stat st{};
@@ -672,8 +655,8 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
             "ShmCapabilityConsumer: received fd has zero size — producer ftruncate skipped?");
     }
 
-    void *base = ::mmap(nullptr, segment_size, PROT_READ | PROT_WRITE,
-                        MAP_SHARED, fd, /*offset=*/0);
+    void *base =
+        ::mmap(nullptr, segment_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, /*offset=*/0);
     if (base == MAP_FAILED)
     {
         const int captured = errno;
@@ -682,12 +665,11 @@ MemfdConsumer::recv_and_mmap_owning_socket_(int                       sock_fd,
     }
 
     received_fd_ = fd;
-    mmap_base_   = base;
-    mmap_size_   = segment_size;
+    mmap_base_ = base;
+    mmap_size_ = segment_size;
 }
 
-MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
-                             std::chrono::milliseconds timeout)
+MemfdConsumer::MemfdConsumer(const std::string &endpoint, std::chrono::milliseconds timeout)
 {
     // HEP-CORE-0041 §5.1: the producer publishes the canonical
     // `unix://` URI in CONSUMER_REG_ACK; strip the scheme before
@@ -698,9 +680,8 @@ MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
     sockaddr_un addr{};
     if (sock_path.empty() || sock_path.size() >= sizeof(addr.sun_path))
     {
-        throw std::invalid_argument(
-            "ShmCapabilityConsumer: invalid endpoint "
-            "(empty or longer than sockaddr_un::sun_path).");
+        throw std::invalid_argument("ShmCapabilityConsumer: invalid endpoint "
+                                    "(empty or longer than sockaddr_un::sun_path).");
     }
 
     const int sock = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -717,16 +698,14 @@ MemfdConsumer::MemfdConsumer(const std::string       &endpoint,
     {
         const int captured = errno;
         ::close(sock);
-        throw make_errno_error("Consumer",
-                               ("connect to '" + endpoint + "' failed").c_str(),
+        throw make_errno_error("Consumer", ("connect to '" + endpoint + "' failed").c_str(),
                                captured);
     }
 
     recv_and_mmap_owning_socket_(sock, timeout, "from '" + endpoint + "'.");
 }
 
-MemfdConsumer::MemfdConsumer(int                       socket_fd,
-                             std::chrono::milliseconds timeout)
+MemfdConsumer::MemfdConsumer(int socket_fd, std::chrono::milliseconds timeout)
 {
     // Production path: the §5.5 ZAP-CURVE handshake has already
     // completed on `socket_fd` (see attach_protocol.cpp
@@ -754,36 +733,31 @@ MemfdConsumer::~MemfdConsumer()
     }
 }
 
-std::span<std::byte>
-MemfdConsumer::data()
+std::span<std::byte> MemfdConsumer::data()
 {
     return {static_cast<std::byte *>(mmap_base_), mmap_size_};
 }
 
-size_t
-MemfdConsumer::size() const noexcept
+size_t MemfdConsumer::size() const noexcept
 {
     return mmap_size_;
 }
 
 } // anonymous namespace
 
-std::unique_ptr<IShmCapabilityProducer>
-create_shm_capability_producer(size_t bytes)
+std::unique_ptr<IShmCapabilityProducer> create_shm_capability_producer(size_t bytes)
 {
     return std::make_unique<MemfdProducer>(bytes);
 }
 
 std::unique_ptr<IShmCapabilityConsumer>
-attach_shm_capability_consumer(const std::string       &endpoint,
-                               std::chrono::milliseconds timeout)
+attach_shm_capability_consumer(const std::string &endpoint, std::chrono::milliseconds timeout)
 {
     return std::make_unique<MemfdConsumer>(endpoint, timeout);
 }
 
 std::unique_ptr<IShmCapabilityConsumer>
-attach_shm_capability_consumer_from_socket(int                       socket_fd,
-                                           std::chrono::milliseconds timeout)
+attach_shm_capability_consumer_from_socket(int socket_fd, std::chrono::milliseconds timeout)
 {
     return std::make_unique<MemfdConsumer>(socket_fd, timeout);
 }
@@ -841,11 +815,10 @@ std::string default_shm_capability_endpoint(std::string_view channel_name)
     static std::atomic<bool> warned{false};
     if (!warned.exchange(true, std::memory_order_acq_rel))
     {
-        LOGGER_WARN(
-            "[ShmCapability] XDG_RUNTIME_DIR unset; falling back to "
-            "/tmp/pylabhub-shmcap-<uid>-<channel>.sock for SHM-capability "
-            "endpoints.  This deployment has weaker per-user isolation than "
-            "a systemd-managed host (HEP-CORE-0041 §5.1 hardening note).");
+        LOGGER_WARN("[ShmCapability] XDG_RUNTIME_DIR unset; falling back to "
+                    "/tmp/pylabhub-shmcap-<uid>-<channel>.sock for SHM-capability "
+                    "endpoints.  This deployment has weaker per-user isolation than "
+                    "a systemd-managed host (HEP-CORE-0041 §5.1 hardening note).");
     }
 
     std::string path = "unix:///tmp/pylabhub-shmcap-";
@@ -857,7 +830,6 @@ std::string default_shm_capability_endpoint(std::string_view channel_name)
 }
 
 #endif // PYLABHUB_PLATFORM_LINUX
-
 
 // ============================================================================
 //  FreeBSD backend — PLAN (not implemented; #error fires below if you
@@ -914,9 +886,9 @@ std::string default_shm_capability_endpoint(std::string_view channel_name)
 // ============================================================================
 
 #if defined(PYLABHUB_PLATFORM_FREEBSD)
-#    error "HEP-CORE-0041 FreeBSD backend not implemented (task #259). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
+#error                                                                                             \
+    "HEP-CORE-0041 FreeBSD backend not implemented (task #259). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
 #endif // PYLABHUB_PLATFORM_FREEBSD
-
 
 // ============================================================================
 //  macOS backend — PLAN (not implemented; #error fires below if you
@@ -980,9 +952,9 @@ std::string default_shm_capability_endpoint(std::string_view channel_name)
 // ============================================================================
 
 #if defined(PYLABHUB_PLATFORM_APPLE)
-#    error "HEP-CORE-0041 macOS backend not implemented (task #260). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
+#error                                                                                             \
+    "HEP-CORE-0041 macOS backend not implemented (task #260). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
 #endif // PYLABHUB_PLATFORM_APPLE
-
 
 // ============================================================================
 //  Windows backend — PLAN (not implemented; #error fires below if you
@@ -1077,9 +1049,9 @@ std::string default_shm_capability_endpoint(std::string_view channel_name)
 // ============================================================================
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
-#    error "HEP-CORE-0041 Windows backend not implemented (task #261). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
+#error                                                                                             \
+    "HEP-CORE-0041 Windows backend not implemented (task #261). See plan in shm_capability_channel.cpp above this line. Refusing to compile until implemented."
 #endif // PYLABHUB_PLATFORM_WIN64
-
 
 // ============================================================================
 //  Truly unsupported platform (e.g., PYLABHUB_PLATFORM_UNKNOWN).
@@ -1090,33 +1062,26 @@ std::string default_shm_capability_endpoint(std::string_view channel_name)
 //  yields a clear runtime error rather than a link failure.
 // ============================================================================
 
-#if !defined(PYLABHUB_PLATFORM_LINUX)   && \
-    !defined(PYLABHUB_PLATFORM_FREEBSD) && \
-    !defined(PYLABHUB_PLATFORM_APPLE)   && \
-    !defined(PYLABHUB_PLATFORM_WIN64)
+#if !defined(PYLABHUB_PLATFORM_LINUX) && !defined(PYLABHUB_PLATFORM_FREEBSD) &&                    \
+    !defined(PYLABHUB_PLATFORM_APPLE) && !defined(PYLABHUB_PLATFORM_WIN64)
 
-std::unique_ptr<IShmCapabilityProducer>
-create_shm_capability_producer(size_t /*bytes*/)
+std::unique_ptr<IShmCapabilityProducer> create_shm_capability_producer(size_t /*bytes*/)
 {
-    throw std::runtime_error(
-        "HEP-CORE-0041 capability transport: no backend for this platform "
-        "(plh_platform.hpp did not detect Linux / FreeBSD / macOS / Win64).");
+    throw std::runtime_error("HEP-CORE-0041 capability transport: no backend for this platform "
+                             "(plh_platform.hpp did not detect Linux / FreeBSD / macOS / Win64).");
 }
 
 std::unique_ptr<IShmCapabilityConsumer>
 attach_shm_capability_consumer(const std::string & /*endpoint*/,
                                std::chrono::milliseconds /*timeout*/)
 {
-    throw std::runtime_error(
-        "HEP-CORE-0041 capability transport: no backend for this platform.");
+    throw std::runtime_error("HEP-CORE-0041 capability transport: no backend for this platform.");
 }
 
 std::unique_ptr<IShmCapabilityConsumer>
-attach_shm_capability_consumer_from_socket(int /*socket_fd*/,
-                                           std::chrono::milliseconds /*timeout*/)
+attach_shm_capability_consumer_from_socket(int /*socket_fd*/, std::chrono::milliseconds /*timeout*/)
 {
-    throw std::runtime_error(
-        "HEP-CORE-0041 capability transport: no backend for this platform.");
+    throw std::runtime_error("HEP-CORE-0041 capability transport: no backend for this platform.");
 }
 
 #endif

@@ -35,20 +35,20 @@ namespace pylabhub::config
 
 struct HubConfig::Impl
 {
-    utils::JsonConfig          jcfg;
-    std::filesystem::path      base_dir;
-    nlohmann::json             raw_json;
+    utils::JsonConfig jcfg;
+    std::filesystem::path base_dir;
+    nlohmann::json raw_json;
 
-    HubIdentityConfig   identity;
-    AuthConfig          auth;
-    ScriptConfig        script;
-    TimingConfig        timing;
-    LoggingConfig       logging;
-    HubNetworkConfig    network;
-    HubAdminConfig      admin;
-    HubBrokerConfig     broker;
+    HubIdentityConfig identity;
+    AuthConfig auth;
+    ScriptConfig script;
+    TimingConfig timing;
+    LoggingConfig logging;
+    HubNetworkConfig network;
+    HubAdminConfig admin;
+    HubBrokerConfig broker;
     HubFederationConfig federation;
-    HubStateConfig      state;
+    HubStateConfig state;
 
     /// Operator-managed allowlist extracted from the encrypted vault by
     /// load_keypair() (HEP-CORE-0035 §4.8).  Empty = deny-all bootstrap.
@@ -72,7 +72,9 @@ HubConfig &HubConfig::operator=(HubConfig &&) noexcept = default;
 /// respective sub-parsers.
 static const std::unordered_set<std::string> kAllowedTopLevelKeys = {
     "hub",
-    "script", "stop_on_script_error", "python_venv",
+    "script",
+    "stop_on_script_error",
+    "python_venv",
     // Timing keys for the hub script tick (HEP-CORE-0033 Phase 7 Commit B).
     // Same parser + same enum + same JSON shape as RoleConfig — see
     // `src/include/utils/config/timing_config.hpp`.  `loop_timing`
@@ -83,9 +85,15 @@ static const std::unordered_set<std::string> kAllowedTopLevelKeys = {
     // hub top level — they are queue / role-broker concepts that have
     // no meaning for the hub script tick.  parse_timing_config defaults
     // them to 0 / kDefault on the hub side.
-    "loop_timing", "target_period_ms", "target_rate_hz",
+    "loop_timing",
+    "target_period_ms",
+    "target_rate_hz",
     "logging",
-    "network", "admin", "broker", "federation", "state",
+    "network",
+    "admin",
+    "broker",
+    "federation",
+    "state",
 };
 
 static void validate_top_level_keys(const nlohmann::json &j)
@@ -105,16 +113,16 @@ void HubConfig::Impl::load_all(const nlohmann::json &j)
 {
     validate_top_level_keys(j);
 
-    identity   = parse_hub_identity_config(j);
-    auth       = parse_auth_config(j, "hub");  // reads j["hub"]["auth"]
-    script     = parse_script_config(j, base_dir, "hub");
-    timing     = parse_timing_config(j, "hub");
-    logging    = parse_logging_config(j, "hub");
-    network    = parse_hub_network_config(j);
-    admin      = parse_hub_admin_config(j);
-    broker     = parse_hub_broker_config(j);
+    identity = parse_hub_identity_config(j);
+    auth = parse_auth_config(j, "hub"); // reads j["hub"]["auth"]
+    script = parse_script_config(j, base_dir, "hub");
+    timing = parse_timing_config(j, "hub");
+    logging = parse_logging_config(j, "hub");
+    network = parse_hub_network_config(j);
+    admin = parse_hub_admin_config(j);
+    broker = parse_hub_broker_config(j);
     federation = parse_hub_federation_config(j);
-    state      = parse_hub_state_config(j);
+    state = parse_hub_state_config(j);
 }
 
 // ============================================================================
@@ -134,15 +142,15 @@ HubConfig HubConfig::load(const std::string &path)
     std::error_code ec;
     s.jcfg = utils::JsonConfig(fs::path(path), /*createIfMissing=*/false, &ec);
     if (ec)
-        throw std::runtime_error(
-            "HubConfig: cannot open config file '" + path + "': " + ec.message());
+        throw std::runtime_error("HubConfig: cannot open config file '" + path +
+                                 "': " + ec.message());
 
     {
         std::error_code lock_ec;
         auto rlock = s.jcfg.lock_for_read(&lock_ec);
         if (!rlock)
-            throw std::runtime_error(
-                "HubConfig: cannot read config '" + path + "': " + lock_ec.message());
+            throw std::runtime_error("HubConfig: cannot read config '" + path +
+                                     "': " + lock_ec.message());
         s.raw_json = rlock->json();
     }
 
@@ -153,8 +161,7 @@ HubConfig HubConfig::load(const std::string &path)
     // Warn if the operator's auth.keyfile path resolves inside the
     // hub directory; this is the load-bearing reminder of the
     // script-write attack surface trade-off.
-    utils::HubDirectory::warn_if_keyfile_in_hub_dir(
-        s.base_dir, s.auth.keyfile);
+    utils::HubDirectory::warn_if_keyfile_in_hub_dir(s.base_dir, s.auth.keyfile);
 
     // HEP-CORE-0035 §4.6 Tier-1: config file is non-secret but
     // references a vault.  verify_keyfile_acl can populate a
@@ -193,18 +200,61 @@ HubConfig HubConfig::load_from_directory(const std::string &dir)
 // Accessors
 // ============================================================================
 
-const HubIdentityConfig   &HubConfig::identity()   const { assert(impl_); return impl_->identity; }
-const AuthConfig          &HubConfig::auth()       const { assert(impl_); return impl_->auth; }
-const ScriptConfig        &HubConfig::script()     const { assert(impl_); return impl_->script; }
-const TimingConfig        &HubConfig::timing()     const { assert(impl_); return impl_->timing; }
-const LoggingConfig       &HubConfig::logging()    const { assert(impl_); return impl_->logging; }
-const HubNetworkConfig    &HubConfig::network()    const { assert(impl_); return impl_->network; }
-const HubAdminConfig      &HubConfig::admin()      const { assert(impl_); return impl_->admin; }
-const HubBrokerConfig     &HubConfig::broker()     const { assert(impl_); return impl_->broker; }
-const HubFederationConfig &HubConfig::federation() const { assert(impl_); return impl_->federation; }
-const HubStateConfig      &HubConfig::state()      const { assert(impl_); return impl_->state; }
-const std::vector<::pylabhub::broker::KnownRole> &
-HubConfig::known_roles() const { assert(impl_); return impl_->known_roles; }
+const HubIdentityConfig &HubConfig::identity() const
+{
+    assert(impl_);
+    return impl_->identity;
+}
+const AuthConfig &HubConfig::auth() const
+{
+    assert(impl_);
+    return impl_->auth;
+}
+const ScriptConfig &HubConfig::script() const
+{
+    assert(impl_);
+    return impl_->script;
+}
+const TimingConfig &HubConfig::timing() const
+{
+    assert(impl_);
+    return impl_->timing;
+}
+const LoggingConfig &HubConfig::logging() const
+{
+    assert(impl_);
+    return impl_->logging;
+}
+const HubNetworkConfig &HubConfig::network() const
+{
+    assert(impl_);
+    return impl_->network;
+}
+const HubAdminConfig &HubConfig::admin() const
+{
+    assert(impl_);
+    return impl_->admin;
+}
+const HubBrokerConfig &HubConfig::broker() const
+{
+    assert(impl_);
+    return impl_->broker;
+}
+const HubFederationConfig &HubConfig::federation() const
+{
+    assert(impl_);
+    return impl_->federation;
+}
+const HubStateConfig &HubConfig::state() const
+{
+    assert(impl_);
+    return impl_->state;
+}
+const std::vector<::pylabhub::broker::KnownRole> &HubConfig::known_roles() const
+{
+    assert(impl_);
+    return impl_->known_roles;
+}
 
 // ============================================================================
 // Vault operations
@@ -216,13 +266,11 @@ namespace
 /// the validated in-memory vector (HEP-CORE-0035 §4.8).  An empty object
 /// is the §4.8.4 deny-all bootstrap → empty list.  Used by `load_keypair`
 /// (identity + allowlist in one vault open).
-std::vector<::pylabhub::broker::KnownRole>
-extract_known_roles(const nlohmann::json &kr)
+std::vector<::pylabhub::broker::KnownRole> extract_known_roles(const nlohmann::json &kr)
 {
     namespace security = pylabhub::utils::security;
     if (kr.is_object() && !kr.empty())
-        return security::KnownRolesStore::from_json(kr, "hub vault known_roles")
-            .list();
+        return security::KnownRolesStore::from_json(kr, "hub vault known_roles").list();
     return {};
 }
 } // namespace
@@ -250,19 +298,17 @@ bool HubConfig::load_keypair(const std::string &password)
     // value would have thrown at config-load.
 
     const auto &hub_dir = impl_->base_dir;
-    const auto &uid     = impl_->identity.uid;
+    const auto &uid = impl_->identity.uid;
 
-    namespace fs       = std::filesystem;
+    namespace fs = std::filesystem;
     namespace security = pylabhub::utils::security;
-    const fs::path vault_path =
-        security::resolve_keyfile_path(auth.keyfile, hub_dir);
+    const fs::path vault_path = security::resolve_keyfile_path(auth.keyfile, hub_dir);
     if (!fs::exists(vault_path))
     {
-        throw std::runtime_error(
-            "[plh_hub] Error: hub.auth.keyfile = '" + auth.keyfile +
-            "' resolves to '" + vault_path.string() +
-            "' which does not exist.  Run `plh_hub --keygen` to "
-            "create the vault (HEP-CORE-0033 §7.1).");
+        throw std::runtime_error("[plh_hub] Error: hub.auth.keyfile = '" + auth.keyfile +
+                                 "' resolves to '" + vault_path.string() +
+                                 "' which does not exist.  Run `plh_hub --keygen` to "
+                                 "create the vault (HEP-CORE-0033 §7.1).");
     }
 
     // HEP-CORE-0035 §4.6.2: verify ACL contract BEFORE reading the
@@ -270,31 +316,29 @@ bool HubConfig::load_keypair(const std::string &password)
     // + owner-uid.  Failure produces an OpenSSH-style actionable
     // diagnostic naming the path, observed mode, required mode, and
     // the exact `chmod` command to fix.
-    if (auto v = security::verify_keyfile_acl(
-            vault_path, security::KeyFileRole::VaultFile);
-        !v.ok)
-        throw std::runtime_error(
-            "[plh_hub] Refusing to load vault — ACL check failed (HEP-"
-            "CORE-0035 §4.6.2):\n" + v.diagnostic);
+    if (auto v = security::verify_keyfile_acl(vault_path, security::KeyFileRole::VaultFile); !v.ok)
+        throw std::runtime_error("[plh_hub] Refusing to load vault — ACL check failed (HEP-"
+                                 "CORE-0035 §4.6.2):\n" +
+                                 v.diagnostic);
     // Edge: an absolute keyfile with no parent (bare-filename like
     // "/x.vault") has parent_path() = "/" which is a valid dir to
     // check.  Operator-relative paths joined with base_dir always
     // produce a non-empty parent.  Defensive skip if somehow empty.
     if (vault_path.has_parent_path())
     {
-        if (auto v = security::verify_keyfile_acl(
-                vault_path.parent_path(), security::KeyFileRole::VaultDir);
+        if (auto v = security::verify_keyfile_acl(vault_path.parent_path(),
+                                                  security::KeyFileRole::VaultDir);
             !v.ok)
-            throw std::runtime_error(
-                "[plh_hub] Refusing to load vault — parent dir ACL check "
-                "failed (HEP-CORE-0035 §4.6.2):\n" + v.diagnostic);
+            throw std::runtime_error("[plh_hub] Refusing to load vault — parent dir ACL check "
+                                     "failed (HEP-CORE-0035 §4.6.2):\n" +
+                                     v.diagnostic);
     }
 
     const auto vault = utils::HubVault::open(vault_path, uid, password);
     {
-        const auto pub = vault.broker_curve_public_key();  // string_view
-        const auto sec = vault.broker_curve_secret_key();  // string_view
-        const auto adm = vault.admin_token();              // string_view
+        const auto pub = vault.broker_curve_public_key(); // string_view
+        const auto sec = vault.broker_curve_secret_key(); // string_view
+        const auto adm = vault.admin_token();             // string_view
 
         // HEP-CORE-0040 §171: identity keypair lives in
         // `pylabhub::utils::security::secure().keys()` (LockedKey storage,
@@ -329,8 +373,7 @@ bool HubConfig::load_keypair(const std::string &password)
         // directly (not here), so `--migrate-known-roles` can still read
         // and remove the file.
         {
-            const std::filesystem::path legacy =
-                impl_->base_dir / "vault" / "known_roles.json";
+            const std::filesystem::path legacy = impl_->base_dir / "vault" / "known_roles.json";
             std::error_code ec;
             if (std::filesystem::exists(legacy, ec))
                 throw std::runtime_error(
@@ -348,8 +391,7 @@ bool HubConfig::load_keypair(const std::string &password)
         std::fprintf(stderr,
                      "[plh_hub] Loaded vault from '%s' (pubkey: %.8s..., "
                      "%zu known_role(s))\n",
-                     vault_path.string().c_str(), pub.data(),
-                     impl_->known_roles.size());
+                     vault_path.string().c_str(), pub.data(), impl_->known_roles.size());
     }
     return true;
 }
@@ -363,10 +405,9 @@ std::string HubConfig::create_keypair(const std::string &password)
     // at config-load before --keygen dispatch.
 
     const auto &hub_dir = impl_->base_dir;
-    const auto &uid     = impl_->identity.uid;
+    const auto &uid = impl_->identity.uid;
     const std::filesystem::path vault_path =
-        pylabhub::utils::security::resolve_keyfile_path(
-            auth.keyfile, hub_dir);
+        pylabhub::utils::security::resolve_keyfile_path(auth.keyfile, hub_dir);
 
     // No-silent-overwrite (HEP-CORE-0033 §7.1, added 2026-05-31): refuse
     // to clobber an existing vault file.  --keygen produces fresh CURVE
@@ -376,13 +417,12 @@ std::string HubConfig::create_keypair(const std::string &password)
     // must remove the file explicitly to re-keygen.
     if (std::filesystem::exists(vault_path))
         throw std::runtime_error(
-            "[plh_hub] Error: vault already exists at '" +
-            vault_path.string() +
+            "[plh_hub] Error: vault already exists at '" + vault_path.string() +
             "'. Refusing to overwrite — that would destroy the existing "
             "keypair (and any ChaCha20-Poly1305 admin token / CURVE "
             "secret bound to it).  If you really want a new keypair, "
-            "remove the file first:\n    rm '" + vault_path.string() +
-            "'\nthen re-run --keygen (HEP-CORE-0033 §7.1).");
+            "remove the file first:\n    rm '" +
+            vault_path.string() + "'\nthen re-run --keygen (HEP-CORE-0033 §7.1).");
 
     const auto vault = utils::HubVault::create(vault_path, uid, password);
     // Publish the broker's CURVE public key at <hub_dir>/hub.pubkey
@@ -412,15 +452,16 @@ bool HubConfig::reload_if_changed()
     assert(impl_);
     bool updated = false;
     impl_->jcfg.transaction(utils::JsonConfig::AccessFlags::ReloadFirst)
-        .read([&](const nlohmann::json &j)
-    {
-        if (j != impl_->raw_json)
-        {
-            impl_->raw_json = j;
-            impl_->load_all(j);
-            updated = true;
-        }
-    });
+        .read(
+            [&](const nlohmann::json &j)
+            {
+                if (j != impl_->raw_json)
+                {
+                    impl_->raw_json = j;
+                    impl_->load_all(j);
+                    updated = true;
+                }
+            });
     return updated;
 }
 

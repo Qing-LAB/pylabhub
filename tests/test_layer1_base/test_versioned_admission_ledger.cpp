@@ -24,7 +24,7 @@
 #include <string>
 
 using pylabhub::hub::VersionedAdmissionLedger;
-using IntLedger    = VersionedAdmissionLedger<int, int>;
+using IntLedger = VersionedAdmissionLedger<int, int>;
 using StringLedger = VersionedAdmissionLedger<std::string, std::string>;
 
 // ── Fresh-state invariants ──────────────────────────────────────────────────
@@ -41,7 +41,7 @@ TEST(VersionedAdmissionLedger, FreshState_HasZeroVersionAndNoAdmissions)
 TEST(VersionedAdmissionLedger, FreshState_IsVisibleTo_ReturnsNulloptForUnconfirmedRole)
 {
     IntLedger l;
-    l.admit(42);  // pubkey admitted at version 1
+    l.admit(42); // pubkey admitted at version 1
     // But role 7 has never confirmed anything → nullopt (distinguishable
     // from "not admitted" per wire semantics: not_confirmed vs not_admitted).
     auto v = l.is_visible_to(/*role=*/7, /*pk=*/42);
@@ -80,7 +80,7 @@ TEST(VersionedAdmissionLedger, Admit_AdmittedCountReflectsUniquePubkeys)
     IntLedger l;
     l.admit(10);
     l.admit(20);
-    l.admit(10);  // idempotent — still count 2
+    l.admit(10); // idempotent — still count 2
     l.admit(30);
     EXPECT_EQ(l.admitted_count(), 3u);
 }
@@ -90,8 +90,8 @@ TEST(VersionedAdmissionLedger, Admit_AdmittedCountReflectsUniquePubkeys)
 TEST(VersionedAdmissionLedger, Revoke_BumpsVersionAndRemovesPubkey)
 {
     IntLedger l;
-    l.admit(10);            // v1
-    l.admit(20);            // v2
+    l.admit(10); // v1
+    l.admit(20); // v2
     EXPECT_EQ(l.revoke(10), 3u);
     EXPECT_EQ(l.current_version(), 3u);
     EXPECT_FALSE(l.admission_version_of(10).has_value());
@@ -102,7 +102,7 @@ TEST(VersionedAdmissionLedger, Revoke_BumpsVersionAndRemovesPubkey)
 TEST(VersionedAdmissionLedger, Revoke_MissingPubkey_IsNoOp_NoBump)
 {
     IntLedger l;
-    l.admit(10);  // v1
+    l.admit(10); // v1
     // Revoking a never-admitted pubkey is a full no-op — no bump, no
     // side effect on role confirmations.  Symmetric with `admit`'s
     // idempotent-no-bump contract: only real mutations advance the
@@ -140,7 +140,8 @@ TEST(VersionedAdmissionLedger, Confirm_AdvancesRoleVersion)
     IntLedger l;
     // Establish issued versions via admits so the clamp accepts legitimate
     // confirms (INVARIANT-BIND-CONFIRM-1 boundary).
-    for (int i = 1; i <= 10; ++i) l.admit(i);
+    for (int i = 1; i <= 10; ++i)
+        l.admit(i);
     ASSERT_EQ(l.current_version(), 10u);
     EXPECT_EQ(l.confirm(/*role=*/7, 5u), 5u);
     EXPECT_EQ(l.confirmed_version_of(7).value(), 5u);
@@ -151,7 +152,8 @@ TEST(VersionedAdmissionLedger, Confirm_AdvancesRoleVersion)
 TEST(VersionedAdmissionLedger, Confirm_IsMonotonic_StaleVersionsAbsorbed)
 {
     IntLedger l;
-    for (int i = 1; i <= 10; ++i) l.admit(i);  // current_version = 10
+    for (int i = 1; i <= 10; ++i)
+        l.admit(i); // current_version = 10
     l.confirm(7, 10u);
     // Stale APPLIED_REQ (from a delayed / duplicated wire message) must
     // NOT regress the stored value.
@@ -162,7 +164,8 @@ TEST(VersionedAdmissionLedger, Confirm_IsMonotonic_StaleVersionsAbsorbed)
 TEST(VersionedAdmissionLedger, Confirm_PerRoleIndependent)
 {
     IntLedger l;
-    for (int i = 1; i <= 10; ++i) l.admit(i);  // current_version = 10
+    for (int i = 1; i <= 10; ++i)
+        l.admit(i); // current_version = 10
     l.confirm(7, 10u);
     l.confirm(8, 3u);
     EXPECT_EQ(l.confirmed_version_of(7).value(), 10u);
@@ -190,17 +193,16 @@ TEST(VersionedAdmissionLedger, Confirm_ClampsAtCurrentVersion_AdversarialInput)
     // ledger has issued.  Without this clamp, every subsequent admit
     // would become immediately visible to that role.
     IntLedger l;
-    l.admit(10);  // current_version = 1
-    l.admit(20);  // current_version = 2
+    l.admit(10); // current_version = 1
+    l.admit(20); // current_version = 2
     // Attacker/buggy caller sends applied_version = UINT64_MAX.
-    const std::uint64_t stored =
-        l.confirm(7, std::numeric_limits<std::uint64_t>::max());
+    const std::uint64_t stored = l.confirm(7, std::numeric_limits<std::uint64_t>::max());
     EXPECT_EQ(stored, 2u) << "must clamp at current_version_";
     EXPECT_EQ(l.confirmed_version_of(7).value(), 2u);
     // Verify the intended defense: a NEW admission (version 3) is NOT
     // immediately visible to role 7 (would have been TRUE under the
     // pre-clamp behavior where confirmed=UINT64_MAX >= 3).
-    l.admit(30);  // current_version = 3
+    l.admit(30); // current_version = 3
     auto vis = l.is_visible_to(7, 30);
     ASSERT_TRUE(vis.has_value());
     EXPECT_FALSE(*vis) << "new admission must NOT be visible to a role "
@@ -214,8 +216,8 @@ TEST(VersionedAdmissionLedger, Confirm_ClampInteractsCorrectlyWithMonotonicity)
     // confirm(applied=1000) clamps to current_version_ and takes the
     // max — the earlier 2 stays because 2 < clamped.
     IntLedger l;
-    l.admit(10);  // v1
-    l.admit(20);  // v2
+    l.admit(10); // v1
+    l.admit(20); // v2
     l.confirm(7, 2u);
     EXPECT_EQ(l.confirmed_version_of(7).value(), 2u);
     // Adversarial follow-up.
@@ -223,7 +225,7 @@ TEST(VersionedAdmissionLedger, Confirm_ClampInteractsCorrectlyWithMonotonicity)
     // Clamped to 2, max(2, 2) = 2 — unchanged.
     EXPECT_EQ(l.confirmed_version_of(7).value(), 2u);
     // Legitimate follow-up at v2 after another admit.
-    l.admit(30);  // v3
+    l.admit(30); // v3
     l.confirm(7, 3u);
     EXPECT_EQ(l.confirmed_version_of(7).value(), 3u);
 }
@@ -233,8 +235,8 @@ TEST(VersionedAdmissionLedger, Confirm_ClampAllowsExactCurrentVersion)
     // Boundary: confirm(applied == current_version_) is a valid, non-
     // adversarial confirmation.  Must succeed and store current_version_.
     IntLedger l;
-    l.admit(10);  // v1
-    l.admit(20);  // v2
+    l.admit(10); // v1
+    l.admit(20); // v2
     const std::uint64_t v = l.current_version();
     ASSERT_EQ(v, 2u);
     EXPECT_EQ(l.confirm(7, v), v);
@@ -246,8 +248,8 @@ TEST(VersionedAdmissionLedger, Confirm_ClampAllowsExactCurrentVersion)
 TEST(VersionedAdmissionLedger, IsVisibleTo_TrueWhenAdmissionLeqConfirmed)
 {
     IntLedger l;
-    l.admit(10);        // v1
-    l.confirm(7, 1u);   // role 7 confirmed at v1
+    l.admit(10);      // v1
+    l.confirm(7, 1u); // role 7 confirmed at v1
     auto v = l.is_visible_to(7, 10);
     ASSERT_TRUE(v.has_value());
     EXPECT_TRUE(*v);
@@ -256,9 +258,9 @@ TEST(VersionedAdmissionLedger, IsVisibleTo_TrueWhenAdmissionLeqConfirmed)
 TEST(VersionedAdmissionLedger, IsVisibleTo_FalseWhenAdmissionGtConfirmed)
 {
     IntLedger l;
-    l.admit(10);       // v1
-    l.admit(20);       // v2
-    l.confirm(7, 1u);  // role 7 confirmed at v1 only
+    l.admit(10);      // v1
+    l.admit(20);      // v2
+    l.confirm(7, 1u); // role 7 confirmed at v1 only
     // Pubkey 20 admitted at v2 > confirmed 1 → NOT visible.
     // This is the exact test-#2480 race pin: 20 was admitted AFTER role 7's
     // last APPLIED_REQ; broker MUST NOT confirm 20 for role 7 until role 7
@@ -311,8 +313,8 @@ TEST(VersionedAdmissionLedger, Test2480_RaceRegression_TwoProducerAdmissionSeque
     // confirm(cons, 2), admission_version(B)=v2 <= confirmed_version(cons)=v2
     // → visible.  Correct.
     StringLedger l;
-    const std::string A    = "A_pubkey";
-    const std::string B    = "B_pubkey";
+    const std::string A = "A_pubkey";
+    const std::string B = "B_pubkey";
     const std::string cons = "cons_uid";
 
     // T1
@@ -382,7 +384,7 @@ TEST(VersionedAdmissionLedger, ForEachAdmitted_VisitsEveryPubkeyExactlyOnce)
     l.admit(10);
     l.admit(20);
     l.admit(30);
-    l.revoke(20);  // now: {10, 30}
+    l.revoke(20); // now: {10, 30}
     std::vector<int> visited;
     l.for_each_admitted([&](int pk) { visited.push_back(pk); });
     std::sort(visited.begin(), visited.end());
@@ -409,8 +411,10 @@ TEST(VersionedAdmissionLedger, ForEachAdmitted_MatchesSnapshot)
     // Equivalence pin: for_each_admitted visits the same set as
     // admitted_snapshot returns.  Order unspecified — compare as sets.
     IntLedger l;
-    for (int i = 1; i <= 100; ++i) l.admit(i);
-    for (int i = 10; i <= 20; ++i) l.revoke(i);
+    for (int i = 1; i <= 100; ++i)
+        l.admit(i);
+    for (int i = 10; i <= 20; ++i)
+        l.revoke(i);
     std::vector<int> via_snapshot = l.admitted_snapshot();
     std::vector<int> via_visitor;
     l.for_each_admitted([&](int pk) { via_visitor.push_back(pk); });
@@ -433,7 +437,8 @@ TEST(VersionedAdmissionLedger, MaxConfirmedVersion_NoRoles_ReturnsZero)
 TEST(VersionedAdmissionLedger, MaxConfirmedVersion_ReturnsHighestAcrossRoles)
 {
     IntLedger l;
-    for (int i = 1; i <= 10; ++i) l.admit(i);
+    for (int i = 1; i <= 10; ++i)
+        l.admit(i);
     l.confirm(7, 3u);
     l.confirm(8, 7u);
     l.confirm(9, 5u);
@@ -452,7 +457,8 @@ TEST(VersionedAdmissionLedger, MaxConfirmedVersion_ClampedInputRespected)
     // role that fabricates applied=UINT64_MAX gets clamped to
     // current_version_; max reflects that, not the raw wire input.
     IntLedger l;
-    for (int i = 1; i <= 5; ++i) l.admit(i);
+    for (int i = 1; i <= 5; ++i)
+        l.admit(i);
     l.confirm(7, std::numeric_limits<std::uint64_t>::max());
     EXPECT_EQ(l.max_confirmed_version(), 5u);
 }
@@ -460,7 +466,7 @@ TEST(VersionedAdmissionLedger, MaxConfirmedVersion_ClampedInputRespected)
 TEST(VersionedAdmissionLedger, ResetRoleConfirmation_KeepsAdmissions)
 {
     IntLedger l;
-    l.admit(10);      // v1
+    l.admit(10); // v1
     l.confirm(7, 1u);
     l.confirm(8, 1u);
     EXPECT_TRUE(l.reset_role_confirmation(7));

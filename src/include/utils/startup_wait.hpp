@@ -40,8 +40,8 @@ inline constexpr int kMaxStartupWaitTimeoutMs = 3'600'000;
 /// One role-presence requirement for startup coordination (HEP-0023).
 struct WaitForRole
 {
-    std::string uid;                                      ///< Exact role UID to wait for (e.g. "prod.sensor.uid3a7f2b1c").
-    int         timeout_ms{kDefaultStartupWaitTimeoutMs}; ///< Per-role wait timeout (ms). Must be > 0.
+    std::string uid; ///< Exact role UID to wait for (e.g. "prod.sensor.uid3a7f2b1c").
+    int timeout_ms{kDefaultStartupWaitTimeoutMs}; ///< Per-role wait timeout (ms). Must be > 0.
 };
 
 } // namespace pylabhub

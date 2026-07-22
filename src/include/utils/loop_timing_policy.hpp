@@ -78,8 +78,8 @@ namespace pylabhub
 #define PYLABHUB_MAX_LOOP_RATE_HZ 10000
 #endif
 
-static constexpr double kUsPerSecond         = 1'000'000.0;
-static constexpr double kUsPerMs             = 1'000.0;
+static constexpr double kUsPerSecond = 1'000'000.0;
+static constexpr double kUsPerMs = 1'000.0;
 
 /// Minimum period in microseconds, derived from the max rate.
 static constexpr double kMinPeriodUs = kUsPerSecond / PYLABHUB_MAX_LOOP_RATE_HZ;
@@ -114,8 +114,7 @@ static constexpr double kMaxQueueIoWaitRatio = 0.5;
 /// Ready, `run_data_loop` no longer re-enters the gate block — user
 /// `on_init` is not re-invoked, and the data loop reverts to the
 /// role's configured `period_us` / `loop_timing` policy.
-static constexpr auto kLoopReadyGateInterval =
-    std::chrono::milliseconds{100};
+static constexpr auto kLoopReadyGateInterval = std::chrono::milliseconds{100};
 
 /// HEP-CORE-0036 §6.6.3 — broker readiness pull cadence.
 ///
@@ -137,8 +136,7 @@ static constexpr auto kLoopReadyGateInterval =
 /// but tuning one MUST NOT couple to the other.  Kept split so a
 /// future change (e.g. faster gate polling for latency-tuned roles)
 /// does not silently accelerate broker RPC traffic during startup.
-static constexpr auto kBrokerReadinessPollInterval =
-    std::chrono::milliseconds{100};
+static constexpr auto kBrokerReadinessPollInterval = std::chrono::milliseconds{100};
 
 // ============================================================================
 // LoopTimingPolicy
@@ -150,9 +148,11 @@ static constexpr auto kBrokerReadinessPollInterval =
  *
  * | Value                     | Period       | Sleep behaviour |
  * |---------------------------|-------------|-----------------|
- * | MaxRate                   | must be 0    | No sleep; iterate as fast as possible. Single acquire per cycle. |
- * | FixedRate                 | must be > 0  | Sleep to deadline. On overrun: reset deadline to `now + period` (no catch-up). |
- * | FixedRateWithCompensation | must be > 0  | Sleep to deadline. On overrun: advance deadline from the previous deadline by one period (catches up; the schedule stays anchored to the original start = start + N·period). |
+ * | MaxRate                   | must be 0    | No sleep; iterate as fast as possible. Single
+ * acquire per cycle. | | FixedRate                 | must be > 0  | Sleep to deadline. On overrun:
+ * reset deadline to `now + period` (no catch-up). | | FixedRateWithCompensation | must be > 0  |
+ * Sleep to deadline. On overrun: advance deadline from the previous deadline by one period (catches
+ * up; the schedule stays anchored to the original start = start + N·period). |
  *
  * **MaxRate** is an explicit, first-class policy — not a side-effect of setting period to 0.
  */
@@ -177,8 +177,8 @@ enum class LoopTimingPolicy : uint8_t
 struct LoopTimingParams
 {
     LoopTimingPolicy policy{LoopTimingPolicy::MaxRate};
-    uint64_t         period_us{0};       ///< Target period (µs). 0 = MaxRate.
-    double           io_wait_ratio{kDefaultQueueIoWaitRatio}; ///< Fraction of period per acquire attempt.
+    uint64_t period_us{0};                          ///< Target period (µs). 0 = MaxRate.
+    double io_wait_ratio{kDefaultQueueIoWaitRatio}; ///< Fraction of period per acquire attempt.
 };
 
 // ============================================================================
@@ -196,13 +196,13 @@ struct LoopTimingParams
  */
 inline double resolve_period_us(double rate_hz, double period_ms, const std::string &context)
 {
-    const bool has_rate   = rate_hz > 0.0;
+    const bool has_rate = rate_hz > 0.0;
     const bool has_period = period_ms > 0.0;
 
     if (has_rate && has_period)
     {
-        throw std::runtime_error(
-            context + ": cannot specify both 'target_rate_hz' and 'target_period_ms'");
+        throw std::runtime_error(context +
+                                 ": cannot specify both 'target_rate_hz' and 'target_period_ms'");
     }
 
     double period_us = 0.0;
@@ -219,11 +219,11 @@ inline double resolve_period_us(double rate_hz, double period_ms, const std::str
     // Enforce minimum period for FixedRate (checked later against policy).
     if (period_us > 0.0 && period_us < kMinPeriodUs)
     {
-        throw std::runtime_error(
-            context + ": period " + std::to_string(period_us) + " μs is below minimum " +
-            std::to_string(kMinPeriodUs) + " μs (" +
-            std::to_string(PYLABHUB_MAX_LOOP_RATE_HZ) + " Hz max rate). "
-            "Use 'max_rate' timing policy for higher rates.");
+        throw std::runtime_error(context + ": period " + std::to_string(period_us) +
+                                 " μs is below minimum " + std::to_string(kMinPeriodUs) + " μs (" +
+                                 std::to_string(PYLABHUB_MAX_LOOP_RATE_HZ) +
+                                 " Hz max rate). "
+                                 "Use 'max_rate' timing policy for higher rates.");
     }
 
     return period_us;
@@ -244,7 +244,7 @@ inline double resolve_period_us(double rate_hz, double period_ms, const std::str
  * @throws std::runtime_error on unrecognized value.
  */
 inline LoopTimingPolicy parse_loop_timing_policy(const std::string &timing_str,
-                                                  const std::string &context)
+                                                 const std::string &context)
 {
     if (timing_str == "max_rate")
     {
@@ -282,12 +282,10 @@ inline LoopTimingPolicy parse_loop_timing_policy(const std::string &timing_str,
  * @param ratio      Queue I/O wait timeout ratio (0.1–0.5, from config).
  * @return Short timeout as std::chrono::microseconds.
  */
-inline std::chrono::microseconds compute_short_timeout(
-    double period_us,
-    double ratio) noexcept
+inline std::chrono::microseconds compute_short_timeout(double period_us, double ratio) noexcept
 {
     const double computed = period_us * ratio;
-    const double clamped  = std::max(computed, kMinQueueIoTimeoutUs);
+    const double clamped = std::max(computed, kMinQueueIoTimeoutUs);
     return std::chrono::microseconds{static_cast<int64_t>(clamped)};
 }
 
@@ -317,11 +315,9 @@ inline std::chrono::microseconds compute_short_timeout(
  * Always advance from previous deadline by period (maintains steady average
  * rate even if individual cycles overrun — risk of cascading overruns).
  */
-inline std::chrono::steady_clock::time_point compute_next_deadline(
-    LoopTimingPolicy                          policy,
-    std::chrono::steady_clock::time_point     prev_deadline,
-    std::chrono::steady_clock::time_point     cycle_start,
-    double                                    period_us) noexcept
+inline std::chrono::steady_clock::time_point
+compute_next_deadline(LoopTimingPolicy policy, std::chrono::steady_clock::time_point prev_deadline,
+                      std::chrono::steady_clock::time_point cycle_start, double period_us) noexcept
 {
     if (policy == LoopTimingPolicy::MaxRate)
     {
@@ -347,13 +343,12 @@ inline std::chrono::steady_clock::time_point compute_next_deadline(
     }
 
     const auto ideal = prev_deadline + period;
-    const auto now   = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     if (now <= ideal)
     {
-        return ideal;       // on time — advance cleanly
+        return ideal; // on time — advance cleanly
     }
-    return now + period;    // overrun — reset from now (no catch-up)
+    return now + period; // overrun — reset from now (no catch-up)
 }
-
 
 } // namespace pylabhub

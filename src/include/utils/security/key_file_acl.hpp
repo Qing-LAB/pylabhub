@@ -139,12 +139,12 @@ enum class SetModeResult : int
 /// §4.6.2).
 struct AclVerdict
 {
-    bool                  ok{false};
+    bool ok{false};
     std::filesystem::path path{};
-    KeyFileRole           role{KeyFileRole::VaultFile};
-    uint32_t              observed_mode{0};
-    uint32_t              required_mode{0};
-    std::string           diagnostic{};
+    KeyFileRole role{KeyFileRole::VaultFile};
+    uint32_t observed_mode{0};
+    uint32_t required_mode{0};
+    std::string diagnostic{};
 };
 
 /// Resolve a config-supplied `auth.keyfile` string to a filesystem
@@ -176,8 +176,7 @@ struct AclVerdict
 /// runtime contract — non-empty + file absent is a hard error,
 /// not a silent fallback).
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::filesystem::path
-resolve_keyfile_path(const std::string           &keyfile,
-                     const std::filesystem::path &base_dir) noexcept;
+resolve_keyfile_path(const std::string &keyfile, const std::filesystem::path &base_dir) noexcept;
 
 /// Returns true if `keyfile`, resolved relative to `base_dir`,
 /// canonicalizes to a path inside `base_dir`.  Used by the hub +
@@ -213,9 +212,8 @@ resolve_keyfile_path(const std::string           &keyfile,
 ///   and answered no."  Lets the caller distinguish the two and
 ///   emit a soft stderr warn only in the diagnostic case.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT bool
-keyfile_inside_base_dir(const std::string           &keyfile,
-                        const std::filesystem::path &base_dir,
-                        std::string                 *out_canonicalize_error = nullptr) noexcept;
+keyfile_inside_base_dir(const std::string &keyfile, const std::filesystem::path &base_dir,
+                        std::string *out_canonicalize_error = nullptr) noexcept;
 
 /// Atomically write @p contents to @p path, ending with a regular
 /// file at mode 0600 owned by the calling euid.
@@ -244,9 +242,8 @@ keyfile_inside_base_dir(const std::string           &keyfile,
 /// diagnostic text (path + errno detail).  Never returns a half-written
 /// file: on any failure, the rename has not happened and `path` retains
 /// its pre-call content.
-PYLABHUB_UTILS_EXPORT void
-atomic_write_owner_only_file(const std::filesystem::path &path,
-                              std::string_view             contents);
+PYLABHUB_UTILS_EXPORT void atomic_write_owner_only_file(const std::filesystem::path &path,
+                                                        std::string_view contents);
 
 /// Verify that `path` satisfies the ACL contract for `role`.
 ///
@@ -274,9 +271,8 @@ atomic_write_owner_only_file(const std::filesystem::path &path,
 /// encryption-at-rest layer (libsodium AEAD via `vault_crypto.cpp`);
 /// the encryption is the primary protection and is not subject to
 /// the TOCTOU window.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT AclVerdict
-verify_keyfile_acl(const std::filesystem::path &path,
-                   KeyFileRole                   role) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT AclVerdict verify_keyfile_acl(const std::filesystem::path &path,
+                                                                  KeyFileRole role) noexcept;
 
 /// Compare `observed_uid` to `expected_uid` for `path` under `role`
 /// and return a verdict.  This is the ownership-check primitive that
@@ -296,10 +292,8 @@ verify_keyfile_acl(const std::filesystem::path &path,
 /// `observed_mode` / `required_mode` are 0 on both paths — this
 /// helper does NOT check modes, only ownership.
 [[nodiscard]] PYLABHUB_UTILS_TEST_EXPORT AclVerdict
-verify_ownership(const std::filesystem::path &path,
-                 KeyFileRole                   role,
-                 uint32_t                      observed_uid,
-                 uint32_t                      expected_uid) noexcept;
+verify_ownership(const std::filesystem::path &path, KeyFileRole role, uint32_t observed_uid,
+                 uint32_t expected_uid) noexcept;
 
 /// Set the mode of `path` to the canonical value for `role` per
 /// HEP-CORE-0035 §4.6.1.
@@ -315,9 +309,7 @@ verify_ownership(const std::filesystem::path &path,
 ///
 /// Does not log; the caller decides how to surface.  Treat
 /// `NoCanonicalMode` as expected, not as an error.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT SetModeResult
-set_keyfile_mode(const std::filesystem::path &path,
-                 KeyFileRole                   role,
-                 int                          *out_errno = nullptr) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT SetModeResult set_keyfile_mode(
+    const std::filesystem::path &path, KeyFileRole role, int *out_errno = nullptr) noexcept;
 
 } // namespace pylabhub::utils::security

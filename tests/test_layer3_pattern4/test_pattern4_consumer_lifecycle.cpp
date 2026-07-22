@@ -71,7 +71,7 @@ namespace
 
 class Pattern4ConsumerLifecycleTest : public IsolatedProcessTest
 {
-protected:
+  protected:
     void TearDown() override
     {
         if (std::getenv("PLH_TEST_KEEP_TEMP") != nullptr)
@@ -187,22 +187,19 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
         pylabhub::scripting::RoleUidTag::Consumer, "pattern4cons", 1u);
 
     const fs::path temp_dir = make_test_temp_dir("consumer_registers_timeout");
-    auto setup            = make_pattern4_setup({producer_uid, consumer_uid});
+    auto setup = make_pattern4_setup({producer_uid, consumer_uid});
     setup.shared_log_path = (temp_dir / "shared.log").string();
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const fs::path shared_log = setup.shared_log_path;
 
     // ── 1. Broker + real producer (idle, holds via quit-pipe) ──
-    auto broker = SpawnWorkerWithQuitSignal(
-        "pattern4_consumer_lifecycle.broker", {temp_dir.string()});
-    expect_log_sequence(
-        shared_log,
-        {"Pattern4Broker: bound endpoint='"},
-        milliseconds{kMidTimeoutMs});
+    auto broker =
+        SpawnWorkerWithQuitSignal("pattern4_consumer_lifecycle.broker", {temp_dir.string()});
+    expect_log_sequence(shared_log, {"Pattern4Broker: bound endpoint='"},
+                        milliseconds{kMidTimeoutMs});
 
-    auto producer = SpawnWorkerWithQuitSignal(
-        "pattern4_consumer_lifecycle.producer_role",
-        {temp_dir.string()});
+    auto producer =
+        SpawnWorkerWithQuitSignal("pattern4_consumer_lifecycle.producer_role", {temp_dir.string()});
     // Physical wall-clock order (verified from a captured run):
     //   1. Broker receives APPLIED_REQ + logs `event=ChannelAuthApplied
     //      producer_uid=...` (broker-side receipt).
@@ -213,23 +210,22 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     // Forward-only sequence order must MATCH this — if reversed, the
     // sequence walker searches forward-only from an already-past
     // marker and hangs on the missing one.
-    expect_log_sequence(
-        shared_log,
-        {
-            // Broker's receive-side confirmation (advances
-            // confirmed_version[K][P] to 0, no-op advance on this
-            // fresh channel).
-            "event=ChannelAuthApplied channel='data.test' producer_uid='" +
-                producer_uid + "' instance=1 applied_version=0 confirmed_version=0",
-            // Producer's send-side emission log (Phase 3a.3b path (1)
-            // — the log line proves the real producer AUTO-EMITTED
-            // APPLIED_REQ from `apply_producer_reg_ack`).
-            "event=ChannelAuthApplied channel='data.test' applied_version=0",
-            // Producer has heartbeated at least once — required for
-            // CONSUMER_REG_REQ to bypass `awaiting_first_heartbeat`.
-            "Broker: first heartbeat received from role='" + producer_uid + "'",
-        },
-        milliseconds{kLongTimeoutMs});
+    expect_log_sequence(shared_log,
+                        {
+                            // Broker's receive-side confirmation (advances
+                            // confirmed_version[K][P] to 0, no-op advance on this
+                            // fresh channel).
+                            "event=ChannelAuthApplied channel='data.test' producer_uid='" +
+                                producer_uid + "' instance=1 applied_version=0 confirmed_version=0",
+                            // Producer's send-side emission log (Phase 3a.3b path (1)
+                            // — the log line proves the real producer AUTO-EMITTED
+                            // APPLIED_REQ from `apply_producer_reg_ack`).
+                            "event=ChannelAuthApplied channel='data.test' applied_version=0",
+                            // Producer has heartbeated at least once — required for
+                            // CONSUMER_REG_REQ to bypass `awaiting_first_heartbeat`.
+                            "Broker: first heartbeat received from role='" + producer_uid + "'",
+                        },
+                        milliseconds{kLongTimeoutMs});
 
     // ── 2. Wire client acts as consumer (own DEALER; same identity
     //      as `setup.curve.role(consumer_uid)` so the broker's
@@ -237,11 +233,11 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     zmq::context_t ctx;
     const auto &cons_kp = setup.curve.role(consumer_uid);
     BrokerWireClient::Config cons_cfg;
-    cons_cfg.broker_endpoint  = setup.broker_endpoint;
-    cons_cfg.broker_pubkey    = setup.curve.hub.public_z85;
-    cons_cfg.client_pubkey    = cons_kp.public_z85;
-    cons_cfg.client_seckey    = cons_kp.secret_z85;
-    cons_cfg.client_role_uid  = consumer_uid;
+    cons_cfg.broker_endpoint = setup.broker_endpoint;
+    cons_cfg.broker_pubkey = setup.curve.hub.public_z85;
+    cons_cfg.client_pubkey = cons_kp.public_z85;
+    cons_cfg.client_seckey = cons_kp.secret_z85;
+    cons_cfg.client_role_uid = consumer_uid;
     BrokerWireClient cons_client(ctx, cons_cfg);
 
     // ── 3. Consumer REG — bumps channel_version[K] 0→1 and fires
@@ -249,18 +245,16 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     //      its BRC inbox unread. ──
     {
         pylabhub::hub::ConsumerRegInputs in;
-        in.channel        = "data.test";
-        in.role_uid       = consumer_uid;
-        in.role_name      = "pattern4cons";
-        in.role_type      = "consumer";
+        in.channel = "data.test";
+        in.role_uid = consumer_uid;
+        in.role_name = "pattern4cons";
+        in.role_type = "consumer";
         in.data_transport = "zmq";
-        in.zmq_pubkey     = cons_kp.public_z85;
+        in.zmq_pubkey = cons_kp.public_z85;
         auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = cons_client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "wire consumer REG_REQ: no reply";
+        auto reply = cons_client.request("CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+                                         milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "wire consumer REG_REQ: no reply";
         ASSERT_EQ(reply->value("status", ""), "success")
             << "wire consumer REG_REQ failed: " << reply->dump();
     }
@@ -269,9 +263,9 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     //      enqueue (wait-path) since confirmed(0) < channel_version(1). ──
     {
         nlohmann::json attach;
-        attach["channel_name"]      = "data.test";
+        attach["channel_name"] = "data.test";
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
@@ -294,10 +288,8 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     // window.  The deferred-reply contract itself IS verified by
     // its dedicated raw-wire attach-coordination test — no need to
     // re-verify from this test which is scoped to real-producer.
-    expect_log_sequence(
-        shared_log,
-        {"event=AttachReqZmqEnqueued channel='data.test'"},
-        milliseconds{kMidTimeoutMs});
+    expect_log_sequence(shared_log, {"event=AttachReqZmqEnqueued channel='data.test'"},
+                        milliseconds{kMidTimeoutMs});
 
     // ── 5. Timeout drain.  Broker's sweep fires at
     //      producer_apply_wait_ms + ~heartbeat_interval ≈ 3.5s.
@@ -305,16 +297,13 @@ TEST_F(Pattern4ConsumerLifecycleTest, IdleProducerYieldsTimeoutDrainToConsumer)
     //      Pattern4AttachCoordinationTest.WaitPathTimeoutOn... cushion). ──
     {
         auto reply = cons_client.receive(milliseconds{6000});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer did not receive timeout reply within 6s — "
-               "broker sweep did not drain, or producer somehow "
-               "responded (which would contradict its idle-cycle "
-               "assumption)";
+        ASSERT_TRUE(reply.has_value()) << "consumer did not receive timeout reply within 6s — "
+                                          "broker sweep did not drain, or producer somehow "
+                                          "responded (which would contradict its idle-cycle "
+                                          "assumption)";
         EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ");
-        EXPECT_EQ(reply->second.value("status", ""), "timeout")
-            << reply->second.dump();
-        EXPECT_EQ(reply->second.value("reason", ""),
-                   "producer_did_not_confirm_within_budget")
+        EXPECT_EQ(reply->second.value("status", ""), "timeout") << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""), "producer_did_not_confirm_within_budget")
             << reply->second.dump();
     }
 

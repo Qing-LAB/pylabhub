@@ -47,11 +47,11 @@ namespace pylabhub::admin
 /// client-claimed) so the per-message fact check cannot be spoofed.
 struct AdminSessionFacts
 {
-    std::string   label;         ///< Operator-supplied, human-readable (e.g. "alice-laptop").
-    std::string   peer_address;  ///< Hub-observed ZMQ "Peer-Address" (peer IP;
-                                 ///< libzmq surfaces the address, not the port).
-    std::string   routing_id;    ///< Hub-observed ROUTER routing identity of the console.
-    std::uint64_t issued_at_ms;  ///< Hub wall clock at establishment.
+    std::string label;          ///< Operator-supplied, human-readable (e.g. "alice-laptop").
+    std::string peer_address;   ///< Hub-observed ZMQ "Peer-Address" (peer IP;
+                                ///< libzmq surfaces the address, not the port).
+    std::string routing_id;     ///< Hub-observed ROUTER routing identity of the console.
+    std::uint64_t issued_at_ms; ///< Hub wall clock at establishment.
 };
 
 /// KeyStore entry name for the hub's per-instance session-sealing key.  The
@@ -69,8 +69,7 @@ PYLABHUB_UTILS_EXPORT void ensure_session_seal_key();
 /// encrypted+authenticated under the per-instance key (`secretbox`) with a
 /// fresh random nonce, then hex-encoded.  Only this hub instance can open it.
 /// Requires `ensure_session_seal_key()` to have run.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
-seal_session_id(const AdminSessionFacts &facts);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string seal_session_id(const AdminSessionFacts &facts);
 
 /// Open a sealed session id.  Returns the embedded facts, or `std::nullopt`
 /// if the input is not valid hex, is truncated, was tampered with, or was
@@ -88,13 +87,11 @@ open_session_id(std::string_view sealed_hex);
 /// or `std::nullopt` on any open failure or fact mismatch (tampered,
 /// foreign-instance, or replayed from another connection).
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<AdminSessionFacts>
-verify_session_id(std::string_view sealed_hex,
-                  std::string_view observed_peer_address,
+verify_session_id(std::string_view sealed_hex, std::string_view observed_peer_address,
                   std::string_view observed_routing_id);
 
 /// Provenance stamp for logs + `sender_uid` on actuated NOTIFYs (§11.0.5).
 /// Human-readable and session-unique: `"<label>@<peer_address>#<issued_at_ms>"`.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
-origin_uid(const AdminSessionFacts &facts);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string origin_uid(const AdminSessionFacts &facts);
 
 } // namespace pylabhub::admin

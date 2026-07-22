@@ -43,9 +43,9 @@ int pick_unused_port(int max_attempts)
             continue;
 
         sockaddr_in addr{};
-        addr.sin_family      = AF_INET;
+        addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port        = 0;  // OS picks.
+        addr.sin_port = 0; // OS picks.
 
         if (::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0)
         {
@@ -65,9 +65,8 @@ int pick_unused_port(int max_attempts)
         if (port > 0)
             return port;
     }
-    throw std::runtime_error(
-        "pick_unused_port: failed to allocate a port after " +
-        std::to_string(max_attempts) + " attempts");
+    throw std::runtime_error("pick_unused_port: failed to allocate a port after " +
+                             std::to_string(max_attempts) + " attempts");
 }
 
 // ─── make_temp_dir ──────────────────────────────────────────────────────────
@@ -75,10 +74,9 @@ int pick_unused_port(int max_attempts)
 fs::path make_temp_dir(std::string_view test_label)
 {
     static std::atomic<int> g_counter{0};
-    const auto unique = std::to_string(::getpid()) + "_" +
-                        std::to_string(g_counter.fetch_add(1));
-    fs::path dir = fs::temp_directory_path() /
-                   ("plh_pattern4_" + std::string(test_label) + "_" + unique);
+    const auto unique = std::to_string(::getpid()) + "_" + std::to_string(g_counter.fetch_add(1));
+    fs::path dir =
+        fs::temp_directory_path() / ("plh_pattern4_" + std::string(test_label) + "_" + unique);
     std::error_code ec;
     fs::remove_all(dir, ec);
     fs::create_directories(dir);
@@ -87,13 +85,12 @@ fs::path make_temp_dir(std::string_view test_label)
 
 // ─── Pattern4Setup ──────────────────────────────────────────────────────────
 
-Pattern4Setup
-make_pattern4_setup(const std::vector<std::string> &role_uids)
+Pattern4Setup make_pattern4_setup(const std::vector<std::string> &role_uids)
 {
     Pattern4Setup s;
-    const int port  = pick_unused_port();
+    const int port = pick_unused_port();
     s.broker_endpoint = "tcp://127.0.0.1:" + std::to_string(port);
-    s.curve           = pylabhub::tests::make_curve_setup(role_uids);
+    s.curve = pylabhub::tests::make_curve_setup(role_uids);
     return s;
 }
 
@@ -101,8 +98,8 @@ void write_pattern4_setup(const Pattern4Setup &setup, const fs::path &path)
 {
     nlohmann::json j;
     j["broker_endpoint"] = setup.broker_endpoint;
-    j["shared_log_path"] = setup.shared_log_path;  // optional; "" disables
-    j["hub"]             = {
+    j["shared_log_path"] = setup.shared_log_path; // optional; "" disables
+    j["hub"] = {
         {"public_z85", setup.curve.hub.public_z85},
         {"secret_z85", setup.curve.hub.secret_z85},
     };
@@ -110,7 +107,7 @@ void write_pattern4_setup(const Pattern4Setup &setup, const fs::path &path)
     for (const auto &[uid, kp] : setup.curve.role_keys)
     {
         roles.push_back({
-            {"uid",        uid},
+            {"uid", uid},
             {"public_z85", kp.public_z85},
             {"secret_z85", kp.secret_z85},
         });
@@ -119,8 +116,7 @@ void write_pattern4_setup(const Pattern4Setup &setup, const fs::path &path)
 
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (!out)
-        throw std::runtime_error("write_pattern4_setup: cannot open " +
-                                  path.string());
+        throw std::runtime_error("write_pattern4_setup: cannot open " + path.string());
     out << j.dump(2);
 }
 
@@ -128,14 +124,13 @@ Pattern4Setup read_pattern4_setup(const fs::path &path)
 {
     std::ifstream in(path);
     if (!in)
-        throw std::runtime_error("read_pattern4_setup: cannot open " +
-                                  path.string());
+        throw std::runtime_error("read_pattern4_setup: cannot open " + path.string());
     nlohmann::json j;
     in >> j;
 
     Pattern4Setup s;
-    s.broker_endpoint    = j.at("broker_endpoint").get<std::string>();
-    s.shared_log_path    = j.value("shared_log_path", std::string{});
+    s.broker_endpoint = j.at("broker_endpoint").get<std::string>();
+    s.shared_log_path = j.value("shared_log_path", std::string{});
     s.curve.hub.public_z85 = j.at("hub").at("public_z85").get<std::string>();
     s.curve.hub.secret_z85 = j.at("hub").at("secret_z85").get<std::string>();
     for (const auto &item : j.at("role_keys"))
@@ -143,8 +138,7 @@ Pattern4Setup read_pattern4_setup(const fs::path &path)
         pylabhub::tests::CurveKeypair kp;
         kp.public_z85 = item.at("public_z85").get<std::string>();
         kp.secret_z85 = item.at("secret_z85").get<std::string>();
-        s.curve.role_keys.emplace(item.at("uid").get<std::string>(),
-                                   std::move(kp));
+        s.curve.role_keys.emplace(item.at("uid").get<std::string>(), std::move(kp));
     }
     return s;
 }
@@ -163,9 +157,8 @@ void set_shared_log(const fs::path &shared_log_path)
     auto &L = pylabhub::utils::Logger::instance();
     if (!L.set_logfile(shared_log_path.string(), /*use_flock=*/true))
     {
-        throw std::runtime_error(
-            "Pattern4 set_shared_log: Logger::set_logfile failed for '" +
-            shared_log_path.string() + "'");
+        throw std::runtime_error("Pattern4 set_shared_log: Logger::set_logfile failed for '" +
+                                 shared_log_path.string() + "'");
     }
 }
 
@@ -180,8 +173,7 @@ namespace
 
 /// Read the captured stderr file in full.  Returns empty string if
 /// the file doesn't exist yet (the subprocess hasn't started writing).
-std::string read_stderr_snapshot(
-    const pylabhub::tests::helper::WorkerProcess &proc)
+std::string read_stderr_snapshot(const pylabhub::tests::helper::WorkerProcess &proc)
 {
     // `WorkerProcess::get_stderr()` returns a `const string &` that is
     // populated lazily on first call (or after wait_for_exit).  We
@@ -198,10 +190,9 @@ std::string read_stderr_snapshot(
     return proc.get_stderr();
 }
 
-} // anon
+} // namespace
 
-bool wait_for_log(const pylabhub::tests::helper::WorkerProcess &proc,
-                  std::string_view substring,
+bool wait_for_log(const pylabhub::tests::helper::WorkerProcess &proc, std::string_view substring,
                   std::chrono::milliseconds timeout)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -246,18 +237,16 @@ std::string tail_lines(const std::string &s, std::size_t n)
     return out;
 }
 
-} // anon
+} // namespace
 
-void expect_log(const pylabhub::tests::helper::WorkerProcess &proc,
-                std::string_view substring,
+void expect_log(const pylabhub::tests::helper::WorkerProcess &proc, std::string_view substring,
                 std::chrono::milliseconds timeout)
 {
     if (wait_for_log(proc, substring, timeout))
         return;
     const auto snapshot = read_stderr_snapshot(proc);
-    ADD_FAILURE() << "expect_log: substring '" << substring
-                  << "' not found within " << timeout.count()
-                  << "ms in worker mode '" << proc.mode() << "'\n"
+    ADD_FAILURE() << "expect_log: substring '" << substring << "' not found within "
+                  << timeout.count() << "ms in worker mode '" << proc.mode() << "'\n"
                   << "Tail of captured stderr (last 10 lines):\n"
                   << tail_lines(snapshot, 10);
 }
@@ -296,10 +285,10 @@ std::string sort_log_by_timestamp(const std::string &snapshot)
 {
     if (snapshot.empty())
         return snapshot;
-    std::vector<std::pair<std::string, std::string>> keyed;  // (sort_key, line)
+    std::vector<std::pair<std::string, std::string>> keyed; // (sort_key, line)
     keyed.reserve(snapshot.size() / 80 + 1);
-    std::string last_ts;  // most recent observed timestamp; inherited by
-                          // continuation lines without their own
+    std::string last_ts; // most recent observed timestamp; inherited by
+                         // continuation lines without their own
     std::size_t pos = 0;
     while (pos < snapshot.size())
     {
@@ -314,7 +303,7 @@ std::string sort_log_by_timestamp(const std::string &snapshot)
         {
             // Skip "[LOGGER] [LEVEL] " — find the 3rd '['.
             std::size_t bracket_count = 0;
-            std::size_t ts_start      = std::string::npos;
+            std::size_t ts_start = std::string::npos;
             for (std::size_t i = 0; i < line.size(); ++i)
             {
                 if (line[i] == '[')
@@ -329,8 +318,8 @@ std::string sort_log_by_timestamp(const std::string &snapshot)
             if (ts_start != std::string::npos)
             {
                 const auto ts_end = line.find(']', ts_start);
-                if (ts_end != std::string::npos
-                    && ts_end - ts_start >= 19)  // "YYYY-MM-DD HH:MM:SS" minimum
+                if (ts_end != std::string::npos &&
+                    ts_end - ts_start >= 19) // "YYYY-MM-DD HH:MM:SS" minimum
                 {
                     ts = std::string{line.substr(ts_start, ts_end - ts_start)};
                     last_ts = ts;
@@ -339,12 +328,11 @@ std::string sort_log_by_timestamp(const std::string &snapshot)
         }
         // Continuation / non-LOGGER lines inherit the most recent
         // timestamp so they sort with their emitting LOGGER call.
-        keyed.emplace_back(ts.empty() ? last_ts : ts,
-                           std::string{line});
+        keyed.emplace_back(ts.empty() ? last_ts : ts, std::string{line});
         pos = end;
     }
     std::stable_sort(keyed.begin(), keyed.end(),
-        [](const auto &a, const auto &b) { return a.first < b.first; });
+                     [](const auto &a, const auto &b) { return a.first < b.first; });
     std::string out;
     out.reserve(snapshot.size());
     for (auto &p : keyed)
@@ -352,12 +340,11 @@ std::string sort_log_by_timestamp(const std::string &snapshot)
     return out;
 }
 
-} // anon
+} // namespace
 
-void expect_log_sequence(
-    const fs::path &shared_log,
-    std::initializer_list<std::string_view> markers,
-    std::chrono::milliseconds per_step_timeout)
+void expect_log_sequence(const fs::path &shared_log,
+                         std::initializer_list<std::string_view> markers,
+                         std::chrono::milliseconds per_step_timeout)
 {
     // Re-search from scratch each poll against the sorted snapshot.
     // Carrying a byte-offset cursor across polls is unsafe: a late-
@@ -374,8 +361,7 @@ void expect_log_sequence(
     // Tracked by max_matched (highest step count seen across polls);
     // when it advances, the deadline resets.
     std::size_t max_matched = 0;
-    auto step_deadline =
-        std::chrono::steady_clock::now() + per_step_timeout;
+    auto step_deadline = std::chrono::steady_clock::now() + per_step_timeout;
     std::size_t cached_raw_size = 0;
     std::string sorted_snapshot;
 
@@ -388,24 +374,24 @@ void expect_log_sequence(
             cached_raw_size = raw.size();
         }
 
-        std::size_t cursor  = 0;
+        std::size_t cursor = 0;
         std::size_t matched = 0;
         for (auto marker : markers)
         {
             const auto pos = sorted_snapshot.find(marker, cursor);
-            if (pos == std::string::npos) break;
+            if (pos == std::string::npos)
+                break;
             cursor = pos + marker.size();
             ++matched;
         }
 
         if (matched == markers.size())
-            return;  // all markers found in causal order
+            return; // all markers found in causal order
 
         if (matched > max_matched)
         {
-            max_matched   = matched;
-            step_deadline =
-                std::chrono::steady_clock::now() + per_step_timeout;
+            max_matched = matched;
+            step_deadline = std::chrono::steady_clock::now() + per_step_timeout;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{25});
     }
@@ -414,19 +400,16 @@ void expect_log_sequence(
     // causal order.
     auto it = markers.begin();
     std::advance(it, max_matched);
-    ADD_FAILURE()
-        << "expect_log_sequence: step " << max_matched + 1
-        << " of " << markers.size()
-        << " — marker '" << *it
-        << "' not found within " << per_step_timeout.count()
-        << "ms after step " << max_matched << " matched (sorted snapshot "
-        << sorted_snapshot.size() << " bytes total).\n"
-        << "Note: 'not found' may also mean the marker IS in the log "
-           "but with an EARLIER timestamp than a previously-matched "
-           "step — i.e., a causal-sequence violation.  Inspect the "
-           "tail for both occurrences and their timestamps.\n"
-        << "Tail of shared log (last 20 lines):\n"
-        << tail_lines(sorted_snapshot, 20);
+    ADD_FAILURE() << "expect_log_sequence: step " << max_matched + 1 << " of " << markers.size()
+                  << " — marker '" << *it << "' not found within " << per_step_timeout.count()
+                  << "ms after step " << max_matched << " matched (sorted snapshot "
+                  << sorted_snapshot.size() << " bytes total).\n"
+                  << "Note: 'not found' may also mean the marker IS in the log "
+                     "but with an EARLIER timestamp than a previously-matched "
+                     "step — i.e., a causal-sequence violation.  Inspect the "
+                     "tail for both occurrences and their timestamps.\n"
+                  << "Tail of shared log (last 20 lines):\n"
+                  << tail_lines(sorted_snapshot, 20);
 }
 
 } // namespace pylabhub::tests::pattern4

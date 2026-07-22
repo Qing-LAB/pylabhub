@@ -179,7 +179,7 @@ class IsolatedProcessTest : public ::testing::Test
      * @return WorkerProcess handle; call wait_for_ready() before proceeding, then wait_for_exit()
      */
     helper::WorkerProcess SpawnWorkerWithReadySignal(const std::string &scenario,
-                                                      const std::vector<std::string> &args = {})
+                                                     const std::vector<std::string> &args = {})
     {
         return helper::WorkerProcess(g_self_exe_path, scenario, args, false, true,
                                      /*with_quit_signal=*/false);
@@ -250,14 +250,12 @@ class IsolatedProcessTest : public ::testing::Test
      * route through run_gtest_worker so the silent-shortcircuit catch
      * applies.
      */
-    static void ExpectLegacyWorkerOk(
-        helper::WorkerProcess &proc,
-        const std::vector<std::string> &required_substrings = {},
-        const std::vector<std::string> &expected_error_substrings = {})
+    static void ExpectLegacyWorkerOk(helper::WorkerProcess &proc,
+                                     const std::vector<std::string> &required_substrings = {},
+                                     const std::vector<std::string> &expected_error_substrings = {})
     {
         proc.wait_for_exit();
-        helper::expect_worker_ok(proc, required_substrings,
-                                 expected_error_substrings,
+        helper::expect_worker_ok(proc, required_substrings, expected_error_substrings,
                                  /*require_completion_markers=*/false);
     }
 };

@@ -23,8 +23,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::recovery
 {
 
-static auto logger_module() { return pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return pylabhub::hub::GetDataBlockModule();
+}
 
 int datablock_is_process_alive_returns_true_for_self()
 {
@@ -35,7 +41,8 @@ int datablock_is_process_alive_returns_true_for_self()
             EXPECT_TRUE(datablock_is_process_alive(my_pid))
                 << "datablock_is_process_alive should return true for current process";
         },
-        "datablock_is_process_alive_returns_true_for_self", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "datablock_is_process_alive_returns_true_for_self", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int integrity_validator_validate_succeeds_on_created_datablock()
@@ -50,18 +57,20 @@ int integrity_validator_validate_succeeds_on_created_datablock()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(
-                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             IntegrityValidator validator(channel);
             RecoveryResult r = validator.validate(false);
-            EXPECT_EQ(r, RECOVERY_SUCCESS) << "validate() should succeed on freshly created DataBlock";
+            EXPECT_EQ(r, RECOVERY_SUCCESS)
+                << "validate() should succeed on freshly created DataBlock";
 
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "integrity_validator_validate_succeeds_on_created_datablock", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "integrity_validator_validate_succeeds_on_created_datablock", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int slot_diagnostics_refresh_succeeds_on_created_datablock()
@@ -76,8 +85,8 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(
-                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             SlotDiagnostics diag(channel, 0);
@@ -88,7 +97,8 @@ int slot_diagnostics_refresh_succeeds_on_created_datablock()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_diagnostics_refresh_succeeds_on_created_datablock", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "slot_diagnostics_refresh_succeeds_on_created_datablock", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int slot_recovery_release_zombie_readers_on_empty_slot()
@@ -103,8 +113,8 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(
-                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             SlotRecovery recovery(channel, 0);
@@ -115,7 +125,8 @@ int slot_recovery_release_zombie_readers_on_empty_slot()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "slot_recovery_release_zombie_readers_on_empty_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "slot_recovery_release_zombie_readers_on_empty_slot", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int heartbeat_manager_registers_and_pulses()
@@ -130,8 +141,7 @@ int heartbeat_manager_registers_and_pulses()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto pair = make_fd_backed_pair(
-                channel, DataBlockPolicy::RingBuffer, config);
+            auto pair = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(pair.producer, nullptr);
             ASSERT_NE(pair.consumer, nullptr);
 
@@ -139,11 +149,13 @@ int heartbeat_manager_registers_and_pulses()
                 HeartbeatManager mgr(*pair.consumer);
                 EXPECT_TRUE(mgr.is_registered()) << "HeartbeatManager should be registered";
                 mgr.pulse();
-                EXPECT_TRUE(mgr.is_registered()) << "HeartbeatManager should remain registered after pulse";
+                EXPECT_TRUE(mgr.is_registered())
+                    << "HeartbeatManager should remain registered after pulse";
             }
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "heartbeat_manager_registers_and_pulses", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "heartbeat_manager_registers_and_pulses", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int producer_update_heartbeat_explicit_succeeds()
@@ -158,8 +170,8 @@ int producer_update_heartbeat_explicit_succeeds()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(
-                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             producer->update_heartbeat();
@@ -168,7 +180,8 @@ int producer_update_heartbeat_explicit_succeeds()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "producer_update_heartbeat_explicit_succeeds", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "producer_update_heartbeat_explicit_succeeds", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 int producer_heartbeat_and_is_writer_alive()
@@ -183,8 +196,8 @@ int producer_heartbeat_and_is_writer_alive()
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
 
-            auto producer = create_datablock_producer_impl(
-                channel, DataBlockPolicy::RingBuffer, config, nullptr, nullptr);
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
+                                                           config, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
             const uint64_t my_pid = pylabhub::platform::get_pid();
@@ -209,14 +222,14 @@ int producer_heartbeat_and_is_writer_alive()
 
             EXPECT_TRUE(is_writer_alive(header, my_pid))
                 << "is_writer_alive(header, my_pid) should be true after commit (heartbeat fresh)";
-            EXPECT_TRUE(is_writer_alive(header, my_pid))
-                << "is_writer_alive idempotent";
+            EXPECT_TRUE(is_writer_alive(header, my_pid)) << "is_writer_alive idempotent";
 
             producer.reset();
             diag.reset();
             cleanup_test_datablock(channel);
         },
-        "producer_heartbeat_and_is_writer_alive", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "producer_heartbeat_and_is_writer_alive", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::recovery

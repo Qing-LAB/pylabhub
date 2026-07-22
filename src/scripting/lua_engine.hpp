@@ -50,8 +50,11 @@
 #include <string>
 #include <unordered_map>
 
-namespace pylabhub::hub_host { class HubAPI; }   // forward — full type only
-                                                  // needed in lua_engine.cpp
+namespace pylabhub::hub_host
+{
+class HubAPI;
+} // namespace pylabhub::hub_host
+  // needed in lua_engine.cpp
 
 namespace pylabhub::scripting
 {
@@ -68,8 +71,7 @@ class LuaEngine : public ScriptEngine
     // ── ScriptEngine lifecycle ───────────────────────────────────────────
 
     bool init_engine_(const std::string &log_tag, RoleHostCore *core) override;
-    bool load_script(const std::filesystem::path &script_dir,
-                     const std::string &entry_point,
+    bool load_script(const std::filesystem::path &script_dir, const std::string &entry_point,
                      const std::string &required_callback) override;
     bool build_api_(RoleAPIBase &api) override;
     /// Hub-side build_api override (HEP-CORE-0033 §12.3).  Creates a
@@ -93,15 +95,12 @@ class LuaEngine : public ScriptEngine
     // `probe_uncached_callback_` below.
 
   protected:
-    [[nodiscard]] bool probe_uncached_callback_(const std::string &name)
-        const noexcept override;
+    [[nodiscard]] bool probe_uncached_callback_(const std::string &name) const noexcept override;
 
   public:
-
     // ── Schema / type building ───────────────────────────────────────────
 
-    bool register_slot_type(const hub::SchemaSpec &spec,
-                            const std::string &type_name,
+    bool register_slot_type(const hub::SchemaSpec &spec, const std::string &type_name,
                             const std::string &packing) override;
     [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
 
@@ -109,39 +108,27 @@ class LuaEngine : public ScriptEngine
 
     pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override;
     void invoke_on_stop() override;
-    void invoke_on_channel_closing(const std::string &channel,
-                                    const std::string &reason) override;
-    void invoke_on_consumer_died(const std::string &channel,
-                                  const std::string &consumer_uid,
-                                  const std::string &reason) override;
+    void invoke_on_channel_closing(const std::string &channel, const std::string &reason) override;
+    void invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
+                                 const std::string &reason) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
-    void invoke_on_band_member_joined(const std::string &band,
-                                      const std::string &role_uid,
+    void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name) override;
-    void invoke_on_band_member_left(const std::string &band,
-                                    const std::string &role_uid,
+    void invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
                                     const std::string &reason) override;
-    void invoke_on_band_message(const std::string &band,
-                                const std::string &sender_role_uid,
+    void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override;
-    void invoke_on_band_lost(const std::string &band,
-                             const std::string &reason) override;
-    void invoke_on_allowlist_changed(
-        const std::string &channel,
-        const std::vector<AllowedPeer> &allowlist,
-        const std::string &reason) override;
+    void invoke_on_band_lost(const std::string &band, const std::string &reason) override;
+    void invoke_on_allowlist_changed(const std::string &channel,
+                                     const std::vector<AllowedPeer> &allowlist,
+                                     const std::string &reason) override;
 
-    InvokeResult invoke_produce(
-        InvokeTx tx,
-        std::vector<IncomingMessage> &msgs) override;
+    InvokeResult invoke_produce(InvokeTx tx, std::vector<IncomingMessage> &msgs) override;
 
-    InvokeResult invoke_consume(
-        InvokeRx rx,
-        std::vector<IncomingMessage> &msgs) override;
+    InvokeResult invoke_consume(InvokeRx rx, std::vector<IncomingMessage> &msgs) override;
 
-    InvokeResult invoke_process(
-        InvokeRx rx, InvokeTx tx,
-        std::vector<IncomingMessage> &msgs) override;
+    InvokeResult invoke_process(InvokeRx rx, InvokeTx tx,
+                                std::vector<IncomingMessage> &msgs) override;
 
     InvokeResult invoke_on_inbox(InvokeInbox msg) override;
 
@@ -150,8 +137,7 @@ class LuaEngine : public ScriptEngine
     bool invoke(const std::string &name) override;
     bool invoke(const std::string &name, const nlohmann::json &args) override;
     InvokeResponse eval(const std::string &code) override;
-    InvokeResponse invoke_returning(const std::string &name,
-                                    const nlohmann::json &args,
+    InvokeResponse invoke_returning(const std::string &name, const nlohmann::json &args,
                                     int64_t timeout_ms = -1) override;
     void process_pending() override;
 
@@ -167,9 +153,9 @@ class LuaEngine : public ScriptEngine
     void release_thread() override;
 
   private:
-    LuaState    state_;
+    LuaState state_;
     std::string log_tag_;
-    std::string script_dir_str_;  ///< Saved for create_thread_state() reload
+    std::string script_dir_str_; ///< Saved for create_thread_state() reload
     std::string entry_point_;
     std::string required_callback_;
 
@@ -201,16 +187,16 @@ class LuaEngine : public ScriptEngine
     // Created via ffi.typeof() at init time. Used by invoke_* for zero-string-op
     // slot view creation on the hot path.
     // Directional FFI type refs.
-    int ref_in_slot_readonly_{LUA_NOREF};   ///< ffi.typeof("InSlotFrame const*")
-    int ref_out_slot_writable_{LUA_NOREF};  ///< ffi.typeof("OutSlotFrame*")
-    int ref_in_fz_{LUA_NOREF};              ///< ffi.typeof("InFlexFrame*") (mutable per HEP-0002)
-    int ref_out_fz_{LUA_NOREF};             ///< ffi.typeof("OutFlexFrame*")
-    int ref_inbox_readonly_{LUA_NOREF};     ///< ffi.typeof("InboxFrame const*")
+    int ref_in_slot_readonly_{LUA_NOREF};  ///< ffi.typeof("InSlotFrame const*")
+    int ref_out_slot_writable_{LUA_NOREF}; ///< ffi.typeof("OutSlotFrame*")
+    int ref_in_fz_{LUA_NOREF};             ///< ffi.typeof("InFlexFrame*") (mutable per HEP-0002)
+    int ref_out_fz_{LUA_NOREF};            ///< ffi.typeof("OutFlexFrame*")
+    int ref_inbox_readonly_{LUA_NOREF};    ///< ffi.typeof("InboxFrame const*")
 
     // Script-level aliases for producer/consumer convenience.
-    int ref_slot_alias_writable_{LUA_NOREF};  ///< "SlotFrame*" alias (producer)
-    int ref_slot_alias_readonly_{LUA_NOREF};  ///< "SlotFrame const*" alias (consumer)
-    int ref_fz_alias_{LUA_NOREF};             ///< "FlexFrame*" alias
+    int ref_slot_alias_writable_{LUA_NOREF}; ///< "SlotFrame*" alias (producer)
+    int ref_slot_alias_readonly_{LUA_NOREF}; ///< "SlotFrame const*" alias (consumer)
+    int ref_fz_alias_{LUA_NOREF};            ///< "FlexFrame*" alias
 
     // api_ is inherited from ScriptEngine (set by build_api).
     bool stop_on_script_error_{false};
@@ -218,8 +204,7 @@ class LuaEngine : public ScriptEngine
     // Inbox cache is shared in core_ (RoleHostCore::inbox_cache_).
 
     // ── Thread-state cache (multi-state: non-owner threads) ──────────────
-    std::unordered_map<std::thread::id,
-                       std::unique_ptr<LuaEngine>> thread_states_;
+    std::unordered_map<std::thread::id, std::unique_ptr<LuaEngine>> thread_states_;
     std::mutex thread_states_mu_;
     // accepting_ is inherited from ScriptEngine base class.
 
@@ -239,23 +224,21 @@ class LuaEngine : public ScriptEngine
     // through this queue.
     struct PendingRequest
     {
-        std::string                  name;
-        nlohmann::json               args;
+        std::string name;
+        nlohmann::json args;
         std::promise<InvokeResponse> promise;
     };
-    std::deque<PendingRequest>  request_queue_;
-    mutable std::mutex          queue_mu_;
+    std::deque<PendingRequest> request_queue_;
+    mutable std::mutex queue_mu_;
 
     /// Owner-thread direct path for `invoke_returning` — captures the
     /// top-of-stack return value into the response.
-    InvokeResponse execute_direct_returning_(const std::string &name,
-                                             const nlohmann::json &args);
+    InvokeResponse execute_direct_returning_(const std::string &name, const nlohmann::json &args);
 
     // ── Internal helpers ─────────────────────────────────────────────────
 
     /// Build FFI cdef string from hub::SchemaSpec. Returns empty string on error.
-    std::string build_ffi_cdef_(const hub::SchemaSpec &spec,
-                                const std::string &type_name,
+    std::string build_ffi_cdef_(const hub::SchemaSpec &spec, const std::string &type_name,
                                 const std::string &packing);
 
     void push_messages_table_(std::vector<IncomingMessage> &msgs);

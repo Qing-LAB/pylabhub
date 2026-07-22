@@ -150,4 +150,4 @@ TEST(StartupConfig, ShmRequireMutualAuth_CoexistsWithStrictAbiAndWaitForRoles)
     EXPECT_EQ(sc.wait_for_roles[0].uid, "cons.foo.uid00000001");
 }
 
-} // anon
+} // namespace

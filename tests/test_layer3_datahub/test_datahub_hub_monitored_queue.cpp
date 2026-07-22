@@ -31,7 +31,7 @@ using ms = std::chrono::milliseconds;
 TEST(MonitoredQueueTest, PushToMaxDepth_DropsOldest)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth       = 3;
+    cfg.max_depth = 3;
     cfg.check_interval_ms = 60000; // disable monitoring for this test
     MonitoredQueue<int> q(cfg);
 
@@ -62,7 +62,7 @@ TEST(MonitoredQueueTest, PushToMaxDepth_DropsOldest)
 TEST(MonitoredQueueTest, TotalDroppedAndPushedCounters)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 2;
+    cfg.max_depth = 2;
     cfg.check_interval_ms = 60000;
     MonitoredQueue<int> q(cfg);
 
@@ -71,7 +71,7 @@ TEST(MonitoredQueueTest, TotalDroppedAndPushedCounters)
         q.push(i);
 
     EXPECT_EQ(q.total_pushed(), 5u);
-    EXPECT_EQ(q.total_dropped(), 3u);  // first 3 dropped to make room
+    EXPECT_EQ(q.total_dropped(), 3u); // first 3 dropped to make room
     EXPECT_EQ(q.size(), 2u);
 
     // After draining, counters remain
@@ -87,7 +87,7 @@ TEST(MonitoredQueueTest, TotalDroppedAndPushedCounters)
 TEST(MonitoredQueueTest, SendErrorsCounted)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 10;
+    cfg.max_depth = 10;
     cfg.check_interval_ms = 60000;
     MonitoredQueue<int> q(cfg);
 
@@ -97,14 +97,16 @@ TEST(MonitoredQueueTest, SendErrorsCounted)
     EXPECT_EQ(q.send_errors(), 0u);
 
     // Sender throws on odd values
-    q.drain([](int &v) {
-        if (v % 2 != 0)
-            throw std::runtime_error("odd");
-    });
+    q.drain(
+        [](int &v)
+        {
+            if (v % 2 != 0)
+                throw std::runtime_error("odd");
+        });
 
     // Items 1 and 3 threw; item 2 succeeded
     EXPECT_EQ(q.send_errors(), 2u);
-    EXPECT_EQ(q.size(), 0u);  // all items processed (errors are consumed, not re-queued)
+    EXPECT_EQ(q.size(), 0u); // all items processed (errors are consumed, not re-queued)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,16 +115,14 @@ TEST(MonitoredQueueTest, SendErrorsCounted)
 TEST(MonitoredQueueTest, OnWarnFiresAfterStagnantDepth)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 100;
-    cfg.check_interval_ms = 50;   // very short interval for testing
-    cfg.dead_timeout_ms   = 60000;
-    cfg.fire_and_forget   = false; // enable monitoring for this test
+    cfg.max_depth = 100;
+    cfg.check_interval_ms = 50; // very short interval for testing
+    cfg.dead_timeout_ms = 60000;
+    cfg.fire_and_forget = false; // enable monitoring for this test
     MonitoredQueue<int> q(cfg);
 
     std::atomic<int> warn_count{0};
-    q.set_on_warn([&](size_t /*depth*/, int /*elapsed_ms*/) {
-        ++warn_count;
-    });
+    q.set_on_warn([&](size_t /*depth*/, int /*elapsed_ms*/) { ++warn_count; });
 
     // Push items but don't drain — simulate stagnant backpressure.
     for (int i = 0; i < 5; ++i)
@@ -150,10 +150,10 @@ TEST(MonitoredQueueTest, OnWarnFiresAfterStagnantDepth)
 TEST(MonitoredQueueTest, OnClearedFiresAfterBackpressureResolves)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 100;
+    cfg.max_depth = 100;
     cfg.check_interval_ms = 50;
-    cfg.dead_timeout_ms   = 60000;
-    cfg.fire_and_forget   = false; // enable monitoring for this test
+    cfg.dead_timeout_ms = 60000;
+    cfg.fire_and_forget = false; // enable monitoring for this test
     MonitoredQueue<int> q(cfg);
 
     std::atomic<int> warn_count{0};
@@ -166,13 +166,13 @@ TEST(MonitoredQueueTest, OnClearedFiresAfterBackpressureResolves)
     for (int i = 0; i < 5; ++i)
         q.push(i);
     std::this_thread::sleep_for(ms{80});
-    q.drain([](int &) {});  // depth_before=5, check fires → on_warn, backpressure=true
+    q.drain([](int &) {}); // depth_before=5, check fires → on_warn, backpressure=true
     EXPECT_GE(warn_count.load(), 1);
     EXPECT_EQ(cleared_count.load(), 0);
 
     // Phase 2: drain empty queue after interval → on_cleared should fire.
     std::this_thread::sleep_for(ms{80});
-    q.drain([](int &) {});  // depth_before=0, backpressure=true → on_cleared
+    q.drain([](int &) {}); // depth_before=0, backpressure=true → on_cleared
 
     EXPECT_GE(cleared_count.load(), 1);
 }
@@ -183,10 +183,10 @@ TEST(MonitoredQueueTest, OnClearedFiresAfterBackpressureResolves)
 TEST(MonitoredQueueTest, OnDeadFiresOnceAfterTimeout)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 100;
+    cfg.max_depth = 100;
     cfg.check_interval_ms = 30;
-    cfg.dead_timeout_ms   = 50;   // very short dead timeout for testing
-    cfg.fire_and_forget   = false; // enable monitoring for this test
+    cfg.dead_timeout_ms = 50;    // very short dead timeout for testing
+    cfg.fire_and_forget = false; // enable monitoring for this test
     MonitoredQueue<int> q(cfg);
 
     std::atomic<int> warn_count{0};
@@ -216,7 +216,7 @@ TEST(MonitoredQueueTest, OnDeadFiresOnceAfterTimeout)
 TEST(MonitoredQueueTest, UnboundedQueueNeverDrops)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 0;    // 0 = unbounded
+    cfg.max_depth = 0; // 0 = unbounded
     cfg.check_interval_ms = 60000;
     MonitoredQueue<int> q(cfg);
 
@@ -238,10 +238,10 @@ TEST(MonitoredQueueTest, UnboundedQueueNeverDrops)
 TEST(MonitoredQueueTest, FireAndForget_True_SkipsCallbacksEvenWhenSet)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 100;
+    cfg.max_depth = 100;
     cfg.check_interval_ms = 30;
-    cfg.dead_timeout_ms   = 50;
-    cfg.fire_and_forget   = true; // default — callbacks must be silenced
+    cfg.dead_timeout_ms = 50;
+    cfg.fire_and_forget = true; // default — callbacks must be silenced
     MonitoredQueue<int> q(cfg);
 
     std::atomic<int> warn_count{0};
@@ -274,10 +274,10 @@ TEST(MonitoredQueueTest, FireAndForget_True_SkipsCallbacksEvenWhenSet)
 TEST(MonitoredQueueTest, MoveAssignment_ResetsMonitoringState)
 {
     MonitoredQueue<int>::Config cfg;
-    cfg.max_depth         = 100;
+    cfg.max_depth = 100;
     cfg.check_interval_ms = 30;
-    cfg.dead_timeout_ms   = 50;
-    cfg.fire_and_forget   = false;
+    cfg.dead_timeout_ms = 50;
+    cfg.fire_and_forget = false;
 
     // Build a queue in backpressure state.
     MonitoredQueue<int> src(cfg);
@@ -351,10 +351,12 @@ TEST(MonitoredQueueTest, OnPushSignal_CalledOutsideLock)
 
     // The signal callback tries to call drain() on the same queue.
     // If signal fires inside the lock, this deadlocks.
-    q.set_on_push_signal([&] {
-        q.drain([](int &) {});
-        drain_succeeded.store(true);
-    });
+    q.set_on_push_signal(
+        [&]
+        {
+            q.drain([](int &) {});
+            drain_succeeded.store(true);
+        });
 
     q.push(42);
     EXPECT_TRUE(drain_succeeded.load()) << "signal callback should not deadlock with drain";

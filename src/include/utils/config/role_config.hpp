@@ -62,8 +62,7 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     /// Receives the raw JSON and a const reference to the partially-loaded
     /// RoleConfig (common fields already populated). Returns role-specific
     /// data as std::any.
-    using RoleParser = std::function<std::any(const nlohmann::json &,
-                                              const RoleConfig &)>;
+    using RoleParser = std::function<std::any(const nlohmann::json &, const RoleConfig &)>;
 
     // ── Factory methods ──────────────────────────────────────────────
 
@@ -72,8 +71,7 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     /// @param role_type    Role type: "producer", "consumer", "processor".
     /// @param role_parser Optional callback to parse role-specific fields.
     /// @throws std::runtime_error on file/parse/validation error.
-    static RoleConfig load(const std::string &path,
-                           const char *role_type,
+    static RoleConfig load(const std::string &path, const char *role_type,
                            RoleParser role_parser = nullptr);
 
     /// Load from a role directory (reads <dir>/<role_type>.json).
@@ -81,32 +79,31 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     /// @param role_type    Role type: "producer", "consumer", "processor".
     /// @param role_parser Optional callback to parse role-specific fields.
     /// @throws std::runtime_error on file/parse/validation error.
-    static RoleConfig load_from_directory(const std::string &dir,
-                                          const char *role_type,
+    static RoleConfig load_from_directory(const std::string &dir, const char *role_type,
                                           RoleParser role_parser = nullptr);
 
     // ── Non-directional accessors ────────────────────────────────────
 
-    const IdentityConfig   &identity()   const;
-    const AuthConfig       &auth()       const;
-    const ScriptConfig     &script()     const;
-    const TimingConfig     &timing()     const;
-    const InboxConfig      &inbox()      const;
-    const StartupConfig    &startup()    const;
+    const IdentityConfig &identity() const;
+    const AuthConfig &auth() const;
+    const ScriptConfig &script() const;
+    const TimingConfig &timing() const;
+    const InboxConfig &inbox() const;
+    const StartupConfig &startup() const;
     const MonitoringConfig &monitoring() const;
-    const ChecksumConfig   &checksum()   const;
-    const LoggingConfig    &logging()    const;
+    const ChecksumConfig &checksum() const;
+    const LoggingConfig &logging() const;
 
     // ── Directional accessors (two slots each) ───────────────────────
 
-    const HubRefConfig                    &in_hub()        const;
-    const HubRefConfig                    &out_hub()       const;
-    const TransportConfig              &in_transport()  const;
-    const TransportConfig              &out_transport() const;
-    const ShmConfig                    &in_shm()        const;
-    const ShmConfig                    &out_shm()       const;
-    const std::string                  &in_channel()    const;
-    const std::string                  &out_channel()   const;
+    const HubRefConfig &in_hub() const;
+    const HubRefConfig &out_hub() const;
+    const TransportConfig &in_transport() const;
+    const TransportConfig &out_transport() const;
+    const ShmConfig &in_shm() const;
+    const ShmConfig &out_shm() const;
+    const std::string &in_channel() const;
+    const std::string &out_channel() const;
 
     /// Channel topology declarations (2026-07-08 topology migration).
     /// Wire-value strings per `pylabhub::hub::to_string(ChannelTopology)`:
@@ -116,8 +113,8 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
     /// overwrite semantics per HEP-CORE-0007 §12.3.  Config authority:
     /// HEP-CORE-0018 §5.3 (`out_channel_topology`) + §5.4
     /// (`in_channel_topology`).
-    const std::string                  &in_channel_topology()  const;
-    const std::string                  &out_channel_topology() const;
+    const std::string &in_channel_topology() const;
+    const std::string &out_channel_topology() const;
 
     // ── Vault operations ────────────────────────────────────────────
 
@@ -150,22 +147,20 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
 
     /// Typed access to role-specific data.
     /// Throws std::bad_any_cast if T does not match the stored type.
-    template <typename T>
-    const T &role_data() const
+    template <typename T> const T &role_data() const
     {
         return std::any_cast<const T &>(role_data_any_());
     }
 
-    template <typename T>
-    T &mutable_role_data()
+    template <typename T> T &mutable_role_data()
     {
         return std::any_cast<T &>(mutable_role_data_any_());
     }
 
     // ── Metadata ──────────────────────────────────────────────────────
 
-    const std::string              &role_type()  const;
-    const std::filesystem::path    &base_dir()  const;
+    const std::string &role_type() const;
+    const std::filesystem::path &base_dir() const;
 
     // ── Special members (pImpl) ──────────────────────────────────────
 
@@ -178,7 +173,7 @@ class PYLABHUB_UTILS_EXPORT RoleConfig
 
     // Non-template bridges into pImpl (compiled in .cpp).
     const std::any &role_data_any_() const;
-    std::any       &mutable_role_data_any_();
+    std::any &mutable_role_data_any_();
 
     struct Impl;
     std::unique_ptr<Impl> impl_; // ONLY member — pure pImpl, ABI-safe.

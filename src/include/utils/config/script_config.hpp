@@ -18,12 +18,12 @@ namespace pylabhub::config
 
 struct ScriptConfig
 {
-    std::string type{"python"};          ///< "python", "lua", or "native"
-    std::string path{"."};               ///< Parent dir of the script/<type>/ package
-    std::string python_venv;             ///< venv name (Python only), empty = base env
-    std::string checksum;                ///< BLAKE2b-256 hex of native .so (native only)
-    bool        type_explicit{false};    ///< true when "type" was present in JSON
-    bool        stop_on_script_error{false}; ///< Fatal on script exception in callback.
+    std::string type{"python"};       ///< "python", "lua", or "native"
+    std::string path{"."};            ///< Parent dir of the script/<type>/ package
+    std::string python_venv;          ///< venv name (Python only), empty = base env
+    std::string checksum;             ///< BLAKE2b-256 hex of native .so (native only)
+    bool type_explicit{false};        ///< true when "type" was present in JSON
+    bool stop_on_script_error{false}; ///< Fatal on script exception in callback.
 
     /// Release the engine's global interpreter lock during the worker
     /// loop's idle waits (queue I/O wait, deadline sleep, hub event
@@ -92,7 +92,7 @@ struct ScriptConfig
     /// (a) is pure Python, (b) wraps its native work in `with nogil:`,
     /// or (c) returns within a few hundred ms.  Test the shutdown
     /// path under representative workload before deployment.
-    bool        release_global_lock_during_wait{false};
+    bool release_global_lock_during_wait{false};
 };
 
 /// Platform-specific shared library extension.
@@ -121,9 +121,8 @@ inline const char *native_lib_extension() noexcept
 /// @param configured_path  The "script.path" value from config (resolved).
 /// @param filename         Library filename (e.g., "libmy_producer" or "libmy_producer.so").
 /// @return Resolved absolute path, or empty if not found.
-inline std::filesystem::path resolve_native_library(
-    const std::string &configured_path,
-    const std::string &filename)
+inline std::filesystem::path resolve_native_library(const std::string &configured_path,
+                                                    const std::string &filename)
 {
     namespace fs = std::filesystem;
     const auto ext = native_lib_extension();
@@ -171,9 +170,8 @@ inline std::filesystem::path resolve_native_library(
 /// @param base   Role directory base path (for resolving relative script.path).
 ///               Pass empty path to skip resolution (from_json_file mode).
 /// @param tag    Context tag for error messages (e.g., "Producer config").
-inline ScriptConfig parse_script_config(const nlohmann::json &j,
-                                         const std::filesystem::path &base,
-                                         const char *tag)
+inline ScriptConfig parse_script_config(const nlohmann::json &j, const std::filesystem::path &base,
+                                        const char *tag)
 {
     namespace fs = std::filesystem;
     ScriptConfig sc;
@@ -186,21 +184,21 @@ inline ScriptConfig parse_script_config(const nlohmann::json &j,
         for (auto it = s.begin(); it != s.end(); ++it)
         {
             const auto &k = it.key();
-            if (k != "type" && k != "path" && k != "checksum"
-                && k != "release_global_lock_during_wait")
-                throw std::runtime_error(
-                    std::string(tag) + ": unknown config key 'script." + k + "'");
+            if (k != "type" && k != "path" && k != "checksum" &&
+                k != "release_global_lock_during_wait")
+                throw std::runtime_error(std::string(tag) + ": unknown config key 'script." + k +
+                                         "'");
         }
         sc.type_explicit = s.contains("type");
         sc.type = s.value("type", std::string{"python"});
         if (sc.type != "python" && sc.type != "lua" && sc.type != "native")
             throw std::invalid_argument(
-                std::string(tag) + ": script.type must be \"python\", \"lua\", or \"native\", got: \""
-                + sc.type + "\"");
+                std::string(tag) +
+                ": script.type must be \"python\", \"lua\", or \"native\", got: \"" + sc.type +
+                "\"");
         sc.path = s.value("path", std::string{"."});
         sc.checksum = s.value("checksum", std::string{});
-        sc.release_global_lock_during_wait =
-            s.value("release_global_lock_during_wait", false);
+        sc.release_global_lock_during_wait = s.value("release_global_lock_during_wait", false);
     }
 
     sc.python_venv = j.value("python_venv", std::string{});

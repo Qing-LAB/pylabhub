@@ -19,16 +19,16 @@ namespace pylabhub::config
 
 struct FederationPeerEntry
 {
-    std::string uid;       ///< Peer hub uid (HEP-0033 §G2.2.0a)
-    std::string endpoint;  ///< ZMQ endpoint
-    std::string pubkey;    ///< Z85 CURVE25519 public key (40 chars), or empty
+    std::string uid;      ///< Peer hub uid (HEP-0033 §G2.2.0a)
+    std::string endpoint; ///< ZMQ endpoint
+    std::string pubkey;   ///< Z85 CURVE25519 public key (40 chars), or empty
 };
 
 struct HubFederationConfig
 {
-    bool                              enabled{false};
-    std::vector<FederationPeerEntry>  peers;
-    int32_t                           forward_timeout_ms{2000};
+    bool enabled{false};
+    std::vector<FederationPeerEntry> peers;
+    int32_t forward_timeout_ms{2000};
 };
 
 inline HubFederationConfig parse_hub_federation_config(const nlohmann::json &j)
@@ -47,13 +47,12 @@ inline HubFederationConfig parse_hub_federation_config(const nlohmann::json &j)
             throw std::runtime_error("hub: unknown config key 'federation." + k + "'");
     }
 
-    fc.enabled            = sect.value("enabled",            fc.enabled);
+    fc.enabled = sect.value("enabled", fc.enabled);
     fc.forward_timeout_ms = sect.value("forward_timeout_ms", fc.forward_timeout_ms);
 
     if (fc.forward_timeout_ms < 0)
-        throw std::runtime_error(
-            "hub: 'federation.forward_timeout_ms' must be >= 0 (got " +
-            std::to_string(fc.forward_timeout_ms) + ")");
+        throw std::runtime_error("hub: 'federation.forward_timeout_ms' must be >= 0 (got " +
+                                 std::to_string(fc.forward_timeout_ms) + ")");
 
     if (sect.contains("peers"))
     {
@@ -63,22 +62,20 @@ inline HubFederationConfig parse_hub_federation_config(const nlohmann::json &j)
         for (const auto &e : arr)
         {
             if (!e.is_object())
-                throw std::runtime_error(
-                    "hub: 'federation.peers[]' entry must be an object");
+                throw std::runtime_error("hub: 'federation.peers[]' entry must be an object");
             for (auto it = e.begin(); it != e.end(); ++it)
             {
                 const auto &k = it.key();
                 if (k != "uid" && k != "endpoint" && k != "pubkey")
-                    throw std::runtime_error(
-                        "hub: unknown config key 'federation.peers[]." + k + "'");
+                    throw std::runtime_error("hub: unknown config key 'federation.peers[]." + k +
+                                             "'");
             }
             FederationPeerEntry pe;
-            pe.uid      = e.value("uid",      std::string{});
+            pe.uid = e.value("uid", std::string{});
             pe.endpoint = e.value("endpoint", std::string{});
-            pe.pubkey   = e.value("pubkey",   std::string{});
+            pe.pubkey = e.value("pubkey", std::string{});
             if (pe.uid.empty() || pe.endpoint.empty())
-                throw std::runtime_error(
-                    "hub: 'federation.peers[]' requires 'uid' + 'endpoint'");
+                throw std::runtime_error("hub: 'federation.peers[]' requires 'uid' + 'endpoint'");
             fc.peers.push_back(std::move(pe));
         }
     }

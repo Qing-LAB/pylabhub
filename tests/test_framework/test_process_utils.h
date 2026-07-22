@@ -167,7 +167,7 @@ class WorkerProcess
                                 bool redirect_stderr_to_console);
     ProcessHandle handle_ = NULL_PROC_HANDLE;
     int exit_code_ = -1;
-    std::string mode_;     ///< worker scenario string ("module.scenario")
+    std::string mode_; ///< worker scenario string ("module.scenario")
     fs::path stdout_path_;
     fs::path stderr_path_;
     mutable std::string stdout_content_;
@@ -175,13 +175,13 @@ class WorkerProcess
     bool waited_ = false;
     bool redirect_stderr_to_console_ = false;
     bool with_ready_signal_ = false;
-    bool with_quit_signal_  = false;
+    bool with_quit_signal_ = false;
 #if defined(PLATFORM_WIN64)
     HANDLE ready_pipe_read_ = NULL;
     // Windows quit-signal not implemented yet; parent-side state unused.
 #else
     int ready_pipe_read_ = -1;
-    int quit_pipe_write_ = -1;  ///< parent's write end; close() to signal child
+    int quit_pipe_write_ = -1; ///< parent's write end; close() to signal child
 #endif
 };
 

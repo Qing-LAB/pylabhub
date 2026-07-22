@@ -58,8 +58,7 @@ TEST(UuidUtilsTest, GenerateUuid4_LowercaseHex)
     {
         if (i == 8 || i == 13 || i == 18 || i == 23)
             continue;
-        EXPECT_TRUE((uuid[i] >= '0' && uuid[i] <= '9') ||
-                     (uuid[i] >= 'a' && uuid[i] <= 'f'))
+        EXPECT_TRUE((uuid[i] >= '0' && uuid[i] <= '9') || (uuid[i] >= 'a' && uuid[i] <= 'f'))
             << "Non-lowercase hex at position " << i << ": " << uuid;
     }
 }

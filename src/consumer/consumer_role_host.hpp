@@ -56,11 +56,10 @@ class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostF
     /// Pure config→opts translation used by `setup_infrastructure_`.
     /// See ProducerRoleHost::make_tx_opts for rationale.  Same audit
     /// B5/B11 history (translation layer that prior L3 tests bypassed).
-    [[nodiscard]] static hub::RxQueueOptions
-    make_rx_opts(const config::RoleConfig &config,
-                 const hub::SchemaSpec    &in_slot_spec,
-                 const hub::SchemaSpec    &in_fz_spec,
-                 bool                      has_rx_fz);
+    [[nodiscard]] static hub::RxQueueOptions make_rx_opts(const config::RoleConfig &config,
+                                                          const hub::SchemaSpec &in_slot_spec,
+                                                          const hub::SchemaSpec &in_fz_spec,
+                                                          bool has_rx_fz);
 
   private:
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
@@ -86,10 +85,10 @@ class PYLABHUB_UTILS_EXPORT ConsumerRoleHost final : public scripting::RoleHostF
     // `core_.set_in_slot_spec()` and `params.in_slot_spec`.  Canonical home
     // is `presences_[0].slot_spec` (see RoleHostFrame); kept here as the
     // member that `worker_main_` initializes.
-    hub::SchemaSpec                         in_slot_spec_;
+    hub::SchemaSpec in_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).
-    std::string                             engine_module_name_;
+    std::string engine_module_name_;
 
     // last_seq: read directly from Consumer::last_seq() → QueueReader
     // (single source of truth).

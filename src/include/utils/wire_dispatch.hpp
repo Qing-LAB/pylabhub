@@ -98,17 +98,17 @@ struct PYLABHUB_UTILS_EXPORT RejectedMessage
 {
     /// Sender's DEALER routing_id from Frame 0 (envelope parse) or empty
     /// if parse failed before Frame 0 was extracted.
-    std::string          identity;
+    std::string identity;
     /// Sender's correlation_id from Frame 3, empty if unavailable.
-    std::string          correlation_id;
+    std::string correlation_id;
     /// msg_type from Frame 2, empty if parse failed before it was extracted.
-    std::string          msg_type;
+    std::string msg_type;
     /// Machine-readable reject code (mapped to `error_code` wire field).
     admission::RejectCode code;
     /// Which field triggered the reject (optional; empty if not field-specific).
-    std::string          field;
+    std::string field;
     /// Human-readable message for logs + client diagnostics.
-    std::string          message;
+    std::string message;
 };
 
 // ── Validated per-msg_type variants ──────────────────────────────────────
@@ -122,41 +122,43 @@ struct PYLABHUB_UTILS_EXPORT RejectedMessage
 // Move-only (envelope + body are both move-only).  Constructed inside
 // receive_and_validate; consumed by broker handlers via std::visit.
 
-#define PLH_WIRE_VALIDATED(Name, BodyClass)                                \
-    struct PYLABHUB_UTILS_EXPORT Name                                      \
-    {                                                                      \
-        ::pylabhub::wire::WireEnvelope env;                                \
-        BodyClass                       body;                              \
-        Name(::pylabhub::wire::WireEnvelope e, BodyClass b) noexcept       \
-            : env(std::move(e)), body(std::move(b)) {}                     \
-        Name(Name &&) noexcept            = default;                       \
-        Name &operator=(Name &&) noexcept = default;                       \
-        Name(const Name &)                = delete;                        \
-        Name &operator=(const Name &)     = delete;                        \
-        [[nodiscard]] std::string identity() const                         \
-        { return std::string(env.identity()); }                            \
-        [[nodiscard]] std::string correlation_id() const                   \
-        { return std::string(env.correlation_id()); }                      \
+#define PLH_WIRE_VALIDATED(Name, BodyClass)                                                        \
+    struct PYLABHUB_UTILS_EXPORT Name                                                              \
+    {                                                                                              \
+        ::pylabhub::wire::WireEnvelope env;                                                        \
+        BodyClass body;                                                                            \
+        Name(::pylabhub::wire::WireEnvelope e, BodyClass b) noexcept                               \
+            : env(std::move(e)), body(std::move(b))                                                \
+        {                                                                                          \
+        }                                                                                          \
+        Name(Name &&) noexcept = default;                                                          \
+        Name &operator=(Name &&) noexcept = default;                                               \
+        Name(const Name &) = delete;                                                               \
+        Name &operator=(const Name &) = delete;                                                    \
+        [[nodiscard]] std::string identity() const { return std::string(env.identity()); }         \
+        [[nodiscard]] std::string correlation_id() const                                           \
+        {                                                                                          \
+            return std::string(env.correlation_id());                                              \
+        }                                                                                          \
     }
 
 // REG-family: full admission (identity + grammar + known_role + rotation
 //             + replay applied by receive_and_validate).  Producer and
 //             consumer use distinct body classes per HEP-CORE-0034 §10.2
 //             (`expected_schema_*` prefix on consumer side).
-PLH_WIRE_VALIDATED(ValidatedRegReq,               ::pylabhub::wire::ProducerRegReqBody);
-PLH_WIRE_VALIDATED(ValidatedConsumerRegReq,       ::pylabhub::wire::ConsumerRegReqBody);
-PLH_WIRE_VALIDATED(ValidatedDeregReq,             ::pylabhub::wire::DeregReqBody);
-PLH_WIRE_VALIDATED(ValidatedConsumerDeregReq,     ::pylabhub::wire::DeregReqBody);
-PLH_WIRE_VALIDATED(ValidatedEndpointUpdateReq,    ::pylabhub::wire::EndpointUpdateReqBody);
-PLH_WIRE_VALIDATED(ValidatedChannelAuthAppliedReq,
-                    ::pylabhub::wire::ChannelAuthAppliedReqBody);
+PLH_WIRE_VALIDATED(ValidatedRegReq, ::pylabhub::wire::ProducerRegReqBody);
+PLH_WIRE_VALIDATED(ValidatedConsumerRegReq, ::pylabhub::wire::ConsumerRegReqBody);
+PLH_WIRE_VALIDATED(ValidatedDeregReq, ::pylabhub::wire::DeregReqBody);
+PLH_WIRE_VALIDATED(ValidatedConsumerDeregReq, ::pylabhub::wire::DeregReqBody);
+PLH_WIRE_VALIDATED(ValidatedEndpointUpdateReq, ::pylabhub::wire::EndpointUpdateReqBody);
+PLH_WIRE_VALIDATED(ValidatedChannelAuthAppliedReq, ::pylabhub::wire::ChannelAuthAppliedReqBody);
 
 // Control (identity-only where role_uid is present).  HEARTBEAT is
 // fire-and-forget per C13 rename (msg_type = `HEARTBEAT_NOTIFY`);
 // its body class is `HeartbeatNotifyBody` in the NOTIFY section.
-PLH_WIRE_VALIDATED(ValidatedHeartbeatNotify,      ::pylabhub::wire::HeartbeatNotifyBody);
-PLH_WIRE_VALIDATED(ValidatedGetChannelAuthReq,    ::pylabhub::wire::GetChannelAuthReqBody);
-PLH_WIRE_VALIDATED(ValidatedDiscReq,              ::pylabhub::wire::DiscReqBody);
+PLH_WIRE_VALIDATED(ValidatedHeartbeatNotify, ::pylabhub::wire::HeartbeatNotifyBody);
+PLH_WIRE_VALIDATED(ValidatedGetChannelAuthReq, ::pylabhub::wire::GetChannelAuthReqBody);
+PLH_WIRE_VALIDATED(ValidatedDiscReq, ::pylabhub::wire::DiscReqBody);
 
 #undef PLH_WIRE_VALIDATED
 
@@ -176,36 +178,26 @@ PLH_WIRE_VALIDATED(ValidatedDiscReq,              ::pylabhub::wire::DiscReqBody)
 struct PYLABHUB_UTILS_EXPORT ValidatedRawControl
 {
     ::pylabhub::wire::WireEnvelope env;
-    ::nlohmann::json               body;
-    ValidatedRawControl(::pylabhub::wire::WireEnvelope e,
-                         ::nlohmann::json               b) noexcept
-        : env(std::move(e)), body(std::move(b)) {}
-    ValidatedRawControl(ValidatedRawControl &&) noexcept            = default;
+    ::nlohmann::json body;
+    ValidatedRawControl(::pylabhub::wire::WireEnvelope e, ::nlohmann::json b) noexcept
+        : env(std::move(e)), body(std::move(b))
+    {
+    }
+    ValidatedRawControl(ValidatedRawControl &&) noexcept = default;
     ValidatedRawControl &operator=(ValidatedRawControl &&) noexcept = default;
-    ValidatedRawControl(const ValidatedRawControl &)                = delete;
-    ValidatedRawControl &operator=(const ValidatedRawControl &)     = delete;
-    [[nodiscard]] std::string identity() const
-    { return std::string(env.identity()); }
-    [[nodiscard]] std::string correlation_id() const
-    { return std::string(env.correlation_id()); }
-    [[nodiscard]] std::string msg_type() const
-    { return std::string(env.msg_type()); }
+    ValidatedRawControl(const ValidatedRawControl &) = delete;
+    ValidatedRawControl &operator=(const ValidatedRawControl &) = delete;
+    [[nodiscard]] std::string identity() const { return std::string(env.identity()); }
+    [[nodiscard]] std::string correlation_id() const { return std::string(env.correlation_id()); }
+    [[nodiscard]] std::string msg_type() const { return std::string(env.msg_type()); }
 };
 
 // ── The full variant ─────────────────────────────────────────────────────
 
 using ReceivedMessage = std::variant<
-    ValidatedRegReq,
-    ValidatedConsumerRegReq,
-    ValidatedDeregReq,
-    ValidatedConsumerDeregReq,
-    ValidatedEndpointUpdateReq,
-    ValidatedChannelAuthAppliedReq,
-    ValidatedHeartbeatNotify,
-    ValidatedGetChannelAuthReq,
-    ValidatedDiscReq,
-    ValidatedRawControl,
-    RejectedMessage>;
+    ValidatedRegReq, ValidatedConsumerRegReq, ValidatedDeregReq, ValidatedConsumerDeregReq,
+    ValidatedEndpointUpdateReq, ValidatedChannelAuthAppliedReq, ValidatedHeartbeatNotify,
+    ValidatedGetChannelAuthReq, ValidatedDiscReq, ValidatedRawControl, RejectedMessage>;
 
 // ── Admission binder ─────────────────────────────────────────────────────
 //
@@ -223,7 +215,7 @@ using ReceivedMessage = std::variant<
 struct PYLABHUB_UTILS_EXPORT AdmissionBinder
 {
     ::pylabhub::admission::AdmissionCallbacks callbacks;
-    ::pylabhub::admission::AdmissionContext   context;
+    ::pylabhub::admission::AdmissionContext context;
 
     /// Rebind the context's cb pointer to `&this->callbacks` after any
     /// modification.  Callers should invoke once after populating
@@ -249,9 +241,8 @@ struct PYLABHUB_UTILS_EXPORT AdmissionBinder
 // caller (BrokerServiceImpl at construction).  Missing callbacks produce
 // `broker_internal_error` rejects — the pipeline never silently skips a
 // gate.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT ReceivedMessage
-receive_and_validate(::zmq::multipart_t                    &&raw,
-                      const ::pylabhub::admission::AdmissionContext &admission_ctx);
+[[nodiscard]] PYLABHUB_UTILS_EXPORT ReceivedMessage receive_and_validate(
+    ::zmq::multipart_t &&raw, const ::pylabhub::admission::AdmissionContext &admission_ctx);
 
 // ── Dispatch table introspection (test-facing) ───────────────────────────
 //
@@ -272,8 +263,7 @@ tier_for_msg_type(std::string_view msg_type) noexcept;
 
 /// Number of rows in the dispatch table.  Used to pin the table size
 /// so a silent add/drop trips the L1 test.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::size_t
-dispatch_table_size() noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::size_t dispatch_table_size() noexcept;
 
 // ── Reject reply helper ──────────────────────────────────────────────────
 //
@@ -284,4 +274,4 @@ dispatch_table_size() noexcept;
 [[nodiscard]] PYLABHUB_UTILS_EXPORT ::zmq::multipart_t
 build_error_reply(const RejectedMessage &rej);
 
-}  // namespace pylabhub::wire::dispatch
+} // namespace pylabhub::wire::dispatch

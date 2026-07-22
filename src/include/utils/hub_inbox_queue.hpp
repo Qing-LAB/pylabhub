@@ -1,7 +1,8 @@
 #pragma once
 /**
  * @file hub_inbox_queue.hpp
- * @brief InboxQueue (ROUTER receiver) and InboxClient (DEALER sender) for typed role-to-role messaging.
+ * @brief InboxQueue (ROUTER receiver) and InboxClient (DEALER sender) for typed role-to-role
+ * messaging.
  *
  * ## Overview
  * A role declares an inbox by configuring `inbox_schema` in its JSON config.
@@ -47,8 +48,8 @@
  * stop() closes the socket (RAII via cppzmq). The shared ZMQ context is NOT
  * closed here — it outlives every InboxQueue/InboxClient in the process.
  */
-#include "utils/hub_zmq_queue.hpp"   // ZmqSchemaField
-#include "utils/security/peer_admission.hpp"  // PeerAdmission (inbox ROUTER ZAP)
+#include "utils/hub_zmq_queue.hpp"           // ZmqSchemaField
+#include "utils/security/peer_admission.hpp" // PeerAdmission (inbox ROUTER ZAP)
 
 #include "pylabhub_utils_export.h"
 
@@ -76,9 +77,9 @@ struct InboxClientImpl;
  */
 struct PYLABHUB_UTILS_EXPORT InboxItem
 {
-    const void*  data{nullptr};    ///< Decoded payload buffer (InboxQueue-owned; item_size() bytes).
-    std::string  sender_id;        ///< Pylabhub UID of the sender (from ZMQ identity frame).
-    uint64_t     seq{0};           ///< Monotonic sender sequence number.
+    const void *data{nullptr}; ///< Decoded payload buffer (InboxQueue-owned; item_size() bytes).
+    std::string sender_id;     ///< Pylabhub UID of the sender (from ZMQ identity frame).
+    uint64_t seq{0};           ///< Monotonic sender sequence number.
 };
 
 // ============================================================================
@@ -104,10 +105,9 @@ struct PYLABHUB_UTILS_EXPORT InboxItem
  *   }
  * @endcode
  */
-class PYLABHUB_UTILS_EXPORT InboxQueue
-    : public pylabhub::utils::security::PeerAdmission
+class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerAdmission
 {
-public:
+  public:
     /**
      * @brief Factory: create an InboxQueue that RECORDS @p endpoint as the future bind target;
      *        the ROUTER socket is bound by `apply_master_approval` (or `start()` under test
@@ -115,22 +115,24 @@ public:
      *        under task #103.
      *
      * @param endpoint    ZMQ endpoint to bind (e.g. "tcp://0.0.0.0:5592" or "tcp://0.0.0.0:0").
-     *                    Port 0 causes the OS to assign a free port; retrieve it via actual_endpoint().
+     *                    Port 0 causes the OS to assign a free port; retrieve it via
+     * actual_endpoint().
      * @param schema      Field list — must be non-empty; returns nullptr on error.
      * @param packing     "aligned" or "packed". Must match InboxClient packing.
      * @param rcvhwm      ZMQ_RCVHWM: max queued incoming messages before ZMQ drops.
      *                    Default 1000 (ZMQ built-in default). 0 = unlimited.
      * @return            nullptr on schema or ZMQ setup error (logged internally).
      */
-    [[nodiscard]] static std::unique_ptr<InboxQueue>
-    bind_at(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
-            std::string packing = "aligned", int rcvhwm = 1000);
+    [[nodiscard]] static std::unique_ptr<InboxQueue> bind_at(const std::string &endpoint,
+                                                             std::vector<ZmqSchemaField> schema,
+                                                             std::string packing = "aligned",
+                                                             int rcvhwm = 1000);
 
     ~InboxQueue();
-    InboxQueue(InboxQueue&&) noexcept;
-    InboxQueue& operator=(InboxQueue&&) noexcept;
-    InboxQueue(const InboxQueue&) = delete;
-    InboxQueue& operator=(const InboxQueue&) = delete;
+    InboxQueue(InboxQueue &&) noexcept;
+    InboxQueue &operator=(InboxQueue &&) noexcept;
+    InboxQueue(const InboxQueue &) = delete;
+    InboxQueue &operator=(const InboxQueue &) = delete;
 
     /**
      * @brief Bind ROUTER socket and start listening.
@@ -162,7 +164,7 @@ public:
      * @return Pointer to the decoded InboxItem (owned by this InboxQueue; valid until
      *         the next recv_one() call).  nullptr on timeout or error.
      */
-    [[nodiscard]] const InboxItem* recv_one(std::chrono::milliseconds timeout) noexcept;
+    [[nodiscard]] const InboxItem *recv_one(std::chrono::milliseconds timeout) noexcept;
 
     /**
      * @brief Send ACK for the last recv_one() result.
@@ -199,9 +201,8 @@ public:
     };
     [[nodiscard]] InboxMetricsSnapshot inbox_metrics() const noexcept
     {
-        return {recv_frame_error_count(), ack_send_error_count(),
-                recv_gap_count(), checksum_error_count(),
-                recv_replay_reject_count()};
+        return {recv_frame_error_count(), ack_send_error_count(), recv_gap_count(),
+                checksum_error_count(), recv_replay_reject_count()};
     }
 
     /**
@@ -222,20 +223,18 @@ public:
      * @param zap_domain         Distinct inbox ZAP domain, e.g.
      *        "<uid>:inbox".  Registered with the process ZapRouter.
      */
-    void set_curve_server_identity(std::string identity_key_name,
-                                   std::string zap_domain);
+    void set_curve_server_identity(std::string identity_key_name, std::string zap_domain);
 
     // ── PeerAdmission (HEP-CORE-0036 §7) — inbox ROUTER ZAP gate ──────────
     // The hub-wide known_roles roster is installed via set_peer_allowlist;
     // the ZapRouter pump thread consults is_peer_allowed at handshake time.
-    bool set_peer_allowlist(
-        pylabhub::utils::security::PeerAllowlist allowlist) override;
+    bool set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist) override;
     [[nodiscard]] std::optional<pylabhub::utils::security::PeerAllowlist>
     peer_allowlist_snapshot() const override;
-    [[nodiscard]] bool is_peer_allowed(
-        const pylabhub::utils::security::PeerIdentity &peer) const override;
+    [[nodiscard]] bool
+    is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const override;
 
-private:
+  private:
     explicit InboxQueue(std::unique_ptr<InboxQueueImpl> impl);
     std::unique_ptr<InboxQueueImpl> pImpl;
 };
@@ -262,7 +261,7 @@ private:
  */
 class PYLABHUB_UTILS_EXPORT InboxClient
 {
-public:
+  public:
     /**
      * @brief Factory: create an InboxClient that connects a DEALER to @p endpoint.
      *
@@ -272,15 +271,16 @@ public:
      * @param packing     "aligned" or "packed". Must match InboxQueue packing.
      * @return            nullptr on schema or ZMQ setup error (logged internally).
      */
-    [[nodiscard]] static std::unique_ptr<InboxClient>
-    connect_to(const std::string& endpoint, const std::string& sender_uid,
-               std::vector<ZmqSchemaField> schema, std::string packing = "aligned");
+    [[nodiscard]] static std::unique_ptr<InboxClient> connect_to(const std::string &endpoint,
+                                                                 const std::string &sender_uid,
+                                                                 std::vector<ZmqSchemaField> schema,
+                                                                 std::string packing = "aligned");
 
     ~InboxClient();
-    InboxClient(InboxClient&&) noexcept;
-    InboxClient& operator=(InboxClient&&) noexcept;
-    InboxClient(const InboxClient&) = delete;
-    InboxClient& operator=(const InboxClient&) = delete;
+    InboxClient(InboxClient &&) noexcept;
+    InboxClient &operator=(InboxClient &&) noexcept;
+    InboxClient(const InboxClient &) = delete;
+    InboxClient &operator=(const InboxClient &) = delete;
 
     /**
      * @brief Set ZMQ_IDENTITY and connect DEALER socket to the configured endpoint.
@@ -304,7 +304,7 @@ public:
      * The buffer is zero-initialized at factory time and between sends.
      * @return Pointer to the write buffer (item_size() bytes); nullptr if not running.
      */
-    [[nodiscard]] void* acquire() noexcept;
+    [[nodiscard]] void *acquire() noexcept;
 
     /**
      * @brief Encode and send the buffer contents; optionally wait for ACK.
@@ -338,10 +338,9 @@ public:
      * @param server_pubkey_z85  The receiver's identity pubkey (Z85),
      *        set as curve_serverkey.
      */
-    void set_curve_client_identity(std::string identity_key_name,
-                                   std::string server_pubkey_z85);
+    void set_curve_client_identity(std::string identity_key_name, std::string server_pubkey_z85);
 
-private:
+  private:
     explicit InboxClient(std::unique_ptr<InboxClientImpl> impl);
     std::unique_ptr<InboxClientImpl> pImpl;
 };
@@ -353,10 +352,10 @@ private:
  * Same X-macro pattern as PYLABHUB_QUEUE_METRICS_FIELDS (see hub_queue.hpp).
  */
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)
-#define PYLABHUB_INBOX_METRICS_FIELDS(X) \
-    X(recv_frame_error_count)            \
-    X(ack_send_error_count)              \
-    X(recv_gap_count)                    \
-    X(checksum_error_count)              \
+#define PYLABHUB_INBOX_METRICS_FIELDS(X)                                                           \
+    X(recv_frame_error_count)                                                                      \
+    X(ack_send_error_count)                                                                        \
+    X(recv_gap_count)                                                                              \
+    X(checksum_error_count)                                                                        \
     X(recv_replay_reject_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)

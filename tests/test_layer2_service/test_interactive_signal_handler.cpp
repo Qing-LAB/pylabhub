@@ -153,7 +153,6 @@ class InteractiveSignalHandlerLifecycleTest : public IsolatedProcessTest
 
 TEST_F(InteractiveSignalHandlerLifecycleTest, LifecycleModuleUninstallsOnFinalize)
 {
-    auto w = SpawnWorker(
-        "signal_handler.lifecycle_module_uninstalls_on_finalize", {});
+    auto w = SpawnWorker("signal_handler.lifecycle_module_uninstalls_on_finalize", {});
     ExpectWorkerOk(w);
 }

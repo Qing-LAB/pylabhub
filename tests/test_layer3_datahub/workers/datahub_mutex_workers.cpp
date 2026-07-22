@@ -16,7 +16,10 @@ namespace pylabhub::tests::worker::datablock_management_mutex
 {
 
 // Print to stderr so ExpectWorkerOk (checks stderr) can verify
-static void log(const char *msg) { fmt::print(stderr, "{}\n", msg); }
+static void log(const char *msg)
+{
+    fmt::print(stderr, "{}\n", msg);
+}
 
 int acquire_and_release_creator(const std::string &shm_name)
 {
@@ -47,7 +50,8 @@ int acquire_and_release_creator_hold_long(const std::string &shm_name)
             pylabhub::hub::DataBlockLockGuard lock(mutex);
             log("Mutex acquired");
             pylabhub::tests::helper::signal_test_ready(); // Parent spawns attacher, which blocks
-            std::this_thread::sleep_for(std::chrono::milliseconds(300)); // Hold until attacher attaches
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(300)); // Hold until attacher attaches
         }
         log("Mutex released");
         return 0;
@@ -132,15 +136,17 @@ int zombie_attacher_recovers(const std::string &shm_name)
 #else
     try
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Let zombie exit and OS mark mutex abandoned
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(100)); // Let zombie exit and OS mark mutex abandoned
         pylabhub::hub::DataBlockMutex mutex(shm_name, nullptr, 0, false);
         // Use timed lock so we never hang: robust mutex can block indefinitely on some kernels.
         const int timeout_ms = 5000;
         if (!mutex.try_lock_for(timeout_ms))
         {
-            fmt::print(stderr,
-                       "Recoverer timed out after {} ms (robust mutex did not return EOWNERDEAD).\n",
-                       timeout_ms);
+            fmt::print(
+                stderr,
+                "Recoverer timed out after {} ms (robust mutex did not return EOWNERDEAD).\n",
+                timeout_ms);
             return 1;
         }
         log("Mutex acquired");
@@ -155,7 +161,6 @@ int zombie_attacher_recovers(const std::string &shm_name)
     }
 #endif
 }
-
 
 int acquire_creator_signal_then_hold(const std::string &shm_name)
 {

@@ -21,14 +21,14 @@
 #include "service/data_loop.hpp"
 
 #include "utils/role_api_base.hpp"
-#include "utils/role_handler.hpp"   // RoleHandler + Presence construction
+#include "utils/role_handler.hpp" // RoleHandler + Presence construction
 #include "utils/role_host_core.hpp"
 #include "utils/role_presence.hpp"
 #include "utils/script_engine.hpp"
 #include "utils/thread_manager.hpp"
 
 #include "plh_service.hpp"
-#include "role_api_base_test_access.h"  // L2-test install_handler helper
+#include "role_api_base_test_access.h" // L2-test install_handler helper
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -58,8 +58,8 @@ using pylabhub::scripting::InvokeTx;
 using pylabhub::scripting::LoopConfig;
 using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
-using pylabhub::scripting::ScriptEngine;
 using pylabhub::scripting::run_data_loop;
+using pylabhub::scripting::ScriptEngine;
 using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 
@@ -73,10 +73,10 @@ namespace
 class MockCycleOps final
 {
   public:
-    int  acquire_count{0};
-    int  invoke_count{0};
-    int  cleanup_shutdown_count{0};
-    int  cleanup_exit_count{0};
+    int acquire_count{0};
+    int invoke_count{0};
+    int cleanup_shutdown_count{0};
+    int cleanup_exit_count{0};
     bool acquire_returns_data{true};
     bool invoke_returns_continue{true};
 
@@ -100,7 +100,7 @@ class MockCycleOps final
 
 struct SlowOps final
 {
-    int  cycle_count{0};
+    int cycle_count{0};
     bool acquire(const AcquireContext &) { return true; }
     void cleanup_on_shutdown() {}
     bool invoke_and_commit(std::vector<IncomingMessage> &)
@@ -154,54 +154,68 @@ struct StubEngine : public ScriptEngine
 
   public:
     bool load_script(const std::filesystem::path &, const std::string &,
-                     const std::string &) override { return true; }
+                     const std::string &) override
+    {
+        return true;
+    }
     bool has_callback(const std::string &) const noexcept override { return false; }
-    bool register_slot_type(const pylabhub::hub::SchemaSpec &,
-                            const std::string &, const std::string &) override
-    { return true; }
-    size_t         type_sizeof(const std::string &) const override { return 0; }
-    bool           invoke(const std::string &) override { return true; }
-    bool           invoke(const std::string &, const nlohmann::json &) override { return true; }
-    InvokeResponse eval(const std::string &) override
-    { return {InvokeStatus::NotFound, {}}; }
-    InvokeResponse invoke_returning(const std::string &,
-                                    const nlohmann::json &,
-                                    int64_t) override
-    { return {InvokeStatus::NotFound, {}}; }
+    bool register_slot_type(const pylabhub::hub::SchemaSpec &, const std::string &,
+                            const std::string &) override
+    {
+        return true;
+    }
+    size_t type_sizeof(const std::string &) const override { return 0; }
+    bool invoke(const std::string &) override { return true; }
+    bool invoke(const std::string &, const nlohmann::json &) override { return true; }
+    InvokeResponse eval(const std::string &) override { return {InvokeStatus::NotFound, {}}; }
+    InvokeResponse invoke_returning(const std::string &, const nlohmann::json &, int64_t) override
+    {
+        return {InvokeStatus::NotFound, {}};
+    }
     pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
-    { return pylabhub::scripting::ScriptEngine::InitStatus::Ready; }
+    {
+        return pylabhub::scripting::ScriptEngine::InitStatus::Ready;
+    }
     void invoke_on_stop() override {}
-    void invoke_on_channel_closing(const std::string &,
-                                    const std::string &) override {}
-    void invoke_on_consumer_died(const std::string &,
-                                  const std::string &,
-                                  const std::string &) override {}
+    void invoke_on_channel_closing(const std::string &, const std::string &) override {}
+    void invoke_on_consumer_died(const std::string &, const std::string &,
+                                 const std::string &) override
+    {
+    }
     void invoke_on_hub_dead(const std::string &) override {}
-    void invoke_on_band_member_joined(const std::string &,
-                                      const std::string &,
-                                      const std::string &) override {}
-    void invoke_on_band_member_left(const std::string &,
-                                    const std::string &,
-                                    const std::string &) override {}
-    void invoke_on_band_message(const std::string &,
-                                const std::string &,
-                                const nlohmann::json &) override {}
-    void invoke_on_band_lost(const std::string &,
-                             const std::string &) override {}
-    void invoke_on_allowlist_changed(
-        const std::string &,
-        const std::vector<pylabhub::scripting::AllowedPeer> &,
-        const std::string &) override {}
+    void invoke_on_band_member_joined(const std::string &, const std::string &,
+                                      const std::string &) override
+    {
+    }
+    void invoke_on_band_member_left(const std::string &, const std::string &,
+                                    const std::string &) override
+    {
+    }
+    void invoke_on_band_message(const std::string &, const std::string &,
+                                const nlohmann::json &) override
+    {
+    }
+    void invoke_on_band_lost(const std::string &, const std::string &) override {}
+    void invoke_on_allowlist_changed(const std::string &,
+                                     const std::vector<pylabhub::scripting::AllowedPeer> &,
+                                     const std::string &) override
+    {
+    }
     InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
-    { return InvokeResult::Commit; }
+    {
+        return InvokeResult::Commit;
+    }
     InvokeResult invoke_consume(InvokeRx, std::vector<IncomingMessage> &) override
-    { return InvokeResult::Commit; }
-    InvokeResult invoke_process(InvokeRx, InvokeTx,
-                                std::vector<IncomingMessage> &) override
-    { return InvokeResult::Commit; }
+    {
+        return InvokeResult::Commit;
+    }
+    InvokeResult invoke_process(InvokeRx, InvokeTx, std::vector<IncomingMessage> &) override
+    {
+        return InvokeResult::Commit;
+    }
     InvokeResult invoke_on_inbox(InvokeInbox) override { return InvokeResult::Commit; }
-    uint64_t     script_error_count() const noexcept override { return 0; }
-    bool         supports_multi_state() const noexcept override { return false; }
+    uint64_t script_error_count() const noexcept override { return 0; }
+    bool supports_multi_state() const noexcept override { return false; }
 };
 
 // HEP-CORE-0011 §"Loop-ready gate" — StubEngine variant that reports
@@ -211,10 +225,7 @@ struct StubEngine : public ScriptEngine
 // (AND, not OR).
 struct StubEngineWithReadyHook : public StubEngine
 {
-    bool has_callback(const std::string &name) const noexcept override
-    {
-        return name == "on_init";
-    }
+    bool has_callback(const std::string &name) const noexcept override { return name == "on_init"; }
     pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
     {
         return pylabhub::scripting::ScriptEngine::InitStatus::Ready;
@@ -252,14 +263,13 @@ void install_one_authorized_presence(RoleAPIBase &api, const char *channel)
     using pylabhub::scripting::test::RoleAPIBaseTestAccess;
 
     Presence p;
-    p.hub.broker        = "tcp://l2-test:0";
+    p.hub.broker = "tcp://l2-test:0";
     p.hub.broker_pubkey = "l2-test-pubkey";
-    p.channel           = channel;
-    p.role_kind         = RoleKind::Producer;
+    p.channel = channel;
+    p.role_kind = RoleKind::Producer;
     // The actual write the gate observes.  Mirrors apply_*_reg_ack
     // exactly (role_api_base.cpp transitions).
-    p.registration_state.store(RegistrationState::Authorized,
-                               std::memory_order_release);
+    p.registration_state.store(RegistrationState::Authorized, std::memory_order_release);
 
     std::vector<Presence> presences;
     presences.push_back(std::move(p));
@@ -293,19 +303,21 @@ int shutdown_stops_loop()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "shutdown_stops_loop");
+            auto api = make_api(core, "shutdown_stops_loop");
             install_one_authorized_presence(*api, "ch.shutdown");
 
-            StubEngine   engine;
+            StubEngine engine;
             MockCycleOps ops;
             core.set_running(true);
-            std::thread stopper([&] {
-                std::this_thread::sleep_for(std::chrono::milliseconds{20});
-                core.request_stop();
-            });
+            std::thread stopper(
+                [&]
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                    core.request_stop();
+                });
 
             LoopConfig cfg;
-            cfg.period_us  = 0;
+            cfg.period_us = 0;
             cfg.loop_timing = LoopTimingPolicy::MaxRate;
 
             run_data_loop(*api, core, cfg, ops, engine);
@@ -339,16 +351,16 @@ int framework_floor_holds_gate()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "framework_floor_holds_gate");
+            auto api = make_api(core, "framework_floor_holds_gate");
             install_one_authorized_presence(*api, "ch.floor_holds");
 
             StubEngineWithReadyHook engine;
-            FrameworkFloorHoldsOps  ops;
+            FrameworkFloorHoldsOps ops;
             core.set_running(true);
 
             LoopConfig cfg;
-            cfg.period_us      = 0;
-            cfg.loop_timing    = LoopTimingPolicy::MaxRate;
+            cfg.period_us = 0;
+            cfg.loop_timing = LoopTimingPolicy::MaxRate;
             // Small budget so the test completes quickly; the pre-Ready
             // cycle pacer runs at kLoopReadyGateInterval (100 ms), so
             // 500 ms allows a handful of paced cycles before the
@@ -364,20 +376,17 @@ int framework_floor_holds_gate()
             // Drain + invoke_and_commit still fires per cycle during
             // the pre-Ready hold (Step D+E runs unconditionally so
             // NOTIFYs can advance state).
-            EXPECT_GE(ops.invoke_count, 1)
-                << "pre-Ready phase must still drain messages";
+            EXPECT_GE(ops.invoke_count, 1) << "pre-Ready phase must still drain messages";
             // Loop exited cleanly.
             EXPECT_EQ(ops.cleanup_exit_count, 1);
             // Stop reason must be InitTimeout — distinguishes this
             // failure mode from a generic critical error or a script
             // error.
-            EXPECT_EQ(core.stop_reason(),
-                      RoleHostCore::StopReason::InitTimeout)
+            EXPECT_EQ(core.stop_reason(), RoleHostCore::StopReason::InitTimeout)
                 << "loop-ready gate timeout must surface as "
                    "StopReason::InitTimeout";
         },
-        "role_data_loop::framework_floor_holds_gate",
-        Logger::GetLifecycleModule());
+        "role_data_loop::framework_floor_holds_gate", Logger::GetLifecycleModule());
 }
 
 int invoke_returns_false_stops_loop()
@@ -386,16 +395,16 @@ int invoke_returns_false_stops_loop()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "invoke_returns_false");
+            auto api = make_api(core, "invoke_returns_false");
             install_one_authorized_presence(*api, "ch.invoke_false");
 
-            StubEngine   engine;
+            StubEngine engine;
             MockCycleOps ops;
             ops.invoke_returns_continue = false;
             core.set_running(true);
 
             LoopConfig cfg;
-            cfg.period_us  = 0;
+            cfg.period_us = 0;
             cfg.loop_timing = LoopTimingPolicy::MaxRate;
 
             run_data_loop(*api, core, cfg, ops, engine);
@@ -404,8 +413,7 @@ int invoke_returns_false_stops_loop()
             EXPECT_EQ(ops.invoke_count, 1);
             EXPECT_EQ(ops.cleanup_exit_count, 1);
         },
-        "role_data_loop::invoke_returns_false_stops_loop",
-        Logger::GetLifecycleModule());
+        "role_data_loop::invoke_returns_false_stops_loop", Logger::GetLifecycleModule());
 }
 
 int metrics_increment()
@@ -414,19 +422,21 @@ int metrics_increment()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "metrics_increment");
+            auto api = make_api(core, "metrics_increment");
             install_one_authorized_presence(*api, "ch.metrics");
 
-            StubEngine   engine;
+            StubEngine engine;
             MockCycleOps ops;
             core.set_running(true);
-            std::thread stopper([&] {
-                std::this_thread::sleep_for(std::chrono::milliseconds{20});
-                core.request_stop();
-            });
+            std::thread stopper(
+                [&]
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                    core.request_stop();
+                });
 
             LoopConfig cfg;
-            cfg.period_us  = 0;
+            cfg.period_us = 0;
             cfg.loop_timing = LoopTimingPolicy::MaxRate;
 
             run_data_loop(*api, core, cfg, ops, engine);
@@ -444,21 +454,23 @@ int no_data_skips_deadline_wait()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "no_data_skips_deadline_wait");
+            auto api = make_api(core, "no_data_skips_deadline_wait");
             install_one_authorized_presence(*api, "ch.no_data");
 
-            StubEngine   engine;
+            StubEngine engine;
             MockCycleOps ops;
             ops.acquire_returns_data = false;
             core.set_running(true);
-            std::thread stopper([&] {
-                std::this_thread::sleep_for(std::chrono::milliseconds{30});
-                core.request_stop();
-            });
+            std::thread stopper(
+                [&]
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{30});
+                    core.request_stop();
+                });
 
             LoopConfig cfg;
-            cfg.period_us                = 100000;
-            cfg.loop_timing              = LoopTimingPolicy::FixedRate;
+            cfg.period_us = 100000;
+            cfg.loop_timing = LoopTimingPolicy::FixedRate;
             cfg.queue_io_wait_timeout_ratio = 0.1;
 
             auto start = std::chrono::steady_clock::now();
@@ -467,12 +479,9 @@ int no_data_skips_deadline_wait()
             auto elapsed = std::chrono::steady_clock::now() - start;
 
             EXPECT_GE(ops.acquire_count, 2);
-            EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
-                          .count(),
-                      200);
+            EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 200);
         },
-        "role_data_loop::no_data_skips_deadline_wait",
-        Logger::GetLifecycleModule());
+        "role_data_loop::no_data_skips_deadline_wait", Logger::GetLifecycleModule());
 }
 
 int overrun_detected()
@@ -481,7 +490,7 @@ int overrun_detected()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "overrun_detected");
+            auto api = make_api(core, "overrun_detected");
             install_one_authorized_presence(*api, "ch.overrun");
 
             core.set_running(true);
@@ -489,8 +498,8 @@ int overrun_detected()
             SlowOps slow_ops;
 
             LoopConfig cfg;
-            cfg.period_us                = 10000;
-            cfg.loop_timing              = LoopTimingPolicy::FixedRate;
+            cfg.period_us = 10000;
+            cfg.loop_timing = LoopTimingPolicy::FixedRate;
             cfg.queue_io_wait_timeout_ratio = 0.1;
 
             run_data_loop(*api, core, cfg, slow_ops, engine);
@@ -509,8 +518,8 @@ int thread_manager_spawn_and_join()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "tm_spawn_and_join");
-            StubEngine   engine;
+            auto api = make_api(core, "tm_spawn_and_join");
+            StubEngine engine;
             api->set_engine(&engine);
 
             core.set_running(true);
@@ -525,8 +534,7 @@ int thread_manager_spawn_and_join()
             EXPECT_EQ(counter.load(), 1);
             EXPECT_EQ(api->thread_manager().active_count(), 0u);
         },
-        "role_data_loop::thread_manager_spawn_and_join",
-        Logger::GetLifecycleModule());
+        "role_data_loop::thread_manager_spawn_and_join", Logger::GetLifecycleModule());
 }
 
 int thread_manager_multiple_threads()
@@ -535,8 +543,8 @@ int thread_manager_multiple_threads()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "tm_multiple_threads");
-            StubEngine   engine;
+            auto api = make_api(core, "tm_multiple_threads");
+            StubEngine engine;
             api->set_engine(&engine);
 
             core.set_running(true);
@@ -553,8 +561,7 @@ int thread_manager_multiple_threads()
             EXPECT_EQ(counter.load(), 111);
             EXPECT_EQ(api->thread_manager().active_count(), 0u);
         },
-        "role_data_loop::thread_manager_multiple_threads",
-        Logger::GetLifecycleModule());
+        "role_data_loop::thread_manager_multiple_threads", Logger::GetLifecycleModule());
 }
 
 int thread_manager_join_in_reverse_order()
@@ -563,31 +570,35 @@ int thread_manager_join_in_reverse_order()
         [&]()
         {
             RoleHostCore core;
-            auto         api = make_api(core, "tm_join_in_reverse_order");
-            StubEngine   engine;
+            auto api = make_api(core, "tm_join_in_reverse_order");
+            StubEngine engine;
             api->set_engine(&engine);
 
             core.set_running(true);
             std::vector<int> order;
-            std::mutex       mu;
+            std::mutex mu;
 
-            api->thread_manager().spawn("first", [&] {
-                std::this_thread::sleep_for(std::chrono::milliseconds{5});
-                std::lock_guard<std::mutex> lk(mu);
-                order.push_back(1);
-            });
-            api->thread_manager().spawn("second", [&] {
-                std::lock_guard<std::mutex> lk(mu);
-                order.push_back(2);
-            });
+            api->thread_manager().spawn("first",
+                                        [&]
+                                        {
+                                            std::this_thread::sleep_for(
+                                                std::chrono::milliseconds{5});
+                                            std::lock_guard<std::mutex> lk(mu);
+                                            order.push_back(1);
+                                        });
+            api->thread_manager().spawn("second",
+                                        [&]
+                                        {
+                                            std::lock_guard<std::mutex> lk(mu);
+                                            order.push_back(2);
+                                        });
 
             std::this_thread::sleep_for(std::chrono::milliseconds{20});
             api->thread_manager().drain();
 
             EXPECT_EQ(order.size(), 2u);
         },
-        "role_data_loop::thread_manager_join_in_reverse_order",
-        Logger::GetLifecycleModule());
+        "role_data_loop::thread_manager_join_in_reverse_order", Logger::GetLifecycleModule());
 }
 
 } // namespace role_data_loop
@@ -607,8 +618,7 @@ struct RoleDataLoopWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_data_loop")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_data_loop")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_data_loop;
@@ -634,8 +644,7 @@ struct RoleDataLoopWorkerRegistrar
                 if (sc == "thread_manager_join_in_reverse_order")
                     return thread_manager_join_in_reverse_order();
 
-                fmt::print(stderr,
-                           "[role_data_loop] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[role_data_loop] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

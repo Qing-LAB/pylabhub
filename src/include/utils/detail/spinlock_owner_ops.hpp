@@ -29,8 +29,8 @@ inline bool try_acquire_token(SharedSpinLockState *state, uint64_t token) noexce
     if (!state)
         return false;
     uint64_t expected = 0;
-    return state->generation.compare_exchange_strong(
-        expected, token, std::memory_order_acq_rel, std::memory_order_acquire);
+    return state->generation.compare_exchange_strong(expected, token, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire);
 }
 
 /** @return true if lock was held by token and is now released. */
@@ -39,8 +39,8 @@ inline bool release_token(SharedSpinLockState *state, uint64_t token) noexcept
     if (!state)
         return false;
     uint64_t expected = token;
-    return state->generation.compare_exchange_strong(
-        expected, 0u, std::memory_order_acq_rel, std::memory_order_acquire);
+    return state->generation.compare_exchange_strong(expected, 0u, std::memory_order_acq_rel,
+                                                     std::memory_order_acquire);
 }
 
 /** @return true if state is currently held (generation != 0). */

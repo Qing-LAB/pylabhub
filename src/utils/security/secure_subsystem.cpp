@@ -21,37 +21,30 @@
 // vault_crypto.hpp `kVault*` KDF params) must match libsodium's
 // actual values.  libsodium has held these stable for over a decade;
 // if they ever drift, this build breaks loudly with a clear message.
-static_assert(crypto_secretbox_KEYBYTES   == 32, "sodium ABI drift: KEYBYTES");
+static_assert(crypto_secretbox_KEYBYTES == 32, "sodium ABI drift: KEYBYTES");
 static_assert(crypto_secretbox_NONCEBYTES == 24, "sodium ABI drift: NONCEBYTES");
-static_assert(crypto_secretbox_MACBYTES   == 16, "sodium ABI drift: MACBYTES");
-static_assert(crypto_pwhash_SALTBYTES     == 16, "sodium ABI drift: SALTBYTES");
-static_assert(crypto_box_PUBLICKEYBYTES   == 32, "sodium ABI drift: BOX PK");
-static_assert(crypto_box_SECRETKEYBYTES   == 32, "sodium ABI drift: BOX SK");
-static_assert(crypto_box_NONCEBYTES       == 24, "sodium ABI drift: BOX NONCE");
-static_assert(crypto_box_MACBYTES         == 16, "sodium ABI drift: BOX MAC");
-static_assert(
-    pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes
-        == crypto_pwhash_SALTBYTES,
-    "SMS kPwhashSaltBytes must equal sodium's crypto_pwhash_SALTBYTES");
-static_assert(
-    pylabhub::utils::security::SecureSubsystem::kBoxPubkeyBytes
-        == crypto_box_PUBLICKEYBYTES,
-    "SMS kBoxPubkeyBytes must equal sodium's crypto_box_PUBLICKEYBYTES");
-static_assert(
-    pylabhub::utils::security::SecureSubsystem::kBoxSeckeyBytes
-        == crypto_box_SECRETKEYBYTES,
-    "SMS kBoxSeckeyBytes must equal sodium's crypto_box_SECRETKEYBYTES");
-static_assert(
-    pylabhub::utils::security::SecureSubsystem::kBoxNonceBytes
-        == crypto_box_NONCEBYTES,
-    "SMS kBoxNonceBytes must equal sodium's crypto_box_NONCEBYTES");
-static_assert(
-    pylabhub::utils::security::SecureSubsystem::kBoxMacBytes
-        == crypto_box_MACBYTES,
-    "SMS kBoxMacBytes must equal sodium's crypto_box_MACBYTES");
+static_assert(crypto_secretbox_MACBYTES == 16, "sodium ABI drift: MACBYTES");
+static_assert(crypto_pwhash_SALTBYTES == 16, "sodium ABI drift: SALTBYTES");
+static_assert(crypto_box_PUBLICKEYBYTES == 32, "sodium ABI drift: BOX PK");
+static_assert(crypto_box_SECRETKEYBYTES == 32, "sodium ABI drift: BOX SK");
+static_assert(crypto_box_NONCEBYTES == 24, "sodium ABI drift: BOX NONCE");
+static_assert(crypto_box_MACBYTES == 16, "sodium ABI drift: BOX MAC");
+static_assert(pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes ==
+                  crypto_pwhash_SALTBYTES,
+              "SMS kPwhashSaltBytes must equal sodium's crypto_pwhash_SALTBYTES");
+static_assert(pylabhub::utils::security::SecureSubsystem::kBoxPubkeyBytes ==
+                  crypto_box_PUBLICKEYBYTES,
+              "SMS kBoxPubkeyBytes must equal sodium's crypto_box_PUBLICKEYBYTES");
+static_assert(pylabhub::utils::security::SecureSubsystem::kBoxSeckeyBytes ==
+                  crypto_box_SECRETKEYBYTES,
+              "SMS kBoxSeckeyBytes must equal sodium's crypto_box_SECRETKEYBYTES");
+static_assert(pylabhub::utils::security::SecureSubsystem::kBoxNonceBytes == crypto_box_NONCEBYTES,
+              "SMS kBoxNonceBytes must equal sodium's crypto_box_NONCEBYTES");
+static_assert(pylabhub::utils::security::SecureSubsystem::kBoxMacBytes == crypto_box_MACBYTES,
+              "SMS kBoxMacBytes must equal sodium's crypto_box_MACBYTES");
 
 #ifndef _WIN32
-#  include <unistd.h>  // getpid — used in the SodiumInit event log line
+#include <unistd.h> // getpid — used in the SodiumInit event log line
 #endif
 
 #include <atomic>
@@ -61,15 +54,15 @@ static_assert(
 #include <cstring>
 
 #ifndef _WIN32
-#  include <sys/resource.h>          // setrlimit / getrlimit / RLIMIT_*
-#  ifdef __linux__
-#    include <sys/prctl.h>           // prctl / PR_SET_DUMPABLE
-#  endif
+#include <sys/resource.h> // setrlimit / getrlimit / RLIMIT_*
+#ifdef __linux__
+#include <sys/prctl.h> // prctl / PR_SET_DUMPABLE
+#endif
 #else
-#  define WIN32_LEAN_AND_MEAN
-#  include <windows.h>               // SetErrorMode
-#  include <werapi.h>                // WerAddExcludedApplication
-#  pragma comment(lib, "wer.lib")
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h> // SetErrorMode
+#include <werapi.h>  // WerAddExcludedApplication
+#pragma comment(lib, "wer.lib")
 #endif
 
 namespace pylabhub::utils::security
@@ -130,13 +123,12 @@ void panic_if_not_ready(const char *context)
     const auto state = load_state();
     if (state != SubsystemState::Initialized)
     {
-        PLH_PANIC(
-            "FATAL: SecureSubsystem::{} called with state={} "
-            "(expected Initialized).  Add "
-            "SecureSubsystem::GetLifecycleModule() to your "
-            "LifecycleGuard mods pack BEFORE any consumer.  Aborting. "
-            "(HEP-CORE-0043 §1.2)",
-            context, static_cast<int>(state));
+        PLH_PANIC("FATAL: SecureSubsystem::{} called with state={} "
+                  "(expected Initialized).  Add "
+                  "SecureSubsystem::GetLifecycleModule() to your "
+                  "LifecycleGuard mods pack BEFORE any consumer.  Aborting. "
+                  "(HEP-CORE-0043 §1.2)",
+                  context, static_cast<int>(state));
     }
 }
 
@@ -216,22 +208,20 @@ void disable_core_dumps_or_panic()
     if (::setrlimit(RLIMIT_CORE, &rl) != 0)
     {
         const int saved_errno = errno;
-        PLH_PANIC(
-            "FATAL: SecureSubsystem: setrlimit(RLIMIT_CORE, 0) failed "
-            "(errno={}: {}).  Aborting. (HEP-CORE-0043 §1.2)",
-            saved_errno, std::strerror(saved_errno));
+        PLH_PANIC("FATAL: SecureSubsystem: setrlimit(RLIMIT_CORE, 0) failed "
+                  "(errno={}: {}).  Aborting. (HEP-CORE-0043 §1.2)",
+                  saved_errno, std::strerror(saved_errno));
     }
 
-#  ifdef __linux__
+#ifdef __linux__
     if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
     {
         const int saved_errno = errno;
-        PLH_PANIC(
-            "FATAL: SecureSubsystem: prctl(PR_SET_DUMPABLE, 0) failed "
-            "(errno={}: {}).  Aborting. (HEP-CORE-0043 §1.2)",
-            saved_errno, std::strerror(saved_errno));
+        PLH_PANIC("FATAL: SecureSubsystem: prctl(PR_SET_DUMPABLE, 0) failed "
+                  "(errno={}: {}).  Aborting. (HEP-CORE-0043 §1.2)",
+                  saved_errno, std::strerror(saved_errno));
     }
-#  endif // __linux__
+#endif // __linux__
 #else  // _WIN32
     UINT old_mode = ::SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
     ::SetErrorMode(old_mode | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
@@ -272,36 +262,28 @@ void SecureSubsystem::Impl::bringup()
     // reads a coherent `expected`.
     {
         SubsystemState expected = SubsystemState::Uninitialized;
-        if (!g_state.compare_exchange_strong(
-                expected,
-                SubsystemState::InitCalled,
-                std::memory_order_acq_rel,
-                std::memory_order_acquire))
+        if (!g_state.compare_exchange_strong(expected, SubsystemState::InitCalled,
+                                             std::memory_order_acq_rel, std::memory_order_acquire))
         {
-            PLH_PANIC(
-                "FATAL: SecureSubsystem bringup invoked while another "
-                "instance is present or in-flight (observed state={}). "
-                "Exactly one instance per process (HEP-CORE-0043 §1.3). "
-                "Aborting.",
-                static_cast<int>(expected));
+            PLH_PANIC("FATAL: SecureSubsystem bringup invoked while another "
+                      "instance is present or in-flight (observed state={}). "
+                      "Exactly one instance per process (HEP-CORE-0043 §1.3). "
+                      "Aborting.",
+                      static_cast<int>(expected));
         }
     }
 
     // Step 2: sodium_init.
     const int sodium_rc = ::sodium_init();
-    LOGGER_INFO(
-        "[SecureSubsystem] event=SodiumInit rc={} libsodium_ver={}.{} pid={}",
-        sodium_rc,
-        ::sodium_library_version_major(),
-        ::sodium_library_version_minor(),
-        static_cast<int>(::getpid()));
+    LOGGER_INFO("[SecureSubsystem] event=SodiumInit rc={} libsodium_ver={}.{} pid={}", sodium_rc,
+                ::sodium_library_version_major(), ::sodium_library_version_minor(),
+                static_cast<int>(::getpid()));
     if (sodium_rc < 0)
     {
-        PLH_PANIC(
-            "FATAL: SecureSubsystem: sodium_init() returned {}. "
-            "CSPRNG unavailable (check /dev/urandom / getrandom on POSIX; "
-            "system entropy on Windows).  Aborting. (HEP-CORE-0043 §1.2)",
-            sodium_rc);
+        PLH_PANIC("FATAL: SecureSubsystem: sodium_init() returned {}. "
+                  "CSPRNG unavailable (check /dev/urandom / getrandom on POSIX; "
+                  "system entropy on Windows).  Aborting. (HEP-CORE-0043 §1.2)",
+                  sodium_rc);
     }
 
     // Step 3: disable core dumps.
@@ -311,19 +293,17 @@ void SecureSubsystem::Impl::bringup()
     const unsigned long memlock_limit = inspect_memlock_capability();
     if (memlock_limit > 0 && memlock_limit < kMemlockWarnThresholdBytes)
     {
-        LOGGER_WARN(
-            "[SecureSubsystem] RLIMIT_MEMLOCK soft limit is {} bytes — "
-            "below the {} byte advisory threshold.  KeyStore allocations "
-            "may fail with ENOMEM.  Raise the limit (ulimit -l on POSIX) "
-            "for hardened deployments.",
-            memlock_limit, kMemlockWarnThresholdBytes);
+        LOGGER_WARN("[SecureSubsystem] RLIMIT_MEMLOCK soft limit is {} bytes — "
+                    "below the {} byte advisory threshold.  KeyStore allocations "
+                    "may fail with ENOMEM.  Raise the limit (ulimit -l on POSIX) "
+                    "for hardened deployments.",
+                    memlock_limit, kMemlockWarnThresholdBytes);
     }
 #ifdef _WIN32
-    LOGGER_WARN(
-        "[SecureSubsystem] Windows SeLockMemoryPrivilege probe is not "
-        "yet implemented; if KeyStore allocations fail, grant "
-        "SeLockMemoryPrivilege via secpol.msc -> Local Policies -> User "
-        "Rights Assignment.");
+    LOGGER_WARN("[SecureSubsystem] Windows SeLockMemoryPrivilege probe is not "
+                "yet implemented; if KeyStore allocations fail, grant "
+                "SeLockMemoryPrivilege via secpol.msc -> Local Policies -> User "
+                "Rights Assignment.");
 #endif
 
     // Step 5: publish Initialized with release order.  All writes
@@ -347,9 +327,7 @@ void SecureSubsystem::Impl::shutdown_module() noexcept
 // SecureSubsystem — trivial ctor / dtor (Logger-pattern shape)
 // ============================================================================
 
-SecureSubsystem::SecureSubsystem()
-    : pImpl(std::make_unique<Impl>())
-{}
+SecureSubsystem::SecureSubsystem() : pImpl(std::make_unique<Impl>()) {}
 
 SecureSubsystem::~SecureSubsystem()
 {
@@ -363,8 +341,7 @@ SecureSubsystem::~SecureSubsystem()
     if (pImpl)
     {
         const auto state = load_state();
-        if (state == SubsystemState::InitCalled ||
-            state == SubsystemState::Initialized)
+        if (state == SubsystemState::InitCalled || state == SubsystemState::Initialized)
         {
             pImpl->shutdown_module();
         }
@@ -402,11 +379,8 @@ void do_secure_subsystem_startup(const char * /*arg*/, void * /*userdata*/)
 void do_secure_subsystem_shutdown(const char * /*arg*/, void * /*userdata*/)
 {
     SubsystemState expected = SubsystemState::Initialized;
-    if (g_state.compare_exchange_strong(
-            expected,
-            SubsystemState::ShuttingDown,
-            std::memory_order_acq_rel,
-            std::memory_order_acquire))
+    if (g_state.compare_exchange_strong(expected, SubsystemState::ShuttingDown,
+                                        std::memory_order_acq_rel, std::memory_order_acquire))
     {
         SecureSubsystem::instance().pImpl->shutdown_module();
     }
@@ -452,21 +426,24 @@ SecureSubsystem &secure()
 
 void SecureSubsystem::random_bytes(std::span<std::uint8_t> out)
 {
-    if (out.empty()) return;
+    if (out.empty())
+        return;
     ::randombytes_buf(out.data(), out.size());
 }
 
-bool SecureSubsystem::memcmp_ct(std::span<const std::uint8_t> a,
-                                 std::span<const std::uint8_t> b)
+bool SecureSubsystem::memcmp_ct(std::span<const std::uint8_t> a, std::span<const std::uint8_t> b)
 {
-    if (a.size() != b.size()) return false;
-    if (a.empty())            return true;
+    if (a.size() != b.size())
+        return false;
+    if (a.empty())
+        return true;
     return ::sodium_memcmp(a.data(), b.data(), a.size()) == 0;
 }
 
 void SecureSubsystem::memzero(std::span<std::uint8_t> region)
 {
-    if (region.empty()) return;
+    if (region.empty())
+        return;
     ::sodium_memzero(region.data(), region.size());
 }
 
@@ -499,18 +476,15 @@ std::array<std::uint8_t, 64> SecureSubsystem::generate_shared_secret()
     return secret;
 }
 
-bool SecureSubsystem::compute_blake2b(std::uint8_t *out, const void *data,
-                                       std::size_t len)
+bool SecureSubsystem::compute_blake2b(std::uint8_t *out, const void *data, std::size_t len)
 {
     if (out == nullptr || data == nullptr)
     {
         LOGGER_ERROR("[SecureSubsystem] compute_blake2b: null pointer argument");
         return false;
     }
-    const int rc = ::crypto_generichash(
-        out, BLAKE2B_HASH_BYTES,
-        static_cast<const unsigned char *>(data), len,
-        nullptr, 0);
+    const int rc = ::crypto_generichash(out, BLAKE2B_HASH_BYTES,
+                                        static_cast<const unsigned char *>(data), len, nullptr, 0);
     if (rc != 0)
     {
         LOGGER_ERROR("[SecureSubsystem] crypto_generichash failed rc={}", rc);
@@ -519,8 +493,7 @@ bool SecureSubsystem::compute_blake2b(std::uint8_t *out, const void *data,
     return true;
 }
 
-bool SecureSubsystem::derive_pwhash_salt(std::uint8_t *salt_out,
-                                          std::string_view domain)
+bool SecureSubsystem::derive_pwhash_salt(std::uint8_t *salt_out, std::string_view domain)
 {
     if (salt_out == nullptr)
     {
@@ -532,11 +505,9 @@ bool SecureSubsystem::derive_pwhash_salt(std::uint8_t *salt_out,
     // the same salt-derivation shape production has used since vault
     // format v1 — changing the outlen here would silently invalidate
     // every existing vault.
-    const int rc = ::crypto_generichash(
-        salt_out, kPwhashSaltBytes,
-        reinterpret_cast<const unsigned char *>(domain.data()),
-        domain.size(),
-        nullptr, 0);
+    const int rc = ::crypto_generichash(salt_out, kPwhashSaltBytes,
+                                        reinterpret_cast<const unsigned char *>(domain.data()),
+                                        domain.size(), nullptr, 0);
     if (rc != 0)
     {
         LOGGER_ERROR("[SecureSubsystem] derive_pwhash_salt: crypto_generichash rc={}", rc);
@@ -545,8 +516,8 @@ bool SecureSubsystem::derive_pwhash_salt(std::uint8_t *salt_out,
     return true;
 }
 
-std::array<std::uint8_t, 32>
-SecureSubsystem::compute_blake2b_array(const void *data, std::size_t len)
+std::array<std::uint8_t, 32> SecureSubsystem::compute_blake2b_array(const void *data,
+                                                                    std::size_t len)
 {
     // hash is default-init to zero; on compute_blake2b failure the
     // buffer STAYS all-zero (documented failure signal — see header
@@ -556,8 +527,7 @@ SecureSubsystem::compute_blake2b_array(const void *data, std::size_t len)
     return hash;
 }
 
-bool SecureSubsystem::verify_blake2b(const std::uint8_t *stored,
-                                      const void *data, std::size_t len)
+bool SecureSubsystem::verify_blake2b(const std::uint8_t *stored, const void *data, std::size_t len)
 {
     if (stored == nullptr || data == nullptr)
     {
@@ -572,9 +542,8 @@ bool SecureSubsystem::verify_blake2b(const std::uint8_t *stored,
     return ::sodium_memcmp(stored, computed.data(), BLAKE2B_HASH_BYTES) == 0;
 }
 
-bool SecureSubsystem::verify_blake2b(
-    const std::array<std::uint8_t, 32> &stored,
-    const void *data, std::size_t len)
+bool SecureSubsystem::verify_blake2b(const std::array<std::uint8_t, 32> &stored, const void *data,
+                                     std::size_t len)
 {
     return verify_blake2b(stored.data(), data, len);
 }
@@ -584,34 +553,39 @@ bool SecureSubsystem::verify_blake2b(
 // Collapsed from the retired `Crypto` sub-container 2026-07-06.
 // ─────────────────────────────────────────────────────────────────
 
-std::size_t SecureSubsystem::secretbox_encrypt(
-    std::uint8_t *out, std::size_t out_max_len,
-    const std::uint8_t *plaintext, std::size_t plaintext_len,
-    std::span<const std::uint8_t, 24> nonce,
-    std::span<const std::uint8_t, 32> key)
+std::size_t SecureSubsystem::secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
+                                               const std::uint8_t *plaintext,
+                                               std::size_t plaintext_len,
+                                               std::span<const std::uint8_t, 24> nonce,
+                                               std::span<const std::uint8_t, 32> key)
 {
-    if (out == nullptr) return 0;
-    if (plaintext == nullptr && plaintext_len > 0) return 0;
+    if (out == nullptr)
+        return 0;
+    if (plaintext == nullptr && plaintext_len > 0)
+        return 0;
     const std::size_t need = plaintext_len + kSecretboxMacBytes;
-    if (out_max_len < need) return 0;
-    if (::crypto_secretbox_easy(out, plaintext, plaintext_len,
-                                 nonce.data(), key.data()) != 0)
+    if (out_max_len < need)
+        return 0;
+    if (::crypto_secretbox_easy(out, plaintext, plaintext_len, nonce.data(), key.data()) != 0)
         return 0;
     return need;
 }
 
-std::size_t SecureSubsystem::secretbox_decrypt(
-    std::uint8_t *out, std::size_t out_max_len,
-    const std::uint8_t *ciphertext, std::size_t ciphertext_len,
-    std::span<const std::uint8_t, 24> nonce,
-    std::span<const std::uint8_t, 32> key)
+std::size_t SecureSubsystem::secretbox_decrypt(std::uint8_t *out, std::size_t out_max_len,
+                                               const std::uint8_t *ciphertext,
+                                               std::size_t ciphertext_len,
+                                               std::span<const std::uint8_t, 24> nonce,
+                                               std::span<const std::uint8_t, 32> key)
 {
-    if (out == nullptr || ciphertext == nullptr) return 0;
-    if (ciphertext_len < kSecretboxMacBytes) return 0;
+    if (out == nullptr || ciphertext == nullptr)
+        return 0;
+    if (ciphertext_len < kSecretboxMacBytes)
+        return 0;
     const std::size_t need = ciphertext_len - kSecretboxMacBytes;
-    if (out_max_len < need) return 0;
-    if (::crypto_secretbox_open_easy(out, ciphertext, ciphertext_len,
-                                      nonce.data(), key.data()) != 0)
+    if (out_max_len < need)
+        return 0;
+    if (::crypto_secretbox_open_easy(out, ciphertext, ciphertext_len, nonce.data(), key.data()) !=
+        0)
         return 0;
     return need;
 }
@@ -622,93 +596,95 @@ std::size_t SecureSubsystem::secretbox_decrypt(
 // cross the API boundary.  HEP-CORE-0043 §1.4 + §6.
 // ─────────────────────────────────────────────────────────────────
 
-std::size_t SecureSubsystem::box_encrypt_using(
-    std::string_view                  own_seckey_name,
-    std::span<const std::uint8_t, 32> peer_pubkey_raw,
-    std::span<const std::uint8_t, 24> nonce,
-    std::span<const std::uint8_t>     plaintext,
-    std::span<std::uint8_t>           out)
+std::size_t SecureSubsystem::box_encrypt_using(std::string_view own_seckey_name,
+                                               std::span<const std::uint8_t, 32> peer_pubkey_raw,
+                                               std::span<const std::uint8_t, 24> nonce,
+                                               std::span<const std::uint8_t> plaintext,
+                                               std::span<std::uint8_t> out)
 {
     const std::size_t need = plaintext.size() + kBoxMacBytes;
-    if (out.size() < need)                  return 0;
-    if (peer_pubkey_raw.data() == nullptr)  return 0;
-    if (nonce.data() == nullptr)            return 0;
-    if (plaintext.data() == nullptr && !plaintext.empty()) return 0;
+    if (out.size() < need)
+        return 0;
+    if (peer_pubkey_raw.data() == nullptr)
+        return 0;
+    if (nonce.data() == nullptr)
+        return 0;
+    if (plaintext.data() == nullptr && !plaintext.empty())
+        return 0;
 
     // `keys()` is the SMS gate — panics if SMS not `Initialized`.
     // The KeyStore's `with_seckey` gives us a scoped view; sodium
     // reads the bytes inside the callback and we return.
     std::size_t written = 0;
-    keys().with_seckey(own_seckey_name, [&](std::string_view sk_view) {
-        if (sk_view.size() != kBoxSeckeyBytes) return;
-        const int rc = ::crypto_box_easy(
-            out.data(),
-            plaintext.data(), plaintext.size(),
-            nonce.data(),
-            peer_pubkey_raw.data(),
-            reinterpret_cast<const std::uint8_t *>(sk_view.data()));
-        if (rc == 0) written = need;
-    });
+    keys().with_seckey(own_seckey_name,
+                       [&](std::string_view sk_view)
+                       {
+                           if (sk_view.size() != kBoxSeckeyBytes)
+                               return;
+                           const int rc = ::crypto_box_easy(
+                               out.data(), plaintext.data(), plaintext.size(), nonce.data(),
+                               peer_pubkey_raw.data(),
+                               reinterpret_cast<const std::uint8_t *>(sk_view.data()));
+                           if (rc == 0)
+                               written = need;
+                       });
     return written;
 }
 
-std::size_t SecureSubsystem::box_decrypt_using(
-    std::string_view                  own_seckey_name,
-    std::span<const std::uint8_t, 32> peer_pubkey_raw,
-    std::span<const std::uint8_t, 24> nonce,
-    std::span<const std::uint8_t>     ciphertext,
-    std::span<std::uint8_t>           out)
+std::size_t SecureSubsystem::box_decrypt_using(std::string_view own_seckey_name,
+                                               std::span<const std::uint8_t, 32> peer_pubkey_raw,
+                                               std::span<const std::uint8_t, 24> nonce,
+                                               std::span<const std::uint8_t> ciphertext,
+                                               std::span<std::uint8_t> out)
 {
-    if (ciphertext.size() < kBoxMacBytes)   return 0;
+    if (ciphertext.size() < kBoxMacBytes)
+        return 0;
     const std::size_t need = ciphertext.size() - kBoxMacBytes;
-    if (out.size() < need)                  return 0;
-    if (peer_pubkey_raw.data() == nullptr)  return 0;
-    if (nonce.data() == nullptr)            return 0;
-    if (ciphertext.data() == nullptr)       return 0;
+    if (out.size() < need)
+        return 0;
+    if (peer_pubkey_raw.data() == nullptr)
+        return 0;
+    if (nonce.data() == nullptr)
+        return 0;
+    if (ciphertext.data() == nullptr)
+        return 0;
 
     std::size_t written = 0;
-    keys().with_seckey(own_seckey_name, [&](std::string_view sk_view) {
-        if (sk_view.size() != kBoxSeckeyBytes) return;
-        const int rc = ::crypto_box_open_easy(
-            out.data(),
-            ciphertext.data(), ciphertext.size(),
-            nonce.data(),
-            peer_pubkey_raw.data(),
-            reinterpret_cast<const std::uint8_t *>(sk_view.data()));
-        if (rc == 0) written = need;
-    });
+    keys().with_seckey(own_seckey_name,
+                       [&](std::string_view sk_view)
+                       {
+                           if (sk_view.size() != kBoxSeckeyBytes)
+                               return;
+                           const int rc = ::crypto_box_open_easy(
+                               out.data(), ciphertext.data(), ciphertext.size(), nonce.data(),
+                               peer_pubkey_raw.data(),
+                               reinterpret_cast<const std::uint8_t *>(sk_view.data()));
+                           if (rc == 0)
+                               written = need;
+                       });
     return written;
 }
 
-bool SecureSubsystem::pwhash_argon2id(
-    std::uint8_t *out, std::size_t out_len,
-    const char *password, std::size_t password_len,
-    const std::uint8_t *salt)
+bool SecureSubsystem::pwhash_argon2id(std::uint8_t *out, std::size_t out_len, const char *password,
+                                      std::size_t password_len, const std::uint8_t *salt)
 {
     if (out == nullptr || password == nullptr || salt == nullptr)
     {
         LOGGER_ERROR("[SecureSubsystem] pwhash_argon2id: null pointer argument");
         return false;
     }
-    if (out_len < crypto_pwhash_BYTES_MIN ||
-        out_len > crypto_pwhash_BYTES_MAX)
+    if (out_len < crypto_pwhash_BYTES_MIN || out_len > crypto_pwhash_BYTES_MAX)
     {
-        LOGGER_ERROR(
-            "[SecureSubsystem] pwhash_argon2id: out_len {} outside "
-            "sodium's [{}, {}] valid range — crypto_pwhash would "
-            "reject; failing early with a clear diagnostic",
-            out_len,
-            static_cast<unsigned long long>(crypto_pwhash_BYTES_MIN),
-            static_cast<unsigned long long>(crypto_pwhash_BYTES_MAX));
+        LOGGER_ERROR("[SecureSubsystem] pwhash_argon2id: out_len {} outside "
+                     "sodium's [{}, {}] valid range — crypto_pwhash would "
+                     "reject; failing early with a clear diagnostic",
+                     out_len, static_cast<unsigned long long>(crypto_pwhash_BYTES_MIN),
+                     static_cast<unsigned long long>(crypto_pwhash_BYTES_MAX));
         return false;
     }
     const int rc = ::crypto_pwhash(
-        out, out_len,
-        password, password_len,
-        salt,
-        crypto_pwhash_OPSLIMIT_INTERACTIVE,
-        crypto_pwhash_MEMLIMIT_INTERACTIVE,
-        crypto_pwhash_ALG_ARGON2ID13);
+        out, out_len, password, password_len, salt, crypto_pwhash_OPSLIMIT_INTERACTIVE,
+        crypto_pwhash_MEMLIMIT_INTERACTIVE, crypto_pwhash_ALG_ARGON2ID13);
     if (rc != 0)
     {
         LOGGER_ERROR("[SecureSubsystem] crypto_pwhash returned {}", rc);
@@ -717,8 +693,8 @@ bool SecureSubsystem::pwhash_argon2id(
     return true;
 }
 
-void SecureSubsystem::bin2hex(char *hex, std::size_t hex_max_len,
-                               const std::uint8_t *bin, std::size_t bin_len)
+void SecureSubsystem::bin2hex(char *hex, std::size_t hex_max_len, const std::uint8_t *bin,
+                              std::size_t bin_len)
 {
     if (hex == nullptr || bin == nullptr)
     {

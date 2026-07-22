@@ -22,13 +22,12 @@ namespace pylabhub::producer
 namespace
 {
 
-nlohmann::json producer_config_template(const std::string &uid,
-                                         const std::string &name)
+nlohmann::json producer_config_template(const std::string &uid, const std::string &name)
 {
     nlohmann::json j;
 
-    j["producer"]["uid"]       = uid;
-    j["producer"]["name"]      = name;
+    j["producer"]["uid"] = uid;
+    j["producer"]["name"] = name;
     j["producer"]["log_level"] = "info";
     // Canonical default vault path per HEP-CORE-0024 §3.4 (finalized
     // 2026-05-31).  Relative path resolves against <producer-dir>.
@@ -37,17 +36,16 @@ nlohmann::json producer_config_template(const std::string &uid,
     // WARNING — see HEP-CORE-0024 §3.4.1 recommended placements.
     // auth.keyfile is REQUIRED non-empty; empty / missing / wrong
     // type all reject at config-load.
-    j["producer"]["auth"]["keyfile"] =
-        "vault/" + std::string(uid) + ".vault";
+    j["producer"]["auth"]["keyfile"] = "vault/" + std::string(uid) + ".vault";
 
-    j["out_hub_dir"]          = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
-    j["out_channel"]          = "lab.my.channel";
-    j["loop_timing"]          = "fixed_rate";
-    j["target_period_ms"]     = 100;
+    j["out_hub_dir"] = "<replace with hub directory path, e.g. /var/pylabhub/my_hub>";
+    j["out_channel"] = "lab.my.channel";
+    j["loop_timing"] = "fixed_rate";
+    j["target_period_ms"] = 100;
 
-    j["out_transport"]        = "shm";
-    j["out_shm_enabled"]      = true;
-    j["out_shm_slot_count"]   = 8;
+    j["out_transport"] = "shm";
+    j["out_shm_enabled"] = true;
+    j["out_shm_slot_count"] = 8;
     // HEP-CORE-0041 §7 substep 1h (#255) — `out_shm_secret` retired.
     // Pre-1h templates omitted the field for a different reason ("0
     // means no secret, users who want auth add it"); post-1h the
@@ -59,13 +57,12 @@ nlohmann::json producer_config_template(const std::string &uid,
 
     // HEP-CORE-0034 §6.2 — packing is required (no silent default).
     j["out_slot_schema"]["packing"] = "aligned";
-    j["out_slot_schema"]["fields"]  = nlohmann::json::array({
-        nlohmann::json{{"name", "value"}, {"type", "float32"}}
-    });
-    j["out_flexzone_schema"]  = nullptr;
+    j["out_slot_schema"]["fields"] =
+        nlohmann::json::array({nlohmann::json{{"name", "value"}, {"type", "float32"}}});
+    j["out_flexzone_schema"] = nullptr;
 
-    j["checksum"]             = "enforced";
-    j["flexzone_checksum"]    = true;
+    j["checksum"] = "enforced";
+    j["flexzone_checksum"] = true;
     j["stop_on_script_error"] = false;
 
     j["script"]["path"] = ".";
@@ -89,15 +86,15 @@ void producer_on_init(const utils::RoleDirectory &rd, const std::string &name)
         if (!out)
             throw std::runtime_error(fmt::format("cannot write '{}'", init_py.string()));
         fmt::print(out,
-            "\"\"\"Producer: {} — package entry point.\n"
-            "\n"
-            "Re-exports callbacks from callbacks.py. Edit callbacks.py to\n"
-            "implement your data-production logic.\n"
-            "\"\"\"\n"
-            "from .callbacks import on_init, on_produce, on_stop\n"
-            "\n"
-            "__all__ = [\"on_init\", \"on_produce\", \"on_stop\"]\n",
-            name);
+                   "\"\"\"Producer: {} — package entry point.\n"
+                   "\n"
+                   "Re-exports callbacks from callbacks.py. Edit callbacks.py to\n"
+                   "implement your data-production logic.\n"
+                   "\"\"\"\n"
+                   "from .callbacks import on_init, on_produce, on_stop\n"
+                   "\n"
+                   "__all__ = [\"on_init\", \"on_produce\", \"on_stop\"]\n",
+                   name);
     }
 
     // callbacks.py — user edits this file
@@ -105,36 +102,35 @@ void producer_on_init(const utils::RoleDirectory &rd, const std::string &name)
         std::ofstream out(callbacks_py);
         if (!out)
             throw std::runtime_error(fmt::format("cannot write '{}'", callbacks_py.string()));
-        fmt::print(out,
-            "\"\"\"Producer callbacks — edit this file.\"\"\"\n"
-            "import pylabhub_producer as prod\n"
-            "\n"
-            "\n"
-            "def on_init(api: prod.ProducerAPI) -> None:\n"
-            "    \"\"\"Called once before the production loop starts.\"\"\"\n"
-            "    api.log('info', f\"on_init: uid={{api.uid()}}\")\n"
-            "\n"
-            "\n"
-            "def on_produce(tx, messages, api: prod.ProducerAPI) -> bool:\n"
-            "    \"\"\"\n"
-            "    Called on each production interval.\n"
-            "\n"
-            "    tx.slot:  ctypes/numpy writable view of the output SHM slot.\n"
-            "    messages: list of (sender: str, data: bytes) from ZMQ consumers.\n"
-            "    api:      ProducerAPI — log, broadcast, stop, metrics, etc.\n"
-            "              api.flexzone(ChannelSide.Tx) for output flexzone.\n"
-            "\n"
-            "    Return True to commit the slot and publish it.\n"
-            "    Return False to discard without publishing.\n"
-            "    \"\"\"\n"
-            "    # TODO: replace with real data production\n"
-            "    tx.slot.value = 0.0\n"
-            "    return True\n"
-            "\n"
-            "\n"
-            "def on_stop(api: prod.ProducerAPI) -> None:\n"
-            "    \"\"\"Called once after the production loop exits.\"\"\"\n"
-            "    api.log('info', f\"on_stop: uid={{api.uid()}}\")\n");
+        fmt::print(out, "\"\"\"Producer callbacks — edit this file.\"\"\"\n"
+                        "import pylabhub_producer as prod\n"
+                        "\n"
+                        "\n"
+                        "def on_init(api: prod.ProducerAPI) -> None:\n"
+                        "    \"\"\"Called once before the production loop starts.\"\"\"\n"
+                        "    api.log('info', f\"on_init: uid={{api.uid()}}\")\n"
+                        "\n"
+                        "\n"
+                        "def on_produce(tx, messages, api: prod.ProducerAPI) -> bool:\n"
+                        "    \"\"\"\n"
+                        "    Called on each production interval.\n"
+                        "\n"
+                        "    tx.slot:  ctypes/numpy writable view of the output SHM slot.\n"
+                        "    messages: list of (sender: str, data: bytes) from ZMQ consumers.\n"
+                        "    api:      ProducerAPI — log, broadcast, stop, metrics, etc.\n"
+                        "              api.flexzone(ChannelSide.Tx) for output flexzone.\n"
+                        "\n"
+                        "    Return True to commit the slot and publish it.\n"
+                        "    Return False to discard without publishing.\n"
+                        "    \"\"\"\n"
+                        "    # TODO: replace with real data production\n"
+                        "    tx.slot.value = 0.0\n"
+                        "    return True\n"
+                        "\n"
+                        "\n"
+                        "def on_stop(api: prod.ProducerAPI) -> None:\n"
+                        "    \"\"\"Called once after the production loop exits.\"\"\"\n"
+                        "    api.log('info', f\"on_stop: uid={{api.uid()}}\")\n");
     }
 }
 
@@ -158,12 +154,10 @@ namespace
 // Free factory: constructs a ProducerRoleHost and upcasts to the abstract
 // base for uniform plh_role dispatch. Function-pointer (not std::function)
 // to satisfy RoleRegistry's ABI-stable signature.
-std::unique_ptr<scripting::RoleHostBase> make_producer_host(
-    config::RoleConfig config,
-    std::atomic<bool> *shutdown_flag)
+std::unique_ptr<scripting::RoleHostBase> make_producer_host(config::RoleConfig config,
+                                                            std::atomic<bool> *shutdown_flag)
 {
-    return std::make_unique<ProducerRoleHost>(
-        std::move(config), shutdown_flag);
+    return std::make_unique<ProducerRoleHost>(std::move(config), shutdown_flag);
 }
 
 } // namespace

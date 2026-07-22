@@ -125,8 +125,7 @@ namespace fs = std::filesystem;
 /// Build a JsonConfig lifecycle module list once per worker.
 auto json_mods()
 {
-    return MakeModDefList(JsonConfig::GetLifecycleModule(),
-                          FileLock::GetLifecycleModule(),
+    return MakeModDefList(JsonConfig::GetLifecycleModule(), FileLock::GetLifecycleModule(),
                           Logger::GetLifecycleModule());
 }
 
@@ -160,7 +159,8 @@ int init_and_create(const std::string &dir)
             ASSERT_TRUE(fs::exists(cfg_path));
 
             config.transaction().read(
-                [&](const json &j) {
+                [&](const json &j)
+                {
                     ASSERT_TRUE(j.is_object());
                     ASSERT_TRUE(j.empty());
                 },
@@ -170,7 +170,8 @@ int init_and_create(const std::string &dir)
             JsonConfig config2(cfg_path, false, &ec);
             ASSERT_FALSE(ec);
             config2.transaction().read(
-                [&](const json &j) {
+                [&](const json &j)
+                {
                     ASSERT_TRUE(j.is_object());
                     ASSERT_TRUE(j.empty());
                 },
@@ -191,8 +192,7 @@ int init_with_empty_path_fails()
             ASSERT_FALSE(cfg.init(fs::path(), false, &ec));
             ASSERT_TRUE(ec);
         },
-        "jsonconfig::init_with_empty_path_fails",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::init_with_empty_path_fails", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -207,15 +207,15 @@ int init_with_non_existent_file(const std::string &dir)
             ASSERT_TRUE(cfg.init(cfg_path, false, &ec));
             ASSERT_FALSE(ec);
             cfg.transaction().read(
-                [&](const json &j) {
+                [&](const json &j)
+                {
                     ASSERT_TRUE(j.is_object());
                     ASSERT_TRUE(j.empty());
                 },
                 &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::init_with_non_existent_file",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::init_with_non_existent_file", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -231,17 +231,23 @@ int basic_accessors(const std::string &dir)
             ASSERT_FALSE(ec);
 
             cfg.transaction(JsonConfig::AccessFlags::UnSynced)
-                .write([&](json &j) {
-                    j["int_val"] = 42;
-                    j["str_val"] = "hello";
-                }, &ec);
+                .write(
+                    [&](json &j)
+                    {
+                        j["int_val"] = 42;
+                        j["str_val"] = "hello";
+                    },
+                    &ec);
             ASSERT_FALSE(ec);
 
             cfg.transaction(JsonConfig::AccessFlags::UnSynced)
-                .read([&](const json &j) {
-                    ASSERT_EQ(j.value("int_val", -1), 42);
-                    ASSERT_EQ(j.value("str_val", std::string{}), "hello");
-                }, &ec);
+                .read(
+                    [&](const json &j)
+                    {
+                        ASSERT_EQ(j.value("int_val", -1), 42);
+                        ASSERT_EQ(j.value("str_val", std::string{}), "hello");
+                    },
+                    &ec);
             ASSERT_FALSE(ec);
         },
         "jsonconfig::basic_accessors", JsonConfig::GetLifecycleModule(),
@@ -263,19 +269,23 @@ int reload_on_disk_change(const std::string &dir)
                 .write([&](json &j) { j["value"] = 1; }, &ec);
             ASSERT_FALSE(ec);
 
-            { std::ofstream out(cfg_path); out << R"({ "value": 2, "new_key": "external" })"; }
+            {
+                std::ofstream out(cfg_path);
+                out << R"({ "value": 2, "new_key": "external" })";
+            }
 
             ASSERT_TRUE(cfg.reload(&ec));
             ASSERT_FALSE(ec);
             cfg.transaction().read(
-                [&](const json &j) {
+                [&](const json &j)
+                {
                     ASSERT_EQ(j.value("value", -1), 2);
                     ASSERT_EQ(j.value("new_key", std::string{}), "external");
-                }, &ec);
+                },
+                &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::reload_on_disk_change",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::reload_on_disk_change", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -297,8 +307,7 @@ int simplified_api_overloads(const std::string &dir)
             ASSERT_FALSE(ec);
             ASSERT_EQ(read_value, "value1");
         },
-        "jsonconfig::simplified_api_overloads",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::simplified_api_overloads", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -315,46 +324,54 @@ int recursion_guard(const std::string &dir)
 
             // 1. Nested read transactions
             cfg.transaction().read(
-                [&]([[maybe_unused]] const json &j) {
+                [&]([[maybe_unused]] const json &j)
+                {
                     std::error_code inner_ec;
-                    cfg.transaction().read(
-                        [&](const json &) { FAIL() << "Inner read lambda should not execute."; },
-                        &inner_ec);
+                    cfg.transaction().read([&](const json &)
+                                           { FAIL() << "Inner read lambda should not execute."; },
+                                           &inner_ec);
                     ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
-                }, &ec);
+                },
+                &ec);
             ASSERT_FALSE(ec);
 
             // 2. Nested write transactions
             cfg.transaction().write(
-                [&]([[maybe_unused]] json &j) {
+                [&]([[maybe_unused]] json &j)
+                {
                     std::error_code inner_ec;
-                    cfg.transaction().write(
-                        [&](json &) { FAIL() << "Inner write lambda should not execute."; },
-                        &inner_ec);
+                    cfg.transaction().write([&](json &)
+                                            { FAIL() << "Inner write lambda should not execute."; },
+                                            &inner_ec);
                     ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
-                }, &ec);
+                },
+                &ec);
             ASSERT_FALSE(ec);
 
             // 3. read-in-write
             cfg.transaction().write(
-                [&]([[maybe_unused]] json &j) {
+                [&]([[maybe_unused]] json &j)
+                {
                     std::error_code inner_ec;
-                    cfg.transaction().read(
-                        [&](const json &) { FAIL() << "Inner read lambda should not execute."; },
-                        &inner_ec);
+                    cfg.transaction().read([&](const json &)
+                                           { FAIL() << "Inner read lambda should not execute."; },
+                                           &inner_ec);
                     ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
-                }, &ec);
+                },
+                &ec);
             ASSERT_FALSE(ec);
 
             // 4. write-in-read
             cfg.transaction().read(
-                [&]([[maybe_unused]] const json &j) {
+                [&]([[maybe_unused]] const json &j)
+                {
                     std::error_code inner_ec;
-                    cfg.transaction().write(
-                        [&](json &) { FAIL() << "Inner write lambda should not execute."; },
-                        &inner_ec);
+                    cfg.transaction().write([&](json &)
+                                            { FAIL() << "Inner write lambda should not execute."; },
+                                            &inner_ec);
                     ASSERT_EQ(inner_ec, std::errc::resource_deadlock_would_occur);
-                }, &ec);
+                },
+                &ec);
             ASSERT_FALSE(ec);
         },
         "jsonconfig::recursion_guard", JsonConfig::GetLifecycleModule(),
@@ -377,18 +394,19 @@ int write_transaction_rolls_back_on_exception(const std::string &dir)
             ASSERT_FALSE(ec);
 
             cfg.transaction().write(
-                [&](json &j) {
+                [&](json &j)
+                {
                     j["value"] = 2;
                     throw std::runtime_error("Something went wrong");
-                }, &ec);
+                },
+                &ec);
             ASSERT_TRUE(ec);
             ASSERT_EQ(ec, std::errc::io_error);
 
             cfg.transaction().read([&](const json &j) { ASSERT_EQ(j.value("value", -1), 1); }, &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::write_transaction_rolls_back_on_exception",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::write_transaction_rolls_back_on_exception", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -398,24 +416,32 @@ int load_malformed_file(const std::string &dir)
         [&]()
         {
             const fs::path cfg_path = fs::path(dir) / "malformed.json";
-            { std::ofstream out(cfg_path); out << "{ \"key\": \"value\""; }
+            {
+                std::ofstream out(cfg_path);
+                out << "{ \"key\": \"value\"";
+            }
             JsonConfig cfg;
             std::error_code ec;
             ASSERT_FALSE(cfg.init(cfg_path, false, &ec));
             ASSERT_EQ(ec, std::errc::io_error);
 
             fs::remove(cfg_path);
-            { std::ofstream out(cfg_path); out << "{}"; }
+            {
+                std::ofstream out(cfg_path);
+                out << "{}";
+            }
             JsonConfig cfg2(cfg_path, false, &ec);
             ASSERT_TRUE(cfg2.is_initialized());
             ASSERT_FALSE(ec);
 
-            { std::ofstream out(cfg_path); out << "this is not json"; }
+            {
+                std::ofstream out(cfg_path);
+                out << "this is not json";
+            }
             ASSERT_FALSE(cfg2.reload(&ec));
             ASSERT_EQ(ec, std::errc::io_error);
         },
-        "jsonconfig::load_malformed_file",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::load_malformed_file", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -431,10 +457,13 @@ int multi_thread_file_contention(const std::string &dir)
                 ASSERT_TRUE(setup_cfg.init(cfg_path, true, &ec));
                 ASSERT_FALSE(ec);
                 setup_cfg.transaction(JsonConfig::AccessFlags::CommitAfter)
-                    .write([&](json &data) {
-                        data["counter"] = 0;
-                        data["write_log"] = json::array();
-                    }, &ec);
+                    .write(
+                        [&](json &data)
+                        {
+                            data["counter"] = 0;
+                            data["write_log"] = json::array();
+                        },
+                        &ec);
                 ASSERT_FALSE(ec);
             }
 
@@ -446,53 +475,69 @@ int multi_thread_file_contention(const std::string &dir)
 
             for (int i = 0; i < kThreads; ++i)
             {
-                threads.emplace_back([=, &read_failures, &successful_writes]() {
-                    JsonConfig cfg(cfg_path);
-                    int last_read_value = -1;
-                    for (int j = 0; j < kIters; ++j)
+                threads.emplace_back(
+                    [=, &read_failures, &successful_writes]()
                     {
-                        if (std::rand() % 4 == 0)
+                        JsonConfig cfg(cfg_path);
+                        int last_read_value = -1;
+                        for (int j = 0; j < kIters; ++j)
                         {
-                            std::error_code ec;
-                            cfg.transaction(JsonConfig::AccessFlags::FullSync)
-                                .write([&](json &data) {
-                                    int v = data.value("counter", 0);
-                                    data["counter"] = v + 1;
-                                    data["write_log"].push_back(fmt::format("T{}-w{}", i, j));
-                                }, &ec);
-                            if (!ec) successful_writes++;
+                            if (std::rand() % 4 == 0)
+                            {
+                                std::error_code ec;
+                                cfg.transaction(JsonConfig::AccessFlags::FullSync)
+                                    .write(
+                                        [&](json &data)
+                                        {
+                                            int v = data.value("counter", 0);
+                                            data["counter"] = v + 1;
+                                            data["write_log"].push_back(
+                                                fmt::format("T{}-w{}", i, j));
+                                        },
+                                        &ec);
+                                if (!ec)
+                                    successful_writes++;
+                            }
+                            else
+                            {
+                                std::error_code ec;
+                                cfg.transaction(JsonConfig::AccessFlags::ReloadFirst)
+                                    .read(
+                                        [&](const json &data)
+                                        {
+                                            int cur = data.value("counter", -1);
+                                            if (cur < last_read_value)
+                                                read_failures++;
+                                            last_read_value = cur;
+                                        },
+                                        &ec);
+                                if (ec)
+                                    read_failures++;
+                            }
+                            std::this_thread::sleep_for(
+                                std::chrono::microseconds(std::rand() % 500));
                         }
-                        else
-                        {
-                            std::error_code ec;
-                            cfg.transaction(JsonConfig::AccessFlags::ReloadFirst)
-                                .read([&](const json &data) {
-                                    int cur = data.value("counter", -1);
-                                    if (cur < last_read_value) read_failures++;
-                                    last_read_value = cur;
-                                }, &ec);
-                            if (ec) read_failures++;
-                        }
-                        std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 500));
-                    }
-                });
+                    });
             }
-            for (auto &t : threads) t.join();
+            for (auto &t : threads)
+                t.join();
             ASSERT_EQ(read_failures.load(), 0);
 
             JsonConfig verifier(cfg_path);
             std::error_code ec;
             verifier.transaction(JsonConfig::AccessFlags::ReloadFirst)
-                .read([&](const json &data) {
-                    int final_counter = data.value("counter", -1);
-                    json final_log = data.value("write_log", json::array());
-                    EXPECT_EQ(final_counter, static_cast<int>(final_log.size()));
-                    EXPECT_GT(final_counter, 0);
-                }, &ec);
+                .read(
+                    [&](const json &data)
+                    {
+                        int final_counter = data.value("counter", -1);
+                        json final_log = data.value("write_log", json::array());
+                        EXPECT_EQ(final_counter, static_cast<int>(final_log.size()));
+                        EXPECT_GT(final_counter, 0);
+                    },
+                    &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::multi_thread_file_contention",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::multi_thread_file_contention", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -504,7 +549,10 @@ int symlink_attack_prevention_posix(const std::string &dir)
 #if PYLABHUB_IS_POSIX
             const fs::path real_file = fs::path(dir) / "real_file.txt";
             const fs::path symlink_path = fs::path(dir) / "config_symlink.json";
-            { std::ofstream out(real_file); out << R"({ "original": "data" })"; }
+            {
+                std::ofstream out(real_file);
+                out << R"({ "original": "data" })";
+            }
             fs::create_symlink(real_file, symlink_path);
 
             JsonConfig cfg;
@@ -526,8 +574,7 @@ int symlink_attack_prevention_posix(const std::string &dir)
             GTEST_SKIP() << "POSIX-only test";
 #endif
         },
-        "jsonconfig::symlink_attack_prevention_posix",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::symlink_attack_prevention_posix", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -539,9 +586,12 @@ int symlink_attack_prevention_windows(const std::string &dir)
 #if defined(PLATFORM_WIN64)
             const fs::path real_file = fs::path(dir) / "real_file_win.txt";
             const fs::path symlink_path = fs::path(dir) / "config_win.json";
-            { std::ofstream out(real_file); out << R"({ "original": "data" })"; }
-            if (!CreateSymbolicLinkW(symlink_path.wstring().c_str(),
-                                     real_file.wstring().c_str(), 0))
+            {
+                std::ofstream out(real_file);
+                out << R"({ "original": "data" })";
+            }
+            if (!CreateSymbolicLinkW(symlink_path.wstring().c_str(), real_file.wstring().c_str(),
+                                     0))
             {
                 GTEST_SKIP() << "could not create symlink (Admin/Developer Mode required)";
             }
@@ -556,8 +606,7 @@ int symlink_attack_prevention_windows(const std::string &dir)
             GTEST_SKIP() << "Windows-only test";
 #endif
         },
-        "jsonconfig::symlink_attack_prevention_windows",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::symlink_attack_prevention_windows", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -579,42 +628,56 @@ int multi_thread_shared_object_contention(const std::string &dir)
 
             for (int i = 0; i < kWriterThreads; ++i)
             {
-                threads.emplace_back([&]() {
-                    for (int j = 0; j < kIterPerWriter; ++j)
+                threads.emplace_back(
+                    [&]()
                     {
-                        shared_cfg.transaction().write([&](json &data) {
-                            int v = data.value("counter", 0);
-                            data["counter"] = v + 1;
-                        }, nullptr);
-                        std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 100));
-                    }
-                });
+                        for (int j = 0; j < kIterPerWriter; ++j)
+                        {
+                            shared_cfg.transaction().write(
+                                [&](json &data)
+                                {
+                                    int v = data.value("counter", 0);
+                                    data["counter"] = v + 1;
+                                },
+                                nullptr);
+                            std::this_thread::sleep_for(
+                                std::chrono::microseconds(std::rand() % 100));
+                        }
+                    });
             }
             for (int i = 0; i < kReaderThreads; ++i)
             {
-                threads.emplace_back([&]() {
-                    int last_read_value = -1;
-                    auto start_time = std::chrono::steady_clock::now();
-                    while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(1))
+                threads.emplace_back(
+                    [&]()
                     {
-                        shared_cfg.transaction().read([&](const json &data) {
-                            int cur = data.value("counter", -1);
-                            if (cur < last_read_value) read_failures++;
-                            last_read_value = cur;
-                        }, nullptr);
-                        std::this_thread::sleep_for(std::chrono::microseconds(std::rand() % 200));
-                    }
-                });
+                        int last_read_value = -1;
+                        auto start_time = std::chrono::steady_clock::now();
+                        while (std::chrono::steady_clock::now() - start_time <
+                               std::chrono::seconds(1))
+                        {
+                            shared_cfg.transaction().read(
+                                [&](const json &data)
+                                {
+                                    int cur = data.value("counter", -1);
+                                    if (cur < last_read_value)
+                                        read_failures++;
+                                    last_read_value = cur;
+                                },
+                                nullptr);
+                            std::this_thread::sleep_for(
+                                std::chrono::microseconds(std::rand() % 200));
+                        }
+                    });
             }
-            for (auto &t : threads) t.join();
+            for (auto &t : threads)
+                t.join();
             ASSERT_EQ(read_failures.load(), 0);
             int final_counter = 0;
-            shared_cfg.transaction().read(
-                [&](const json &data) { final_counter = data.value("counter", -1); }, nullptr);
+            shared_cfg.transaction().read([&](const json &data)
+                                          { final_counter = data.value("counter", -1); }, nullptr);
             EXPECT_EQ(final_counter, kWriterThreads * kIterPerWriter);
         },
-        "jsonconfig::multi_thread_shared_object_contention",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::multi_thread_shared_object_contention", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -651,8 +714,7 @@ int manual_locking_api(const std::string &dir)
             ASSERT_TRUE(j.value("manual", false));
             ASSERT_EQ(j.value("value", ""), "test");
         },
-        "jsonconfig::manual_locking_api",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::manual_locking_api", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -675,8 +737,8 @@ int move_semantics(const std::string &dir)
             ASSERT_FALSE(cfg1.is_initialized());
             ASSERT_TRUE(cfg_moved_to.is_initialized());
             ASSERT_EQ(cfg_moved_to.config_path(), cfg_path1);
-            cfg_moved_to.transaction().read(
-                [&](const json &j) { ASSERT_EQ(j.value("val", 0), 1); }, &ec);
+            cfg_moved_to.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", 0), 1); },
+                                            &ec);
             ASSERT_FALSE(ec);
 
             JsonConfig cfg2(cfg_path2, true, &ec);
@@ -689,12 +751,11 @@ int move_semantics(const std::string &dir)
             ASSERT_FALSE(cfg2.is_initialized());
             ASSERT_TRUE(cfg_moved_to.is_initialized());
             ASSERT_EQ(cfg_moved_to.config_path(), cfg_path2);
-            cfg_moved_to.transaction().read(
-                [&](const json &j) { ASSERT_EQ(j.value("val", 0), 2); }, &ec);
+            cfg_moved_to.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", 0), 2); },
+                                            &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::move_semantics",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::move_semantics", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -712,7 +773,10 @@ int overwrite_method(const std::string &dir)
             cfg.transaction().write([&](json &j) { j["val"] = "in-memory"; }, &ec);
             ASSERT_FALSE(ec);
             ASSERT_TRUE(cfg.is_dirty());
-            { std::ofstream out(cfg_path); out << R"({ "val": "external" })"; }
+            {
+                std::ofstream out(cfg_path);
+                out << R"({ "val": "external" })";
+            }
             ASSERT_TRUE(cfg.overwrite(&ec));
             ASSERT_FALSE(ec);
             ASSERT_FALSE(cfg.is_dirty());
@@ -721,8 +785,7 @@ int overwrite_method(const std::string &dir)
                 .read([&](const json &j) { ASSERT_EQ(j.value("val", ""), "in-memory"); }, &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::overwrite_method",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::overwrite_method", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -773,8 +836,7 @@ int dirty_flag_logic(const std::string &dir)
             ASSERT_FALSE(ec);
             ASSERT_FALSE(cfg.is_dirty());
         },
-        "jsonconfig::dirty_flag_logic",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::dirty_flag_logic", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -793,10 +855,13 @@ int write_veto_commit(const std::string &dir)
             ASSERT_FALSE(ec);
 
             cfg.transaction(JsonConfig::AccessFlags::CommitAfter)
-                .write([&](json &j) -> bool {
-                    j["val"] = 2;
-                    return false;
-                }, &ec);
+                .write(
+                    [&](json &j) -> bool
+                    {
+                        j["val"] = 2;
+                        return false;
+                    },
+                    &ec);
             ASSERT_FALSE(ec);
             ASSERT_TRUE(cfg.is_dirty());
 
@@ -808,8 +873,7 @@ int write_veto_commit(const std::string &dir)
                 .read([&](const json &j) { ASSERT_EQ(j.value("val", 0), 1); }, &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::write_veto_commit",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::write_veto_commit", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -830,18 +894,18 @@ int write_produces_invalid_json(const std::string &dir)
             ASSERT_TRUE(ec);
             ASSERT_EQ(ec, std::errc::invalid_argument);
 
-            cfg.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", ""), "good"); }, &ec);
+            cfg.transaction().read([&](const json &j) { ASSERT_EQ(j.value("val", ""), "good"); },
+                                   &ec);
             ASSERT_FALSE(ec);
 
             JsonConfig verifier(cfg_path);
             verifier.reload(&ec);
             ASSERT_FALSE(ec);
-            verifier.transaction().read(
-                [&](const json &j) { ASSERT_EQ(j.value("val", ""), "good"); }, &ec);
+            verifier.transaction().read([&](const json &j)
+                                        { ASSERT_EQ(j.value("val", ""), "good"); }, &ec);
             ASSERT_FALSE(ec);
         },
-        "jsonconfig::write_produces_invalid_json",
-        JsonConfig::GetLifecycleModule(),
+        "jsonconfig::write_produces_invalid_json", JsonConfig::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
@@ -875,11 +939,11 @@ struct JsonConfigWorkerRegistrar
 
                 // Pattern 3 conversions of in-process JsonConfigTest bodies.
                 // All take a parent-provided unique temp dir as argv[2].
-                auto need_dir = [&]() -> bool {
-                    if (argc <= 2) {
-                        fmt::print(stderr,
-                                   "jsonconfig.{}: missing required <dir> arg\n",
-                                   scenario);
+                auto need_dir = [&]() -> bool
+                {
+                    if (argc <= 2)
+                    {
+                        fmt::print(stderr, "jsonconfig.{}: missing required <dir> arg\n", scenario);
                         return false;
                     }
                     return true;

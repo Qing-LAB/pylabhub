@@ -17,29 +17,27 @@
  * instantiation lands here alongside the role one.
  */
 #include "utils/engine_host.hpp"
-#include "utils/debug_info.hpp"   // PLH_PANIC
-#include "utils/logger.hpp"       // LOGGER_SYSTEM_SYNC on GIL-stolen leak
+#include "utils/debug_info.hpp" // PLH_PANIC
+#include "utils/logger.hpp"     // LOGGER_SYSTEM_SYNC on GIL-stolen leak
 #include "utils/role_api_base.hpp"
-#include "utils/script_engine.hpp"   // engine().release_global_lock_during_wait()
-#include "utils/thread_manager.hpp"  // api_->thread_manager() inside startup_
+#include "utils/script_engine.hpp"     // engine().release_global_lock_during_wait()
+#include "utils/thread_manager.hpp"    // api_->thread_manager() inside startup_
 #include "utils/timeout_constants.hpp" // kMidTimeoutMs (do_role_teardown)
 
 #include <atomic>
-#include <chrono>     // detach safety gate grace period
-#include <thread>     // sleep_for during detach grace poll
-#include <typeinfo>   // typeid(ApiT).name() in destructor diagnostic
+#include <chrono>   // detach safety gate grace period
+#include <thread>   // sleep_for during detach grace poll
+#include <typeinfo> // typeid(ApiT).name() in destructor diagnostic
 #include <utility>
 
 namespace pylabhub::scripting
 {
 
 template <typename ApiT>
-EngineHost<ApiT>::EngineHost(std::string_view short_tag,
-                              ConfigT config,
-                              std::atomic<bool> *shutdown_flag)
-    : short_tag_(short_tag)
-    , config_(std::move(config))
-    , engine_(nullptr)  // constructed in derived's worker_main_ Step 0
+EngineHost<ApiT>::EngineHost(std::string_view short_tag, ConfigT config,
+                             std::atomic<bool> *shutdown_flag)
+    : short_tag_(short_tag), config_(std::move(config)),
+      engine_(nullptr) // constructed in derived's worker_main_ Step 0
 {
     // Extract uid via the per-ApiT trait helper AFTER the move into
     // `config_`.  Reading through the trait + the moved-in `config_`
@@ -74,8 +72,7 @@ EngineHost<ApiT>::EngineHost(std::string_view short_tag,
 // Rather than paper over that with a defensive cleanup, we surface the
 // bug loudly via `std::abort()` with a diagnostic.
 //
-template <typename ApiT>
-EngineHost<ApiT>::~EngineHost()
+template <typename ApiT> EngineHost<ApiT>::~EngineHost()
 {
     // Contract: the host must be in `Constructed` (never started) or
     // `ShutDown` (started + properly shut down) by the time the
@@ -94,38 +91,32 @@ EngineHost<ApiT>::~EngineHost()
         // reviewer reading the panic knows immediately whether the
         // failing host was role-side or hub-side.  Mangled name is
         // compiler-specific but always unambiguous within a single build.
-        PLH_PANIC(
-            "EngineHost<{}> destructor entered while in Running phase — "
-            "shutdown_() was never called.  short_tag='{}' uid='{}'.  "
-            "Either the derived destructor did not call shutdown_() as "
-            "its first statement, or an override of shutdown_() failed "
-            "to call EngineHost::shutdown_().  The worker thread may "
-            "still reference now-destroyed derived members; aborting "
-            "to avoid silent use-after-free.",
-            typeid(ApiT).name(),
-            short_tag_, uid_);
+        PLH_PANIC("EngineHost<{}> destructor entered while in Running phase — "
+                  "shutdown_() was never called.  short_tag='{}' uid='{}'.  "
+                  "Either the derived destructor did not call shutdown_() as "
+                  "its first statement, or an override of shutdown_() failed "
+                  "to call EngineHost::shutdown_().  The worker thread may "
+                  "still reference now-destroyed derived members; aborting "
+                  "to avoid silent use-after-free.",
+                  typeid(ApiT).name(), short_tag_, uid_);
     }
 }
 
-template <typename ApiT>
-void EngineHost<ApiT>::startup_()
+template <typename ApiT> void EngineHost<ApiT>::startup_()
 {
     // Phase FSM (NOT a LifecycleGuard transition): Constructed → Running.
     // CAS rejects re-entry from Running (idempotent) and from ShutDown
     // (single-use after shutdown — construct a new host).
     Phase expected = Phase::Constructed;
-    if (!phase_.compare_exchange_strong(expected, Phase::Running,
-                                         std::memory_order_acq_rel))
+    if (!phase_.compare_exchange_strong(expected, Phase::Running, std::memory_order_acq_rel))
     {
         if (expected == Phase::Running)
-            return;  // idempotent: already running
+            return; // idempotent: already running
         // expected == Phase::ShutDown
-        PLH_PANIC(
-            "EngineHost<{}>::startup_() called after shutdown_() — "
-            "this host instance is single-use.  short_tag='{}' uid='{}'.  "
-            "Construct a new EngineHost instance to start fresh.",
-            typeid(ApiT).name(),
-            short_tag_, uid_);
+        PLH_PANIC("EngineHost<{}>::startup_() called after shutdown_() — "
+                  "this host instance is single-use.  short_tag='{}' uid='{}'.  "
+                  "Construct a new EngineHost instance to start fresh.",
+                  typeid(ApiT).name(), short_tag_, uid_);
     }
 
     try
@@ -140,8 +131,7 @@ void EngineHost<ApiT>::startup_()
         // used by the ApiT-owned ThreadManager name + log prefixes.
         // uid_ is the host instance uid carried separately from
         // ConfigT (Phase 7 Option E — see engine_host.hpp ctor docs).
-        api_ = std::make_unique<ApiT>(
-            core_, std::string(short_tag_), uid_);
+        api_ = std::make_unique<ApiT>(core_, std::string(short_tag_), uid_);
 
         api_->thread_manager().spawn("worker", [this] { worker_main_(); });
 
@@ -167,15 +157,13 @@ void EngineHost<ApiT>::startup_()
     }
 }
 
-template <typename ApiT>
-void EngineHost<ApiT>::shutdown_() noexcept
+template <typename ApiT> void EngineHost<ApiT>::shutdown_() noexcept
 {
     // Phase FSM (NOT a LifecycleGuard transition): Running → ShutDown.
     // CAS makes the transition race-free; only the first effective
     // caller does the work.
     Phase expected = Phase::Running;
-    if (!phase_.compare_exchange_strong(expected, Phase::ShutDown,
-                                         std::memory_order_acq_rel))
+    if (!phase_.compare_exchange_strong(expected, Phase::ShutDown, std::memory_order_acq_rel))
     {
         // Either still Constructed (never started — nothing to do) or
         // already ShutDown (idempotent).  Either way, no-op.
@@ -234,8 +222,8 @@ void EngineHost<ApiT>::shutdown_() noexcept
     // NumPy op without `with nogil:`, native module with a long
     // pure-C path, etc.) can wedge the reacquire.  This is exactly
     // the case the message below is calling out.
-    if (api_ && api_->thread_manager().detached_count_last_drain() > 0
-        && has_engine() && engine().release_global_lock_during_wait())
+    if (api_ && api_->thread_manager().detached_count_last_drain() > 0 && has_engine() &&
+        engine().release_global_lock_during_wait())
     {
         // SYSTEM_SYNC — bypass the async log queue.  This message is
         // emitted on the shutdown path; the async logger is still
@@ -243,22 +231,21 @@ void EngineHost<ApiT>::shutdown_() noexcept
         // process exits if a downstream lifecycle module also wedges.
         // Sync delivery guarantees the operator-diagnostic message
         // reaches the sink (file / stderr) before any further teardown.
-        LOGGER_SYSTEM_SYNC(
-            "[EngineHost:{}] worker thread did not exit within "
-            "ThreadManager's bounded join AND this engine has "
-            "`script.release_global_lock_during_wait` enabled.  Most "
-            "likely cause: a script-spawned thread is holding the "
-            "Python GIL across the worker's reacquire.  Look for "
-            "non-yielding C extensions in the script's sub-threads "
-            "(NumPy/SciPy ops without `with nogil:`, native modules "
-            "with long pure-C paths, or `time.sleep` from a C "
-            "library that does not drop the GIL).  Pure Python code "
-            "yields the GIL every ~5 ms (sys.setswitchinterval) and "
-            "would NOT wedge here.  The worker thread has been "
-            "DETACHED; the OS will reap it on process exit.  Some "
-            "engine-owned resources (Python objects, sockets) may "
-            "leak until then.",
-            short_tag_);
+        LOGGER_SYSTEM_SYNC("[EngineHost:{}] worker thread did not exit within "
+                           "ThreadManager's bounded join AND this engine has "
+                           "`script.release_global_lock_during_wait` enabled.  Most "
+                           "likely cause: a script-spawned thread is holding the "
+                           "Python GIL across the worker's reacquire.  Look for "
+                           "non-yielding C extensions in the script's sub-threads "
+                           "(NumPy/SciPy ops without `with nogil:`, native modules "
+                           "with long pure-C paths, or `time.sleep` from a C "
+                           "library that does not drop the GIL).  Pure Python code "
+                           "yields the GIL every ~5 ms (sys.setswitchinterval) and "
+                           "would NOT wedge here.  The worker thread has been "
+                           "DETACHED; the OS will reap it on process exit.  Some "
+                           "engine-owned resources (Python objects, sockets) may "
+                           "leak until then.",
+                           short_tag_);
     }
 
     // Detach safety gate (HEP-CORE-0031 §4.2; post-MD1.5 — bugs pinned
@@ -280,8 +267,7 @@ void EngineHost<ApiT>::shutdown_() noexcept
     if (api_ && api_->thread_manager().detached_count_last_drain() > 0)
     {
         constexpr auto kDetachGrace = std::chrono::seconds{10};
-        const auto      deadline    =
-            std::chrono::steady_clock::now() + kDetachGrace;
+        const auto deadline = std::chrono::steady_clock::now() + kDetachGrace;
         while (!api_->thread_manager().all_detached_done() &&
                std::chrono::steady_clock::now() < deadline)
         {
@@ -293,30 +279,26 @@ void EngineHost<ApiT>::shutdown_() noexcept
             // Every detached thread has returned; their wrapper
             // lambdas are done writing to retained state.  Safe to
             // reset normally.
-            LOGGER_WARN(
-                "[EngineHost:{}] {} thread(s) were detached during "
-                "shutdown drain but all returned within the grace "
-                "window — proceeding with normal `api_.reset()`.",
-                short_tag_,
-                api_->thread_manager().detached_count_last_drain());
+            LOGGER_WARN("[EngineHost:{}] {} thread(s) were detached during "
+                        "shutdown drain but all returned within the grace "
+                        "window — proceeding with normal `api_.reset()`.",
+                        short_tag_, api_->thread_manager().detached_count_last_drain());
             api_.reset();
             return;
         }
 
         // Grace expired with at least one runaway still active.
         // Leak as last resort — see comment block above.
-        LOGGER_ERROR(
-            "[EngineHost:{}] {} thread(s) were detached during shutdown "
-            "drain AND at least one is still running after a {}s grace "
-            "period.  Leaking `api_` rather than calling `api_.reset()` "
-            "— resetting would free state still owned by the runaway "
-            "thread (deterministic UAF; see HEP-CORE-0031 §4.2).  The "
-            "OS will reap the detached thread(s) and their allocations "
-            "at process exit.",
-            short_tag_,
-            api_->thread_manager().detached_count_last_drain(),
-            kDetachGrace.count());
-        (void)api_.release();  // drop ownership without running ~ApiT
+        LOGGER_ERROR("[EngineHost:{}] {} thread(s) were detached during shutdown "
+                     "drain AND at least one is still running after a {}s grace "
+                     "period.  Leaking `api_` rather than calling `api_.reset()` "
+                     "— resetting would free state still owned by the runaway "
+                     "thread (deterministic UAF; see HEP-CORE-0031 §4.2).  The "
+                     "OS will reap the detached thread(s) and their allocations "
+                     "at process exit.",
+                     short_tag_, api_->thread_manager().detached_count_last_drain(),
+                     kDetachGrace.count());
+        (void)api_.release(); // drop ownership without running ~ApiT
         return;
     }
 
@@ -353,12 +335,8 @@ template class EngineHost<RoleAPIBase>;
 // docstring scrub: removed obsolete "legacy mode / set_broker_comm /
 // broker_channel fallback" references that became dead with Wave-B
 // M4f (commit 6da5837).
-void do_role_teardown(
-    ScriptEngine          &engine,
-    RoleAPIBase           &api,
-    RoleHostCore          &core,
-    bool                   has_api,
-    std::function<void()>  teardown_infrastructure)
+void do_role_teardown(ScriptEngine &engine, RoleAPIBase &api, RoleHostCore &core, bool has_api,
+                      std::function<void()> teardown_infrastructure)
 {
     // Step 9: stop accepting invoke from non-owner threads.
     engine.stop_accepting();

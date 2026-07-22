@@ -45,10 +45,10 @@ using SignalStatusCallback = std::function<std::string()>;
 /// Configuration for the interactive signal handler.
 struct SignalHandlerConfig
 {
-    std::string binary_name;             ///< e.g. "pylabhub-producer"
-    int         timeout_s       = 5;     ///< Prompt timeout (seconds); 0 = no prompt
-    bool        force_interactive = false; ///< Override TTY auto-detect (always prompt)
-    bool        force_daemon      = false; ///< Force non-interactive (never prompt)
+    std::string binary_name;        ///< e.g. "pylabhub-producer"
+    int timeout_s = 5;              ///< Prompt timeout (seconds); 0 = no prompt
+    bool force_interactive = false; ///< Override TTY auto-detect (always prompt)
+    bool force_daemon = false;      ///< Force non-interactive (never prompt)
 };
 
 /// Interactive Ctrl-C handler with Jupyter-style prompt.
@@ -58,9 +58,8 @@ struct SignalHandlerConfig
 /// default disposition on uninstall().
 class PYLABHUB_UTILS_EXPORT InteractiveSignalHandler
 {
-public:
-    InteractiveSignalHandler(SignalHandlerConfig config,
-                             std::atomic<bool>  *shutdown_flag);
+  public:
+    InteractiveSignalHandler(SignalHandlerConfig config, std::atomic<bool> *shutdown_flag);
     ~InteractiveSignalHandler();
 
     InteractiveSignalHandler(const InteractiveSignalHandler &) = delete;
@@ -98,7 +97,7 @@ public:
     ///   pointer is written exactly once and cleared on shutdown.
     [[nodiscard]] utils::ModuleDef make_lifecycle_module();
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

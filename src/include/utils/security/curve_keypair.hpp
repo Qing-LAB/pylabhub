@@ -109,7 +109,7 @@ namespace pylabhub::utils::security
 /// HEP-CORE-0035 §4.6 file ACLs protect.
 class PYLABHUB_UTILS_EXPORT Z85PublicKey
 {
-public:
+  public:
     /// Length of a Z85-encoded CURVE public key in ASCII chars.
     /// Same constant the libzmq sockopt expects.
     static constexpr std::size_t kZ85Chars = 40;
@@ -128,11 +128,11 @@ public:
     /// clean exit-1 with a diagnostic.  See HEP-CORE-0040 §8.4.1.
     [[nodiscard]] static Z85PublicKey validate(std::string_view z85);
 
-    Z85PublicKey(const Z85PublicKey &)            = default;
-    Z85PublicKey(Z85PublicKey &&) noexcept        = default;
+    Z85PublicKey(const Z85PublicKey &) = default;
+    Z85PublicKey(Z85PublicKey &&) noexcept = default;
     Z85PublicKey &operator=(const Z85PublicKey &) = default;
     Z85PublicKey &operator=(Z85PublicKey &&) noexcept = default;
-    ~Z85PublicKey()                               = default;
+    ~Z85PublicKey() = default;
 
     /// View over the 40 Z85 chars.  Use to pass to libzmq sockopt
     /// (`zmq::sockopt::curve_serverkey` accepts string_view) without
@@ -148,18 +148,16 @@ public:
     /// any libzmq sockopt operation.
     [[nodiscard]] bool empty() const noexcept;
 
-    [[nodiscard]] friend bool
-    operator==(const Z85PublicKey &a, const Z85PublicKey &b) noexcept
+    [[nodiscard]] friend bool operator==(const Z85PublicKey &a, const Z85PublicKey &b) noexcept
     {
         return a.z85_ == b.z85_;
     }
-    [[nodiscard]] friend bool
-    operator!=(const Z85PublicKey &a, const Z85PublicKey &b) noexcept
+    [[nodiscard]] friend bool operator!=(const Z85PublicKey &a, const Z85PublicKey &b) noexcept
     {
         return !(a == b);
     }
 
-private:
+  private:
     std::string z85_;
 };
 
@@ -179,7 +177,6 @@ struct CurveKeypair
 /// libsodium.  Cost: ~100 μs.  Throws `std::runtime_error` on
 /// failure (does not happen in normal operation — libzmq's
 /// `zmq_curve_keypair` only fails if its CSPRNG init fails).
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-CurveKeypair generate_curve_keypair();
+[[nodiscard]] PYLABHUB_UTILS_EXPORT CurveKeypair generate_curve_keypair();
 
 } // namespace pylabhub::utils::security

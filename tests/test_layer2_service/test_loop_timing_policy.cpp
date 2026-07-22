@@ -23,8 +23,7 @@ using pylabhub::LoopTimingPolicy;
 
 TEST(LoopTimingPolicyTest, Parse_MaxRate_OK)
 {
-    EXPECT_EQ(pylabhub::parse_loop_timing_policy("max_rate", "test"),
-              LoopTimingPolicy::MaxRate);
+    EXPECT_EQ(pylabhub::parse_loop_timing_policy("max_rate", "test"), LoopTimingPolicy::MaxRate);
 }
 
 TEST(LoopTimingPolicyTest, Parse_FixedRate_OK)
@@ -41,8 +40,7 @@ TEST(LoopTimingPolicyTest, Parse_FixedRateWithCompensation_OK)
 
 TEST(LoopTimingPolicyTest, Parse_InvalidString_Throws)
 {
-    EXPECT_THROW(pylabhub::parse_loop_timing_policy("turbo", "ctx"),
-                 std::runtime_error);
+    EXPECT_THROW(pylabhub::parse_loop_timing_policy("turbo", "ctx"), std::runtime_error);
 }
 
 // Cross-field validation (MaxRate+period, FixedRate+no period, etc.) is now
@@ -57,22 +55,19 @@ TEST(LoopTimingPolicyTest, Parse_InvalidString_Throws)
 TEST(LoopTimingComputeTest, ShortTimeout_MaxRate_FloorsAt10us)
 {
     // period=0 (MaxRate) → 0 * ratio = 0 → clamped to the 10µs floor.
-    EXPECT_EQ(pylabhub::compute_short_timeout(0.0, 0.1),
-              std::chrono::microseconds{10});
+    EXPECT_EQ(pylabhub::compute_short_timeout(0.0, 0.1), std::chrono::microseconds{10});
 }
 
 TEST(LoopTimingComputeTest, ShortTimeout_FixedRate_RatioOfPeriod)
 {
     // period=1000µs, ratio=0.1 → 100µs (above the floor).
-    EXPECT_EQ(pylabhub::compute_short_timeout(1000.0, 0.1),
-              std::chrono::microseconds{100});
+    EXPECT_EQ(pylabhub::compute_short_timeout(1000.0, 0.1), std::chrono::microseconds{100});
 }
 
 TEST(LoopTimingComputeTest, ShortTimeout_SmallPeriod_ClampsToFloor)
 {
     // period=50µs, ratio=0.1 → 5µs → clamped to the 10µs floor.
-    EXPECT_EQ(pylabhub::compute_short_timeout(50.0, 0.1),
-              std::chrono::microseconds{10});
+    EXPECT_EQ(pylabhub::compute_short_timeout(50.0, 0.1), std::chrono::microseconds{10});
 }
 
 // ============================================================================
@@ -87,18 +82,18 @@ TEST(LoopTimingComputeTest, ShortTimeout_SmallPeriod_ClampsToFloor)
 
 namespace
 {
-using Clock                    = std::chrono::steady_clock;
-constexpr double     kPeriodUs = 1000.0;                    // 1 ms
+using Clock = std::chrono::steady_clock;
+constexpr double kPeriodUs = 1000.0; // 1 ms
 const std::chrono::microseconds kPeriod{1000};
-const auto           kMaxTp    = Clock::time_point::max();
+const auto kMaxTp = Clock::time_point::max();
 const std::chrono::hours kHour{1};
 } // namespace
 
 TEST(LoopTimingComputeTest, NextDeadline_MaxRate_IsTimePointMax)
 {
     // MaxRate has no deadline regardless of the other args.
-    const auto out = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::MaxRate, Clock::now(), Clock::now(), kPeriodUs);
+    const auto out = pylabhub::compute_next_deadline(LoopTimingPolicy::MaxRate, Clock::now(),
+                                                     Clock::now(), kPeriodUs);
     EXPECT_EQ(out, kMaxTp);
 }
 
@@ -106,16 +101,16 @@ TEST(LoopTimingComputeTest, NextDeadline_FirstCycle_FixedRate_IsCycleStartPlusPe
 {
     // prev == max signals the first cycle → cycle_start + period (exact).
     const auto start = Clock::now();
-    const auto out   = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, kMaxTp, start, kPeriodUs);
+    const auto out =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, kMaxTp, start, kPeriodUs);
     EXPECT_EQ(out, start + kPeriod);
 }
 
 TEST(LoopTimingComputeTest, NextDeadline_FirstCycle_Compensation_IsCycleStartPlusPeriod)
 {
     const auto start = Clock::now();
-    const auto out   = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRateWithCompensation, kMaxTp, start, kPeriodUs);
+    const auto out = pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRateWithCompensation,
+                                                     kMaxTp, start, kPeriodUs);
     EXPECT_EQ(out, start + kPeriod);
 }
 
@@ -124,10 +119,10 @@ TEST(LoopTimingComputeTest, NextDeadline_FixedRate_OnTime_AdvancesFromPrevDeadli
     // prev_deadline 1h in the FUTURE → internal now() is well below prev+period
     // (1h margin) → on-time branch → advance to prev+period EXACTLY (the result
     // does not read now()).
-    const auto prev  = Clock::now() + kHour;
-    const auto start = Clock::now();  // irrelevant on this branch
-    const auto out   = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
+    const auto prev = Clock::now() + kHour;
+    const auto start = Clock::now(); // irrelevant on this branch
+    const auto out =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
     EXPECT_EQ(out, prev + kPeriod);
 }
 
@@ -137,31 +132,29 @@ TEST(LoopTimingComputeTest, NextDeadline_FixedRate_Overrun_ResetsForwardFromNow)
     // (1h margin) → overrun branch → reset to now+period.  Assert only the
     // RELATIONAL invariant: the new deadline is strictly FORWARD of the stale
     // schedule prev+period (no absolute now() value asserted).
-    const auto prev  = Clock::now() - kHour;
+    const auto prev = Clock::now() - kHour;
     const auto start = Clock::now();
-    const auto out   = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
+    const auto out =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
     EXPECT_GT(out, prev + kPeriod)
         << "FixedRate overrun must reset FORWARD (now+period), not stay on the "
            "stale schedule prev+period";
 }
 
-TEST(LoopTimingComputeTest,
-     NextDeadline_Compensation_Overrun_AdvancesFromPrevDeadline_ExactCatchUp)
+TEST(LoopTimingComputeTest, NextDeadline_Compensation_Overrun_AdvancesFromPrevDeadline_ExactCatchUp)
 {
     // Even under heavy overrun (prev 1h in the past), Compensation advances by
     // EXACTLY one period from prev_deadline (catch-up / steady average rate) and
     // NEVER reads now() — so this is fully deterministic.  Regression pin for the
     // 2026-05-03 bug (Compensation silently degraded to FixedRate = reset-from-now).
-    const auto prev  = Clock::now() - kHour;
-    const auto start = Clock::now();  // irrelevant on this branch
-    const auto out   = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRateWithCompensation, prev, start, kPeriodUs);
+    const auto prev = Clock::now() - kHour;
+    const auto start = Clock::now(); // irrelevant on this branch
+    const auto out = pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRateWithCompensation,
+                                                     prev, start, kPeriodUs);
     EXPECT_EQ(out, prev + kPeriod);
 }
 
-TEST(LoopTimingComputeTest,
-     NextDeadline_Overrun_FixedRateResetsPastCompensationCatchUp)
+TEST(LoopTimingComputeTest, NextDeadline_Overrun_FixedRateResetsPastCompensationCatchUp)
 {
     // Same heavy-overrun input to BOTH policies.  FixedRate resets to now+period
     // (≈ now, ~1h ahead of the stale schedule); Compensation stays at prev+period
@@ -169,16 +162,15 @@ TEST(LoopTimingComputeTest,
     // LATER.  If the 2026-05-03 regression returned (Compensation → reset-from-now)
     // the two would be EQUAL — this asserts they differ, deterministically (~1h
     // gap, immune to CI jitter).
-    const auto prev  = Clock::now() - kHour;
+    const auto prev = Clock::now() - kHour;
     const auto start = Clock::now();
-    const auto fr    = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
-    const auto comp  = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRateWithCompensation, prev, start, kPeriodUs);
-    EXPECT_EQ(comp, prev + kPeriod);   // Compensation: exact catch-up
-    EXPECT_GT(fr, comp)
-        << "Compensation must NOT degrade to FixedRate's reset-from-now "
-           "(2026-05-03 regression)";
+    const auto fr =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
+    const auto comp = pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRateWithCompensation,
+                                                      prev, start, kPeriodUs);
+    EXPECT_EQ(comp, prev + kPeriod); // Compensation: exact catch-up
+    EXPECT_GT(fr, comp) << "Compensation must NOT degrade to FixedRate's reset-from-now "
+                           "(2026-05-03 regression)";
 }
 
 TEST(LoopTimingComputeTest, NextDeadline_DeterministicBranches_TwoConsecutiveCallsIdentical)
@@ -187,19 +179,19 @@ TEST(LoopTimingComputeTest, NextDeadline_DeterministicBranches_TwoConsecutiveCal
     // calls with identical inputs return the EXACT same deadline — pinning that
     // those branches are clock-independent (unlike the overrun reset).
     const auto comp_prev = Clock::now() - kHour;
-    const auto onT_prev  = Clock::now() + kHour;
-    const auto start     = Clock::now();
+    const auto onT_prev = Clock::now() + kHour;
+    const auto start = Clock::now();
 
-    const auto c1 = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRateWithCompensation, comp_prev, start, kPeriodUs);
-    const auto c2 = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRateWithCompensation, comp_prev, start, kPeriodUs);
+    const auto c1 = pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRateWithCompensation,
+                                                    comp_prev, start, kPeriodUs);
+    const auto c2 = pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRateWithCompensation,
+                                                    comp_prev, start, kPeriodUs);
     EXPECT_EQ(c1, c2) << "Compensation is clock-independent → identical across calls";
 
-    const auto o1 = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, onT_prev, start, kPeriodUs);
-    const auto o2 = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, onT_prev, start, kPeriodUs);
+    const auto o1 =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, onT_prev, start, kPeriodUs);
+    const auto o2 =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, onT_prev, start, kPeriodUs);
     EXPECT_EQ(o1, o2) << "FixedRate on-time is clock-independent → identical across calls";
 }
 
@@ -208,11 +200,11 @@ TEST(LoopTimingComputeTest, NextDeadline_FixedRateOverrun_TwoConsecutiveCallsNon
     // The overrun branch DOES read now(), so two back-to-back calls are
     // non-decreasing (steady_clock is monotonic).  Use >= (not >) so the test
     // cannot flake if the clock does not advance between two very fast calls.
-    const auto prev  = Clock::now() - kHour;
+    const auto prev = Clock::now() - kHour;
     const auto start = Clock::now();
-    const auto r1    = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
-    const auto r2    = pylabhub::compute_next_deadline(
-        LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
+    const auto r1 =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
+    const auto r2 =
+        pylabhub::compute_next_deadline(LoopTimingPolicy::FixedRate, prev, start, kPeriodUs);
     EXPECT_GE(r2, r1);
 }

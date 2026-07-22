@@ -27,13 +27,13 @@
 #include "plh_platform.hpp"
 
 namespace fs = std::filesystem;
-using pylabhub::utils::RoleVault;
 using pylabhub::utils::generate_uuid4;
+using pylabhub::utils::RoleVault;
 
 namespace
 {
 
-constexpr const char *kPassword      = "test-role-password-123";
+constexpr const char *kPassword = "test-role-password-123";
 constexpr const char *kWrongPassword = "wrong-password-456";
 
 /// Validate a Z85 key: exactly 40 printable ASCII chars (no space).
@@ -55,9 +55,9 @@ bool is_valid_z85_key(std::string_view s)
 
 class RoleVaultTest : public ::testing::Test
 {
-protected:
-    fs::path    vault_dir_;
-    fs::path    vault_path_;
+  protected:
+    fs::path vault_dir_;
+    fs::path vault_path_;
     std::string role_uid_;
 
     void SetUp() override
@@ -116,8 +116,7 @@ TEST_F(RoleVaultTest, Create_ValidZ85Keypair)
     RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
     EXPECT_TRUE(is_valid_z85_key(v.public_key()))
         << "public_key is not a valid 40-char Z85 key: '" << v.public_key() << "'";
-    EXPECT_TRUE(is_valid_z85_key(v.secret_key()))
-        << "secret_key is not a valid 40-char Z85 key";
+    EXPECT_TRUE(is_valid_z85_key(v.secret_key())) << "secret_key is not a valid 40-char Z85 key";
 }
 
 TEST_F(RoleVaultTest, Create_EmptyPassword)
@@ -134,7 +133,7 @@ TEST_F(RoleVaultTest, Create_EmptyPassword)
 TEST_F(RoleVaultTest, Open_CorrectPassword)
 {
     RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword);
-    RoleVault opened  = RoleVault::open(vault_path_, role_uid_, kPassword);
+    RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword);
 
     EXPECT_EQ(created.public_key(), opened.public_key());
     EXPECT_EQ(created.secret_key(), opened.secret_key());
@@ -185,7 +184,7 @@ TEST_F(RoleVaultTest, Encrypt_SecretsNotInPlaintext)
 
     std::ifstream ifs(vault_path_, std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
-                                 std::istreambuf_iterator<char>());
+                                std::istreambuf_iterator<char>());
 
     EXPECT_EQ(raw_bytes.find(v.public_key()), std::string::npos)
         << "Public key appears in plaintext in vault file";
@@ -234,10 +233,13 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // Pin the atomic-layer message — distinct from the operator-
     // friendly config-layer fs::exists() refusal that fires earlier
     // in --keygen.  Both must continue to refuse + cite the contract.
-    try {
-        (void) RoleVault::create(vault_path_, role_uid_, kPassword);
+    try
+    {
+        (void)RoleVault::create(vault_path_, role_uid_, kPassword);
         FAIL() << "Second create against existing role vault must refuse atomically";
-    } catch (const std::runtime_error &ex) {
+    }
+    catch (const std::runtime_error &ex)
+    {
         const std::string msg = ex.what();
         EXPECT_NE(msg.find("HEP-CORE-0035"), std::string::npos)
             << "atomic-layer message must cite HEP-CORE-0035; got: " << msg;
@@ -265,14 +267,12 @@ TEST_F(RoleVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
     fs::create_symlink(target, vault_path_);
     ASSERT_TRUE(fs::is_symlink(vault_path_));
 
-    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword),
-                 std::runtime_error)
+    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword), std::runtime_error)
         << "Create against a symlink at vault_path must refuse atomically";
 
     EXPECT_TRUE(fs::is_symlink(vault_path_));
     std::ifstream check(target);
-    std::string content((std::istreambuf_iterator<char>(check)),
-                         std::istreambuf_iterator<char>{});
+    std::string content((std::istreambuf_iterator<char>(check)), std::istreambuf_iterator<char>{});
     EXPECT_EQ(content, "would receive redirected role secret")
         << "symlink target must remain untouched by refused create";
 }
@@ -285,13 +285,11 @@ TEST_F(RoleVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 
     namespace fs = std::filesystem;
     const auto file_status = fs::status(vault_path_);
-    EXPECT_EQ(static_cast<unsigned>(file_status.permissions()) & 0777,
-              0600u)
+    EXPECT_EQ(static_cast<unsigned>(file_status.permissions()) & 0777, 0600u)
         << "role vault file mode must be 0600 even with umask 0";
 
     const auto dir_status = fs::status(vault_path_.parent_path());
-    EXPECT_EQ(static_cast<unsigned>(dir_status.permissions()) & 0777,
-              0700u)
+    EXPECT_EQ(static_cast<unsigned>(dir_status.permissions()) & 0777, 0700u)
         << "role vault parent dir mode must be 0700 even with umask 0";
 }
 #endif

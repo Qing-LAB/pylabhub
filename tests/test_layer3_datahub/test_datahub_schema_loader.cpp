@@ -50,25 +50,25 @@ using namespace pylabhub::schema;
 // ============================================================================
 struct TempRawSlot
 {
-    double ts;     // float64
-    float  value;  // float32
+    double ts;   // float64
+    float value; // float32
     // 4 bytes tail padding (natural alignment to 8 bytes)
 };
 
 PYLABHUB_SCHEMA_BEGIN(TempRawSlot)
-    PYLABHUB_SCHEMA_MEMBER(ts)
-    PYLABHUB_SCHEMA_MEMBER(value)
+PYLABHUB_SCHEMA_MEMBER(ts)
+PYLABHUB_SCHEMA_MEMBER(value)
 PYLABHUB_SCHEMA_END(TempRawSlot)
 
 struct SamplesSlot
 {
-    double  ts;
-    float   samples[8];
+    double ts;
+    float samples[8];
 };
 
 PYLABHUB_SCHEMA_BEGIN(SamplesSlot)
-    PYLABHUB_SCHEMA_MEMBER(ts)
-    PYLABHUB_SCHEMA_MEMBER(samples)
+PYLABHUB_SCHEMA_MEMBER(ts)
+PYLABHUB_SCHEMA_MEMBER(samples)
 PYLABHUB_SCHEMA_END(SamplesSlot)
 
 // ============================================================================
@@ -149,9 +149,9 @@ TEST(DatahubSchemaParser, LoadFromString_BasicParsing)
 {
     const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson);
 
-    EXPECT_EQ(e.schema_id,  "$lab.sensors.temperature.raw.v1");
-    EXPECT_EQ(e.version,    1u);
-    EXPECT_EQ(e.description,"Raw temperature");
+    EXPECT_EQ(e.schema_id, "$lab.sensors.temperature.raw.v1");
+    EXPECT_EQ(e.version, 1u);
+    EXPECT_EQ(e.description, "Raw temperature");
 
     ASSERT_EQ(e.slot.fields.size(), 2u);
     EXPECT_EQ(e.slot.fields[0].name, "ts");
@@ -191,7 +191,7 @@ TEST(DatahubSchemaParser, ArrayFieldStructSize)
 
 TEST(DatahubSchemaParser, HashComputedAndNonZero)
 {
-    const SchemaEntry             e = SchemaLibrary::load_from_string(kTempRawJson);
+    const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson);
     const std::array<uint8_t, 32> zero{};
 
     EXPECT_NE(e.slot_info.hash, zero) << "slot hash should not be zero";
@@ -220,16 +220,16 @@ TEST(DatahubSchemaParser, AllPrimitiveTypesParse)
     const std::string &blds = e.slot_info.blds;
     EXPECT_NE(blds.find("f32_field:f32"), std::string::npos);
     EXPECT_NE(blds.find("f64_field:f64"), std::string::npos);
-    EXPECT_NE(blds.find("i8_field:i8"),   std::string::npos);
-    EXPECT_NE(blds.find("u8_field:u8"),   std::string::npos);
+    EXPECT_NE(blds.find("i8_field:i8"), std::string::npos);
+    EXPECT_NE(blds.find("u8_field:u8"), std::string::npos);
     EXPECT_NE(blds.find("i16_field:i16"), std::string::npos);
     EXPECT_NE(blds.find("u16_field:u16"), std::string::npos);
     EXPECT_NE(blds.find("i32_field:i32"), std::string::npos);
     EXPECT_NE(blds.find("u32_field:u32"), std::string::npos);
     EXPECT_NE(blds.find("i64_field:i64"), std::string::npos);
     EXPECT_NE(blds.find("u64_field:u64"), std::string::npos);
-    EXPECT_NE(blds.find("bool_field:b"),  std::string::npos);
-    EXPECT_NE(blds.find("char_field:c"),  std::string::npos);
+    EXPECT_NE(blds.find("bool_field:b"), std::string::npos);
+    EXPECT_NE(blds.find("char_field:c"), std::string::npos);
 
     const std::array<uint8_t, 32> zero{};
     EXPECT_NE(e.slot_info.hash, zero);
@@ -239,7 +239,7 @@ TEST(DatahubSchemaParser, SchemaIDOverride)
 {
     const SchemaEntry e = SchemaLibrary::load_from_string(kTempRawJson, "$custom.alias.v7");
     EXPECT_EQ(e.schema_id, "$custom.alias.v7");
-    EXPECT_EQ(e.version,   7u);
+    EXPECT_EQ(e.version, 7u);
     EXPECT_EQ(e.slot_info.blds, "ts:f64;value:f32");
 }
 
@@ -255,7 +255,7 @@ TEST(DatahubSchemaParser, DeterministicHash)
 
 TEST(DatahubSchemaParser, DifferentSchemasHaveDifferentHashes)
 {
-    const SchemaEntry e_temp    = SchemaLibrary::load_from_string(kTempRawJson);
+    const SchemaEntry e_temp = SchemaLibrary::load_from_string(kTempRawJson);
     const SchemaEntry e_samples = SchemaLibrary::load_from_string(kSamplesJson);
 
     EXPECT_NE(e_temp.slot_info.hash, e_samples.slot_info.hash);
@@ -271,8 +271,8 @@ TEST(DatahubSchemaParser, DifferentSchemasHaveDifferentHashes)
 
 TEST(DatahubSchemaParser, CppStructMatchesJsonSchema)
 {
-    const SchemaInfo cpp_info = generate_schema_info<TempRawSlot>(
-        "TempRawSlot", SchemaVersion{1, 0, 0});
+    const SchemaInfo cpp_info =
+        generate_schema_info<TempRawSlot>("TempRawSlot", SchemaVersion{1, 0, 0});
     const SchemaEntry json_entry = SchemaLibrary::load_from_string(kTempRawJson);
 
     EXPECT_EQ(cpp_info.blds, json_entry.slot_info.blds)
@@ -302,28 +302,24 @@ class DatahubSchemaFileLoadTest : public IsolatedProcessTest
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_SingleFile)
 {
-    auto w = SpawnWorker(
-        "datahub_schema_loader.load_all_from_dirs_single_file");
+    auto w = SpawnWorker("datahub_schema_loader.load_all_from_dirs_single_file");
     ExpectWorkerOk(w);
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_NestedPath)
 {
-    auto w = SpawnWorker(
-        "datahub_schema_loader.load_all_from_dirs_nested_path");
+    auto w = SpawnWorker("datahub_schema_loader.load_all_from_dirs_nested_path");
     ExpectWorkerOk(w);
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_InvalidJsonSkipped)
 {
-    auto w = SpawnWorker(
-        "datahub_schema_loader.load_all_from_dirs_invalid_json_skipped");
+    auto w = SpawnWorker("datahub_schema_loader.load_all_from_dirs_invalid_json_skipped");
     ExpectWorkerOk(w);
 }
 
 TEST_F(DatahubSchemaFileLoadTest, LoadAllFromDirs_FirstMatchWinsAcrossDirs)
 {
-    auto w = SpawnWorker(
-        "datahub_schema_loader.load_all_from_dirs_first_match_wins_across_dirs");
+    auto w = SpawnWorker("datahub_schema_loader.load_all_from_dirs_first_match_wins_across_dirs");
     ExpectWorkerOk(w);
 }

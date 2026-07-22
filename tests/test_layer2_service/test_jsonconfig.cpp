@@ -58,9 +58,8 @@ class JsonConfigTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_jc_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                     ("plh_l2_jc_" + std::string(test_name) + "_" + std::to_string(::getpid()) +
+                      "_" + std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
         return p.string();
@@ -90,8 +89,7 @@ TEST_F(JsonConfigTest, InitWithEmptyPathFails)
 
 TEST_F(JsonConfigTest, InitWithNonExistentFile)
 {
-    auto w = SpawnWorker("jsonconfig.init_with_non_existent_file",
-                         {unique_dir("ne")});
+    auto w = SpawnWorker("jsonconfig.init_with_non_existent_file", {unique_dir("ne")});
     ExpectWorkerOk(w);
 }
 
@@ -109,8 +107,7 @@ TEST_F(JsonConfigTest, ReloadOnDiskChange)
 
 TEST_F(JsonConfigTest, SimplifiedApiOverloads)
 {
-    auto w = SpawnWorker("jsonconfig.simplified_api_overloads",
-                         {unique_dir("sa")});
+    auto w = SpawnWorker("jsonconfig.simplified_api_overloads", {unique_dir("sa")});
     ExpectWorkerOk(w);
 }
 
@@ -122,8 +119,8 @@ TEST_F(JsonConfigTest, RecursionGuard)
 
 TEST_F(JsonConfigTest, WriteTransactionRollsBackOnException)
 {
-    auto w = SpawnWorker("jsonconfig.write_transaction_rolls_back_on_exception",
-                         {unique_dir("rb")});
+    auto w =
+        SpawnWorker("jsonconfig.write_transaction_rolls_back_on_exception", {unique_dir("rb")});
     // The worker deliberately throws inside the write lambda; the wrapper
     // catches it and surfaces ec=io_error. The subprocess emits one
     // [ERROR ] log for the write failure — declare it expected so the
@@ -139,24 +136,22 @@ TEST_F(JsonConfigTest, LoadMalformedFile)
     // [ERROR ] log entry from the JsonConfig parse path. Under multiset
     // semantics, list the substring twice — one entry per expected
     // ERROR line.
-    ExpectWorkerOk(w, /*required=*/{},
-                   /*expected_error_substrings=*/
-                   {"JsonConfig::private_load_from_disk_unsafe",
-                    "JsonConfig::private_load_from_disk_unsafe"});
+    ExpectWorkerOk(
+        w, /*required=*/{},
+        /*expected_error_substrings=*/
+        {"JsonConfig::private_load_from_disk_unsafe", "JsonConfig::private_load_from_disk_unsafe"});
 }
 
 TEST_F(JsonConfigTest, MultiThreadFileContention)
 {
-    auto w = SpawnWorker("jsonconfig.multi_thread_file_contention",
-                         {unique_dir("mt")});
+    auto w = SpawnWorker("jsonconfig.multi_thread_file_contention", {unique_dir("mt")});
     ExpectWorkerOk(w);
 }
 
 #if PYLABHUB_IS_POSIX
 TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
 {
-    auto w = SpawnWorker("jsonconfig.symlink_attack_prevention_posix",
-                         {unique_dir("sp")});
+    auto w = SpawnWorker("jsonconfig.symlink_attack_prevention_posix", {unique_dir("sp")});
     // The worker triggers an "operation_not_permitted" log when init
     // refuses the symlinked path. Both anchors live on the SAME ERROR
     // line; under multiset semantics we must pick a single unique
@@ -170,8 +165,7 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionPosix)
 #if defined(PLATFORM_WIN64)
 TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
 {
-    auto w = SpawnWorker("jsonconfig.symlink_attack_prevention_windows",
-                         {unique_dir("sw")});
+    auto w = SpawnWorker("jsonconfig.symlink_attack_prevention_windows", {unique_dir("sw")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"symlink"});
 }
@@ -179,8 +173,7 @@ TEST_F(JsonConfigTest, SymlinkAttackPreventionWindows)
 
 TEST_F(JsonConfigTest, MultiThreadSharedObjectContention)
 {
-    auto w = SpawnWorker("jsonconfig.multi_thread_shared_object_contention",
-                         {unique_dir("ms")});
+    auto w = SpawnWorker("jsonconfig.multi_thread_shared_object_contention", {unique_dir("ms")});
     ExpectWorkerOk(w);
 }
 
@@ -216,8 +209,7 @@ TEST_F(JsonConfigTest, WriteVetoCommit)
 
 TEST_F(JsonConfigTest, WriteProducesInvalidJson)
 {
-    auto w = SpawnWorker("jsonconfig.write_produces_invalid_json",
-                         {unique_dir("ij")});
+    auto w = SpawnWorker("jsonconfig.write_produces_invalid_json", {unique_dir("ij")});
     // Invalid UTF-8 dump emits an [ERROR ] from the JSON serializer path.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -258,8 +250,7 @@ TEST_F(JsonConfigTest, MultiProcessContention)
     {
         procs.push_back(std::make_unique<WorkerProcess>(
             g_self_exe_path, "jsonconfig.write_id",
-            std::vector<std::string>{cfg_path,
-                                     "worker_" + std::to_string(i)}));
+            std::vector<std::string>{cfg_path, "worker_" + std::to_string(i)}));
         ASSERT_TRUE(procs.back()->valid());
     }
     int success = 0;

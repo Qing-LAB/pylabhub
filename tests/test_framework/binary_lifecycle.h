@@ -97,11 +97,12 @@ namespace pylabhub::tests
 /// (typically via the `PLH_BINARY_LIFECYCLE_MODULES` macro below).
 class BinaryLifecycleEnvironment : public ::testing::Environment
 {
-public:
+  public:
     template <typename... Mods>
     explicit BinaryLifecycleEnvironment(Mods &&...mods)
         : mods_(pylabhub::utils::MakeModDefList(std::forward<Mods>(mods)...))
-    {}
+    {
+    }
 
     void SetUp() override
     {
@@ -112,12 +113,9 @@ public:
         guard_.emplace(std::move(mods_), std::source_location::current());
     }
 
-    void TearDown() override
-    {
-        guard_.reset();
-    }
+    void TearDown() override { guard_.reset(); }
 
-private:
+  private:
     std::vector<pylabhub::utils::ModuleDef> mods_;
     std::optional<pylabhub::utils::LifecycleGuard> guard_;
 };
@@ -138,15 +136,15 @@ private:
 ///         pylabhub::utils::Logger::GetLifecycleModule(),
 ///         pylabhub::utils::FileLock::GetLifecycleModule()
 ///     )
-#define PLH_BINARY_LIFECYCLE_MODULES(...)                                     \
-    namespace                                                                  \
-    {                                                                          \
-    struct PlhBinaryLifecycleRegistrar                                         \
-    {                                                                          \
-        PlhBinaryLifecycleRegistrar()                                          \
-        {                                                                      \
-            ::testing::AddGlobalTestEnvironment(                              \
-                new ::pylabhub::tests::BinaryLifecycleEnvironment{__VA_ARGS__}); \
-        }                                                                      \
-    } g_plh_binary_lifecycle_registrar;                                        \
+#define PLH_BINARY_LIFECYCLE_MODULES(...)                                                          \
+    namespace                                                                                      \
+    {                                                                                              \
+    struct PlhBinaryLifecycleRegistrar                                                             \
+    {                                                                                              \
+        PlhBinaryLifecycleRegistrar()                                                              \
+        {                                                                                          \
+            ::testing::AddGlobalTestEnvironment(                                                   \
+                new ::pylabhub::tests::BinaryLifecycleEnvironment{__VA_ARGS__});                   \
+        }                                                                                          \
+    } g_plh_binary_lifecycle_registrar;                                                            \
     }

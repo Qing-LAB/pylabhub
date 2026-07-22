@@ -55,8 +55,7 @@ RoleRegistry::RuntimeBuilder::~RuntimeBuilder()
     }
 }
 
-RoleRegistry::RuntimeBuilder &
-RoleRegistry::RuntimeBuilder::role_label(std::string_view label)
+RoleRegistry::RuntimeBuilder &RoleRegistry::RuntimeBuilder::role_label(std::string_view label)
 {
     entry_.role_label = std::string(label);
     return *this;
@@ -79,14 +78,13 @@ RoleRegistry::RuntimeBuilder::config_parser(RoleRuntimeInfo::ConfigParser p)
 void RoleRegistry::RuntimeBuilder::commit()
 {
     if (committed_)
-        return;  // idempotent — second call is a no-op
+        return; // idempotent — second call is a no-op
     committed_ = true;
 
     if (entry_.host_factory == nullptr)
     {
-        throw std::runtime_error(
-            "RoleRegistry::register_runtime('" + entry_.role_type +
-            "'): host_factory() is required before commit");
+        throw std::runtime_error("RoleRegistry::register_runtime('" + entry_.role_type +
+                                 "'): host_factory() is required before commit");
     }
 
     std::lock_guard lk(registry_mutex_());
@@ -94,22 +92,19 @@ void RoleRegistry::RuntimeBuilder::commit()
     auto [it, inserted] = map.emplace(entry_.role_type, entry_);
     if (!inserted)
     {
-        throw std::runtime_error(
-            "RoleRegistry::register_runtime: role_type '" +
-            entry_.role_type + "' already registered");
+        throw std::runtime_error("RoleRegistry::register_runtime: role_type '" + entry_.role_type +
+                                 "' already registered");
     }
 }
 
 // ─── Static entry points ─────────────────────────────────────────────────────
 
-RoleRegistry::RuntimeBuilder
-RoleRegistry::register_runtime(std::string_view role_type)
+RoleRegistry::RuntimeBuilder RoleRegistry::register_runtime(std::string_view role_type)
 {
     return RuntimeBuilder(role_type);
 }
 
-const RoleRuntimeInfo *
-RoleRegistry::get_runtime(std::string_view role_type)
+const RoleRuntimeInfo *RoleRegistry::get_runtime(std::string_view role_type)
 {
     std::lock_guard lk(registry_mutex_());
     const auto &map = registry_();

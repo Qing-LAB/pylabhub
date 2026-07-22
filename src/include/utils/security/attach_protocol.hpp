@@ -48,8 +48,8 @@
 
 #include "plh_platform.hpp"
 #include "pylabhub_utils_export.h"
-#include "utils/security/attach_channel.hpp"        // IAttachChannel
-#include "utils/security/secure_subsystem.hpp"      // secure() facade
+#include "utils/security/attach_channel.hpp"   // IAttachChannel
+#include "utils/security/secure_subsystem.hpp" // secure() facade
 #include "utils/security/shm_capability_channel.hpp"
 
 #include <chrono>
@@ -61,7 +61,7 @@
 #include <string>
 
 #if defined(PYLABHUB_IS_POSIX)
-#    include <sys/types.h>  // uid_t
+#include <sys/types.h> // uid_t
 #endif
 
 namespace pylabhub::utils::security
@@ -128,8 +128,8 @@ struct ConsumerAuthMaterial
 struct PYLABHUB_UTILS_EXPORT AuthenticatedConsumer
 {
     IShmCapabilityProducer::AcceptedPeer raw_peer;
-    std::string                          consumer_role_uid;
-    std::string                          consumer_pubkey_z85;
+    std::string consumer_role_uid;
+    std::string consumer_pubkey_z85;
 };
 
 #if defined(PYLABHUB_PLATFORM_LINUX)
@@ -140,7 +140,7 @@ struct PYLABHUB_UTILS_EXPORT AuthenticatedConsumer
 /// each.
 class PYLABHUB_UTILS_EXPORT AttachProtocolAcceptor
 {
-public:
+  public:
     /// @param transport             L1 IShmCapabilityProducer; must
     ///                              outlive this acceptor.
     /// @param expected_uid          Deployment's uid; SO_PEERCRED.uid
@@ -162,17 +162,16 @@ public:
     ///                              known broker-observer pubkey Z85
     ///                              (dynamic, updated via REG_ACK).
     ///                              Optional.
-    AttachProtocolAcceptor(IShmCapabilityProducer &transport,
-                           uid_t                   expected_uid,
-                           std::string             own_seckey_name,
-                           ObserverPubkeyAccessor  broker_observer_pubkey_accessor = nullptr);
+    AttachProtocolAcceptor(IShmCapabilityProducer &transport, uid_t expected_uid,
+                           std::string own_seckey_name,
+                           ObserverPubkeyAccessor broker_observer_pubkey_accessor = nullptr);
 
     ~AttachProtocolAcceptor() = default;
 
-    AttachProtocolAcceptor(const AttachProtocolAcceptor &)            = delete;
+    AttachProtocolAcceptor(const AttachProtocolAcceptor &) = delete;
     AttachProtocolAcceptor &operator=(const AttachProtocolAcceptor &) = delete;
-    AttachProtocolAcceptor(AttachProtocolAcceptor &&)                 = delete;
-    AttachProtocolAcceptor &operator=(AttachProtocolAcceptor &&)      = delete;
+    AttachProtocolAcceptor(AttachProtocolAcceptor &&) = delete;
+    AttachProtocolAcceptor &operator=(AttachProtocolAcceptor &&) = delete;
 
     /// Accept one consumer, run the challenge-response, return the
     /// authenticated peer + claimed identity.
@@ -191,14 +190,13 @@ public:
     /// is normally caller-owned per `AcceptedPeer` semantics) is
     /// CLOSED here so the caller does not have to chase fd leaks
     /// across exception boundaries.
-    std::optional<AuthenticatedConsumer>
-    accept_one(std::chrono::milliseconds timeout);
+    std::optional<AuthenticatedConsumer> accept_one(std::chrono::milliseconds timeout);
 
-private:
+  private:
     IShmCapabilityProducer &transport_;
-    uid_t                   expected_uid_;
-    std::string             own_seckey_name_;
-    ObserverPubkeyAccessor  broker_observer_pubkey_accessor_;
+    uid_t expected_uid_;
+    std::string own_seckey_name_;
+    ObserverPubkeyAccessor broker_observer_pubkey_accessor_;
 };
 
 /// Consumer-side counterpart.  Connect to producer's endpoint, run
@@ -228,11 +226,9 @@ private:
 /// When `require_mutual_auth == false` (default), the consumer keeps
 /// the original 2-frame flow (backward compatible with pre-#262 producers).
 PYLABHUB_UTILS_EXPORT std::optional<int>
-initiate_consumer_handshake(const std::string          &endpoint,
-                            const ConsumerAuthMaterial &self,
-                            const std::string          &producer_pubkey_z85,
-                            std::chrono::milliseconds   timeout,
-                            bool require_mutual_auth = false);
+initiate_consumer_handshake(const std::string &endpoint, const ConsumerAuthMaterial &self,
+                            const std::string &producer_pubkey_z85,
+                            std::chrono::milliseconds timeout, bool require_mutual_auth = false);
 
 #endif // PYLABHUB_PLATFORM_LINUX
 
@@ -311,9 +307,8 @@ struct ProducerHandshakeResult
 /// @throws  std::runtime_error     on protocol violation, wrong
 ///                                 pubkey, MAC verify failure, etc.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT ProducerHandshakeResult
-run_producer_handshake(IAttachChannel                       &channel,
-                       const std::string                    &own_seckey_name,
-                       const ObserverPubkeyAccessor         &observer_pubkey_accessor,
+run_producer_handshake(IAttachChannel &channel, const std::string &own_seckey_name,
+                       const ObserverPubkeyAccessor &observer_pubkey_accessor,
                        std::chrono::steady_clock::time_point deadline);
 
 /// Run the consumer-side AttachProtocol challenge-response over
@@ -345,12 +340,11 @@ run_producer_handshake(IAttachChannel                       &channel,
 ///                                Frames 1+2 then went quiet is
 ///                                affirmatively refusing to
 ///                                authenticate — no retry).
-PYLABHUB_UTILS_EXPORT void
-run_consumer_handshake(IAttachChannel                       &channel,
-                       const ConsumerAuthMaterial           &self,
-                       const std::string                    &producer_pubkey_z85,
-                       std::chrono::steady_clock::time_point deadline,
-                       bool                                  require_mutual_auth);
+PYLABHUB_UTILS_EXPORT void run_consumer_handshake(IAttachChannel &channel,
+                                                  const ConsumerAuthMaterial &self,
+                                                  const std::string &producer_pubkey_z85,
+                                                  std::chrono::steady_clock::time_point deadline,
+                                                  bool require_mutual_auth);
 
 } // namespace pylabhub::utils::security
 

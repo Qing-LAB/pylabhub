@@ -36,8 +36,7 @@
 namespace pylabhub::utils::detail
 {
 
-template <typename T>
-class PortableAtomicSharedPtr
+template <typename T> class PortableAtomicSharedPtr
 {
   public:
     PortableAtomicSharedPtr() = default;
@@ -47,8 +46,8 @@ class PortableAtomicSharedPtr
     PortableAtomicSharedPtr(const PortableAtomicSharedPtr &) = delete;
     PortableAtomicSharedPtr &operator=(const PortableAtomicSharedPtr &) = delete;
 
-    [[nodiscard]] std::shared_ptr<T> load(
-        std::memory_order order = std::memory_order_acquire) const noexcept
+    [[nodiscard]] std::shared_ptr<T>
+    load(std::memory_order order = std::memory_order_acquire) const noexcept
     {
 #if PLH_HAS_STD_ATOMIC_SHARED_PTR
         return ptr_.load(order);
@@ -58,8 +57,7 @@ class PortableAtomicSharedPtr
 #endif
     }
 
-    void store(std::shared_ptr<T> p,
-               std::memory_order order = std::memory_order_release) noexcept
+    void store(std::shared_ptr<T> p, std::memory_order order = std::memory_order_release) noexcept
     {
 #if PLH_HAS_STD_ATOMIC_SHARED_PTR
         ptr_.store(std::move(p), order);

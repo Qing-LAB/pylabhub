@@ -62,8 +62,7 @@ class ScriptEngine;
 // rejects it in some configurations even though C++17 allows it in
 // type aliases).  Implementations are still required to be `noexcept`
 // — failure is signalled by returning `nullptr`.
-using EngineFactoryFn =
-    std::unique_ptr<ScriptEngine> (*)(const config::ScriptConfig &);
+using EngineFactoryFn = std::unique_ptr<ScriptEngine> (*)(const config::ScriptConfig &);
 
 /// Register an engine factory.  Called once per process by
 /// `pylabhub::scripting::init_scripting()` (defined in pylabhub-scripting).
@@ -81,8 +80,7 @@ void register_engine_factory(EngineFactoryFn fp) noexcept;
 /// (= the role host's worker thread).  This is what makes the worker
 /// the GIL holder for Python engines.
 PYLABHUB_UTILS_EXPORT
-std::unique_ptr<ScriptEngine>
-create_engine(const config::ScriptConfig &sc) noexcept;
+std::unique_ptr<ScriptEngine> create_engine(const config::ScriptConfig &sc) noexcept;
 
 /// One-time initializer for the scripting layer.  Defined in
 /// `pylabhub-scripting` (`engine_factory.cpp`) and called explicitly
@@ -128,8 +126,7 @@ using PythonGilReleaseFn = void (*)(PythonGilToken);
 /// Register the GIL-pickup helpers.  Called by `init_scripting()` in
 /// pylabhub-scripting.  Safe to call from any thread.
 PYLABHUB_UTILS_EXPORT
-void register_python_gil_helpers(PythonGilAcquireFn acquire,
-                                  PythonGilReleaseFn release) noexcept;
+void register_python_gil_helpers(PythonGilAcquireFn acquire, PythonGilReleaseFn release) noexcept;
 
 /// Acquire the GIL on the calling thread iff the PythonInterpreter
 /// module is loaded.  Returns `nullptr` if Python is not in play (no
@@ -153,21 +150,21 @@ void release_python_gil(PythonGilToken token) noexcept;
 /// the worker's entire lifetime if Python is in play; no-op otherwise.
 class PythonGilLease
 {
-public:
+  public:
     PythonGilLease() noexcept : token_(acquire_python_gil()) {}
     ~PythonGilLease() noexcept { release_python_gil(token_); }
 
-    PythonGilLease(const PythonGilLease &)            = delete;
+    PythonGilLease(const PythonGilLease &) = delete;
     PythonGilLease &operator=(const PythonGilLease &) = delete;
-    PythonGilLease(PythonGilLease &&)                 = delete;
-    PythonGilLease &operator=(PythonGilLease &&)      = delete;
+    PythonGilLease(PythonGilLease &&) = delete;
+    PythonGilLease &operator=(PythonGilLease &&) = delete;
 
     /// True iff this lease actually holds the GIL (= Python interpreter
     /// is loaded in this process).  Workers can branch on this to skip
     /// engine construction in non-Python deployments.
     [[nodiscard]] bool holds_gil() const noexcept { return token_ != nullptr; }
 
-private:
+  private:
     PythonGilToken token_;
 };
 
@@ -198,7 +195,7 @@ private:
 //     into the engine.  Pure C++ idle waits only.
 
 using EngineGlobalLockToken = void *;
-using EngineGlobalLockReleaseFn   = EngineGlobalLockToken (*)() noexcept;
+using EngineGlobalLockReleaseFn = EngineGlobalLockToken (*)() noexcept;
 using EngineGlobalLockReacquireFn = void (*)(EngineGlobalLockToken) noexcept;
 
 /// Register the GIL release/reacquire helpers.  Called by
@@ -206,9 +203,8 @@ using EngineGlobalLockReacquireFn = void (*)(EngineGlobalLockToken) noexcept;
 /// helpers.  Safe to call from any thread.  Registering nullptr clears
 /// the registration (the RAII becomes a no-op).
 PYLABHUB_UTILS_EXPORT
-void register_engine_global_lock_release_helpers(
-    EngineGlobalLockReleaseFn   release,
-    EngineGlobalLockReacquireFn reacquire) noexcept;
+void register_engine_global_lock_release_helpers(EngineGlobalLockReleaseFn release,
+                                                 EngineGlobalLockReacquireFn reacquire) noexcept;
 
 /// Release the engine's global interpreter lock on the calling thread.
 /// Returns nullptr if no helper is registered or the interpreter is
@@ -230,21 +226,21 @@ void reacquire_engine_global_lock(EngineGlobalLockToken token) noexcept;
 /// is not loaded.
 class EngineGlobalLockRelease
 {
-public:
+  public:
     EngineGlobalLockRelease() noexcept : token_(release_engine_global_lock()) {}
     ~EngineGlobalLockRelease() noexcept { reacquire_engine_global_lock(token_); }
 
-    EngineGlobalLockRelease(const EngineGlobalLockRelease &)            = delete;
+    EngineGlobalLockRelease(const EngineGlobalLockRelease &) = delete;
     EngineGlobalLockRelease &operator=(const EngineGlobalLockRelease &) = delete;
-    EngineGlobalLockRelease(EngineGlobalLockRelease &&)                 = delete;
-    EngineGlobalLockRelease &operator=(EngineGlobalLockRelease &&)      = delete;
+    EngineGlobalLockRelease(EngineGlobalLockRelease &&) = delete;
+    EngineGlobalLockRelease &operator=(EngineGlobalLockRelease &&) = delete;
 
     /// True iff this RAII actually released the GIL (= Python
     /// interpreter is loaded AND a release helper is registered).
     /// Mostly for tests; production code does not need to branch on it.
     [[nodiscard]] bool released() const noexcept { return token_ != nullptr; }
 
-private:
+  private:
     EngineGlobalLockToken token_;
 };
 

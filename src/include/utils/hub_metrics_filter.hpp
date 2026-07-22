@@ -26,12 +26,12 @@ namespace pylabhub::hub
 namespace metrics_category
 {
 inline constexpr const char *kChannel = "channel";
-inline constexpr const char *kRole    = "role";
-inline constexpr const char *kBand    = "band";
-inline constexpr const char *kPeer    = "peer";
-inline constexpr const char *kBroker  = "broker";
-inline constexpr const char *kShm     = "shm";
-inline constexpr const char *kSchema  = "schema";
+inline constexpr const char *kRole = "role";
+inline constexpr const char *kBand = "band";
+inline constexpr const char *kPeer = "peer";
+inline constexpr const char *kBroker = "broker";
+inline constexpr const char *kShm = "shm";
+inline constexpr const char *kSchema = "schema";
 } // namespace metrics_category
 
 /// Selector for `BrokerService::query_metrics`.  All identity selectors

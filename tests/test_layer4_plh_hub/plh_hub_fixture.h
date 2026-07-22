@@ -42,8 +42,7 @@ namespace fs = std::filesystem;
 /// stage root, so `<self>/../bin/plh_hub` reaches the hub binary.
 inline std::string plh_hub_binary()
 {
-    return (fs::path(::g_self_exe_path).parent_path()
-            / ".." / "bin" / "plh_hub").string();
+    return (fs::path(::g_self_exe_path).parent_path() / ".." / "bin" / "plh_hub").string();
 }
 
 /// Create a uniquely-named temp directory for a single test invocation.
@@ -78,15 +77,13 @@ inline fs::path make_tmp_dir(const std::string &prefix)
         // and creates path-inside-path (the original #258 self-
         // inflicted bug exposed when the test_artifacts dir was
         // migrated off /tmp in commit 25bed024).
-        root = fs::absolute(
-                   fs::path(::g_self_exe_path).parent_path().parent_path())
-             / "test_artifacts" / "plh_hub_l4";
+        root = fs::absolute(fs::path(::g_self_exe_path).parent_path().parent_path()) /
+               "test_artifacts" / "plh_hub_l4";
     }
-    fs::path dir = root / ("plh_hub_l4_" + prefix + "_"
-                            + std::to_string(::getpid()) + "_"
-                            + std::to_string(id));
+    fs::path dir = root / ("plh_hub_l4_" + prefix + "_" + std::to_string(::getpid()) + "_" +
+                           std::to_string(id));
     std::error_code ec;
-    fs::remove_all(dir, ec);   // best-effort: previous aborted run
+    fs::remove_all(dir, ec); // best-effort: previous aborted run
     fs::create_directories(dir);
 
     // Scoreboard append: the fixture's TearDown() preserves paths on
@@ -110,7 +107,9 @@ inline fs::path make_tmp_dir(const std::string &prefix)
             f << dir.string() << "\n";
         }
     }
-    catch (...) { /* scoreboard is best-effort; never abort the test */ }
+    catch (...)
+    { /* scoreboard is best-effort; never abort the test */
+    }
 
     return dir;
 }
@@ -146,19 +145,17 @@ inline nlohmann::json read_json(const fs::path &path)
 /// sees in `--init` output.
 inline std::string minimal_python_script()
 {
-    return
-        "def on_init(api):\n"
-        "    pass\n"
-        "\n"
-        "def on_stop(api):\n"
-        "    pass\n";
+    return "def on_init(api):\n"
+           "    pass\n"
+           "\n"
+           "def on_stop(api):\n"
+           "    pass\n";
 }
 
 /// Write the canonical script at `<hub_dir>/script/python/__init__.py`.
 inline void write_minimal_script(const fs::path &hub_dir)
 {
-    write_file(hub_dir / "script" / "python" / "__init__.py",
-               minimal_python_script());
+    write_file(hub_dir / "script" / "python" / "__init__.py", minimal_python_script());
 }
 
 /// Build a minimal-valid hub.json at @p cfg_path.
@@ -182,49 +179,47 @@ inline void write_minimal_script(const fs::path &hub_dir)
 /// `keygen_minimal_hub` below.  Admin endpoint uses
 /// `tcp://127.0.0.1:0` so each test gets an ephemeral port; broker
 /// endpoint similarly.
-inline void write_minimal_config(const fs::path &cfg_path,
-                                  const fs::path &base_dir,
-                                  const nlohmann::json &overrides =
-                                      nlohmann::json::object())
+inline void write_minimal_config(const fs::path &cfg_path, const fs::path &base_dir,
+                                 const nlohmann::json &overrides = nlohmann::json::object())
 {
     nlohmann::json j;
 
-    j["hub"]["uid"]        = "hub.l4test.uid00000001";
-    j["hub"]["name"]       = "L4Test";
-    j["hub"]["log_level"]  = "info";
+    j["hub"]["uid"] = "hub.l4test.uid00000001";
+    j["hub"]["name"] = "L4Test";
+    j["hub"]["log_level"] = "info";
     j["hub"]["auth"]["keyfile"] = "vault/placeholder.vault";
 
     // admin.admin_token is RUNTIME-ONLY (populated from the vault by
     // HubConfig::load_keypair); never written to hub.json.  Only the
     // two operator-tunable fields go into the JSON.
-    j["admin"]["enabled"]        = true;
-    j["admin"]["endpoint"]       = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"] = true;
+    j["admin"]["endpoint"] = "tcp://127.0.0.1:0";
 
-    j["broker"]["heartbeat_interval_ms"]    = 500;
-    j["broker"]["ready_miss_heartbeats"]    = 10;
-    j["broker"]["pending_miss_heartbeats"]  = 10;
+    j["broker"]["heartbeat_interval_ms"] = 500;
+    j["broker"]["ready_miss_heartbeats"] = 10;
+    j["broker"]["pending_miss_heartbeats"] = 10;
 
-    j["federation"]["enabled"]           = false;
+    j["federation"]["enabled"] = false;
     j["federation"]["forward_timeout_ms"] = 2000;
-    j["federation"]["peers"]             = nlohmann::json::array();
+    j["federation"]["peers"] = nlohmann::json::array();
 
-    j["network"]["broker_bind"]      = true;
-    j["network"]["broker_endpoint"]  = "tcp://127.0.0.1:0";
-    j["network"]["zmq_io_threads"]   = 1;
+    j["network"]["broker_bind"] = true;
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["network"]["zmq_io_threads"] = 1;
 
-    j["state"]["disconnected_grace_ms"]    = 60000;
+    j["state"]["disconnected_grace_ms"] = 60000;
     j["state"]["max_disconnected_entries"] = 1000;
 
-    j["logging"]["backups"]      = 5;
-    j["logging"]["file_path"]    = "";
-    j["logging"]["max_size_mb"]  = 10;
-    j["logging"]["timestamped"]  = true;
+    j["logging"]["backups"] = 5;
+    j["logging"]["file_path"] = "";
+    j["logging"]["max_size_mb"] = 10;
+    j["logging"]["timestamped"] = true;
 
-    j["script"]["type"]      = "python";
-    j["script"]["path"]      = base_dir.generic_string();
-    j["python_venv"]         = "";
-    j["loop_timing"]         = "fixed_rate";
-    j["target_period_ms"]    = 1000;
+    j["script"]["type"] = "python";
+    j["script"]["path"] = base_dir.generic_string();
+    j["python_venv"] = "";
+    j["loop_timing"] = "fixed_rate";
+    j["target_period_ms"] = 1000;
     j["stop_on_script_error"] = false;
 
     if (!overrides.is_null())
@@ -236,22 +231,19 @@ inline void write_minimal_config(const fs::path &cfg_path,
 /// subprocess paths_to_clean_ teardown happens automatically.
 class PlhHubCliTest : public pylabhub::tests::IsolatedProcessTest
 {
-protected:
+  protected:
     void TearDown() override
     {
         // Mirror of plh_role_fixture: preserve dirs on failure
         // (forensics for L4 e2e investigation, #258) OR when
         // PLH_KEEP_TEST_ARTIFACTS is set.  Otherwise clean up.
         const bool keep =
-            ::testing::Test::HasFailure() ||
-            (std::getenv("PLH_KEEP_TEST_ARTIFACTS") != nullptr);
+            ::testing::Test::HasFailure() || (std::getenv("PLH_KEEP_TEST_ARTIFACTS") != nullptr);
         if (keep)
         {
             for (const auto &p : paths_to_clean_)
             {
-                fmt::print(stderr,
-                            "[PLH_TEST_ARTIFACTS] preserved on failure: {}\n",
-                            p.string());
+                fmt::print(stderr, "[PLH_TEST_ARTIFACTS] preserved on failure: {}\n", p.string());
             }
         }
         else
@@ -316,9 +308,8 @@ struct ScopedHubPassword
 /// Cost: one Argon2id INTERACTIVE derivation (~100ms locally).
 inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
 {
-    pylabhub::tests::helper::WorkerProcess kg(
-        plh_hub_binary(), "--config",
-        {cfg_path.string(), "--keygen"});
+    pylabhub::tests::helper::WorkerProcess kg(plh_hub_binary(), "--config",
+                                              {cfg_path.string(), "--keygen"});
     const int rc = kg.wait_for_exit();
 
     if (rc == 0)
@@ -331,33 +322,27 @@ inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
     // gets reported, just without the "did the vault land on disk"
     // breakdown.
     fs::path vault_abs;
-    bool     vault_exists = false;
+    bool vault_exists = false;
     {
         std::ifstream f(cfg_path);
         if (f.is_open())
         {
             auto j = nlohmann::json::parse(f, nullptr, /*allow_exc=*/false);
-            if (!j.is_discarded()
-                && j.contains("hub")
-                && j["hub"].contains("auth")
-                && j["hub"]["auth"].contains("keyfile"))
+            if (!j.is_discarded() && j.contains("hub") && j["hub"].contains("auth") &&
+                j["hub"]["auth"].contains("keyfile"))
             {
-                const std::string kf =
-                    j["hub"]["auth"]["keyfile"].get<std::string>();
+                const std::string kf = j["hub"]["auth"]["keyfile"].get<std::string>();
                 if (!kf.empty())
                 {
                     fs::path kf_path = kf;
-                    vault_abs = kf_path.is_absolute()
-                              ? kf_path
-                              : cfg_path.parent_path() / kf_path;
+                    vault_abs = kf_path.is_absolute() ? kf_path : cfg_path.parent_path() / kf_path;
                     // Existence AND non-zero size: a 0-byte file at the
                     // vault path (partial-write failure) would otherwise
                     // read as "vault present" and get misclassified as a
                     // #242 teardown hang.  Real vaults are hundreds of
                     // bytes minimum (HEP-CORE-0035 §4.6 vault layout).
                     std::error_code ec;
-                    vault_exists = fs::exists(vault_abs, ec)
-                                && fs::file_size(vault_abs, ec) > 0;
+                    vault_exists = fs::exists(vault_abs, ec) && fs::file_size(vault_abs, ec) > 0;
                 }
             }
         }
@@ -365,24 +350,22 @@ inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
 
     if (vault_exists)
     {
-        ADD_FAILURE()
-            << "keygen_minimal_hub: plh_hub --keygen produced the vault "
-            << "at '" << vault_abs << "' but the process did NOT exit "
-            << "cleanly within wait_for_exit deadline (rc=" << rc
-            << ").  This matches the Logger-shutdown detach hang pattern "
-            << "tracked as task #242 — keygen WORK SUCCEEDED, only the "
-            << "process teardown hung.  Treat as #242 follow-up, not a "
-            << "regression in --keygen logic.  cfg='" << cfg_path
-            << "'; stderr:\n" << kg.get_stderr();
+        ADD_FAILURE() << "keygen_minimal_hub: plh_hub --keygen produced the vault "
+                      << "at '" << vault_abs << "' but the process did NOT exit "
+                      << "cleanly within wait_for_exit deadline (rc=" << rc
+                      << ").  This matches the Logger-shutdown detach hang pattern "
+                      << "tracked as task #242 — keygen WORK SUCCEEDED, only the "
+                      << "process teardown hung.  Treat as #242 follow-up, not a "
+                      << "regression in --keygen logic.  cfg='" << cfg_path << "'; stderr:\n"
+                      << kg.get_stderr();
     }
     else
     {
-        ADD_FAILURE()
-            << "keygen_minimal_hub: plh_hub --keygen FAILED to produce "
-            << "the vault (rc=" << rc << ", vault absent at '"
-            << vault_abs << "').  Real keygen-path failure — investigate "
-            << "the stderr below.  cfg='" << cfg_path << "'; stderr:\n"
-            << kg.get_stderr();
+        ADD_FAILURE() << "keygen_minimal_hub: plh_hub --keygen FAILED to produce "
+                      << "the vault (rc=" << rc << ", vault absent at '" << vault_abs
+                      << "').  Real keygen-path failure — investigate "
+                      << "the stderr below.  cfg='" << cfg_path << "'; stderr:\n"
+                      << kg.get_stderr();
     }
 }
 
@@ -390,8 +373,7 @@ inline void keygen_minimal_hub(const std::filesystem::path &cfg_path)
 /// lines in the binary's stderr.  Mirrors the role-side check.  Error-
 /// path tests do NOT call this — their contract is the diagnostic
 /// substring pinned via Class A path-discrimination.
-inline void expect_no_unexpected_errors(
-    const pylabhub::tests::helper::WorkerProcess &p)
+inline void expect_no_unexpected_errors(const pylabhub::tests::helper::WorkerProcess &p)
 {
     const std::string &err = p.get_stderr();
     std::istringstream lines(err);
@@ -400,7 +382,8 @@ inline void expect_no_unexpected_errors(
     {
         if (line.find("[ERROR ]") != std::string::npos)
             ADD_FAILURE() << "Unexpected ERROR-level log in plh_hub "
-                             "stderr (Class D gate):\n  " << line;
+                             "stderr (Class D gate):\n  "
+                          << line;
     }
 }
 

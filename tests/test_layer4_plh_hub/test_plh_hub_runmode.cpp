@@ -33,9 +33,9 @@
 #include <thread>
 
 using namespace pylabhub::tests::plh_hub_l4;
-using pylabhub::tests::helper::WorkerProcess;
-using pylabhub::tests::helper::ExpectVaultFileSecured;
 using pylabhub::tests::helper::ExpectVaultDirSecured;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::WorkerProcess;
 
 namespace
 {
@@ -60,11 +60,11 @@ std::string read_hub_log(const fs::path &hub_dir)
         if (e.path().extension() == ".log" && e.path() > newest)
             newest = e.path();
     }
-    if (newest.empty()) return {};
+    if (newest.empty())
+        return {};
 
     std::ifstream f(newest);
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>{});
+    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>{});
     return content;
 }
 
@@ -76,7 +76,8 @@ std::string read_hub_log(const fs::path &hub_dir)
 /// values fall back to 1.0.
 double timeout_scale()
 {
-    static const double s = []() -> double {
+    static const double s = []() -> double
+    {
         const char *raw = ::getenv("PLH_TEST_TIMEOUT_SCALE");
         if (raw == nullptr || *raw == '\0')
             return 1.0;
@@ -95,11 +96,9 @@ double timeout_scale()
 /// timeout).  Timing is the watchdog ceiling, NOT the success
 /// criterion — a successful startup sees the marker in <1s on dev
 /// hardware; the 5s ceiling is for CI/sanitizer headroom.
-bool wait_for_log_marker(const fs::path &hub_dir,
-                          const std::string &marker,
-                          pylabhub::tests::helper::WorkerProcess *proc = nullptr,
-                          std::chrono::milliseconds timeout =
-                              std::chrono::milliseconds(5000))
+bool wait_for_log_marker(const fs::path &hub_dir, const std::string &marker,
+                         pylabhub::tests::helper::WorkerProcess *proc = nullptr,
+                         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000))
 {
     const auto scaled = std::chrono::milliseconds(
         static_cast<long>(static_cast<double>(timeout.count()) * timeout_scale()));
@@ -129,9 +128,9 @@ void configure_for_runmode(const fs::path &dir)
         std::ifstream f(dir / "hub.json");
         f >> j;
     }
-    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";  // ephemeral
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";                   // no script
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0"; // ephemeral
+    j["admin"]["enabled"] = false;
+    j["script"]["path"] = ""; // no script
     // Leave hub.auth.keyfile = "vault/<hub_uid>.vault" from --init
     // template (HEP-CORE-0033 §6.5 revised 2026-05-31 — UID-keyed).
     {
@@ -144,14 +143,13 @@ void configure_for_runmode(const fs::path &dir)
 
     // Materialize the vault — required for run-mode startup.
     ::setenv("PYLABHUB_HUB_PASSWORD", "l4-runmode-pw", /*overwrite=*/1);
-    pylabhub::tests::helper::WorkerProcess kg(
-        plh_hub_binary(), "--config",
-        {(dir / "hub.json").string(), "--keygen"});
+    pylabhub::tests::helper::WorkerProcess kg(plh_hub_binary(), "--config",
+                                              {(dir / "hub.json").string(), "--keygen"});
     const int rc = kg.wait_for_exit();
     if (rc != 0)
     {
-        ADD_FAILURE() << "configure_for_runmode: --keygen failed (rc=" << rc
-                      << "):\n" << kg.get_stderr();
+        ADD_FAILURE() << "configure_for_runmode: --keygen failed (rc=" << rc << "):\n"
+                      << kg.get_stderr();
         return;
     }
     // Verify --keygen actually produced the vault file at the path
@@ -179,7 +177,7 @@ TEST_F(PlhHubCliTest, RunMode_StartsBindsAcceptsSigtermExitsZero)
     const fs::path dir = tmp("runmode_basic");
     {
         WorkerProcess init(plh_hub_binary(), "--init",
-            {dir.string(), "--name", "L4RuntimeHubBasic"});
+                           {dir.string(), "--name", "L4RuntimeHubBasic"});
         ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
     }
     configure_for_runmode(dir);
@@ -194,8 +192,8 @@ TEST_F(PlhHubCliTest, RunMode_StartsBindsAcceptsSigtermExitsZero)
     // appears and the watchdog times out cleanly.
     ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on", &hub))
         << "plh_hub never reached broker-bind state.  Log:\n"
-        << read_hub_log(dir)
-        << "\nhub stderr:\n" << hub.get_stderr();
+        << read_hub_log(dir) << "\nhub stderr:\n"
+        << hub.get_stderr();
 
     // Send SIGTERM.  plh_hub's signal handler flips g_shutdown; bridge
     // thread translates to host.request_shutdown(); run_main_loop wakes;
@@ -209,14 +207,14 @@ TEST_F(PlhHubCliTest, RunMode_StartsBindsAcceptsSigtermExitsZero)
     const auto t0 = std::chrono::steady_clock::now();
     const int rc = hub.wait_for_exit(/*timeout_s=*/10);
     const auto elapsed_ms =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - t0).count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+            .count();
 
-    EXPECT_EQ(rc, 0) << "plh_hub did not exit cleanly on SIGTERM (rc=" << rc
-                     << ").  stderr:\n" << hub.get_stderr();
-    EXPECT_LT(elapsed_ms, 10000)
-        << "shutdown took " << elapsed_ms << " ms — bounded join timed out.  "
-           "Regression in HEP-CORE-0033 §4.2 shutdown sequence.";
+    EXPECT_EQ(rc, 0) << "plh_hub did not exit cleanly on SIGTERM (rc=" << rc << ").  stderr:\n"
+                     << hub.get_stderr();
+    EXPECT_LT(elapsed_ms, 10000) << "shutdown took " << elapsed_ms
+                                 << " ms — bounded join timed out.  "
+                                    "Regression in HEP-CORE-0033 §4.2 shutdown sequence.";
 
     // Class D gate: no stray ERROR-level logs.  An ERROR during
     // shutdown indicates a teardown bug (e.g., a subsystem failed
@@ -224,9 +222,7 @@ TEST_F(PlhHubCliTest, RunMode_StartsBindsAcceptsSigtermExitsZero)
     const std::string log = read_hub_log(dir);
     const std::string err = hub.get_stderr();
     auto contains_error = [](const std::string &haystack)
-    {
-        return haystack.find("[ERROR ]") != std::string::npos;
-    };
+    { return haystack.find("[ERROR ]") != std::string::npos; };
     EXPECT_FALSE(contains_error(log))
         << "plh_hub log file contains [ERROR ] lines after clean SIGTERM exit:\n"
         << log;
@@ -245,7 +241,7 @@ TEST_F(PlhHubCliTest, RunMode_LogShowsCorrectStartupAndShutdownOrdering)
     const fs::path dir = tmp("runmode_ordering");
     {
         WorkerProcess init(plh_hub_binary(), "--init",
-            {dir.string(), "--name", "L4RuntimeHubOrdering"});
+                           {dir.string(), "--name", "L4RuntimeHubOrdering"});
         ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
     }
     configure_for_runmode(dir);
@@ -253,8 +249,9 @@ TEST_F(PlhHubCliTest, RunMode_LogShowsCorrectStartupAndShutdownOrdering)
     WorkerProcess hub(plh_hub_binary(), dir.string(), {});
 
     ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on", &hub))
-        << "broker never bound. Log:\n" << read_hub_log(dir)
-        << "\nhub stderr:\n" << hub.get_stderr();
+        << "broker never bound. Log:\n"
+        << read_hub_log(dir) << "\nhub stderr:\n"
+        << hub.get_stderr();
 
     hub.send_signal(SIGTERM);
     EXPECT_EQ(hub.wait_for_exit(10), 0);
@@ -278,29 +275,28 @@ TEST_F(PlhHubCliTest, RunMode_LogShowsCorrectStartupAndShutdownOrdering)
 
     // Startup: the broker's listening line MUST come AFTER the
     // ThreadManager spawned it and BEFORE startup-complete.
-    const auto pos_spawn      = log.find("spawned thread 'broker'");
-    const auto pos_broker_up  = log.find("Broker: listening on");
+    const auto pos_spawn = log.find("spawned thread 'broker'");
+    const auto pos_broker_up = log.find("Broker: listening on");
     const auto pos_startup_ok = log.find("startup complete (broker on");
-    ASSERT_NE(pos_spawn,      std::string::npos) << log;
-    ASSERT_NE(pos_broker_up,  std::string::npos) << log;
+    ASSERT_NE(pos_spawn, std::string::npos) << log;
+    ASSERT_NE(pos_broker_up, std::string::npos) << log;
     ASSERT_NE(pos_startup_ok, std::string::npos) << log;
-    EXPECT_LT(pos_spawn,      pos_broker_up);
-    EXPECT_LT(pos_broker_up,  pos_startup_ok);
+    EXPECT_LT(pos_spawn, pos_broker_up);
+    EXPECT_LT(pos_broker_up, pos_startup_ok);
 
     // Shutdown: HEP-0033 §4.2 step ordering — main loop wakes,
     // shutdown initiated, broker stops, shutdown complete.
-    const auto pos_wake     = log.find("main loop woke for shutdown");
-    const auto pos_init     = log.find("] shutdown initiated");
-    const auto pos_stopped  = log.find("Broker: stopped");
+    const auto pos_wake = log.find("main loop woke for shutdown");
+    const auto pos_init = log.find("] shutdown initiated");
+    const auto pos_stopped = log.find("Broker: stopped");
     const auto pos_complete = log.find("] shutdown complete");
-    ASSERT_NE(pos_wake,     std::string::npos) << log;
-    ASSERT_NE(pos_init,     std::string::npos) << log;
-    ASSERT_NE(pos_stopped,  std::string::npos) << log;
+    ASSERT_NE(pos_wake, std::string::npos) << log;
+    ASSERT_NE(pos_init, std::string::npos) << log;
+    ASSERT_NE(pos_stopped, std::string::npos) << log;
     ASSERT_NE(pos_complete, std::string::npos) << log;
-    EXPECT_LT(pos_startup_ok, pos_wake)
-        << "shutdown signaled BEFORE startup completed — race.";
-    EXPECT_LT(pos_wake,    pos_init);
-    EXPECT_LT(pos_init,    pos_stopped);
+    EXPECT_LT(pos_startup_ok, pos_wake) << "shutdown signaled BEFORE startup completed — race.";
+    EXPECT_LT(pos_wake, pos_init);
+    EXPECT_LT(pos_init, pos_stopped);
     EXPECT_LT(pos_stopped, pos_complete);
 }
 
@@ -312,15 +308,16 @@ TEST_F(PlhHubCliTest, RunMode_DoubleSigtermIsIdempotent)
     const fs::path dir = tmp("runmode_double_sig");
     {
         WorkerProcess init(plh_hub_binary(), "--init",
-            {dir.string(), "--name", "L4RuntimeHubDouble"});
+                           {dir.string(), "--name", "L4RuntimeHubDouble"});
         ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
     }
     configure_for_runmode(dir);
 
     WorkerProcess hub(plh_hub_binary(), dir.string(), {});
     ASSERT_TRUE(wait_for_log_marker(dir, "Broker: listening on", &hub))
-        << "broker never bound. Log:\n" << read_hub_log(dir)
-        << "\nhub stderr:\n" << hub.get_stderr();
+        << "broker never bound. Log:\n"
+        << read_hub_log(dir) << "\nhub stderr:\n"
+        << hub.get_stderr();
 
     hub.send_signal(SIGTERM);
     // Small wait so the second SIGTERM lands during shutdown, not
@@ -329,9 +326,10 @@ TEST_F(PlhHubCliTest, RunMode_DoubleSigtermIsIdempotent)
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     hub.send_signal(SIGTERM);
 
-    EXPECT_EQ(hub.wait_for_exit(10), 0)
-        << "double SIGTERM caused non-zero exit.  stderr:\n" << hub.get_stderr();
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << "double SIGTERM caused non-zero exit.  stderr:\n"
+                                        << hub.get_stderr();
     const std::string log = read_hub_log(dir);
     EXPECT_EQ(log.find("[ERROR ]"), std::string::npos)
-        << "double SIGTERM produced ERROR-level log lines.  Log:\n" << log;
+        << "double SIGTERM produced ERROR-level log lines.  Log:\n"
+        << log;
 }

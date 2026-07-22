@@ -32,18 +32,23 @@ namespace
 // have caused wire-boundary bugs historically.
 bool is_id_char(char c) noexcept
 {
-    if (c >= 'a' && c <= 'z') return true;
-    if (c >= 'A' && c <= 'Z') return true;
-    if (c >= '0' && c <= '9') return true;
+    if (c >= 'a' && c <= 'z')
+        return true;
+    if (c >= 'A' && c <= 'Z')
+        return true;
+    if (c >= '0' && c <= '9')
+        return true;
     return c == '.' || c == '_' || c == '-';
 }
 
 bool grammar_ok(std::string_view s) noexcept
 {
-    if (s.empty() || s.size() > 128) return false;
+    if (s.empty() || s.size() > 128)
+        return false;
     for (char c : s)
     {
-        if (!is_id_char(c)) return false;
+        if (!is_id_char(c))
+            return false;
     }
     return true;
 }
@@ -54,30 +59,40 @@ bool grammar_ok(std::string_view s) noexcept
 RejectDetail make(RejectCode code, std::string field, std::string msg)
 {
     RejectDetail d;
-    d.code    = code;
-    d.field   = std::move(field);
+    d.code = code;
+    d.field = std::move(field);
     d.message = std::move(msg);
     return d;
 }
 
-}  // namespace
+} // namespace
 
 std::string_view to_wire_string(RejectCode code) noexcept
 {
     switch (code)
     {
-        case RejectCode::envelope_tampered:       return "ENVELOPE_TAMPERED";
-        case RejectCode::body_schema_violation:   return "BODY_SCHEMA_VIOLATION";
-        case RejectCode::identity_mismatch:       return "IDENTITY_MISMATCH";
-        case RejectCode::invalid_request:         return "INVALID_REQUEST";
-        case RejectCode::unknown_role:            return "UNKNOWN_ROLE";
-        case RejectCode::pubkey_mismatch:         return "PUBKEY_MISMATCH";
-        case RejectCode::uid_conflict:            return "UID_CONFLICT";
-        case RejectCode::replay_or_skew:          return "REPLAY_OR_SKEW";
-        case RejectCode::invalid_role_tag:        return "INVALID_ROLE_TAG";
-        case RejectCode::broker_internal_error:   return "BROKER_INTERNAL_ERROR";
+    case RejectCode::envelope_tampered:
+        return "ENVELOPE_TAMPERED";
+    case RejectCode::body_schema_violation:
+        return "BODY_SCHEMA_VIOLATION";
+    case RejectCode::identity_mismatch:
+        return "IDENTITY_MISMATCH";
+    case RejectCode::invalid_request:
+        return "INVALID_REQUEST";
+    case RejectCode::unknown_role:
+        return "UNKNOWN_ROLE";
+    case RejectCode::pubkey_mismatch:
+        return "PUBKEY_MISMATCH";
+    case RejectCode::uid_conflict:
+        return "UID_CONFLICT";
+    case RejectCode::replay_or_skew:
+        return "REPLAY_OR_SKEW";
+    case RejectCode::invalid_role_tag:
+        return "INVALID_ROLE_TAG";
+    case RejectCode::broker_internal_error:
+        return "BROKER_INTERNAL_ERROR";
     }
-    return "UNKNOWN";  // unreachable under complete switch
+    return "UNKNOWN"; // unreachable under complete switch
 }
 
 // ── Individual gates ──────────────────────────────────────────────────
@@ -86,9 +101,8 @@ std::string_view to_wire_string(RejectCode code) noexcept
 // through `abi_fingerprint` at the broker's REG handler per
 // HEP-CORE-0032 §8.
 
-std::optional<RejectDetail>
-gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
-                     const RegFamilyBodyView              &body) noexcept
+std::optional<RejectDetail> gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
+                                                const RegFamilyBodyView &body) noexcept
 {
     // I-DEALER-IDENTITY: routing_id captured in Frame 0 must equal the
     // self-declared role_uid.  Bytewise compare — role_uid grammar
@@ -103,8 +117,7 @@ gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
     return std::nullopt;
 }
 
-std::optional<RejectDetail>
-gate_grammar(const RegFamilyBodyView &body) noexcept
+std::optional<RejectDetail> gate_grammar(const RegFamilyBodyView &body) noexcept
 {
     // §14.5 gate 4: HEP-CORE-0033 §G2.2.0b grammar on the universal
     // identifiers.  role_uid + channel_name run the identifier grammar;
@@ -135,16 +148,14 @@ gate_grammar(const RegFamilyBodyView &body) noexcept
     if (body.zmq_pubkey.size() != 40)
     {
         return make(RejectCode::invalid_request, "zmq_pubkey",
-                    "zmq_pubkey length is " +
-                        std::to_string(body.zmq_pubkey.size()) +
+                    "zmq_pubkey length is " + std::to_string(body.zmq_pubkey.size()) +
                         ", expected 40 (Z85-encoded CURVE25519)");
     }
     return std::nullopt;
 }
 
-std::optional<RejectDetail>
-gate_known_role_binding(const RegFamilyBodyView &body,
-                         const AdmissionContext  &ctx) noexcept
+std::optional<RejectDetail> gate_known_role_binding(const RegFamilyBodyView &body,
+                                                    const AdmissionContext &ctx) noexcept
 {
     if (!ctx.cb || !ctx.cb->lookup_known_role)
     {
@@ -152,21 +163,19 @@ gate_known_role_binding(const RegFamilyBodyView &body,
         return make(RejectCode::broker_internal_error, "",
                     "internal: known_roles callback not bound");
     }
-    const auto result = ctx.cb->lookup_known_role(body.role_uid,
-                                                    body.zmq_pubkey);
+    const auto result = ctx.cb->lookup_known_role(body.role_uid, body.zmq_pubkey);
     switch (result)
     {
-        case KnownRoleLookup::binding_matches:
-            return std::nullopt;
-        case KnownRoleLookup::uid_unknown:
-            return make(RejectCode::unknown_role, "role_uid",
-                        "role_uid not present in known_roles");
-        case KnownRoleLookup::pubkey_mismatch:
-            return make(RejectCode::pubkey_mismatch, "zmq_pubkey",
-                        "zmq_pubkey does not match known_roles entry "
-                        "for this role_uid");
+    case KnownRoleLookup::binding_matches:
+        return std::nullopt;
+    case KnownRoleLookup::uid_unknown:
+        return make(RejectCode::unknown_role, "role_uid", "role_uid not present in known_roles");
+    case KnownRoleLookup::pubkey_mismatch:
+        return make(RejectCode::pubkey_mismatch, "zmq_pubkey",
+                    "zmq_pubkey does not match known_roles entry "
+                    "for this role_uid");
     }
-    return std::nullopt;  // unreachable
+    return std::nullopt; // unreachable
 }
 
 // Shared I-REPLAY-BOUND check (wall-clock skew + nonce dedup).  ONE
@@ -175,29 +184,25 @@ gate_known_role_binding(const RegFamilyBodyView &body,
 // ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED path).  De-duplicated 2026-07-17 so
 // the two callers cannot drift (was: a verbatim inline copy in the auth-reg
 // runner).  File-local; both callers live in this TU.
-static std::optional<RejectDetail>
-check_replay_bound(std::string_view        role_uid,
-                    std::string_view        client_nonce,
-                    std::uint64_t           client_wall_ts,
-                    const AdmissionContext &ctx) noexcept
+static std::optional<RejectDetail> check_replay_bound(std::string_view role_uid,
+                                                      std::string_view client_nonce,
+                                                      std::uint64_t client_wall_ts,
+                                                      const AdmissionContext &ctx) noexcept
 {
     if (!ctx.cb || !ctx.cb->record_and_check_nonce || !ctx.cb->wall_now_ms)
     {
-        return make(RejectCode::invalid_request, "",
-                    "internal: replay-check callback not bound");
+        return make(RejectCode::invalid_request, "", "internal: replay-check callback not bound");
     }
     // Wall-clock skew check runs first so a clock-off client fails fast
     // before its nonce enters the dedup map (avoids polluting the map
     // with entries an operator has to interpret).
     const std::uint64_t broker_now = ctx.cb->wall_now_ms();
-    const std::uint64_t delta_ms   = broker_now > client_wall_ts
-                                          ? broker_now - client_wall_ts
-                                          : client_wall_ts - broker_now;
+    const std::uint64_t delta_ms =
+        broker_now > client_wall_ts ? broker_now - client_wall_ts : client_wall_ts - broker_now;
     if (delta_ms > ctx.skew_tolerance_ms)
     {
         return make(RejectCode::replay_or_skew, "client_wall_ts",
-                    "wall-clock skew " + std::to_string(delta_ms) +
-                        " ms exceeds tolerance " +
+                    "wall-clock skew " + std::to_string(delta_ms) + " ms exceeds tolerance " +
                         std::to_string(ctx.skew_tolerance_ms) + " ms");
     }
     // Nonce dedup — the underlying ReplayGuard prunes against its OWN
@@ -216,12 +221,10 @@ check_replay_bound(std::string_view        role_uid,
     return std::nullopt;
 }
 
-std::optional<RejectDetail>
-gate_replay_bound(const RegFamilyBodyView &body,
-                   const AdmissionContext  &ctx) noexcept
+std::optional<RejectDetail> gate_replay_bound(const RegFamilyBodyView &body,
+                                              const AdmissionContext &ctx) noexcept
 {
-    return check_replay_bound(body.role_uid, body.client_nonce,
-                              body.client_wall_ts, ctx);
+    return check_replay_bound(body.role_uid, body.client_nonce, body.client_wall_ts, ctx);
 }
 
 // ── Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8) ───────────
@@ -242,7 +245,7 @@ constexpr std::string_view kTagProc = "proc";
 struct RoleTagRow
 {
     std::string_view msg_type;
-    std::array<std::string_view, 3> allowed;  ///< empties = unused slot
+    std::array<std::string_view, 3> allowed; ///< empties = unused slot
 };
 
 // clang-format off
@@ -254,12 +257,12 @@ constexpr std::array<RoleTagRow, 4> kRoleTagTable = {{
 }};
 // clang-format on
 
-bool tag_in(std::string_view                             tag,
-             const std::array<std::string_view, 3>       &allowed) noexcept
+bool tag_in(std::string_view tag, const std::array<std::string_view, 3> &allowed) noexcept
 {
     for (const auto &a : allowed)
     {
-        if (!a.empty() && a == tag) return true;
+        if (!a.empty() && a == tag)
+            return true;
     }
     return false;
 }
@@ -270,20 +273,21 @@ std::string format_allowed(const std::array<std::string_view, 3> &allowed)
     bool first = true;
     for (const auto &a : allowed)
     {
-        if (a.empty()) continue;
-        if (!first) out.append(", ");
+        if (a.empty())
+            continue;
+        if (!first)
+            out.append(", ");
         out.append(a);
         first = false;
     }
     return out;
 }
 
-}  // namespace
+} // namespace
 
-std::optional<RejectDetail>
-gate_role_tag_policy(std::string_view msg_type,
-                      std::string_view role_uid,
-                      std::string_view role_type_field) noexcept
+std::optional<RejectDetail> gate_role_tag_policy(std::string_view msg_type,
+                                                 std::string_view role_uid,
+                                                 std::string_view role_type_field) noexcept
 {
     // Extract the short tag from the uid.  role_uid grammar ran before us,
     // so a nullopt here is a broker-side bug (grammar accepted a uid
@@ -306,9 +310,12 @@ gate_role_tag_policy(std::string_view msg_type,
     if (msg_type == "HEARTBEAT_NOTIFY")
     {
         std::string_view required_tag;
-        if      (role_type_field == "producer")  required_tag = kTagProd;
-        else if (role_type_field == "consumer")  required_tag = kTagCons;
-        else if (role_type_field == "processor") required_tag = kTagProc;
+        if (role_type_field == "producer")
+            required_tag = kTagProd;
+        else if (role_type_field == "consumer")
+            required_tag = kTagCons;
+        else if (role_type_field == "processor")
+            required_tag = kTagProc;
         else
         {
             return make(RejectCode::invalid_request, "role_type",
@@ -320,9 +327,8 @@ gate_role_tag_policy(std::string_view msg_type,
         {
             return make(RejectCode::invalid_role_tag, "role_uid",
                         std::string{"role_uid tag '"} + std::string{tag} +
-                            "' does not match declared role_type '" +
-                            std::string{role_type_field} + "' (expected '" +
-                            std::string{required_tag} + "')");
+                            "' does not match declared role_type '" + std::string{role_type_field} +
+                            "' (expected '" + std::string{required_tag} + "')");
         }
         return std::nullopt;
     }
@@ -336,10 +342,9 @@ gate_role_tag_policy(std::string_view msg_type,
             if (!tag_in(tag, row.allowed))
             {
                 return make(RejectCode::invalid_role_tag, "role_uid",
-                            std::string{"role_uid tag '"} + std::string{tag} +
-                                "' not allowed on " + std::string{msg_type} +
-                                " (allowed: " + format_allowed(row.allowed) +
-                                ") per HEP-CORE-0033 §G2.2.0b.8");
+                            std::string{"role_uid tag '"} + std::string{tag} + "' not allowed on " +
+                                std::string{msg_type} + " (allowed: " +
+                                format_allowed(row.allowed) + ") per HEP-CORE-0033 §G2.2.0b.8");
             }
             return std::nullopt;
         }
@@ -359,25 +364,28 @@ gate_role_tag_policy(std::string_view msg_type,
 
 // ── Pipeline runner ───────────────────────────────────────────────────
 
-std::optional<RejectDetail>
-run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
-                      const RegFamilyBodyView              &body,
-                      const AdmissionContext               &ctx) noexcept
+std::optional<RejectDetail> run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
+                                                 const RegFamilyBodyView &body,
+                                                 const AdmissionContext &ctx) noexcept
 {
     // §14.5 gate order.  Gate 1 (envelope hash) already ran at
     // WireEnvelope::parse; if we're here, hash is valid.
     // gate_supported_proto retired per C3 — wire-version + ABI via
     // `abi_fingerprint` per HEP-CORE-0032 §8, not this gate.
-    if (auto r = gate_identity_match(env, body))          return r;
-    if (auto r = gate_grammar(body))                       return r;
+    if (auto r = gate_identity_match(env, body))
+        return r;
+    if (auto r = gate_grammar(body))
+        return r;
     // Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8).  role_type
     // field is unused for REG_REQ / CONSUMER_REG_REQ / DEREG_REQ /
     // CONSUMER_DEREG_REQ (only HEARTBEAT_NOTIFY reads it).
     if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, {}))
         return r;
-    if (auto r = gate_known_role_binding(body, ctx))       return r;
-    if (auto r = gate_replay_bound(body, ctx))             return r;
-    return std::nullopt;  // Admitted; caller runs topology/cardinality/schema.
+    if (auto r = gate_known_role_binding(body, ctx))
+        return r;
+    if (auto r = gate_replay_bound(body, ctx))
+        return r;
+    return std::nullopt; // Admitted; caller runs topology/cardinality/schema.
 }
 
 // ── Authenticated-REG-family gate runner ──────────────────────────────
@@ -388,10 +396,9 @@ run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
 // identity + universal grammar + replay.
 
 std::optional<RejectDetail>
-run_authenticated_reg_family_gates(
-    const ::pylabhub::wire::WireEnvelope   &env,
-    const AuthenticatedRegFamilyView       &body,
-    const AdmissionContext                 &ctx) noexcept
+run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
+                                   const AuthenticatedRegFamilyView &body,
+                                   const AdmissionContext &ctx) noexcept
 {
     // Identity match — envelope's Frame 0 must equal payload role_uid.
     if (env.identity() != body.role_uid)
@@ -427,8 +434,7 @@ run_authenticated_reg_family_gates(
     // Replay-bound — I-REPLAY-BOUND (nonce dedup + wall-clock skew).
     // Shared with the REG_REQ path via `check_replay_bound`
     // (de-duplicated 2026-07-17; was a verbatim inline copy).
-    return check_replay_bound(body.role_uid, body.client_nonce,
-                              body.client_wall_ts, ctx);
+    return check_replay_bound(body.role_uid, body.client_nonce, body.client_wall_ts, ctx);
 }
 
 // ── Control-tier gate runner ──────────────────────────────────────────
@@ -438,10 +444,9 @@ run_authenticated_reg_family_gates(
 // carries role_uid / channel_name.  Bodies without role_uid (DISC_REQ,
 // CHANNEL_LIST_REQ) skip identity — envelope_hash from parse is the
 // only assurance for those.
-std::optional<RejectDetail>
-run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
-                   const ControlBodyView                &body,
-                   const AdmissionContext               &/*ctx*/) noexcept
+std::optional<RejectDetail> run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
+                                              const ControlBodyView &body,
+                                              const AdmissionContext & /*ctx*/) noexcept
 {
     if (!body.role_uid.empty())
     {
@@ -453,10 +458,8 @@ run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
             // symptom of a routing_id ≠ role_uid config drift, which
             // is only diagnosable by seeing both.
             return make(RejectCode::identity_mismatch, "role_uid",
-                        std::string{"ROUTER identity '"} +
-                            std::string(env.identity()) +
-                            "' does not equal payload role_uid '" +
-                            std::string(body.role_uid) +
+                        std::string{"ROUTER identity '"} + std::string(env.identity()) +
+                            "' does not equal payload role_uid '" + std::string(body.role_uid) +
                             "' (I-DEALER-IDENTITY)");
         }
         if (!grammar_ok(body.role_uid))
@@ -468,8 +471,7 @@ run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
         // Per-msg-type role-tag policy — HEARTBEAT_NOTIFY reads
         // body.role_type to derive its allowed tag; other control
         // msg_types fall through to the universal set.
-        if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid,
-                                            body.role_type))
+        if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, body.role_type))
             return r;
     }
     if (!body.channel_name.empty() && !grammar_ok(body.channel_name))
@@ -481,4 +483,4 @@ run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
     return std::nullopt;
 }
 
-}  // namespace pylabhub::admission
+} // namespace pylabhub::admission

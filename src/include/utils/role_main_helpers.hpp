@@ -72,10 +72,8 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules()
         pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule(),
-        pylabhub::hub::GetDataBlockModule()
-    );
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule(),
+        pylabhub::hub::GetDataBlockModule());
 }
 
 /**
@@ -101,16 +99,14 @@ inline std::vector<pylabhub::utils::ModuleDef> role_lifecycle_modules()
  *         unwritable directory). On failure the logger continues to use
  *         its existing sink (stderr) and the error reason is in @p ec.
  */
-inline bool configure_logger_from_config(const config::RoleConfig &cfg,
-                                           std::error_code &ec,
-                                           const char *log_tag)
+inline bool configure_logger_from_config(const config::RoleConfig &cfg, std::error_code &ec,
+                                         const char *log_tag)
 {
     namespace fs = std::filesystem;
     const auto &lc = cfg.logging();
 
-    fs::path base = lc.file_path.empty()
-                        ? (cfg.base_dir() / "logs" / (cfg.identity().uid + ".log"))
-                        : fs::path(lc.file_path);
+    fs::path base = lc.file_path.empty() ? (cfg.base_dir() / "logs" / (cfg.identity().uid + ".log"))
+                                         : fs::path(lc.file_path);
     if (base.is_relative())
         base = cfg.base_dir() / base;
 
@@ -122,22 +118,19 @@ inline bool configure_logger_from_config(const config::RoleConfig &cfg,
 
     pylabhub::utils::Logger::RotatingLogConfig rcfg{};
     rcfg.max_file_size_bytes = lc.max_size_bytes;
-    rcfg.max_backup_files    = lc.max_backup_files;
-    rcfg.timestamped_names   = lc.timestamped;
-    rcfg.use_flock           = true;
+    rcfg.max_backup_files = lc.max_backup_files;
+    rcfg.timestamped_names = lc.timestamped;
+    rcfg.use_flock = true;
 
-    if (!pylabhub::utils::Logger::instance()
-             .set_rotating_logfile(base, rcfg, ec))
+    if (!pylabhub::utils::Logger::instance().set_rotating_logfile(base, rcfg, ec))
     {
-        LOGGER_ERROR("{} Failed to attach rotating log sink at '{}': {}",
-                     log_tag, base.string(), ec.message());
+        LOGGER_ERROR("{} Failed to attach rotating log sink at '{}': {}", log_tag, base.string(),
+                     ec.message());
         return false;
     }
-    LOGGER_INFO("{} Log sink: {} (max_size={} MiB, backups={}, timestamped={})",
-                log_tag, base.string(),
-                lc.max_size_bytes / (1024.0 * 1024.0),
-                (lc.max_backup_files ==
-                 pylabhub::config::LoggingConfig::kKeepAllBackups)
+    LOGGER_INFO("{} Log sink: {} (max_size={} MiB, backups={}, timestamped={})", log_tag,
+                base.string(), lc.max_size_bytes / (1024.0 * 1024.0),
+                (lc.max_backup_files == pylabhub::config::LoggingConfig::kKeepAllBackups)
                     ? std::string("all")
                     : std::to_string(lc.max_backup_files),
                 lc.timestamped);
@@ -156,16 +149,17 @@ inline bool configure_logger_from_config(const config::RoleConfig &cfg,
  * @param handler   The already-installed InteractiveSignalHandler.
  * @param log_tag   Tag for the warning message, e.g. "[prod-main]".
  */
-inline void register_signal_handler_lifecycle(
-    pylabhub::InteractiveSignalHandler &handler, const char *log_tag)
+inline void register_signal_handler_lifecycle(pylabhub::InteractiveSignalHandler &handler,
+                                              const char *log_tag)
 {
     if (!pylabhub::utils::LifecycleManager::instance().register_dynamic_module(
             handler.make_lifecycle_module()) ||
-        !pylabhub::utils::LifecycleManager::instance().load_module(
-            "SignalHandler", std::source_location::current()))
+        !pylabhub::utils::LifecycleManager::instance().load_module("SignalHandler",
+                                                                   std::source_location::current()))
     {
         LOGGER_WARN("{} SignalHandler lifecycle module registration failed — "
-                    "falling back to explicit uninstall on exit.", log_tag);
+                    "falling back to explicit uninstall on exit.",
+                    log_tag);
     }
 }
 

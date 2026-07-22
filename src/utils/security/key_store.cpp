@@ -9,7 +9,7 @@
  * materializes as a std::string outside the LockedKey region.
  */
 #include "utils/security/key_store.hpp"
-#include "utils/security/curve_keypair.hpp"  // generate_curve_keypair — #317 D1
+#include "utils/security/curve_keypair.hpp" // generate_curve_keypair — #317 D1
 
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
@@ -25,11 +25,11 @@
 #include <unordered_map>
 
 #include <sodium.h>
-#include <zmq.h>  // zmq_z85_encode + zmq_z85_decode — Z85 codec at the
-                  // KeyStore module boundary (HEP-CORE-0040 §8.5.2)
+#include <zmq.h> // zmq_z85_encode + zmq_z85_decode — Z85 codec at the
+                 // KeyStore module boundary (HEP-CORE-0040 §8.5.2)
 
 #ifdef __linux__
-#  include <sys/mman.h>   // madvise / MADV_DONTDUMP
+#include <sys/mman.h> // madvise / MADV_DONTDUMP
 #endif
 
 namespace pylabhub::utils::security
@@ -45,7 +45,7 @@ namespace
 
 class LockedKey
 {
-public:
+  public:
     /// Allocates `len` bytes via `sodium_malloc` (mlock + guard pages +
     /// canary) and copies `plaintext_src` in; then `sodium_memzero`'s
     /// the source.  Throws `std::runtime_error` if allocation fails
@@ -56,14 +56,11 @@ public:
     {
         // Debug — first sodium_malloc site.  Shows exactly what happens
         // when the failing CI test hits the allocator.
-        LOGGER_INFO(
-            "[LockedKey] event=SodiumMalloc size={} buf_null={}",
-            len_, buf_ == nullptr);
+        LOGGER_INFO("[LockedKey] event=SodiumMalloc size={} buf_null={}", len_, buf_ == nullptr);
         if (buf_ == nullptr)
         {
-            throw std::runtime_error(
-                "LockedKey: sodium_malloc failed — RLIMIT_MEMLOCK likely "
-                "exhausted (HEP-CORE-0040 §6.1).");
+            throw std::runtime_error("LockedKey: sodium_malloc failed — RLIMIT_MEMLOCK likely "
+                                     "exhausted (HEP-CORE-0040 §6.1).");
         }
         std::memcpy(buf_, plaintext_src.data(), plaintext_src.size_bytes());
         ::sodium_memzero(plaintext_src.data(), plaintext_src.size_bytes());
@@ -95,18 +92,18 @@ public:
         }
     }
 
-    LockedKey(const LockedKey &)            = delete;
+    LockedKey(const LockedKey &) = delete;
     LockedKey &operator=(const LockedKey &) = delete;
-    LockedKey(LockedKey &&)                 = delete;
-    LockedKey &operator=(LockedKey &&)      = delete;
+    LockedKey(LockedKey &&) = delete;
+    LockedKey &operator=(LockedKey &&) = delete;
 
     [[nodiscard]] std::span<const std::byte> bytes() const noexcept
     {
         return std::span<const std::byte>(buf_, len_);
     }
 
-private:
-    std::byte  *buf_;
+  private:
+    std::byte *buf_;
     std::size_t len_;
 };
 
@@ -134,9 +131,9 @@ namespace
 // :388 catches that drift but only after the consumer had to bail
 // mid-handshake.  Centralising the encoding at the KeyStore boundary
 // removes the bug class.
-constexpr std::size_t kRawHalfBytes         = 32; // crypto_box_SECRETKEYBYTES / _PUBLICKEYBYTES
+constexpr std::size_t kRawHalfBytes = 32;         // crypto_box_SECRETKEYBYTES / _PUBLICKEYBYTES
 constexpr std::size_t kIdentityKeypairBytes = 64; // pub_raw || sec_raw
-constexpr std::size_t kZ85HalfBytes         = 40; // wire/file/display half
+constexpr std::size_t kZ85HalfBytes = 40;         // wire/file/display half
 } // namespace
 
 // ============================================================================
@@ -161,12 +158,12 @@ struct KeyStore::Impl
     struct Entry
     {
         std::unique_ptr<LockedKey> key;
-        std::string                pub_z85_cache;  // empty for non-identity
-        bool                       is_identity = false;
+        std::string pub_z85_cache; // empty for non-identity
+        bool is_identity = false;
     };
 
-    mutable std::shared_mutex                  mu;
-    std::unordered_map<std::string, Entry>     store;
+    mutable std::shared_mutex mu;
+    std::unordered_map<std::string, Entry> store;
 };
 
 // ============================================================================
@@ -181,9 +178,7 @@ struct KeyStore::Impl
 // are guaranteed to see an initialized libsodium because the accessor
 // gate in `secure()` blocks entry before SMS state is `Initialized`.
 
-KeyStore::KeyStore()
-    : pImpl(std::make_unique<Impl>())
-{}
+KeyStore::KeyStore() : pImpl(std::make_unique<Impl>()) {}
 
 KeyStore::~KeyStore()
 {
@@ -206,8 +201,8 @@ void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_p
     // §2.2): the only way to reach this method is via
     // `secure().keys().add_identity(...)`, and `secure()` PANICs if
     // SMS is not `Initialized`.  Sodium is guaranteed initialized.
-    LOGGER_INFO("[KeyStore] event=AddIdentity name='{}' size={}",
-                std::string(name), packed_pub_sec.size_bytes());
+    LOGGER_INFO("[KeyStore] event=AddIdentity name='{}' size={}", std::string(name),
+                packed_pub_sec.size_bytes());
     // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — the packed
     // buffer is now RAW 64 bytes (pub_raw[32] || sec_raw[32]), not
     // Z85 80 bytes.  Pre-#291 callers that packed Z85 must go through
@@ -215,11 +210,10 @@ void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_p
     // of add_identity are the SecureBuffer-pack site below.
     if (packed_pub_sec.size_bytes() != kIdentityKeypairBytes)
     {
-        throw std::runtime_error(
-            "KeyStore::add_identity: packed_pub_sec must be exactly "
-            + std::to_string(kIdentityKeypairBytes)
-            + " bytes (pub_raw[32] || sec_raw[32], HEP-CORE-0040 §8.5.2), got "
-            + std::to_string(packed_pub_sec.size_bytes()));
+        throw std::runtime_error("KeyStore::add_identity: packed_pub_sec must be exactly " +
+                                 std::to_string(kIdentityKeypairBytes) +
+                                 " bytes (pub_raw[32] || sec_raw[32], HEP-CORE-0040 §8.5.2), got " +
+                                 std::to_string(packed_pub_sec.size_bytes()));
     }
 
     std::string name_key(name);
@@ -229,45 +223,38 @@ void KeyStore::add_identity(std::string_view name, std::span<std::byte> packed_p
     // the raw 32 pubkey bytes in the front half of `packed_pub_sec`;
     // result is exactly 40 ASCII chars + NUL (Z85 expansion is 5:4).
     char pub_z85_buf[kZ85HalfBytes + 1] = {};
-    if (zmq_z85_encode(pub_z85_buf,
-                        reinterpret_cast<const uint8_t *>(
-                            packed_pub_sec.data()),
-                        kRawHalfBytes) == nullptr)
+    if (zmq_z85_encode(pub_z85_buf, reinterpret_cast<const uint8_t *>(packed_pub_sec.data()),
+                       kRawHalfBytes) == nullptr)
     {
-        throw std::runtime_error(
-            "KeyStore::add_identity: zmq_z85_encode(pub) failed");
+        throw std::runtime_error("KeyStore::add_identity: zmq_z85_encode(pub) failed");
     }
 
     std::unique_lock<std::shared_mutex> wlk(pImpl->mu);
 
     if (pImpl->store.find(name_key) != pImpl->store.end())
     {
-        throw std::runtime_error(
-            "KeyStore::add_identity: name already present: '"
-            + std::string(name) + "'");
+        throw std::runtime_error("KeyStore::add_identity: name already present: '" +
+                                 std::string(name) + "'");
     }
 
     Impl::Entry entry;
-    entry.key           = std::make_unique<LockedKey>(packed_pub_sec);
+    entry.key = std::make_unique<LockedKey>(packed_pub_sec);
     entry.pub_z85_cache = std::string(pub_z85_buf, kZ85HalfBytes);
-    entry.is_identity   = true;
+    entry.is_identity = true;
 
     pImpl->store.emplace(std::move(name_key), std::move(entry));
 }
 
-void KeyStore::add_identity_from_z85(std::string_view name,
-                                      std::string_view pub_z85,
-                                      std::string_view sec_z85)
+void KeyStore::add_identity_from_z85(std::string_view name, std::string_view pub_z85,
+                                     std::string_view sec_z85)
 {
     if (pub_z85.size() != kZ85HalfBytes || sec_z85.size() != kZ85HalfBytes)
     {
         throw std::runtime_error(
             "KeyStore::add_identity_from_z85: pub_z85 and sec_z85 must "
-            "each be exactly "
-            + std::to_string(kZ85HalfBytes)
-            + " chars (Z85 of 32 raw bytes).  got pub="
-            + std::to_string(pub_z85.size())
-            + ", sec=" + std::to_string(sec_z85.size()));
+            "each be exactly " +
+            std::to_string(kZ85HalfBytes) + " chars (Z85 of 32 raw bytes).  got pub=" +
+            std::to_string(pub_z85.size()) + ", sec=" + std::to_string(sec_z85.size()));
     }
 
     // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — SINGLE
@@ -278,17 +265,15 @@ void KeyStore::add_identity_from_z85(std::string_view name,
     // pass Z85 strings; this is the ONE site that does the decode.
     SecureBuffer<kIdentityKeypairBytes> raw_packed;
     auto buf = raw_packed.span();
-    if (zmq_z85_decode(reinterpret_cast<uint8_t *>(buf.data()),
-                        std::string(pub_z85).c_str()) == nullptr)
+    if (zmq_z85_decode(reinterpret_cast<uint8_t *>(buf.data()), std::string(pub_z85).c_str()) ==
+        nullptr)
     {
-        throw std::runtime_error(
-            "KeyStore::add_identity_from_z85: zmq_z85_decode(pub) failed");
+        throw std::runtime_error("KeyStore::add_identity_from_z85: zmq_z85_decode(pub) failed");
     }
     if (zmq_z85_decode(reinterpret_cast<uint8_t *>(buf.data() + kRawHalfBytes),
-                        std::string(sec_z85).c_str()) == nullptr)
+                       std::string(sec_z85).c_str()) == nullptr)
     {
-        throw std::runtime_error(
-            "KeyStore::add_identity_from_z85: zmq_z85_decode(sec) failed");
+        throw std::runtime_error("KeyStore::add_identity_from_z85: zmq_z85_decode(sec) failed");
     }
     add_identity(name, buf);
 }
@@ -334,21 +319,19 @@ void KeyStore::add_raw(std::string_view name, std::span<std::byte> plaintext)
 {
     // No sodium_ready() gate needed post-SEC-Fold-2 (HEP-CORE-0043
     // §2.2): entry via `secure().keys()` PANICs on non-Initialized SMS.
-    LOGGER_INFO("[KeyStore] event=AddRaw name='{}' size={}",
-                std::string(name), plaintext.size());
+    LOGGER_INFO("[KeyStore] event=AddRaw name='{}' size={}", std::string(name), plaintext.size());
     std::string name_key(name);
 
     std::unique_lock<std::shared_mutex> wlk(pImpl->mu);
 
     if (pImpl->store.find(name_key) != pImpl->store.end())
     {
-        throw std::runtime_error(
-            "KeyStore::add_raw: name already present: '"
-            + std::string(name) + "'");
+        throw std::runtime_error("KeyStore::add_raw: name already present: '" + std::string(name) +
+                                 "'");
     }
 
     Impl::Entry entry;
-    entry.key         = std::make_unique<LockedKey>(plaintext);
+    entry.key = std::make_unique<LockedKey>(plaintext);
     entry.is_identity = false;
 
     pImpl->store.emplace(std::move(name_key), std::move(entry));
@@ -361,14 +344,12 @@ std::string_view KeyStore::pubkey(std::string_view name) const
     const auto it = pImpl->store.find(std::string(name));
     if (it == pImpl->store.end())
     {
-        throw std::out_of_range(
-            "KeyStore::pubkey: name not present: '" + std::string(name) + "'");
+        throw std::out_of_range("KeyStore::pubkey: name not present: '" + std::string(name) + "'");
     }
     if (!it->second.is_identity)
     {
-        throw std::out_of_range(
-            "KeyStore::pubkey: '" + std::string(name)
-            + "' is a raw secret, not an identity keypair — use lookup_raw");
+        throw std::out_of_range("KeyStore::pubkey: '" + std::string(name) +
+                                "' is a raw secret, not an identity keypair — use lookup_raw");
     }
     // HEP-CORE-0040 §8.5.2 — return the Z85 cache (40 ASCII chars)
     // computed at add_identity time.  Pubkey is non-secret; the
@@ -376,22 +357,20 @@ std::string_view KeyStore::pubkey(std::string_view name) const
     return it->second.pub_z85_cache;
 }
 
-void KeyStore::with_seckey(std::string_view                          name,
-                            std::function<void(std::string_view)>     use) const
+void KeyStore::with_seckey(std::string_view name, std::function<void(std::string_view)> use) const
 {
     std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
 
     const auto it = pImpl->store.find(std::string(name));
     if (it == pImpl->store.end())
     {
-        throw std::out_of_range(
-            "KeyStore::with_seckey: name not present: '" + std::string(name) + "'");
+        throw std::out_of_range("KeyStore::with_seckey: name not present: '" + std::string(name) +
+                                "'");
     }
     if (!it->second.is_identity)
     {
-        throw std::out_of_range(
-            "KeyStore::with_seckey: '" + std::string(name)
-            + "' is a raw secret, not an identity keypair — use lookup_raw");
+        throw std::out_of_range("KeyStore::with_seckey: '" + std::string(name) +
+                                "' is a raw secret, not an identity keypair — use lookup_raw");
     }
 
     // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — return the
@@ -404,29 +383,26 @@ void KeyStore::with_seckey(std::string_view                          name,
     // callback's duration — concurrent remove(name) waits.  Callback
     // MUST be prompt (HEP-CORE-0040 §5.5 contract).
     const auto bytes = it->second.key->bytes();
-    const std::string_view sec(
-        reinterpret_cast<const char *>(bytes.data() + kRawHalfBytes),
-        kRawHalfBytes);
+    const std::string_view sec(reinterpret_cast<const char *>(bytes.data() + kRawHalfBytes),
+                               kRawHalfBytes);
     use(sec);
 }
 
-void KeyStore::with_seckey_z85(std::string_view                          name,
-                                std::function<void(std::string_view)>     use) const
+void KeyStore::with_seckey_z85(std::string_view name,
+                               std::function<void(std::string_view)> use) const
 {
     std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
 
     const auto it = pImpl->store.find(std::string(name));
     if (it == pImpl->store.end())
     {
-        throw std::out_of_range(
-            "KeyStore::with_seckey_z85: name not present: '"
-            + std::string(name) + "'");
+        throw std::out_of_range("KeyStore::with_seckey_z85: name not present: '" +
+                                std::string(name) + "'");
     }
     if (!it->second.is_identity)
     {
-        throw std::out_of_range(
-            "KeyStore::with_seckey_z85: '" + std::string(name)
-            + "' is a raw secret, not an identity keypair — use lookup_raw");
+        throw std::out_of_range("KeyStore::with_seckey_z85: '" + std::string(name) +
+                                "' is a raw secret, not an identity keypair — use lookup_raw");
     }
 
     // HEP-CORE-0040 §8.5.2 — Z85 view of the seckey, encoded
@@ -437,14 +413,11 @@ void KeyStore::with_seckey_z85(std::string_view                          name,
     // zeroed before return so the seckey bytes don't survive the
     // callback's stack frame.
     const auto bytes = it->second.key->bytes();
-    char       sec_z85_buf[kZ85HalfBytes + 1] = {};
-    if (zmq_z85_encode(sec_z85_buf,
-                        reinterpret_cast<const uint8_t *>(
-                            bytes.data() + kRawHalfBytes),
-                        kRawHalfBytes) == nullptr)
+    char sec_z85_buf[kZ85HalfBytes + 1] = {};
+    if (zmq_z85_encode(sec_z85_buf, reinterpret_cast<const uint8_t *>(bytes.data() + kRawHalfBytes),
+                       kRawHalfBytes) == nullptr)
     {
-        throw std::runtime_error(
-            "KeyStore::with_seckey_z85: zmq_z85_encode(sec) failed");
+        throw std::runtime_error("KeyStore::with_seckey_z85: zmq_z85_encode(sec) failed");
     }
     try
     {
@@ -460,23 +433,20 @@ void KeyStore::with_seckey_z85(std::string_view                          name,
 
 void KeyStore::with_keypair_z85(
     std::string_view name,
-    std::function<void(std::string_view /*pubkey*/,
-                       std::string_view /*seckey*/)> use) const
+    std::function<void(std::string_view /*pubkey*/, std::string_view /*seckey*/)> use) const
 {
     std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
 
     const auto it = pImpl->store.find(std::string(name));
     if (it == pImpl->store.end())
     {
-        throw std::out_of_range(
-            "KeyStore::with_keypair_z85: name not present: '"
-            + std::string(name) + "'");
+        throw std::out_of_range("KeyStore::with_keypair_z85: name not present: '" +
+                                std::string(name) + "'");
     }
     if (!it->second.is_identity)
     {
-        throw std::out_of_range(
-            "KeyStore::with_keypair_z85: '" + std::string(name)
-            + "' is a raw secret, not an identity keypair — use lookup_raw");
+        throw std::out_of_range("KeyStore::with_keypair_z85: '" + std::string(name) +
+                                "' is a raw secret, not an identity keypair — use lookup_raw");
     }
 
     // Pubkey: non-secret cached Z85 (40 chars, lifetime = Entry).
@@ -486,14 +456,11 @@ void KeyStore::with_keypair_z85(
     // return.  Same shape as with_seckey_z85 above; combining the two
     // saves one entry lookup + one lock acquisition per call.
     const auto bytes = it->second.key->bytes();
-    char       sec_z85_buf[kZ85HalfBytes + 1] = {};
-    if (zmq_z85_encode(sec_z85_buf,
-                        reinterpret_cast<const uint8_t *>(
-                            bytes.data() + kRawHalfBytes),
-                        kRawHalfBytes) == nullptr)
+    char sec_z85_buf[kZ85HalfBytes + 1] = {};
+    if (zmq_z85_encode(sec_z85_buf, reinterpret_cast<const uint8_t *>(bytes.data() + kRawHalfBytes),
+                       kRawHalfBytes) == nullptr)
     {
-        throw std::runtime_error(
-            "KeyStore::with_keypair_z85: zmq_z85_encode(sec) failed");
+        throw std::runtime_error("KeyStore::with_keypair_z85: zmq_z85_encode(sec) failed");
     }
     try
     {
@@ -514,8 +481,8 @@ std::span<const std::byte> KeyStore::lookup_raw(std::string_view name) const
     const auto it = pImpl->store.find(std::string(name));
     if (it == pImpl->store.end())
     {
-        throw std::out_of_range(
-            "KeyStore::lookup_raw: name not present: '" + std::string(name) + "'");
+        throw std::out_of_range("KeyStore::lookup_raw: name not present: '" + std::string(name) +
+                                "'");
     }
     return it->second.key->bytes();
 }

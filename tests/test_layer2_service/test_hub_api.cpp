@@ -32,9 +32,9 @@
 #include <string>
 #include <vector>
 
-using pylabhub::utils::Logger;
-using pylabhub::scripting::RoleHostCore;
 using pylabhub::hub_host::HubAPI;
+using pylabhub::scripting::RoleHostCore;
+using pylabhub::utils::Logger;
 
 // Pattern 1+ (BinaryLifecycleEnvironment) — Logger only.  HubAPI tests
 // drive the script-visible API surface in isolation (no HubHost, no
@@ -49,15 +49,12 @@ using pylabhub::hub_host::HubAPI;
 //   4. No deliberate crashes / death tests.
 // Migrated 2026-05-14 from the SetUpTestSuite-owned `LifecycleGuard`
 // antipattern.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
-)
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule())
 
-class HubApiTest : public ::testing::Test,
-                    public pylabhub::tests::LogCaptureFixture
+class HubApiTest : public ::testing::Test, public pylabhub::tests::LogCaptureFixture
 {
-protected:
-    void SetUp() override    { LogCaptureFixture::Install(); }
+  protected:
+    void SetUp() override { LogCaptureFixture::Install(); }
     void TearDown() override
     {
         AssertNoUnexpectedLogWarnError();
@@ -80,13 +77,9 @@ TEST_F(HubApiTest, Construct_RoleTagAndUid_NonEmpty)
 {
     // Both fields are required at construction; throws std::invalid_argument
     // on empty input — matches RoleAPIBase contract.
-    EXPECT_THROW({
-        HubAPI bad(core_, "", "hub.test.uid00000001");
-    }, std::invalid_argument);
+    EXPECT_THROW({ HubAPI bad(core_, "", "hub.test.uid00000001"); }, std::invalid_argument);
 
-    EXPECT_THROW({
-        HubAPI bad(core_, "hub", "");
-    }, std::invalid_argument);
+    EXPECT_THROW({ HubAPI bad(core_, "hub", ""); }, std::invalid_argument);
 }
 
 TEST_F(HubApiTest, Construct_Valid_UidAccessorReturnsConstructorValue)
@@ -111,17 +104,16 @@ namespace
 /// Read the capture file and return true if any line contains BOTH
 /// the level boundary (`] [WARN ` / `] [ERROR ` / `] [INFO `) and
 /// the body substring.  Caller flushes the Logger first.
-bool log_file_contains(const std::filesystem::path &path,
-                        std::string_view level_boundary,
-                        std::string_view body_needle)
+bool log_file_contains(const std::filesystem::path &path, std::string_view level_boundary,
+                       std::string_view body_needle)
 {
     pylabhub::utils::Logger::instance().flush();
     std::ifstream f(path);
-    std::string   line;
+    std::string line;
     while (std::getline(f, line))
     {
         if (line.find(level_boundary) != std::string::npos &&
-            line.find(body_needle)    != std::string::npos)
+            line.find(body_needle) != std::string::npos)
             return true;
     }
     return false;
@@ -132,7 +124,7 @@ TEST_F(HubApiTest, Log_InfoLevel_RoutesToLoggerInfo)
 {
     auto api = make_api();
     api.log("info", "first info line");
-    api.log("",     "second info line");        // unknown → info
+    api.log("", "second info line"); // unknown → info
     api.log("Info", "third info — capitalized");
 
     EXPECT_TRUE(log_file_contains(log_path(), "] [INFO ", "first info line"));
@@ -140,23 +132,22 @@ TEST_F(HubApiTest, Log_InfoLevel_RoutesToLoggerInfo)
     EXPECT_TRUE(log_file_contains(log_path(), "] [INFO ", "third info"));
 
     // Negative path: none of these should have surfaced as WARN/ERROR.
-    EXPECT_FALSE(log_file_contains(log_path(), "] [WARN ",  "first info line"));
+    EXPECT_FALSE(log_file_contains(log_path(), "] [WARN ", "first info line"));
     EXPECT_FALSE(log_file_contains(log_path(), "] [ERROR ", "first info line"));
 }
 
 TEST_F(HubApiTest, Log_WarnLevel_EmitsLoggerWarn)
 {
-    ExpectLogWarn("heads up");        // tell LogCaptureFixture this WARN is expected
+    ExpectLogWarn("heads up"); // tell LogCaptureFixture this WARN is expected
     auto api = make_api();
     api.log("warn", "heads up");
 
     // Affirmative: the WARN must actually be in the file.
-    ASSERT_TRUE(log_file_contains(log_path(), "] [WARN ",
-                                   "[hub/hub.test.uid00000001] heads up"))
+    ASSERT_TRUE(log_file_contains(log_path(), "] [WARN ", "[hub/hub.test.uid00000001] heads up"))
         << "api.log(\"warn\", ...) must route to LOGGER_WARN";
 
     // Path-discrimination: must NOT have routed to INFO/ERROR.
-    EXPECT_FALSE(log_file_contains(log_path(), "] [INFO ",  "heads up"));
+    EXPECT_FALSE(log_file_contains(log_path(), "] [INFO ", "heads up"));
     EXPECT_FALSE(log_file_contains(log_path(), "] [ERROR ", "heads up"));
 }
 
@@ -166,8 +157,8 @@ TEST_F(HubApiTest, Log_WarnAliases_AllRouteToWarn)
     // RoleAPIBase::log convention HubAPI mirrors.
     ExpectLogWarn("alias-test");
     auto api = make_api();
-    api.log("warn",    "alias-test warn");
-    api.log("Warn",    "alias-test Warn");
+    api.log("warn", "alias-test warn");
+    api.log("Warn", "alias-test Warn");
     api.log("warning", "alias-test warning");
 
     EXPECT_TRUE(log_file_contains(log_path(), "] [WARN ", "alias-test warn"));
@@ -181,8 +172,8 @@ TEST_F(HubApiTest, Log_ErrorLevel_EmitsLoggerError)
     auto api = make_api();
     api.log("error", "something failed");
 
-    ASSERT_TRUE(log_file_contains(log_path(), "] [ERROR ",
-                                   "[hub/hub.test.uid00000001] something failed"))
+    ASSERT_TRUE(
+        log_file_contains(log_path(), "] [ERROR ", "[hub/hub.test.uid00000001] something failed"))
         << "api.log(\"error\", ...) must route to LOGGER_ERROR";
 
     EXPECT_FALSE(log_file_contains(log_path(), "] [INFO ", "something failed"));
@@ -197,7 +188,7 @@ TEST_F(HubApiTest, Log_DebugLevel_RoutesToLoggerDebug)
 
     // Default Logger threshold may filter DEBUG below INFO; even if
     // suppressed, the level mapping must NOT escalate to WARN/ERROR.
-    EXPECT_FALSE(log_file_contains(log_path(), "] [WARN ",  "trace-marker"));
+    EXPECT_FALSE(log_file_contains(log_path(), "] [WARN ", "trace-marker"));
     EXPECT_FALSE(log_file_contains(log_path(), "] [ERROR ", "trace-marker"));
 }
 
@@ -211,8 +202,7 @@ TEST_F(HubApiTest, Metrics_NoHostBackref_ReturnsEmptyObject)
     auto api = make_api();
     const auto m = api.metrics();
     EXPECT_TRUE(m.is_object());
-    EXPECT_TRUE(m.empty()) << "metrics() with no host backref should return {}; got: "
-                            << m.dump();
+    EXPECT_TRUE(m.empty()) << "metrics() with no host backref should return {}; got: " << m.dump();
 }
 
 // ============================================================================
@@ -282,8 +272,8 @@ TEST_F(HubApiTest, PostEvent_ValidName_EnqueuesAppPrefixedMessage)
     ASSERT_EQ(msgs.size(), 1u);
     // Hub auto-prefixes with "app_" so the worker dispatches as
     // engine.invoke("on_app_<name>", details).
-    EXPECT_EQ(msgs[0].event,        "app_my_event");
-    EXPECT_EQ(msgs[0].sender,       "hub.test.uid00000001");  // from the fixture uid
+    EXPECT_EQ(msgs[0].event, "app_my_event");
+    EXPECT_EQ(msgs[0].sender, "hub.test.uid00000001"); // from the fixture uid
     EXPECT_EQ(msgs[0].details.value("k", 0), 42);
 }
 
@@ -350,9 +340,8 @@ TEST_F(HubApiTest, AugmentTimeout_DefaultIsHeartbeatBased)
     // Any positive value within ~minute range is the contract; pin the
     // exact derivation rather than a magic number so changing the
     // heartbeat constants doesn't bit-rot the test.
-    const int64_t expected =
-        static_cast<int64_t>(pylabhub::kDefaultAugmentTimeoutHeartbeats)
-        * static_cast<int64_t>(pylabhub::kDefaultHeartbeatIntervalMs);
+    const int64_t expected = static_cast<int64_t>(pylabhub::kDefaultAugmentTimeoutHeartbeats) *
+                             static_cast<int64_t>(pylabhub::kDefaultHeartbeatIntervalMs);
     EXPECT_EQ(api.augment_timeout_ms(), expected);
 }
 
@@ -396,91 +385,111 @@ namespace
 
 class MockEngine : public pylabhub::scripting::ScriptEngine
 {
-public:
+  public:
     struct Call
     {
-        std::string                  callback;
-        nlohmann::json               args;
-        int64_t                      timeout_ms;
+        std::string callback;
+        nlohmann::json args;
+        int64_t timeout_ms;
     };
-    std::vector<Call>                     recorded;
+    std::vector<Call> recorded;
 
     // Configurable response for the next invoke_returning call.
-    pylabhub::scripting::InvokeStatus     next_status{
-        pylabhub::scripting::InvokeStatus::Ok};
-    nlohmann::json                        next_value;
-    bool                                  has_callback_returns{true};
+    pylabhub::scripting::InvokeStatus next_status{pylabhub::scripting::InvokeStatus::Ok};
+    nlohmann::json next_value;
+    bool has_callback_returns{true};
 
     // ── Required ScriptEngine surface ───────────────────────────
-    bool init_engine_(const std::string &, pylabhub::scripting::RoleHostCore *) override { return true; }
+    bool init_engine_(const std::string &, pylabhub::scripting::RoleHostCore *) override
+    {
+        return true;
+    }
     bool build_api_(pylabhub::scripting::RoleAPIBase &) override { return true; }
     bool build_api_(pylabhub::hub_host::HubAPI &) override { return true; }
     void finalize_engine_() override {}
 
     bool load_script(const std::filesystem::path &, const std::string &,
-                     const std::string &) override { return true; }
-    bool register_slot_type(const pylabhub::hub::SchemaSpec &,
-                            const std::string &, const std::string &) override
-    { return true; }
+                     const std::string &) override
+    {
+        return true;
+    }
+    bool register_slot_type(const pylabhub::hub::SchemaSpec &, const std::string &,
+                            const std::string &) override
+    {
+        return true;
+    }
     size_t type_sizeof(const std::string &) const override { return 0; }
-    bool   has_callback(const std::string &) const noexcept override { return has_callback_returns; }
+    bool has_callback(const std::string &) const noexcept override { return has_callback_returns; }
 
-    bool   invoke(const std::string &) override { return true; }
-    bool   invoke(const std::string &, const nlohmann::json &) override { return true; }
+    bool invoke(const std::string &) override { return true; }
+    bool invoke(const std::string &, const nlohmann::json &) override { return true; }
     pylabhub::scripting::InvokeResponse eval(const std::string &) override
-    { return {pylabhub::scripting::InvokeStatus::NotFound, {}}; }
+    {
+        return {pylabhub::scripting::InvokeStatus::NotFound, {}};
+    }
 
-    pylabhub::scripting::InvokeResponse
-    invoke_returning(const std::string &name,
-                     const nlohmann::json &args,
-                     int64_t timeout_ms) override
+    pylabhub::scripting::InvokeResponse invoke_returning(const std::string &name,
+                                                         const nlohmann::json &args,
+                                                         int64_t timeout_ms) override
     {
         recorded.push_back({name, args, timeout_ms});
         return {next_status, next_value};
     }
 
     pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
-    { return pylabhub::scripting::ScriptEngine::InitStatus::Ready; }
+    {
+        return pylabhub::scripting::ScriptEngine::InitStatus::Ready;
+    }
     void invoke_on_stop() override {}
-    void invoke_on_channel_closing(const std::string &,
-                                    const std::string &) override {}
-    void invoke_on_consumer_died(const std::string &,
-                                  const std::string &,
-                                  const std::string &) override {}
+    void invoke_on_channel_closing(const std::string &, const std::string &) override {}
+    void invoke_on_consumer_died(const std::string &, const std::string &,
+                                 const std::string &) override
+    {
+    }
     void invoke_on_hub_dead(const std::string &) override {}
-    void invoke_on_band_member_joined(const std::string &,
-                                      const std::string &,
-                                      const std::string &) override {}
-    void invoke_on_band_member_left(const std::string &,
-                                    const std::string &,
-                                    const std::string &) override {}
-    void invoke_on_band_message(const std::string &,
-                                const std::string &,
-                                const nlohmann::json &) override {}
-    void invoke_on_band_lost(const std::string &,
-                             const std::string &) override {}
-    void invoke_on_allowlist_changed(
-        const std::string &,
-        const std::vector<pylabhub::scripting::AllowedPeer> &,
-        const std::string &) override {}
-    pylabhub::scripting::InvokeResult invoke_produce(
-        pylabhub::scripting::InvokeTx,
-        std::vector<pylabhub::scripting::IncomingMessage> &) override
-    { return pylabhub::scripting::InvokeResult::Commit; }
-    pylabhub::scripting::InvokeResult invoke_consume(
-        pylabhub::scripting::InvokeRx,
-        std::vector<pylabhub::scripting::IncomingMessage> &) override
-    { return pylabhub::scripting::InvokeResult::Commit; }
-    pylabhub::scripting::InvokeResult invoke_process(
-        pylabhub::scripting::InvokeRx, pylabhub::scripting::InvokeTx,
-        std::vector<pylabhub::scripting::IncomingMessage> &) override
-    { return pylabhub::scripting::InvokeResult::Commit; }
-    pylabhub::scripting::InvokeResult invoke_on_inbox(
-        pylabhub::scripting::InvokeInbox) override
-    { return pylabhub::scripting::InvokeResult::Commit; }
+    void invoke_on_band_member_joined(const std::string &, const std::string &,
+                                      const std::string &) override
+    {
+    }
+    void invoke_on_band_member_left(const std::string &, const std::string &,
+                                    const std::string &) override
+    {
+    }
+    void invoke_on_band_message(const std::string &, const std::string &,
+                                const nlohmann::json &) override
+    {
+    }
+    void invoke_on_band_lost(const std::string &, const std::string &) override {}
+    void invoke_on_allowlist_changed(const std::string &,
+                                     const std::vector<pylabhub::scripting::AllowedPeer> &,
+                                     const std::string &) override
+    {
+    }
+    pylabhub::scripting::InvokeResult
+    invoke_produce(pylabhub::scripting::InvokeTx,
+                   std::vector<pylabhub::scripting::IncomingMessage> &) override
+    {
+        return pylabhub::scripting::InvokeResult::Commit;
+    }
+    pylabhub::scripting::InvokeResult
+    invoke_consume(pylabhub::scripting::InvokeRx,
+                   std::vector<pylabhub::scripting::IncomingMessage> &) override
+    {
+        return pylabhub::scripting::InvokeResult::Commit;
+    }
+    pylabhub::scripting::InvokeResult
+    invoke_process(pylabhub::scripting::InvokeRx, pylabhub::scripting::InvokeTx,
+                   std::vector<pylabhub::scripting::IncomingMessage> &) override
+    {
+        return pylabhub::scripting::InvokeResult::Commit;
+    }
+    pylabhub::scripting::InvokeResult invoke_on_inbox(pylabhub::scripting::InvokeInbox) override
+    {
+        return pylabhub::scripting::InvokeResult::Commit;
+    }
 
     uint64_t script_error_count() const noexcept override { return 0; }
-    bool     supports_multi_state() const noexcept override { return false; }
+    bool supports_multi_state() const noexcept override { return false; }
 };
 
 } // namespace
@@ -517,18 +526,17 @@ TEST_F(HubApiTest, Augment_QueryMetrics_RoutesToEngineWithBoundTimeout)
     api.set_engine(eng);
     api.set_augment_timeout(1234);
 
-    nlohmann::json params   = {{"categories", nlohmann::json::array({"channels"})}};
+    nlohmann::json params = {{"categories", nlohmann::json::array({"channels"})}};
     nlohmann::json response = {{"default", "x"}};
     api.augment_query_metrics(params, response);
 
     ASSERT_EQ(eng.recorded.size(), 1u);
     const auto &c = eng.recorded[0];
-    EXPECT_EQ(c.callback,   "on_query_metrics");
+    EXPECT_EQ(c.callback, "on_query_metrics");
     EXPECT_EQ(c.timeout_ms, 1234);
     // Args carry both the params we passed AND the prepared response,
     // so the script callback can mutate-and-return.
-    EXPECT_EQ(c.args.value("params",   nlohmann::json{}).at("categories")[0],
-              "channels");
+    EXPECT_EQ(c.args.value("params", nlohmann::json{}).at("categories")[0], "channels");
     EXPECT_EQ(c.args.value("response", nlohmann::json{}).at("default"), "x");
 
     // Returned non-null value replaces the response.
@@ -541,7 +549,7 @@ TEST_F(HubApiTest, Augment_NullReturn_KeepsDefaultResponse)
 {
     auto api = make_api();
     MockEngine eng;
-    eng.next_value = nullptr;   // script returned None / nil
+    eng.next_value = nullptr; // script returned None / nil
     api.set_engine(eng);
 
     nlohmann::json response = {{"default", true}};
@@ -558,7 +566,7 @@ TEST_F(HubApiTest, Augment_TimedOutStatus_KeepsDefaultResponse)
     auto api = make_api();
     MockEngine eng;
     eng.next_status = pylabhub::scripting::InvokeStatus::TimedOut;
-    eng.next_value  = nlohmann::json{{"would-have-been", "ignored"}};
+    eng.next_value = nlohmann::json{{"would-have-been", "ignored"}};
     api.set_engine(eng);
 
     nlohmann::json response = {{"default", true}};

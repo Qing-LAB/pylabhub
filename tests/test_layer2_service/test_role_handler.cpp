@@ -42,8 +42,8 @@
  */
 
 #include "binary_lifecycle.h"
-#include "curve_test_setup.h"  // gen_curve_keypair
-#include "plh_service.hpp"     // pulls hub::GetZMQContextModule
+#include "curve_test_setup.h" // gen_curve_keypair
+#include "plh_service.hpp"    // pulls hub::GetZMQContextModule
 #include "utils/logger.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/role_handler.hpp"
@@ -59,11 +59,9 @@
 // for the M3 data-structure tests; M4 tests construct real BRCs via
 // `RoleHandler::start_connections()`.  This is the only
 // `LifecycleGuard` owner in this binary by design — see file header.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-    pylabhub::hub::GetZMQContextModule()
-)
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                             pylabhub::hub::GetZMQContextModule())
 
 #include <string>
 #include <vector>
@@ -78,27 +76,24 @@ using pylabhub::scripting::to_wire_string;
 namespace
 {
 
-HubRefConfig make_hub(const std::string &endpoint,
-                      const std::string &pubkey = "test-pubkey-aaaa")
+HubRefConfig make_hub(const std::string &endpoint, const std::string &pubkey = "test-pubkey-aaaa")
 {
     HubRefConfig h;
-    h.broker        = endpoint;
+    h.broker = endpoint;
     h.broker_pubkey = pubkey;
     return h;
 }
 
-Presence make_presence(const std::string &channel,
-                       RoleKind           kind,
-                       HubRefConfig       hub)
+Presence make_presence(const std::string &channel, RoleKind kind, HubRefConfig hub)
 {
     Presence p;
-    p.hub       = std::move(hub);
-    p.channel   = channel;
+    p.hub = std::move(hub);
+    p.channel = channel;
     p.role_kind = kind;
     return p;
 }
 
-}  // namespace
+} // namespace
 
 // ── KeyStore identity seeding for M4 lifecycle tests ──────────────────────
 //
@@ -118,7 +113,7 @@ namespace
 
 class RoleHandlerTestEnvironment : public ::testing::Environment
 {
-public:
+  public:
     void SetUp() override
     {
         namespace sec = pylabhub::utils::security;
@@ -130,8 +125,7 @@ public:
         if (!ks.has(sec::kRoleIdentityName))
         {
             const auto kp = pylabhub::tests::gen_curve_keypair();
-            ks.add_identity_from_z85(sec::kRoleIdentityName,
-                                     kp.public_z85, kp.secret_z85);
+            ks.add_identity_from_z85(sec::kRoleIdentityName, kp.public_z85, kp.secret_z85);
         }
     }
 };
@@ -151,13 +145,12 @@ HubRefConfig make_curve_hub(const std::string &endpoint)
 {
     namespace sec = pylabhub::utils::security;
     HubRefConfig h;
-    h.broker        = endpoint;
-    h.broker_pubkey =
-        std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)};
+    h.broker = endpoint;
+    h.broker_pubkey = std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)};
     return h;
 }
 
-}  // namespace
+} // namespace
 
 // ── RoleKind wire-string round-trip ─────────────────────────────────────────
 
@@ -172,8 +165,8 @@ TEST(RoleKindWire, ToString)
 TEST(RoleHandlerSinglePresence, Producer_OneConnection)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "test.out", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("test.out", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
 
     RoleHandler h(std::move(presences));
 
@@ -192,16 +185,15 @@ TEST(RoleHandlerSinglePresence, Producer_OneConnection)
 TEST(RoleHandlerSinglePresence, Consumer_OneConnection)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "test.in", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("test.in", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
 
     RoleHandler h(std::move(presences));
 
     EXPECT_EQ(h.presence_count(), 1u);
     EXPECT_EQ(h.connection_count(), 1u);
     ASSERT_NE(h.find_presence_for_channel("test.in"), nullptr);
-    EXPECT_EQ(h.find_presence_for_channel("test.in")->role_kind,
-              RoleKind::Consumer);
+    EXPECT_EQ(h.find_presence_for_channel("test.in")->role_kind, RoleKind::Consumer);
 }
 
 // ── Processor topologies — the dedup payoff ────────────────────────────────
@@ -213,9 +205,9 @@ TEST(RoleHandlerProcessor, SingleHub_TwoPresences_DedupToOneConnection)
     // ONE HubConnection because (broker_endpoint, broker_pubkey) is
     // identical.  This is the operator-invisible optimisation per
     // role_host_template_design.md §5.4.
-    auto                  hub = make_hub("tcp://127.0.0.1:5570", "shared-pubkey");
+    auto hub = make_hub("tcp://127.0.0.1:5570", "shared-pubkey");
     std::vector<Presence> presences;
-    presences.push_back(make_presence("proc.in",  RoleKind::Consumer, hub));
+    presences.push_back(make_presence("proc.in", RoleKind::Consumer, hub));
     presences.push_back(make_presence("proc.out", RoleKind::Producer, hub));
 
     RoleHandler h(std::move(presences));
@@ -225,11 +217,11 @@ TEST(RoleHandlerProcessor, SingleHub_TwoPresences_DedupToOneConnection)
         << "Single-hub processor (in==out) must dedup to exactly one "
            "HubConnection (design §5.4).";
 
-    const auto *p_in  = h.find_presence_for_channel("proc.in");
+    const auto *p_in = h.find_presence_for_channel("proc.in");
     const auto *p_out = h.find_presence_for_channel("proc.out");
-    ASSERT_NE(p_in,  nullptr);
+    ASSERT_NE(p_in, nullptr);
     ASSERT_NE(p_out, nullptr);
-    EXPECT_EQ(p_in->role_kind,  RoleKind::Consumer);
+    EXPECT_EQ(p_in->role_kind, RoleKind::Consumer);
     EXPECT_EQ(p_out->role_kind, RoleKind::Producer);
 
     // BOTH presences must point at the SAME HubConnection slot — that
@@ -245,26 +237,25 @@ TEST(RoleHandlerProcessor, DualHub_TwoPresences_TwoConnections)
     // connections.  This is the topology Wave-B M8 enables end-to-end;
     // M3 verifies the data shape is in place.
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "proc.in",  RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
-    presences.push_back(make_presence(
-        "proc.out", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(
+        make_presence("proc.in", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("proc.out", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
 
     RoleHandler h(std::move(presences));
 
     EXPECT_EQ(h.presence_count(), 2u);
-    EXPECT_EQ(h.connection_count(), 2u)
-        << "Dual-hub processor must materialise two distinct "
-           "HubConnections — one per broker endpoint.";
+    EXPECT_EQ(h.connection_count(), 2u) << "Dual-hub processor must materialise two distinct "
+                                           "HubConnections — one per broker endpoint.";
 
-    const auto *p_in  = h.find_presence_for_channel("proc.in");
+    const auto *p_in = h.find_presence_for_channel("proc.in");
     const auto *p_out = h.find_presence_for_channel("proc.out");
-    ASSERT_NE(p_in,  nullptr);
+    ASSERT_NE(p_in, nullptr);
     ASSERT_NE(p_out, nullptr);
     EXPECT_NE(p_in->connection, p_out->connection)
         << "Dual-hub processor presences must point at distinct "
            "HubConnection slots.";
-    EXPECT_EQ(p_in->connection->broker_endpoint,  "tcp://127.0.0.1:5570");
+    EXPECT_EQ(p_in->connection->broker_endpoint, "tcp://127.0.0.1:5570");
     EXPECT_EQ(p_out->connection->broker_endpoint, "tcp://127.0.0.1:5571");
 }
 
@@ -274,12 +265,10 @@ TEST(RoleHandlerProcessor, MixedResolvedSame_PubkeyDifferences_TwoConnections)
     // → distinct connections.  Pin the contract that dedup compares
     // BOTH halves of the tuple, not just the endpoint.
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "proc.in",  RoleKind::Consumer,
-        make_hub("tcp://127.0.0.1:5570", "pubkey-A")));
-    presences.push_back(make_presence(
-        "proc.out", RoleKind::Producer,
-        make_hub("tcp://127.0.0.1:5570", "pubkey-B")));
+    presences.push_back(
+        make_presence("proc.in", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570", "pubkey-A")));
+    presences.push_back(make_presence("proc.out", RoleKind::Producer,
+                                      make_hub("tcp://127.0.0.1:5570", "pubkey-B")));
 
     RoleHandler h(std::move(presences));
 
@@ -293,8 +282,8 @@ TEST(RoleHandlerProcessor, MixedResolvedSame_PubkeyDifferences_TwoConnections)
 TEST(RoleHandlerLookup, UnknownChannel_ReturnsNullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
 
     RoleHandler h(std::move(presences));
 
@@ -309,9 +298,9 @@ TEST(RoleHandlerLookup, EmptyChannelInPresence_NotIndexed)
     // would shadow other code paths checking for "not found" via empty
     // strings.  The presence still appears in `presences()` though.
     std::vector<Presence> presences;
-    Presence              p;
-    p.hub       = make_hub("tcp://127.0.0.1:5570");
-    p.channel   = "";  // deliberately empty
+    Presence p;
+    p.hub = make_hub("tcp://127.0.0.1:5570");
+    p.channel = ""; // deliberately empty
     p.role_kind = RoleKind::Producer;
     presences.push_back(std::move(p));
 
@@ -329,17 +318,14 @@ TEST(RoleHandlerLookup, PresenceCountForChannel_DistinctChannels_AllOne)
     // Three distinct channels on three presences (a hypothetical
     // N-input router topology from design §5.2).
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "chA", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
-    presences.push_back(make_presence(
-        "chB", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5571")));
-    presences.push_back(make_presence(
-        "chC", RoleKind::Producer, make_hub("tcp://127.0.0.1:5572")));
+    presences.push_back(make_presence("chA", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("chB", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(make_presence("chC", RoleKind::Producer, make_hub("tcp://127.0.0.1:5572")));
 
     RoleHandler h(std::move(presences));
 
-    EXPECT_EQ(h.presence_count(),    3u);
-    EXPECT_EQ(h.connection_count(),  3u);
+    EXPECT_EQ(h.presence_count(), 3u);
+    EXPECT_EQ(h.connection_count(), 3u);
     EXPECT_EQ(h.presence_count_for_channel("chA"), 1u);
     EXPECT_EQ(h.presence_count_for_channel("chB"), 1u);
     EXPECT_EQ(h.presence_count_for_channel("chC"), 1u);
@@ -423,15 +409,15 @@ TEST(RoleHandlerStability, PresenceConnectionPointersAreValidPostConstruction)
     // the test never moves a RoleHandler, and RoleHandler is in fact
     // move-deleted; the original name was misleading.)
     std::vector<Presence> presences;
-    auto                  hub = make_hub("tcp://127.0.0.1:5570");
-    presences.push_back(make_presence("proc.in",  RoleKind::Consumer, hub));
+    auto hub = make_hub("tcp://127.0.0.1:5570");
+    presences.push_back(make_presence("proc.in", RoleKind::Consumer, hub));
     presences.push_back(make_presence("proc.out", RoleKind::Producer, hub));
 
     RoleHandler h(std::move(presences));
 
-    const auto &live_presences   = h.presences();
+    const auto &live_presences = h.presences();
     const auto &live_connections = h.connections();
-    ASSERT_EQ(live_presences.size(),   2u);
+    ASSERT_EQ(live_presences.size(), 2u);
     ASSERT_EQ(live_connections.size(), 1u);
 
     // Both presences' connection pointer must reference the single
@@ -452,17 +438,16 @@ TEST(RoleHandlerEdgeCases, EmptyPresenceList_CtorSucceeds_LookupReturnsNullptr)
     // produces no presences; the handler does not assume ≥ 1.
     RoleHandler h(std::vector<Presence>{});
 
-    EXPECT_EQ(h.presence_count(),   0u);
+    EXPECT_EQ(h.presence_count(), 0u);
     EXPECT_EQ(h.connection_count(), 0u);
     EXPECT_EQ(h.find_presence_for_channel("anything"), nullptr);
-    EXPECT_EQ(h.find_presence_for_channel(""),         nullptr);
+    EXPECT_EQ(h.find_presence_for_channel(""), nullptr);
     EXPECT_EQ(h.presence_count_for_channel("anything"), 0u);
     EXPECT_TRUE(h.presences().empty());
     EXPECT_TRUE(h.connections().empty());
 }
 
-TEST(RoleHandlerProcessor,
-     ConnectionsVector_FirstWinsOrdering_AcrossThreePresences)
+TEST(RoleHandlerProcessor, ConnectionsVector_FirstWinsOrdering_AcrossThreePresences)
 {
     // 3-presence topology with a repeat: P0=hubA, P1=hubB, P2=hubA.
     // Pins the load-bearing "first-wins" ordering documented at
@@ -474,26 +459,25 @@ TEST(RoleHandlerProcessor,
     auto hubB = make_hub("tcp://127.0.0.1:5571", "pubkey-B");
 
     std::vector<Presence> presences;
-    presences.push_back(make_presence("ch.first",  RoleKind::Consumer, hubA));
+    presences.push_back(make_presence("ch.first", RoleKind::Consumer, hubA));
     presences.push_back(make_presence("ch.second", RoleKind::Consumer, hubB));
-    presences.push_back(make_presence("ch.third",  RoleKind::Producer, hubA));
+    presences.push_back(make_presence("ch.third", RoleKind::Producer, hubA));
 
     RoleHandler h(std::move(presences));
 
-    ASSERT_EQ(h.presence_count(),   3u);
-    ASSERT_EQ(h.connection_count(), 2u)
-        << "Two unique hubs across three presences must dedup to "
-           "exactly two connections (hubA shared by P0 + P2).";
+    ASSERT_EQ(h.presence_count(), 3u);
+    ASSERT_EQ(h.connection_count(), 2u) << "Two unique hubs across three presences must dedup to "
+                                           "exactly two connections (hubA shared by P0 + P2).";
 
     // First-wins ordering: hubA was named first (P0), so it occupies
     // connections()[0]; hubB second.
     const auto &conns = h.connections();
     EXPECT_EQ(conns[0].broker_endpoint, "tcp://127.0.0.1:5570")
         << "First-named hub (hubA via P0) must occupy connections()[0].";
-    EXPECT_EQ(conns[0].broker_pubkey,   "pubkey-A");
+    EXPECT_EQ(conns[0].broker_pubkey, "pubkey-A");
     EXPECT_EQ(conns[1].broker_endpoint, "tcp://127.0.0.1:5571")
         << "Second-named hub (hubB via P1) must occupy connections()[1].";
-    EXPECT_EQ(conns[1].broker_pubkey,   "pubkey-B");
+    EXPECT_EQ(conns[1].broker_pubkey, "pubkey-B");
 
     // Presence-to-connection wiring: P0 + P2 share connections()[0]
     // (both on hubA); P1 alone on connections()[1].
@@ -523,8 +507,8 @@ TEST(RoleHandlerProcessor,
 TEST(RoleHandlerRouting, BrcForChannel_UnknownChannel_ReturnsNullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     EXPECT_EQ(h.brc_for_channel("unknown.channel"), nullptr);
@@ -539,8 +523,8 @@ TEST(RoleHandlerRouting, BrcForChannel_BeforeStart_ReturnsNullptr_ButPresenceFou
     // the BRC is missing).  This is the disambiguation pattern
     // documented in the brc_for_channel docstring.
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("real.channel", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     EXPECT_FALSE(h.connections_started());
@@ -562,20 +546,17 @@ TEST(RoleHandlerRouting, BrcForRole_NoConnections_ReturnsNullptr)
 TEST(RoleHandlerRouting, BrcForRole_BeforeStart_ReturnsNullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     EXPECT_EQ(h.connection_count(), 1u);
-    EXPECT_EQ(h.brc_for_role(), nullptr)
-        << "Pre-start, the first connection's BRC is nullptr.";
+    EXPECT_EQ(h.brc_for_role(), nullptr) << "Pre-start, the first connection's BRC is nullptr.";
 }
 
 TEST(RoleHandlerRouting, BrcForBand_NotJoined_ReturnsNullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     EXPECT_EQ(h.brc_for_band("not.joined.band"), nullptr);
@@ -585,8 +566,7 @@ TEST(RoleHandlerRouting, BrcForBand_NotJoined_ReturnsNullptr)
 TEST(RoleHandlerRouting, OnBandJoined_PopulatesIndex_FindByNotification)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     const Presence *p = h.find_presence_for_channel("ch");
@@ -614,15 +594,14 @@ TEST(RoleHandlerRouting, OnBandJoined_PopulatesIndex_FindByNotification)
 TEST(RoleHandlerRouting, OnBandJoined_Idempotent_SamePair)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     const Presence *p = h.find_presence_for_channel("ch");
     ASSERT_NE(p, nullptr);
 
     h.on_band_joined("my.band", p);
-    h.on_band_joined("my.band", p);  // idempotent
+    h.on_band_joined("my.band", p); // idempotent
 
     nlohmann::json body;
     body["band"] = "my.band";
@@ -635,10 +614,8 @@ TEST(RoleHandlerRouting, OnBandJoined_OverwriteDifferentPresence_LastWins)
     // sequentially — the second call overwrites the first per the
     // docstring contract.
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch1", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
-    presences.push_back(make_presence(
-        "ch2", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(make_presence("ch1", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch2", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
     RoleHandler h(std::move(presences));
 
     const Presence *p0 = h.find_presence_for_channel("ch1");
@@ -659,8 +636,7 @@ TEST(RoleHandlerRouting, OnBandJoined_OverwriteDifferentPresence_LastWins)
 TEST(RoleHandlerRouting, OnBandLeft_RemovesIndex)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     const Presence *p = h.find_presence_for_channel("ch");
@@ -681,16 +657,15 @@ TEST(RoleHandlerRouting, OnBandLeft_RemovesIndex)
 TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelName_Routes)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch.a", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
-    presences.push_back(make_presence(
-        "ch.b", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(
+        make_presence("ch.a", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("ch.b", RoleKind::Producer, make_hub("tcp://127.0.0.1:5571")));
     RoleHandler h(std::move(presences));
 
     nlohmann::json body;
     body["channel_name"] = "ch.b";
-    const Presence *p = h.find_presence_from_notification(
-        "CHANNEL_CLOSING_NOTIFY", body);
+    const Presence *p = h.find_presence_from_notification("CHANNEL_CLOSING_NOTIFY", body);
     ASSERT_NE(p, nullptr);
     EXPECT_EQ(p->channel, "ch.b");
 }
@@ -698,8 +673,8 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelName_Routes)
 TEST(RoleHandlerRouting, FindPresenceFromNotification_UnknownChannel_Nullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     nlohmann::json body;
@@ -710,17 +685,16 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_UnknownChannel_Nullptr)
 TEST(RoleHandlerRouting, FindPresenceFromNotification_NoChannelNoBand_Nullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     // Role-scope notification example: ROLE_DEREGISTERED_NOTIFY
     // typically has role_uid + reason, NOT channel_name or band.
     nlohmann::json body;
     body["role_uid"] = "prod.someone.uid";
-    body["reason"]   = "voluntary_close";
-    EXPECT_EQ(h.find_presence_from_notification("ROLE_DEREGISTERED_NOTIFY", body),
-              nullptr)
+    body["reason"] = "voluntary_close";
+    EXPECT_EQ(h.find_presence_from_notification("ROLE_DEREGISTERED_NOTIFY", body), nullptr)
         << "No channel_name or band → caller routes via other "
            "logic (role-scope notifications don't bind to a "
            "specific presence).";
@@ -729,17 +703,17 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_NoChannelNoBand_Nullptr)
 TEST(RoleHandlerRouting, FindPresenceFromNotification_NotObject_Nullptr)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("ch.a", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
-    nlohmann::json body_array  = nlohmann::json::array();
+    nlohmann::json body_array = nlohmann::json::array();
     nlohmann::json body_string = "just a string";
     nlohmann::json body_null;
 
-    EXPECT_EQ(h.find_presence_from_notification("X", body_array),  nullptr);
+    EXPECT_EQ(h.find_presence_from_notification("X", body_array), nullptr);
     EXPECT_EQ(h.find_presence_from_notification("X", body_string), nullptr);
-    EXPECT_EQ(h.find_presence_from_notification("X", body_null),   nullptr);
+    EXPECT_EQ(h.find_presence_from_notification("X", body_null), nullptr);
 }
 
 TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelTakesPrecedenceOverBand)
@@ -750,21 +724,21 @@ TEST(RoleHandlerRouting, FindPresenceFromNotification_ChannelTakesPrecedenceOver
     // "Inspects body['channel_name'] FIRST (Class A — HEP-0007),
     // then body['band'] (Class D — HEP-0030 §5.1)."
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch.priority", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
-    presences.push_back(make_presence(
-        "ch.other",    RoleKind::Consumer, make_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(
+        make_presence("ch.priority", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("ch.other", RoleKind::Consumer, make_hub("tcp://127.0.0.1:5571")));
     RoleHandler h(std::move(presences));
 
-    const Presence *p_ch   = h.find_presence_for_channel("ch.priority");
+    const Presence *p_ch = h.find_presence_for_channel("ch.priority");
     const Presence *p_band = h.find_presence_for_channel("ch.other");
-    ASSERT_NE(p_ch,   nullptr);
+    ASSERT_NE(p_ch, nullptr);
     ASSERT_NE(p_band, nullptr);
     h.on_band_joined("the.band", p_band);
 
     nlohmann::json body;
     body["channel_name"] = "ch.priority";
-    body["band"]    = "the.band";
+    body["band"] = "the.band";
 
     EXPECT_EQ(h.find_presence_from_notification("X", body), p_ch)
         << "Both fields present → channel wins per docstring "
@@ -786,8 +760,7 @@ TEST(RoleHandlerRouting, OnBandJoined_NullPresence_NoOp)
 TEST(RoleHandlerRouting, OnBandJoined_EmptyBandName_NoOp)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(make_presence("ch", RoleKind::Producer, make_hub("tcp://127.0.0.1:5570")));
     RoleHandler h(std::move(presences));
 
     const Presence *p = h.find_presence_for_channel("ch");
@@ -813,19 +786,17 @@ TEST(RoleHandlerRouting, OnBandJoined_EmptyBandName_NoOp)
 TEST(RoleHandlerLifecycle, StartStop_Smoke_SinglePresence)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "smoke.ch", RoleKind::Producer,
-        make_curve_hub("tcp://127.0.0.1:5570")));
+    presences.push_back(
+        make_presence("smoke.ch", RoleKind::Producer, make_curve_hub("tcp://127.0.0.1:5570")));
     RoleHandler handler(std::move(presences));
 
-    EXPECT_EQ(handler.presence_count(),   1u);
+    EXPECT_EQ(handler.presence_count(), 1u);
     EXPECT_EQ(handler.connection_count(), 1u);
     EXPECT_FALSE(handler.connections_started());
     EXPECT_EQ(handler.connections()[0].brc.get(), nullptr);
 
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::scripting::RoleAPIBase  api(
-        core, "prod", "prod.smoke.uid00000001");
+    pylabhub::scripting::RoleAPIBase api(core, "prod", "prod.smoke.uid00000001");
     api.set_name("smoke");
 
     // Post-start: brc allocated + connect() returned true.
@@ -849,18 +820,15 @@ TEST(RoleHandlerLifecycle, StartStop_Smoke_SinglePresence)
 TEST(RoleHandlerLifecycle, StartStop_DualHub_BothConnectionsConnected)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "dual.in",  RoleKind::Consumer,
-        make_curve_hub("tcp://127.0.0.1:5571")));
-    presences.push_back(make_presence(
-        "dual.out", RoleKind::Producer,
-        make_curve_hub("tcp://127.0.0.1:5572")));
+    presences.push_back(
+        make_presence("dual.in", RoleKind::Consumer, make_curve_hub("tcp://127.0.0.1:5571")));
+    presences.push_back(
+        make_presence("dual.out", RoleKind::Producer, make_curve_hub("tcp://127.0.0.1:5572")));
     RoleHandler handler(std::move(presences));
     ASSERT_EQ(handler.connection_count(), 2u);
 
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::scripting::RoleAPIBase  api(
-        core, "proc", "proc.dual.uid00000001");
+    pylabhub::scripting::RoleAPIBase api(core, "proc", "proc.dual.uid00000001");
     api.set_name("dual_hub");
 
     ASSERT_TRUE(handler.start_connections(api));
@@ -877,14 +845,12 @@ TEST(RoleHandlerLifecycle, StartStop_DualHub_BothConnectionsConnected)
 TEST(RoleHandlerLifecycle, DoubleStart_Rejected_StateNotCleared)
 {
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        "double.ch", RoleKind::Producer,
-        make_curve_hub("tcp://127.0.0.1:5573")));
+    presences.push_back(
+        make_presence("double.ch", RoleKind::Producer, make_curve_hub("tcp://127.0.0.1:5573")));
     RoleHandler handler(std::move(presences));
 
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::scripting::RoleAPIBase  api(
-        core, "prod", "prod.double.uid00000001");
+    pylabhub::scripting::RoleAPIBase api(core, "prod", "prod.double.uid00000001");
     api.set_name("double_start");
 
     ASSERT_TRUE(handler.start_connections(api));
@@ -906,14 +872,12 @@ TEST(RoleHandlerRouting, BrcForX_PostStart_PointerIdentity)
     // POST-start pointer identity for the 3 routing classes.
     const std::string ch = "routing.ch";
     std::vector<Presence> presences;
-    presences.push_back(make_presence(
-        ch, RoleKind::Producer,
-        make_curve_hub("tcp://127.0.0.1:5574")));
+    presences.push_back(
+        make_presence(ch, RoleKind::Producer, make_curve_hub("tcp://127.0.0.1:5574")));
     RoleHandler handler(std::move(presences));
 
     pylabhub::scripting::RoleHostCore core;
-    pylabhub::scripting::RoleAPIBase  api(
-        core, "prod", "prod.routing.uid00000001");
+    pylabhub::scripting::RoleAPIBase api(core, "prod", "prod.routing.uid00000001");
     api.set_name("brc_routing");
 
     ASSERT_TRUE(handler.start_connections(api));

@@ -87,8 +87,8 @@ PYLABHUB_UTILS_EXPORT const char *to_string(IdentifierKind k) noexcept;
  * trusted boundaries (internal asserts, test-helper contracts) use
  * @ref require_valid_identifier to panic on failure.
  */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-bool is_valid_identifier(std::string_view s, IdentifierKind kind) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool is_valid_identifier(std::string_view s,
+                                                             IdentifierKind kind) noexcept;
 
 /**
  * @brief `is_valid_identifier`, plus panic on failure.
@@ -102,8 +102,7 @@ bool is_valid_identifier(std::string_view s, IdentifierKind kind) noexcept;
  *                 the panic message so operators can triage).
  */
 PYLABHUB_UTILS_EXPORT
-void require_valid_identifier(std::string_view s, IdentifierKind kind,
-                              std::string_view context);
+void require_valid_identifier(std::string_view s, IdentifierKind kind, std::string_view context);
 
 /// Dissection of a well-formed tagged uid (role or peer — HEP-0033
 /// §G2.2.0b "UID construction").  Both role.uid and peer.uid share
@@ -122,8 +121,8 @@ struct TaggedUidParts
  * one of `prod`/`cons`/`proc`).  Views into the caller-owned string;
  * output lifetime is tied to @p uid.
  */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-std::optional<TaggedUidParts> parse_role_uid(std::string_view uid) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<TaggedUidParts>
+parse_role_uid(std::string_view uid) noexcept;
 
 /**
  * @brief Parse a peer uid into its three mandatory parts.
@@ -131,17 +130,17 @@ std::optional<TaggedUidParts> parse_role_uid(std::string_view uid) noexcept;
  * Returns std::nullopt if @p uid is not a valid `PeerUid` (tag must be
  * exactly `hub`).  Same structural rules as role uid.
  */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-std::optional<TaggedUidParts> parse_peer_uid(std::string_view uid) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<TaggedUidParts>
+parse_peer_uid(std::string_view uid) noexcept;
 
 /// Dissection of a well-formed `schema` id (HEP-0033 §G2.2.0b).
 /// The trailing version component is factored out so callers don't
 /// have to parse it themselves.
 struct SchemaIdParts
 {
-    std::string_view base;            ///< Everything between '$' and the final version component.
-    std::string_view version_token;   ///< The literal "v<digits>" tail (e.g. "v2").
-    std::uint32_t    version{0};      ///< Parsed integer version (e.g. 2).
+    std::string_view base;          ///< Everything between '$' and the final version component.
+    std::string_view version_token; ///< The literal "v<digits>" tail (e.g. "v2").
+    std::uint32_t version{0};       ///< Parsed integer version (e.g. 2).
 };
 
 /**
@@ -153,8 +152,8 @@ struct SchemaIdParts
  *
  * Views into the caller-owned string; output lifetime is tied to @p id.
  */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<SchemaIdParts>
+parse_schema_id(std::string_view id) noexcept;
 
 /**
  * @brief Canonical short tag for a role type, per HEP-CORE-0036 §5b.10.
@@ -172,14 +171,16 @@ std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept;
  *         the first 4 chars of @p role_type for unknown values; empty
  *         string_view if @p role_type is empty.
  */
-[[nodiscard]] constexpr std::string_view
-short_role_tag(std::string_view role_type) noexcept
+[[nodiscard]] constexpr std::string_view short_role_tag(std::string_view role_type) noexcept
 {
     // The known role types map deterministically.  A switch on length
     // gives a near-perfect-hash dispatch without strcmp on the hot path.
-    if (role_type == "producer")  return "prod";
-    if (role_type == "consumer")  return "cons";
-    if (role_type == "processor") return "proc";
+    if (role_type == "producer")
+        return "prod";
+    if (role_type == "consumer")
+        return "cons";
+    if (role_type == "processor")
+        return "proc";
     // Unknown role kind: take the first 4 chars (or fewer if shorter).
     return role_type.substr(0, std::min(role_type.size(), std::size_t{4}));
 }
@@ -195,8 +196,8 @@ short_role_tag(std::string_view role_type) noexcept
  * @return `"prod"` / `"cons"` / `"proc"` if @p uid is a valid RoleUid,
  *         std::nullopt otherwise.
  */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-std::optional<std::string_view> extract_short_tag(std::string_view uid) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<std::string_view>
+extract_short_tag(std::string_view uid) noexcept;
 
 /**
  * @brief Canonical human-readable reference to a role.
@@ -207,9 +208,7 @@ std::optional<std::string_view> extract_short_tag(std::string_view uid) noexcept
  *   omitted if empty.  Intended for log / admin output where `uid`
  *   may or may not be available.
  */
-[[nodiscard]] PYLABHUB_UTILS_EXPORT
-std::string format_role_ref(std::string_view uid,
-                            std::string_view name = {},
-                            std::string_view tag  = {});
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string
+format_role_ref(std::string_view uid, std::string_view name = {}, std::string_view tag = {});
 
 } // namespace pylabhub::hub

@@ -75,59 +75,46 @@ inline HubBrokerConfig parse_hub_broker_config(const nlohmann::json &j)
     for (auto it = sect.begin(); it != sect.end(); ++it)
     {
         const auto &k = it.key();
-        if (k != "heartbeat_interval_ms" &&
-            k != "ready_miss_heartbeats" &&
-            k != "pending_miss_heartbeats" &&
-            k != "ready_timeout_ms" &&
-            k != "pending_timeout_ms" &&
-            k != "checksum_repair_policy")
+        if (k != "heartbeat_interval_ms" && k != "ready_miss_heartbeats" &&
+            k != "pending_miss_heartbeats" && k != "ready_timeout_ms" &&
+            k != "pending_timeout_ms" && k != "checksum_repair_policy")
             throw std::runtime_error("hub: unknown config key 'broker." + k + "'");
     }
 
-    bc.heartbeat_interval_ms = sect.value("heartbeat_interval_ms",
-                                          bc.heartbeat_interval_ms);
-    bc.ready_miss_heartbeats   = sect.value("ready_miss_heartbeats",
-                                            bc.ready_miss_heartbeats);
-    bc.pending_miss_heartbeats = sect.value("pending_miss_heartbeats",
-                                            bc.pending_miss_heartbeats);
+    bc.heartbeat_interval_ms = sect.value("heartbeat_interval_ms", bc.heartbeat_interval_ms);
+    bc.ready_miss_heartbeats = sect.value("ready_miss_heartbeats", bc.ready_miss_heartbeats);
+    bc.pending_miss_heartbeats = sect.value("pending_miss_heartbeats", bc.pending_miss_heartbeats);
 
     auto load_optional = [&](const char *k, std::optional<int32_t> &out)
     {
         if (sect.contains(k) && !sect[k].is_null())
             out = sect[k].get<int32_t>();
     };
-    load_optional("ready_timeout_ms",   bc.ready_timeout_ms);
+    load_optional("ready_timeout_ms", bc.ready_timeout_ms);
     load_optional("pending_timeout_ms", bc.pending_timeout_ms);
 
     if (bc.heartbeat_interval_ms <= 0)
-        throw std::runtime_error(
-            "hub: 'broker.heartbeat_interval_ms' must be > 0 (got " +
-            std::to_string(bc.heartbeat_interval_ms) + ")");
+        throw std::runtime_error("hub: 'broker.heartbeat_interval_ms' must be > 0 (got " +
+                                 std::to_string(bc.heartbeat_interval_ms) + ")");
     if (bc.ready_miss_heartbeats == 0)
-        throw std::runtime_error(
-            "hub: 'broker.ready_miss_heartbeats' must be >= 1");
+        throw std::runtime_error("hub: 'broker.ready_miss_heartbeats' must be >= 1");
     if (bc.pending_miss_heartbeats == 0)
-        throw std::runtime_error(
-            "hub: 'broker.pending_miss_heartbeats' must be >= 1");
+        throw std::runtime_error("hub: 'broker.pending_miss_heartbeats' must be >= 1");
 
-    auto check_optional_nonneg = [](const char *name,
-                                     const std::optional<int32_t> &v)
+    auto check_optional_nonneg = [](const char *name, const std::optional<int32_t> &v)
     {
         if (v && *v < 0)
-            throw std::runtime_error(
-                std::string("hub: 'broker.") + name + "' must be >= 0 (got " +
-                std::to_string(*v) + ")");
+            throw std::runtime_error(std::string("hub: 'broker.") + name + "' must be >= 0 (got " +
+                                     std::to_string(*v) + ")");
     };
-    check_optional_nonneg("ready_timeout_ms",   bc.ready_timeout_ms);
+    check_optional_nonneg("ready_timeout_ms", bc.ready_timeout_ms);
     check_optional_nonneg("pending_timeout_ms", bc.pending_timeout_ms);
 
-    bc.checksum_repair_policy = sect.value("checksum_repair_policy",
-                                            bc.checksum_repair_policy);
-    if (bc.checksum_repair_policy != "none" &&
-        bc.checksum_repair_policy != "notify_only")
-        throw std::runtime_error(
-            "hub: 'broker.checksum_repair_policy' must be \"none\" or "
-            "\"notify_only\" (got \"" + bc.checksum_repair_policy + "\")");
+    bc.checksum_repair_policy = sect.value("checksum_repair_policy", bc.checksum_repair_policy);
+    if (bc.checksum_repair_policy != "none" && bc.checksum_repair_policy != "notify_only")
+        throw std::runtime_error("hub: 'broker.checksum_repair_policy' must be \"none\" or "
+                                 "\"notify_only\" (got \"" +
+                                 bc.checksum_repair_policy + "\")");
 
     return bc;
 }

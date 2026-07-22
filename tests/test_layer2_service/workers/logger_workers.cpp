@@ -114,7 +114,8 @@ int test_bad_format_string(const std::string &log_path_str)
             // Verify that a format error message was logged
             std::string contents;
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
-            PLH_DEBUG("Log file contents for BadFormatString test:\n{}", contents); // ADDED DEBUG LINE
+            PLH_DEBUG("Log file contents for BadFormatString test:\n{}",
+                      contents); // ADDED DEBUG LINE
             ASSERT_NE(contents.find("[FORMAT ERROR]"), std::string::npos);
         },
         "logger::test_bad_format_string", Logger::GetLifecycleModule());
@@ -319,7 +320,8 @@ int test_reentrant_error_callback([[maybe_unused]] const std::string &initial_lo
                     callback_count.fetch_add(1, std::memory_order_release);
                     // Re-entrant log call inside the error callback. This should not deadlock.
                     LOGGER_SYSTEM("Log from error callback: {}", err_msg);
-                    callback_done.set_value(); // Signal that callback ran (it's invoked async by dispatcher)
+                    callback_done
+                        .set_value(); // Signal that callback ran (it's invoked async by dispatcher)
                 });
 
             // Set log file to a directory to cause a write error.
@@ -359,7 +361,7 @@ int test_write_error_callback_async()
             auto future_status = err_msg_future.wait_for(2s);
             ASSERT_EQ(future_status, std::future_status::ready)
                 << "Callback was not invoked within the timeout.";
-                                ASSERT_NE(err_msg_future.get().find("Failed to create FileSink"), std::string::npos);
+            ASSERT_NE(err_msg_future.get().find("Failed to create FileSink"), std::string::npos);
 #else
             GTEST_SUCCESS_("Windows does not have a simple equivalent of writing to a directory to "
                            "force a log error.");
@@ -381,8 +383,7 @@ int test_set_rotating_logfile_failure(const std::string &unwritable_dir_str)
 #if PYLABHUB_IS_POSIX
             fs::path unwritable_dir(unwritable_dir_str);
             fs::create_directories(unwritable_dir);
-            fs::permissions(unwritable_dir,
-                            fs::perms::owner_read | fs::perms::owner_exec,
+            fs::permissions(unwritable_dir, fs::perms::owner_read | fs::perms::owner_exec,
                             fs::perm_options::replace);
             auto log_path = unwritable_dir / "test.log";
 
@@ -394,8 +395,8 @@ int test_set_rotating_logfile_failure(const std::string &unwritable_dir_str)
 
             // Restore permissions so the parent's TearDown cleanup works.
             std::error_code restore_ec;
-            fs::permissions(unwritable_dir, fs::perms::owner_all,
-                            fs::perm_options::replace, restore_ec);
+            fs::permissions(unwritable_dir, fs::perms::owner_all, fs::perm_options::replace,
+                            restore_ec);
 #else
             auto invalid_log_path = "C:\\*\\invalid:path.log";
             std::error_code ec;
@@ -617,8 +618,7 @@ int test_rotating_file_sink(const std::string &base_log_path_str, size_t max_fil
 //   6. Verifies no numeric-style backup files (`base.1`, `base.2`) exist
 //      — this is the behavior the Numeric mode would produce.
 int test_timestamped_rotating_file_sink(const std::string &base_path_str,
-                                        size_t max_file_size_bytes,
-                                        size_t max_backup_files)
+                                        size_t max_file_size_bytes, size_t max_backup_files)
 {
     return run_gtest_worker(
         [&]()
@@ -628,12 +628,13 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
             Logger &L = Logger::instance();
             Logger::RotatingLogConfig cfg;
             cfg.max_file_size_bytes = max_file_size_bytes;
-            cfg.max_backup_files    = max_backup_files;
-            cfg.timestamped_names   = true;
-            cfg.use_flock           = false;
+            cfg.max_backup_files = max_backup_files;
+            cfg.timestamped_names = true;
+            cfg.use_flock = false;
 
-            fmt::print("Setting up timestamped rotating sink: base='{}' max_size={} max_backups={}\n",
-                       base_path.string(), max_file_size_bytes, max_backup_files);
+            fmt::print(
+                "Setting up timestamped rotating sink: base='{}' max_size={} max_backups={}\n",
+                base_path.string(), max_file_size_bytes, max_backup_files);
 
             std::error_code ec;
             bool success = L.set_rotating_logfile(base_path, cfg, ec);
@@ -654,7 +655,8 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
             // Derive prefix the same way the sink does: strip extension.
             const fs::path dir = base_path.parent_path();
             std::string stem = base_path.stem().string();
-            if (stem.empty()) stem = base_path.filename().string();
+            if (stem.empty())
+                stem = base_path.filename().string();
             const std::string prefix = stem + "-";
 
             // (a) Count all <stem>-*.log files.
@@ -671,8 +673,8 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
 
             // (b) Count must not exceed max_backup_files + 1 (active file).
             ASSERT_LE(log_files.size(), max_backup_files + 1)
-                << "Pruning did not enforce the max_backup_files limit. Found "
-                << log_files.size() << " files.";
+                << "Pruning did not enforce the max_backup_files limit. Found " << log_files.size()
+                << " files.";
 
             // (c) At least one rotation must have occurred (test scenario check).
             ASSERT_GE(log_files.size(), 2u)
@@ -726,27 +728,23 @@ int test_timestamped_rotating_file_sink(const std::string &base_path_str,
             for (const auto &p : log_files)
             {
                 const std::string name = p.filename().string();
-                ASSERT_EQ(name.rfind(prefix, 0), 0u)
-                    << "filename missing prefix: " << name;
+                ASSERT_EQ(name.rfind(prefix, 0), 0u) << "filename missing prefix: " << name;
                 ASSERT_EQ(name.substr(name.size() - 4), ".log")
                     << "filename missing .log extension: " << name;
 
-                const std::string middle = name.substr(prefix.size(),
-                                                        name.size() - prefix.size() - 4);
+                const std::string middle =
+                    name.substr(prefix.size(), name.size() - prefix.size() - 4);
 
                 // Timestamp is exactly 26 chars: YYYY-MM-DD-HH-MM-SS.uuuuuu
-                ASSERT_EQ(middle.size(), 26u)
-                    << "timestamp not 26 chars in: " << name;
+                ASSERT_EQ(middle.size(), 26u) << "timestamp not 26 chars in: " << name;
                 for (size_t i : {4u, 7u, 10u, 13u, 16u})
-                    EXPECT_EQ(middle[i], '-') << "bad dash separator at " << i
-                                                << " in: " << name;
+                    EXPECT_EQ(middle[i], '-') << "bad dash separator at " << i << " in: " << name;
                 EXPECT_EQ(middle[19], '.')
                     << "expected '.' fractional separator at position 19 in: " << name;
 
                 // Digits at all non-separator positions.
-                for (size_t i : {0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u,
-                                 11u, 12u, 14u, 15u, 17u, 18u,
-                                 20u, 21u, 22u, 23u, 24u, 25u})
+                for (size_t i : {0u,  1u,  2u,  3u,  5u,  6u,  8u,  9u,  11u, 12u,
+                                 14u, 15u, 17u, 18u, 20u, 21u, 22u, 23u, 24u, 25u})
                 {
                     EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(middle[i])))
                         << "non-digit at position " << i << " in: " << name;
@@ -806,7 +804,8 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
             // 1b. Assert get_total_dropped_since_sink_switch() matches our count
             ASSERT_EQ(logger.get_total_dropped_since_sink_switch(),
                       static_cast<size_t>(messages_dropped))
-                << "get_total_dropped_since_sink_switch() should match the number of dropped messages";
+                << "get_total_dropped_since_sink_switch() should match the number of dropped "
+                   "messages";
 
             // 2. Switch sink to console so the worker flushes the file sink before returning.
             // With sink messages enabled, the worker flushes the old (file) sink when handling
@@ -829,7 +828,8 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
             ASSERT_NE(contents.find(summary_substr), std::string::npos)
                 << "Final summary message about dropped logs not found in file.";
 
-            // 4c. Extract and sum all "Summary: ... dropped N" numbers (there may be multiple lines).
+            // 4c. Extract and sum all "Summary: ... dropped N" numbers (there may be multiple
+            // lines).
             size_t reported_dropped_count = 0;
             for (std::string::size_type pos = 0;
                  (pos = contents.find(summary_substr, pos)) != std::string::npos;
@@ -845,7 +845,8 @@ int test_queue_full_and_message_dropping(const std::string &log_path_str)
             // 4d. Count the number of actual INFO messages logged.
             size_t logged_info_count = count_lines(contents, "Message ");
             ASSERT_EQ(logged_info_count, messages_enqueued)
-                << "The number of logged INFO messages does not match the number successfully enqueued.";
+                << "The number of logged INFO messages does not match the number successfully "
+                   "enqueued.";
         },
         "logger::test_queue_full_and_message_dropping", Logger::GetLifecycleModule());
 }
@@ -857,7 +858,7 @@ int use_without_lifecycle_aborts()
     // we must signal failure so the parent's ASSERT_NE(exit, 0) fails.
     bool ok = Logger::instance().set_logfile("/tmp/pylabhub_logger_no_lifecycle.log");
     (void)ok;
-    return 0;  // Should not reach here; if we do, implementation changed
+    return 0; // Should not reach here; if we do, implementation changed
 }
 
 // Worker to test StartupLogFileSink with plain file mode.
@@ -879,7 +880,8 @@ int test_startup_log_file_sink_plain(const std::string &log_path_str)
             std::string contents;
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
             ASSERT_NE(contents.find("startup_sink_plain_test_message"), std::string::npos)
-                << "Expected log message not found in file. Contents:\n" << contents;
+                << "Expected log message not found in file. Contents:\n"
+                << contents;
         },
         "logger::test_startup_log_file_sink_plain");
 }
@@ -903,7 +905,8 @@ int test_startup_log_file_sink_rotating(const std::string &log_path_str)
             std::string contents;
             ASSERT_TRUE(read_file_contents(log_path_str, contents));
             ASSERT_NE(contents.find("startup_sink_rotating_test_message"), std::string::npos)
-                << "Expected log message not found in file. Contents:\n" << contents;
+                << "Expected log message not found in file. Contents:\n"
+                << contents;
         },
         "logger::test_startup_log_file_sink_rotating");
 }
@@ -968,8 +971,7 @@ struct LoggerWorkerRegistrar
                                                    static_cast<size_t>(std::stoul(argv[4])));
                 if (scenario == "test_timestamped_rotating_file_sink" && argc > 4)
                     return test_timestamped_rotating_file_sink(
-                        argv[2],
-                        static_cast<size_t>(std::stoul(argv[3])),
+                        argv[2], static_cast<size_t>(std::stoul(argv[3])),
                         static_cast<size_t>(std::stoul(argv[4])));
                 if (scenario == "test_queue_full_and_message_dropping" && argc > 2)
                     return test_queue_full_and_message_dropping(argv[2]);

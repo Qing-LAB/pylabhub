@@ -62,7 +62,10 @@
 #include <atomic>
 #include <memory>
 
-namespace pylabhub::hub_host { class HubHost; }
+namespace pylabhub::hub_host
+{
+class HubHost;
+}
 
 namespace pylabhub::scripting
 {
@@ -74,7 +77,7 @@ using HubScriptRunnerBase = EngineHost<pylabhub::hub_host::HubAPI>;
 /// Hub-side script-thread runtime.  See file header for design notes.
 class HubScriptRunner final : public HubScriptRunnerBase
 {
-public:
+  public:
     /// @param host        HubHost backref — outlives the runner per
     ///                    HEP-0033 §4.2 step 2.  Set on the HubAPI
     ///                    after EngineHost lazy-constructs it.  Per
@@ -87,15 +90,14 @@ public:
     /// `scripting::create_engine(host_.config().script())`.
     /// @param shutdown_flag  External shutdown atomic shared with main
     ///                       and HubHost; nullptr ok in tests.
-    HubScriptRunner(pylabhub::hub_host::HubHost  &host,
-                    std::atomic<bool>            *shutdown_flag = nullptr);
+    HubScriptRunner(pylabhub::hub_host::HubHost &host, std::atomic<bool> *shutdown_flag = nullptr);
 
     /// Destructor calls shutdown_() (per EngineHost contract — must be
     /// the FIRST statement, see EngineHost::~EngineHost docs for the
     /// abort-on-Running-phase rationale).
     ~HubScriptRunner() override;
 
-    HubScriptRunner(const HubScriptRunner &)            = delete;
+    HubScriptRunner(const HubScriptRunner &) = delete;
     HubScriptRunner &operator=(const HubScriptRunner &) = delete;
 
     /// HEP-CORE-0033 §12.2.2 — public accessor needed by HubHost::hub_api()
@@ -108,7 +110,7 @@ public:
         return EngineHost::has_api() ? &EngineHost::api() : nullptr;
     }
 
-protected:
+  protected:
     /// EngineHost worker hook.  Subscribes to all 11 HubState events
     /// at startup, then runs the event-poll-or-tick loop until
     /// shutdown.  `ready_promise().set_value(true)` fires after
@@ -117,7 +119,7 @@ protected:
     /// promptly with a definite outcome.
     void worker_main_() override;
 
-private:
+  private:
     pylabhub::hub_host::HubHost &host_;
 };
 

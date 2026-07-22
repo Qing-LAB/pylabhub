@@ -14,7 +14,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/config/checksum_config.hpp"
 #include "utils/config/inbox_config.hpp"
-#include "utils/security/key_store.hpp"        // kRoleIdentityName
+#include "utils/security/key_store.hpp" // kRoleIdentityName
 #include "utils/data_block_policy.hpp"
 #include "utils/schema_utils.hpp"
 #include "plh_datahub.hpp"
@@ -59,18 +59,17 @@ namespace pylabhub::scripting
  * @param log_tag       Log prefix, e.g. "[prod]".
  * @return true if all roles found; false on first timeout.
  */
-inline bool wait_for_roles(RoleAPIBase                      &api,
-                            const std::vector<WaitForRole>   &wait_list,
-                            const char                       *log_tag)
+inline bool wait_for_roles(RoleAPIBase &api, const std::vector<WaitForRole> &wait_list,
+                           const char *log_tag)
 {
     for (const auto &wr : wait_list)
     {
-        LOGGER_INFO("{} Startup: waiting for role '{}' (timeout {}ms)...",
-                    log_tag, wr.uid, wr.timeout_ms);
+        LOGGER_INFO("{} Startup: waiting for role '{}' (timeout {}ms)...", log_tag, wr.uid,
+                    wr.timeout_ms);
         if (!api.wait_for_role(wr.uid, wr.timeout_ms))
         {
-            LOGGER_ERROR("{} Startup wait failed: role '{}' not present after {}ms",
-                         log_tag, wr.uid, wr.timeout_ms);
+            LOGGER_ERROR("{} Startup wait failed: role '{}' not present after {}ms", log_tag,
+                         wr.uid, wr.timeout_ms);
             return false;
         }
         LOGGER_INFO("{} Startup: role '{}' found", log_tag, wr.uid);
@@ -110,9 +109,9 @@ inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
     for (const auto &f : spec.fields)
     {
         nlohmann::json fj;
-        fj["name"]    = f.name;
-        fj["type"]    = f.type_str;
-        fj["count"]   = f.count;
+        fj["name"] = f.name;
+        fj["type"] = f.type_str;
+        fj["count"] = f.count;
         if (f.type_str == "string" || f.type_str == "bytes")
             fj["length"] = f.length;
         fields_arr.push_back(std::move(fj));
@@ -139,10 +138,10 @@ inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
 struct InboxSetupResult
 {
     std::unique_ptr<hub::InboxQueue> queue;
-    std::string actual_endpoint;   ///< OS-resolved endpoint (for broker registration).
-    std::string schema_json;       ///< Serialized spec (for ROLE_INFO_REQ discovery).
-    std::string packing;           ///< From inbox schema (sole source of truth).
-    std::string checksum;          ///< Checksum policy string.
+    std::string actual_endpoint; ///< OS-resolved endpoint (for broker registration).
+    std::string schema_json;     ///< Serialized spec (for ROLE_INFO_REQ discovery).
+    std::string packing;         ///< From inbox schema (sole source of truth).
+    std::string checksum;        ///< Checksum policy string.
 };
 
 /**
@@ -161,29 +160,25 @@ struct InboxSetupResult
  *                         channel's domain per HEP-CORE-0027 §3.5).
  * @return InboxSetupResult on success, nullopt on failure.
  */
-inline std::optional<InboxSetupResult>
-setup_inbox_facility(const hub::SchemaSpec &inbox_spec,
-                     config::InboxConfig   &inbox_cfg,
-                     hub::ChecksumPolicy    checksum_policy,
-                     const char            *tag,
-                     const std::string    &uid)
+inline std::optional<InboxSetupResult> setup_inbox_facility(const hub::SchemaSpec &inbox_spec,
+                                                            config::InboxConfig &inbox_cfg,
+                                                            hub::ChecksumPolicy checksum_policy,
+                                                            const char *tag, const std::string &uid)
 {
     auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
-    const int rcvhwm = (inbox_cfg.overflow_policy == "block")
-        ? 0
-        : static_cast<int>(inbox_cfg.buffer_depth);
+    const int rcvhwm =
+        (inbox_cfg.overflow_policy == "block") ? 0 : static_cast<int>(inbox_cfg.buffer_depth);
 
-    auto queue = hub::InboxQueue::bind_at(
-        inbox_cfg.endpoint, std::move(zmq_fields), inbox_spec.packing, rcvhwm);
+    auto queue = hub::InboxQueue::bind_at(inbox_cfg.endpoint, std::move(zmq_fields),
+                                          inbox_spec.packing, rcvhwm);
     // HEP-CORE-0027 §3.5 — arm CURVE-server auth BEFORE start().  The inbox
     // ROUTER presents the role identity keypair (single-key model I6) under
     // a distinct "<uid>:inbox" ZAP domain, hub-wide known_roles roster.
     // start() binds deny-all; RoleAPIBase seeds the roster at S3 (REG_ACK).
     if (queue)
-        queue->set_curve_server_identity(
-            std::string(pylabhub::utils::security::kRoleIdentityName),
-            uid + ":inbox");
+        queue->set_curve_server_identity(std::string(pylabhub::utils::security::kRoleIdentityName),
+                                         uid + ":inbox");
     if (!queue || !queue->start())
     {
         LOGGER_ERROR("[{}] Failed to start InboxQueue at '{}'", tag, inbox_cfg.endpoint);
@@ -194,15 +189,15 @@ setup_inbox_facility(const hub::SchemaSpec &inbox_spec,
 
     InboxSetupResult result;
     result.actual_endpoint = queue->actual_endpoint();
-    result.schema_json     = serialize_inbox_spec_json(inbox_spec).dump();
-    result.packing         = inbox_spec.packing;
-    result.checksum        = config::checksum_policy_to_string(checksum_policy);
-    result.queue           = std::move(queue);
+    result.schema_json = serialize_inbox_spec_json(inbox_spec).dump();
+    result.packing = inbox_spec.packing;
+    result.checksum = config::checksum_policy_to_string(checksum_policy);
+    result.queue = std::move(queue);
 
     // Populate resolved fields on InboxConfig (single source of truth).
     inbox_cfg.schema_fields_json = result.schema_json;
-    inbox_cfg.packing            = result.packing;
-    inbox_cfg.checksum           = result.checksum;
+    inbox_cfg.packing = result.packing;
+    inbox_cfg.checksum = result.checksum;
 
     return result;
 }

@@ -38,8 +38,7 @@ class FileLockSingleProcessTest : public IsolatedProcessTest
                 auto file_lock = FileLock::get_expected_lock_fullname_for(p);
                 if (fs::exists(file_lock))
                     fs::remove(file_lock);
-                auto dir_lock =
-                    FileLock::get_expected_lock_fullname_for(p, /*is_directory=*/true);
+                auto dir_lock = FileLock::get_expected_lock_fullname_for(p, /*is_directory=*/true);
                 if (fs::exists(dir_lock))
                     fs::remove(dir_lock);
                 if (fs::exists(p))
@@ -62,9 +61,8 @@ class FileLockSingleProcessTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_flsp_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)) + ".txt");
+                     ("plh_l2_flsp_" + std::string(test_name) + "_" + std::to_string(::getpid()) +
+                      "_" + std::to_string(ctr.fetch_add(1)) + ".txt");
         paths_to_clean_.push_back(p);
         return p.string();
     }
@@ -75,8 +73,7 @@ class FileLockSingleProcessTest : public IsolatedProcessTest
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
                      ("plh_l2_flsp_dir_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                      std::to_string(::getpid()) + "_" + std::to_string(ctr.fetch_add(1)));
         paths_to_clean_.push_back(p);
         return p.string();
     }
@@ -111,7 +108,7 @@ TEST_F(FileLockSingleProcessTest, MoveSemantics)
 {
     auto p1 = make_resource("move1");
     auto p2 = make_resource("move2");
-    auto w  = SpawnWorker("filelock_singleprocess.move_semantics", {p1, p2});
+    auto w = SpawnWorker("filelock_singleprocess.move_semantics", {p1, p2});
     ExpectWorkerOk(w);
 }
 
@@ -132,8 +129,7 @@ TEST_F(FileLockSingleProcessTest, TimedLock)
 TEST_F(FileLockSingleProcessTest, SequentialAcquireRelease)
 {
     auto p = make_resource("sequential");
-    auto w = SpawnWorker("filelock_singleprocess.sequential_acquire_release",
-                         {p});
+    auto w = SpawnWorker("filelock_singleprocess.sequential_acquire_release", {p});
     ExpectWorkerOk(w);
 }
 
@@ -141,24 +137,20 @@ TEST_F(FileLockSingleProcessTest, GetExpectedLockFullnameFor)
 {
     auto fp = make_resource("get_expected_file");
     auto dp = make_dir("get_expected_dir");
-    auto w  = SpawnWorker(
-        "filelock_singleprocess.get_expected_lock_fullname_for", {fp, dp});
+    auto w = SpawnWorker("filelock_singleprocess.get_expected_lock_fullname_for", {fp, dp});
     ExpectWorkerOk(w);
 }
 
 TEST_F(FileLockSingleProcessTest, GetLockedResourceAndCanonicalLockPath)
 {
     auto p = make_resource("path_getters");
-    auto w = SpawnWorker(
-        "filelock_singleprocess.get_locked_resource_and_canonical_lock_path",
-        {p});
+    auto w = SpawnWorker("filelock_singleprocess.get_locked_resource_and_canonical_lock_path", {p});
     ExpectWorkerOk(w);
 }
 
 TEST_F(FileLockSingleProcessTest, GetPathsReturnEmptyWhenInvalid)
 {
-    auto w = SpawnWorker(
-        "filelock_singleprocess.get_paths_return_empty_when_invalid", {});
+    auto w = SpawnWorker("filelock_singleprocess.get_paths_return_empty_when_invalid", {});
     ExpectWorkerOk(w);
 }
 

@@ -14,7 +14,8 @@
 // Scenario list:
 //   1. zombie_writer_detected_and_released  — dead PID in write_lock → release_zombie_writer → FREE
 //   2. zombie_readers_force_cleared         — reader_count>0, no live write_lock → release → 0
-//   3. force_reset_slot_on_dead_writer      — WRITING + dead write_lock → force_reset (no force flag)
+//   3. force_reset_slot_on_dead_writer      — WRITING + dead write_lock → force_reset (no force
+//   flag)
 //   4. dead_consumer_cleanup               — fake heartbeat with dead PID → cleanup removes it
 //   5. is_process_alive_false_for_nonexistent — datablock_is_process_alive sentinel check
 //   6. force_reset_unsafe_when_writer_alive — RECOVERY_UNSAFE when alive PID holds write_lock
@@ -34,8 +35,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::recovery_scenarios
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // INT32_MAX as a dead PID — guaranteed not to be a live process on any Linux system.
 static constexpr uint64_t kDeadPid = 2147483647ULL;
@@ -70,8 +77,7 @@ int zombie_writer_detected_and_released()
             std::string channel = make_test_channel_name("ZombieWriter");
             DataBlockConfig cfg = make_recovery_config();
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -94,7 +100,8 @@ int zombie_writer_detected_and_released()
 
             // Recovery: release_zombie_writer should detect dead PID → FREE
             RecoveryResult r = datablock_release_zombie_writer(channel.c_str(), 0);
-            EXPECT_EQ(r, RECOVERY_SUCCESS) << "release_zombie_writer must succeed for dead write_lock";
+            EXPECT_EQ(r, RECOVERY_SUCCESS)
+                << "release_zombie_writer must succeed for dead write_lock";
 
             // Verify the slot is now FREE with write_lock cleared
             {
@@ -131,7 +138,8 @@ int zombie_writer_detected_and_released()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "zombie_writer_detected_and_released", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "zombie_writer_detected_and_released", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -150,8 +158,7 @@ int zombie_readers_force_cleared()
             std::string channel = make_test_channel_name("ZombieReaders");
             DataBlockConfig cfg = make_recovery_config();
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -180,7 +187,8 @@ int zombie_readers_force_cleared()
 
             // Recovery: write_lock=0 → producer_is_alive=false → can release without force
             RecoveryResult r = datablock_release_zombie_readers(channel.c_str(), 0, false);
-            EXPECT_EQ(r, RECOVERY_SUCCESS) << "release_zombie_readers must succeed (no live write_lock)";
+            EXPECT_EQ(r, RECOVERY_SUCCESS)
+                << "release_zombie_readers must succeed (no live write_lock)";
 
             // Verify reader_count cleared
             {
@@ -204,7 +212,8 @@ int zombie_readers_force_cleared()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "zombie_readers_force_cleared", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "zombie_readers_force_cleared", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -226,8 +235,7 @@ int force_reset_slot_on_dead_writer()
             std::string channel = make_test_channel_name("ForceResetDeadWriter");
             DataBlockConfig cfg = make_recovery_config();
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -281,7 +289,8 @@ int force_reset_slot_on_dead_writer()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "force_reset_slot_on_dead_writer", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "force_reset_slot_on_dead_writer", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -301,8 +310,7 @@ int dead_consumer_cleanup()
             std::string channel = make_test_channel_name("DeadConsumerCleanup");
             DataBlockConfig cfg = make_recovery_config();
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -314,8 +322,7 @@ int dead_consumer_cleanup()
                 ASSERT_NE(hdr, nullptr);
 
                 // Slot 0 in the heartbeat pool: set consumer_pid to dead PID
-                hdr->consumer_heartbeats[0].consumer_pid.store(kDeadPid,
-                                                               std::memory_order_release);
+                hdr->consumer_heartbeats[0].consumer_pid.store(kDeadPid, std::memory_order_release);
                 // Increment active_consumer_count to reflect this "registered" consumer
                 hdr->active_consumer_count.fetch_add(1, std::memory_order_relaxed);
             }
@@ -343,7 +350,8 @@ int dead_consumer_cleanup()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "dead_consumer_cleanup", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "dead_consumer_cleanup", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -364,7 +372,8 @@ int is_process_alive_false_for_nonexistent()
             EXPECT_TRUE(datablock_is_process_alive(my_pid))
                 << "is_process_alive must return true for current process PID " << my_pid;
         },
-        "is_process_alive_false_for_nonexistent", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "is_process_alive_false_for_nonexistent", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -383,8 +392,7 @@ int force_reset_unsafe_when_writer_alive()
             std::string channel = make_test_channel_name("ForceResetUnsafe");
             DataBlockConfig cfg = make_recovery_config();
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -408,7 +416,8 @@ int force_reset_unsafe_when_writer_alive()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "force_reset_unsafe_when_writer_alive", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "force_reset_unsafe_when_writer_alive", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::recovery_scenarios

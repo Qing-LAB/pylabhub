@@ -20,14 +20,13 @@ namespace pylabhub::producer
 /// Schema definitions are producer-only — consumers discover them from the broker.
 struct ProducerFields
 {
-    nlohmann::json out_slot_schema_json;      ///< Required. Output slot schema.
-    nlohmann::json out_flexzone_schema_json;   ///< Optional. Flexzone schema (null = no flexzone).
+    nlohmann::json out_slot_schema_json;     ///< Required. Output slot schema.
+    nlohmann::json out_flexzone_schema_json; ///< Optional. Flexzone schema (null = no flexzone).
 };
 
 /// Parse producer-specific fields from JSON.
 /// Common fields are already populated in cfg.
-inline std::any parse_producer_fields(const nlohmann::json &j,
-                                       const config::RoleConfig & /*cfg*/)
+inline std::any parse_producer_fields(const nlohmann::json &j, const config::RoleConfig & /*cfg*/)
 {
     ProducerFields pf;
     pf.out_slot_schema_json = j.value("out_slot_schema", nlohmann::json{});

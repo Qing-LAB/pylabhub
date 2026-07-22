@@ -91,7 +91,7 @@ namespace
 {
 
 // Broker bind-retry parameters per Pattern 4 doc § "Bind robustness".
-constexpr int  kBindMaxAttempts    = 4;
+constexpr int kBindMaxAttempts = 4;
 constexpr auto kBindInitialBackoff = std::chrono::milliseconds{10};
 
 // Safety timeout for both subprocesses — fires ONLY if the parent
@@ -105,16 +105,17 @@ void maybe_redirect_to_shared_log(const Pattern4Setup &setup)
         set_shared_log(setup.shared_log_path);
 }
 
-} // anon
+} // namespace
 
 // ─── pattern4_heartbeat.broker ──────────────────────────────────────────────
 
 int pattern4_heartbeat_broker(const char *temp_dir_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
 
             pylabhub::tests::seed_curve_identities(setup.curve);
 
@@ -125,23 +126,21 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
             pylabhub::tests::apply_curve_to(cfg, setup.curve);
 
             std::promise<std::string> ready_promise;
-            auto                       ready_future = ready_promise.get_future();
-            cfg.on_ready = [&ready_promise](const std::string &ep,
-                                             const std::string &pk) {
-                LOGGER_INFO("Pattern4Broker: bound endpoint='{}' pubkey='{}'",
-                            ep, pk);
+            auto ready_future = ready_promise.get_future();
+            cfg.on_ready = [&ready_promise](const std::string &ep, const std::string &pk)
+            {
+                LOGGER_INFO("Pattern4Broker: bound endpoint='{}' pubkey='{}'", ep, pk);
                 ready_promise.set_value(ep);
             };
 
-            pylabhub::hub::HubState                            state;
+            pylabhub::hub::HubState state;
             std::unique_ptr<pylabhub::broker::BrokerService> broker;
             auto backoff = kBindInitialBackoff;
             for (int attempt = 1; attempt <= kBindMaxAttempts; ++attempt)
             {
                 try
                 {
-                    broker = std::make_unique<
-                        pylabhub::broker::BrokerService>(cfg, state);
+                    broker = std::make_unique<pylabhub::broker::BrokerService>(cfg, state);
                     break;
                 }
                 catch (const zmq::error_t &e)
@@ -151,8 +150,7 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
                         LOGGER_WARN("Pattern4Broker: bind EADDRINUSE on "
                                     "endpoint='{}' - retrying in {}ms "
                                     "(attempt {}/{})",
-                                    cfg.endpoint, backoff.count(),
-                                    attempt, kBindMaxAttempts);
+                                    cfg.endpoint, backoff.count(), attempt, kBindMaxAttempts);
                         std::this_thread::sleep_for(backoff);
                         backoff *= 5;
                         continue;
@@ -163,8 +161,7 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
             ASSERT_TRUE(broker);
 
             std::thread broker_thread([&] { broker->run(); });
-            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}),
-                      std::future_status::ready);
+            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}), std::future_status::ready);
 
             // Periodic snapshot + "role done" detector — runs on the
             // main thread.  Every 500 ms:
@@ -183,11 +180,11 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
             // Pure test observability — no production-code involvement
             // beyond the HubState snapshot API that already exists.
             constexpr auto kSnapshotInterval = std::chrono::milliseconds{500};
-            constexpr int  kStableTicks      = 4;  // 2 s of no growth
-            std::uint64_t last_total      = 0;
-            std::uint64_t max_seen        = 0;
-            int           stable_streak   = 0;
-            const auto    overall_deadline =
+            constexpr int kStableTicks = 4; // 2 s of no growth
+            std::uint64_t last_total = 0;
+            std::uint64_t max_seen = 0;
+            int stable_streak = 0;
+            const auto overall_deadline =
                 std::chrono::steady_clock::now() + kHeartbeatSafetyTimeout;
 
             LOGGER_INFO("Pattern4Broker: polling for role-done "
@@ -196,7 +193,7 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
             while (std::chrono::steady_clock::now() < overall_deadline)
             {
                 std::this_thread::sleep_for(kSnapshotInterval);
-                const auto    snap        = state.snapshot();
+                const auto snap = state.snapshot();
                 std::uint64_t total_count = 0;
                 for (const auto &[uid, role_entry] : snap.roles)
                 {
@@ -205,8 +202,7 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
                         LOGGER_INFO("Pattern4Broker: counter snapshot "
                                     "role='{}' channel='{}' "
                                     "role_type='{}' received={}",
-                                    uid, p.channel, p.role_type,
-                                    p.heartbeats_received);
+                                    uid, p.channel, p.role_type, p.heartbeats_received);
                         total_count += p.heartbeats_received;
                     }
                 }
@@ -228,17 +224,16 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
             }
             if (std::chrono::steady_clock::now() >= overall_deadline)
                 LOGGER_WARN("Pattern4Broker: safety deadline reached "
-                            "(saw max {} heartbeats)", max_seen);
+                            "(saw max {} heartbeats)",
+                            max_seen);
             broker->stop();
             broker_thread.join();
             LOGGER_INFO("Pattern4Broker: exiting cleanly");
         },
-        "pattern4_heartbeat.broker",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_heartbeat.broker", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // ─── pattern4_heartbeat.producer_role ───────────────────────────────────────
@@ -246,17 +241,17 @@ int pattern4_heartbeat_broker(const char *temp_dir_arg)
 int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
             const std::string role_uid = pylabhub::scripting::make_role_uid(
                 pylabhub::scripting::RoleUidTag::Producer, "pattern4hb", 1u);
-            const std::string channel  = "hb.test";
+            const std::string channel = "hb.test";
 
             pylabhub::tests::seed_curve_identities(setup.curve);
-            pylabhub::tests::add_curve_identity(
-                pylabhub::utils::security::kRoleIdentityName,
-                setup.curve.role_keys.at(role_uid));
+            pylabhub::tests::add_curve_identity(pylabhub::utils::security::kRoleIdentityName,
+                                                setup.curve.role_keys.at(role_uid));
 
             maybe_redirect_to_shared_log(setup);
 
@@ -267,20 +262,18 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             api.set_channel(channel);
 
             pylabhub::config::HubRefConfig hub_cfg;
-            hub_cfg.broker        = setup.broker_endpoint;
+            hub_cfg.broker = setup.broker_endpoint;
             hub_cfg.broker_pubkey = setup.curve.hub.public_z85;
 
             std::vector<pylabhub::scripting::Presence> presences;
             {
                 pylabhub::scripting::Presence p;
-                p.hub       = hub_cfg;
-                p.channel   = channel;
+                p.hub = hub_cfg;
+                p.channel = channel;
                 p.role_kind = pylabhub::scripting::RoleKind::Producer;
                 presences.push_back(std::move(p));
             }
-            auto handler =
-                std::make_unique<pylabhub::scripting::RoleHandler>(
-                    std::move(presences));
+            auto handler = std::make_unique<pylabhub::scripting::RoleHandler>(std::move(presences));
 
             ASSERT_TRUE(api.start_handler_threads(std::move(handler)));
             ASSERT_NE(api.handler(), nullptr);
@@ -300,21 +293,17 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             // exercise consumer attach).
             namespace sec = pylabhub::utils::security;
             pylabhub::hub::ProducerRegInputs reg_in;
-            reg_in.channel          = channel;
-            reg_in.role_uid         = role_uid;
-            reg_in.role_name        = "pattern4_heartbeat";
-            reg_in.role_type         = "producer";
-            reg_in.has_shm          = true;
+            reg_in.channel = channel;
+            reg_in.role_uid = role_uid;
+            reg_in.role_name = "pattern4_heartbeat";
+            reg_in.role_type = "producer";
+            reg_in.has_shm = true;
             reg_in.is_zmq_transport = false;
-            reg_in.shm_capability_endpoint =
-                sec::default_shm_capability_endpoint(channel);
-            reg_in.zmq_pubkey       = std::string(
-                sec::secure().keys().pubkey(sec::kRoleIdentityName));
-            auto reg_opts =
-                pylabhub::hub::build_producer_reg_payload(reg_in);
+            reg_in.shm_capability_endpoint = sec::default_shm_capability_endpoint(channel);
+            reg_in.zmq_pubkey = std::string(sec::secure().keys().pubkey(sec::kRoleIdentityName));
+            auto reg_opts = pylabhub::hub::build_producer_reg_payload(reg_in);
 
-            auto reg_resp = api.register_producer_channel(
-                reg_opts, pylabhub::kMidTimeoutMs);
+            auto reg_resp = api.register_producer_channel(reg_opts, pylabhub::kMidTimeoutMs);
             ASSERT_TRUE(reg_resp.has_value());
             ASSERT_EQ(reg_resp->value("status", std::string{}), "success");
 
@@ -326,8 +315,7 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             // axis).
             const int role_cfg_ms = 1000;
             const auto hub_max =
-                pylabhub::scripting::RoleAPIBase::extract_hub_heartbeat_max(
-                    *reg_resp);
+                pylabhub::scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_resp);
             api.install_heartbeat(role_cfg_ms, hub_max);
 
             // BRC's `set_periodic_task` gates each firing on BOTH a
@@ -340,32 +328,33 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             // for cadence.  Without this thread the periodic task
             // never fires — the bug surfaced during #223 bring-up.
             std::atomic<bool> iter_driver_running{true};
-            std::thread iter_driver([&core, &iter_driver_running] {
-                while (iter_driver_running.load(std::memory_order_relaxed))
+            std::thread iter_driver(
+                [&core, &iter_driver_running]
                 {
-                    core.inc_iteration_count();
-                    std::this_thread::sleep_for(std::chrono::milliseconds{20});
-                }
-            });
+                    while (iter_driver_running.load(std::memory_order_relaxed))
+                    {
+                        core.inc_iteration_count();
+                        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+                    }
+                });
 
-            // Fixed measurement window — role drives its own duration
-            // (no parent-side quit-signal needed for this rung).  The
-            // window must cover enough heartbeat ticks for the rate
-            // band to be tight; 2 s × 2 Hz default = 4 ticks minimum.
-            // CI gets a generous window per the `PYLABHUB_CI_BUILD`
-            // compile-time flag — slow scheduling under -j 2 can
-            // delay the first tick a few hundred ms, eating into the
-            // accuracy of a short window.
+        // Fixed measurement window — role drives its own duration
+        // (no parent-side quit-signal needed for this rung).  The
+        // window must cover enough heartbeat ticks for the rate
+        // band to be tight; 2 s × 2 Hz default = 4 ticks minimum.
+        // CI gets a generous window per the `PYLABHUB_CI_BUILD`
+        // compile-time flag — slow scheduling under -j 2 can
+        // delay the first tick a few hundred ms, eating into the
+        // accuracy of a short window.
 #ifdef PYLABHUB_CI_BUILD
             constexpr auto kMeasurementWindow = std::chrono::seconds{4};
 #else
             constexpr auto kMeasurementWindow = std::chrono::seconds{2};
 #endif
-            LOGGER_INFO("Pattern4Role[{}]: measuring heartbeat for {}s",
-                        role_uid, kMeasurementWindow.count());
+            LOGGER_INFO("Pattern4Role[{}]: measuring heartbeat for {}s", role_uid,
+                        kMeasurementWindow.count());
             std::this_thread::sleep_for(kMeasurementWindow);
-            LOGGER_INFO("Pattern4Role[{}]: measurement window elapsed",
-                        role_uid);
+            LOGGER_INFO("Pattern4Role[{}]: measurement window elapsed", role_uid);
 
             iter_driver_running.store(false, std::memory_order_relaxed);
             iter_driver.join();
@@ -373,31 +362,30 @@ int pattern4_heartbeat_producer_role(const char *temp_dir_arg)
             api.stop_handler_threads();
             LOGGER_INFO("Pattern4Role[{}]: exiting cleanly", role_uid);
         },
-        "pattern4_heartbeat.producer_role",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_heartbeat.producer_role", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // ─── Dispatcher registration ────────────────────────────────────────────────
 
 int dispatch_pattern4_heartbeat(int argc, char **argv)
 {
-    if (argc < 2) return -1;
+    if (argc < 2)
+        return -1;
     const std::string mode = argv[1];
-    const auto        dot  = mode.find('.');
-    if (dot == std::string::npos) return -1;
-    const std::string module   = mode.substr(0, dot);
+    const auto dot = mode.find('.');
+    if (dot == std::string::npos)
+        return -1;
+    const std::string module = mode.substr(0, dot);
     const std::string scenario = mode.substr(dot + 1);
-    if (module != "pattern4_heartbeat") return -1;
+    if (module != "pattern4_heartbeat")
+        return -1;
 
     if (argc < 3)
     {
-        std::fprintf(stderr,
-                     "pattern4_heartbeat.%s: missing <temp_dir> arg\n",
-                     scenario.c_str());
+        std::fprintf(stderr, "pattern4_heartbeat.%s: missing <temp_dir> arg\n", scenario.c_str());
         return 1;
     }
     const char *temp_dir = argv[2];
@@ -407,18 +395,13 @@ int dispatch_pattern4_heartbeat(int argc, char **argv)
     if (scenario == "producer_role")
         return pattern4_heartbeat_producer_role(temp_dir);
 
-    std::fprintf(stderr,
-                 "pattern4_heartbeat: unknown scenario '%s'\n",
-                 scenario.c_str());
+    std::fprintf(stderr, "pattern4_heartbeat: unknown scenario '%s'\n", scenario.c_str());
     return 1;
 }
 
 struct Pattern4HeartbeatRegistrar
 {
-    Pattern4HeartbeatRegistrar()
-    {
-        ::register_worker_dispatcher(dispatch_pattern4_heartbeat);
-    }
+    Pattern4HeartbeatRegistrar() { ::register_worker_dispatcher(dispatch_pattern4_heartbeat); }
 };
 
 static Pattern4HeartbeatRegistrar g_pattern4_heartbeat_registrar;

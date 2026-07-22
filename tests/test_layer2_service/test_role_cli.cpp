@@ -20,9 +20,9 @@
 #include <string>
 #include <vector>
 
+using pylabhub::role_cli::parse_role_args;
 using pylabhub::role_cli::ParseResult;
 using pylabhub::role_cli::RoleArgs;
-using pylabhub::role_cli::parse_role_args;
 
 namespace
 {
@@ -32,32 +32,31 @@ namespace
 struct ArgVec
 {
     std::vector<std::string> owned;
-    std::vector<char *>       ptrs;
+    std::vector<char *> ptrs;
 
     explicit ArgVec(std::initializer_list<const char *> args)
     {
         owned.reserve(args.size());
-        for (const char *a : args) owned.emplace_back(a);
+        for (const char *a : args)
+            owned.emplace_back(a);
         ptrs.reserve(owned.size());
-        for (auto &s : owned) ptrs.push_back(s.data());
+        for (auto &s : owned)
+            ptrs.push_back(s.data());
     }
-    int    argc() const { return static_cast<int>(ptrs.size()); }
-    char **argv()       { return ptrs.data(); }
+    int argc() const { return static_cast<int>(ptrs.size()); }
+    char **argv() { return ptrs.data(); }
 };
 
 // Run parse_role_args with in-memory streams.
-ParseResult run(std::initializer_list<const char *> args,
-                std::ostringstream &out,
-                std::ostringstream &err,
-                const char *role_name = "producer")
+ParseResult run(std::initializer_list<const char *> args, std::ostringstream &out,
+                std::ostringstream &err, const char *role_name = "producer")
 {
     ArgVec av(args);
     return parse_role_args(av.argc(), av.argv(), role_name, out, err);
 }
 
 // Convenience overload that discards streams (for happy-path tests).
-ParseResult run(std::initializer_list<const char *> args,
-                const char *role_name = "producer")
+ParseResult run(std::initializer_list<const char *> args, const char *role_name = "producer")
 {
     std::ostringstream out, err;
     return run(args, out, err, role_name);
@@ -74,11 +73,11 @@ TEST(RoleCliTest, Help_ExitsZeroAndPrintsUsageToStdout)
     EXPECT_EQ(r.exit_code, 0);
     EXPECT_TRUE(err.str().empty()) << "stderr: " << err.str();
     const auto text = out.str();
-    EXPECT_NE(text.find("Usage:"),        std::string::npos);
-    EXPECT_NE(text.find("--role"),        std::string::npos);
-    EXPECT_NE(text.find("--init"),        std::string::npos);
-    EXPECT_NE(text.find("--validate"),    std::string::npos);
-    EXPECT_NE(text.find("--keygen"),      std::string::npos);
+    EXPECT_NE(text.find("Usage:"), std::string::npos);
+    EXPECT_NE(text.find("--role"), std::string::npos);
+    EXPECT_NE(text.find("--init"), std::string::npos);
+    EXPECT_NE(text.find("--validate"), std::string::npos);
+    EXPECT_NE(text.find("--keygen"), std::string::npos);
     EXPECT_NE(text.find("--log-maxsize"), std::string::npos);
     EXPECT_NE(text.find("--log-backups"), std::string::npos);
 }
@@ -137,8 +136,7 @@ TEST(RoleCliTest, InitMode_WithName)
 
 TEST(RoleCliTest, InitMode_WithLogOverrides_BothSet)
 {
-    auto r = run({"plh_role", "--init", "/tmp/x",
-                  "--log-maxsize", "25", "--log-backups", "7"});
+    auto r = run({"plh_role", "--init", "/tmp/x", "--log-maxsize", "25", "--log-backups", "7"});
     ASSERT_EQ(r.exit_code, -1);
     ASSERT_TRUE(r.args.log_max_size_mb.has_value());
     EXPECT_DOUBLE_EQ(*r.args.log_max_size_mb, 25.0);
@@ -250,8 +248,7 @@ TEST(RoleCliTest, Error_InitAndKeygen)
 TEST(RoleCliTest, Error_ValidateAndKeygen)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--config", "/tmp/x.json",
-                  "--validate", "--keygen"}, out, err);
+    auto r = run({"plh_role", "--config", "/tmp/x.json", "--validate", "--keygen"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("mutually exclusive"), std::string::npos);
 }
@@ -259,8 +256,7 @@ TEST(RoleCliTest, Error_ValidateAndKeygen)
 TEST(RoleCliTest, Error_AllThreeModes)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--init", "/tmp/x", "--validate", "--keygen"},
-                 out, err);
+    auto r = run({"plh_role", "--init", "/tmp/x", "--validate", "--keygen"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
 }
 
@@ -277,8 +273,8 @@ TEST(RoleCliTest, Error_LogMaxsizeWithoutInit_RunMode)
 TEST(RoleCliTest, Error_LogMaxsizeWithoutInit_ValidateMode)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--config", "/tmp/x.json", "--validate",
-                  "--log-maxsize", "10"}, out, err);
+    auto r =
+        run({"plh_role", "--config", "/tmp/x.json", "--validate", "--log-maxsize", "10"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
 }
 
@@ -301,16 +297,14 @@ TEST(RoleCliTest, Error_NameWithoutInit_RunMode)
 TEST(RoleCliTest, Error_NameWithValidate)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--config", "/tmp/x.json", "--validate",
-                  "--name", "Foo"}, out, err);
+    auto r = run({"plh_role", "--config", "/tmp/x.json", "--validate", "--name", "Foo"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
 }
 
 TEST(RoleCliTest, Error_NameWithKeygen)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--config", "/tmp/x.json", "--keygen",
-                  "--name", "Foo"}, out, err);
+    auto r = run({"plh_role", "--config", "/tmp/x.json", "--keygen", "--name", "Foo"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
 }
 
@@ -319,21 +313,17 @@ TEST(RoleCliTest, Error_NameWithKeygen)
 TEST(RoleCliTest, Error_LogMaxsize_NotANumber)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--init", "/tmp/x",
-                  "--log-maxsize", "abc"}, out, err);
+    auto r = run({"plh_role", "--init", "/tmp/x", "--log-maxsize", "abc"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
-    EXPECT_NE(err.str().find("--log-maxsize expects a number"),
-              std::string::npos);
+    EXPECT_NE(err.str().find("--log-maxsize expects a number"), std::string::npos);
 }
 
 TEST(RoleCliTest, Error_LogBackups_NotAnInteger)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "--init", "/tmp/x",
-                  "--log-backups", "abc"}, out, err);
+    auto r = run({"plh_role", "--init", "/tmp/x", "--log-backups", "abc"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
-    EXPECT_NE(err.str().find("--log-backups expects an integer"),
-              std::string::npos);
+    EXPECT_NE(err.str().find("--log-backups expects an integer"), std::string::npos);
 }
 
 // ─── Removed flag (Phase 18) — --log-file rejected as unknown ────────────────
@@ -341,11 +331,10 @@ TEST(RoleCliTest, Error_LogBackups_NotAnInteger)
 TEST(RoleCliTest, Error_LogFileFlagRemoved)
 {
     std::ostringstream out, err;
-    auto r = run({"plh_role", "/tmp/x", "--log-file", "/tmp/app.log"},
-                 out, err);
+    auto r = run({"plh_role", "/tmp/x", "--log-file", "/tmp/app.log"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
-    EXPECT_NE(err.str().find("Unknown argument"),      std::string::npos);
-    EXPECT_NE(err.str().find("--log-file"),            std::string::npos);
+    EXPECT_NE(err.str().find("Unknown argument"), std::string::npos);
+    EXPECT_NE(err.str().find("--log-file"), std::string::npos);
 }
 
 // ─── Unknown flags / positional errors ───────────────────────────────────────
@@ -374,7 +363,7 @@ TEST(RoleCliTest, Error_NoDirNoConfigNoInit)
     auto r = run({"plh_role"}, out, err);
     EXPECT_EQ(r.exit_code, 1);
     EXPECT_NE(err.str().find("role directory, --init, --skeleton, "
-                              "or --config"),
+                             "or --config"),
               std::string::npos);
 }
 
@@ -398,7 +387,7 @@ TEST(RoleCliTest, Ordering_RoleBeforeDir)
 {
     auto r = run({"plh_role", "--role", "consumer", "/tmp/x"});
     ASSERT_EQ(r.exit_code, -1);
-    EXPECT_EQ(r.args.role,     "consumer");
+    EXPECT_EQ(r.args.role, "consumer");
     EXPECT_EQ(r.args.role_dir, "/tmp/x");
 }
 
@@ -406,20 +395,18 @@ TEST(RoleCliTest, Ordering_DirBeforeRole)
 {
     auto r = run({"plh_role", "/tmp/x", "--role", "consumer"});
     ASSERT_EQ(r.exit_code, -1);
-    EXPECT_EQ(r.args.role,     "consumer");
+    EXPECT_EQ(r.args.role, "consumer");
     EXPECT_EQ(r.args.role_dir, "/tmp/x");
 }
 
 TEST(RoleCliTest, Ordering_InitFlagsReordered)
 {
-    auto r = run({"plh_role", "--log-backups", "3",
-                  "--init", "/tmp/x",
-                  "--log-maxsize", "5",
+    auto r = run({"plh_role", "--log-backups", "3", "--init", "/tmp/x", "--log-maxsize", "5",
                   "--name", "N"});
     ASSERT_EQ(r.exit_code, -1);
     EXPECT_TRUE(r.args.init_only);
-    EXPECT_EQ(r.args.role_dir,    "/tmp/x");
-    EXPECT_EQ(r.args.init_name,   "N");
+    EXPECT_EQ(r.args.role_dir, "/tmp/x");
+    EXPECT_EQ(r.args.init_name, "N");
     ASSERT_TRUE(r.args.log_max_size_mb.has_value());
     EXPECT_DOUBLE_EQ(*r.args.log_max_size_mb, 5.0);
     ASSERT_TRUE(r.args.log_backups.has_value());

@@ -151,7 +151,8 @@ TEST(SlotRWCoordinatorTest, HighContentionWritersAndReadersStress)
     std::atomic<uint64_t> writes_ok{0};
     std::atomic<uint64_t> reads_ok{0};
 
-    auto writer = [&]() {
+    auto writer = [&]()
+    {
         while (!stop.load(std::memory_order_acquire))
         {
             SlotAcquireResult res = slot_rw_acquire_write(&f.slot, /*timeout_ms=*/5);
@@ -164,7 +165,8 @@ TEST(SlotRWCoordinatorTest, HighContentionWritersAndReadersStress)
         }
     };
 
-    auto reader = [&]() {
+    auto reader = [&]()
+    {
         while (!stop.load(std::memory_order_acquire))
         {
             uint64_t gen = 0;
@@ -202,4 +204,3 @@ TEST(SlotRWCoordinatorTest, HighContentionWritersAndReadersStress)
     EXPECT_GT(writes_ok.load(std::memory_order_relaxed), 0u);
     EXPECT_GT(reads_ok.load(std::memory_order_relaxed), 0u);
 }
-

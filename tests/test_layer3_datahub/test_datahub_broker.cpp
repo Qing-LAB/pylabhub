@@ -100,15 +100,13 @@ TEST_F(DatahubBrokerTest, Gate_RegReq_AcceptsProcTag)
 
 TEST_F(DatahubBrokerTest, Gate_ConsumerRegReq_RejectsProducerTag)
 {
-    auto proc = SpawnWorker(
-        "broker.gate_consumer_reg_req_rejects_producer_tag", {});
+    auto proc = SpawnWorker("broker.gate_consumer_reg_req_rejects_producer_tag", {});
     ExpectWorkerOk(proc);
 }
 
 TEST_F(DatahubBrokerTest, Gate_ConsumerRegReq_AcceptsProcTag)
 {
-    auto proc = SpawnWorker(
-        "broker.gate_consumer_reg_req_accepts_proc_tag", {});
+    auto proc = SpawnWorker("broker.gate_consumer_reg_req_accepts_proc_tag", {});
     ExpectWorkerOk(proc);
 }
 

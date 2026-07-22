@@ -52,17 +52,16 @@
 
 using pylabhub::hub::ChecksumPolicy;
 using pylabhub::hub::ConsumerSyncPolicy;
+using pylabhub::hub::datablock_layout_total_size;
 using pylabhub::hub::DataBlockConfig;
 using pylabhub::hub::DataBlockPageSize;
 using pylabhub::hub::DataBlockPolicy;
 using pylabhub::hub::SchemaFieldDesc;
 using pylabhub::hub::ShmQueue;
-using pylabhub::hub::datablock_layout_total_size;
 
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-    pylabhub::hub::GetDataBlockModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                             pylabhub::hub::GetDataBlockModule())
 
 namespace
 {
@@ -76,7 +75,7 @@ std::vector<SchemaFieldDesc> make_slot_schema()
 {
     SchemaFieldDesc field;
     field.type_str = "float32";
-    field.count    = 1;
+    field.count = 1;
     return {field};
 }
 
@@ -86,13 +85,13 @@ std::vector<SchemaFieldDesc> make_slot_schema()
 DataBlockConfig matching_config(size_t item_size)
 {
     DataBlockConfig cfg;
-    cfg.logical_unit_size    = item_size;
-    cfg.flex_zone_size       = 0;   // matches empty fz_schema below
+    cfg.logical_unit_size = item_size;
+    cfg.flex_zone_size = 0; // matches empty fz_schema below
     cfg.ring_buffer_capacity = kRingCapacity;
-    cfg.physical_page_size   = DataBlockPageSize::Size4K;
-    cfg.policy               = DataBlockPolicy::RingBuffer;
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.checksum_policy      = ChecksumPolicy::None;
+    cfg.checksum_policy = ChecksumPolicy::None;
     return cfg;
 }
 
@@ -103,7 +102,8 @@ class ShmQueueCapabilityTest : public ::testing::Test
     {
         for (int fd : owned_fds_)
         {
-            if (fd >= 0) ::close(fd);
+            if (fd >= 0)
+                ::close(fd);
         }
     }
 
@@ -119,14 +119,14 @@ class ShmQueueCapabilityTest : public ::testing::Test
     {
         const auto slot_schema = make_slot_schema();
         // Compute the item_size that the writer factory will compute.
-        auto [_, item_size] = pylabhub::hub::compute_field_layout(
-            slot_schema, "aligned");
+        auto [_, item_size] = pylabhub::hub::compute_field_layout(slot_schema, "aligned");
         const auto total = datablock_layout_total_size(matching_config(item_size));
         EXPECT_GT(total, 0u);
 
         const int memfd = ::memfd_create(label, MFD_CLOEXEC);
         EXPECT_GE(memfd, 0) << "memfd_create failed: errno=" << errno;
-        if (memfd < 0) return -1;
+        if (memfd < 0)
+            return -1;
         track_fd(memfd);
         EXPECT_EQ(0, ::ftruncate(memfd, static_cast<off_t>(total)))
             << "ftruncate failed: errno=" << errno;
@@ -137,17 +137,14 @@ class ShmQueueCapabilityTest : public ::testing::Test
     {
         return ShmQueue::create_writer_standby(
             chan, make_slot_schema(), "aligned",
-            /*fz_schema=*/{}, /*fz_packing=*/"aligned",
-            kRingCapacity, DataBlockPageSize::Size4K,
-            DataBlockPolicy::RingBuffer,
-            ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
+            /*fz_schema=*/{}, /*fz_packing=*/"aligned", kRingCapacity, DataBlockPageSize::Size4K,
+            DataBlockPolicy::RingBuffer, ConsumerSyncPolicy::Latest_only, ChecksumPolicy::None);
     }
 
     static std::unique_ptr<ShmQueue> standby_reader(const std::string &chan)
     {
         return ShmQueue::create_reader_standby(
-            /*shm_name=*/chan, make_slot_schema(), "aligned",
-            chan);
+            /*shm_name=*/chan, make_slot_schema(), "aligned", chan);
     }
 
   private:
@@ -187,13 +184,12 @@ TEST_F(ShmQueueCapabilityTest, WriterStandby_SetCapabilityFd_Start_Active)
 // mirroring SCM_RIGHTS semantics).  Pins that data written via the
 // producer's write_acquire is observable via the consumer's
 // read_acquire — the end-to-end pipe through the new path.
-TEST_F(ShmQueueCapabilityTest,
-       ReaderStandby_SetCapabilityFd_Start_Active_ReadsProducerData)
+TEST_F(ShmQueueCapabilityTest, ReaderStandby_SetCapabilityFd_Start_Active_ReadsProducerData)
 {
     const std::string chan = "cap-rw-test";
 
     // Producer side.
-    auto writer       = standby_writer(chan);
+    auto writer = standby_writer(chan);
     const int memfd_w = make_sized_memfd("plh_l2_shmq_cap_rw_w");
     ASSERT_GE(memfd_w, 0);
     ASSERT_NE(writer, nullptr);
@@ -213,17 +209,17 @@ TEST_F(ShmQueueCapabilityTest,
         char dummy = 'X';
         struct iovec iov{};
         iov.iov_base = &dummy;
-        iov.iov_len  = 1;
-        char           cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
-        struct msghdr  msg{};
-        msg.msg_iov        = &iov;
-        msg.msg_iovlen     = 1;
-        msg.msg_control    = cmsgbuf;
+        iov.iov_len = 1;
+        char cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
+        struct msghdr msg{};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsgbuf;
         msg.msg_controllen = sizeof(cmsgbuf);
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-        cmsg->cmsg_level     = SOL_SOCKET;
-        cmsg->cmsg_type      = SCM_RIGHTS;
-        cmsg->cmsg_len       = CMSG_LEN(sizeof(int));
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
         std::memcpy(CMSG_DATA(cmsg), &memfd_w, sizeof(int));
         ASSERT_EQ(1, ::sendmsg(sv[0], &msg, 0));
     }
@@ -232,12 +228,12 @@ TEST_F(ShmQueueCapabilityTest,
         char dummy = 0;
         struct iovec iov{};
         iov.iov_base = &dummy;
-        iov.iov_len  = 1;
-        char           cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
-        struct msghdr  msg{};
-        msg.msg_iov        = &iov;
-        msg.msg_iovlen     = 1;
-        msg.msg_control    = cmsgbuf;
+        iov.iov_len = 1;
+        char cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
+        struct msghdr msg{};
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = cmsgbuf;
         msg.msg_controllen = sizeof(cmsgbuf);
         ASSERT_EQ(1, ::recvmsg(sv[1], &msg, 0));
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
@@ -351,8 +347,7 @@ TEST_F(ShmQueueCapabilityTest, Mechanism_AfterStart_IsShmCapability)
 
     // Mechanism string name (the surface scripts see via
     // `api.queue_mechanism(side)`).
-    EXPECT_STREQ(pylabhub::hub::mechanism_name(queue->mechanism()),
-                 "ShmCapability");
+    EXPECT_STREQ(pylabhub::hub::mechanism_name(queue->mechanism()), "ShmCapability");
 }
 
 // ── Topology-parametric factories (Phase C step 3) ────────────────────
@@ -364,66 +359,59 @@ TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanIn_ReaderRefused)
 {
     ShmQueue::RxCreateOptions opts;
     opts.channel_name = "shm-fanin-refuse-r";
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.slot_packing = "aligned";
 
-    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::FanIn,
-                                      std::move(opts));
-    EXPECT_EQ(q, nullptr)
-        << "SHM fan-in reader must be refused per HEP-CORE-0017 §3.3.0 gate 1";
+    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::FanIn, std::move(opts));
+    EXPECT_EQ(q, nullptr) << "SHM fan-in reader must be refused per HEP-CORE-0017 §3.3.0 gate 1";
 }
 
 TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanIn_WriterRefused)
 {
     ShmQueue::TxCreateOptions opts;
-    opts.channel_name         = "shm-fanin-refuse-w";
-    opts.slot_schema          = make_slot_schema();
-    opts.slot_packing         = "aligned";
+    opts.channel_name = "shm-fanin-refuse-w";
+    opts.slot_schema = make_slot_schema();
+    opts.slot_packing = "aligned";
     opts.ring_buffer_capacity = kRingCapacity;
-    opts.page_size            = DataBlockPageSize::Size4K;
-    opts.policy               = DataBlockPolicy::RingBuffer;
-    opts.sync_policy          = ConsumerSyncPolicy::Latest_only;
-    opts.checksum_policy      = ChecksumPolicy::None;
+    opts.page_size = DataBlockPageSize::Size4K;
+    opts.policy = DataBlockPolicy::RingBuffer;
+    opts.sync_policy = ConsumerSyncPolicy::Latest_only;
+    opts.checksum_policy = ChecksumPolicy::None;
 
-    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::FanIn,
-                                      std::move(opts));
-    EXPECT_EQ(q, nullptr)
-        << "SHM fan-in writer must be refused per HEP-CORE-0017 §3.3.0 gate 1";
+    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::FanIn, std::move(opts));
+    EXPECT_EQ(q, nullptr) << "SHM fan-in writer must be refused per HEP-CORE-0017 §3.3.0 gate 1";
 }
 
 TEST_F(ShmQueueCapabilityTest, TopologyFactory_OneToOne_WriterDispatchesToStandby)
 {
     ShmQueue::TxCreateOptions opts;
-    opts.channel_name         = "shm-o2o-writer";
-    opts.slot_schema          = make_slot_schema();
-    opts.slot_packing         = "aligned";
+    opts.channel_name = "shm-o2o-writer";
+    opts.slot_schema = make_slot_schema();
+    opts.slot_packing = "aligned";
     opts.ring_buffer_capacity = kRingCapacity;
-    opts.page_size            = DataBlockPageSize::Size4K;
-    opts.policy               = DataBlockPolicy::RingBuffer;
-    opts.sync_policy          = ConsumerSyncPolicy::Latest_only;
-    opts.checksum_policy      = ChecksumPolicy::None;
+    opts.page_size = DataBlockPageSize::Size4K;
+    opts.policy = DataBlockPolicy::RingBuffer;
+    opts.sync_policy = ConsumerSyncPolicy::Latest_only;
+    opts.checksum_policy = ChecksumPolicy::None;
 
-    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::OneToOne,
-                                      std::move(opts));
+    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::OneToOne, std::move(opts));
     ASSERT_NE(q, nullptr);
-    ASSERT_FALSE(q->is_running())
-        << "Standby: no capability_fd applied yet";
+    ASSERT_FALSE(q->is_running()) << "Standby: no capability_fd applied yet";
 }
 
 TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanOut_WriterDispatchesToStandby)
 {
     ShmQueue::TxCreateOptions opts;
-    opts.channel_name         = "shm-fanout-writer";
-    opts.slot_schema          = make_slot_schema();
-    opts.slot_packing         = "aligned";
+    opts.channel_name = "shm-fanout-writer";
+    opts.slot_schema = make_slot_schema();
+    opts.slot_packing = "aligned";
     opts.ring_buffer_capacity = kRingCapacity;
-    opts.page_size            = DataBlockPageSize::Size4K;
-    opts.policy               = DataBlockPolicy::RingBuffer;
-    opts.sync_policy          = ConsumerSyncPolicy::Latest_only;
-    opts.checksum_policy      = ChecksumPolicy::None;
+    opts.page_size = DataBlockPageSize::Size4K;
+    opts.policy = DataBlockPolicy::RingBuffer;
+    opts.sync_policy = ConsumerSyncPolicy::Latest_only;
+    opts.checksum_policy = ChecksumPolicy::None;
 
-    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::FanOut,
-                                      std::move(opts));
+    auto q = ShmQueue::create_writer(pylabhub::hub::ChannelTopology::FanOut, std::move(opts));
     ASSERT_NE(q, nullptr);
     // FanOut and OneToOne produce identical SHM-side construction —
     // N-consumer multiplication happens at L2 accept loop, not here.
@@ -434,11 +422,10 @@ TEST_F(ShmQueueCapabilityTest, TopologyFactory_OneToOne_ReaderDispatchesToStandb
 {
     ShmQueue::RxCreateOptions opts;
     opts.channel_name = "shm-o2o-reader";
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.slot_packing = "aligned";
 
-    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::OneToOne,
-                                      std::move(opts));
+    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::OneToOne, std::move(opts));
     ASSERT_NE(q, nullptr);
     ASSERT_FALSE(q->is_running());
 }
@@ -447,11 +434,10 @@ TEST_F(ShmQueueCapabilityTest, TopologyFactory_FanOut_ReaderDispatchesToStandby)
 {
     ShmQueue::RxCreateOptions opts;
     opts.channel_name = "shm-fanout-reader";
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.slot_packing = "aligned";
 
-    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::FanOut,
-                                      std::move(opts));
+    auto q = ShmQueue::create_reader(pylabhub::hub::ChannelTopology::FanOut, std::move(opts));
     ASSERT_NE(q, nullptr);
     ASSERT_FALSE(q->is_running());
 }
@@ -464,4 +450,3 @@ TEST_F(ShmQueueCapabilityTest, LegacyFactories_StillWork)
     auto r = standby_reader("shm-legacy-reader");
     ASSERT_NE(r, nullptr);
 }
-

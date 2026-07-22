@@ -19,18 +19,16 @@
 namespace pylabhub::utils::security
 {
 
-DomainRoutingTable::DomainRoutingTable()  = default;
+DomainRoutingTable::DomainRoutingTable() = default;
 DomainRoutingTable::~DomainRoutingTable() = default;
 
-bool DomainRoutingTable::register_domain(std::string    domain,
-                                          PeerAdmission &admission)
+bool DomainRoutingTable::register_domain(std::string domain, PeerAdmission &admission)
 {
     if (domain.empty())
         return false;
     std::unique_lock<std::shared_mutex> lk(mu_);
-    const auto [it, inserted] =
-        map_.try_emplace(std::move(domain), std::ref(admission));
-    (void) it;
+    const auto [it, inserted] = map_.try_emplace(std::move(domain), std::ref(admission));
+    (void)it;
     return inserted;
 }
 
@@ -48,18 +46,18 @@ std::size_t DomainRoutingTable::size() const noexcept
     return map_.size();
 }
 
-void DomainRoutingTable::log_admission_threw_(const std::string &domain,
-                                               const char *what)
+void DomainRoutingTable::log_admission_threw_(const std::string &domain, const char *what)
 {
     LOGGER_ERROR("DomainRoutingTable: admission for domain '{}' threw "
-                 "— treating as deny.  what(): {}", domain, what);
+                 "— treating as deny.  what(): {}",
+                 domain, what);
 }
 
-void DomainRoutingTable::log_admission_threw_unknown_(
-    const std::string &domain)
+void DomainRoutingTable::log_admission_threw_unknown_(const std::string &domain)
 {
     LOGGER_ERROR("DomainRoutingTable: admission for domain '{}' threw "
-                 "non-std exception — treating as deny.", domain);
+                 "non-std exception — treating as deny.",
+                 domain);
 }
 
 } // namespace pylabhub::utils::security

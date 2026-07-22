@@ -92,7 +92,7 @@ namespace pylabhub::utils::security
 /// sequentially by the protocol code.
 class PYLABHUB_UTILS_EXPORT IAttachChannel
 {
-public:
+  public:
     /// Maximum JSON frame size accepted by any conforming
     /// implementation.  Same value as the SHM channel's historical
     /// cap (`attach_protocol.cpp` pre-Phase-3); every transport uses
@@ -112,9 +112,8 @@ public:
     ///                                mid-send (peer stalled).
     /// @throws std::runtime_error     on transport error, oversized
     ///                                frame, or peer disconnect.
-    virtual void
-    send_frame(const nlohmann::json &frame,
-               std::chrono::steady_clock::time_point deadline) = 0;
+    virtual void send_frame(const nlohmann::json &frame,
+                            std::chrono::steady_clock::time_point deadline) = 0;
 
     /// Receive a JSON frame from the peer.
     ///
@@ -126,8 +125,7 @@ public:
     /// @throws std::runtime_error     on transport error, malformed
     ///                                length prefix, oversized frame,
     ///                                bad JSON, or peer disconnect.
-    virtual nlohmann::json
-    recv_frame(std::chrono::steady_clock::time_point deadline) = 0;
+    virtual nlohmann::json recv_frame(std::chrono::steady_clock::time_point deadline) = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -147,18 +145,18 @@ public:
 attach_remaining_ms(std::chrono::steady_clock::time_point deadline) noexcept
 {
     const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) return std::chrono::milliseconds{0};
+    if (now >= deadline)
+        return std::chrono::milliseconds{0};
     return std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
 }
 
 /// Build a `std::runtime_error` with the canonical AttachProtocol
 /// message shape: `"AttachProtocol::<side>: <what>: <strerror>"`.
-[[nodiscard]] inline std::runtime_error
-attach_make_errno_error(const char *side, const char *what,
-                        int captured_errno)
+[[nodiscard]] inline std::runtime_error attach_make_errno_error(const char *side, const char *what,
+                                                                int captured_errno)
 {
-    return std::runtime_error(std::string{"AttachProtocol::"} + side + ": " +
-                              what + ": " + std::strerror(captured_errno));
+    return std::runtime_error(std::string{"AttachProtocol::"} + side + ": " + what + ": " +
+                              std::strerror(captured_errno));
 }
 
 } // namespace pylabhub::utils::security

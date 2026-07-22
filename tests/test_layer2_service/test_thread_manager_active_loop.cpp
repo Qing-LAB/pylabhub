@@ -32,8 +32,7 @@ class ThreadManagerActiveLoopTest : public IsolatedProcessTest
 
 TEST_F(ThreadManagerActiveLoopTest, OldOverload_FlagSetAfterBodyReturn)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.old_overload_flag_set_after_body_return");
+    auto w = SpawnWorker("thread_manager_active_loop.old_overload_flag_set_after_body_return");
     ExpectWorkerOk(w);
 }
 
@@ -46,8 +45,8 @@ TEST_F(ThreadManagerActiveLoopTest, NewOverload_EarlyMark_ObservableBeforeBodyRe
 
 TEST_F(ThreadManagerActiveLoopTest, IsActiveLoopExited_UnknownName_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.is_active_loop_exited_unknown_name_returns_false");
+    auto w =
+        SpawnWorker("thread_manager_active_loop.is_active_loop_exited_unknown_name_returns_false");
     ExpectWorkerOk(w);
 }
 
@@ -60,75 +59,63 @@ TEST_F(ThreadManagerActiveLoopTest, WaitForActiveLoopExit_UnknownName_ReturnsFal
 
 TEST_F(ThreadManagerActiveLoopTest, WaitForActiveLoopExit_Timeout_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.wait_for_active_loop_exit_timeout_returns_false");
+    auto w =
+        SpawnWorker("thread_manager_active_loop.wait_for_active_loop_exit_timeout_returns_false");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerActiveLoopTest, MarkActiveLoopExited_Idempotent)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.mark_active_loop_exited_idempotent");
+    auto w = SpawnWorker("thread_manager_active_loop.mark_active_loop_exited_idempotent");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerActiveLoopTest, Drain_FastPath_AlreadyExited)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.drain_fast_path_already_exited");
+    auto w = SpawnWorker("thread_manager_active_loop.drain_fast_path_already_exited");
     ExpectWorkerOk(w);
 }
 
 // ── drain() two-stage diagnostics — deliberately exercise detach path ──────
 
-TEST_F(ThreadManagerActiveLoopTest,
-       Drain_StuckInActiveLoop_DetachesWithActiveLoopDiagnostic)
+TEST_F(ThreadManagerActiveLoopTest, Drain_StuckInActiveLoop_DetachesWithActiveLoopDiagnostic)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.drain_stuck_in_active_loop");
+    auto w = SpawnWorker("thread_manager_active_loop.drain_stuck_in_active_loop");
     // F1 detach path: drain emits the "stuck inside its active loop"
     // ERROR + the "UNCLEAN SHUTDOWN" summary.  Pin both as expected so
     // the framework asserts they fire AND tolerates them.
     ExpectWorkerOk(w, /*required=*/{},
-                   /*expected_errors=*/{
-                       "stuck inside its active loop body",
-                       "UNCLEAN SHUTDOWN"});
+                   /*expected_errors=*/{"stuck inside its active loop body", "UNCLEAN SHUTDOWN"});
 }
 
-TEST_F(ThreadManagerActiveLoopTest,
-       Drain_StuckInPostLoop_DetachesWithPostLoopDiagnostic)
+TEST_F(ThreadManagerActiveLoopTest, Drain_StuckInPostLoop_DetachesWithPostLoopDiagnostic)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.drain_stuck_in_post_loop");
+    auto w = SpawnWorker("thread_manager_active_loop.drain_stuck_in_post_loop");
     // F2 detach path: drain emits the "stuck in post-loop cleanup"
     // ERROR + the "UNCLEAN SHUTDOWN" summary.
     ExpectWorkerOk(w, /*required=*/{},
-                   /*expected_errors=*/{
-                       "stuck in post-loop cleanup",
-                       "UNCLEAN SHUTDOWN"});
+                   /*expected_errors=*/{"stuck in post-loop cleanup", "UNCLEAN SHUTDOWN"});
 }
 
 // ── Transactional family ───────────────────────────────────────────────────
 
 TEST_F(ThreadManagerActiveLoopTest, WithActiveLoop_BracketTogglesInActiveLoop)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.with_active_loop_bracket_toggles_in_active_loop");
+    auto w =
+        SpawnWorker("thread_manager_active_loop.with_active_loop_bracket_toggles_in_active_loop");
     ExpectWorkerOk(w);
 }
 
-TEST_F(ThreadManagerActiveLoopTest,
-       WithActiveLoop_SkipsBodyIfShutdownRequestedBeforeEntry)
+TEST_F(ThreadManagerActiveLoopTest, WithActiveLoop_SkipsBodyIfShutdownRequestedBeforeEntry)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.with_active_loop_skips_body_if_shutdown_requested_before_entry");
+    auto w = SpawnWorker("thread_manager_active_loop.with_active_loop_skips_body_if_shutdown_"
+                         "requested_before_entry");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerActiveLoopTest, WithActiveLoop_RAIIResetOnException)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.with_active_loop_raii_reset_on_exception");
+    auto w = SpawnWorker("thread_manager_active_loop.with_active_loop_raii_reset_on_exception");
     // Body throws inside the bracket; the spawn wrapper catches and
     // emits "thread '<name>' body threw: <msg>" at ERROR level.
     // Declare it as expected so the framework's no-ERROR guard
@@ -139,28 +126,25 @@ TEST_F(ThreadManagerActiveLoopTest, WithActiveLoop_RAIIResetOnException)
 
 TEST_F(ThreadManagerActiveLoopTest, ShutdownRequested_ThreadSidePollObservesFlag)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.shutdown_requested_thread_side_poll_observes_flag");
+    auto w =
+        SpawnWorker("thread_manager_active_loop.shutdown_requested_thread_side_poll_observes_flag");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerActiveLoopTest, RequestShutdown_UnknownNameReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.request_shutdown_unknown_name_returns_false");
+    auto w = SpawnWorker("thread_manager_active_loop.request_shutdown_unknown_name_returns_false");
     ExpectWorkerOk(w);
 }
 
-TEST_F(ThreadManagerActiveLoopTest,
-       RequestShutdownAll_FlipsClosingAndRejectsNewSpawn)
+TEST_F(ThreadManagerActiveLoopTest, RequestShutdownAll_FlipsClosingAndRejectsNewSpawn)
 {
     auto w = SpawnWorker(
         "thread_manager_active_loop.request_shutdown_all_flips_closing_and_rejects_new_spawn");
     ExpectWorkerOk(w);
 }
 
-TEST_F(ThreadManagerActiveLoopTest,
-       WaitForQuiescence_DefaultSafeThreadsPassInstantly)
+TEST_F(ThreadManagerActiveLoopTest, WaitForQuiescence_DefaultSafeThreadsPassInstantly)
 {
     auto w = SpawnWorker(
         "thread_manager_active_loop.wait_for_quiescence_default_safe_threads_pass_instantly");
@@ -169,7 +153,6 @@ TEST_F(ThreadManagerActiveLoopTest,
 
 TEST_F(ThreadManagerActiveLoopTest, WaitForQuiescence_ExcludesCallingThread)
 {
-    auto w = SpawnWorker(
-        "thread_manager_active_loop.wait_for_quiescence_excludes_calling_thread");
+    auto w = SpawnWorker("thread_manager_active_loop.wait_for_quiescence_excludes_calling_thread");
     ExpectWorkerOk(w);
 }

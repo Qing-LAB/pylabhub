@@ -16,22 +16,22 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_admin_config.hpp"
-#include "utils/curve_socket.hpp"          // arm_curve_server (shared CURVE-server arm)
-#include "utils/hub_api.hpp"               // augment_* hooks (HEP-0033 §12.2.2)
+#include "utils/curve_socket.hpp" // arm_curve_server (shared CURVE-server arm)
+#include "utils/hub_api.hpp"      // augment_* hooks (HEP-0033 §12.2.2)
 #include "utils/hub_host.hpp"
 #include "utils/hub_metrics_filter.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/hub_state_json.hpp"
 #include "utils/logger.hpp"
-#include "utils/admin_session.hpp"          // sealed session identity (§11.0.5)
+#include "utils/admin_session.hpp"             // sealed session identity (§11.0.5)
 #include "utils/security/key_store.hpp"        // kHubIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
 #include "utils/timeout_constants.hpp"
-#include "utils/wire_bodies.hpp"            // typed admin bodies + ADMIN_* msg_types
-#include "utils/wire_envelope.hpp"          // typed ROUTER envelope
+#include "utils/wire_bodies.hpp"   // typed admin bodies + ADMIN_* msg_types
+#include "utils/wire_envelope.hpp" // typed ROUTER envelope
 
 #include "cppzmq/zmq.hpp"
-#include "cppzmq/zmq_addon.hpp"             // zmq::multipart_t
+#include "cppzmq/zmq_addon.hpp" // zmq::multipart_t
 
 #include <nlohmann/json.hpp>
 
@@ -56,7 +56,7 @@ json make_error(std::string_view code, std::string_view message)
 {
     return json{
         {"status", "error"},
-        {"error",  {{"code", std::string(code)}, {"message", std::string(message)}}},
+        {"error", {{"code", std::string(code)}, {"message", std::string(message)}}},
     };
 }
 
@@ -77,27 +77,24 @@ json make_ok(json result)
 
 struct AdminService::Impl
 {
-    zmq::context_t                &ctx;
-    hub_host::HubHost             &host;
-    std::string                    endpoint;
-    std::string                    admin_token;
+    zmq::context_t &ctx;
+    hub_host::HubHost &host;
+    std::string endpoint;
+    std::string admin_token;
 
-    std::atomic<bool>              stop_requested{false};
-    std::string                    bound_endpoint;
+    std::atomic<bool> stop_requested{false};
+    std::string bound_endpoint;
 
-    Impl(zmq::context_t &c, hub_host::HubHost &h)
-        : ctx(c), host(h)
-    {}
+    Impl(zmq::context_t &c, hub_host::HubHost &h) : ctx(c), host(h) {}
 
     /// Typed dispatcher — routes a parsed admin envelope by msg_type,
     /// verifies the session (except establishment) against the observed
     /// connection facts (§11.0.5), runs the (unchanged) `handle_*` member
     /// with the params it expects, and returns {ack_msg_type, ack_body}.
     /// Any failure becomes an `ADMIN_ERROR` reply.
-    std::pair<std::string, nlohmann::json>
-    dispatch_typed(const wire::WireEnvelope &env,
-                   std::string_view          peer_address,
-                   std::string_view          routing_id);
+    std::pair<std::string, nlohmann::json> dispatch_typed(const wire::WireEnvelope &env,
+                                                          std::string_view peer_address,
+                                                          std::string_view routing_id);
 
     /// Constant-time-equal-length admin token check (§11.3).
     [[nodiscard]] bool token_ok(std::string_view token) const noexcept;
@@ -112,31 +109,29 @@ struct AdminService::Impl
     // gate forbids stray log noise on happy paths.  Handlers may emit
     // LOGGER_WARN / LOGGER_ERROR on legitimate error paths; the
     // accompanying L2 test must declare those via `ExpectLogWarn` etc.
-    json handle_ping             (const json &request);
-    json handle_list_channels    (const json &request);
-    json handle_get_channel      (const json &request);
-    json handle_list_roles       (const json &request);
-    json handle_get_role         (const json &request);
-    json handle_list_bands       (const json &request);
-    json handle_list_peers       (const json &request);
-    json handle_query_metrics    (const json &request);
-    json handle_close_channel    (const json &request);
+    json handle_ping(const json &request);
+    json handle_list_channels(const json &request);
+    json handle_get_channel(const json &request);
+    json handle_list_roles(const json &request);
+    json handle_get_role(const json &request);
+    json handle_list_bands(const json &request);
+    json handle_list_peers(const json &request);
+    json handle_query_metrics(const json &request);
+    json handle_close_channel(const json &request);
     json handle_broadcast_channel(const json &request);
-    json handle_request_shutdown (const json &request);
+    json handle_request_shutdown(const json &request);
 };
 
 // ============================================================================
 // Construction / destruction
 // ============================================================================
 
-AdminService::AdminService(zmq::context_t          &zmq_ctx,
-                            const config::HubAdminConfig &cfg,
-                            std::string_view         admin_token,
-                            hub_host::HubHost       &host)
+AdminService::AdminService(zmq::context_t &zmq_ctx, const config::HubAdminConfig &cfg,
+                           std::string_view admin_token, hub_host::HubHost &host)
     : impl_(std::make_unique<Impl>(zmq_ctx, host))
 {
-    impl_->endpoint       = cfg.endpoint;
-    impl_->admin_token    = std::string(admin_token);
+    impl_->endpoint = cfg.endpoint;
+    impl_->admin_token = std::string(admin_token);
 
     // §11.3 invariant: the admin token is MANDATORY — there is no
     // token-less admin path (the CURVE transport in run() encrypts it, so
@@ -145,11 +140,10 @@ AdminService::AdminService(zmq::context_t          &zmq_ctx,
     // every request.
     if (admin_token.empty())
     {
-        throw std::invalid_argument(
-            "AdminService: admin_token is empty — the admin token is "
-            "mandatory (HEP-CORE-0033 §11.3).  Vault not unlocked? "
-            "HubConfig::load_keypair must run before AdminService "
-            "construction.");
+        throw std::invalid_argument("AdminService: admin_token is empty — the admin token is "
+                                    "mandatory (HEP-CORE-0033 §11.3).  Vault not unlocked? "
+                                    "HubConfig::load_keypair must run before AdminService "
+                                    "construction.");
     }
 }
 
@@ -178,8 +172,7 @@ void AdminService::run()
     // socket authenticates by CURVE crypto alone and stays off the broker's
     // single inproc ZAP pumper (HEP-CORE-0036 §7.4 single-pumper invariant).  The arm is the
     // shared helper (use-not-export), the same one the broker/inbox use.
-    pylabhub::utils::arm_curve_server(
-        sock, pylabhub::utils::security::kHubIdentityName);
+    pylabhub::utils::arm_curve_server(sock, pylabhub::utils::security::kHubIdentityName);
     sock.set(zmq::sockopt::zap_enforce_domain, 1);
 
     sock.bind(impl_->endpoint);
@@ -230,12 +223,11 @@ void AdminService::run()
         const std::string routing_id(env->identity());
         const std::string corr(env->correlation_id());
 
-        std::string    ack_type;
-        json           ack_body;
+        std::string ack_type;
+        json ack_body;
         try
         {
-            std::tie(ack_type, ack_body) =
-                impl_->dispatch_typed(*env, peer_address, routing_id);
+            std::tie(ack_type, ack_body) = impl_->dispatch_typed(*env, peer_address, routing_id);
         }
         catch (const wire::WireBodyError &e)
         {
@@ -251,14 +243,13 @@ void AdminService::run()
         // Route the reply back to the sender's DEALER; correlation_id echoes
         // the request (ACK / ERROR are not _NOTIFY, so it is non-empty —
         // parse_router_recv already enforced that policy on the request).
-        auto reply = wire::WireEnvelope::build_router_send(
-            routing_id, ack_type, corr, std::move(ack_body));
+        auto reply =
+            wire::WireEnvelope::build_router_send(routing_id, ack_type, corr, std::move(ack_body));
         reply.send(sock);
     }
 
     sock.close();
-    LOGGER_INFO("[admin] AdminService stopped (was bound to {})",
-                impl_->bound_endpoint);
+    LOGGER_INFO("[admin] AdminService stopped (was bound to {})", impl_->bound_endpoint);
 }
 
 void AdminService::stop() noexcept
@@ -299,15 +290,13 @@ namespace
 /// Hub wall clock in ms — folded into the session id (§11.0.5).
 std::uint64_t now_ms()
 {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
 }
 
 /// {ADMIN_ERROR, {code, message}} — the typed failure reply (§11.5).
-std::pair<std::string, json> err_reply(std::string_view code,
-                                       std::string_view message)
+std::pair<std::string, json> err_reply(std::string_view code, std::string_view message)
 {
     return {std::string(wire::kAdminError),
             json{{"code", std::string(code)}, {"message", std::string(message)}}};
@@ -316,8 +305,8 @@ std::pair<std::string, json> err_reply(std::string_view code,
 /// Convert an unchanged handler's `{status, result|error}` envelope into the
 /// typed reply.  `result_ack` = query (wrap `result` object) vs control
 /// (emit `{status:"ok"}`).  A handler error becomes an ADMIN_ERROR reply.
-std::pair<std::string, json> to_reply(std::string_view ack_type,
-                                      const json &handler_out, bool result_ack)
+std::pair<std::string, json> to_reply(std::string_view ack_type, const json &handler_out,
+                                      bool result_ack)
 {
     if (handler_out.value("status", std::string{}) != "ok")
     {
@@ -332,13 +321,12 @@ std::pair<std::string, json> to_reply(std::string_view ack_type,
 
 } // namespace
 
-std::pair<std::string, json>
-AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
-                                   std::string_view          peer_address,
-                                   std::string_view          routing_id)
+std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
+                                                                std::string_view peer_address,
+                                                                std::string_view routing_id)
 {
     namespace w = pylabhub::wire;
-    const std::string     mt(env.msg_type());
+    const std::string mt(env.msg_type());
     const nlohmann::json &body = env.body();
 
     // ── Establishment (§11.0.5) — token authorizes; mint the session id ──
@@ -347,10 +335,9 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
         w::AdminHelloReqBody b(body);
         if (!token_ok(b.token()))
             return err_reply("unauthorized", "invalid admin token");
-        const AdminSessionFacts facts{b.label(), std::string(peer_address),
-                                      std::string(routing_id), now_ms()};
-        return {std::string(w::kAdminHelloAck),
-                json{{"session_id", seal_session_id(facts)}}};
+        const AdminSessionFacts facts{b.label(), std::string(peer_address), std::string(routing_id),
+                                      now_ms()};
+        return {std::string(w::kAdminHelloAck), json{{"session_id", seal_session_id(facts)}}};
     }
 
     // Session + in-session-replay gate (§11.0.5).  Every command body carries
@@ -362,30 +349,29 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     // here through `HubHost::nonce_seen` (the admin plane holds no mutable
     // HubState), keyed by the session's `origin_uid`.  Returns the typed
     // error reply on any failure, or nullopt to proceed.
-    constexpr std::uint64_t kReplaySkewMs   = 30'000; // I-REPLAY-BOUND parity
+    constexpr std::uint64_t kReplaySkewMs = 30'000; // I-REPLAY-BOUND parity
     // MUST be >= 2 * skew: dedup prunes against the trusted `now` clock,
     // but a replay stays skew-valid for up to 2*skew after the original.
     constexpr std::uint64_t kReplayWindowMs = 2 * kReplaySkewMs;
-    const auto gate =
-        [&](std::string_view sid) -> std::optional<std::pair<std::string, json>> {
+    const auto gate = [&](std::string_view sid) -> std::optional<std::pair<std::string, json>>
+    {
         auto facts = verify_session_id(sid, peer_address, routing_id);
         if (!facts)
             return err_reply("unauthorized", "invalid or hijacked session");
-        const std::uint64_t ts   = body.value("client_wall_ts", std::uint64_t{0});
-        const std::uint64_t now  = now_ms();
+        const std::uint64_t ts = body.value("client_wall_ts", std::uint64_t{0});
+        const std::uint64_t now = now_ms();
         const std::uint64_t skew = now > ts ? now - ts : ts - now;
         if (skew > kReplaySkewMs)
             return err_reply("replay_or_skew", "admin command wall-clock skew "
                                                "exceeds tolerance");
         const std::string origin = origin_uid(*facts);
-        const std::string nonce  = body.value("client_nonce", std::string{});
+        const std::string nonce = body.value("client_nonce", std::string{});
         // Dedup: the ReplayGuard prunes against its OWN trusted monotonic
         // clock — no timestamp is passed, so the client `ts` (confined to
         // the skew gate above) cannot reach the dedup window (see
         // ReplayGuard header).
         if (!host.nonce_seen(origin, nonce, kReplayWindowMs))
-            return err_reply("replay_or_skew",
-                             "client_nonce reused (in-session replay)");
+            return err_reply("replay_or_skew", "client_nonce reused (in-session replay)");
         return std::nullopt;
     };
 
@@ -393,42 +379,48 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminPingReq)
     {
         w::AdminPingReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         return to_reply(w::kAdminPingAck, handle_ping(req), false);
     }
     if (mt == w::kAdminListChannelsReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         return to_reply(w::kAdminListChannelsAck, handle_list_channels(req), true);
     }
     if (mt == w::kAdminListRolesReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         return to_reply(w::kAdminListRolesAck, handle_list_roles(req), true);
     }
     if (mt == w::kAdminListBandsReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         return to_reply(w::kAdminListBandsAck, handle_list_bands(req), true);
     }
     if (mt == w::kAdminListPeersReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         return to_reply(w::kAdminListPeersAck, handle_list_peers(req), true);
     }
     if (mt == w::kAdminGetChannelReq)
     {
         w::AdminNamedReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         req["params"]["channel"] = b.name();
         return to_reply(w::kAdminGetChannelAck, handle_get_channel(req), true);
@@ -436,7 +428,8 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminGetRoleReq)
     {
         w::AdminNamedReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         req["params"]["uid"] = b.name();
         return to_reply(w::kAdminGetRoleAck, handle_get_role(req), true);
@@ -444,7 +437,8 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminQueryMetricsReq)
     {
         w::AdminQueryMetricsReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         req["params"] = b.filter();
         return to_reply(w::kAdminQueryMetricsAck, handle_query_metrics(req), true);
@@ -454,7 +448,8 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminCloseChannelReq)
     {
         w::AdminCloseChannelReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         req["params"]["channel"] = b.channel();
         return to_reply(w::kAdminCloseChannelAck, handle_close_channel(req), false);
@@ -462,23 +457,24 @@ AdminService::Impl::dispatch_typed(const wire::WireEnvelope &env,
     if (mt == w::kAdminBroadcastChannelReq)
     {
         w::AdminBroadcastChannelReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         req["params"]["channel"] = b.channel();
         req["params"]["message"] = b.message();
-        req["params"]["data"]    = b.data();
+        req["params"]["data"] = b.data();
         return to_reply(w::kAdminBroadcastChannelAck, handle_broadcast_channel(req), false);
     }
     if (mt == w::kAdminRequestShutdownReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id())) return *rej;
+        if (auto rej = gate(b.session_id()))
+            return *rej;
         json req;
         return to_reply(w::kAdminRequestShutdownAck, handle_request_shutdown(req), false);
     }
 
-    return err_reply("unknown_method",
-                     std::string("unrecognised admin msg_type '") + mt + "'");
+    return err_reply("unknown_method", std::string("unrecognised admin msg_type '") + mt + "'");
 }
 
 // ============================================================================
@@ -524,10 +520,9 @@ json AdminService::Impl::handle_list_channels(const json & /*request*/)
 json AdminService::Impl::handle_get_channel(const json &request)
 {
     const auto pit = request.find("params");
-    if (pit == request.end() || !pit->is_object() ||
-        !pit->contains("channel") || !(*pit)["channel"].is_string())
-        return make_error("invalid_params",
-                          "get_channel requires params.channel (string)");
+    if (pit == request.end() || !pit->is_object() || !pit->contains("channel") ||
+        !(*pit)["channel"].is_string())
+        return make_error("invalid_params", "get_channel requires params.channel (string)");
     const auto &name = (*pit)["channel"].get_ref<const std::string &>();
     // Single snapshot keeps the channel + producer-presence lookup
     // consistent.  HEP-CORE-0023 §2.2 derives `observable` by scanning
@@ -535,12 +530,11 @@ json AdminService::Impl::handle_get_channel(const json &request)
     // `ChannelEntry.producers[i].role_uid` and returning the
     // "best of all producers" observable (multi-producer, §2.1.1).
     const auto snap = host.state().snapshot();
-    const auto cit  = snap.channels.find(name);
+    const auto cit = snap.channels.find(name);
     if (cit == snap.channels.end())
-        return make_error("not_found",
-                          std::string("channel '") + name + "' not registered");
+        return make_error("not_found", std::string("channel '") + name + "' not registered");
     const auto obs = pylabhub::hub::observe_channel(cit->second, snap);
-    json result    = pylabhub::hub::channel_to_json(cit->second, obs);
+    json result = pylabhub::hub::channel_to_json(cit->second, obs);
     // HEP-CORE-0033 §12.2.2 — script-side response augmentation hook.
     // No-op when no script is loaded or the script doesn't define
     // `on_get_channel`; otherwise the script may mutate `result`.
@@ -563,15 +557,13 @@ json AdminService::Impl::handle_list_roles(const json & /*request*/)
 json AdminService::Impl::handle_get_role(const json &request)
 {
     const auto pit = request.find("params");
-    if (pit == request.end() || !pit->is_object() ||
-        !pit->contains("uid") || !(*pit)["uid"].is_string())
-        return make_error("invalid_params",
-                          "get_role requires params.uid (string)");
+    if (pit == request.end() || !pit->is_object() || !pit->contains("uid") ||
+        !(*pit)["uid"].is_string())
+        return make_error("invalid_params", "get_role requires params.uid (string)");
     const auto &uid = (*pit)["uid"].get_ref<const std::string &>();
     auto r = host.state().role(uid);
     if (!r)
-        return make_error("not_found",
-                          std::string("role '") + uid + "' not registered");
+        return make_error("not_found", std::string("role '") + uid + "' not registered");
     return make_ok(pylabhub::hub::role_to_json(*r));
 }
 
@@ -609,41 +601,43 @@ json AdminService::Impl::handle_query_metrics(const json &request)
     {
         // Per-field type validation.  Anything wrong is invalid_params
         // (a typo'd filter should not silently include everything).
-        auto opt_string_array = [&](const char *field,
-                                    std::vector<std::string> &out) -> json
+        auto opt_string_array = [&](const char *field, std::vector<std::string> &out) -> json
         {
             const auto it = pit->find(field);
-            if (it == pit->end()) return {};
+            if (it == pit->end())
+                return {};
             if (!it->is_array())
-                return make_error("invalid_params",
-                    std::string("query_metrics: params.") + field +
-                    " must be an array of strings");
+                return make_error("invalid_params", std::string("query_metrics: params.") + field +
+                                                        " must be an array of strings");
             for (const auto &v : *it)
             {
                 if (!v.is_string())
-                    return make_error("invalid_params",
-                        std::string("query_metrics: params.") + field +
-                        " entries must be strings");
+                    return make_error("invalid_params", std::string("query_metrics: params.") +
+                                                            field + " entries must be strings");
                 out.push_back(v.get<std::string>());
             }
             return {};
         };
-        if (auto e = opt_string_array("channels", filter.channels); !e.is_null()) return e;
-        if (auto e = opt_string_array("roles",    filter.roles);    !e.is_null()) return e;
-        if (auto e = opt_string_array("bands",    filter.bands);    !e.is_null()) return e;
-        if (auto e = opt_string_array("peers",    filter.peers);    !e.is_null()) return e;
+        if (auto e = opt_string_array("channels", filter.channels); !e.is_null())
+            return e;
+        if (auto e = opt_string_array("roles", filter.roles); !e.is_null())
+            return e;
+        if (auto e = opt_string_array("bands", filter.bands); !e.is_null())
+            return e;
+        if (auto e = opt_string_array("peers", filter.peers); !e.is_null())
+            return e;
         // Categories are an unordered_set<string>.
         const auto cit = pit->find("categories");
         if (cit != pit->end())
         {
             if (!cit->is_array())
                 return make_error("invalid_params",
-                    "query_metrics: params.categories must be an array of strings");
+                                  "query_metrics: params.categories must be an array of strings");
             for (const auto &v : *cit)
             {
                 if (!v.is_string())
                     return make_error("invalid_params",
-                        "query_metrics: params.categories entries must be strings");
+                                      "query_metrics: params.categories entries must be strings");
                 filter.categories.insert(v.get<std::string>());
             }
         }
@@ -655,9 +649,7 @@ json AdminService::Impl::handle_query_metrics(const json &request)
     // metrics dict (e.g. add custom aggregates computed in on_tick).
     if (auto *api = host.hub_api())
     {
-        json params_for_hook = (pit != request.end() && pit->is_object())
-                                   ? *pit
-                                   : json::object();
+        json params_for_hook = (pit != request.end() && pit->is_object()) ? *pit : json::object();
         api->augment_query_metrics(params_for_hook, result);
     }
     return make_ok(std::move(result));
@@ -681,14 +673,12 @@ json AdminService::Impl::handle_query_metrics(const json &request)
 json AdminService::Impl::handle_close_channel(const json &request)
 {
     const auto pit = request.find("params");
-    if (pit == request.end() || !pit->is_object() ||
-        !pit->contains("channel") || !(*pit)["channel"].is_string())
-        return make_error("invalid_params",
-                          "close_channel requires params.channel (string)");
+    if (pit == request.end() || !pit->is_object() || !pit->contains("channel") ||
+        !(*pit)["channel"].is_string())
+        return make_error("invalid_params", "close_channel requires params.channel (string)");
     const auto &name = (*pit)["channel"].get_ref<const std::string &>();
     if (!host.state().channel(name))
-        return make_error("not_found",
-                          std::string("channel '") + name + "' not registered");
+        return make_error("not_found", std::string("channel '") + name + "' not registered");
     host.broker().request_close_channel(name);
     return make_ok(json{{"queued", true}, {"channel", name}});
 }
@@ -697,20 +687,16 @@ json AdminService::Impl::handle_broadcast_channel(const json &request)
 {
     const auto pit = request.find("params");
     if (pit == request.end() || !pit->is_object())
-        return make_error("invalid_params",
-                          "broadcast_channel requires params.{channel,message}");
+        return make_error("invalid_params", "broadcast_channel requires params.{channel,message}");
     const auto cit = pit->find("channel");
     const auto mit = pit->find("message");
-    if (cit == pit->end() || !cit->is_string() ||
-        mit == pit->end() || !mit->is_string())
-        return make_error("invalid_params",
-                          "broadcast_channel requires params.channel (string) "
-                          "and params.message (string)");
+    if (cit == pit->end() || !cit->is_string() || mit == pit->end() || !mit->is_string())
+        return make_error("invalid_params", "broadcast_channel requires params.channel (string) "
+                                            "and params.message (string)");
     const auto &channel = cit->get_ref<const std::string &>();
     const auto &message = mit->get_ref<const std::string &>();
     if (!host.state().channel(channel))
-        return make_error("not_found",
-                          std::string("channel '") + channel + "' not registered");
+        return make_error("not_found", std::string("channel '") + channel + "' not registered");
     // Optional `data` payload (string).
     std::string data;
     const auto dit = pit->find("data");

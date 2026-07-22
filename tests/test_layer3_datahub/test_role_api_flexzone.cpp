@@ -112,8 +112,7 @@ TEST_F(RoleApiFlexzoneTest, ShmRoundTrip_ArrayField)
 
 TEST_F(RoleApiFlexzoneTest, ShmSlotChecksum_Corrupt_Detected)
 {
-    auto w = SpawnWorker(
-        "role_api_flexzone.shm_slot_checksum_corrupt_detected", {});
+    auto w = SpawnWorker("role_api_flexzone.shm_slot_checksum_corrupt_detected", {});
     // Corrupted slot emits "[ShmQueue] slot checksum error on slot ..."
     // — pinning the substring proves the verify path actually fired.
     // If the verify were a no-op, this log would not appear and
@@ -124,8 +123,7 @@ TEST_F(RoleApiFlexzoneTest, ShmSlotChecksum_Corrupt_Detected)
 
 TEST_F(RoleApiFlexzoneTest, ShmFlexzoneChecksum_Corrupt_Detected)
 {
-    auto w = SpawnWorker(
-        "role_api_flexzone.shm_flexzone_checksum_corrupt_detected", {});
+    auto w = SpawnWorker("role_api_flexzone.shm_flexzone_checksum_corrupt_detected", {});
     // Corrupted flexzone emits "[ShmQueue] flexzone checksum error on slot
     // ..." — a distinct log line from the slot-checksum path.  Pinning
     // the substring proves the flexzone verify path (not the slot path)

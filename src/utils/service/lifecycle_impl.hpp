@@ -17,10 +17,10 @@
 #include <map>                // For std::map
 #include <mutex>              // For std::mutex, std::unique_lock, std::lock_guard
 #include "portable_atomic_shared_ptr.hpp"
-#include <queue>              // For std::queue
-#include <set>                // For std::set
-#include <stdexcept>          // For std::runtime_error, std::length_error
-#include <thread>             // For std::thread
+#include <queue>     // For std::queue
+#include <set>       // For std::set
+#include <stdexcept> // For std::runtime_error, std::length_error
+#include <thread>    // For std::thread
 
 // ---------------------------------------------------------------------------
 // Internal helper declarations (bodies in lifecycle_helpers.cpp — one definition,
@@ -36,8 +36,8 @@ namespace pylabhub::utils::lifecycle_internal
  */
 struct ShutdownOutcome
 {
-    bool        success;       ///< true if the callback completed without throwing
-    bool        timed_out;     ///< true if the callback did not complete within the deadline
+    bool success;              ///< true if the callback completed without throwing
+    bool timed_out;            ///< true if the callback did not complete within the deadline
     std::string exception_msg; ///< non-empty if the callback threw an exception
 };
 
@@ -53,8 +53,7 @@ void validate_module_name(std::string_view name, const char *param_name);
  *        Returns without blocking beyond the deadline (detaches thread on timeout).
  * @note Defined in lifecycle_helpers.cpp.
  */
-ShutdownOutcome timedShutdown(const std::function<void()> &func,
-                              std::chrono::milliseconds    timeout);
+ShutdownOutcome timedShutdown(const std::function<void()> &func, std::chrono::milliseconds timeout);
 
 struct InternalModuleShutdownDef
 {
@@ -95,7 +94,6 @@ struct InternalModuleDef
     /// Use ONLY when thread-affinity is a hard requirement.
     bool synchronous_shutdown = false;
 
-
     // User data (set at ModuleDef construction, immutable).
     void *userdata{nullptr};
     uint64_t userdata_key{0};
@@ -132,9 +130,9 @@ class LifecycleManagerImpl
         LOADING,
         LOADED,
         FAILED,
-        UNLOADING,       ///< Marked for unload; shutdown thread will process it.
+        UNLOADING,        ///< Marked for unload; shutdown thread will process it.
         SHUTDOWN_TIMEOUT, ///< Shutdown timed out; module may be in undefined state.
-        FAILED_SHUTDOWN  ///< Shutdown threw an exception; module may be in undefined state.
+        FAILED_SHUTDOWN   ///< Shutdown threw an exception; module may be in undefined state.
     };
 
     struct InternalGraphNode
@@ -188,17 +186,19 @@ class LifecycleManagerImpl
     /// the caller is responsible for invoking
     /// `processOneUnloadInThread` on each of those names AFTER
     /// releasing the mutex.
-    void cleanupAfterUnload_(const std::string              &node_name,
+    void cleanupAfterUnload_(const std::string &node_name,
                              const std::vector<std::string> &deps_copy,
-                             std::vector<std::string>       &deps_to_process);
+                             std::vector<std::string> &deps_to_process);
 
     // --- Public API Methods ---
     void registerStaticModule(lifecycle_internal::InternalModuleDef def);
     bool registerDynamicModule(lifecycle_internal::InternalModuleDef def);
     void initialize(std::source_location loc = std::source_location::current());
     void finalize(std::source_location loc = std::source_location::current());
-    bool loadModule(std::string_view name, std::source_location loc = std::source_location::current());
-    bool unloadModule(std::string_view name, std::source_location loc = std::source_location::current());
+    bool loadModule(std::string_view name,
+                    std::source_location loc = std::source_location::current());
+    bool unloadModule(std::string_view name,
+                      std::source_location loc = std::source_location::current());
     DynModuleState waitForUnload(std::string_view name, std::chrono::milliseconds timeout);
     DynModuleState getDynamicModuleState(std::string_view name);
     void setLifecycleLogSink(std::shared_ptr<LifecycleLogSink> sink);
@@ -216,7 +216,8 @@ class LifecycleManagerImpl
     // --- Private Helper Methods ---
     void recalculateReferenceCounts();
     void buildStaticGraph();
-    static std::vector<InternalGraphNode *> topologicalSort(const std::vector<InternalGraphNode *> &nodes);
+    static std::vector<InternalGraphNode *>
+    topologicalSort(const std::vector<InternalGraphNode *> &nodes);
     bool loadModuleInternal(InternalGraphNode &node);
     static void shutdownModuleWithTimeout(InternalGraphNode &mod, std::string &debug_info);
     void printStatusAndAbort(const std::string &msg, const std::string &mod = "");
@@ -229,20 +230,17 @@ class LifecycleManagerImpl
     template <typename... Args>
     void lifecycleDebug(fmt::format_string<Args...> fmt_str, Args &&...args) const
     {
-        lifecycleLog(LifecycleLogLevel::Debug,
-               fmt::format(fmt_str, std::forward<Args>(args)...));
+        lifecycleLog(LifecycleLogLevel::Debug, fmt::format(fmt_str, std::forward<Args>(args)...));
     }
     template <typename... Args>
     void lifecycleWarn(fmt::format_string<Args...> fmt_str, Args &&...args) const
     {
-        lifecycleLog(LifecycleLogLevel::Warn,
-               fmt::format(fmt_str, std::forward<Args>(args)...));
+        lifecycleLog(LifecycleLogLevel::Warn, fmt::format(fmt_str, std::forward<Args>(args)...));
     }
     template <typename... Args>
     void lifecycleError(fmt::format_string<Args...> fmt_str, Args &&...args) const
     {
-        lifecycleLog(LifecycleLogLevel::Error,
-               fmt::format(fmt_str, std::forward<Args>(args)...));
+        lifecycleLog(LifecycleLogLevel::Error, fmt::format(fmt_str, std::forward<Args>(args)...));
     }
 
     // --- Dynamic module shutdown thread ---
@@ -268,9 +266,10 @@ class LifecycleManagerImpl
     const std::string m_app_name;
     std::atomic<bool> m_is_initialized = {false};
     std::atomic<bool> m_is_finalized = {false};
-    std::mutex m_registry_mutex;       // Protects m_registered_modules before initialization
-    std::mutex m_graph_mutation_mutex; // Protects m_module_graph, m_marked_for_unload,
-                                       //   m_contaminated_modules, and m_dyn_shutdown_thread_started
+    std::mutex m_registry_mutex; // Protects m_registered_modules before initialization
+    std::mutex
+        m_graph_mutation_mutex; // Protects m_module_graph, m_marked_for_unload,
+                                //   m_contaminated_modules, and m_dyn_shutdown_thread_started
     std::vector<lifecycle_internal::InternalModuleDef> m_registered_modules;
     // std::less<> enables heterogeneous lookup (find/contains with std::string_view)
     // without constructing a temporary std::string.
@@ -309,8 +308,12 @@ class LifecycleManagerImpl
 
     // User-data generation key counter (monotonic, skip-zero).
     std::atomic<uint64_t> m_next_userdata_key{1};
+
   public:
-    uint64_t nextUserdataKey() { return m_next_userdata_key.fetch_add(1, std::memory_order_relaxed); }
+    uint64_t nextUserdataKey()
+    {
+        return m_next_userdata_key.fetch_add(1, std::memory_order_relaxed);
+    }
 };
 
 } // namespace pylabhub::utils

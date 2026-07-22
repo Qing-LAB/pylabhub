@@ -55,7 +55,8 @@ class PYLABHUB_UTILS_TEST_EXPORT HeartbeatManager
     bool is_registered() const;
 
   private:
-    DataBlockConsumer *consumer_ = nullptr; // always set by the explicit constructor; null = default-constructed (unregistered)
+    DataBlockConsumer *consumer_ = nullptr; // always set by the explicit constructor; null =
+                                            // default-constructed (unregistered)
     int heartbeat_slot_ = -1;
 };
 

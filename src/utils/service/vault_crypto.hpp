@@ -58,19 +58,19 @@ namespace pylabhub::utils::detail
 //   MIN:         opslimit=1, memlimit=8192       (test; ~1 ms/hash)
 #if defined(PYLABHUB_VAULT_TEST_KDF)
 constexpr unsigned long long kVaultOpsLimit = 1ULL;
-constexpr std::size_t        kVaultMemLimit = 8192U;
+constexpr std::size_t kVaultMemLimit = 8192U;
 #elif defined(PYLABHUB_VAULT_HIGH_SECURITY)
 constexpr unsigned long long kVaultOpsLimit = 4ULL;
-constexpr std::size_t        kVaultMemLimit = 1073741824U; // 1 GiB
+constexpr std::size_t kVaultMemLimit = 1073741824U; // 1 GiB
 #else
 constexpr unsigned long long kVaultOpsLimit = 2ULL;
-constexpr std::size_t        kVaultMemLimit = 67108864U;   // 64 MiB
+constexpr std::size_t kVaultMemLimit = 67108864U; // 64 MiB
 #endif
 
-constexpr std::size_t kVaultKeyBytes   = 32U;  // crypto_secretbox_KEYBYTES
-constexpr std::size_t kVaultNonceBytes = 24U;  // crypto_secretbox_NONCEBYTES
-constexpr std::size_t kVaultMacBytes   = 16U;  // crypto_secretbox_MACBYTES
-constexpr std::size_t kVaultSaltBytes  = 16U;  // crypto_pwhash_SALTBYTES
+constexpr std::size_t kVaultKeyBytes = 32U;   // crypto_secretbox_KEYBYTES
+constexpr std::size_t kVaultNonceBytes = 24U; // crypto_secretbox_NONCEBYTES
+constexpr std::size_t kVaultMacBytes = 16U;   // crypto_secretbox_MACBYTES
+constexpr std::size_t kVaultSaltBytes = 16U;  // crypto_pwhash_SALTBYTES
 
 // ── Function declarations ─────────────────────────────────────────────────────
 
@@ -82,15 +82,13 @@ void vault_require_sodium();
 /// The uid acts as a per-vault domain separator so different vaults using the
 /// same password produce different encryption keys.
 std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,
-                                                      const std::string &uid);
+                                                     const std::string &uid);
 
 /// Encrypt json_payload and write to path as [nonce(24)][MAC(16)||ciphertext].
 /// File permissions are set to 0600 (owner read/write only).
 /// Throws std::runtime_error on crypto or I/O failure.
-void vault_write(const std::filesystem::path &path,
-                 const std::string           &json_payload,
-                 const std::string           &password,
-                 const std::string           &uid);
+void vault_write(const std::filesystem::path &path, const std::string &json_payload,
+                 const std::string &password, const std::string &uid);
 
 /// Decrypt the vault at `path` and write the plaintext JSON bytes
 /// directly into `out_buf`.  Returns the number of bytes written.
@@ -111,9 +109,7 @@ void vault_write(const std::filesystem::path &path,
 ///     auto n = vault_read_secure(path, pw, uid, json_buf.span());
 ///     // parse JSON from json_buf.span().first(n) ...
 ///     // json_buf dtor zeros the plaintext when this scope exits.
-std::size_t vault_read_secure(const std::filesystem::path &path,
-                              const std::string           &password,
-                              const std::string           &uid,
-                              std::span<std::byte>         out_buf);
+std::size_t vault_read_secure(const std::filesystem::path &path, const std::string &password,
+                              const std::string &uid, std::span<std::byte> out_buf);
 
 } // namespace pylabhub::utils::detail

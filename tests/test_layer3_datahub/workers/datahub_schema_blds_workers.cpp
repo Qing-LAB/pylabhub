@@ -40,8 +40,8 @@ PYLABHUB_SCHEMA_END(WorkerOtherSchema)
 // natural alignment, WorkerPackedAB uses pragma-pack(1).
 struct WorkerAlignedAB
 {
-    bool    flag;   // 1 byte + 3 padding (natural alignment)
-    int32_t value;  // 4 bytes
+    bool flag;     // 1 byte + 3 padding (natural alignment)
+    int32_t value; // 4 bytes
 };
 PYLABHUB_SCHEMA_BEGIN(WorkerAlignedAB)
 PYLABHUB_SCHEMA_MEMBER(flag)
@@ -51,8 +51,8 @@ PYLABHUB_SCHEMA_END(WorkerAlignedAB)
 #pragma pack(push, 1)
 struct WorkerPackedAB
 {
-    bool    flag;   // 1 byte (no padding under #pragma pack(1))
-    int32_t value;  // 4 bytes
+    bool flag;     // 1 byte (no padding under #pragma pack(1))
+    int32_t value; // 4 bytes
 };
 #pragma pack(pop)
 PYLABHUB_SCHEMA_BEGIN_PACKED(WorkerPackedAB)
@@ -76,7 +76,8 @@ int schema_info_sets_name_version_size()
             EXPECT_EQ(info.version.patch, 0);
             EXPECT_EQ(info.struct_size, sizeof(WorkerSimpleSchema));
         },
-        "schema_info_sets_name_version_size", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "schema_info_sets_name_version_size", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int schema_info_blds_format()
@@ -88,7 +89,8 @@ int schema_info_blds_format()
                 generate_schema_info<WorkerSimpleSchema>("Test.Simple", SchemaVersion{1, 0, 0});
             EXPECT_EQ(info.blds, "a:i32;b:c;c:u64");
         },
-        "schema_info_blds_format", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "schema_info_blds_format", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int schema_info_hash_is_deterministic()
@@ -102,7 +104,8 @@ int schema_info_hash_is_deterministic()
                 generate_schema_info<WorkerSimpleSchema>("Test.Simple", SchemaVersion{1, 0, 0});
             EXPECT_EQ(info1.hash, info2.hash) << "Same schema must produce same hash";
         },
-        "schema_info_hash_is_deterministic", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "schema_info_hash_is_deterministic", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int schema_info_different_struct_different_hash()
@@ -115,7 +118,9 @@ int schema_info_different_struct_different_hash()
             SchemaInfo info2 = generate_schema_info<WorkerOtherSchema>("B", SchemaVersion{1, 0, 0});
             EXPECT_NE(info1.hash, info2.hash) << "Different structs must produce different hashes";
         },
-        "schema_info_different_struct_different_hash", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "schema_info_different_struct_different_hash",
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int schema_info_matches()
@@ -127,7 +132,8 @@ int schema_info_matches()
             SchemaInfo b = generate_schema_info<WorkerSimpleSchema>("B", SchemaVersion{1, 0, 0});
             EXPECT_TRUE(a.matches(b)) << "Same struct layout should match by hash";
         },
-        "schema_info_matches", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "schema_info_matches", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int schema_info_matches_hash()
@@ -139,7 +145,8 @@ int schema_info_matches_hash()
                 generate_schema_info<WorkerSimpleSchema>("Test", SchemaVersion{1, 0, 0});
             EXPECT_TRUE(info.matches_hash(info.hash));
         },
-        "schema_info_matches_hash", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "schema_info_matches_hash", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int packing_macro_distinct_hashes()
@@ -158,7 +165,7 @@ int packing_macro_distinct_hashes()
 
             // 1. Macro sets the packing string correctly.
             EXPECT_EQ(aligned.packing, "aligned");
-            EXPECT_EQ(packed.packing,  "packed");
+            EXPECT_EQ(packed.packing, "packed");
 
             // 2. BLDS string is field-list-only and identical (same fields).
             EXPECT_EQ(aligned.blds, packed.blds)
@@ -172,11 +179,12 @@ int packing_macro_distinct_hashes()
             // 4. Struct sizes reflect actual layout (sanity that the macro
             //    aligns with the underlying struct declaration).
             EXPECT_EQ(aligned.struct_size, sizeof(WorkerAlignedAB));
-            EXPECT_EQ(packed.struct_size,  sizeof(WorkerPackedAB));
+            EXPECT_EQ(packed.struct_size, sizeof(WorkerPackedAB));
             EXPECT_GT(aligned.struct_size, packed.struct_size)
                 << "natural-aligned bool+int32 (8B) should be larger than packed (5B)";
         },
-        "packing_macro_distinct_hashes", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "packing_macro_distinct_hashes", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int validate_schema_match_same_does_not_throw()
@@ -188,7 +196,8 @@ int validate_schema_match_same_does_not_throw()
             SchemaInfo b = generate_schema_info<WorkerSimpleSchema>("B", SchemaVersion{1, 0, 0});
             EXPECT_NO_THROW(validate_schema_match(a, b));
         },
-        "validate_schema_match_same_does_not_throw", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "validate_schema_match_same_does_not_throw", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int validate_schema_match_different_throws()
@@ -200,7 +209,8 @@ int validate_schema_match_different_throws()
             SchemaInfo b = generate_schema_info<WorkerOtherSchema>("B", SchemaVersion{1, 0, 0});
             EXPECT_THROW(validate_schema_match(a, b), SchemaValidationException);
         },
-        "validate_schema_match_different_throws", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "validate_schema_match_different_throws", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int validate_schema_hash_matching_does_not_throw()
@@ -212,7 +222,9 @@ int validate_schema_hash_matching_does_not_throw()
                 generate_schema_info<WorkerSimpleSchema>("Test", SchemaVersion{1, 0, 0});
             EXPECT_NO_THROW(validate_schema_hash(info, info.hash));
         },
-        "validate_schema_hash_matching_does_not_throw", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "validate_schema_hash_matching_does_not_throw",
+        pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int validate_schema_hash_mismatch_throws()
@@ -226,7 +238,8 @@ int validate_schema_hash_mismatch_throws()
             wrong_hash.fill(0xff);
             EXPECT_THROW(validate_schema_hash(info, wrong_hash), SchemaValidationException);
         },
-        "validate_schema_hash_mismatch_throws", pylabhub::utils::Logger::GetLifecycleModule(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+        "validate_schema_hash_mismatch_throws", pylabhub::utils::Logger::GetLifecycleModule(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 } // namespace pylabhub::tests::worker::schema_blds

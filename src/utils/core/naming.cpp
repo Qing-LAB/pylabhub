@@ -28,7 +28,7 @@ constexpr std::size_t kMaxComponentLen = 64;
 // boundary — NOT a cap on federated / composite references, which
 // use structured (multi-field) encoding, not string concatenation.
 // See HEP-0033 §G2.2.0b "Length-cap scope clarification."
-constexpr std::size_t kMaxTotalLen     = 256;
+constexpr std::size_t kMaxTotalLen = 256;
 
 [[nodiscard]] constexpr bool is_first_char(char c) noexcept
 {
@@ -43,18 +43,20 @@ constexpr std::size_t kMaxTotalLen     = 256;
 /// Validates one dot-separated NameComponent: [A-Za-z][A-Za-z0-9_-]{0,63}.
 [[nodiscard]] bool is_valid_component(std::string_view c) noexcept
 {
-    if (c.empty() || c.size() > kMaxComponentLen) return false;
-    if (!is_first_char(c[0])) return false;
+    if (c.empty() || c.size() > kMaxComponentLen)
+        return false;
+    if (!is_first_char(c[0]))
+        return false;
     for (std::size_t i = 1; i < c.size(); ++i)
-        if (!is_component_char(c[i])) return false;
+        if (!is_component_char(c[i]))
+            return false;
     return true;
 }
 
 /// Walks the dotted body, invoking @p f on each component.  Returns
 /// false if any component is malformed (including empty, which catches
 /// leading/trailing dots and `..` runs).
-template <typename F>
-[[nodiscard]] bool for_each_component(std::string_view body, F &&f)
+template <typename F> [[nodiscard]] bool for_each_component(std::string_view body, F &&f)
 {
     std::size_t start = 0;
     for (std::size_t i = 0; i <= body.size(); ++i)
@@ -62,8 +64,10 @@ template <typename F>
         if (i == body.size() || body[i] == '.')
         {
             std::string_view comp = body.substr(start, i - start);
-            if (!is_valid_component(comp)) return false;
-            if (!f(comp)) return false;
+            if (!is_valid_component(comp))
+                return false;
+            if (!f(comp))
+                return false;
             start = i + 1;
         }
     }
@@ -76,7 +80,8 @@ template <typename F>
 /// empty components.
 [[nodiscard]] bool validate_dotted_body(std::string_view body) noexcept
 {
-    if (body.empty()) return false;
+    if (body.empty())
+        return false;
     return for_each_component(body, [](std::string_view) { return true; });
 }
 
@@ -85,14 +90,15 @@ template <typename F>
     return static_cast<std::size_t>(std::count(s.begin(), s.end(), '.'));
 }
 
-constexpr std::string_view kRoleTags[]             = {"prod", "cons", "proc"};
-constexpr std::string_view kPeerTag                 = "hub";
-constexpr std::string_view kChannelReservedFirst[]  = {"prod", "cons", "proc", "hub", "sys"};
+constexpr std::string_view kRoleTags[] = {"prod", "cons", "proc"};
+constexpr std::string_view kPeerTag = "hub";
+constexpr std::string_view kChannelReservedFirst[] = {"prod", "cons", "proc", "hub", "sys"};
 
 [[nodiscard]] bool is_short_tag(std::string_view s) noexcept
 {
     for (auto t : kRoleTags)
-        if (s == t) return true;
+        if (s == t)
+            return true;
     return false;
 }
 
@@ -104,7 +110,8 @@ constexpr std::string_view kChannelReservedFirst[]  = {"prod", "cons", "proc", "
 [[nodiscard]] bool is_reserved_channel_first(std::string_view s) noexcept
 {
     for (auto t : kChannelReservedFirst)
-        if (s == t) return true;
+        if (s == t)
+            return true;
     return false;
 }
 
@@ -113,7 +120,8 @@ constexpr std::string_view kChannelReservedFirst[]  = {"prod", "cons", "proc", "
 /// caller's responsibility.
 [[nodiscard]] bool is_valid_tagged_uid_structure(std::string_view s) noexcept
 {
-    if (!validate_dotted_body(s)) return false;
+    if (!validate_dotted_body(s))
+        return false;
     return count_dots(s) >= 2;
 }
 
@@ -138,17 +146,19 @@ constexpr std::string_view kChannelReservedFirst[]  = {"prod", "cons", "proc", "
 /// version component rule).  Also writes the parsed uint32 to
 /// @p out_version on success.  On overflow the value is saturated
 /// and the function returns false.
-[[nodiscard]] bool is_version_component(std::string_view  s,
-                                        std::uint32_t    &out_version) noexcept
+[[nodiscard]] bool is_version_component(std::string_view s, std::uint32_t &out_version) noexcept
 {
-    if (s.size() < 2 || s[0] != 'v') return false;
+    if (s.size() < 2 || s[0] != 'v')
+        return false;
     std::uint64_t acc = 0;
     for (std::size_t i = 1; i < s.size(); ++i)
     {
         const char c = s[i];
-        if (c < '0' || c > '9') return false;
+        if (c < '0' || c > '9')
+            return false;
         acc = acc * 10 + static_cast<std::uint32_t>(c - '0');
-        if (acc > std::numeric_limits<std::uint32_t>::max()) return false;
+        if (acc > std::numeric_limits<std::uint32_t>::max())
+            return false;
     }
     out_version = static_cast<std::uint32_t>(acc);
     return true;
@@ -160,26 +170,35 @@ const char *to_string(IdentifierKind k) noexcept
 {
     switch (k)
     {
-    case IdentifierKind::Channel:  return "Channel";
-    case IdentifierKind::Band:     return "Band";
-    case IdentifierKind::RoleUid:  return "RoleUid";
-    case IdentifierKind::RoleName: return "RoleName";
-    case IdentifierKind::PeerUid:  return "PeerUid";
-    case IdentifierKind::Schema:   return "Schema";
-    case IdentifierKind::SysKey:   return "SysKey";
+    case IdentifierKind::Channel:
+        return "Channel";
+    case IdentifierKind::Band:
+        return "Band";
+    case IdentifierKind::RoleUid:
+        return "RoleUid";
+    case IdentifierKind::RoleName:
+        return "RoleName";
+    case IdentifierKind::PeerUid:
+        return "PeerUid";
+    case IdentifierKind::Schema:
+        return "Schema";
+    case IdentifierKind::SysKey:
+        return "SysKey";
     }
     return "Unknown";
 }
 
 bool is_valid_identifier(std::string_view s, IdentifierKind kind) noexcept
 {
-    if (s.empty() || s.size() > kMaxTotalLen) return false;
+    if (s.empty() || s.size() > kMaxTotalLen)
+        return false;
 
     switch (kind)
     {
     case IdentifierKind::Channel:
     {
-        if (!validate_dotted_body(s)) return false;
+        if (!validate_dotted_body(s))
+            return false;
         return !is_reserved_channel_first(first_component(s));
     }
 
@@ -191,43 +210,44 @@ bool is_valid_identifier(std::string_view s, IdentifierKind kind) noexcept
 
     case IdentifierKind::Schema:
     {
-        if (s.size() < 2 || s.front() != '$') return false;
+        if (s.size() < 2 || s.front() != '$')
+            return false;
         const auto body = s.substr(1);
-        if (!validate_dotted_body(body)) return false;
+        if (!validate_dotted_body(body))
+            return false;
         // Need ≥2 components total in the body (base + version), so
         // at least one dot is required.
-        if (body.find('.') == std::string_view::npos) return false;
+        if (body.find('.') == std::string_view::npos)
+            return false;
         // Last component must match v[0-9]+.
         std::uint32_t v = 0;
         return is_version_component(last_component(body), v);
     }
 
     case IdentifierKind::RoleUid:
-        return is_valid_tagged_uid_structure(s) &&
-               is_short_tag(first_component(s));
+        return is_valid_tagged_uid_structure(s) && is_short_tag(first_component(s));
 
     case IdentifierKind::PeerUid:
-        return is_valid_tagged_uid_structure(s) &&
-               is_peer_tag(first_component(s));
+        return is_valid_tagged_uid_structure(s) && is_peer_tag(first_component(s));
 
     case IdentifierKind::SysKey:
     {
         // 'sys' + '.' + ≥1 component
-        if (s.size() < 5) return false;
-        if (s.substr(0, 4) != "sys.") return false;
+        if (s.size() < 5)
+            return false;
+        if (s.substr(0, 4) != "sys.")
+            return false;
         return validate_dotted_body(s);
     }
     }
     return false;
 }
 
-void require_valid_identifier(std::string_view s, IdentifierKind kind,
-                              std::string_view context)
+void require_valid_identifier(std::string_view s, IdentifierKind kind, std::string_view context)
 {
     if (!is_valid_identifier(s, kind))
     {
-        PLH_PANIC("invalid identifier: '{}' (kind={}) ctx='{}'",
-                  s, to_string(kind), context);
+        PLH_PANIC("invalid identifier: '{}' (kind={}) ctx='{}'", s, to_string(kind), context);
     }
 }
 
@@ -237,11 +257,11 @@ namespace
 /// mandatory segments without repeating the validation.
 TaggedUidParts split_tagged_uid(std::string_view uid) noexcept
 {
-    const auto     d1 = uid.find('.');
-    const auto     d2 = uid.find('.', d1 + 1);
+    const auto d1 = uid.find('.');
+    const auto d2 = uid.find('.', d1 + 1);
     TaggedUidParts parts;
-    parts.tag    = uid.substr(0, d1);
-    parts.name   = uid.substr(d1 + 1, d2 - d1 - 1);
+    parts.tag = uid.substr(0, d1);
+    parts.name = uid.substr(d1 + 1, d2 - d1 - 1);
     parts.unique = uid.substr(d2 + 1);
     return parts;
 }
@@ -249,28 +269,31 @@ TaggedUidParts split_tagged_uid(std::string_view uid) noexcept
 
 std::optional<TaggedUidParts> parse_role_uid(std::string_view uid) noexcept
 {
-    if (!is_valid_identifier(uid, IdentifierKind::RoleUid)) return std::nullopt;
+    if (!is_valid_identifier(uid, IdentifierKind::RoleUid))
+        return std::nullopt;
     return split_tagged_uid(uid);
 }
 
 std::optional<TaggedUidParts> parse_peer_uid(std::string_view uid) noexcept
 {
-    if (!is_valid_identifier(uid, IdentifierKind::PeerUid)) return std::nullopt;
+    if (!is_valid_identifier(uid, IdentifierKind::PeerUid))
+        return std::nullopt;
     return split_tagged_uid(uid);
 }
 
 std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept
 {
-    if (!is_valid_identifier(id, IdentifierKind::Schema)) return std::nullopt;
+    if (!is_valid_identifier(id, IdentifierKind::Schema))
+        return std::nullopt;
     // Strip the '$' sigil.
     const auto body = id.substr(1);
     // Last component is guaranteed `v[0-9]+` by the validator.
     const auto last_dot = body.rfind('.');
     // `body` has ≥2 components (validator enforces), so last_dot exists.
     SchemaIdParts parts;
-    parts.base          = body.substr(0, last_dot);
+    parts.base = body.substr(0, last_dot);
     parts.version_token = body.substr(last_dot + 1);
-    std::uint32_t v     = 0;
+    std::uint32_t v = 0;
     (void)is_version_component(parts.version_token, v); // already validated
     parts.version = v;
     return parts;
@@ -278,15 +301,15 @@ std::optional<SchemaIdParts> parse_schema_id(std::string_view id) noexcept
 
 std::optional<std::string_view> extract_short_tag(std::string_view uid) noexcept
 {
-    if (auto p = parse_role_uid(uid)) return p->tag;
+    if (auto p = parse_role_uid(uid))
+        return p->tag;
     return std::nullopt;
 }
 
-std::string format_role_ref(std::string_view uid,
-                            std::string_view name,
-                            std::string_view tag)
+std::string format_role_ref(std::string_view uid, std::string_view name, std::string_view tag)
 {
-    if (!uid.empty()) return std::string(uid);
+    if (!uid.empty())
+        return std::string(uid);
 
     std::string out;
     out.reserve(tag.size() + name.size() + 4);
@@ -295,7 +318,8 @@ std::string format_role_ref(std::string_view uid,
         out.push_back('[');
         out.append(tag.data(), tag.size());
         out.push_back(']');
-        if (!name.empty()) out.push_back(' ');
+        if (!name.empty())
+            out.push_back(' ');
     }
     out.append(name.data(), name.size());
     return out;

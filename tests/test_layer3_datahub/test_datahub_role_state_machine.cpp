@@ -67,7 +67,8 @@ TEST_F(DatahubRoleStateMachineTest, RoleEntry_TerminalCleanup_OnLastPresenceDisc
     //      thread for the entry erase).
     //
     // A mutation that disables the dispatch must make this test fail.
-    auto proc = SpawnWorker("broker_role_state.role_entry_terminal_cleanup_on_last_presence_dereg", {});
+    auto proc =
+        SpawnWorker("broker_role_state.role_entry_terminal_cleanup_on_last_presence_dereg", {});
     ExpectWorkerOk(proc);
 }
 
@@ -76,7 +77,8 @@ TEST_F(DatahubRoleStateMachineTest, RoleEntry_TerminalCleanup_OnConsumerLeftLast
     // Wave M3 step 5b (2026-05-11) — pins dispatch from
     // `_on_consumer_left`.  Consumer registers (its only presence) and
     // DEREGs; role entry must be erased.
-    auto proc = SpawnWorker("broker_role_state.role_entry_terminal_cleanup_on_consumer_left_last", {});
+    auto proc =
+        SpawnWorker("broker_role_state.role_entry_terminal_cleanup_on_consumer_left_last", {});
     ExpectWorkerOk(proc);
 }
 
@@ -89,8 +91,8 @@ TEST_F(DatahubRoleStateMachineTest, ConsumerHeartbeatTimeout_FiresConsumerDiedNo
     // every producer on the channel.  Producer + channel are unaffected:
     // consumer-presence disconnect never tears down channels per
     // HEP-CORE-0023 §2.1.1.
-    auto proc = SpawnWorker(
-        "broker_role_state.consumer_heartbeat_timeout_fires_consumer_died_notify", {});
+    auto proc =
+        SpawnWorker("broker_role_state.consumer_heartbeat_timeout_fires_consumer_died_notify", {});
     ExpectWorkerOk(proc);
 }
 
@@ -102,10 +104,14 @@ TEST_F(DatahubRoleStateMachineTest, ConsumerHeartbeatTimeout_FiresConsumerDiedNo
 // internal `connected` flag (set at end of `connect()`, before any
 // wire handshake), so the broker that lived here was scaffolding
 // only and the L3 layer was incorrect.  Removed:
-//   - RoleHandler_Connections_StartStop_Smoke   → RoleHandlerLifecycle.StartStop_Smoke_SinglePresence
-//   - RoleHandler_Connections_DualHub           → RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected
-//   - RoleHandler_Connections_DoubleStart_Rejected → RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared
-//   - RoleHandler_BrcForX_PostStart_PointerIdentity → RoleHandlerRouting.BrcForX_PostStart_PointerIdentity
+//   - RoleHandler_Connections_StartStop_Smoke   →
+//   RoleHandlerLifecycle.StartStop_Smoke_SinglePresence
+//   - RoleHandler_Connections_DualHub           →
+//   RoleHandlerLifecycle.StartStop_DualHub_BothConnectionsConnected
+//   - RoleHandler_Connections_DoubleStart_Rejected →
+//   RoleHandlerLifecycle.DoubleStart_Rejected_StateNotCleared
+//   - RoleHandler_BrcForX_PostStart_PointerIdentity →
+//   RoleHandlerRouting.BrcForX_PostStart_PointerIdentity
 
 TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_E2E)
 {
@@ -120,8 +126,7 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_StartHandlerThreads_E2E)
     //  - stop_handler_threads cleanly drains + clears state +
     //    fallback view (api.handler() == nullptr).
     //  - Second stop is idempotent.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_start_handler_threads_e2e", {});
+    auto proc = SpawnWorker("broker_role_state.role_api_base_start_handler_threads_e2e", {});
     ExpectWorkerOk(proc);
 }
 
@@ -160,9 +165,8 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandNotify_WireField_And_Routing
     //  - No test inspected the wire payload key against the HEP.
     //
     // This test closes both gaps in one round-trip.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_band_notify_wire_field_and_routing",
-        {});
+    auto proc =
+        SpawnWorker("broker_role_state.role_api_base_band_notify_wire_field_and_routing", {});
     ExpectWorkerOk(proc);
 }
 
@@ -178,9 +182,7 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_RegistrationFSM_Transitions)
     // pre-S1 state was carried by string non-emptiness on
     // `Impl::Shared::producer_channel`, which is internal to
     // role_api_base.cpp and not externally observable.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_registration_fsm_transitions",
-        {});
+    auto proc = SpawnWorker("broker_role_state.role_api_base_registration_fsm_transitions", {});
     ExpectWorkerOk(proc);
 }
 
@@ -209,7 +211,6 @@ TEST_F(DatahubRoleStateMachineTest, RoleAPIBase_BandJoin_HandlerMode_Bootstrap)
     // `test_pattern4_channel_group.cpp`) were migrated to call
     // bc->band_join directly; this restores it at the public
     // RoleAPIBase surface.
-    auto proc = SpawnWorker(
-        "broker_role_state.role_api_base_band_join_handler_mode", {});
+    auto proc = SpawnWorker("broker_role_state.role_api_base_band_join_handler_mode", {});
     ExpectWorkerOk(proc);
 }

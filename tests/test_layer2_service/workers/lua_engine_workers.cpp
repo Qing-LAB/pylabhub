@@ -47,7 +47,7 @@
 #include "utils/role_api_base.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/schema_utils.hpp"
-#include "service/cycle_ops.hpp"  // dispatch_notifications + StopRequestor
+#include "service/cycle_ops.hpp" // dispatch_notifications + StopRequestor
 
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -73,9 +73,9 @@ using pylabhub::scripting::RoleHostCore;
 using pylabhub::tests::all_types_schema;
 using pylabhub::tests::complex_mixed_schema;
 using pylabhub::tests::fz_array_schema;
-using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::tests::padding_schema;
 using pylabhub::tests::simple_schema;
+using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 
 namespace pylabhub::tests::worker
@@ -96,14 +96,17 @@ void write_script(const fs::path &dir, const std::string &content)
 /// role-tagged (PROD-/CONS-/PROC-) for cross-engine parity with
 /// python_engine_workers::make_api; a shared convention makes any
 /// future cross-engine grep for UID strings work uniformly.
-std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
-                                     const std::string &tag = "prod")
+std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core, const std::string &tag = "prod")
 {
     std::string uid;
-    if      (tag == "prod") uid = "prod.testengine.uid00000001";
-    else if (tag == "cons") uid = "cons.testengine.uid00000001";
-    else if (tag == "proc") uid = "proc.testengine.uid00000001";
-    else                    uid = "TEST-" + tag + "-00000001";
+    if (tag == "prod")
+        uid = "prod.testengine.uid00000001";
+    else if (tag == "cons")
+        uid = "cons.testengine.uid00000001";
+    else if (tag == "proc")
+        uid = "proc.testengine.uid00000001";
+    else
+        uid = "TEST-" + tag + "-00000001";
     auto api = std::make_unique<RoleAPIBase>(core, tag, uid);
     api->set_name("TestEngine");
     api->set_channel("test.channel");
@@ -117,9 +120,9 @@ std::unique_ptr<RoleAPIBase> make_api(RoleHostCore &core,
 /// registrations — see setup_role_engine below.
 enum class RoleKind
 {
-    Producer,   ///< on_produce, tag "prod", register OutSlotFrame
-    Consumer,   ///< on_consume, tag "cons", register InSlotFrame
-    Processor,  ///< on_process, tag "proc", register InSlotFrame + OutSlotFrame
+    Producer,  ///< on_produce, tag "prod", register OutSlotFrame
+    Consumer,  ///< on_consume, tag "cons", register InSlotFrame
+    Processor, ///< on_process, tag "proc", register InSlotFrame + OutSlotFrame
 };
 
 /// Composes initialize + load_script + per-role register_slot_type +
@@ -135,26 +138,31 @@ enum class RoleKind
 /// tests that register OutFlexFrame, or the all_types_schema test)
 /// drive initialize/load_script/register_slot_type/build_api inline
 /// themselves and skip this helper.
-bool setup_role_engine(LuaEngine &engine, RoleHostCore &core,
-                       const fs::path &dir,
-                       std::unique_ptr<RoleAPIBase> &api_out,
-                       RoleKind kind)
+bool setup_role_engine(LuaEngine &engine, RoleHostCore &core, const fs::path &dir,
+                       std::unique_ptr<RoleAPIBase> &api_out, RoleKind kind)
 {
-    const char *required_cb  = nullptr;
-    const char *tag          = nullptr;
-    bool        register_in  = false;
-    bool        register_out = false;
+    const char *required_cb = nullptr;
+    const char *tag = nullptr;
+    bool register_in = false;
+    bool register_out = false;
     switch (kind)
     {
-        case RoleKind::Producer:
-            required_cb = "on_produce"; tag = "prod";
-            register_out = true;                       break;
-        case RoleKind::Consumer:
-            required_cb = "on_consume"; tag = "cons";
-            register_in = true;                        break;
-        case RoleKind::Processor:
-            required_cb = "on_process"; tag = "proc";
-            register_in = true;  register_out = true;  break;
+    case RoleKind::Producer:
+        required_cb = "on_produce";
+        tag = "prod";
+        register_out = true;
+        break;
+    case RoleKind::Consumer:
+        required_cb = "on_consume";
+        tag = "cons";
+        register_in = true;
+        break;
+    case RoleKind::Processor:
+        required_cb = "on_process";
+        tag = "proc";
+        register_in = true;
+        register_out = true;
+        break;
     }
 
     if (!engine.initialize("test", &core))
@@ -176,8 +184,8 @@ bool setup_role_engine(LuaEngine &engine, RoleHostCore &core,
 /// process_worker_with_script trio whose logic was identical modulo
 /// the RoleKind.
 template <typename F>
-int script_worker(const std::string &dir, const char *scenario_name,
-                  RoleKind kind, const std::string &lua_source, F &&body)
+int script_worker(const std::string &dir, const char *scenario_name, RoleKind kind,
+                  const std::string &lua_source, F &&body)
 {
     return run_gtest_worker(
         [&]()
@@ -186,7 +194,7 @@ int script_worker(const std::string &dir, const char *scenario_name,
             write_script(script_dir, lua_source);
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
             ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, kind));
 
@@ -205,22 +213,19 @@ template <typename F>
 int produce_worker_with_script(const std::string &dir, const char *name,
                                const std::string &lua_source, F &&body)
 {
-    return script_worker(dir, name, RoleKind::Producer,
-                         lua_source, std::forward<F>(body));
+    return script_worker(dir, name, RoleKind::Producer, lua_source, std::forward<F>(body));
 }
 template <typename F>
 int consume_worker_with_script(const std::string &dir, const char *name,
                                const std::string &lua_source, F &&body)
 {
-    return script_worker(dir, name, RoleKind::Consumer,
-                         lua_source, std::forward<F>(body));
+    return script_worker(dir, name, RoleKind::Consumer, lua_source, std::forward<F>(body));
 }
 template <typename F>
 int process_worker_with_script(const std::string &dir, const char *name,
                                const std::string &lua_source, F &&body)
 {
-    return script_worker(dir, name, RoleKind::Processor,
-                         lua_source, std::forward<F>(body));
+    return script_worker(dir, name, RoleKind::Processor, lua_source, std::forward<F>(body));
 }
 
 } // namespace
@@ -236,7 +241,8 @@ int full_lifecycle(const std::string &dir)
     // verify the callbacks actually executed by inspecting
     // core.custom_metrics_snapshot() afterwards.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"(
                 function on_produce(tx, msgs, api)
@@ -251,10 +257,9 @@ int full_lifecycle(const std::string &dir)
             )");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                          RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             // Before invoking anything: metrics should not contain the keys.
             auto before = core.custom_metrics_snapshot();
@@ -273,8 +278,7 @@ int full_lifecycle(const std::string &dir)
             EXPECT_EQ(after_stop.count("on_stop_called"), 1u)
                 << "on_stop must have dispatched into the Lua runtime";
 
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "no callback should have raised";
+            EXPECT_EQ(engine.script_error_count(), 0u) << "no callback should have raised";
 
             engine.finalize();
         },
@@ -293,17 +297,17 @@ int initialize_and_finalize_succeeds(const std::string &dir)
     // nullptr).  No such hook currently exists — adding one is deferred
     // to a later dedicated commit; this test covers the happy path only.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            (void)script_dir;  // not used — we don't load a script here
+            (void)script_dir; // not used — we don't load a script here
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             engine.finalize();
         },
-        "lua_engine::initialize_and_finalize_succeeds",
-        Logger::GetLifecycleModule());
+        "lua_engine::initialize_and_finalize_succeeds", Logger::GetLifecycleModule());
 }
 
 // ── Type registration ──────────────────────────────────────────────────────
@@ -311,38 +315,36 @@ int initialize_and_finalize_succeeds(const std::string &dir)
 int register_slot_type_sizeof_correct(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 4u)
                 << "simple_schema is a single float32 field";
 
             engine.finalize();
         },
-        "lua_engine::register_slot_type_sizeof_correct",
-        Logger::GetLifecycleModule());
+        "lua_engine::register_slot_type_sizeof_correct", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_multi_field(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
@@ -351,15 +353,12 @@ int register_slot_type_multi_field(const std::string &dir)
             spec.fields.push_back({"x", "float32", 1, 0});
             spec.fields.push_back({"y", "float32", 1, 0});
             spec.fields.push_back({"z", "float32", 1, 0});
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"));
-            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u)
-                << "3 x float32 = 12 bytes";
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 12u) << "3 x float32 = 12 bytes";
 
             engine.finalize();
         },
-        "lua_engine::register_slot_type_multi_field",
-        Logger::GetLifecycleModule());
+        "lua_engine::register_slot_type_multi_field", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_packed_packing(const std::string &dir)
@@ -383,50 +382,47 @@ int register_slot_type_packed_packing(const std::string &dir)
     // bool+int32 combination so that a compute_schema_size drift
     // for this schema — if any future refactor moves it — surfaces.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             SchemaSpec spec;
             spec.has_schema = true;
-            spec.fields.push_back({"flag", "bool",  1, 0});
-            spec.fields.push_back({"val",  "int32", 1, 0});
+            spec.fields.push_back({"flag", "bool", 1, 0});
+            spec.fields.push_back({"val", "int32", 1, 0});
 
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "packed"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "packed"));
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 5u)
                 << "packed: bool(1) + int32(4) = 5 — hand-verified "
                    "anchor for this schema";
 
             engine.finalize();
         },
-        "lua_engine::register_slot_type_packed_packing",
-        Logger::GetLifecycleModule());
+        "lua_engine::register_slot_type_packed_packing", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_has_schema_false_returns_false(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             SchemaSpec spec;
             spec.has_schema = false;
-            EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            EXPECT_FALSE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             engine.finalize();
         },
@@ -444,16 +440,15 @@ int register_slot_type_unknown_name_rejects_no_side_effect(const std::string &di
     // expected_error_substrings (Logger is async; CaptureStderr in the
     // worker would not see it).
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
 
@@ -470,8 +465,7 @@ int register_slot_type_unknown_name_rejects_no_side_effect(const std::string &di
                    "before the name check rejected it (ordering bug).";
 
             // (3): engine still usable after the rejection.
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
-                                                   "aligned"))
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"))
                 << "engine must remain usable after a rejected register";
             EXPECT_GT(engine.type_sizeof("InSlotFrame"), 0u);
 
@@ -505,19 +499,18 @@ int register_slot_type_all_supported_types(const std::string &dir)
     // against per-type-dispatcher bugs.  No need to redundantly
     // test both packings.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = all_types_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"))
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"))
                 << "every scalar type in all_types_schema must register "
                    "successfully under aligned — a missing dispatcher "
                    "branch for any type would fail here";
@@ -529,8 +522,7 @@ int register_slot_type_all_supported_types(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::register_slot_type_all_supported_types",
-        Logger::GetLifecycleModule());
+        "lua_engine::register_slot_type_all_supported_types", Logger::GetLifecycleModule());
 }
 
 // ── Alias creation ─────────────────────────────────────────────────────────
@@ -538,85 +530,77 @@ int register_slot_type_all_supported_types(const std::string &dir)
 int alias_slot_frame_producer(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
-            EXPECT_EQ(engine.type_sizeof("SlotFrame"),
-                      engine.type_sizeof("OutSlotFrame"))
+            EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("OutSlotFrame"))
                 << "producer build_api must expose OutSlotFrame under the "
                    "role-agnostic 'SlotFrame' alias";
             EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
 
             engine.finalize();
         },
-        "lua_engine::alias_slot_frame_producer",
-        Logger::GetLifecycleModule());
+        "lua_engine::alias_slot_frame_producer", Logger::GetLifecycleModule());
 }
 
 int alias_slot_frame_consumer(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_consume(rx, msgs, api) return true end");
+            write_script(script_dir, "function on_consume(rx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_consume"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
 
             auto api = make_api(core, "cons");
             ASSERT_TRUE(engine.build_api(*api));
 
-            EXPECT_EQ(engine.type_sizeof("SlotFrame"),
-                      engine.type_sizeof("InSlotFrame"))
+            EXPECT_EQ(engine.type_sizeof("SlotFrame"), engine.type_sizeof("InSlotFrame"))
                 << "consumer build_api must expose InSlotFrame under the "
                    "role-agnostic 'SlotFrame' alias";
             EXPECT_GT(engine.type_sizeof("SlotFrame"), 0u);
 
             engine.finalize();
         },
-        "lua_engine::alias_slot_frame_consumer",
-        Logger::GetLifecycleModule());
+        "lua_engine::alias_slot_frame_consumer", Logger::GetLifecycleModule());
 }
 
 int alias_no_alias_processor(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_process(rx, tx, msgs, api) return true end");
+            write_script(script_dir, "function on_process(rx, tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_process"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
-                                                  "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core, "proc");
             ASSERT_TRUE(engine.build_api(*api));
@@ -630,60 +614,54 @@ int alias_no_alias_processor(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::alias_no_alias_processor",
-        Logger::GetLifecycleModule());
+        "lua_engine::alias_no_alias_processor", Logger::GetLifecycleModule());
 }
 
 int alias_flex_frame_producer(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         R"(function on_produce(tx, msgs, api) return true end)");
+            write_script(script_dir, R"(function on_produce(tx, msgs, api) return true end)");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
-            EXPECT_EQ(engine.type_sizeof("FlexFrame"),
-                      engine.type_sizeof("OutFlexFrame"))
+            EXPECT_EQ(engine.type_sizeof("FlexFrame"), engine.type_sizeof("OutFlexFrame"))
                 << "producer with registered OutFlexFrame must expose "
                    "'FlexFrame' alias";
             EXPECT_GT(engine.type_sizeof("FlexFrame"), 0u);
 
             engine.finalize();
         },
-        "lua_engine::alias_flex_frame_producer",
-        Logger::GetLifecycleModule());
+        "lua_engine::alias_flex_frame_producer", Logger::GetLifecycleModule());
 }
 
 int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                  "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             // Deliberately NO OutFlexFrame registered.
 
             auto api = make_api(core);
@@ -697,8 +675,7 @@ int alias_producer_no_fz_no_flex_frame_alias(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::alias_producer_no_fz_no_flex_frame_alias",
-        Logger::GetLifecycleModule());
+        "lua_engine::alias_producer_no_fz_no_flex_frame_alias", Logger::GetLifecycleModule());
 }
 
 // ── invoke_produce (chunk 2) ────────────────────────────────────────────────
@@ -730,16 +707,15 @@ int invoke_produce_commit_on_true(const std::string &dir)
                 return true
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_FLOAT_EQ(buf, 42.0f);
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "commit path must not emit script errors";
+            EXPECT_EQ(engine.script_error_count(), 0u) << "commit path must not emit script errors";
         });
 }
 
@@ -763,12 +739,12 @@ int invoke_produce_discard_on_false(const std::string &dir)
                 return false
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
-            float buf = 777.0f;  // sentinel — Lua script doesn't write
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
+            float buf = 777.0f; // sentinel — Lua script doesn't write
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_FLOAT_EQ(buf, 777.0f)
                 << "engine must not write buf on Discard when Lua didn't write";
@@ -785,12 +761,12 @@ int invoke_produce_nil_return_is_error(const std::string &dir)
                 -- no explicit return → nil → error (must be explicit)
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
                 << "missing return is an error — must be explicit true/false";
             EXPECT_EQ(engine.script_error_count(), 1u);
@@ -816,11 +792,10 @@ int invoke_produce_nil_slot(const std::string &dir)
                 return false
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
+            auto result = engine.invoke_produce(pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "the Lua assert(tx.slot == nil) must have passed; "
@@ -838,13 +813,13 @@ int invoke_produce_script_error(const std::string &dir)
                 error("intentional error")
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             EXPECT_EQ(engine.script_error_count(), 0u);
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 1u);
         });
@@ -865,8 +840,7 @@ int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir)
     // iteration; if they expected the engine to clear it on Discard
     // they'd get stale data.
     return produce_worker_with_script(
-        dir,
-        "lua_engine::invoke_produce_discard_on_false_but_lua_wrote_slot",
+        dir, "lua_engine::invoke_produce_discard_on_false_but_lua_wrote_slot",
         R"(
             function on_produce(tx, msgs, api)
                 if tx.slot then
@@ -875,12 +849,12 @@ int invoke_produce_discard_on_false_but_lua_wrote_slot(const std::string &dir)
                 return false
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard)
                 << "explicit `return false` must yield Discard";
             EXPECT_FLOAT_EQ(buf, 42.0f)
@@ -925,12 +899,12 @@ int invoke_consume_receives_slot(const std::string &dir)
                 return true
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float data = 99.5f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto result =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit)
                 << "on_consume returning true must map to Commit even though "
                    "the data loop currently ignores the return value";
@@ -955,11 +929,10 @@ int invoke_consume_nil_slot(const std::string &dir)
                 return true
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{nullptr, 0}, msgs);
+            auto result = engine.invoke_consume(pylabhub::scripting::InvokeRx{nullptr, 0}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Lua assert(rx.slot == nil) must have passed";
@@ -979,12 +952,12 @@ int invoke_consume_script_error_detected(const std::string &dir)
                 error("consume error")
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float data = 1.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto result =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 1u);
         });
@@ -1008,17 +981,18 @@ int invoke_consume_discard_on_false_no_error_bump(const std::string &dir)
                 return false
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float data = 42.5f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
             for (int i = 0; i < 10; ++i)
             {
-                auto result = engine.invoke_consume(
-                    pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+                auto result =
+                    engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
                 EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard)
-                    << "iter " << i << ": `return false` must yield Discard, "
+                    << "iter " << i
+                    << ": `return false` must yield Discard, "
                        "not Error or Commit";
             }
 
@@ -1075,20 +1049,19 @@ int invoke_consume_rx_slot_is_read_only(const std::string &dir)
                 return true  -- unreachable if the write raises
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float data = 99.5f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto result =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
 
             // Four coupled assertions that together pin the design:
             //
             //  (a) buf unchanged — the read-only invariant
-            EXPECT_FLOAT_EQ(data, 99.5f)
-                << "rx.slot write must NOT propagate to the underlying "
-                   "C buffer. data==777.0 here would indicate the engine "
-                   "dropped the `const*` cast in register_slot_type.";
+            EXPECT_FLOAT_EQ(data, 99.5f) << "rx.slot write must NOT propagate to the underlying "
+                                            "C buffer. data==777.0 here would indicate the engine "
+                                            "dropped the `const*` cast in register_slot_type.";
 
             //  (b) the library signals Error — loud, observable result
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
@@ -1162,8 +1135,8 @@ int invoke_produce_receives_messages_event_with_details(const std::string &dir)
                 return false
             end
         )LUA",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
             pylabhub::scripting::IncomingMessage m1;
@@ -1174,12 +1147,12 @@ int invoke_produce_receives_messages_event_with_details(const std::string &dir)
             pylabhub::scripting::IncomingMessage m2;
             m2.event = "channel_closing";
             m2.details["reason"] = "voluntary";
-            m2.details["code"]   = 0;
+            m2.details["code"] = 0;
             msgs.push_back(std::move(m2));
 
             float buf = 0.0f;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Lua asserts must have passed — a non-zero count means "
@@ -1213,12 +1186,12 @@ int invoke_produce_receives_messages_empty_vector(const std::string &dir)
                 return false
             end
         )LUA",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
-            std::vector<pylabhub::scripting::IncomingMessage> msgs;  // empty
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
+            std::vector<pylabhub::scripting::IncomingMessage> msgs; // empty
             float buf = 0.0f;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1256,11 +1229,11 @@ int invoke_produce_receives_messages_data_message(const std::string &dir)
                 return false
             end
         )LUA",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             pylabhub::scripting::IncomingMessage m;
-            m.event = "";  // data message — empty event triggers bare projection
+            m.event = ""; // data message — empty event triggers bare projection
             // IncomingMessage::sender is std::string (per role_host_core.hpp
             // :48) — treated as an arbitrary byte sequence and rendered to
             // Lua via format_tools::bytes_to_hex. Two bytes 0xCA 0xFE
@@ -1271,8 +1244,8 @@ int invoke_produce_receives_messages_data_message(const std::string &dir)
             msgs.push_back(std::move(m));
 
             float buf = 0.0f;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "a failing assert here indicates the data-message "
@@ -1305,8 +1278,8 @@ int invoke_consume_receives_messages_data_bare_format(const std::string &dir)
                 return true
             end
         )LUA",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             pylabhub::scripting::IncomingMessage m;
             m.event = "";
@@ -1315,8 +1288,8 @@ int invoke_consume_receives_messages_data_bare_format(const std::string &dir)
             msgs.push_back(std::move(m));
 
             float data = 0.0f;
-            auto result = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto result =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1362,15 +1335,14 @@ int invoke_process_dual_slots(const std::string &dir)
                 return false
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
-            float in_data  = 21.0f;
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
+            float in_data = 21.0f;
             float out_data = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto result = engine.invoke_process(
                 pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
-                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_FLOAT_EQ(out_data, 42.0f)
                 << "Lua computed tx.slot.value = rx.slot.value * 2.0 = 42.0";
@@ -1404,12 +1376,11 @@ int invoke_process_both_slots_nil(const std::string &dir)
                 return false
             end
         )LUA",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                pylabhub::scripting::InvokeRx{nullptr, 0},
-                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
+            auto result = engine.invoke_process(pylabhub::scripting::InvokeRx{nullptr, 0},
+                                                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Lua-side assert(both nil) must have passed; failure means "
@@ -1440,16 +1411,15 @@ int invoke_process_rx_present_tx_nil(const std::string &dir)
                 return false
             end
         )LUA",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
             float in_data = 10.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_process(
-                pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
-                pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
+            auto result =
+                engine.invoke_process(pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
+                                      pylabhub::scripting::InvokeTx{nullptr, 0}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
-            EXPECT_FLOAT_EQ(in_data, 10.0f)
-                << "rx is still read-only in the rx-only-no-tx path";
+            EXPECT_FLOAT_EQ(in_data, 10.0f) << "rx is still read-only in the rx-only-no-tx path";
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
 }
@@ -1477,20 +1447,18 @@ int invoke_process_rx_slot_is_read_only(const std::string &dir)
                 return true             -- unreachable
             end
         )",
-        [](pylabhub::scripting::LuaEngine &engine,
-           pylabhub::scripting::RoleHostCore & /*core*/) {
-            float in_data  = 99.5f;
+        [](pylabhub::scripting::LuaEngine &engine, pylabhub::scripting::RoleHostCore & /*core*/)
+        {
+            float in_data = 99.5f;
             float out_data = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto result = engine.invoke_process(
                 pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
-                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)}, msgs);
 
             // Four coupled assertions pinning the design contract:
-            EXPECT_FLOAT_EQ(in_data, 99.5f)
-                << "rx.slot write must NOT propagate to the underlying "
-                   "rx buffer.";
+            EXPECT_FLOAT_EQ(in_data, 99.5f) << "rx.slot write must NOT propagate to the underlying "
+                                               "rx buffer.";
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
                 << "rx write in invoke_process must surface as "
                    "InvokeResult::Error, same loud contract as "
@@ -1539,8 +1507,7 @@ int api_version_info_returns_json_string(const std::string &dir)
     // which is what we want, since scripts using version_info() in
     // the wild key off these exact names.
     return script_worker(
-        dir, "lua_engine::api_version_info_returns_json_string",
-        RoleKind::Producer,
+        dir, "lua_engine::api_version_info_returns_json_string", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 local info = api.version_info()
@@ -1561,11 +1528,12 @@ int api_version_info_returns_json_string(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1579,10 +1547,8 @@ int api_identity_uid_name_channel(const std::string &dir)
     // role scripts that use these for logging, registration, or
     // channel-scoped work. Values are the ones make_api installs
     // (see setup_role_engine → make_api in this file).
-    return script_worker(
-        dir, "lua_engine::api_identity_uid_name_channel",
-        RoleKind::Producer,
-        R"LUA(
+    return script_worker(dir, "lua_engine::api_identity_uid_name_channel", RoleKind::Producer,
+                         R"LUA(
             function on_produce(tx, msgs, api)
                 assert(api.uid() == "prod.testengine.uid00000001",
                        "uid: " .. tostring(api.uid()))
@@ -1593,14 +1559,15 @@ int api_identity_uid_name_channel(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
-            float buf = 0.0f;
-            std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                         [](LuaEngine &engine, RoleHostCore & /*core*/)
+                         {
+                             float buf = 0.0f;
+                             std::vector<pylabhub::scripting::IncomingMessage> msgs;
+                             auto result = engine.invoke_produce(
+                                 pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+                             EXPECT_EQ(engine.script_error_count(), 0u);
+                         });
 }
 
 int api_log_dispatches_levels(const std::string &dir)
@@ -1616,10 +1583,8 @@ int api_log_dispatches_levels(const std::string &dir)
     // LOGGER_COMPILE_LEVEL=0 in the cmake sets all levels compiled
     // in but runtime may still filter DEBUG; testing the compiled
     // presence is a separate concern from level-dispatch routing.
-    return script_worker(
-        dir, "lua_engine::api_log_dispatches_levels",
-        RoleKind::Producer,
-        R"LUA(
+    return script_worker(dir, "lua_engine::api_log_dispatches_levels", RoleKind::Producer,
+                         R"LUA(
             function on_produce(tx, msgs, api)
                 api.log("error",   "lua_error_msg")
                 api.log("warn",    "lua_warn_msg")
@@ -1629,19 +1594,20 @@ int api_log_dispatches_levels(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
-            float buf = 0.0f;
-            std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
-            // The worker doesn't EXPECT on stderr directly — the parent
-            // test's expected_error_substrings pins the one ERROR line
-            // the engine must emit. Absence of other ERRORs is also
-            // verified there by the framework's "every ERROR must be
-            // accounted for" clause.
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                         [](LuaEngine &engine, RoleHostCore & /*core*/)
+                         {
+                             float buf = 0.0f;
+                             std::vector<pylabhub::scripting::IncomingMessage> msgs;
+                             auto result = engine.invoke_produce(
+                                 pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+                             // The worker doesn't EXPECT on stderr directly — the parent
+                             // test's expected_error_substrings pins the one ERROR line
+                             // the engine must emit. Absence of other ERRORs is also
+                             // verified there by the framework's "every ERROR must be
+                             // accounted for" clause.
+                             EXPECT_EQ(engine.script_error_count(), 0u);
+                         });
 }
 
 int api_stop_sets_shutdown_requested(const std::string &dir)
@@ -1651,41 +1617,40 @@ int api_stop_sets_shutdown_requested(const std::string &dir)
     // host's main loop polls is_shutdown_requested() to exit
     // cleanly; this test pins that the Lua API path correctly
     // reaches the same flag.
-    return script_worker(
-        dir, "lua_engine::api_stop_sets_shutdown_requested",
-        RoleKind::Producer,
-        R"LUA(
+    return script_worker(dir, "lua_engine::api_stop_sets_shutdown_requested", RoleKind::Producer,
+                         R"LUA(
             function on_produce(tx, msgs, api)
                 api.stop()
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
-            // Pre-condition: nothing has set the flag yet.
-            EXPECT_FALSE(core.is_shutdown_requested());
-            EXPECT_FALSE(core.is_critical_error())
-                << "stop() alone must NOT flag a critical error — that's "
-                   "only set by set_critical_error()";
+                         [](LuaEngine &engine, RoleHostCore &core)
+                         {
+                             // Pre-condition: nothing has set the flag yet.
+                             EXPECT_FALSE(core.is_shutdown_requested());
+                             EXPECT_FALSE(core.is_critical_error())
+                                 << "stop() alone must NOT flag a critical error — that's "
+                                    "only set by set_critical_error()";
 
-            float buf = 0.0f;
-            std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+                             float buf = 0.0f;
+                             std::vector<pylabhub::scripting::IncomingMessage> msgs;
+                             auto result = engine.invoke_produce(
+                                 pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
 
-            // Post-condition: Lua api.stop() must have reached the core.
-            EXPECT_TRUE(core.is_shutdown_requested());
-            // And must NOT have touched the critical-error path.
-            EXPECT_FALSE(core.is_critical_error());
-            EXPECT_EQ(core.stop_reason_string(), std::string("normal"))
-                << "stop_reason stays 'normal' after a plain api.stop() — "
-                   "a non-normal reason indicates the wrong path was taken.";
-            EXPECT_EQ(engine.script_error_count(), 0u);
+                             // Post-condition: Lua api.stop() must have reached the core.
+                             EXPECT_TRUE(core.is_shutdown_requested());
+                             // And must NOT have touched the critical-error path.
+                             EXPECT_FALSE(core.is_critical_error());
+                             EXPECT_EQ(core.stop_reason_string(), std::string("normal"))
+                                 << "stop_reason stays 'normal' after a plain api.stop() — "
+                                    "a non-normal reason indicates the wrong path was taken.";
+                             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            // Engine also logs one INFO line documenting the api.stop()
-            // call (lua_engine.cpp:1333). Not asserted here — INFO lines
-            // are not in the framework's expected-error channel.
-        });
+                             // Engine also logs one INFO line documenting the api.stop()
+                             // call (lua_engine.cpp:1333). Not asserted here — INFO lines
+                             // are not in the framework's expected-error channel.
+                         });
 }
 
 int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
@@ -1704,8 +1669,7 @@ int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
     // in any of the three closures (or the core's set_critical_error
     // side-effects) fails this test.
     return script_worker(
-        dir, "lua_engine::api_critical_error_set_and_read_and_stop_reason",
-        RoleKind::Producer,
+        dir, "lua_engine::api_critical_error_set_and_read_and_stop_reason", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 -- Initial state: flag is false
@@ -1728,15 +1692,16 @@ int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             // Pre-condition: clean state
             EXPECT_FALSE(core.is_critical_error());
             EXPECT_FALSE(core.is_shutdown_requested());
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Lua asserts must have all passed; a non-zero count "
@@ -1748,8 +1713,7 @@ int api_critical_error_set_and_read_and_stop_reason(const std::string &dir)
             EXPECT_TRUE(core.is_shutdown_requested())
                 << "set_critical_error must ALSO set shutdown_requested "
                    "so the main loop exits — see role_host_core.hpp:221.";
-            EXPECT_EQ(core.stop_reason_string(),
-                      std::string("critical_error"));
+            EXPECT_EQ(core.stop_reason_string(), std::string("critical_error"));
         });
 }
 
@@ -1776,20 +1740,24 @@ int api_stop_reason_reflects_all_enum_values(const std::string &dir)
     // needing 4 separate Lua scripts or a Lua-side table of expected
     // strings.
     return script_worker(
-        dir, "lua_engine::api_stop_reason_reflects_all_enum_values",
-        RoleKind::Producer,
+        dir, "lua_engine::api_stop_reason_reflects_all_enum_values", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.set_shared_data("observed_reason", api.stop_reason())
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
-            struct Case { RoleHostCore::StopReason r; const char *expected; };
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
+            struct Case
+            {
+                RoleHostCore::StopReason r;
+                const char *expected;
+            };
             const Case cases[] = {
-                {RoleHostCore::StopReason::Normal,        "normal"},
-                {RoleHostCore::StopReason::PeerDead,      "peer_dead"},
-                {RoleHostCore::StopReason::HubDead,       "hub_dead"},
+                {RoleHostCore::StopReason::Normal, "normal"},
+                {RoleHostCore::StopReason::PeerDead, "peer_dead"},
+                {RoleHostCore::StopReason::HubDead, "hub_dead"},
                 {RoleHostCore::StopReason::CriticalError, "critical_error"},
             };
 
@@ -1798,23 +1766,20 @@ int api_stop_reason_reflects_all_enum_values(const std::string &dir)
                 core.set_stop_reason(c.r);
                 float buf = 0.0f;
                 std::vector<pylabhub::scripting::IncomingMessage> msgs;
-                auto result = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto result =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
-                EXPECT_EQ(engine.script_error_count(), 0u)
-                    << "iter expected=" << c.expected;
+                EXPECT_EQ(engine.script_error_count(), 0u) << "iter expected=" << c.expected;
 
                 auto v = core.get_shared_data("observed_reason");
-                ASSERT_TRUE(v.has_value())
-                    << "Lua must have written the key; missing value means "
-                       "set_shared_data did not reach the core";
+                ASSERT_TRUE(v.has_value()) << "Lua must have written the key; missing value means "
+                                              "set_shared_data did not reach the core";
                 ASSERT_TRUE(std::holds_alternative<std::string>(*v))
                     << "Lua must have written a string (the return of "
                        "api.stop_reason()); wrong variant means the closure "
                        "returned a non-string type";
                 EXPECT_EQ(std::get<std::string>(*v), std::string(c.expected))
-                    << "api.stop_reason() must reflect set_stop_reason("
-                    << static_cast<int>(c.r)
+                    << "api.stop_reason() must reflect set_stop_reason(" << static_cast<int>(c.r)
                     << ") — wrong string means stop_reason_string()'s switch "
                        "lost a case or Lua closure read a stale cached value";
             }
@@ -1839,8 +1804,7 @@ int api_report_metric_appears_under_custom(const std::string &dir)
     // accidentally promoted keys to the top of m (shadowing the
     // loop/role sub-groups) would slip past the weaker V2 check.
     return script_worker(
-        dir, "lua_engine::api_report_metric_appears_under_custom",
-        RoleKind::Producer,
+        dir, "lua_engine::api_report_metric_appears_under_custom", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.report_metric("latency_ms", 42.5)
@@ -1868,11 +1832,12 @@ int api_report_metric_appears_under_custom(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1881,8 +1846,7 @@ int api_report_metric_appears_under_custom(const std::string &dir)
 int api_report_metric_overwrite_same_key(const std::string &dir)
 {
     return script_worker(
-        dir, "lua_engine::api_report_metric_overwrite_same_key",
-        RoleKind::Producer,
+        dir, "lua_engine::api_report_metric_overwrite_same_key", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.report_metric("x", 1)
@@ -1896,11 +1860,12 @@ int api_report_metric_overwrite_same_key(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1912,8 +1877,7 @@ int api_report_metric_zero_value_preserved(const std::string &dir)
     // implementations; this test pins that a reported 0 is visibly
     // PRESENT (not nil-confused) in m.custom.
     return script_worker(
-        dir, "lua_engine::api_report_metric_zero_value_preserved",
-        RoleKind::Producer,
+        dir, "lua_engine::api_report_metric_zero_value_preserved", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.report_metric("x", 0.0)
@@ -1928,11 +1892,12 @@ int api_report_metric_zero_value_preserved(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1945,8 +1910,7 @@ int api_report_metrics_batch_accepts_table(const std::string &dir)
     // int, and fractional double to exercise the luaL_checknumber
     // coercion path and pin that sign is preserved.
     return script_worker(
-        dir, "lua_engine::api_report_metrics_batch_accepts_table",
-        RoleKind::Producer,
+        dir, "lua_engine::api_report_metrics_batch_accepts_table", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.report_metrics({a = 1, b = -7, c = 3.5})
@@ -1963,11 +1927,12 @@ int api_report_metrics_batch_accepts_table(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -1986,19 +1951,19 @@ int api_report_metrics_non_table_arg_is_error(const std::string &dir)
     // silently accepts a non-table (e.g. luaL_checktype replaced by
     // a permissive cast) would fail the result-code assertion.
     return script_worker(
-        dir, "lua_engine::api_report_metrics_non_table_arg_is_error",
-        RoleKind::Producer,
+        dir, "lua_engine::api_report_metrics_non_table_arg_is_error", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.report_metrics(42)  -- wrong type, must raise
                 return false            -- unreachable if raise fires
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Error)
                 << "non-table arg must surface as InvokeResult::Error, "
                    "not Discard/Commit — loud-failure contract";
@@ -2015,8 +1980,7 @@ int api_clear_custom_metrics_empties_and_allows_rewrite(const std::string &dir)
     // leave the table in an unusable state (e.g. null pointer, or
     // stale "cleared" flag blocking future reports).
     return script_worker(
-        dir, "lua_engine::api_clear_custom_metrics_empties_and_allows_rewrite",
-        RoleKind::Producer,
+        dir, "lua_engine::api_clear_custom_metrics_empties_and_allows_rewrite", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.report_metric("a", 1)
@@ -2053,11 +2017,12 @@ int api_clear_custom_metrics_empties_and_allows_rewrite(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -2087,8 +2052,7 @@ int api_shared_data_round_trip_all_variant_types(const std::string &dir)
     // regression on either direction (e.g. get_shared_data variant
     // visitor drops a branch) fails here.
     return script_worker(
-        dir, "lua_engine::api_shared_data_round_trip_all_variant_types",
-        RoleKind::Producer,
+        dir, "lua_engine::api_shared_data_round_trip_all_variant_types", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.set_shared_data("counter", 42)      -- int64 branch
@@ -2127,11 +2091,12 @@ int api_shared_data_round_trip_all_variant_types(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -2169,8 +2134,7 @@ int api_shared_data_round_trip_all_variant_types(const std::string &dir)
 int api_shared_data_get_missing_key_returns_nil(const std::string &dir)
 {
     return script_worker(
-        dir, "lua_engine::api_shared_data_get_missing_key_returns_nil",
-        RoleKind::Producer,
+        dir, "lua_engine::api_shared_data_get_missing_key_returns_nil", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 local v = api.get_shared_data("nonexistent")
@@ -2179,11 +2143,12 @@ int api_shared_data_get_missing_key_returns_nil(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -2195,10 +2160,8 @@ int api_shared_data_nil_removes_key(const std::string &dir)
     // removal (V2 only checked via C++ core).  Also adds a pre-set
     // assertion so the test distinguishes "removal worked" from
     // "key was never there".
-    return script_worker(
-        dir, "lua_engine::api_shared_data_nil_removes_key",
-        RoleKind::Producer,
-        R"LUA(
+    return script_worker(dir, "lua_engine::api_shared_data_nil_removes_key", RoleKind::Producer,
+                         R"LUA(
             function on_produce(tx, msgs, api)
                 api.set_shared_data("temp", 99)
                 -- pre-condition: set worked
@@ -2213,20 +2176,21 @@ int api_shared_data_nil_removes_key(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
-            float buf = 0.0f;
-            std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-            EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-            // C++-side: key truly removed, not just set to a "nil
-            // sentinel".  has_value()==false is the contract.
-            EXPECT_FALSE(core.get_shared_data("temp").has_value())
-                << "set_shared_data(key, nil) must remove the key "
-                   "(calls core.remove_shared_data at "
-                   "lua_engine.cpp:1415) — not store a nil/sentinel";
-        });
+                         [](LuaEngine &engine, RoleHostCore &core)
+                         {
+                             float buf = 0.0f;
+                             std::vector<pylabhub::scripting::IncomingMessage> msgs;
+                             auto result = engine.invoke_produce(
+                                 pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
+                             EXPECT_EQ(engine.script_error_count(), 0u);
+                             // C++-side: key truly removed, not just set to a "nil
+                             // sentinel".  has_value()==false is the contract.
+                             EXPECT_FALSE(core.get_shared_data("temp").has_value())
+                                 << "set_shared_data(key, nil) must remove the key "
+                                    "(calls core.remove_shared_data at "
+                                    "lua_engine.cpp:1415) — not store a nil/sentinel";
+                         });
 }
 
 int api_shared_data_overwrite_changes_type(const std::string &dir)
@@ -2238,8 +2202,7 @@ int api_shared_data_overwrite_changes_type(const std::string &dir)
     // variant flipped to the new type (a regression where the engine
     // refused to change type or silently coerced would fail here).
     return script_worker(
-        dir, "lua_engine::api_shared_data_overwrite_changes_type",
-        RoleKind::Producer,
+        dir, "lua_engine::api_shared_data_overwrite_changes_type", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.set_shared_data("k", 42)           -- int64
@@ -2256,11 +2219,12 @@ int api_shared_data_overwrite_changes_type(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -2283,9 +2247,7 @@ int api_shared_data_overwrite_changes_value_same_type(const std::string &dir)
     // with the same type — a bug class where the second set is
     // silently a no-op (e.g. "key already exists" guard).
     return script_worker(
-        dir,
-        "lua_engine::api_shared_data_overwrite_changes_value_same_type",
-        RoleKind::Producer,
+        dir, "lua_engine::api_shared_data_overwrite_changes_value_same_type", RoleKind::Producer,
         R"LUA(
             function on_produce(tx, msgs, api)
                 api.set_shared_data("n", 1)
@@ -2296,20 +2258,20 @@ int api_shared_data_overwrite_changes_value_same_type(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto result = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto result =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             auto v = core.get_shared_data("n");
             ASSERT_TRUE(v.has_value());
             EXPECT_TRUE(std::holds_alternative<int64_t>(*v));
-            EXPECT_EQ(std::get<int64_t>(*v), 2)
-                << "second set must overwrite the first — 1 still "
-                   "present means set became a no-op";
+            EXPECT_EQ(std::get<int64_t>(*v), 2) << "second set must overwrite the first — 1 still "
+                                                   "present means set became a no-op";
         });
 }
 
@@ -2331,18 +2293,18 @@ int invoke_multiple_errors_count_accumulates(const std::string &dir)
                 error("oops")
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             for (size_t i = 0; i < 5; ++i)
             {
-                auto r = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto r =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
-                    << "iteration " << i
-                    << ": raised error must surface as Error, not Discard";
+                    << "iteration " << i << ": raised error must surface as Error, not Discard";
                 EXPECT_EQ(engine.script_error_count(), i + 1)
                     << "iteration " << i << ": count must increment by 1 "
                     << "per invocation, monotonically";
@@ -2369,17 +2331,16 @@ int invoke_produce_wrong_return_type_is_error(const std::string &dir)
                 return 42  -- number instead of true/false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r1 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r1 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Error)
                 << "returning a number must surface as Error";
             EXPECT_EQ(engine.script_error_count(), 1u);
 
-            auto r2 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r2 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Error)
                 << "second invocation must also cleanly surface Error — "
                    "engine not entering a broken state after the first";
@@ -2400,16 +2361,15 @@ int invoke_produce_wrong_return_string_is_error(const std::string &dir)
                 return "ok"  -- string instead of true/false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r1 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r1 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 1u);
 
-            auto r2 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r2 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Error)
                 << "second invocation must also surface Error cleanly";
             EXPECT_EQ(engine.script_error_count(), 2u);
@@ -2431,7 +2391,8 @@ int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir)
     // make_api sets set_stop_on_script_error(false) by default and
     // we need true for this test.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -2445,11 +2406,10 @@ int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir)
             ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
-            api->set_stop_on_script_error(true);  // ← key difference from default
+            api->set_stop_on_script_error(true); // ← key difference from default
             ASSERT_TRUE(engine.build_api(*api));
 
             EXPECT_FALSE(core.is_shutdown_requested());
@@ -2458,8 +2418,7 @@ int invoke_produce_stop_on_script_error_sets_shutdown(const std::string &dir)
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error);
             EXPECT_TRUE(core.is_shutdown_requested())
@@ -2503,11 +2462,11 @@ int invoke_on_init_or_stop_script_error_accumulates(const std::string &dir)
                 error("stop failed")
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_EQ(engine.script_error_count(), 0u);
             engine.invoke_on_init();
-            EXPECT_EQ(engine.script_error_count(), 1u)
-                << "on_init error must bump count";
+            EXPECT_EQ(engine.script_error_count(), 1u) << "on_init error must bump count";
             engine.invoke_on_stop();
             EXPECT_EQ(engine.script_error_count(), 2u)
                 << "on_stop error must bump count again — script_error_count "
@@ -2522,7 +2481,8 @@ int invoke_on_inbox_discard_on_false_no_error_bump(const std::string &dir)
     // register_slot_type("InboxFrame", ...) in addition to the producer
     // stub that keeps load_script happy.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
@@ -2532,16 +2492,13 @@ int invoke_on_inbox_discard_on_false_no_error_bump(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -2550,10 +2507,10 @@ int invoke_on_inbox_discard_on_false_no_error_bump(const std::string &dir)
             for (int i = 0; i < 10; ++i)
             {
                 auto r = engine.invoke_on_inbox(
-                    {&inbox_data, sizeof(inbox_data),
-                     "SENDER-00000001", static_cast<uint64_t>(i)});
+                    {&inbox_data, sizeof(inbox_data), "SENDER-00000001", static_cast<uint64_t>(i)});
                 EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard)
-                    << "iter " << i << ": on_inbox `return false` must yield "
+                    << "iter " << i
+                    << ": on_inbox `return false` must yield "
                        "Discard";
             }
 
@@ -2568,12 +2525,10 @@ int invoke_on_inbox_discard_on_false_no_error_bump(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::invoke_on_inbox_discard_on_false_no_error_bump",
-        Logger::GetLifecycleModule());
+        "lua_engine::invoke_on_inbox_discard_on_false_no_error_bump", Logger::GetLifecycleModule());
 }
 
-int invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(
-    const std::string &dir)
+int invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(const std::string &dir)
 {
     // Inbox-path parallel of invoke_consume_rx_slot_is_read_only.
     // Source chain: lua_engine.cpp:726 (readonly=true) →
@@ -2584,7 +2539,8 @@ int invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(
     //   (b) InvokeResult::Error (loud failure, not silent no-op)
     //   (c) script_error_count bumped (routed through on_pcall_error_)
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
@@ -2598,25 +2554,21 @@ int invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged(
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
-            auto spec = simple_schema();  // single float32 'value'
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            auto spec = simple_schema(); // single float32 'value'
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
             const float sentinel = 77.25f;
             float inbox_data = sentinel;
-            auto r = engine.invoke_on_inbox(
-                {&inbox_data, sizeof(inbox_data),
-                 "SENDER-00000001", 1});
+            auto r =
+                engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "SENDER-00000001", 1});
 
             // (a) Core buffer invariant: const* cast must prevent write.
             EXPECT_FLOAT_EQ(inbox_data, sentinel)
@@ -2654,7 +2606,8 @@ int invoke_on_inbox_script_error_increments_count(const std::string &dir)
     // Inline setup because InboxFrame must be registered in addition
     // to OutSlotFrame and setup_role_engine doesn't handle inbox.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
@@ -2675,14 +2628,11 @@ int invoke_on_inbox_script_error_increments_count(const std::string &dir)
             RoleHostCore core;
             LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                           "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -2690,8 +2640,7 @@ int invoke_on_inbox_script_error_increments_count(const std::string &dir)
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             float inbox_data = 1.0f;
-            engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data),
-                                    "SENDER-00000001", 1});
+            engine.invoke_on_inbox({&inbox_data, sizeof(inbox_data), "SENDER-00000001", 1});
 
             EXPECT_EQ(engine.script_error_count(), 1u)
                 << "on_inbox error must increment count by exactly 1";
@@ -2705,8 +2654,7 @@ int invoke_on_inbox_script_error_increments_count(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::invoke_on_inbox_script_error_increments_count",
-        Logger::GetLifecycleModule());
+        "lua_engine::invoke_on_inbox_script_error_increments_count", Logger::GetLifecycleModule());
 }
 
 int eval_syntax_error_returns_script_error(const std::string &dir)
@@ -2722,7 +2670,8 @@ int eval_syntax_error_returns_script_error(const std::string &dir)
         R"LUA(
             function on_produce(tx, msgs, api) return false end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             // Several CONSECUTIVE failing evals.  Without the stack-clear fix,
@@ -2734,8 +2683,7 @@ int eval_syntax_error_returns_script_error(const std::string &dir)
             for (unsigned i = 0; i < kFails; ++i)
             {
                 auto bad = engine.eval("invalid syntax {{{");
-                EXPECT_EQ(bad.status,
-                          pylabhub::scripting::InvokeStatus::ScriptError);
+                EXPECT_EQ(bad.status, pylabhub::scripting::InvokeStatus::ScriptError);
             }
             EXPECT_EQ(engine.script_error_count(), kFails)
                 << "each eval syntax error must increment script_error_count "
@@ -2764,30 +2712,27 @@ int load_script_missing_file_returns_false(const std::string &dir)
     //       engine's ref table in a broken state after a missed
     //       file would fail the retry.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
 
-            EXPECT_FALSE(engine.load_script(script_dir, "nonexistent.lua",
-                                             "on_produce"))
+            EXPECT_FALSE(engine.load_script(script_dir, "nonexistent.lua", "on_produce"))
                 << "load_script must return false when file is missing";
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "missing-file error is a setup failure, NOT a script "
                    "error — script_error_count must stay 0";
 
             // Now write a valid script and retry — must succeed.
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return false end");
-            EXPECT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"))
+            write_script(script_dir, "function on_produce(tx, msgs, api) return false end");
+            EXPECT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"))
                 << "engine must be re-usable after a load_script failure";
 
             engine.finalize();
         },
-        "lua_engine::load_script_missing_file_returns_false",
-        Logger::GetLifecycleModule());
+        "lua_engine::load_script_missing_file_returns_false", Logger::GetLifecycleModule());
 }
 
 int load_script_missing_required_callback_returns_false(const std::string &dir)
@@ -2797,10 +2742,11 @@ int load_script_missing_required_callback_returns_false(const std::string &dir)
     // clean, not holding a stale ref from a partial load), and
     // that a retry with a script containing on_produce succeeds.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
 
             // Script defines on_init but NOT on_produce.
@@ -2808,8 +2754,7 @@ int load_script_missing_required_callback_returns_false(const std::string &dir)
                 function on_init(api) end
                 -- on_produce intentionally absent
             )LUA");
-            EXPECT_FALSE(engine.load_script(script_dir, "init.lua",
-                                             "on_produce"))
+            EXPECT_FALSE(engine.load_script(script_dir, "init.lua", "on_produce"))
                 << "load_script must return false when required callback "
                    "is missing";
             EXPECT_EQ(engine.script_error_count(), 0u);
@@ -2818,8 +2763,7 @@ int load_script_missing_required_callback_returns_false(const std::string &dir)
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
             )LUA");
-            EXPECT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            EXPECT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
             EXPECT_TRUE(engine.has_callback("on_produce"));
 
             engine.finalize();
@@ -2832,32 +2776,28 @@ int load_script_syntax_error_returns_false(const std::string &dir)
 {
     // Strengthened: verifies retry with valid syntax succeeds.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
 
             // Syntactically invalid Lua.
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api)  -- unterminated");
-            EXPECT_FALSE(engine.load_script(script_dir, "init.lua",
-                                             "on_produce"))
+            write_script(script_dir, "function on_produce(tx, msgs, api)  -- unterminated");
+            EXPECT_FALSE(engine.load_script(script_dir, "init.lua", "on_produce"))
                 << "load_script must return false on syntax error";
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "syntax error is a load-time failure, NOT a runtime "
                    "script error";
 
             // Overwrite with valid syntax and retry.
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return false end");
-            EXPECT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            write_script(script_dir, "function on_produce(tx, msgs, api) return false end");
+            EXPECT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             engine.finalize();
         },
-        "lua_engine::load_script_syntax_error_returns_false",
-        Logger::GetLifecycleModule());
+        "lua_engine::load_script_syntax_error_returns_false", Logger::GetLifecycleModule());
 }
 
 int register_slot_type_bad_field_type_returns_false(const std::string &dir)
@@ -2883,23 +2823,21 @@ int register_slot_type_bad_field_type_returns_false(const std::string &dir)
     //   (e) type_sizeof for the bad-named attempt returns 0 —
     //       non-canonical names never cache.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             // (a) Bad field type under CANONICAL name.
             SchemaSpec bad;
             bad.has_schema = true;
             bad.fields.push_back({"x", "complex128", 1, 0});
-            EXPECT_FALSE(engine.register_slot_type(bad, "OutSlotFrame",
-                                                    "aligned"))
+            EXPECT_FALSE(engine.register_slot_type(bad, "OutSlotFrame", "aligned"))
                 << "unsupported field type 'complex128' must fail "
                    "registration even under a canonical name";
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 0u)
@@ -2909,26 +2847,22 @@ int register_slot_type_bad_field_type_returns_false(const std::string &dir)
             SchemaSpec bad2;
             bad2.has_schema = true;
             bad2.fields.push_back({"y", "not_a_type", 1, 0});
-            EXPECT_FALSE(engine.register_slot_type(bad2, "InSlotFrame",
-                                                     "aligned"))
+            EXPECT_FALSE(engine.register_slot_type(bad2, "InSlotFrame", "aligned"))
                 << "a second unsupported type also fails — rejection "
                    "isn't specific to one value";
 
             // (c) NON-CANONICAL name even with a GOOD schema must fail.
             //     Pins the canonical-name-only contract added 2026-04-20.
             auto good = simple_schema();
-            EXPECT_FALSE(engine.register_slot_type(good, "BadFrame",
-                                                    "aligned"))
+            EXPECT_FALSE(engine.register_slot_type(good, "BadFrame", "aligned"))
                 << "non-canonical name must be rejected even with a "
                    "valid schema — engines accept only the five "
                    "canonical frame names per script_engine.hpp";
-            EXPECT_EQ(engine.type_sizeof("BadFrame"), 0u)
-                << "non-canonical names never cache";
+            EXPECT_EQ(engine.type_sizeof("BadFrame"), 0u) << "non-canonical names never cache";
 
             // (d) Valid schema under CANONICAL name succeeds after
             //     all failures — the engine isn't poisoned.
-            EXPECT_TRUE(engine.register_slot_type(good, "OutSlotFrame",
-                                                    "aligned"))
+            EXPECT_TRUE(engine.register_slot_type(good, "OutSlotFrame", "aligned"))
                 << "valid schema under canonical name must succeed "
                    "after prior failed registrations — engine must "
                    "not be poisoned by earlier rejection";
@@ -2959,16 +2893,15 @@ int finalize_double_call_is_safe(const std::string &dir)
     //      crash) — demonstrates the engine's "dead state" is
     //      observable and not fatal.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             // First finalize — primary cleanup.
             engine.finalize();
@@ -2986,14 +2919,12 @@ int finalize_double_call_is_safe(const std::string &dir)
             // Post-finalize invocations must fail gracefully, not crash.
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
                 << "invoke_produce after finalize must surface as Error, "
                    "not attempt to run against torn-down Lua state";
         },
-        "lua_engine::finalize_double_call_is_safe",
-        Logger::GetLifecycleModule());
+        "lua_engine::finalize_double_call_is_safe", Logger::GetLifecycleModule());
 }
 
 // ── Generic engine.invoke() / engine.eval() (chunk 8a) ─────────────────────
@@ -3013,12 +2944,12 @@ int invoke_existing_function_returns_true(const std::string &dir)
                 api.set_shared_data("heartbeat_ran", true)
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             EXPECT_TRUE(engine.invoke("on_heartbeat"));
             // Body must have executed.
             auto v = core.get_shared_data("heartbeat_ran");
-            ASSERT_TRUE(v.has_value())
-                << "invoke returned true but the callback did not run";
+            ASSERT_TRUE(v.has_value()) << "invoke returned true but the callback did not run";
             EXPECT_TRUE(std::holds_alternative<bool>(*v));
             EXPECT_TRUE(std::get<bool>(*v));
             EXPECT_EQ(engine.script_error_count(), 0u);
@@ -3035,7 +2966,8 @@ int invoke_non_existent_function_returns_false(const std::string &dir)
         R"LUA(
             function on_produce(tx, msgs, api) return true end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_FALSE(engine.invoke("no_such_function"));
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "name lookup miss must NOT count as a script error";
@@ -3053,7 +2985,8 @@ int invoke_empty_name_returns_false(const std::string &dir)
         R"LUA(
             function on_produce(tx, msgs, api) return true end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_FALSE(engine.invoke(""));
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "empty-name short-circuit must NOT count as a script error";
@@ -3065,13 +2998,13 @@ int invoke_script_error_returns_false_and_increments_errors(const std::string &d
     // V2 already asserts return false + count == 1.  No additional
     // strengthening needed — the conversion alone is the value here.
     return produce_worker_with_script(
-        dir,
-        "lua_engine::invoke_script_error_returns_false_and_increments_errors",
+        dir, "lua_engine::invoke_script_error_returns_false_and_increments_errors",
         R"LUA(
             function on_produce(tx, msgs, api) return true end
             function bad_func() error("intentional test error") end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             EXPECT_FALSE(engine.invoke("bad_func"));
             EXPECT_EQ(engine.script_error_count(), 1u);
         });
@@ -3085,9 +3018,8 @@ int invoke_with_args_returns_true(const std::string &dir)
     // (lua_engine.cpp:525).  This body stores the received arg via
     // set_shared_data so C++ can verify the table reached the
     // callback with the expected keys/values.
-    return produce_worker_with_script(
-        dir, "lua_engine::invoke_with_args_returns_true",
-        R"LUA(
+    return produce_worker_with_script(dir, "lua_engine::invoke_with_args_returns_true",
+                                      R"LUA(
             function on_produce(tx, msgs, api) return true end
             function greet(args)
                 -- args is the table passed by engine.invoke(name, json)
@@ -3095,20 +3027,21 @@ int invoke_with_args_returns_true(const std::string &dir)
                 api.set_shared_data("got_age", args.age)
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
-            nlohmann::json args = {{"name", "alice"}, {"age", 30}};
-            EXPECT_TRUE(engine.invoke("greet", args));
-            EXPECT_EQ(engine.script_error_count(), 0u);
+                                      [](LuaEngine &engine, RoleHostCore &core)
+                                      {
+                                          nlohmann::json args = {{"name", "alice"}, {"age", 30}};
+                                          EXPECT_TRUE(engine.invoke("greet", args));
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
 
-            // Args must have propagated to Lua.
-            auto n = core.get_shared_data("got_name");
-            ASSERT_TRUE(n.has_value());
-            EXPECT_EQ(std::get<std::string>(*n), "alice");
+                                          // Args must have propagated to Lua.
+                                          auto n = core.get_shared_data("got_name");
+                                          ASSERT_TRUE(n.has_value());
+                                          EXPECT_EQ(std::get<std::string>(*n), "alice");
 
-            auto a = core.get_shared_data("got_age");
-            ASSERT_TRUE(a.has_value());
-            EXPECT_EQ(std::get<int64_t>(*a), 30);
-        });
+                                          auto a = core.get_shared_data("got_age");
+                                          ASSERT_TRUE(a.has_value());
+                                          EXPECT_EQ(std::get<int64_t>(*a), 30);
+                                      });
 }
 
 int invoke_after_finalize_returns_false(const std::string &dir)
@@ -3126,7 +3059,8 @@ int invoke_after_finalize_returns_false(const std::string &dir)
     // same property for invoke_produce; this one covers the generic
     // invoke() and eval() entry points.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return true end
@@ -3134,29 +3068,25 @@ int invoke_after_finalize_returns_false(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             engine.finalize();
             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            EXPECT_FALSE(engine.invoke("on_heartbeat"))
-                << "post-finalize invoke must return false";
+            EXPECT_FALSE(engine.invoke("on_heartbeat")) << "post-finalize invoke must return false";
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "post-finalize reject must NOT increment error count";
 
             auto r = engine.eval("return 42");
-            EXPECT_EQ(r.status,
-                      pylabhub::scripting::InvokeStatus::EngineShutdown)
+            EXPECT_EQ(r.status, pylabhub::scripting::InvokeStatus::EngineShutdown)
                 << "post-finalize eval must return EngineShutdown, not "
                    "ScriptError — distinct status for 'engine is dead' "
                    "vs 'script had an error'";
             EXPECT_EQ(engine.script_error_count(), 0u);
         },
-        "lua_engine::invoke_after_finalize_returns_false",
-        Logger::GetLifecycleModule());
+        "lua_engine::invoke_after_finalize_returns_false", Logger::GetLifecycleModule());
 }
 
 int eval_returns_scalar_result(const std::string &dir)
@@ -3173,7 +3103,8 @@ int eval_returns_scalar_result(const std::string &dir)
         R"LUA(
             function on_produce(tx, msgs, api) return true end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             // Integer.
             auto r1 = engine.eval("return 42");
             EXPECT_EQ(r1.status, pylabhub::scripting::InvokeStatus::Ok);
@@ -3192,8 +3123,7 @@ int eval_returns_scalar_result(const std::string &dir)
             // NEW: nil return → JSON null.
             auto r4 = engine.eval("return nil");
             EXPECT_EQ(r4.status, pylabhub::scripting::InvokeStatus::Ok);
-            EXPECT_TRUE(r4.value.is_null())
-                << "nil return must project to JSON null";
+            EXPECT_TRUE(r4.value.is_null()) << "nil return must project to JSON null";
 
             // NEW: fractional number.
             auto r5 = engine.eval("return 3.5");
@@ -3223,13 +3153,13 @@ int supports_multi_state_returns_true(const std::string &dir)
     // structural engine property; it must hold in both lifecycle
     // phases.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
             // Right after initialize — no script loaded, no thread
             // states. Property must already be true.
@@ -3237,11 +3167,9 @@ int supports_multi_state_returns_true(const std::string &dir)
                 << "supports_multi_state must hold immediately after "
                    "initialize() — it is structural, not state-dependent";
 
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
@@ -3250,8 +3178,7 @@ int supports_multi_state_returns_true(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::supports_multi_state_returns_true",
-        Logger::GetLifecycleModule());
+        "lua_engine::supports_multi_state_returns_true", Logger::GetLifecycleModule());
 }
 
 int state_persists_across_calls(const std::string &dir)
@@ -3274,18 +3201,19 @@ int state_persists_across_calls(const std::string &dir)
                 return true
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
             for (size_t i = 1; i <= 4; ++i)
             {
                 float buf = 0.0f;
-                auto r = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto r =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
                 EXPECT_FLOAT_EQ(buf, static_cast<float>(i))
-                    << "call_count must be " << i << " on iteration "
-                    << i << " — Lua global state must persist across "
+                    << "call_count must be " << i << " on iteration " << i
+                    << " — Lua global state must persist across "
                     << "invocations on the owner thread";
             }
             EXPECT_EQ(engine.script_error_count(), 0u);
@@ -3308,19 +3236,18 @@ int invoke_from_non_owner_thread_works(const std::string &dir)
                 api.set_shared_data("hb_thread_ran", true)
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             bool result = false;
             std::thread t([&] { result = engine.invoke("on_heartbeat"); });
             t.join();
 
-            EXPECT_TRUE(result)
-                << "invoke from non-owner thread must succeed";
+            EXPECT_TRUE(result) << "invoke from non-owner thread must succeed";
 
             // Side-effect must have landed in shared core.
             auto v = core.get_shared_data("hb_thread_ran");
-            ASSERT_TRUE(v.has_value())
-                << "non-owner thread invoke succeeded but the callback "
-                   "did not actually run";
+            ASSERT_TRUE(v.has_value()) << "non-owner thread invoke succeeded but the callback "
+                                          "did not actually run";
             EXPECT_TRUE(std::get<bool>(*v));
         });
 }
@@ -3348,22 +3275,20 @@ int invoke_non_owner_thread_uses_independent_state(const std::string &dir)
                                     owner_marker == true)
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             // Forward: child sets, owner reads → must be invisible.
             std::thread t1([&] { engine.invoke("set_in_child"); });
             t1.join();
             engine.invoke("read_child_marker_in_owner");
             auto v1 = core.get_shared_data("child_marker_seen_in_owner");
             ASSERT_TRUE(v1.has_value());
-            EXPECT_FALSE(std::get<bool>(*v1))
-                << "child_marker set in non-owner thread leaked into "
-                   "owner state — Lua globals must be per-state";
+            EXPECT_FALSE(std::get<bool>(*v1)) << "child_marker set in non-owner thread leaked into "
+                                                 "owner state — Lua globals must be per-state";
 
             // Reverse: owner sets, child reads → must be invisible.
             engine.invoke("set_in_owner");
-            std::thread t2([&] {
-                engine.invoke("read_owner_marker_in_child");
-            });
+            std::thread t2([&] { engine.invoke("read_owner_marker_in_child"); });
             t2.join();
             auto v2 = core.get_shared_data("owner_marker_seen_in_child");
             ASSERT_TRUE(v2.has_value());
@@ -3382,9 +3307,8 @@ int invoke_concurrent_owner_and_non_owner(const std::string &dir)
     // The kCalls magic number stays at 20 to match V2 behavior; if
     // STRESS_TEST_LEVEL gets adopted this is one of the candidates
     // for amplification (already noted in TESTING_TODO).
-    return produce_worker_with_script(
-        dir, "lua_engine::invoke_concurrent_owner_and_non_owner",
-        R"LUA(
+    return produce_worker_with_script(dir, "lua_engine::invoke_concurrent_owner_and_non_owner",
+                                      R"LUA(
             function on_produce(tx, msgs, api) return true end
             function inc_owner()
                 local v = api.get_shared_data("owner_count") or 0
@@ -3395,36 +3319,42 @@ int invoke_concurrent_owner_and_non_owner(const std::string &dir)
                 api.set_shared_data("child_count", v + 1)
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
-            constexpr int kCalls = 20;
-            std::atomic<bool> barrier{false};
-            std::atomic<int>  child_ok{0};
+                                      [](LuaEngine &engine, RoleHostCore &core)
+                                      {
+                                          constexpr int kCalls = 20;
+                                          std::atomic<bool> barrier{false};
+                                          std::atomic<int> child_ok{0};
 
-            std::thread t([&] {
-                while (!barrier.load(std::memory_order_acquire)) {}
-                for (int i = 0; i < kCalls; ++i)
-                    if (engine.invoke("inc_child"))
-                        child_ok.fetch_add(1, std::memory_order_relaxed);
-            });
+                                          std::thread t(
+                                              [&]
+                                              {
+                                                  while (!barrier.load(std::memory_order_acquire))
+                                                  {
+                                                  }
+                                                  for (int i = 0; i < kCalls; ++i)
+                                                      if (engine.invoke("inc_child"))
+                                                          child_ok.fetch_add(
+                                                              1, std::memory_order_relaxed);
+                                              });
 
-            int owner_ok = 0;
-            barrier.store(true, std::memory_order_release);
-            for (int i = 0; i < kCalls; ++i)
-                if (engine.invoke("inc_owner"))
-                    ++owner_ok;
-            t.join();
+                                          int owner_ok = 0;
+                                          barrier.store(true, std::memory_order_release);
+                                          for (int i = 0; i < kCalls; ++i)
+                                              if (engine.invoke("inc_owner"))
+                                                  ++owner_ok;
+                                          t.join();
 
-            EXPECT_EQ(owner_ok, kCalls);
-            EXPECT_EQ(child_ok.load(), kCalls);
+                                          EXPECT_EQ(owner_ok, kCalls);
+                                          EXPECT_EQ(child_ok.load(), kCalls);
 
-            auto ov = core.get_shared_data("owner_count");
-            auto cv = core.get_shared_data("child_count");
-            ASSERT_TRUE(ov.has_value());
-            ASSERT_TRUE(cv.has_value());
-            EXPECT_EQ(std::get<int64_t>(*ov), kCalls);
-            EXPECT_EQ(std::get<int64_t>(*cv), kCalls);
-            EXPECT_EQ(engine.script_error_count(), 0u);
-        });
+                                          auto ov = core.get_shared_data("owner_count");
+                                          auto cv = core.get_shared_data("child_count");
+                                          ASSERT_TRUE(ov.has_value());
+                                          ASSERT_TRUE(cv.has_value());
+                                          EXPECT_EQ(std::get<int64_t>(*ov), kCalls);
+                                          EXPECT_EQ(std::get<int64_t>(*cv), kCalls);
+                                          EXPECT_EQ(engine.script_error_count(), 0u);
+                                      });
 }
 
 int shared_data_cross_thread_visible(const std::string &dir)
@@ -3448,11 +3378,10 @@ int shared_data_cross_thread_visible(const std::string &dir)
                 api.set_shared_data("read_back_in_child", v)
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             // Forward: child writes via Lua, owner reads via C++.
-            std::thread t1([&] {
-                engine.invoke("set_marker_in_child");
-            });
+            std::thread t1([&] { engine.invoke("set_marker_in_child"); });
             t1.join();
 
             auto v1 = core.get_shared_data("from_thread");
@@ -3463,9 +3392,7 @@ int shared_data_cross_thread_visible(const std::string &dir)
             // Reverse: C++ writes (simulating an owner write or
             // an external producer) → non-owner Lua reads it back.
             core.set_shared_data("from_owner", int64_t{456});
-            std::thread t2([&] {
-                engine.invoke("read_owner_value_in_child");
-            });
+            std::thread t2([&] { engine.invoke("read_owner_value_in_child"); });
             t2.join();
 
             auto v2 = core.get_shared_data("read_back_in_child");
@@ -3500,7 +3427,8 @@ int has_callback_detects_presence_absence(const std::string &dir)
     // load_script ourselves with a script that defines a deliberate
     // subset of callbacks.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             // Defined: on_produce, on_init, on_inbox + one ad-hoc
             //          global function (not a role-callback name) so
@@ -3515,10 +3443,9 @@ int has_callback_detects_presence_absence(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             // Path 1 — present role callbacks (hard-coded ref slot).
             EXPECT_TRUE(engine.has_callback("on_produce"));
@@ -3544,8 +3471,7 @@ int has_callback_detects_presence_absence(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::has_callback_detects_presence_absence",
-        Logger::GetLifecycleModule());
+        "lua_engine::has_callback_detects_presence_absence", Logger::GetLifecycleModule());
 }
 
 int invoke_consume_messages_data_and_event_mixed(const std::string &dir)
@@ -3586,13 +3512,14 @@ int invoke_consume_messages_data_and_event_mixed(const std::string &dir)
                 return true
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
             // Data message (no event, has sender + data bytes).
             pylabhub::scripting::IncomingMessage dm;
             dm.sender = "sender-id";
-            dm.data   = {std::byte{0x41}, std::byte{0x42}};
+            dm.data = {std::byte{0x41}, std::byte{0x42}};
             msgs.push_back(std::move(dm));
 
             // Event message (event populated, no data).
@@ -3601,8 +3528,7 @@ int invoke_consume_messages_data_and_event_mixed(const std::string &dir)
             msgs.push_back(std::move(em));
 
             float buf = 0.0f;
-            auto r = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_consume(pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Lua-side asserts must have passed — failure means "
@@ -3626,7 +3552,8 @@ int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir)
     // OutFlexFrame, which the setup_role_engine helper does not do
     // by default (it only registers one slot per role).
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -3637,16 +3564,13 @@ int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutFlexFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -3654,16 +3578,14 @@ int invoke_produce_slot_only_no_flexzone_on_invoke(const std::string &dir)
             float slot_buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&slot_buf, sizeof(slot_buf)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_FLOAT_EQ(slot_buf, 10.0f);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             engine.finalize();
         },
-        "lua_engine::invoke_produce_slot_only_no_flexzone_on_invoke",
-        Logger::GetLifecycleModule());
+        "lua_engine::invoke_produce_slot_only_no_flexzone_on_invoke", Logger::GetLifecycleModule());
 }
 
 int invoke_on_inbox_typed_data(const std::string &dir)
@@ -3677,7 +3599,8 @@ int invoke_on_inbox_typed_data(const std::string &dir)
     // Inline setup because InboxFrame must be registered alongside
     // OutSlotFrame.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
@@ -3696,34 +3619,28 @@ int invoke_on_inbox_typed_data(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
             float inbox_data = 77.0f;
             auto r = engine.invoke_on_inbox(
-                {&inbox_data, sizeof(inbox_data),
-                 "prod.sender.uid00000001", 7});
+                {&inbox_data, sizeof(inbox_data), "prod.sender.uid00000001", 7});
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit)
                 << "on_inbox returned true → must map to Commit";
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "Lua-side asserts must have all passed";
+            EXPECT_EQ(engine.script_error_count(), 0u) << "Lua-side asserts must have all passed";
 
             engine.finalize();
         },
-        "lua_engine::invoke_on_inbox_typed_data",
-        Logger::GetLifecycleModule());
+        "lua_engine::invoke_on_inbox_typed_data", Logger::GetLifecycleModule());
 }
 
 int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
@@ -3749,39 +3666,34 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
     // SlotFrame alias and InboxFrame but didn't tie either to the
     // canonical compute_schema_size).
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
-            write_script(script_dir,
-                         "function on_produce(tx, msgs, api) return true end");
+            write_script(script_dir, "function on_produce(tx, msgs, api) return true end");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             SchemaSpec spec;
             spec.has_schema = true;
-            spec.fields.push_back({"flag",   "uint8",   1, 0});
-            spec.fields.push_back({"value",  "float64", 1, 0});
-            spec.fields.push_back({"count",  "uint16",  1, 0});
-            spec.fields.push_back({"status", "int32",   1, 0});
-            spec.fields.push_back({"label",  "string",  1, 5});
+            spec.fields.push_back({"flag", "uint8", 1, 0});
+            spec.fields.push_back({"value", "float64", 1, 0});
+            spec.fields.push_back({"count", "uint16", 1, 0});
+            spec.fields.push_back({"status", "int32", 1, 0});
+            spec.fields.push_back({"label", "string", 1, 5});
 
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
-            const size_t expected =
-                pylabhub::hub::compute_schema_size(spec, "aligned");
-            EXPECT_EQ(expected, 32u)
-                << "schema layout: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + "
-                   "3pad = 32 — if compute_schema_size returns "
-                   "anything else the layout helper is wrong";
+            const size_t expected = pylabhub::hub::compute_schema_size(spec, "aligned");
+            EXPECT_EQ(expected, 32u) << "schema layout: 1 + 7pad + 8 + 2 + 2pad + 4 + 5 + "
+                                        "3pad = 32 — if compute_schema_size returns "
+                                        "anything else the layout helper is wrong";
 
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), expected)
                 << "engine sizeof(SlotFrame alias) must equal "
@@ -3792,8 +3704,7 @@ int type_sizeof_inbox_frame_returns_correct_size(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::type_sizeof_inbox_frame_returns_correct_size",
-        Logger::GetLifecycleModule());
+        "lua_engine::type_sizeof_inbox_frame_returns_correct_size", Logger::GetLifecycleModule());
 }
 
 int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &dir)
@@ -3812,7 +3723,8 @@ int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &d
     // (build_api succeeded for a producer script) so the guarded
     // LOGGER_ERROR + on_pcall_error_ fire.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
@@ -3820,18 +3732,15 @@ int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &d
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             // Register InboxFrame so the missing-callback guard (not the
             // missing-type guard) is the one that fires.
-            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InboxFrame", "aligned"));
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
@@ -3839,8 +3748,7 @@ int invoke_on_inbox_missing_callback_counts_as_script_error(const std::string &d
             ASSERT_FALSE(engine.has_callback("on_inbox"));
 
             float raw = 1.0f;
-            auto r = engine.invoke_on_inbox(
-                {&raw, sizeof(raw), "cons.sender.uid00000001", 1});
+            auto r = engine.invoke_on_inbox({&raw, sizeof(raw), "cons.sender.uid00000001", 1});
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
                 << "missing callback must surface as Error result";
@@ -3864,7 +3772,8 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
     //     lua_engine.cpp:965-967 ("InboxFrame type not registered")
     //     — pinned via the parent test's expected_error_substrings.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api) return false end
@@ -3872,22 +3781,19 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
             // Deliberately NO InboxFrame registration.
 
             auto api = make_api(core);
             ASSERT_TRUE(engine.build_api(*api));
 
             float raw = 1.0f;
-            auto r = engine.invoke_on_inbox(
-                {&raw, sizeof(raw), "cons.sender.uid00000001", 1});
+            auto r = engine.invoke_on_inbox({&raw, sizeof(raw), "cons.sender.uid00000001", 1});
 
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Error)
                 << "missing InboxFrame must surface as Error result";
@@ -3899,8 +3805,7 @@ int invoke_on_inbox_missing_type_reports_error(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::invoke_on_inbox_missing_type_reports_error",
-        Logger::GetLifecycleModule());
+        "lua_engine::invoke_on_inbox_missing_type_reports_error", Logger::GetLifecycleModule());
 }
 
 // ── Logical-size accessors via engine_lifecycle_startup (chunk 9b) ─────────
@@ -3931,11 +3836,11 @@ namespace
 
 struct LogicalSizeCase
 {
-    SchemaSpec   slot_spec;
-    SchemaSpec   fz_spec;        // .has_schema=false → no flexzone
-    const char  *out_packing;
-    size_t       expected_slot;       // = compute_schema_size(slot_spec, packing)
-    size_t       expected_fz;         // = compute_schema_size(fz_spec, packing)
+    SchemaSpec slot_spec;
+    SchemaSpec fz_spec; // .has_schema=false → no flexzone
+    const char *out_packing;
+    size_t expected_slot; // = compute_schema_size(slot_spec, packing)
+    size_t expected_fz;   // = compute_schema_size(fz_spec, packing)
     // ANCHOR LITERALS: hard-coded sizes the test author KNOWS to be
     // correct for these specific schemas.  Without anchors, every
     // assertion in the test would route through compute_schema_size,
@@ -3943,8 +3848,8 @@ struct LogicalSizeCase
     // (compute_schema_size == compute_schema_size).  Anchors catch a
     // silent regression in compute_schema_size itself for these
     // schemas (e.g. the layout helper drops a padding byte).
-    size_t       anchor_slot;         // hard-coded expected slot size
-    size_t       anchor_fz;           // hard-coded expected fz size (0 if none)
+    size_t anchor_slot; // hard-coded expected slot size
+    size_t anchor_fz;   // hard-coded expected fz size (0 if none)
 };
 
 // L2 BYPASS — see file header `L2 BYPASS PATTERN`.
@@ -3952,12 +3857,12 @@ struct LogicalSizeCase
 //          for the supplied (slot, fz) schema pair.
 // POPULATES: core.set_out_slot_spec,
 //            api->set_flexzone_info_cache_.
-int run_logical_size_case(const std::string &dir,
-                          const char        *scenario_name,
+int run_logical_size_case(const std::string &dir, const char *scenario_name,
                           const LogicalSizeCase &c)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
 
             // The Lua script reads the expected sizes from shared_data
@@ -3965,34 +3870,31 @@ int run_logical_size_case(const std::string &dir,
             // authoritative compute_schema_size, not a literal — pins
             // a roundtrip from C++ schema math through Lua closures.
             const bool has_fz = c.fz_spec.has_schema;
-            std::string lua_src =
-                "function on_produce(tx, msgs, api)\n"
-                "    local slot_sz = api.slot_logical_size()\n"
-                "    local exp_slot = api.get_shared_data('exp_slot')\n"
-                "    assert(slot_sz == exp_slot,\n"
-                "           'slot_logical_size mismatch: expected '\n"
-                "           .. tostring(exp_slot) .. ', got '\n"
-                "           .. tostring(slot_sz))\n";
+            std::string lua_src = "function on_produce(tx, msgs, api)\n"
+                                  "    local slot_sz = api.slot_logical_size()\n"
+                                  "    local exp_slot = api.get_shared_data('exp_slot')\n"
+                                  "    assert(slot_sz == exp_slot,\n"
+                                  "           'slot_logical_size mismatch: expected '\n"
+                                  "           .. tostring(exp_slot) .. ', got '\n"
+                                  "           .. tostring(slot_sz))\n";
             if (has_fz)
             {
-                lua_src +=
-                    "    local fz_sz = api.flexzone_logical_size()\n"
-                    "    local exp_fz = api.get_shared_data('exp_fz')\n"
-                    "    assert(fz_sz == exp_fz,\n"
-                    "           'flexzone_logical_size mismatch: expected '\n"
-                    "           .. tostring(exp_fz) .. ', got '\n"
-                    "           .. tostring(fz_sz))\n";
+                lua_src += "    local fz_sz = api.flexzone_logical_size()\n"
+                           "    local exp_fz = api.get_shared_data('exp_fz')\n"
+                           "    assert(fz_sz == exp_fz,\n"
+                           "           'flexzone_logical_size mismatch: expected '\n"
+                           "           .. tostring(exp_fz) .. ', got '\n"
+                           "           .. tostring(fz_sz))\n";
             }
             lua_src += "    return false\nend\n";
             write_script(script_dir, lua_src);
 
             RoleHostCore core;
-            LuaEngine    engine;
-            auto         api = make_api(core, "prod");
+            LuaEngine engine;
+            auto api = make_api(core, "prod");
 
             // Pre-set core slot spec (role-host-equivalent step).
-            core.set_out_slot_spec(SchemaSpec{c.slot_spec},
-                                   c.expected_slot);
+            core.set_out_slot_spec(SchemaSpec{c.slot_spec}, c.expected_slot);
 
             // Populate the FlexzoneInfoCache (see file header BYPASS
             // PATTERN).  Compute via the same production path
@@ -4002,75 +3904,62 @@ int run_logical_size_case(const std::string &dir,
             // layout function, not a tautology.
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = has_fz;
-                fz_info.tx_logical_size  = has_fz
-                    ? pylabhub::hub::compute_schema_size(c.fz_spec,
-                                                        c.fz_spec.packing)
-                    : 0u;
-                fz_info.tx_physical_size = has_fz
-                    ? pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size)
-                    : 0u;
+                fz_info.has_tx_fz = has_fz;
+                fz_info.tx_logical_size =
+                    has_fz ? pylabhub::hub::compute_schema_size(c.fz_spec, c.fz_spec.packing) : 0u;
+                fz_info.tx_physical_size =
+                    has_fz ? pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size) : 0u;
                 api->set_flexzone_info_cache_(fz_info);
             }
 
             // Pre-populate shared_data with expected sizes so the Lua
             // side uses authoritative numbers, not hard-coded literals.
-            core.set_shared_data("exp_slot",
-                                 static_cast<int64_t>(c.expected_slot));
+            core.set_shared_data("exp_slot", static_cast<int64_t>(c.expected_slot));
             if (has_fz)
-                core.set_shared_data("exp_fz",
-                                     static_cast<int64_t>(c.expected_fz));
+                core.set_shared_data("exp_fz", static_cast<int64_t>(c.expected_fz));
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "prod";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "prod";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_produce";
-            params.out_slot_spec     = c.slot_spec;
-            params.out_packing       = c.out_packing;
+            params.out_slot_spec = c.slot_spec;
+            params.out_packing = c.out_packing;
             if (has_fz)
-                params.out_fz_spec   = c.fz_spec;
+                params.out_fz_spec = c.fz_spec;
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(
-                    nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             // ANCHOR check (NOT a tautology): compute_schema_size for
             // this specific schema must equal the hard-coded number
             // the test author verified by hand.  A silent regression
             // in the layout helper for this schema fails here.
-            EXPECT_EQ(pylabhub::hub::compute_schema_size(
-                          c.slot_spec, c.out_packing),
-                      c.anchor_slot)
+            EXPECT_EQ(pylabhub::hub::compute_schema_size(c.slot_spec, c.out_packing), c.anchor_slot)
                 << "compute_schema_size DRIFTED for this slot schema — "
                    "the layout helper now returns a different size for "
                    "the same input. This is a real regression in the "
                    "schema math, not in the engine.";
 
             // Engine cdef vs schema-helper consistency.
-            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"),
-                      c.anchor_slot)
+            EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), c.anchor_slot)
                 << "engine type_sizeof disagrees with the anchor — ffi "
                    "cdef the engine builds doesn't match the canonical "
                    "size used by the role host to allocate buffers";
 
             if (has_fz)
             {
-                EXPECT_EQ(pylabhub::hub::compute_schema_size(
-                              c.fz_spec, c.out_packing),
-                          c.anchor_fz)
+                EXPECT_EQ(pylabhub::hub::compute_schema_size(c.fz_spec, c.out_packing), c.anchor_fz)
                     << "compute_schema_size DRIFTED for this fz schema";
-                EXPECT_EQ(engine.type_sizeof("OutFlexFrame"),
-                          c.anchor_fz);
+                EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), c.anchor_fz);
             }
 
             // Drive on_produce — the Lua-side asserts run here.
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             std::vector<uint8_t> buf(c.expected_slot, 0);
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{buf.data(), buf.size()}, msgs);
+            auto r =
+                engine.invoke_produce(pylabhub::scripting::InvokeTx{buf.data(), buf.size()}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "Lua-side slot/fz size asserts must have passed";
@@ -4080,23 +3969,22 @@ int run_logical_size_case(const std::string &dir,
         scenario_name, Logger::GetLifecycleModule());
 }
 
-} // anonymous
+} // namespace
 
 int slot_logical_size_aligned_padding_sensitive(const std::string &dir)
 {
     auto spec = padding_schema();
     spec.packing = "aligned";
     LogicalSizeCase c{
-        /*slot_spec*/   spec,
-        /*fz_spec*/     SchemaSpec{},  // no flexzone
+        /*slot_spec*/ spec,
+        /*fz_spec*/ SchemaSpec{}, // no flexzone
         /*out_packing*/ "aligned",
-        /*exp_slot*/    pylabhub::hub::compute_schema_size(spec, "aligned"),
-        /*exp_fz*/      0,
-        /*anchor_slot*/ 16,            // hand-verified for padding_schema aligned
-        /*anchor_fz*/   0,
+        /*exp_slot*/ pylabhub::hub::compute_schema_size(spec, "aligned"),
+        /*exp_fz*/ 0,
+        /*anchor_slot*/ 16, // hand-verified for padding_schema aligned
+        /*anchor_fz*/ 0,
     };
-    return run_logical_size_case(
-        dir, "lua_engine::slot_logical_size_aligned_padding_sensitive", c);
+    return run_logical_size_case(dir, "lua_engine::slot_logical_size_aligned_padding_sensitive", c);
 }
 
 int slot_logical_size_packed_no_padding(const std::string &dir)
@@ -4104,13 +3992,15 @@ int slot_logical_size_packed_no_padding(const std::string &dir)
     auto spec = padding_schema();
     spec.packing = "packed";
     LogicalSizeCase c{
-        spec, SchemaSpec{}, "packed",
-        pylabhub::hub::compute_schema_size(spec, "packed"), 0,
-        /*anchor_slot*/ 13,            // hand-verified for padding_schema packed
-        /*anchor_fz*/   0,
+        spec,
+        SchemaSpec{},
+        "packed",
+        pylabhub::hub::compute_schema_size(spec, "packed"),
+        0,
+        /*anchor_slot*/ 13, // hand-verified for padding_schema packed
+        /*anchor_fz*/ 0,
     };
-    return run_logical_size_case(
-        dir, "lua_engine::slot_logical_size_packed_no_padding", c);
+    return run_logical_size_case(dir, "lua_engine::slot_logical_size_packed_no_padding", c);
 }
 
 int slot_logical_size_complex_mixed_aligned(const std::string &dir)
@@ -4118,28 +4008,33 @@ int slot_logical_size_complex_mixed_aligned(const std::string &dir)
     auto spec = complex_mixed_schema();
     spec.packing = "aligned";
     LogicalSizeCase c{
-        spec, SchemaSpec{}, "aligned",
-        pylabhub::hub::compute_schema_size(spec, "aligned"), 0,
-        /*anchor_slot*/ 56,            // hand-verified for complex_mixed_schema aligned
-        /*anchor_fz*/   0,
+        spec,
+        SchemaSpec{},
+        "aligned",
+        pylabhub::hub::compute_schema_size(spec, "aligned"),
+        0,
+        /*anchor_slot*/ 56, // hand-verified for complex_mixed_schema aligned
+        /*anchor_fz*/ 0,
     };
-    return run_logical_size_case(
-        dir, "lua_engine::slot_logical_size_complex_mixed_aligned", c);
+    return run_logical_size_case(dir, "lua_engine::slot_logical_size_complex_mixed_aligned", c);
 }
 
 int flexzone_logical_size_array_fields(const std::string &dir)
 {
-    auto slot = padding_schema();   slot.packing = "aligned";
-    auto fz   = fz_array_schema();  fz.packing   = "aligned";
+    auto slot = padding_schema();
+    slot.packing = "aligned";
+    auto fz = fz_array_schema();
+    fz.packing = "aligned";
     LogicalSizeCase c{
-        slot, fz, "aligned",
+        slot,
+        fz,
+        "aligned",
         pylabhub::hub::compute_schema_size(slot, "aligned"),
-        pylabhub::hub::compute_schema_size(fz,   "aligned"),
-        /*anchor_slot*/ 16,            // hand-verified for padding_schema aligned
-        /*anchor_fz*/   24,            // hand-verified for fz_array_schema aligned
+        pylabhub::hub::compute_schema_size(fz, "aligned"),
+        /*anchor_slot*/ 16, // hand-verified for padding_schema aligned
+        /*anchor_fz*/ 24,   // hand-verified for fz_array_schema aligned
     };
-    return run_logical_size_case(
-        dir, "lua_engine::flexzone_logical_size_array_fields", c);
+    return run_logical_size_case(dir, "lua_engine::flexzone_logical_size_array_fields", c);
 }
 
 // ── Graceful degradation: api.* closures without infrastructure (chunk 10) ─
@@ -4153,9 +4048,8 @@ int flexzone_logical_size_array_fields(const std::string &dir)
 namespace
 {
 
-int run_graceful_degrade_case(const std::string &dir,
-                              const char        *scenario_name,
-                              const char        *lua_call_with_assert)
+int run_graceful_degrade_case(const std::string &dir, const char *scenario_name,
+                              const char *lua_call_with_assert)
 {
     // Builds a script of the form:
     //   function on_produce(tx, msgs, api)
@@ -4171,24 +4065,22 @@ int run_graceful_degrade_case(const std::string &dir,
 
     return produce_worker_with_script(
         dir, scenario_name, lua,
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
-            EXPECT_EQ(engine.script_error_count(), 0u)
-                << "Lua-side asserts must have all passed";
+            EXPECT_EQ(engine.script_error_count(), 0u) << "Lua-side asserts must have all passed";
         });
 }
 
-} // anonymous
+} // namespace
 
 int api_open_inbox_without_broker_returns_nil(const std::string &dir)
 {
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_open_inbox_without_broker_returns_nil",
-        R"LUA(
+    return run_graceful_degrade_case(dir, "lua_engine::api_open_inbox_without_broker_returns_nil",
+                                     R"LUA(
             local h = api.open_inbox("some-uid")
             assert(h == nil,
                    "open_inbox without broker must return nil, got "
@@ -4198,9 +4090,8 @@ int api_open_inbox_without_broker_returns_nil(const std::string &dir)
 
 int api_band_join_without_broker_returns_nil(const std::string &dir)
 {
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_band_join_without_broker_returns_nil",
-        R"LUA(
+    return run_graceful_degrade_case(dir, "lua_engine::api_band_join_without_broker_returns_nil",
+                                     R"LUA(
             local r = api.band_join("!test_ch")
             assert(r == nil,
                    "band_join without broker must return nil, got "
@@ -4210,9 +4101,8 @@ int api_band_join_without_broker_returns_nil(const std::string &dir)
 
 int api_band_leave_without_broker_returns_false(const std::string &dir)
 {
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_band_leave_without_broker_returns_false",
-        R"LUA(
+    return run_graceful_degrade_case(dir, "lua_engine::api_band_leave_without_broker_returns_false",
+                                     R"LUA(
             local r = api.band_leave("!test_ch")
             assert(r == false,
                    "band_leave without broker must return false (NOT nil), "
@@ -4225,18 +4115,16 @@ int api_band_broadcast_without_broker_no_error(const std::string &dir)
     // band_broadcast has no return value to verify.  Contract: must
     // not raise, must not log an error.  Idempotence pinned by the
     // double-call in the helper.
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_band_broadcast_without_broker_no_error",
-        R"LUA(
+    return run_graceful_degrade_case(dir, "lua_engine::api_band_broadcast_without_broker_no_error",
+                                     R"LUA(
             api.band_broadcast("!test_ch", {hello = "world", value = 42})
         )LUA");
 }
 
 int api_band_members_without_broker_returns_nil(const std::string &dir)
 {
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_band_members_without_broker_returns_nil",
-        R"LUA(
+    return run_graceful_degrade_case(dir, "lua_engine::api_band_members_without_broker_returns_nil",
+                                     R"LUA(
             local r = api.band_members("!test_ch")
             assert(r == nil,
                    "band_members without broker must return nil, got "
@@ -4246,9 +4134,8 @@ int api_band_members_without_broker_returns_nil(const std::string &dir)
 
 int api_spinlock_count_without_shm_returns_zero(const std::string &dir)
 {
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_spinlock_count_without_shm_returns_zero",
-        R"LUA(
+    return run_graceful_degrade_case(dir, "lua_engine::api_spinlock_count_without_shm_returns_zero",
+                                     R"LUA(
             local n = api.spinlock_count()
             assert(n == 0,
                    "spinlock_count without SHM must return 0, got "
@@ -4264,10 +4151,9 @@ int api_spinlock_acquire_without_shm_is_pcall_error(const std::string &dir)
     // pcall catches the Lua error so it does NOT bump
     // script_error_count — that's the explicit "pcall makes this
     // recoverable" contract.
-    return run_graceful_degrade_case(
-        dir,
-        "lua_engine::api_spinlock_acquire_without_shm_is_pcall_error",
-        R"LUA(
+    return run_graceful_degrade_case(dir,
+                                     "lua_engine::api_spinlock_acquire_without_shm_is_pcall_error",
+                                     R"LUA(
             local ok, err = pcall(api.spinlock, 0)
             assert(not ok,
                    "spinlock(0) without SHM must raise (pcall returns false)")
@@ -4278,9 +4164,9 @@ int api_spinlock_acquire_without_shm_is_pcall_error(const std::string &dir)
 
 int api_flexzone_accessor_without_shm_returns_nil(const std::string &dir)
 {
-    return run_graceful_degrade_case(
-        dir, "lua_engine::api_flexzone_accessor_without_shm_returns_nil",
-        R"LUA(
+    return run_graceful_degrade_case(dir,
+                                     "lua_engine::api_flexzone_accessor_without_shm_returns_nil",
+                                     R"LUA(
             local fz = api.flexzone()
             assert(fz == nil,
                    "flexzone() without SHM must return nil, got "
@@ -4307,7 +4193,8 @@ int metrics_individual_accessors_read_core_counters_live(const std::string &dir)
     // This catches a regression where the api closure caches the
     // first read and returns stale values on subsequent calls.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -4331,43 +4218,40 @@ int metrics_individual_accessors_read_core_counters_live(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
-            auto invoke_phase = [&](int phase, int64_t exp_ow,
-                                    int64_t exp_dr) {
+            auto invoke_phase = [&](int phase, int64_t exp_ow, int64_t exp_dr)
+            {
                 core.set_shared_data("phase", static_cast<int64_t>(phase));
                 core.set_shared_data("exp_ow", exp_ow);
                 core.set_shared_data("exp_dr", exp_dr);
-                auto r = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
-                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard)
-                    << "phase " << phase;
-                EXPECT_EQ(engine.script_error_count(), 0u)
-                    << "phase " << phase;
+                auto r =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard) << "phase " << phase;
+                EXPECT_EQ(engine.script_error_count(), 0u) << "phase " << phase;
             };
 
             // Phase 0: pristine — both counters start at 0.
             invoke_phase(0, 0, 0);
 
-            // Phase 1: set non-zero values.  test_set_* is a backdoor
-            // surface absent in Release builds (HEP-CORE-0032 §3.2);
-            // the calling TEST_F SKIPs in NDEBUG so this worker is
-            // never invoked there.  The #if keeps the worker .cpp
-            // compiling against the Release-mode RoleHostCore.
+        // Phase 1: set non-zero values.  test_set_* is a backdoor
+        // surface absent in Release builds (HEP-CORE-0032 §3.2);
+        // the calling TEST_F SKIPs in NDEBUG so this worker is
+        // never invoked there.  The #if keeps the worker .cpp
+        // compiling against the Release-mode RoleHostCore.
 #if !defined(NDEBUG)
             core.test_set_out_slots_written(42);
             core.test_set_out_drop_count(7);
 #endif
             invoke_phase(1, 42, 7);
 
-            // Phase 2: increment further between invocations — pins
-            // LIVE read (cached snapshot would still report 42/7).
+        // Phase 2: increment further between invocations — pins
+        // LIVE read (cached snapshot would still report 42/7).
 #if !defined(NDEBUG)
             core.test_set_out_slots_written(100);
             core.test_set_out_drop_count(15);
@@ -4413,31 +4297,32 @@ int metrics_in_slots_received_works_consumer(const std::string &dir)
                 return true
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             float data = 1.0f;
 
-            // Phase 1: in=15.  test_set_* is a backdoor absent in
-            // Release (HEP-CORE-0032 §3.2); the calling TEST_F SKIPs
-            // in NDEBUG so this worker is never invoked there.
-            // #if keeps the worker .cpp compiling against the
-            // Release-mode RoleHostCore.
+        // Phase 1: in=15.  test_set_* is a backdoor absent in
+        // Release (HEP-CORE-0032 §3.2); the calling TEST_F SKIPs
+        // in NDEBUG so this worker is never invoked there.
+        // #if keeps the worker .cpp compiling against the
+        // Release-mode RoleHostCore.
 #if !defined(NDEBUG)
             core.test_set_in_slots_received(15);
 #endif
             core.set_shared_data("exp_ir", static_cast<int64_t>(15));
-            auto r1 = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto r1 =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
-            // Phase 2: bump in=42 between invokes — pins live read.
+        // Phase 2: bump in=42 between invokes — pins live read.
 #if !defined(NDEBUG)
             core.test_set_in_slots_received(42);
 #endif
             core.set_shared_data("exp_ir", static_cast<int64_t>(42));
-            auto r2 = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto r2 =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -4465,7 +4350,8 @@ int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
     //   2. Trigger one script error via a separate pre-invoke before
     //      the real metrics-reading invoke.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -4530,18 +4416,19 @@ int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             // Pre-set anchored loop counters.
-            for (int i = 0; i < 7; ++i) core.inc_iteration_count();
-            for (int i = 0; i < 2; ++i) core.inc_loop_overrun();
+            for (int i = 0; i < 7; ++i)
+                core.inc_iteration_count();
+            for (int i = 0; i < 2; ++i)
+                core.inc_loop_overrun();
             core.set_last_cycle_work_us(555);
             core.set_configured_period(999);
-            // Pre-set anchored role counters via backdoor APIs (absent
-            // in Release; calling TEST_F SKIPs in NDEBUG — HEP-0032 §3.2).
+        // Pre-set anchored role counters via backdoor APIs (absent
+        // in Release; calling TEST_F SKIPs in NDEBUG — HEP-0032 §3.2).
 #if !defined(NDEBUG)
             core.test_set_out_slots_written(5);
             core.test_set_out_drop_count(2);
@@ -4552,23 +4439,20 @@ int metrics_hierarchical_table_producer_full_shape(const std::string &dir)
 
             // Phase 0: seed an error to bump script_error_count.
             core.set_shared_data("phase", static_cast<int64_t>(0));
-            auto r0 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r0 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r0, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 1u);
 
             // Phase 1: real metrics read.
             core.set_shared_data("phase", static_cast<int64_t>(1));
-            auto r1 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r1 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 1u)
                 << "phase 1 metric-read must not bump error count";
 
             engine.finalize();
         },
-        "lua_engine::metrics_hierarchical_table_producer_full_shape",
-        Logger::GetLifecycleModule());
+        "lua_engine::metrics_hierarchical_table_producer_full_shape", Logger::GetLifecycleModule());
 }
 
 int metrics_hierarchical_table_consumer_full_shape(const std::string &dir)
@@ -4615,14 +4499,15 @@ int metrics_hierarchical_table_consumer_full_shape(const std::string &dir)
                 return true
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
 #if !defined(NDEBUG)
-            core.test_set_in_slots_received(10);  // backdoor — HEP-0032 §3.2
+            core.test_set_in_slots_received(10); // backdoor — HEP-0032 §3.2
 #endif
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             float data = 1.0f;
-            auto r = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto r =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -4637,7 +4522,8 @@ int metrics_loop_overrun_count_live_increments(const std::string &dir)
     //   - Phase 1: bump to 3 (between invokes) → expect 3
     //   - Phase 2: bump to 5 → expect 5
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -4651,32 +4537,33 @@ int metrics_loop_overrun_count_live_increments(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
-            auto invoke_with_exp = [&](int64_t exp) {
+            auto invoke_with_exp = [&](int64_t exp)
+            {
                 core.set_shared_data("exp", exp);
-                auto r = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto r =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
                 EXPECT_EQ(engine.script_error_count(), 0u);
             };
 
-            invoke_with_exp(0);              // pristine
-            for (int i = 0; i < 3; ++i) core.inc_loop_overrun();
-            invoke_with_exp(3);              // bumped to 3
-            for (int i = 0; i < 2; ++i) core.inc_loop_overrun();
-            invoke_with_exp(5);              // bumped further to 5
+            invoke_with_exp(0); // pristine
+            for (int i = 0; i < 3; ++i)
+                core.inc_loop_overrun();
+            invoke_with_exp(3); // bumped to 3
+            for (int i = 0; i < 2; ++i)
+                core.inc_loop_overrun();
+            invoke_with_exp(5); // bumped further to 5
 
             engine.finalize();
         },
-        "lua_engine::metrics_loop_overrun_count_live_increments",
-        Logger::GetLifecycleModule());
+        "lua_engine::metrics_loop_overrun_count_live_increments", Logger::GetLifecycleModule());
 }
 
 int metrics_last_cycle_work_us_overwrite_semantics(const std::string &dir)
@@ -4689,7 +4576,8 @@ int metrics_last_cycle_work_us_overwrite_semantics(const std::string &dir)
     //   - Overflowing into uint64 max-ish values reads correctly
     //     (catches truncation on Lua int64 boundary).
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -4703,34 +4591,33 @@ int metrics_last_cycle_work_us_overwrite_semantics(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto invoke_with_exp = [&](int64_t exp) {
+            auto invoke_with_exp = [&](int64_t exp)
+            {
                 core.set_shared_data("exp", exp);
-                auto r = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto r =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
                 EXPECT_EQ(engine.script_error_count(), 0u);
             };
 
-            invoke_with_exp(0);                // default
+            invoke_with_exp(0); // default
             core.set_last_cycle_work_us(12345);
-            invoke_with_exp(12345);            // first set
+            invoke_with_exp(12345); // first set
             core.set_last_cycle_work_us(99999);
-            invoke_with_exp(99999);            // overwrite (not accumulate)
+            invoke_with_exp(99999); // overwrite (not accumulate)
             // Large value near int32 boundary — pin no truncation.
             core.set_last_cycle_work_us(2'500'000'000ULL);
-            invoke_with_exp(2'500'000'000LL);  // > INT32_MAX
+            invoke_with_exp(2'500'000'000LL); // > INT32_MAX
 
             engine.finalize();
         },
-        "lua_engine::metrics_last_cycle_work_us_overwrite_semantics",
-        Logger::GetLifecycleModule());
+        "lua_engine::metrics_last_cycle_work_us_overwrite_semantics", Logger::GetLifecycleModule());
 }
 
 int metrics_all_loop_fields_anchored_values(const std::string &dir)
@@ -4788,16 +4675,18 @@ int metrics_all_loop_fields_anchored_values(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
-            for (int i = 0; i < 10; ++i) core.inc_iteration_count();
-            for (int i = 0; i < 3; ++i) core.inc_loop_overrun();
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
+            for (int i = 0; i < 10; ++i)
+                core.inc_iteration_count();
+            for (int i = 0; i < 3; ++i)
+                core.inc_loop_overrun();
             core.set_last_cycle_work_us(500);
             core.set_configured_period(1000);
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -4816,7 +4705,8 @@ int metrics_role_script_error_count_reflects_raised_error(const std::string &dir
     // The script switches behavior based on a "phase" shared_data
     // hint: phase 0 reads metrics, phase 1+ raises an error.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -4837,20 +4727,20 @@ int metrics_role_script_error_count_reflects_raised_error(const std::string &dir
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             std::unique_ptr<RoleAPIBase> api;
-            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api,
-                                           RoleKind::Producer));
+            ASSERT_TRUE(setup_role_engine(engine, core, script_dir, api, RoleKind::Producer));
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
-            auto invoke_phase = [&](int phase, int64_t exp_count,
-                                    pylabhub::scripting::InvokeResult exp_r) {
+            auto invoke_phase =
+                [&](int phase, int64_t exp_count, pylabhub::scripting::InvokeResult exp_r)
+            {
                 core.set_shared_data("phase", static_cast<int64_t>(phase));
                 core.set_shared_data("exp_count", exp_count);
-                auto r = engine.invoke_produce(
-                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+                auto r =
+                    engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
                 EXPECT_EQ(r, exp_r) << "phase " << phase;
             };
 
@@ -4859,7 +4749,7 @@ int metrics_role_script_error_count_reflects_raised_error(const std::string &dir
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             // Phase 1: raise.  Engine bumps script_error_count to 1.
-            invoke_phase(1, /*unused*/0, pylabhub::scripting::InvokeResult::Error);
+            invoke_phase(1, /*unused*/ 0, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 1u);
 
             // Phase 3 verification: read — m.role.script_error_count == 1.
@@ -4867,7 +4757,7 @@ int metrics_role_script_error_count_reflects_raised_error(const std::string &dir
             EXPECT_EQ(engine.script_error_count(), 1u);
 
             // Phase 2: raise again.  Count becomes 2.
-            invoke_phase(2, /*unused*/0, pylabhub::scripting::InvokeResult::Error);
+            invoke_phase(2, /*unused*/ 0, pylabhub::scripting::InvokeResult::Error);
             EXPECT_EQ(engine.script_error_count(), 2u);
 
             // Final verify: read — count == 2.  Both Lua-table and
@@ -4898,8 +4788,7 @@ int queue_state_consumer_without_queue_returns_defaults(const std::string &dir)
     //     (role-specific closure exposure — lua_engine.cpp:339-343
     //     shows consumer only gets in_* closures, not out_*).
     return consume_worker_with_script(
-        dir,
-        "lua_engine::queue_state_consumer_without_queue_returns_defaults",
+        dir, "lua_engine::queue_state_consumer_without_queue_returns_defaults",
         R"LUA(
             function on_consume(rx, msgs, api)
                 -- Call 1 — baseline.
@@ -4929,11 +4818,11 @@ int queue_state_consumer_without_queue_returns_defaults(const std::string &dir)
                 return true
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 1.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_consume(pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -4972,11 +4861,11 @@ int queue_state_producer_without_queue_returns_defaults(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -4993,8 +4882,7 @@ int queue_state_processor_dual_without_queues_returns_defaults(const std::string
     //   - Pins in_policy and out_policy both return empty strings
     //     (not nil — type enforcement).
     return process_worker_with_script(
-        dir,
-        "lua_engine::queue_state_processor_dual_without_queues_returns_defaults",
+        dir, "lua_engine::queue_state_processor_dual_without_queues_returns_defaults",
         R"LUA(
             function on_process(rx, tx, msgs, api)
                 -- Processor exposes BOTH in_* and out_* closures
@@ -5023,14 +4911,14 @@ int queue_state_processor_dual_without_queues_returns_defaults(const std::string
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore & /*core*/) {
-            float in_data  = 1.0f;
+        [](LuaEngine &engine, RoleHostCore & /*core*/)
+        {
+            float in_data = 1.0f;
             float out_data = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto r = engine.invoke_process(
                 pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
-                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
         });
@@ -5063,7 +4951,8 @@ int api_environment_strings_reflect_setters(const std::string &dir)
     // logs_dir / run_dir have no set_* method at this L2 layer (env-
     // provided at runtime in production); type-only check retained.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -5105,13 +4994,11 @@ int api_environment_strings_reflect_setters(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_produce"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_produce"));
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core);
             api->set_log_level("warn");
@@ -5124,8 +5011,7 @@ int api_environment_strings_reflect_setters(const std::string &dir)
 
             // Phase 0: fresh read after build_api.
             core.set_shared_data("phase", static_cast<int64_t>(0));
-            auto r0 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r0 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r0, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -5138,8 +5024,7 @@ int api_environment_strings_reflect_setters(const std::string &dir)
 
             // Phase 1: Lua still reads the frozen directory snapshots.
             core.set_shared_data("phase", static_cast<int64_t>(1));
-            auto r1 = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r1 = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
                 << "phase 1 asserts failing means DIRECTORY strings are "
@@ -5148,8 +5033,7 @@ int api_environment_strings_reflect_setters(const std::string &dir)
 
             engine.finalize();
         },
-        "lua_engine::api_environment_strings_reflect_setters",
-        Logger::GetLifecycleModule());
+        "lua_engine::api_environment_strings_reflect_setters", Logger::GetLifecycleModule());
 }
 
 int api_processor_channels_reflect_setters(const std::string &dir)
@@ -5173,7 +5057,8 @@ int api_processor_channels_reflect_setters(const std::string &dir)
     // closures (lua_engine.cpp:346-347). Producer/Consumer have
     // api.channel() only — pinned in chunk 6a ApiIdentity.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_process(rx, tx, msgs, api)
@@ -5207,36 +5092,31 @@ int api_processor_channels_reflect_setters(const std::string &dir)
             )LUA");
 
             RoleHostCore core;
-            LuaEngine    engine;
+            LuaEngine engine;
             ASSERT_TRUE(engine.initialize("test", &core));
-            ASSERT_TRUE(engine.load_script(script_dir, "init.lua",
-                                            "on_process"));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_process"));
 
             auto spec = simple_schema();
-            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame",
-                                                   "aligned"));
-            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame",
-                                                   "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
 
             auto api = make_api(core, "proc");
             api->set_channel("sensor.input");
             api->set_out_channel("sensor.output");
             ASSERT_TRUE(engine.build_api(*api));
 
-            float in_data  = 1.0f;
+            float in_data = 1.0f;
             float out_data = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto r = engine.invoke_process(
                 pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
-                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             engine.finalize();
         },
-        "lua_engine::api_processor_channels_reflect_setters",
-        Logger::GetLifecycleModule());
+        "lua_engine::api_processor_channels_reflect_setters", Logger::GetLifecycleModule());
 }
 
 // ── FullStartup composite tests (chunk 13) ─────────────────────────────────
@@ -5271,33 +5151,30 @@ namespace
 // version exercises ALL THREE invoke methods uniformly.
 void expect_post_shutdown_is_dead(LuaEngine &engine)
 {
-    EXPECT_FALSE(engine.is_accepting())
-        << "post-shutdown engine must NOT accept new work";
+    EXPECT_FALSE(engine.is_accepting()) << "post-shutdown engine must NOT accept new work";
 
     float buf = 0.0f;
     std::vector<pylabhub::scripting::IncomingMessage> msgs;
 
-    EXPECT_EQ(engine.invoke_produce(
-                  pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs),
+    EXPECT_EQ(engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs),
               pylabhub::scripting::InvokeResult::Error)
         << "post-shutdown invoke_produce must surface Error, not crash";
-    EXPECT_EQ(engine.invoke_consume(
-                  pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs),
+    EXPECT_EQ(engine.invoke_consume(pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs),
               pylabhub::scripting::InvokeResult::Error)
         << "post-shutdown invoke_consume must surface Error, not crash";
-    EXPECT_EQ(engine.invoke_process(
-                  pylabhub::scripting::InvokeRx{&buf, sizeof(buf)},
-                  pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs),
+    EXPECT_EQ(engine.invoke_process(pylabhub::scripting::InvokeRx{&buf, sizeof(buf)},
+                                    pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs),
               pylabhub::scripting::InvokeResult::Error)
         << "post-shutdown invoke_process must surface Error, not crash";
 }
 
-} // anonymous
+} // namespace
 
 int full_startup_producer_slot_only(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -5306,36 +5183,32 @@ int full_startup_producer_slot_only(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "prod";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "prod";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_produce";
-            params.out_slot_spec     = simple_schema();
-            params.out_packing       = "aligned";
+            params.out_slot_spec = simple_schema();
+            params.out_packing = "aligned";
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             const size_t expected =
-                pylabhub::hub::compute_schema_size(params.out_slot_spec,
-                                                   params.out_packing);
-            EXPECT_EQ(expected, 4u)
-                << "simple_schema aligned anchor = 4 (one float32)";
+                pylabhub::hub::compute_schema_size(params.out_slot_spec, params.out_packing);
+            EXPECT_EQ(expected, 4u) << "simple_schema aligned anchor = 4 (one float32)";
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), expected)
                 << "producer SlotFrame alias must equal OutSlotFrame size";
 
             float buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_FLOAT_EQ(buf, 77.0f);
 
@@ -5343,8 +5216,7 @@ int full_startup_producer_slot_only(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_producer_slot_only",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_producer_slot_only", Logger::GetLifecycleModule());
 }
 
 // L2 BYPASS — see file header `L2 BYPASS PATTERN`.
@@ -5355,7 +5227,8 @@ int full_startup_producer_slot_only(const std::string &dir)
 int full_startup_producer_slot_and_flexzone(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -5364,41 +5237,38 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "prod";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "prod";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_produce";
-            params.out_slot_spec     = simple_schema();
-            params.out_fz_spec       = simple_schema();
-            params.out_packing       = "aligned";
+            params.out_slot_spec = simple_schema();
+            params.out_fz_spec = simple_schema();
+            params.out_packing = "aligned";
 
             // Populate the FlexzoneInfoCache (see file header BYPASS PATTERN).
             {
                 pylabhub::scripting::RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = params.out_fz_spec.has_schema;
-                fz_info.tx_logical_size  = pylabhub::hub::compute_schema_size(
-                    params.out_fz_spec, params.out_packing);
+                fz_info.has_tx_fz = params.out_fz_spec.has_schema;
+                fz_info.tx_logical_size =
+                    pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing);
                 fz_info.tx_physical_size =
                     pylabhub::hub::align_to_physical_page(fz_info.tx_logical_size);
                 api->set_flexzone_info_cache_(fz_info);
             }
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             const size_t slot_sz =
-                pylabhub::hub::compute_schema_size(params.out_slot_spec,
-                                                   params.out_packing);
+                pylabhub::hub::compute_schema_size(params.out_slot_spec, params.out_packing);
             const size_t fz_sz =
-                pylabhub::hub::compute_schema_size(params.out_fz_spec,
-                                                   params.out_packing);
+                pylabhub::hub::compute_schema_size(params.out_fz_spec, params.out_packing);
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), slot_sz);
             EXPECT_EQ(engine.type_sizeof("OutFlexFrame"), fz_sz);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), slot_sz)
@@ -5406,15 +5276,12 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
             EXPECT_EQ(engine.type_sizeof("FlexFrame"), fz_sz)
                 << "FlexFrame alias must match OutFlexFrame";
             EXPECT_TRUE(api->has_tx_fz());
-            EXPECT_GT(api->flexzone_physical_size(
-                          pylabhub::scripting::ChannelSide::Tx),
-                      0u);
+            EXPECT_GT(api->flexzone_physical_size(pylabhub::scripting::ChannelSide::Tx), 0u);
 
             float slot_buf = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&slot_buf, sizeof(slot_buf)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&slot_buf, sizeof(slot_buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_FLOAT_EQ(slot_buf, 10.0f);
 
@@ -5422,14 +5289,14 @@ int full_startup_producer_slot_and_flexzone(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_producer_slot_and_flexzone",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_producer_slot_and_flexzone", Logger::GetLifecycleModule());
 }
 
 int full_startup_consumer(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_consume(rx, msgs, api)
@@ -5438,34 +5305,32 @@ int full_startup_consumer(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "cons");
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "cons";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "cons";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_consume";
-            params.in_slot_spec      = simple_schema();
-            params.in_packing        = "aligned";
+            params.in_slot_spec = simple_schema();
+            params.in_packing = "aligned";
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             const size_t expected =
-                pylabhub::hub::compute_schema_size(params.in_slot_spec,
-                                                   params.in_packing);
+                pylabhub::hub::compute_schema_size(params.in_slot_spec, params.in_packing);
             EXPECT_EQ(engine.type_sizeof("InSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), expected)
                 << "consumer SlotFrame alias must match InSlotFrame size";
 
             float data = 42.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            auto r =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -5473,14 +5338,14 @@ int full_startup_consumer(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_consumer",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_consumer", Logger::GetLifecycleModule());
 }
 
 int full_startup_processor(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_process(rx, tx, msgs, api)
@@ -5491,28 +5356,26 @@ int full_startup_processor(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "proc");
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "proc";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "proc";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_process";
-            params.in_slot_spec      = simple_schema();
-            params.out_slot_spec     = simple_schema();
-            params.in_packing        = "aligned";
-            params.out_packing       = "aligned";
+            params.in_slot_spec = simple_schema();
+            params.out_slot_spec = simple_schema();
+            params.in_packing = "aligned";
+            params.out_packing = "aligned";
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             const size_t expected =
-                pylabhub::hub::compute_schema_size(params.in_slot_spec,
-                                                   params.in_packing);
+                pylabhub::hub::compute_schema_size(params.in_slot_spec, params.in_packing);
             EXPECT_EQ(engine.type_sizeof("InSlotFrame"), expected);
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), expected);
             // Processor must NOT expose SlotFrame alias (ambiguous).
@@ -5520,13 +5383,12 @@ int full_startup_processor(const std::string &dir)
                 << "processor has no bare SlotFrame alias (ambiguous "
                    "between In and Out)";
 
-            float in_data  = 5.0f;
+            float in_data = 5.0f;
             float out_data = 0.0f;
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
             auto r = engine.invoke_process(
                 pylabhub::scripting::InvokeRx{&in_data, sizeof(in_data)},
-                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)},
-                msgs);
+                pylabhub::scripting::InvokeTx{&out_data, sizeof(out_data)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_FLOAT_EQ(out_data, 10.0f);
 
@@ -5534,14 +5396,14 @@ int full_startup_processor(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_processor",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_processor", Logger::GetLifecycleModule());
 }
 
 int full_startup_producer_multifield(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_produce(tx, msgs, api)
@@ -5552,46 +5414,43 @@ int full_startup_producer_multifield(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "prod");
 
             auto spec = padding_schema();
             spec.packing = "aligned";
-            core.set_out_slot_spec(
-                SchemaSpec{spec},
-                pylabhub::hub::compute_schema_size(spec, "aligned"));
+            core.set_out_slot_spec(SchemaSpec{spec},
+                                   pylabhub::hub::compute_schema_size(spec, "aligned"));
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "prod";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "prod";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_produce";
-            params.out_slot_spec     = spec;
-            params.out_packing       = "aligned";
+            params.out_slot_spec = spec;
+            params.out_packing = "aligned";
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             // Anchor: padding_schema aligned = 16 bytes (hand-verified).
-            EXPECT_EQ(pylabhub::hub::compute_schema_size(spec, "aligned"),
-                      16u)
+            EXPECT_EQ(pylabhub::hub::compute_schema_size(spec, "aligned"), 16u)
                 << "compute_schema_size anchor drift for padding_schema";
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), 16u)
                 << "producer SlotFrame alias must match OutSlotFrame";
 
-            struct {
+            struct
+            {
                 double ts;
                 uint8_t flag;
                 uint8_t pad[3];
                 int32_t count;
             } buf{};
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_produce(
-                pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_produce(pylabhub::scripting::InvokeTx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_DOUBLE_EQ(buf.ts, 1.23456789);
             EXPECT_EQ(buf.flag, 0xAB);
@@ -5602,14 +5461,14 @@ int full_startup_producer_multifield(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_producer_multifield",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_producer_multifield", Logger::GetLifecycleModule());
 }
 
 int full_startup_consumer_multifield(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_consume(rx, msgs, api)
@@ -5623,44 +5482,44 @@ int full_startup_consumer_multifield(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "cons");
 
             auto spec = padding_schema();
             spec.packing = "aligned";
-            core.set_in_slot_spec(
-                SchemaSpec{spec},
-                pylabhub::hub::compute_schema_size(spec, "aligned"));
+            core.set_in_slot_spec(SchemaSpec{spec},
+                                  pylabhub::hub::compute_schema_size(spec, "aligned"));
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "cons";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "cons";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_consume";
-            params.in_slot_spec      = spec;
-            params.in_packing        = "aligned";
+            params.in_slot_spec = spec;
+            params.in_packing = "aligned";
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             EXPECT_EQ(engine.type_sizeof("InSlotFrame"), 16u);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), 16u)
                 << "consumer SlotFrame alias must match InSlotFrame";
 
-            struct {
+            struct
+            {
                 double ts;
                 uint8_t flag;
                 uint8_t pad[3];
                 int32_t count;
             } buf{};
-            buf.ts = 9.87; buf.flag = 0xCD; buf.count = 100;
+            buf.ts = 9.87;
+            buf.flag = 0xCD;
+            buf.count = 100;
 
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_consume(
-                pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
+            auto r = engine.invoke_consume(pylabhub::scripting::InvokeRx{&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_EQ(engine.script_error_count(), 0u);
 
@@ -5668,14 +5527,14 @@ int full_startup_consumer_multifield(const std::string &dir)
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_consumer_multifield",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_consumer_multifield", Logger::GetLifecycleModule());
 }
 
 int full_startup_processor_multifield(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path script_dir(dir);
             write_script(script_dir, R"LUA(
                 function on_process(rx, tx, msgs, api)
@@ -5686,38 +5545,37 @@ int full_startup_processor_multifield(const std::string &dir)
                 end
             )LUA");
 
-            LuaEngine    engine;
+            LuaEngine engine;
             RoleHostCore core;
             auto api = make_api(core, "proc");
 
             auto spec = padding_schema();
             spec.packing = "aligned";
-            const size_t sz =
-                pylabhub::hub::compute_schema_size(spec, "aligned");
+            const size_t sz = pylabhub::hub::compute_schema_size(spec, "aligned");
             core.set_in_slot_spec(SchemaSpec{spec}, sz);
             core.set_out_slot_spec(SchemaSpec{spec}, sz);
 
             pylabhub::scripting::EngineModuleParams params;
-            params.engine            = &engine;
-            params.api               = api.get();
-            params.tag               = "proc";
-            params.script_dir        = script_dir;
-            params.entry_point       = "init.lua";
+            params.engine = &engine;
+            params.api = api.get();
+            params.tag = "proc";
+            params.script_dir = script_dir;
+            params.entry_point = "init.lua";
             params.required_callback = "on_process";
-            params.in_slot_spec      = spec;
-            params.out_slot_spec     = spec;
-            params.in_packing        = "aligned";
-            params.out_packing       = "aligned";
+            params.in_slot_spec = spec;
+            params.out_slot_spec = spec;
+            params.in_packing = "aligned";
+            params.out_packing = "aligned";
 
-            ASSERT_NO_THROW(
-                pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
+            ASSERT_NO_THROW(pylabhub::scripting::engine_lifecycle_startup(nullptr, &params));
 
             EXPECT_EQ(engine.type_sizeof("InSlotFrame"), 16u);
             EXPECT_EQ(engine.type_sizeof("OutSlotFrame"), 16u);
             EXPECT_EQ(engine.type_sizeof("SlotFrame"), 0u)
                 << "processor has no bare SlotFrame alias";
 
-            struct {
+            struct
+            {
                 double ts;
                 uint8_t flag;
                 uint8_t pad[3];
@@ -5728,23 +5586,20 @@ int full_startup_processor_multifield(const std::string &dir)
             in_buf.count = -42;
 
             std::vector<pylabhub::scripting::IncomingMessage> msgs;
-            auto r = engine.invoke_process(
-                pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf)},
-                pylabhub::scripting::InvokeTx{&out_buf, sizeof(out_buf)},
-                msgs);
+            auto r = engine.invoke_process(pylabhub::scripting::InvokeRx{&in_buf, sizeof(in_buf)},
+                                           pylabhub::scripting::InvokeTx{&out_buf, sizeof(out_buf)},
+                                           msgs);
             EXPECT_EQ(r, pylabhub::scripting::InvokeResult::Commit);
             EXPECT_DOUBLE_EQ(out_buf.ts, 1.23456789);
             EXPECT_EQ(out_buf.flag, 0xAB);
-            EXPECT_EQ(out_buf.count, -84)
-                << "processor doubled count, expected -42 * 2 = -84";
+            EXPECT_EQ(out_buf.count, -84) << "processor doubled count, expected -42 * 2 = -84";
             EXPECT_EQ(engine.script_error_count(), 0u);
 
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             pylabhub::scripting::engine_lifecycle_shutdown(nullptr, &params);
             expect_post_shutdown_is_dead(engine);
         },
-        "lua_engine::full_startup_processor_multifield",
-        Logger::GetLifecycleModule());
+        "lua_engine::full_startup_processor_multifield", Logger::GetLifecycleModule());
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -5789,8 +5644,7 @@ int full_startup_processor_multifield(const std::string &dir)
 int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
 {
     return script_worker(
-        dir, "lua_engine::dispatch_notifications_real_lua_engine_records_args",
-        RoleKind::Producer,
+        dir, "lua_engine::dispatch_notifications_real_lua_engine_records_args", RoleKind::Producer,
         R"LUA(
             -- Override script-side on_channel_closing.  Records the
             -- args into core.shared_data so the C++ side can read
@@ -5807,7 +5661,8 @@ int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
                 return false
             end
         )LUA",
-        [](LuaEngine &engine, RoleHostCore &core) {
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
             // Verify the real engine's cache reports the callback
             // is defined.  Pre-conditions, in case the cache wiring
             // was broken upstream this catches it before we even
@@ -5827,8 +5682,7 @@ int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
             // (role_api_base.cpp:983-996).
             pylabhub::scripting::IncomingMessage msg;
             msg.event = "CHANNEL_CLOSING_NOTIFY";
-            msg.notification_id =
-                pylabhub::scripting::parse_notification_id(msg.event);
+            msg.notification_id = pylabhub::scripting::parse_notification_id(msg.event);
             msg.details = nlohmann::json::object();
             msg.details["channel_name"] = "ch.alpha.from.real.engine.test";
             msg.details["reason"] = "producer_deregistered";
@@ -5838,15 +5692,13 @@ int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
 
             // Drive the REAL dispatcher with the REAL Lua engine.
             // No mock anywhere in this path.
-            pylabhub::scripting::dispatch_notifications(
-                engine, msgs,
-                pylabhub::scripting::StopRequestor{core});
+            pylabhub::scripting::dispatch_notifications(engine, msgs,
+                                                        pylabhub::scripting::StopRequestor{core});
 
             // Verify the dispatcher consumed the msg (Pattern A —
             // always-consume on known notifications).
-            EXPECT_TRUE(msgs.empty())
-                << "Dispatcher must erase known notifications from "
-                   "msgs (single-delivery contract).";
+            EXPECT_TRUE(msgs.empty()) << "Dispatcher must erase known notifications from "
+                                         "msgs (single-delivery contract).";
             // Verify the framework's default did NOT fire — the
             // script's override replaced it.
             EXPECT_FALSE(core.is_shutdown_requested())
@@ -5858,14 +5710,12 @@ int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
             // adapter → real LuaEngine::invoke_on_channel_closing
             // → script callback → set_shared_data → core.
             auto rc = core.get_shared_data("recorded_channel");
-            ASSERT_TRUE(rc.has_value())
-                << "Lua override must have recorded `channel` arg via "
-                   "api.set_shared_data — missing means the dispatcher "
-                   "did not actually invoke the real Lua callback "
-                   "(despite has_callback returning true).";
+            ASSERT_TRUE(rc.has_value()) << "Lua override must have recorded `channel` arg via "
+                                           "api.set_shared_data — missing means the dispatcher "
+                                           "did not actually invoke the real Lua callback "
+                                           "(despite has_callback returning true).";
             ASSERT_TRUE(std::holds_alternative<std::string>(*rc));
-            EXPECT_EQ(std::get<std::string>(*rc),
-                      std::string("ch.alpha.from.real.engine.test"))
+            EXPECT_EQ(std::get<std::string>(*rc), std::string("ch.alpha.from.real.engine.test"))
                 << "Recorded channel must match the value placed in "
                    "msg.details[\"channel_name\"] — mismatch means "
                    "invoke_user_channel_closing read the wrong details "
@@ -5874,8 +5724,7 @@ int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
             auto rr = core.get_shared_data("recorded_reason");
             ASSERT_TRUE(rr.has_value());
             ASSERT_TRUE(std::holds_alternative<std::string>(*rr));
-            EXPECT_EQ(std::get<std::string>(*rr),
-                      std::string("producer_deregistered"))
+            EXPECT_EQ(std::get<std::string>(*rr), std::string("producer_deregistered"))
                 << "Recorded reason must match msg.details[\"reason\"].";
         });
 }
@@ -5899,15 +5748,14 @@ struct LuaEngineWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "lua_engine")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "lua_engine")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::lua_engine;
 
-                if (argc <= 2) {
-                    fmt::print(stderr,
-                               "lua_engine.{}: missing <dir> arg\n", sc);
+                if (argc <= 2)
+                {
+                    fmt::print(stderr, "lua_engine.{}: missing <dir> arg\n", sc);
                     return 1;
                 }
                 const std::string dir = argv[2];
@@ -6181,8 +6029,7 @@ struct LuaEngineWorkerRegistrar
                 if (sc == "dispatch_notifications_real_lua_engine_records_args")
                     return dispatch_notifications_real_lua_engine_records_args(dir);
 
-                fmt::print(stderr,
-                           "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

@@ -46,7 +46,7 @@ namespace pylabhub::utils
  */
 class PYLABHUB_UTILS_EXPORT RoleDirectory
 {
-public:
+  public:
     // ── Construction ───────────────────────────────────────────────────────────
 
     /**
@@ -143,8 +143,7 @@ public:
      *                     "lua" (→ `init.lua`).
      * @return Absolute path to the script entry-point file.
      */
-    std::filesystem::path script_entry(std::string_view script_path,
-                                       std::string_view type) const;
+    std::filesystem::path script_entry(std::string_view script_path, std::string_view type) const;
 
     // ── Hub reference resolution ───────────────────────────────────────────────
     //
@@ -169,8 +168,7 @@ public:
      * @param hub_dir_value  Value of the `hub_dir` JSON field.
      * @return Absolute (weakly-canonical) path to the hub directory, or nullopt.
      */
-    std::optional<std::filesystem::path> resolve_hub_dir(
-        std::string_view hub_dir_value) const;
+    std::optional<std::filesystem::path> resolve_hub_dir(std::string_view hub_dir_value) const;
 
     /**
      * @brief Path to the hub's public key file.
@@ -225,7 +223,7 @@ public:
      *                   relative to @p role_base for the comparison).
      */
     static void warn_if_keyfile_in_role_dir(const std::filesystem::path &role_base,
-                                             const std::string           &keyfile);
+                                            const std::string &keyfile);
 
     // ── Layout inspection ──────────────────────────────────────────────────────
 
@@ -238,7 +236,7 @@ public:
 
     // ── Registration-based directory initialization (HEP-0024 §10) ────────
 
-    class RoleRegistrationBuilder;   // forward declaration
+    class RoleRegistrationBuilder; // forward declaration
 
     /**
      * @brief Begin registering a role for init_directory() scaffolding.
@@ -295,15 +293,13 @@ public:
         /// Written to @c logging.max_size_mb if set.
         std::optional<double> max_size_mb;
         /// Written to @c logging.backups if set (@c -1 = keep all).
-        std::optional<int>    backups;
+        std::optional<int> backups;
     };
 
-    static int init_directory(const std::filesystem::path &dir,
-                              const std::string &role_type,
-                              const std::string &name,
-                              const LogInitOverrides &log = {});
+    static int init_directory(const std::filesystem::path &dir, const std::string &role_type,
+                              const std::string &name, const LogInitOverrides &log = {});
 
-private:
+  private:
     explicit RoleDirectory(std::filesystem::path base) noexcept;
 
     std::filesystem::path base_;
@@ -319,7 +315,7 @@ private:
  */
 class PYLABHUB_UTILS_EXPORT RoleDirectory::RoleRegistrationBuilder
 {
-public:
+  public:
     ~RoleRegistrationBuilder();
     RoleRegistrationBuilder(RoleRegistrationBuilder &&) noexcept;
     RoleRegistrationBuilder &operator=(RoleRegistrationBuilder &&) noexcept;
@@ -336,19 +332,19 @@ public:
     RoleRegistrationBuilder &role_label(std::string label);
 
     /// Default JSON config template function. Called with (uid, name).
-    RoleRegistrationBuilder &config_template(
-        std::function<nlohmann::json(const std::string &, const std::string &)> fn);
+    RoleRegistrationBuilder &
+    config_template(std::function<nlohmann::json(const std::string &, const std::string &)> fn);
 
     /// Optional post-init callback for role-specific customization.
     /// Called after directory + config are created. Use RoleDirectory path APIs.
-    RoleRegistrationBuilder &on_init(
-        std::function<void(const RoleDirectory &, const std::string &)> fn);
+    RoleRegistrationBuilder &
+    on_init(std::function<void(const RoleDirectory &, const std::string &)> fn);
 
     /// Explicitly commit the registration. Called automatically by destructor
     /// if not called manually. Safe to call multiple times (no-op after first).
     void commit();
 
-private:
+  private:
     friend class RoleDirectory;
     explicit RoleRegistrationBuilder(std::string role_type);
 

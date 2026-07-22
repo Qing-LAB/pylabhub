@@ -16,8 +16,7 @@ namespace
 constexpr uint64_t kNsPerMs = 1'000'000;
 }
 
-SharedSpinLock::SharedSpinLock(SharedSpinLockState *state, std::string name)
-    : m_state(state)
+SharedSpinLock::SharedSpinLock(SharedSpinLockState *state, std::string name) : m_state(state)
 {
     std::strncpy(m_name, name.c_str(), detail::SPINLOCK_NAME_MAX - 1);
     m_name[detail::SPINLOCK_NAME_MAX - 1] = '\0';
@@ -86,14 +85,15 @@ bool SharedSpinLock::try_lock_for(int timeout_ms)
             if (m_state->owner_pid.compare_exchange_strong(
                     zombie_pid, my_pid, std::memory_order_acquire, std::memory_order_relaxed))
             {
-                LOGGER_WARN("SharedSpinLock '{}': Reclaimed zombie lock from dead PID {}.",
-                            m_name, expected_pid);
+                LOGGER_WARN("SharedSpinLock '{}': Reclaimed zombie lock from dead PID {}.", m_name,
+                            expected_pid);
                 m_state->owner_tid.store(my_tid, std::memory_order_release);
                 m_state->recursion_count.store(1, std::memory_order_relaxed);
                 m_state->generation.fetch_add(1, std::memory_order_relaxed);
                 return true;
             }
-            // Lost the reclaim race — another process grabbed it first; fall through to spin/timeout.
+            // Lost the reclaim race — another process grabbed it first; fall through to
+            // spin/timeout.
         }
 
         // Timeout check (0 = non-blocking, < 0 = infinite, > 0 = wait N ms)
@@ -163,8 +163,9 @@ void SharedSpinLock::unlock()
     //      process is alive (it is executing this very code).
     m_state->recursion_count.store(0, std::memory_order_release);
     m_state->generation.fetch_add(1, std::memory_order_relaxed);
-    m_state->owner_tid.store(0, std::memory_order_relaxed);  // Cleared first; lock still "held" here
-    m_state->owner_pid.store(0, std::memory_order_release);  // Authoritative "lock free" signal — last
+    m_state->owner_tid.store(0, std::memory_order_relaxed); // Cleared first; lock still "held" here
+    m_state->owner_pid.store(0,
+                             std::memory_order_release); // Authoritative "lock free" signal — last
 }
 
 bool SharedSpinLock::is_locked_by_current_process() const

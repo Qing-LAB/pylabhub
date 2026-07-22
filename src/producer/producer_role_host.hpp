@@ -75,11 +75,10 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     /// Inputs are everything the translation actually consumes; output
     /// is a fully-populated `TxQueueOptions`.  Pure — no side effects,
     /// no broker, no queue construction.  Safe to call from tests.
-    [[nodiscard]] static hub::TxQueueOptions
-    make_tx_opts(const config::RoleConfig &config,
-                 const hub::SchemaSpec    &out_slot_spec,
-                 const hub::SchemaSpec    &out_fz_spec,
-                 bool                      has_tx_fz);
+    [[nodiscard]] static hub::TxQueueOptions make_tx_opts(const config::RoleConfig &config,
+                                                          const hub::SchemaSpec &out_slot_spec,
+                                                          const hub::SchemaSpec &out_fz_spec,
+                                                          bool has_tx_fz);
 
   private:
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
@@ -112,10 +111,10 @@ class PYLABHUB_UTILS_EXPORT ProducerRoleHost final : public scripting::RoleHostF
     // `core_.set_out_slot_spec()` and `params.out_slot_spec`.  Canonical
     // home is `presences_[0].slot_spec` (see RoleHostFrame); kept here as
     // the member that `worker_main_` initializes.
-    hub::SchemaSpec                         out_slot_spec_;
+    hub::SchemaSpec out_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).
-    std::string                             engine_module_name_;
+    std::string engine_module_name_;
 };
 
 } // namespace pylabhub::producer

@@ -47,8 +47,8 @@ int basic_nonblocking(const std::string &resource_path)
             FileLock lock2(p, /*is_directory=*/false, /*blocking=*/false);
             EXPECT_TRUE(lock2.valid());
         },
-        "filelock_singleprocess::basic_nonblocking",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::basic_nonblocking", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int blocking_lock_timeout(const std::string &resource_path)
@@ -62,20 +62,21 @@ int blocking_lock_timeout(const std::string &resource_path)
 
             std::atomic<bool> acquired{false};
             std::atomic<bool> timed_out{false};
-            std::thread t([&]() {
-                auto start = std::chrono::steady_clock::now();
-                FileLock lock(p, /*is_directory=*/false,
-                              std::chrono::milliseconds(100));
-                auto elapsed = std::chrono::steady_clock::now() - start;
-                acquired = lock.valid();
-                timed_out = !acquired && elapsed >= std::chrono::milliseconds(100);
-            });
+            std::thread t(
+                [&]()
+                {
+                    auto start = std::chrono::steady_clock::now();
+                    FileLock lock(p, /*is_directory=*/false, std::chrono::milliseconds(100));
+                    auto elapsed = std::chrono::steady_clock::now() - start;
+                    acquired = lock.valid();
+                    timed_out = !acquired && elapsed >= std::chrono::milliseconds(100);
+                });
             t.join();
             EXPECT_FALSE(acquired.load());
             EXPECT_TRUE(timed_out.load());
         },
-        "filelock_singleprocess::blocking_lock_timeout",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::blocking_lock_timeout", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int multi_threaded_contention(const std::string &resource_path)
@@ -86,27 +87,29 @@ int multi_threaded_contention(const std::string &resource_path)
             const fs::path p(resource_path);
             std::atomic<int> success_count{0};
             std::atomic<int> fail_count{0};
-            constexpr int    kThreads = 10;
-            std::barrier     completion(kThreads + 1);
+            constexpr int kThreads = 10;
+            std::barrier completion(kThreads + 1);
 
             std::vector<std::thread> threads;
             for (int i = 0; i < kThreads; ++i)
             {
-                threads.emplace_back([&, i]() {
-                    auto lock_opt = FileLock::try_lock(
-                        p, /*is_directory=*/false, /*blocking=*/false);
-                    if (lock_opt.has_value())
+                threads.emplace_back(
+                    [&, i]()
                     {
-                        success_count++;
-                        std::this_thread::sleep_for(10ms);
-                    }
-                    else
-                    {
-                        fail_count++;
-                    }
-                    (void)i;
-                    completion.arrive_and_wait();
-                });
+                        auto lock_opt =
+                            FileLock::try_lock(p, /*is_directory=*/false, /*blocking=*/false);
+                        if (lock_opt.has_value())
+                        {
+                            success_count++;
+                            std::this_thread::sleep_for(10ms);
+                        }
+                        else
+                        {
+                            fail_count++;
+                        }
+                        (void)i;
+                        completion.arrive_and_wait();
+                    });
             }
             completion.arrive_and_wait();
             for (auto &t : threads)
@@ -115,8 +118,8 @@ int multi_threaded_contention(const std::string &resource_path)
             EXPECT_EQ(success_count.load(), 1);
             EXPECT_EQ(fail_count.load(), kThreads - 1);
         },
-        "filelock_singleprocess::multi_threaded_contention",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::multi_threaded_contention", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int move_semantics(const std::string &p1, const std::string &p2)
@@ -142,8 +145,8 @@ int move_semantics(const std::string &p1, const std::string &p2)
             EXPECT_TRUE(lock3.valid());
             EXPECT_FALSE(lock2.valid());
         },
-        "filelock_singleprocess::move_semantics",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::move_semantics", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int directory_path_locking(const std::string &dir_path)
@@ -162,8 +165,8 @@ int directory_path_locking(const std::string &dir_path)
                                                /*blocking=*/false);
             EXPECT_FALSE(lock_opt.has_value());
         },
-        "filelock_singleprocess::directory_path_locking",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::directory_path_locking", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int timed_lock(const std::string &resource_path)
@@ -176,21 +179,23 @@ int timed_lock(const std::string &resource_path)
             ASSERT_TRUE(main_lock.valid());
 
             std::atomic<bool> acquired{false};
-            std::thread t([&]() {
-                auto start    = std::chrono::steady_clock::now();
-                auto lock_opt = FileLock::try_lock(p, /*is_directory=*/false,
-                                                   std::chrono::milliseconds(50));
-                auto elapsed  = std::chrono::steady_clock::now() - start;
-                acquired      = lock_opt.has_value();
-                EXPECT_FALSE(acquired);
-                EXPECT_GE(elapsed, std::chrono::milliseconds(50));
-                EXPECT_LT(elapsed, std::chrono::milliseconds(200));
-            });
+            std::thread t(
+                [&]()
+                {
+                    auto start = std::chrono::steady_clock::now();
+                    auto lock_opt = FileLock::try_lock(p, /*is_directory=*/false,
+                                                       std::chrono::milliseconds(50));
+                    auto elapsed = std::chrono::steady_clock::now() - start;
+                    acquired = lock_opt.has_value();
+                    EXPECT_FALSE(acquired);
+                    EXPECT_GE(elapsed, std::chrono::milliseconds(50));
+                    EXPECT_LT(elapsed, std::chrono::milliseconds(200));
+                });
             t.join();
             EXPECT_FALSE(acquired.load());
         },
-        "filelock_singleprocess::timed_lock",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::timed_lock", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int sequential_acquire_release(const std::string &resource_path)
@@ -205,12 +210,11 @@ int sequential_acquire_release(const std::string &resource_path)
                 ASSERT_TRUE(lock.valid()) << "iteration " << i;
             }
         },
-        "filelock_singleprocess::sequential_acquire_release",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::sequential_acquire_release", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
-int get_expected_lock_fullname_for(const std::string &file_path,
-                                   const std::string &dir_path)
+int get_expected_lock_fullname_for(const std::string &file_path, const std::string &dir_path)
 {
     return run_gtest_worker(
         [&]()
@@ -221,19 +225,16 @@ int get_expected_lock_fullname_for(const std::string &file_path,
 
             auto file_lock_path = FileLock::get_expected_lock_fullname_for(fp);
             EXPECT_FALSE(file_lock_path.empty());
-            EXPECT_NE(file_lock_path.generic_string().find(".lock"),
-                      std::string::npos);
-            EXPECT_EQ(file_lock_path.generic_string().find(".dir.lock"),
-                      std::string::npos);
+            EXPECT_NE(file_lock_path.generic_string().find(".lock"), std::string::npos);
+            EXPECT_EQ(file_lock_path.generic_string().find(".dir.lock"), std::string::npos);
 
             auto dir_lock_path =
                 FileLock::get_expected_lock_fullname_for(dp, /*is_directory=*/true);
             EXPECT_FALSE(dir_lock_path.empty());
-            EXPECT_NE(dir_lock_path.generic_string().find(".dir.lock"),
-                      std::string::npos);
+            EXPECT_NE(dir_lock_path.generic_string().find(".dir.lock"), std::string::npos);
         },
-        "filelock_singleprocess::get_expected_lock_fullname_for",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::get_expected_lock_fullname_for", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int get_locked_resource_and_canonical_lock_path(const std::string &resource_path)
@@ -252,8 +253,7 @@ int get_locked_resource_and_canonical_lock_path(const std::string &resource_path
             auto canonical = lock.get_canonical_lock_file_path();
             ASSERT_TRUE(canonical.has_value());
             EXPECT_FALSE(canonical->empty());
-            EXPECT_NE(canonical->generic_string().find(".lock"),
-                      std::string::npos);
+            EXPECT_NE(canonical->generic_string().find(".lock"), std::string::npos);
         },
         "filelock_singleprocess::get_locked_resource_and_canonical_lock_path",
         Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
@@ -272,8 +272,8 @@ int get_paths_return_empty_when_invalid()
             EXPECT_FALSE(lock.get_locked_resource_path().has_value());
             EXPECT_FALSE(lock.get_canonical_lock_file_path().has_value());
         },
-        "filelock_singleprocess::get_paths_return_empty_when_invalid",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::get_paths_return_empty_when_invalid", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 int invalid_resource_path()
@@ -294,8 +294,8 @@ int invalid_resource_path()
                                                /*blocking=*/false);
             ASSERT_FALSE(lock_opt.has_value());
         },
-        "filelock_singleprocess::invalid_resource_path",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule());
+        "filelock_singleprocess::invalid_resource_path", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule());
 }
 
 } // namespace filelock_singleprocess
@@ -321,11 +321,12 @@ struct FileLockSingleProcessWorkerRegistrar
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::filelock_singleprocess;
 
-                auto need = [&](int n) -> bool {
-                    if (argc < n) {
-                        fmt::print(stderr,
-                                   "filelock_singleprocess.{}: expected {} args\n",
-                                   sc, n - 2);
+                auto need = [&](int n) -> bool
+                {
+                    if (argc < n)
+                    {
+                        fmt::print(stderr, "filelock_singleprocess.{}: expected {} args\n", sc,
+                                   n - 2);
                         return false;
                     }
                     return true;

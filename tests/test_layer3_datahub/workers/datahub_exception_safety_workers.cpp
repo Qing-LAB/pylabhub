@@ -18,7 +18,7 @@
 // Secret numbers: 73001+ to avoid conflicts with other test suites.
 
 #include "datahub_exception_safety_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
@@ -35,8 +35,14 @@ using namespace std::chrono_literals;
 namespace pylabhub::tests::worker::exception_safety
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 /// #275-S2: `secret` param dropped — fd-source factory ignores it.
 static DataBlockConfig make_config()
@@ -71,8 +77,8 @@ int exception_before_publish_aborts_write_slot()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Throw before auto-publish — slot must be aborted
             bool exception_caught = false;
@@ -139,8 +145,8 @@ int exception_before_publish_aborts_write_slot()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "exception_before_publish_aborts_write_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "exception_before_publish_aborts_write_slot", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -160,18 +166,15 @@ int exception_in_write_transaction_leaves_producer_usable()
             auto p = make_fd_backed_producer_typed<EmptyFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Throw immediately in the lambda (no slot acquired)
             bool caught = false;
             try
             {
                 producer->with_transaction<EmptyFlexZone, TestDataBlock>(
-                    500ms,
-                    [](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &)
-                    {
-                        throw std::logic_error("early throw in write transaction");
-                    });
+                    500ms, [](WriteTransactionContext<EmptyFlexZone, TestDataBlock> &)
+                    { throw std::logic_error("early throw in write transaction"); });
             }
             catch (const std::logic_error &)
             {
@@ -200,8 +203,8 @@ int exception_in_write_transaction_leaves_producer_usable()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "exception_in_write_transaction_leaves_producer_usable", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "exception_in_write_transaction_leaves_producer_usable", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -222,8 +225,8 @@ int exception_in_read_transaction_leaves_consumer_usable()
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write slot 1
             producer->with_transaction<EmptyFlexZone, TestDataBlock>(
@@ -301,8 +304,8 @@ int exception_in_read_transaction_leaves_consumer_usable()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "exception_in_read_transaction_leaves_consumer_usable", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "exception_in_read_transaction_leaves_consumer_usable", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::exception_safety

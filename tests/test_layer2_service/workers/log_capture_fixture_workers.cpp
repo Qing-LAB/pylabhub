@@ -93,7 +93,8 @@ namespace log_capture_fixture
 int expect_log_warn_permissive_allows_no_fail()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogWarn("expected-warn-substring");
@@ -108,7 +109,8 @@ int expect_log_warn_permissive_allows_no_fail()
 int expect_log_warn_permissive_silently_ok_when_warn_does_not_fire()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             // Critical legacy contract: a permissive declaration that
@@ -126,7 +128,8 @@ int expect_log_warn_permissive_silently_ok_when_warn_does_not_fire()
 int expect_log_warn_undeclared_warn_fails()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             LOGGER_WARN("[test] this WARN was not declared");
@@ -141,22 +144,21 @@ int expect_log_warn_undeclared_warn_fails()
                 threw = true;
                 msg = e.what();
             }
-            EXPECT_TRUE(threw)
-                << "AssertNoUnexpectedLogWarnError() should have thrown "
-                   "on an undeclared WARN line";
+            EXPECT_TRUE(threw) << "AssertNoUnexpectedLogWarnError() should have thrown "
+                                  "on an undeclared WARN line";
             EXPECT_NE(msg.find("unexpected WARN"), std::string::npos)
                 << "failure message did not pin 'unexpected WARN'; got:\n"
                 << msg;
             cap.Uninstall();
         },
-        "log_capture_fixture::expect_log_warn_undeclared_warn_fails",
-        Logger::GetLifecycleModule());
+        "log_capture_fixture::expect_log_warn_undeclared_warn_fails", Logger::GetLifecycleModule());
 }
 
 int expect_log_error_undeclared_error_fails()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             LOGGER_ERROR("[test] this ERROR was not declared");
@@ -171,9 +173,8 @@ int expect_log_error_undeclared_error_fails()
                 threw = true;
                 msg = e.what();
             }
-            EXPECT_TRUE(threw)
-                << "AssertNoUnexpectedLogWarnError() should have thrown "
-                   "on an undeclared ERROR line";
+            EXPECT_TRUE(threw) << "AssertNoUnexpectedLogWarnError() should have thrown "
+                                  "on an undeclared ERROR line";
             EXPECT_NE(msg.find("unexpected ERROR"), std::string::npos)
                 << "failure message did not pin 'unexpected ERROR'; got:\n"
                 << msg;
@@ -188,7 +189,8 @@ int expect_log_error_undeclared_error_fails()
 int must_fire_warn_fired_no_fail()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogWarnMustFire("strict-warn-needle");
@@ -196,14 +198,14 @@ int must_fire_warn_fired_no_fail()
             cap.AssertNoUnexpectedLogWarnError();
             cap.Uninstall();
         },
-        "log_capture_fixture::must_fire_warn_fired_no_fail",
-        Logger::GetLifecycleModule());
+        "log_capture_fixture::must_fire_warn_fired_no_fail", Logger::GetLifecycleModule());
 }
 
 int must_fire_warn_not_fired_fails()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogWarnMustFire("never-emitted-needle");
@@ -218,22 +220,22 @@ int must_fire_warn_not_fired_fails()
                 threw = true;
                 msg = e.what();
             }
-            EXPECT_TRUE(threw)
-                << "AssertNoUnexpectedLogWarnError() should have thrown "
-                   "on an unfulfilled must-fire WARN declaration";
+            EXPECT_TRUE(threw) << "AssertNoUnexpectedLogWarnError() should have thrown "
+                                  "on an unfulfilled must-fire WARN declaration";
             EXPECT_NE(msg.find("ExpectLogWarnMustFire"), std::string::npos)
                 << "failure message did not pin "
-                   "'ExpectLogWarnMustFire'; got:\n" << msg;
+                   "'ExpectLogWarnMustFire'; got:\n"
+                << msg;
             cap.Uninstall();
         },
-        "log_capture_fixture::must_fire_warn_not_fired_fails",
-        Logger::GetLifecycleModule());
+        "log_capture_fixture::must_fire_warn_not_fired_fails", Logger::GetLifecycleModule());
 }
 
 int must_fire_error_fired_no_fail()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogErrorMustFire("strict-error-needle");
@@ -241,14 +243,14 @@ int must_fire_error_fired_no_fail()
             cap.AssertNoUnexpectedLogWarnError();
             cap.Uninstall();
         },
-        "log_capture_fixture::must_fire_error_fired_no_fail",
-        Logger::GetLifecycleModule());
+        "log_capture_fixture::must_fire_error_fired_no_fail", Logger::GetLifecycleModule());
 }
 
 int must_fire_error_not_fired_fails()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogErrorMustFire("never-emitted-error");
@@ -263,22 +265,22 @@ int must_fire_error_not_fired_fails()
                 threw = true;
                 msg = e.what();
             }
-            EXPECT_TRUE(threw)
-                << "AssertNoUnexpectedLogWarnError() should have thrown "
-                   "on an unfulfilled must-fire ERROR declaration";
+            EXPECT_TRUE(threw) << "AssertNoUnexpectedLogWarnError() should have thrown "
+                                  "on an unfulfilled must-fire ERROR declaration";
             EXPECT_NE(msg.find("ExpectLogErrorMustFire"), std::string::npos)
                 << "failure message did not pin "
-                   "'ExpectLogErrorMustFire'; got:\n" << msg;
+                   "'ExpectLogErrorMustFire'; got:\n"
+                << msg;
             cap.Uninstall();
         },
-        "log_capture_fixture::must_fire_error_not_fired_fails",
-        Logger::GetLifecycleModule());
+        "log_capture_fixture::must_fire_error_not_fired_fails", Logger::GetLifecycleModule());
 }
 
 int must_fire_warn_also_satisfies_allowlist()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             // Strict must-fire IMPLIES permissive allowlist — a matching
@@ -295,7 +297,8 @@ int must_fire_warn_also_satisfies_allowlist()
 int must_fire_multiple_emissions_count_as_one_match()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             // Two WARN lines containing the same needle.  Must-fire is
@@ -314,7 +317,8 @@ int must_fire_multiple_emissions_count_as_one_match()
 int must_fire_two_distinct_needles_both_must_match()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogWarnMustFire("alpha");
@@ -331,12 +335,12 @@ int must_fire_two_distinct_needles_both_must_match()
                 threw = true;
                 msg = e.what();
             }
-            EXPECT_TRUE(threw)
-                << "AssertNoUnexpectedLogWarnError() should have thrown "
-                   "because 'beta' must-fire never matched";
+            EXPECT_TRUE(threw) << "AssertNoUnexpectedLogWarnError() should have thrown "
+                                  "because 'beta' must-fire never matched";
             EXPECT_NE(msg.find("beta"), std::string::npos)
                 << "failure message did not name the unmatched needle "
-                   "'beta'; got:\n" << msg;
+                   "'beta'; got:\n"
+                << msg;
             cap.Uninstall();
         },
         "log_capture_fixture::must_fire_two_distinct_needles_both_must_match",
@@ -346,7 +350,8 @@ int must_fire_two_distinct_needles_both_must_match()
 int must_fire_two_distinct_needles_both_fire_no_fail()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             cap.ExpectLogWarnMustFire("alpha");
@@ -363,7 +368,8 @@ int must_fire_two_distinct_needles_both_fire_no_fail()
 int must_fire_distinct_needles_each_consume_one_line()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture cap;
             cap.Install();
             // Two needles, two lines, each line matches exactly one
@@ -397,11 +403,11 @@ struct LogCaptureFixtureRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "log_capture_fixture")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "log_capture_fixture")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::log_capture_fixture;

@@ -41,7 +41,7 @@
 
 #include "utils/broker_request_comm.hpp"
 
-#include <cstdlib>       // std::getenv (HEP-0032 §8 strict-mode gate)
+#include <cstdlib> // std::getenv (HEP-0032 §8 strict-mode gate)
 #include <string_view>
 #include "utils/broker_service.hpp"
 #include "utils/file_lock.hpp"
@@ -83,19 +83,20 @@ namespace
 constexpr auto kSmokeSafetyTimeout = std::chrono::seconds{60};
 
 // Bind-retry parameters per Pattern 4 doc § "Bind robustness".
-constexpr int  kBindMaxAttempts = 4;
+constexpr int kBindMaxAttempts = 4;
 constexpr auto kBindInitialBackoff = std::chrono::milliseconds{10};
 
-} // anon
+} // namespace
 
 // ─── pattern4_smoke.broker ──────────────────────────────────────────────────
 
 int pattern4_smoke_broker(const char *temp_dir_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
 
             // HEP-CORE-0040 §172: seed KeyStore with hub identity
             // before building BrokerService.  seed_curve_identities
@@ -118,31 +119,28 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
             {
                 cfg.strict_abi_mismatch = true;
                 LOGGER_INFO("Pattern4Broker: strict_abi_mismatch=true "
-                             "(PLH_TEST_STRICT_ABI_MISMATCH=1)");
+                            "(PLH_TEST_STRICT_ABI_MISMATCH=1)");
             }
 
             // on_ready logs the bound endpoint so the parent can pin
             // it via expect_log.
             std::promise<std::string> ready_promise;
-            auto                       ready_future = ready_promise.get_future();
-            cfg.on_ready = [&ready_promise](const std::string &ep,
-                                             const std::string &pk) {
-                LOGGER_INFO("Pattern4Broker: bound endpoint='{}' pubkey='{}'",
-                            ep, pk);
+            auto ready_future = ready_promise.get_future();
+            cfg.on_ready = [&ready_promise](const std::string &ep, const std::string &pk)
+            {
+                LOGGER_INFO("Pattern4Broker: bound endpoint='{}' pubkey='{}'", ep, pk);
                 ready_promise.set_value(ep);
             };
 
             // Retry-on-EADDRINUSE per Pattern 4 doc.
-            pylabhub::hub::HubState                       state;
+            pylabhub::hub::HubState state;
             std::unique_ptr<pylabhub::broker::BrokerService> broker;
-            auto                                          backoff =
-                kBindInitialBackoff;
+            auto backoff = kBindInitialBackoff;
             for (int attempt = 1; attempt <= kBindMaxAttempts; ++attempt)
             {
                 try
                 {
-                    broker = std::make_unique<
-                        pylabhub::broker::BrokerService>(cfg, state);
+                    broker = std::make_unique<pylabhub::broker::BrokerService>(cfg, state);
                     break;
                 }
                 catch (const zmq::error_t &e)
@@ -152,8 +150,7 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
                         LOGGER_WARN("Pattern4Broker: bind EADDRINUSE on "
                                     "endpoint='{}' — retrying in {}ms "
                                     "(attempt {}/{})",
-                                    cfg.endpoint, backoff.count(),
-                                    attempt, kBindMaxAttempts);
+                                    cfg.endpoint, backoff.count(), attempt, kBindMaxAttempts);
                         std::this_thread::sleep_for(backoff);
                         backoff *= 5;
                         continue;
@@ -161,25 +158,22 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
                     throw;
                 }
             }
-            ASSERT_TRUE(broker) << "Pattern4Broker: failed to bind after "
-                                << kBindMaxAttempts << " attempts on '"
-                                << cfg.endpoint << "'";
+            ASSERT_TRUE(broker) << "Pattern4Broker: failed to bind after " << kBindMaxAttempts
+                                << " attempts on '" << cfg.endpoint << "'";
 
             // Run broker on its own thread; main thread self-timeouts.
             std::thread broker_thread([&] { broker->run(); });
 
             // Block until on_ready fires so we know the broker actually
             // bound (vs threw during run() after construction succeeded).
-            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}),
-                      std::future_status::ready)
+            ASSERT_EQ(ready_future.wait_for(std::chrono::seconds{2}), std::future_status::ready)
                 << "Pattern4Broker: on_ready callback did not fire within 2s";
 
             LOGGER_INFO("Pattern4Broker: waiting on quit-signal pipe "
                         "(safety timeout {} s)",
                         kSmokeSafetyTimeout.count());
             const auto wait_result =
-                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
-                    kSmokeSafetyTimeout);
+                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(kSmokeSafetyTimeout);
             switch (wait_result)
             {
             case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
@@ -204,12 +198,10 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
             broker_thread.join();
             LOGGER_INFO("Pattern4Broker: exiting cleanly");
         },
-        "pattern4_smoke.broker",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_smoke.broker", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // ─── pattern4_smoke.role_x ──────────────────────────────────────────────────
@@ -217,9 +209,10 @@ int pattern4_smoke_broker(const char *temp_dir_arg)
 int pattern4_smoke_role_x(const char *temp_dir_arg)
 {
     return pylabhub::tests::helper::run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path temp_dir = temp_dir_arg;
-            const auto     setup    = read_pattern4_setup(temp_dir / "setup.json");
+            const auto setup = read_pattern4_setup(temp_dir / "setup.json");
             const std::string role_uid = "role.x";
 
             // HEP-CORE-0040 §172: seed KeyStore with role identity.
@@ -230,37 +223,32 @@ int pattern4_smoke_role_x(const char *temp_dir_arg)
             // BRC config — production shape.
             pylabhub::hub::BrokerRequestComm::Config brc_cfg;
             brc_cfg.broker_endpoint = setup.broker_endpoint;
-            brc_cfg.broker_pubkey   = setup.curve.hub.public_z85;
-            brc_cfg.keystore_name   =
-                pylabhub::tests::role_keystore_name(role_uid);
-            brc_cfg.role_uid        = role_uid;
+            brc_cfg.broker_pubkey = setup.curve.hub.public_z85;
+            brc_cfg.keystore_name = pylabhub::tests::role_keystore_name(role_uid);
+            brc_cfg.role_uid = role_uid;
 
             pylabhub::hub::BrokerRequestComm brc;
-            LOGGER_INFO("Pattern4Role[{}]: BRC connecting to '{}'",
-                        role_uid, setup.broker_endpoint);
+            LOGGER_INFO("Pattern4Role[{}]: BRC connecting to '{}'", role_uid,
+                        setup.broker_endpoint);
             ASSERT_TRUE(brc.connect(brc_cfg))
-                << "Pattern4Role: BRC::connect failed against endpoint='"
-                << setup.broker_endpoint << "'";
+                << "Pattern4Role: BRC::connect failed against endpoint='" << setup.broker_endpoint
+                << "'";
             LOGGER_INFO("Pattern4Role[{}]: BRC connected", role_uid);
 
             // Run the BRC poll loop on a separate thread; main thread
             // self-timeouts.
             std::atomic<bool> running{true};
-            std::thread       poll_thread([&] {
-                brc.run_poll_loop([&] { return running.load(); });
-            });
+            std::thread poll_thread([&] { brc.run_poll_loop([&] { return running.load(); }); });
 
             LOGGER_INFO("Pattern4Role[{}]: waiting on quit-signal pipe "
                         "(safety timeout {} s)",
                         role_uid, kSmokeSafetyTimeout.count());
             const auto wait_result =
-                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(
-                    kSmokeSafetyTimeout);
+                pylabhub::tests::helper::wait_for_quit_or_safety_timeout(kSmokeSafetyTimeout);
             switch (wait_result)
             {
             case pylabhub::tests::helper::QuitWaitResult::QuitSignal:
-                LOGGER_INFO("Pattern4Role[{}]: quit signal received, stopping",
-                            role_uid);
+                LOGGER_INFO("Pattern4Role[{}]: quit signal received, stopping", role_uid);
                 break;
             case pylabhub::tests::helper::QuitWaitResult::SafetyTimeout:
                 LOGGER_WARN("Pattern4Role[{}]: safety timeout fired — parent "
@@ -281,12 +269,10 @@ int pattern4_smoke_role_x(const char *temp_dir_arg)
             brc.disconnect();
             LOGGER_INFO("Pattern4Role[{}]: exiting cleanly", role_uid);
         },
-        "pattern4_smoke.role_x",
-        pylabhub::utils::Logger::GetLifecycleModule(),
+        "pattern4_smoke.role_x", pylabhub::utils::Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::utils::FileLock::GetLifecycleModule(),
-        pylabhub::utils::JsonConfig::GetLifecycleModule(),
-        pylabhub::hub::GetZMQContextModule());
+        pylabhub::utils::JsonConfig::GetLifecycleModule(), pylabhub::hub::GetZMQContextModule());
 }
 
 // ─── Dispatcher registration ────────────────────────────────────────────────
@@ -296,18 +282,17 @@ int dispatch_pattern4_smoke(int argc, char **argv)
     if (argc < 2)
         return -1;
     const std::string mode = argv[1];
-    const auto        dot  = mode.find('.');
+    const auto dot = mode.find('.');
     if (dot == std::string::npos)
         return -1;
-    const std::string module   = mode.substr(0, dot);
+    const std::string module = mode.substr(0, dot);
     const std::string scenario = mode.substr(dot + 1);
     if (module != "pattern4_smoke")
         return -1;
 
     if (argc < 3)
     {
-        std::fprintf(stderr, "pattern4_smoke.%s: missing <temp_dir> arg\n",
-                     scenario.c_str());
+        std::fprintf(stderr, "pattern4_smoke.%s: missing <temp_dir> arg\n", scenario.c_str());
         return 1;
     }
     const char *temp_dir = argv[2];
@@ -317,17 +302,13 @@ int dispatch_pattern4_smoke(int argc, char **argv)
     if (scenario == "role_x")
         return pattern4_smoke_role_x(temp_dir);
 
-    std::fprintf(stderr, "pattern4_smoke: unknown scenario '%s'\n",
-                 scenario.c_str());
+    std::fprintf(stderr, "pattern4_smoke: unknown scenario '%s'\n", scenario.c_str());
     return 1;
 }
 
 struct Pattern4SmokeRegistrar
 {
-    Pattern4SmokeRegistrar()
-    {
-        ::register_worker_dispatcher(dispatch_pattern4_smoke);
-    }
+    Pattern4SmokeRegistrar() { ::register_worker_dispatcher(dispatch_pattern4_smoke); }
 };
 
 static Pattern4SmokeRegistrar g_pattern4_smoke_registrar;

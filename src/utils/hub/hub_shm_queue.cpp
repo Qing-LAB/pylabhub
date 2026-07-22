@@ -36,10 +36,10 @@ struct ShmQueueImpl
 
     // Current acquired handles (valid between acquire and release/commit/discard):
     std::unique_ptr<SlotConsumeHandle> read_handle;
-    std::unique_ptr<SlotWriteHandle>   write_handle;
+    std::unique_ptr<SlotWriteHandle> write_handle;
 
-    size_t      item_sz{0};
-    size_t      fz_sz{0};
+    size_t item_sz{0};
+    size_t fz_sz{0};
     std::string chan_name;
 
     // Write-side checksum flags.
@@ -61,43 +61,43 @@ struct ShmQueueImpl
     // Stored at factory time so start() can do the actual SHM attach /
     // segment creation using the HEP-CORE-0041 capability-transport
     // borrowed fd populated via set_shm_capability_fd().
-    bool        mode_is_reader{false};       ///< true: reader; false: writer
+    bool mode_is_reader{false}; ///< true: reader; false: writer
 
     // HEP-CORE-0041 capability-transport path.  Borrowed fd from
     // IShmCapabilityProducer (writer side) or received via SCM_RIGHTS
     // (reader side); DataBlock fd-source factories dup internally so
     // ShmQueue does NOT own the fd.
-    bool        has_capability_fd{false};
-    int         pending_capability_fd{-1};
+    bool has_capability_fd{false};
+    int pending_capability_fd{-1};
 
     // Reader-side deferred params.
-    std::string                       pending_shm_name;
-    std::vector<SchemaFieldDesc>      pending_expected_slot_schema;
-    std::string                       pending_expected_packing;
-    std::string                       pending_consumer_uid;
-    std::string                       pending_consumer_name;
+    std::string pending_shm_name;
+    std::vector<SchemaFieldDesc> pending_expected_slot_schema;
+    std::string pending_expected_packing;
+    std::string pending_consumer_uid;
+    std::string pending_consumer_name;
 
     // Writer-side deferred params.  Big — but the alternative (separate
     // Impl per mode) would require dispatching in every method.  Kept
     // here so the queue object is mode-agnostic at the C++ type level.
-    std::vector<SchemaFieldDesc>      pending_slot_schema;
-    std::string                       pending_slot_packing;
-    std::vector<SchemaFieldDesc>      pending_fz_schema;
-    std::string                       pending_fz_packing;
-    uint32_t                          pending_ring_buffer_capacity{0};
-    DataBlockPageSize                 pending_page_size{DataBlockPageSize::Size4K};
-    DataBlockPolicy                   pending_policy{DataBlockPolicy::RingBuffer};
-    ConsumerSyncPolicy                pending_sync_policy{ConsumerSyncPolicy::Latest_only};
-    ChecksumPolicy                    pending_checksum_policy{ChecksumPolicy::None};
-    std::string                       pending_hub_uid;
-    std::string                       pending_hub_name;
-    std::string                       pending_producer_uid;
-    std::string                       pending_producer_name;
+    std::vector<SchemaFieldDesc> pending_slot_schema;
+    std::string pending_slot_packing;
+    std::vector<SchemaFieldDesc> pending_fz_schema;
+    std::string pending_fz_packing;
+    uint32_t pending_ring_buffer_capacity{0};
+    DataBlockPageSize pending_page_size{DataBlockPageSize::Size4K};
+    DataBlockPolicy pending_policy{DataBlockPolicy::RingBuffer};
+    ConsumerSyncPolicy pending_sync_policy{ConsumerSyncPolicy::Latest_only};
+    ChecksumPolicy pending_checksum_policy{ChecksumPolicy::None};
+    std::string pending_hub_uid;
+    std::string pending_hub_name;
+    std::string pending_producer_uid;
+    std::string pending_producer_name;
     // SchemaInfo lives in the caller's memory for the role host's lifetime;
     // we hold raw pointers and rely on caller-managed lifetime extension to
     // start().  In practice the role host owns these throughout startup.
-    const schema::SchemaInfo *        pending_slot_schema_info{nullptr};
-    const schema::SchemaInfo *        pending_fz_schema_info{nullptr};
+    const schema::SchemaInfo *pending_slot_schema_info{nullptr};
+    const schema::SchemaInfo *pending_fz_schema_info{nullptr};
 };
 
 // HEP-CORE-0041 1i-cleanup S3c (#275) — legacy secret-based factories
@@ -115,26 +115,15 @@ struct ShmQueueImpl
 // Configured by calling set_shm_capability_fd(fd) once the L1
 // IShmCapabilityProducer has the memfd ready, then start().
 
-std::unique_ptr<ShmQueue>
-ShmQueue::create_writer_standby(const std::string &channel_name,
-                                const std::vector<SchemaFieldDesc> &slot_schema,
-                                const std::string &slot_packing,
-                                const std::vector<SchemaFieldDesc> &fz_schema,
-                                const std::string &fz_packing,
-                                uint32_t ring_buffer_capacity,
-                                DataBlockPageSize page_size,
-                                DataBlockPolicy policy,
-                                ConsumerSyncPolicy sync_policy,
-                                ChecksumPolicy checksum_policy,
-                                bool checksum_slot,
-                                bool checksum_fz,
-                                bool always_clear_slot,
-                                const std::string &hub_uid,
-                                const std::string &hub_name,
-                                const schema::SchemaInfo *slot_schema_info,
-                                const schema::SchemaInfo *fz_schema_info,
-                                const std::string &producer_uid,
-                                const std::string &producer_name)
+std::unique_ptr<ShmQueue> ShmQueue::create_writer_standby(
+    const std::string &channel_name, const std::vector<SchemaFieldDesc> &slot_schema,
+    const std::string &slot_packing, const std::vector<SchemaFieldDesc> &fz_schema,
+    const std::string &fz_packing, uint32_t ring_buffer_capacity, DataBlockPageSize page_size,
+    DataBlockPolicy policy, ConsumerSyncPolicy sync_policy, ChecksumPolicy checksum_policy,
+    bool checksum_slot, bool checksum_fz, bool always_clear_slot, const std::string &hub_uid,
+    const std::string &hub_name, const schema::SchemaInfo *slot_schema_info,
+    const schema::SchemaInfo *fz_schema_info, const std::string &producer_uid,
+    const std::string &producer_name)
 {
     if (slot_schema.empty())
     {
@@ -156,29 +145,29 @@ ShmQueue::create_writer_standby(const std::string &channel_name,
         fz_size = align_to_physical_page(raw_fz_size);
     }
 
-    auto impl                     = std::make_unique<ShmQueueImpl>();
-    impl->mode_is_reader          = false;
-    impl->item_sz                 = item_size;
-    impl->fz_sz                   = fz_size;
-    impl->chan_name               = channel_name;
-    impl->checksum_slot           = checksum_slot;
-    impl->checksum_fz             = checksum_fz;
-    impl->always_clear_slot       = always_clear_slot;
-    impl->pending_slot_schema     = slot_schema;
-    impl->pending_slot_packing    = slot_packing;
-    impl->pending_fz_schema       = fz_schema;
-    impl->pending_fz_packing      = fz_packing;
+    auto impl = std::make_unique<ShmQueueImpl>();
+    impl->mode_is_reader = false;
+    impl->item_sz = item_size;
+    impl->fz_sz = fz_size;
+    impl->chan_name = channel_name;
+    impl->checksum_slot = checksum_slot;
+    impl->checksum_fz = checksum_fz;
+    impl->always_clear_slot = always_clear_slot;
+    impl->pending_slot_schema = slot_schema;
+    impl->pending_slot_packing = slot_packing;
+    impl->pending_fz_schema = fz_schema;
+    impl->pending_fz_packing = fz_packing;
     impl->pending_ring_buffer_capacity = ring_buffer_capacity;
-    impl->pending_page_size       = page_size;
-    impl->pending_policy          = policy;
-    impl->pending_sync_policy     = sync_policy;
+    impl->pending_page_size = page_size;
+    impl->pending_policy = policy;
+    impl->pending_sync_policy = sync_policy;
     impl->pending_checksum_policy = checksum_policy;
-    impl->pending_hub_uid         = hub_uid;
-    impl->pending_hub_name        = hub_name;
-    impl->pending_producer_uid    = producer_uid;
-    impl->pending_producer_name   = producer_name;
+    impl->pending_hub_uid = hub_uid;
+    impl->pending_hub_name = hub_name;
+    impl->pending_producer_uid = producer_uid;
+    impl->pending_producer_name = producer_name;
     impl->pending_slot_schema_info = slot_schema_info;
-    impl->pending_fz_schema_info  = fz_schema_info;
+    impl->pending_fz_schema_info = fz_schema_info;
     return std::unique_ptr<ShmQueue>(new ShmQueue(std::move(impl)));
 }
 
@@ -186,15 +175,10 @@ ShmQueue::create_writer_standby(const std::string &channel_name,
 // create_reader_standby — HEP-CORE-0041 capability-transport Standby factory
 // ============================================================================
 
-std::unique_ptr<ShmQueue>
-ShmQueue::create_reader_standby(const std::string &shm_name,
-                                const std::vector<SchemaFieldDesc> &expected_slot_schema,
-                                const std::string &expected_packing,
-                                const std::string &channel_name,
-                                bool verify_slot,
-                                bool verify_fz,
-                                const std::string &consumer_uid,
-                                const std::string &consumer_name)
+std::unique_ptr<ShmQueue> ShmQueue::create_reader_standby(
+    const std::string &shm_name, const std::vector<SchemaFieldDesc> &expected_slot_schema,
+    const std::string &expected_packing, const std::string &channel_name, bool verify_slot,
+    bool verify_fz, const std::string &consumer_uid, const std::string &consumer_name)
 {
     size_t item_size = 0;
     if (!expected_slot_schema.empty())
@@ -203,17 +187,17 @@ ShmQueue::create_reader_standby(const std::string &shm_name,
         item_size = sz;
     }
 
-    auto impl                          = std::make_unique<ShmQueueImpl>();
-    impl->mode_is_reader               = true;
-    impl->item_sz                      = item_size;
-    impl->chan_name                    = channel_name;
-    impl->verify_slot                  = verify_slot;
-    impl->verify_fz                    = verify_fz;
-    impl->pending_shm_name             = shm_name;
+    auto impl = std::make_unique<ShmQueueImpl>();
+    impl->mode_is_reader = true;
+    impl->item_sz = item_size;
+    impl->chan_name = channel_name;
+    impl->verify_slot = verify_slot;
+    impl->verify_fz = verify_fz;
+    impl->pending_shm_name = shm_name;
     impl->pending_expected_slot_schema = expected_slot_schema;
-    impl->pending_expected_packing     = expected_packing;
-    impl->pending_consumer_uid         = consumer_uid;
-    impl->pending_consumer_name        = consumer_name;
+    impl->pending_expected_packing = expected_packing;
+    impl->pending_consumer_uid = consumer_uid;
+    impl->pending_consumer_name = consumer_name;
     return std::unique_ptr<ShmQueue>(new ShmQueue(std::move(impl)));
 }
 
@@ -243,49 +227,40 @@ ShmQueue::create_reader_standby(const std::string &shm_name,
 // fan-out SHM with distinct handshake semantics) has a natural
 // insertion point.
 
-std::unique_ptr<ShmQueue>
-ShmQueue::create_reader(pylabhub::hub::ChannelTopology topology,
-                        RxCreateOptions                opts)
+std::unique_ptr<ShmQueue> ShmQueue::create_reader(pylabhub::hub::ChannelTopology topology,
+                                                  RxCreateOptions opts)
 {
     using pylabhub::hub::ChannelTopology;
     if (topology == ChannelTopology::FanIn)
     {
-        LOGGER_ERROR(
-            "[hub::ShmQueue::create_reader] fan-in requires ZMQ "
-            "transport (SHM is host-local + single-producer by "
-            "physical constraint of the shared DataBlock; "
-            "HEP-CORE-0017 §3.3.0 gate 1).  Channel '{}' refused.",
-            opts.channel_name);
+        LOGGER_ERROR("[hub::ShmQueue::create_reader] fan-in requires ZMQ "
+                     "transport (SHM is host-local + single-producer by "
+                     "physical constraint of the shared DataBlock; "
+                     "HEP-CORE-0017 §3.3.0 gate 1).  Channel '{}' refused.",
+                     opts.channel_name);
         return nullptr;
     }
     // FanOut + OneToOne: both dispatch through the same standby
     // factory.  The topology parameter is gate-only at this layer;
     // the fan-out N-consumer multiplication happens at L2 accept
     // loop, not here.
-    return create_reader_standby(
-        opts.channel_name,           // diagnostic shm_name label
-        opts.slot_schema,
-        opts.slot_packing,
-        opts.channel_name,
-        opts.verify_slot,
-        opts.verify_fz,
-        opts.consumer_uid,
-        opts.consumer_name);
+    return create_reader_standby(opts.channel_name, // diagnostic shm_name label
+                                 opts.slot_schema, opts.slot_packing, opts.channel_name,
+                                 opts.verify_slot, opts.verify_fz, opts.consumer_uid,
+                                 opts.consumer_name);
 }
 
-std::unique_ptr<ShmQueue>
-ShmQueue::create_writer(pylabhub::hub::ChannelTopology topology,
-                        TxCreateOptions                opts)
+std::unique_ptr<ShmQueue> ShmQueue::create_writer(pylabhub::hub::ChannelTopology topology,
+                                                  TxCreateOptions opts)
 {
     using pylabhub::hub::ChannelTopology;
     if (topology == ChannelTopology::FanIn)
     {
-        LOGGER_ERROR(
-            "[hub::ShmQueue::create_writer] fan-in requires ZMQ "
-            "transport (SHM is host-local + single-producer by "
-            "physical constraint of the shared DataBlock; "
-            "HEP-CORE-0017 §3.3.0 gate 1).  Channel '{}' refused.",
-            opts.channel_name);
+        LOGGER_ERROR("[hub::ShmQueue::create_writer] fan-in requires ZMQ "
+                     "transport (SHM is host-local + single-producer by "
+                     "physical constraint of the shared DataBlock; "
+                     "HEP-CORE-0017 §3.3.0 gate 1).  Channel '{}' refused.",
+                     opts.channel_name);
         return nullptr;
     }
     // FanOut + OneToOne: same producer-side construction (one
@@ -293,22 +268,10 @@ ShmQueue::create_writer(pylabhub::hub::ChannelTopology topology,
     // fanout under FanOut emerges from the accept loop, not from a
     // different queue shape.
     return create_writer_standby(
-        opts.channel_name,
-        opts.slot_schema, opts.slot_packing,
-        opts.fz_schema,   opts.fz_packing,
-        opts.ring_buffer_capacity,
-        opts.page_size,
-        opts.policy,
-        opts.sync_policy,
-        opts.checksum_policy,
-        opts.checksum_slot,
-        opts.checksum_fz,
-        opts.always_clear_slot,
-        opts.hub_uid,
-        opts.hub_name,
-        opts.slot_schema_info,
-        opts.fz_schema_info,
-        opts.producer_uid,
+        opts.channel_name, opts.slot_schema, opts.slot_packing, opts.fz_schema, opts.fz_packing,
+        opts.ring_buffer_capacity, opts.page_size, opts.policy, opts.sync_policy,
+        opts.checksum_policy, opts.checksum_slot, opts.checksum_fz, opts.always_clear_slot,
+        opts.hub_uid, opts.hub_name, opts.slot_schema_info, opts.fz_schema_info, opts.producer_uid,
         opts.producer_name);
 }
 
@@ -318,7 +281,8 @@ ShmQueue::create_writer(pylabhub::hub::ChannelTopology topology,
 
 bool ShmQueue::set_shm_capability_fd(int fd) noexcept
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (fd < 0)
     {
         LOGGER_WARN("[ShmQueue] set_shm_capability_fd refused: fd<0 "
@@ -337,7 +301,7 @@ bool ShmQueue::set_shm_capability_fd(int fd) noexcept
         return false;
     }
     pImpl->pending_capability_fd = fd;
-    pImpl->has_capability_fd     = true;
+    pImpl->has_capability_fd = true;
     return true;
 }
 
@@ -347,7 +311,8 @@ bool ShmQueue::set_shm_capability_fd(int fd) noexcept
 
 bool ShmQueue::start()
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     // Already Active: idempotent no-op (HEP §6.7 mutator table).
     if (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr)
         return true;
@@ -363,10 +328,10 @@ bool ShmQueue::start()
     // (1i-cleanup S3c #275 deleted the legacy secret-based branch).
     if (pImpl->mode_is_reader)
     {
-        const char *uid  = pImpl->pending_consumer_uid.empty()
-                               ? nullptr : pImpl->pending_consumer_uid.c_str();
-        const char *cnam = pImpl->pending_consumer_name.empty()
-                               ? nullptr : pImpl->pending_consumer_name.c_str();
+        const char *uid =
+            pImpl->pending_consumer_uid.empty() ? nullptr : pImpl->pending_consumer_uid.c_str();
+        const char *cnam =
+            pImpl->pending_consumer_name.empty() ? nullptr : pImpl->pending_consumer_name.c_str();
         std::unique_ptr<DataBlockConsumer> dbc;
         try
         {
@@ -375,22 +340,20 @@ bool ShmQueue::start()
             // it reads from the received fd.
             dbc = find_datablock_consumer_from_fd_impl(
                 pImpl->chan_name, pImpl->pending_capability_fd,
-                /*expected_config=*/nullptr,
-                pImpl->pending_fz_schema_info,
-                pImpl->pending_slot_schema_info,
-                uid, cnam);
+                /*expected_config=*/nullptr, pImpl->pending_fz_schema_info,
+                pImpl->pending_slot_schema_info, uid, cnam);
         }
         catch (const std::exception &e)
         {
             LOGGER_ERROR("[ShmQueue] start (capability): consumer "
                          "attach failed for channel='{}' fd={}: {}",
-                         pImpl->chan_name,
-                         pImpl->pending_capability_fd, e.what());
+                         pImpl->chan_name, pImpl->pending_capability_fd, e.what());
             return false;
         }
-        if (!dbc) return false;
+        if (!dbc)
+            return false;
         pImpl->fz_sz = dbc->flexible_zone_span().size();
-        pImpl->dbc   = std::move(dbc);
+        pImpl->dbc = std::move(dbc);
         return true;
     }
 
@@ -400,37 +363,35 @@ bool ShmQueue::start()
     // datablock_layout_total_size(config); the fd-source ctor
     // validates fstat size matches.
     DataBlockConfig config;
-    config.logical_unit_size    = pImpl->item_sz;
-    config.flex_zone_size       = pImpl->fz_sz;
+    config.logical_unit_size = pImpl->item_sz;
+    config.flex_zone_size = pImpl->fz_sz;
     config.ring_buffer_capacity = pImpl->pending_ring_buffer_capacity;
-    config.physical_page_size   = pImpl->pending_page_size;
+    config.physical_page_size = pImpl->pending_page_size;
     // shared_secret is irrelevant on the capability path; left at
     // default (0).  Auth is via L2 attach handshake (HEP-0041 §5.5).
-    config.policy               = pImpl->pending_policy;
+    config.policy = pImpl->pending_policy;
     config.consumer_sync_policy = pImpl->pending_sync_policy;
-    config.checksum_policy      = pImpl->pending_checksum_policy;
-    config.hub_uid              = pImpl->pending_hub_uid;
-    config.hub_name             = pImpl->pending_hub_name;
-    config.producer_uid         = pImpl->pending_producer_uid;
-    config.producer_name        = pImpl->pending_producer_name;
+    config.checksum_policy = pImpl->pending_checksum_policy;
+    config.hub_uid = pImpl->pending_hub_uid;
+    config.hub_name = pImpl->pending_hub_name;
+    config.producer_uid = pImpl->pending_producer_uid;
+    config.producer_name = pImpl->pending_producer_name;
     std::unique_ptr<DataBlockProducer> dbp;
     try
     {
         dbp = create_datablock_producer_from_fd_impl(
-            pImpl->chan_name, pImpl->pending_capability_fd,
-            pImpl->pending_policy, config,
-            pImpl->pending_fz_schema_info,
-            pImpl->pending_slot_schema_info);
+            pImpl->chan_name, pImpl->pending_capability_fd, pImpl->pending_policy, config,
+            pImpl->pending_fz_schema_info, pImpl->pending_slot_schema_info);
     }
     catch (const std::exception &e)
     {
         LOGGER_ERROR("[ShmQueue] start (capability): producer create "
                      "failed for channel='{}' fd={}: {}",
-                     pImpl->chan_name,
-                     pImpl->pending_capability_fd, e.what());
+                     pImpl->chan_name, pImpl->pending_capability_fd, e.what());
         return false;
     }
-    if (!dbp) return false;
+    if (!dbp)
+        return false;
     pImpl->dbp = std::move(dbp);
     return true;
 }
@@ -441,7 +402,8 @@ bool ShmQueue::start()
 
 void ShmQueue::stop()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     // Release outstanding handles before tearing down the DataBlock.
     if (pImpl->read_handle && pImpl->dbc.get())
     {
@@ -459,7 +421,7 @@ void ShmQueue::stop()
     // we don't silently restart with stale artifacts.  The fd itself
     // is non-owning (L1 transport owns it), so we only forget our
     // reference; we do not close().
-    pImpl->has_capability_fd     = false;
+    pImpl->has_capability_fd = false;
     pImpl->pending_capability_fd = -1;
 }
 
@@ -467,7 +429,7 @@ void ShmQueue::stop()
 // apply_master_approval — HEP-CORE-0036 §6.7 polymorphic dispatch
 // ============================================================================
 
-bool ShmQueue::apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
+bool ShmQueue::apply_master_approval(const nlohmann::json & /*artifacts*/) noexcept
 {
     // HEP-CORE-0041 1i-cleanup S3c (#275) — the legacy `shm_secret`
     // artifact read retired with `set_shm_secret`.  SHM wires via the
@@ -507,7 +469,7 @@ void ShmQueue::set_checksum_options(bool slot, bool fz) noexcept
     if (pImpl)
     {
         pImpl->checksum_slot = slot;
-        pImpl->checksum_fz   = fz;
+        pImpl->checksum_fz = fz;
     }
 }
 
@@ -526,7 +488,7 @@ void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept
     if (pImpl)
     {
         pImpl->verify_slot = slot;
-        pImpl->verify_fz   = fz;
+        pImpl->verify_fz = fz;
     }
 }
 
@@ -536,7 +498,8 @@ void ShmQueue::set_verify_checksum(bool slot, bool fz) const noexcept
 
 void ShmQueue::set_checksum_policy(ChecksumPolicy policy)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     // Write side: auto-stamp only for Enforced. Manual = caller stamps explicitly.
     pImpl->checksum_slot = (policy == ChecksumPolicy::Enforced);
     // Read side: always verify for Manual and Enforced (catches missing stamps).
@@ -545,32 +508,37 @@ void ShmQueue::set_checksum_policy(ChecksumPolicy policy)
 
 void ShmQueue::set_flexzone_checksum(bool enabled)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->checksum_fz = enabled;
-    pImpl->verify_fz   = enabled;
+    pImpl->verify_fz = enabled;
 }
 
 void ShmQueue::update_checksum()
 {
-    if (!pImpl || !pImpl->write_handle) return;
+    if (!pImpl || !pImpl->write_handle)
+        return;
     (void)pImpl->write_handle->update_checksum_slot();
 }
 
 void ShmQueue::update_flexzone_checksum()
 {
-    if (!pImpl || !pImpl->write_handle) return;
+    if (!pImpl || !pImpl->write_handle)
+        return;
     (void)pImpl->write_handle->update_checksum_flexible_zone();
 }
 
 bool ShmQueue::verify_checksum()
 {
-    if (!pImpl || !pImpl->read_handle) return true;
+    if (!pImpl || !pImpl->read_handle)
+        return true;
     return pImpl->read_handle->verify_checksum_slot();
 }
 
 bool ShmQueue::verify_flexzone_checksum()
 {
-    if (!pImpl || !pImpl->read_handle) return true;
+    if (!pImpl || !pImpl->read_handle)
+        return true;
     return pImpl->read_handle->verify_checksum_flexible_zone();
 }
 
@@ -622,20 +590,19 @@ ShmQueue::~ShmQueue()
     }
 }
 
-ShmQueue::ShmQueue(ShmQueue&&) noexcept            = default;
-ShmQueue& ShmQueue::operator=(ShmQueue&&) noexcept = default;
+ShmQueue::ShmQueue(ShmQueue &&) noexcept = default;
+ShmQueue &ShmQueue::operator=(ShmQueue &&) noexcept = default;
 
 // ============================================================================
 // Reading
 // ============================================================================
 
-const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
+const void *ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
 {
     if (!pImpl || !pImpl->dbc.get())
         return nullptr;
 
-    pImpl->read_handle = pImpl->dbc.get()->acquire_consume_slot(
-        static_cast<int>(timeout.count()));
+    pImpl->read_handle = pImpl->dbc.get()->acquire_consume_slot(static_cast<int>(timeout.count()));
 
     if (!pImpl->read_handle)
         return nullptr;
@@ -647,8 +614,8 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     if (pImpl->verify_slot && !pImpl->read_handle->verify_checksum_slot())
     {
         pImpl->dbc.get()->mutable_metrics().inc_checksum_error();
-        LOGGER_ERROR("[ShmQueue] slot checksum error on slot {} channel '{}'",
-                     pImpl->last_seq, pImpl->chan_name);
+        LOGGER_ERROR("[ShmQueue] slot checksum error on slot {} channel '{}'", pImpl->last_seq,
+                     pImpl->chan_name);
         (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
         pImpl->read_handle.reset();
         return nullptr;
@@ -656,8 +623,8 @@ const void* ShmQueue::read_acquire(std::chrono::milliseconds timeout) noexcept
     if (pImpl->verify_fz && !pImpl->read_handle->verify_checksum_flexible_zone())
     {
         pImpl->dbc.get()->mutable_metrics().inc_checksum_error();
-        LOGGER_ERROR("[ShmQueue] flexzone checksum error on slot {} channel '{}'",
-                     pImpl->last_seq, pImpl->chan_name);
+        LOGGER_ERROR("[ShmQueue] flexzone checksum error on slot {} channel '{}'", pImpl->last_seq,
+                     pImpl->chan_name);
         (void)pImpl->dbc.get()->release_consume_slot(*pImpl->read_handle);
         pImpl->read_handle.reset();
         return nullptr;
@@ -678,19 +645,23 @@ void ShmQueue::read_release() noexcept
 uint32_t ShmQueue::spinlock_count() const noexcept
 {
     // Spinlocks live in the DataBlock header; reachable via either side handle.
-    if (pImpl && pImpl->dbp) return pImpl->dbp->spinlock_count();
-    if (pImpl && pImpl->dbc) return pImpl->dbc->spinlock_count();
+    if (pImpl && pImpl->dbp)
+        return pImpl->dbp->spinlock_count();
+    if (pImpl && pImpl->dbc)
+        return pImpl->dbc->spinlock_count();
     return 0;
 }
 
 SharedSpinLock ShmQueue::get_spinlock(size_t index)
 {
-    if (pImpl && pImpl->dbp) return pImpl->dbp->get_spinlock(index);
-    if (pImpl && pImpl->dbc) return pImpl->dbc->get_spinlock(index);
+    if (pImpl && pImpl->dbp)
+        return pImpl->dbp->get_spinlock(index);
+    if (pImpl && pImpl->dbc)
+        return pImpl->dbc->get_spinlock(index);
     throw std::runtime_error("ShmQueue::get_spinlock: no DataBlock backing");
 }
 
-void* ShmQueue::flexzone() noexcept
+void *ShmQueue::flexzone() noexcept
 {
     // Single authoritative guard: fz_sz is the flexzone size stored at
     // construction. Zero → no flexzone configured on this channel (this is
@@ -726,19 +697,19 @@ uint64_t ShmQueue::last_seq() const noexcept
 // Writing
 // ============================================================================
 
-void* ShmQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
+void *ShmQueue::write_acquire(std::chrono::milliseconds timeout) noexcept
 {
     if (!pImpl || !pImpl->dbp.get())
         return nullptr;
 
-    pImpl->write_handle = pImpl->dbp.get()->acquire_write_slot(
-        static_cast<int>(timeout.count()));
+    pImpl->write_handle = pImpl->dbp.get()->acquire_write_slot(static_cast<int>(timeout.count()));
 
     if (!pImpl->write_handle)
         return nullptr;
 
     std::span<std::byte> buf = pImpl->write_handle->buffer_span();
-    if (buf.empty()) return nullptr;
+    if (buf.empty())
+        return nullptr;
     if (pImpl->always_clear_slot)
         std::fill(buf.begin(), buf.end(), std::byte{0});
     return buf.data();
@@ -803,12 +774,12 @@ size_t ShmQueue::capacity() const
     if (!pImpl)
         throw std::runtime_error("ShmQueue::capacity(): not connected");
     DataBlockMetrics m{};
-    if (const DataBlockConsumer* c = pImpl->dbc.get())
+    if (const DataBlockConsumer *c = pImpl->dbc.get())
     {
         if (c->get_metrics(m) == 0)
             return static_cast<size_t>(m.slot_count);
     }
-    else if (const DataBlockProducer* p = pImpl->dbp.get())
+    else if (const DataBlockProducer *p = pImpl->dbp.get())
     {
         if (p->get_metrics(m) == 0)
             return static_cast<size_t>(m.slot_count);
@@ -833,7 +804,8 @@ std::string ShmQueue::policy_info() const
 
 QueueMetrics ShmQueue::metrics() const noexcept
 {
-    if (!pImpl) return {};
+    if (!pImpl)
+        return {};
 
     // ShmQueue wraps exactly one DataBlock handle — either consumer (read mode)
     // or producer (write mode), never both. The metrics reflect this handle's
@@ -842,28 +814,28 @@ QueueMetrics ShmQueue::metrics() const noexcept
 
     QueueMetrics m;
 
-    if (const DataBlockConsumer* c = pImpl->dbc.get())
+    if (const DataBlockConsumer *c = pImpl->dbc.get())
     {
         const auto &cm = c->metrics();
-        m.last_slot_wait_us    = cm.last_slot_wait_us_val();
-        m.last_iteration_us    = cm.last_iteration_us_val();
-        m.max_iteration_us     = cm.max_iteration_us_val();
-        m.context_elapsed_us   = cm.context_elapsed_us_val();
-        m.last_slot_exec_us    = cm.last_slot_exec_us_val();
+        m.last_slot_wait_us = cm.last_slot_wait_us_val();
+        m.last_iteration_us = cm.last_iteration_us_val();
+        m.max_iteration_us = cm.max_iteration_us_val();
+        m.context_elapsed_us = cm.context_elapsed_us_val();
+        m.last_slot_exec_us = cm.last_slot_exec_us_val();
         // configured_period_us reported at loop level (LoopMetricsSnapshot), not queue level.
         // recv_overflow_count stays 0 for SHM (no receive buffer overflow possible).
         m.checksum_error_count = cm.checksum_error_count_val();
         return m;
     }
 
-    if (const DataBlockProducer* p = pImpl->dbp.get())
+    if (const DataBlockProducer *p = pImpl->dbp.get())
     {
         const auto &cm = p->metrics();
-        m.last_slot_wait_us    = cm.last_slot_wait_us_val();
-        m.last_iteration_us    = cm.last_iteration_us_val();
-        m.max_iteration_us     = cm.max_iteration_us_val();
-        m.context_elapsed_us   = cm.context_elapsed_us_val();
-        m.last_slot_exec_us    = cm.last_slot_exec_us_val();
+        m.last_slot_wait_us = cm.last_slot_wait_us_val();
+        m.last_iteration_us = cm.last_iteration_us_val();
+        m.max_iteration_us = cm.max_iteration_us_val();
+        m.context_elapsed_us = cm.context_elapsed_us_val();
+        m.last_slot_exec_us = cm.last_slot_exec_us_val();
         // configured_period_us reported at loop level (LoopMetricsSnapshot), not queue level.
         return m;
     }
@@ -873,21 +845,23 @@ QueueMetrics ShmQueue::metrics() const noexcept
 
 void ShmQueue::reset_metrics()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     // Reset both sides unconditionally — safe on null (returns immediately).
-    if (DataBlockConsumer* c = pImpl->dbc.get())
+    if (DataBlockConsumer *c = pImpl->dbc.get())
         c->clear_metrics();
-    if (DataBlockProducer* p = pImpl->dbp.get())
+    if (DataBlockProducer *p = pImpl->dbp.get())
         p->clear_metrics();
 }
 
 void ShmQueue::set_configured_period(uint64_t period_us)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     // Write directly to ContextMetrics via DataBlock mutable_metrics() accessor.
-    if (DataBlockConsumer* c = pImpl->dbc.get())
+    if (DataBlockConsumer *c = pImpl->dbc.get())
         c->mutable_metrics().set_configured_period(period_us);
-    else if (DataBlockProducer* p = pImpl->dbp.get())
+    else if (DataBlockProducer *p = pImpl->dbp.get())
         p->mutable_metrics().set_configured_period(period_us);
 }
 

@@ -55,9 +55,8 @@ namespace pylabhub::tests::helper
  * @endcode
  */
 template <typename Pred>
-bool poll_until(Pred pred,
-                std::chrono::milliseconds timeout  = std::chrono::seconds{5},
-                std::chrono::milliseconds poll_ms  = std::chrono::milliseconds{10})
+bool poll_until(Pred pred, std::chrono::milliseconds timeout = std::chrono::seconds{5},
+                std::chrono::milliseconds poll_ms = std::chrono::milliseconds{10})
 {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (!pred())

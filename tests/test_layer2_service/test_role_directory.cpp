@@ -23,10 +23,9 @@ using pylabhub::utils::RoleDirectory;
 static fs::path unique_temp_dir(const char *tag)
 {
     static std::atomic<int> counter{0};
-    const int               id = counter.fetch_add(1);
-    fs::path                d  = fs::temp_directory_path() /
-                                 ("plh_roletest_" + std::string(tag) + "_" +
-                                  std::to_string(id));
+    const int id = counter.fetch_add(1);
+    fs::path d =
+        fs::temp_directory_path() / ("plh_roletest_" + std::string(tag) + "_" + std::to_string(id));
     fs::remove_all(d);
     return d;
 }
@@ -78,7 +77,10 @@ TEST(RoleDirectoryTest, FromConfigFile_ParentDir)
     const auto tmp = unique_temp_dir("fromcfg");
     fs::create_directories(tmp);
     const auto cfg = tmp / "producer.json";
-    { std::ofstream f(cfg); f << "{}"; }
+    {
+        std::ofstream f(cfg);
+        f << "{}";
+    }
 
     const auto rd = RoleDirectory::from_config_file(cfg);
     EXPECT_EQ(rd.base(), RoleDirectory::open(tmp).base());
@@ -90,8 +92,8 @@ TEST(RoleDirectoryTest, Create_MakesStandardLayout)
 
     const auto rd = RoleDirectory::create(tmp);
 
-    EXPECT_TRUE(fs::is_directory(rd.logs()))  << "logs/ missing";
-    EXPECT_TRUE(fs::is_directory(rd.run()))   << "run/ missing";
+    EXPECT_TRUE(fs::is_directory(rd.logs())) << "logs/ missing";
+    EXPECT_TRUE(fs::is_directory(rd.run())) << "run/ missing";
     EXPECT_TRUE(fs::is_directory(rd.vault())) << "vault/ missing";
     EXPECT_TRUE(fs::is_directory(tmp / "script" / "python")) << "script/python/ missing";
 
@@ -131,9 +133,9 @@ TEST(RoleDirectoryTest, PathAccessors_RelativeToBase)
     fs::create_directories(tmp);
 
     const auto rd = RoleDirectory::open(tmp);
-    EXPECT_EQ(rd.logs(),   rd.base() / "logs");
-    EXPECT_EQ(rd.run(),    rd.base() / "run");
-    EXPECT_EQ(rd.vault(),  rd.base() / "vault");
+    EXPECT_EQ(rd.logs(), rd.base() / "logs");
+    EXPECT_EQ(rd.run(), rd.base() / "run");
+    EXPECT_EQ(rd.vault(), rd.base() / "vault");
     EXPECT_EQ(rd.config_file("producer.json"), rd.base() / "producer.json");
     EXPECT_EQ(rd.subdir("custom"), rd.base() / "custom");
 }
@@ -145,8 +147,8 @@ TEST(RoleDirectoryTest, ScriptEntry_RelativePath)
     const auto tmp = unique_temp_dir("se_rel");
     fs::create_directories(tmp);
 
-    const auto rd  = RoleDirectory::open(tmp);
-    const auto ep  = rd.script_entry(".", "python");
+    const auto rd = RoleDirectory::open(tmp);
+    const auto ep = rd.script_entry(".", "python");
 
     // Should be: <base>/./script/python/__init__.py → canonical
     EXPECT_EQ(ep.filename().string(), "__init__.py");
@@ -156,7 +158,7 @@ TEST(RoleDirectoryTest, ScriptEntry_RelativePath)
 
 TEST(RoleDirectoryTest, ScriptEntry_AbsolutePath)
 {
-    const auto base     = unique_temp_dir("se_abs_base");
+    const auto base = unique_temp_dir("se_abs_base");
     const auto ext_path = unique_temp_dir("se_abs_ext");
     fs::create_directories(base);
     fs::create_directories(ext_path);
@@ -198,7 +200,7 @@ TEST(RoleDirectoryTest, ResolveHubDir_Relative_ResolvesToBase)
     const auto tmp = unique_temp_dir("rhd_rel");
     fs::create_directories(tmp / "hub");
 
-    const auto rd  = RoleDirectory::open(tmp);
+    const auto rd = RoleDirectory::open(tmp);
     const auto res = rd.resolve_hub_dir("hub");
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(*res, rd.base() / "hub");
@@ -206,12 +208,12 @@ TEST(RoleDirectoryTest, ResolveHubDir_Relative_ResolvesToBase)
 
 TEST(RoleDirectoryTest, ResolveHubDir_Absolute_ReturnedDirectly)
 {
-    const auto base    = unique_temp_dir("rhd_abs_base");
+    const auto base = unique_temp_dir("rhd_abs_base");
     const auto hub_dir = unique_temp_dir("rhd_abs_hub");
     fs::create_directories(base);
     fs::create_directories(hub_dir);
 
-    const auto rd  = RoleDirectory::open(base);
+    const auto rd = RoleDirectory::open(base);
     const auto res = rd.resolve_hub_dir(hub_dir.string());
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(*res, RoleDirectory::open(hub_dir).base());
@@ -247,7 +249,7 @@ TEST(RoleDirectoryTest, HubBrokerEndpoint_NeitherKey_Throws)
     fs::create_directories(tmp);
     {
         std::ofstream f(tmp / "hub.json");
-        f << R"({"hub":{"name":"x"}})";  // no broker_endpoint anywhere
+        f << R"({"hub":{"name":"x"}})"; // no broker_endpoint anywhere
     }
     // Pin both type AND message substring so a regression that throws
     // a different runtime_error (e.g. the parse-failure path or the
@@ -257,11 +259,18 @@ TEST(RoleDirectoryTest, HubBrokerEndpoint_NeitherKey_Throws)
     // message substring is what discriminates the path.
     bool threw = false;
     std::string msg;
-    try { (void)RoleDirectory::hub_broker_endpoint(tmp); }
-    catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    try
+    {
+        (void)RoleDirectory::hub_broker_endpoint(tmp);
+    }
+    catch (const std::runtime_error &e)
+    {
+        threw = true;
+        msg = e.what();
+    }
     EXPECT_TRUE(threw);
     EXPECT_NE(msg.find("neither 'network.broker_endpoint' nor "
-                        "'hub.broker_endpoint'"),
+                       "'hub.broker_endpoint'"),
               std::string::npos)
         << "wrong runtime_error path; what(): " << msg;
     fs::remove_all(tmp);
@@ -274,8 +283,15 @@ TEST(RoleDirectoryTest, HubBrokerEndpoint_MissingJson_Throws)
 
     bool threw = false;
     std::string msg;
-    try { (void)RoleDirectory::hub_broker_endpoint(tmp); }
-    catch (const std::runtime_error &e) { threw = true; msg = e.what(); }
+    try
+    {
+        (void)RoleDirectory::hub_broker_endpoint(tmp);
+    }
+    catch (const std::runtime_error &e)
+    {
+        threw = true;
+        msg = e.what();
+    }
     EXPECT_TRUE(threw);
     EXPECT_NE(msg.find("cannot open hub.json"), std::string::npos)
         << "wrong runtime_error path; what(): " << msg;
@@ -305,8 +321,7 @@ TEST(RoleDirectoryTest, HubBrokerPubkey_MissingFile_ReturnsEmpty)
 TEST(RoleDirectoryTest, HubPubkeyPath_ConcatenatesFilename)
 {
     const auto hub_dir = fs::path("/some/hub");
-    EXPECT_EQ(RoleDirectory::hub_pubkey_path(hub_dir),
-              fs::path("/some/hub/hub.pubkey"));
+    EXPECT_EQ(RoleDirectory::hub_pubkey_path(hub_dir), fs::path("/some/hub/hub.pubkey"));
 }
 
 // ── pylabhub::cli generic helpers ──────────────────────────────────────────────
@@ -320,8 +335,7 @@ TEST(CliHelpersTest, IsStdinTty_Runs)
 
 TEST(CliHelpersTest, ResolveInitName_CliNameProvided)
 {
-    const auto result =
-        pylabhub::cli::resolve_init_name("MyRole", "Enter name: ");
+    const auto result = pylabhub::cli::resolve_init_name("MyRole", "Enter name: ");
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(*result, "MyRole");
 }
@@ -364,8 +378,7 @@ TEST(CliHelpersTest, GetNewPassword_EnvVarSet_ReturnsEnvValueWithoutConfirm)
 {
     const char *kVarName = "PYLABHUB_TEST_NEWPW_VAR_A";
     ::setenv(kVarName, "new-secret", /*overwrite=*/1);
-    const auto result = pylabhub::cli::get_new_password(
-        "test", kVarName, "New: ", "Confirm: ");
+    const auto result = pylabhub::cli::get_new_password("test", kVarName, "New: ", "Confirm: ");
     ::unsetenv(kVarName);
 
     ASSERT_TRUE(result.has_value());
@@ -379,16 +392,16 @@ TEST(CliHelpersTest, GetNewPassword_EnvVarUnset_NonInteractive_ReturnsNullopt)
 
     const char *kVarName = "PYLABHUB_TEST_NEWPW_VAR_B";
     ::unsetenv(kVarName);
-    const auto result = pylabhub::cli::get_new_password(
-        "test", kVarName, "New: ", "Confirm: ");
+    const auto result = pylabhub::cli::get_new_password("test", kVarName, "New: ", "Confirm: ");
     EXPECT_FALSE(result.has_value());
 }
 
 TEST(RoleCliTest, ParseRoleArgs_InitOnly)
 {
     const char *argv[] = {"prog", "--init", "/tmp/roletest", "--name", "Test", nullptr};
-    int         argc   = 5;
-    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    int argc = 5;
+    const auto parsed =
+        pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
     ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
     const auto &args = parsed.args;
 
@@ -400,8 +413,9 @@ TEST(RoleCliTest, ParseRoleArgs_InitOnly)
 TEST(RoleCliTest, ParseRoleArgs_ConfigPath)
 {
     const char *argv[] = {"prog", "--config", "/tmp/foo.json", nullptr};
-    int         argc   = 3;
-    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    int argc = 3;
+    const auto parsed =
+        pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
     ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
     const auto &args = parsed.args;
 
@@ -412,8 +426,9 @@ TEST(RoleCliTest, ParseRoleArgs_ConfigPath)
 TEST(RoleCliTest, ParseRoleArgs_ValidateFlag)
 {
     const char *argv[] = {"prog", "--config", "/tmp/foo.json", "--validate", nullptr};
-    int         argc   = 4;
-    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    int argc = 4;
+    const auto parsed =
+        pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
     ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
     const auto &args = parsed.args;
 
@@ -423,8 +438,9 @@ TEST(RoleCliTest, ParseRoleArgs_ValidateFlag)
 TEST(RoleCliTest, ParseRoleArgs_KeygenFlag)
 {
     const char *argv[] = {"prog", "--config", "/tmp/foo.json", "--keygen", nullptr};
-    int         argc   = 4;
-    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    int argc = 4;
+    const auto parsed =
+        pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
     ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
     const auto &args = parsed.args;
 
@@ -434,8 +450,9 @@ TEST(RoleCliTest, ParseRoleArgs_KeygenFlag)
 TEST(RoleCliTest, ParseRoleArgs_PositionalDir)
 {
     const char *argv[] = {"prog", "/tmp/myrole", nullptr};
-    int         argc   = 2;
-    const auto parsed = pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
+    int argc = 2;
+    const auto parsed =
+        pylabhub::role_cli::parse_role_args(argc, const_cast<char **>(argv), "producer");
     ASSERT_EQ(parsed.exit_code, -1) << "unexpected exit_code";
     const auto &args = parsed.args;
 
@@ -454,8 +471,8 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_NoWarnWhenEmpty)
     testing::internal::CaptureStderr();
     RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "");
     const std::string captured = testing::internal::GetCapturedStderr();
-    EXPECT_TRUE(captured.empty())
-        << "empty keyfile must not produce any stderr output; got: " << captured;
+    EXPECT_TRUE(captured.empty()) << "empty keyfile must not produce any stderr output; got: "
+                                  << captured;
     fs::remove_all(tmp);
 }
 
@@ -483,7 +500,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
 {
     // Keyfile outside role dir: warning must be suppressed (silent return).
     const auto role_tmp = unique_temp_dir("wkf_out_role");
-    const auto sys_tmp  = unique_temp_dir("wkf_out_sys");
+    const auto sys_tmp = unique_temp_dir("wkf_out_sys");
     fs::create_directories(role_tmp);
     fs::create_directories(sys_tmp);
 
@@ -493,8 +510,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_OutsideRoleDir_NoWarn)
     testing::internal::CaptureStderr();
     RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), kf);
     const std::string captured = testing::internal::GetCapturedStderr();
-    EXPECT_TRUE(captured.empty())
-        << "keyfile outside role dir must not warn; got: " << captured;
+    EXPECT_TRUE(captured.empty()) << "keyfile outside role dir must not warn; got: " << captured;
     fs::remove_all(role_tmp);
     fs::remove_all(sys_tmp);
 }
@@ -512,8 +528,7 @@ TEST(RoleDirectoryTest, WarnIfKeyfileInRoleDir_RelativePath_Resolved)
     RoleDirectory::warn_if_keyfile_in_role_dir(rd.base(), "vault/prod.test.vault");
     const std::string captured = testing::internal::GetCapturedStderr();
     EXPECT_NE(captured.find("PYLABHUB SECURITY WARNING"), std::string::npos)
-        << "relative keyfile resolved inside role dir must warn; stderr: "
-        << captured;
+        << "relative keyfile resolved inside role dir must warn; stderr: " << captured;
     fs::remove_all(tmp);
 }
 
@@ -548,15 +563,15 @@ TEST(RoleDirectoryTest, InitDirectory_CreatesDirectoryAndConfig)
         .config_filename("test_role.json")
         .uid_prefix("TEST")
         .role_label("TestRole")
-        .config_template([](const std::string &uid, const std::string &name)
-            -> nlohmann::json
-        {
-            nlohmann::json j;
-            j["test"]["uid"]  = uid;
-            j["test"]["name"] = name;
-            j["value"]        = 42;
-            return j;
-        });
+        .config_template(
+            [](const std::string &uid, const std::string &name) -> nlohmann::json
+            {
+                nlohmann::json j;
+                j["test"]["uid"] = uid;
+                j["test"]["name"] = name;
+                j["value"] = 42;
+                return j;
+            });
 
     EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_basic", "MyTestRole"), 0);
 
@@ -587,7 +602,7 @@ TEST(RoleDirectoryTest, InitDirectory_ExistingConfig_ReturnsError)
         .uid_prefix("TEST")
         .role_label("TestRole")
         .config_template([](const std::string &, const std::string &)
-        { return nlohmann::json{{"x", 1}}; });
+                         { return nlohmann::json{{"x", 1}}; });
 
     // Create directory and config file first.
     fs::create_directories(tmp);
@@ -610,18 +625,17 @@ TEST(RoleDirectoryTest, InitDirectory_OnInitCallbackInvoked)
         .uid_prefix("CB")
         .role_label("CallbackRole")
         .config_template([](const std::string &uid, const std::string &name)
-        {
-            return nlohmann::json{{"uid", uid}, {"name", name}};
-        })
-        .on_init([&](const RoleDirectory &rd, const std::string &name)
-        {
-            callback_invoked = true;
-            callback_name = name;
-            // Write a custom file using RoleDirectory path API.
-            const auto custom_file = rd.subdir("data") / "readme.txt";
-            fs::create_directories(custom_file.parent_path());
-            std::ofstream(custom_file) << "Created by on_init\n";
-        });
+                         { return nlohmann::json{{"uid", uid}, {"name", name}}; })
+        .on_init(
+            [&](const RoleDirectory &rd, const std::string &name)
+            {
+                callback_invoked = true;
+                callback_name = name;
+                // Write a custom file using RoleDirectory path API.
+                const auto custom_file = rd.subdir("data") / "readme.txt";
+                fs::create_directories(custom_file.parent_path());
+                std::ofstream(custom_file) << "Created by on_init\n";
+            });
 
     EXPECT_EQ(RoleDirectory::init_directory(tmp, "test_role_cb", "MyCallback"), 0);
 

@@ -39,14 +39,14 @@
 #include <vector>
 
 namespace fs = std::filesystem;
-using pylabhub::utils::Logger;
-using pylabhub::utils::FileLock;
-using pylabhub::utils::JsonConfig;
 using pylabhub::config::HubConfig;
-using pylabhub::utils::HubDirectory;
 using pylabhub::hub_host::HubHost;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::run_gtest_worker;
+using pylabhub::utils::FileLock;
+using pylabhub::utils::HubDirectory;
+using pylabhub::utils::JsonConfig;
+using pylabhub::utils::Logger;
 using json = nlohmann::json;
 
 namespace pylabhub::tests::worker
@@ -61,8 +61,7 @@ fs::path unique_temp_dir(const char *tag)
 {
     static std::atomic<int> ctr{0};
     fs::path d = fs::temp_directory_path() /
-                 ("plh_l3_py_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
+                 ("plh_l3_py_" + std::string(tag) + "_" + std::to_string(::getpid()) + "_" +
                   std::to_string(ctr.fetch_add(1)));
     fs::remove_all(d);
     return d;
@@ -77,7 +76,7 @@ std::string read_log_file(const fs::path &path)
 }
 
 fs::path make_python_hub_dir(const char *tag, const std::string &py_body,
-                              std::vector<fs::path> &cleanup)
+                             std::vector<fs::path> &cleanup)
 {
     const fs::path dir = unique_temp_dir(tag);
     HubDirectory::init_directory(dir, "L3PyHub");
@@ -89,9 +88,9 @@ fs::path make_python_hub_dir(const char *tag, const std::string &py_body,
         j = json::parse(f);
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["type"]             = "python";
-    j["script"]["path"]             = ".";
+    j["admin"]["enabled"] = false;
+    j["script"]["type"] = "python";
+    j["script"]["path"] = ".";
     {
         std::ofstream f(dir / "hub.json");
         f << j.dump(2);
@@ -110,7 +109,8 @@ fs::path make_python_hub_dir(const char *tag, const std::string &py_body,
 int realpythonscript_oninit_onstop_fireandlog()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             // HEP-CORE-0011 §"Engine Construction Lifecycle": register the
             // dispatching ScriptEngine factory + GIL helpers, then load
             // the PythonInterpreter persistent dynamic module on THIS
@@ -186,8 +186,7 @@ def on_stop(api):
 
             auto cfg = HubConfig::load_from_directory(dir.string());
             const std::string expected_uid = cfg.identity().uid;
-            ASSERT_FALSE(expected_uid.empty())
-                << "init_directory must have generated a hub uid";
+            ASSERT_FALSE(expected_uid.empty()) << "init_directory must have generated a hub uid";
 
             // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass: seed
             // the process KeyStore with a fresh hub identity before
@@ -211,14 +210,15 @@ def on_stop(api):
             // builds; still catches a sub-2-second slowdown.
             const auto t_startup = std::chrono::steady_clock::now();
             ASSERT_NO_THROW(host.startup());
-            const auto startup_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t_startup).count();
-            EXPECT_LT(startup_ms, 2500)
-                << "host.startup() with real PythonEngine must complete "
-                   "in <2500 ms; took " << startup_ms << " ms — regression "
-                   "in interpreter init / load_script / build_api / "
-                   "on_init paths";
+            const auto startup_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - t_startup)
+                                        .count();
+            EXPECT_LT(startup_ms, 2500) << "host.startup() with real PythonEngine must complete "
+                                           "in <2500 ms; took "
+                                        << startup_ms
+                                        << " ms — regression "
+                                           "in interpreter init / load_script / build_api / "
+                                           "on_init paths";
             EXPECT_TRUE(host.is_running());
 
             host.shutdown();
@@ -233,23 +233,25 @@ def on_stop(api):
             ASSERT_NE(pos_init, std::string::npos)
                 << "missing on_init log marker — api.log() did not "
                    "route through HubAPI::log() to the process logger.  "
-                   "Log dump:\n" << log;
+                   "Log dump:\n"
+                << log;
             ASSERT_NE(pos_stop, std::string::npos)
                 << "missing on_stop log marker — script's on_stop "
-                   "never fired.  Log dump:\n" << log;
-            EXPECT_LT(pos_init, pos_stop)
-                << "on_init must appear before on_stop in the log";
+                   "never fired.  Log dump:\n"
+                << log;
+            EXPECT_LT(pos_init, pos_stop) << "on_init must appear before on_stop in the log";
 
-            const std::string init_line_marker =
-                "HUB_INIT uid=" + expected_uid;
+            const std::string init_line_marker = "HUB_INIT uid=" + expected_uid;
             EXPECT_NE(log.find(init_line_marker), std::string::npos)
                 << "api.uid() must return cfg.identity().uid; expected "
-                   "to find\n  " << init_line_marker << "\nLog dump:\n" << log;
+                   "to find\n  "
+                << init_line_marker << "\nLog dump:\n"
+                << log;
 
-            EXPECT_NE(log.find("[hub/" + expected_uid + "]"),
-                      std::string::npos)
+            EXPECT_NE(log.find("[hub/" + expected_uid + "]"), std::string::npos)
                 << "HubAPI::log() must emit lines with prefix "
-                   "[hub/<uid>]; not found in:\n" << log;
+                   "[hub/<uid>]; not found in:\n"
+                << log;
 
             // ── Read-accessor binding surface ───────────────────────
             static constexpr const char *kAccessorMarkers[] = {
@@ -275,7 +277,8 @@ def on_stop(api):
                 EXPECT_NE(log.find(m), std::string::npos)
                     << "missing read-accessor binding marker '" << m
                     << "' — pybind11 binding failed to bind, raised, "
-                       "or returned wrong type.\nLog dump:\n" << log;
+                       "or returned wrong type.\nLog dump:\n"
+                    << log;
             }
 
             log_cap.AssertNoUnexpectedLogWarnError();
@@ -287,8 +290,7 @@ def on_stop(api):
             }
         },
         "hub_python_integration::realpythonscript_oninit_onstop_fireandlog",
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -309,7 +311,8 @@ struct HubPythonIntegrationRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
                 if (dot == std::string_view::npos ||

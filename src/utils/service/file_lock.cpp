@@ -32,7 +32,7 @@ namespace
 {
 constexpr int kLockFileMode = 0644;
 constexpr std::chrono::milliseconds kFileLockShutdownTimeoutMs{2000};
-}
+} // namespace
 
 static std::string make_lock_key(const std::filesystem::path &lockpath)
 {
@@ -405,7 +405,8 @@ static bool prepare_lock_path(FileLockImpl *pImpl, bool is_directory)
     return true;
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- blocking vs non-blocking and waiter logic
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- blocking vs non-blocking and waiter
+// logic
 static bool acquire_process_local_lock(FileLockImpl *pImpl, bool blocking,
                                        std::optional<std::chrono::milliseconds> timeout)
 {

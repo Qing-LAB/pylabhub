@@ -28,8 +28,7 @@ inline void queue_metrics_to_pydict(py::dict &d, const hub::QueueMetrics &m)
 }
 
 /// Populate a Python dict with all loop metrics fields.
-inline void loop_metrics_to_pydict(py::dict &d,
-                                   const RoleHostCore::LoopMetricsSnapshot &m)
+inline void loop_metrics_to_pydict(py::dict &d, const RoleHostCore::LoopMetricsSnapshot &m)
 {
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define X(field) d[#field] = py::int_(m.field);
@@ -38,8 +37,7 @@ inline void loop_metrics_to_pydict(py::dict &d,
 }
 
 /// Populate a Python dict with all inbox metrics fields.
-inline void inbox_metrics_to_pydict(py::dict &d,
-                                    const hub::InboxQueue::InboxMetricsSnapshot &m)
+inline void inbox_metrics_to_pydict(py::dict &d, const hub::InboxQueue::InboxMetricsSnapshot &m)
 {
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define X(field) d[#field] = py::int_(m.field);

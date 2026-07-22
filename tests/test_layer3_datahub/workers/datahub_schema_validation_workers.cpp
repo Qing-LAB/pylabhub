@@ -10,13 +10,13 @@
 // remains for this file.)
 
 #include "datahub_schema_validation_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
 #include <gtest/gtest.h>
 #include <fmt/core.h>
-#include <unistd.h>  // ::dup, ::close — mismatch sites attach consumer inline
+#include <unistd.h> // ::dup, ::close — mismatch sites attach consumer inline
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
@@ -52,8 +52,14 @@ PYLABHUB_SCHEMA_END(SchemaValidV2)
 namespace pylabhub::tests::worker::schema_validation
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // ============================================================================
 // Helper: build config for schema validation tests.
@@ -91,11 +97,13 @@ int consumer_connects_with_matching_schema()
             auto p = make_fd_backed_pair_typed<SchemaValidV1, SchemaValidV1>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
-            ASSERT_NE(p.consumer, nullptr) << "Consumer with matching schema must connect successfully";
+            ASSERT_NE(p.consumer, nullptr)
+                << "Consumer with matching schema must connect successfully";
 
             cleanup_test_datablock(channel);
         },
-        "consumer_connects_with_matching_schema", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "consumer_connects_with_matching_schema", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -126,12 +134,13 @@ int consumer_fails_to_connect_with_mismatched_schema()
             auto consumer = find_datablock_consumer_from_fd<SchemaValidV1, SchemaValidV2>(
                 channel, rx_fd, config);
             ::close(rx_fd);
-            ASSERT_EQ(consumer, nullptr) << "Consumer with mismatched DataBlock schema must be rejected";
+            ASSERT_EQ(consumer, nullptr)
+                << "Consumer with mismatched DataBlock schema must be rejected";
 
             cleanup_test_datablock(channel);
         },
-        "consumer_fails_to_connect_with_mismatched_schema", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "consumer_fails_to_connect_with_mismatched_schema", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -168,7 +177,8 @@ int flexzone_mismatch_rejected()
 
             cleanup_test_datablock(channel);
         },
-        "flexzone_mismatch_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "flexzone_mismatch_rejected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -202,7 +212,8 @@ int both_schemas_mismatch_rejected()
 
             cleanup_test_datablock(channel);
         },
-        "both_schemas_mismatch_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "both_schemas_mismatch_rejected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -242,7 +253,8 @@ int consumer_mismatched_capacity_rejected()
 
             cleanup_test_datablock(channel);
         },
-        "consumer_mismatched_capacity_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "consumer_mismatched_capacity_rejected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::schema_validation

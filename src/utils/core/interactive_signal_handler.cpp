@@ -38,7 +38,7 @@ namespace pylabhub
 // Only one InteractiveSignalHandler may be active per process.
 // ============================================================================
 
-static std::atomic<int>  g_signal_count{0};
+static std::atomic<int> g_signal_count{0};
 static std::atomic<bool> g_force_exit{false};
 
 #if defined(PYLABHUB_IS_POSIX)
@@ -80,16 +80,16 @@ static void signal_handler_impl(int /*sig*/) noexcept
 
 struct InteractiveSignalHandler::Impl
 {
-    SignalHandlerConfig    config;
-    std::atomic<bool>     *shutdown_flag{nullptr};
-    SignalStatusCallback   status_cb;
-    std::mutex             cb_mutex;
-    std::thread            watcher_thread;
-    std::atomic<bool>      installed{false};
-    bool                   interactive{false};
+    SignalHandlerConfig config;
+    std::atomic<bool> *shutdown_flag{nullptr};
+    SignalStatusCallback status_cb;
+    std::mutex cb_mutex;
+    std::thread watcher_thread;
+    std::atomic<bool> installed{false};
+    bool interactive{false};
 
     // Saved previous signal dispositions.
-    void (*prev_sigint)(int)  = SIG_DFL;
+    void (*prev_sigint)(int) = SIG_DFL;
     void (*prev_sigterm)(int) = SIG_DFL;
 
     // ── Platform init/cleanup ──────────────────────────────────────────────
@@ -192,10 +192,9 @@ struct InteractiveSignalHandler::Impl
             if (!interactive || count >= 2)
             {
                 // Non-interactive, or double-signal: immediate shutdown.
-                do_shutdown(count >= 2
-                    ? "Shutdown confirmed (double interrupt)."
-                    : fmt::format("{}: signal received, shutting down.",
-                                  config.binary_name));
+                do_shutdown(count >= 2 ? "Shutdown confirmed (double interrupt)."
+                                       : fmt::format("{}: signal received, shutting down.",
+                                                     config.binary_name));
                 return;
             }
 
@@ -203,11 +202,9 @@ struct InteractiveSignalHandler::Impl
             // api.stop() was called from a script), skip the interactive prompt
             // and complete the shutdown silently.  This prevents a 5-second hang
             // when a SIGTERM arrives during lifecycle teardown.
-            if (shutdown_flag != nullptr &&
-                shutdown_flag->load(std::memory_order_acquire))
+            if (shutdown_flag != nullptr && shutdown_flag->load(std::memory_order_acquire))
             {
-                do_shutdown(fmt::format("{}: shutdown already in progress.",
-                                       config.binary_name));
+                do_shutdown(fmt::format("{}: shutdown already in progress.", config.binary_name));
                 return;
             }
 
@@ -224,8 +221,7 @@ struct InteractiveSignalHandler::Impl
             // Timeout or decline: resume.
             if (result == PromptResult::Timeout)
             {
-                fmt::print(stderr, "No answer for {}s — resuming operation.\n",
-                           config.timeout_s);
+                fmt::print(stderr, "No answer for {}s — resuming operation.\n", config.timeout_s);
             }
             else
             {
@@ -256,7 +252,7 @@ struct InteractiveSignalHandler::Impl
     {
         // Timestamp.
         auto now = std::chrono::system_clock::now();
-        auto tt  = std::chrono::system_clock::to_time_t(now);
+        auto tt = std::chrono::system_clock::to_time_t(now);
         std::tm tm_buf{};
 #if defined(PYLABHUB_IS_POSIX)
         ::localtime_r(&tt, &tm_buf);
@@ -290,7 +286,13 @@ struct InteractiveSignalHandler::Impl
         }
     }
 
-    enum class PromptResult { Confirm, Decline, Timeout, DoubleInterrupt };
+    enum class PromptResult
+    {
+        Confirm,
+        Decline,
+        Timeout,
+        DoubleInterrupt
+    };
 
     PromptResult prompt_with_timeout()
     {
@@ -329,8 +331,7 @@ struct InteractiveSignalHandler::Impl
             std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
             return g_signal_count.load(std::memory_order_acquire) > 0;
         }
-        DWORD ret = ::WaitForSingleObject(g_wake_event,
-                                           static_cast<DWORD>(timeout_ms));
+        DWORD ret = ::WaitForSingleObject(g_wake_event, static_cast<DWORD>(timeout_ms));
         if (ret == WAIT_OBJECT_0)
         {
             ::ResetEvent(g_wake_event);
@@ -348,8 +349,8 @@ struct InteractiveSignalHandler::Impl
     {
 #if defined(PYLABHUB_IS_POSIX)
         struct pollfd fds[2] = {
-            {STDIN_FILENO,    POLLIN, 0},
-            {g_wake_pipe[0],  POLLIN, 0},
+            {STDIN_FILENO, POLLIN, 0},
+            {g_wake_pipe[0], POLLIN, 0},
         };
         const int nfds = (g_wake_pipe[0] >= 0) ? 2 : 1;
         int ret = ::poll(fds, static_cast<nfds_t>(nfds), timeout_ms);
@@ -397,8 +398,8 @@ struct InteractiveSignalHandler::Impl
             return PromptResult::Timeout;
         }
 
-        DWORD ret = ::WaitForMultipleObjects(
-            handle_count, handles, FALSE, static_cast<DWORD>(timeout_ms));
+        DWORD ret =
+            ::WaitForMultipleObjects(handle_count, handles, FALSE, static_cast<DWORD>(timeout_ms));
 
         if (ret == WAIT_TIMEOUT)
             return PromptResult::Timeout;
@@ -444,7 +445,8 @@ struct InteractiveSignalHandler::Impl
         {
             char buf[64];
             while (::read(g_wake_pipe[0], buf, sizeof(buf)) > 0)
-            { }
+            {
+            }
         }
 #elif defined(PYLABHUB_IS_WINDOWS)
         if (g_wake_event != nullptr)
@@ -459,12 +461,11 @@ struct InteractiveSignalHandler::Impl
 // Public API
 // ============================================================================
 
-InteractiveSignalHandler::InteractiveSignalHandler(
-    SignalHandlerConfig config,
-    std::atomic<bool>  *shutdown_flag)
+InteractiveSignalHandler::InteractiveSignalHandler(SignalHandlerConfig config,
+                                                   std::atomic<bool> *shutdown_flag)
     : impl_(std::make_unique<Impl>())
 {
-    impl_->config        = std::move(config);
+    impl_->config = std::move(config);
     impl_->shutdown_flag = shutdown_flag;
 }
 
@@ -509,7 +510,7 @@ void InteractiveSignalHandler::install()
     impl_->platform_init();
 
     // Install signal handlers.
-    impl_->prev_sigint  = std::signal(SIGINT,  signal_handler_impl);
+    impl_->prev_sigint = std::signal(SIGINT, signal_handler_impl);
     impl_->prev_sigterm = std::signal(SIGTERM, signal_handler_impl);
 
     // Start watcher thread.
@@ -589,8 +590,7 @@ utils::ModuleDef InteractiveSignalHandler::make_lifecycle_module()
     utils::ModuleDef def("SignalHandler");
     // No startup callback — caller calls install() explicitly before registering.
     // Timeout slightly exceeds the watcher thread's interactive prompt timeout.
-    def.set_shutdown(signal_handler_lifecycle_cleanup,
-                     std::chrono::milliseconds(7000));
+    def.set_shutdown(signal_handler_lifecycle_cleanup, std::chrono::milliseconds(7000));
     def.set_as_persistent(true);
     return def;
 }

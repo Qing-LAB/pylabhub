@@ -10,7 +10,8 @@ int with_write_transaction_success();
 /** with_write_transaction timeout: writer blocks (no slot available), times out. */
 int with_write_transaction_timeout();
 
-/** WriteTransactionGuard: lambda throws before commit; destructor releases slot; slot becomes available. */
+/** WriteTransactionGuard: lambda throws before commit; destructor releases slot; slot becomes
+ * available. */
 int WriteTransactionGuard_exception_releases_slot();
 
 /** ReadTransactionGuard: lambda throws; destructor releases slot. */

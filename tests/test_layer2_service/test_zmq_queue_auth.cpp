@@ -40,8 +40,7 @@ class ZmqQueueAuthTest : public IsolatedProcessTest
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
                      ("plh_l2_zmq_auth_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                      std::to_string(::getpid()) + "_" + std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
         return p.string();
@@ -68,9 +67,8 @@ TEST_F(ZmqQueueAuthTest, UnallowedPeer_BlockedFromDelivery)
 
 TEST_F(ZmqQueueAuthTest, AllowlistSwap_TakesEffectForNextConnection)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_allowlist_swap_takes_effect_for_next_connection",
-        {unique_dir("auth_allowlist_swap_takes_effect_for_next_connection")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_allowlist_swap_takes_effect_for_next_connection",
+                         {unique_dir("auth_allowlist_swap_takes_effect_for_next_connection")});
     ExpectWorkerOk(w);
 }
 
@@ -85,33 +83,29 @@ TEST_F(ZmqQueueAuthTest, AllowlistSwap_TakesEffectForNextConnection)
 
 TEST_F(ZmqQueueAuthTest, Deny_ThenAllowViaSwap_PinsPath)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_deny_then_allow_via_swap_pins_path",
-        {unique_dir("auth_deny_then_allow_via_swap_pins_path")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_deny_then_allow_via_swap_pins_path",
+                         {unique_dir("auth_deny_then_allow_via_swap_pins_path")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZmqQueueAuthTest, Swap_BlocksOldPeer_PinsData)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_swap_blocks_old_peer_pins_data",
-        {unique_dir("auth_swap_blocks_old_peer_pins_data")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_swap_blocks_old_peer_pins_data",
+                         {unique_dir("auth_swap_blocks_old_peer_pins_data")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZmqQueueAuthTest, SetPeerAllowlist_OnPullSide_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_set_peer_allowlist_on_pull_side_returns_false",
-        {unique_dir("auth_set_peer_allowlist_on_pull_side_returns_false")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_set_peer_allowlist_on_pull_side_returns_false",
+                         {unique_dir("auth_set_peer_allowlist_on_pull_side_returns_false")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZmqQueueAuthTest, EmptyAllowlist_DeniesAll)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_empty_allowlist_denies_all",
-        {unique_dir("auth_empty_allowlist_denies_all")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_empty_allowlist_denies_all",
+                         {unique_dir("auth_empty_allowlist_denies_all")});
     ExpectWorkerOk(w);
 }
 
@@ -130,9 +124,8 @@ TEST_F(ZmqQueueAuthTest, EmptyAllowlist_DeniesAll)
 // only checks the worker exited clean (no unexpected ERROR/WARN logs).
 TEST_F(ZmqQueueAuthTest, Standby_StateTransitions_PullSide)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_standby_state_transitions",
-        {unique_dir("auth_standby_state_transitions")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_standby_state_transitions",
+                         {unique_dir("auth_standby_state_transitions")});
     ExpectWorkerOk(w);
 }
 
@@ -140,9 +133,8 @@ TEST_F(ZmqQueueAuthTest, Standby_StateTransitions_PullSide)
 // in Standby; start() refuses; set_producer_peers is inert.
 TEST_F(ZmqQueueAuthTest, Standby_PushSide_StartRefuses_SetPeersInert)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_standby_push_side",
-        {unique_dir("auth_standby_push_side")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_standby_push_side",
+                         {unique_dir("auth_standby_push_side")});
     ExpectWorkerOk(w);
 }
 
@@ -156,9 +148,8 @@ TEST_F(ZmqQueueAuthTest, Standby_PushSide_StartRefuses_SetPeersInert)
 // assertion fires (allowlist is empty post-start).
 TEST_F(ZmqQueueAuthTest, ApplyMasterApproval_SeedsInitialAllowlist)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_apply_master_approval_seeds_initial_allowlist",
-        {unique_dir("auth_apply_master_approval_seeds_initial_allowlist")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_apply_master_approval_seeds_initial_allowlist",
+                         {unique_dir("auth_apply_master_approval_seeds_initial_allowlist")});
     ExpectWorkerOk(w);
 }
 
@@ -180,9 +171,8 @@ TEST_F(ZmqQueueAuthTest, ConnectEmptyServerkey_FactorySucceedsStandbyStartRefuse
 
 TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_misconfig_factory_returns_nullptr",
-        {unique_dir("auth_misconfig_factory_returns_nullptr")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_misconfig_factory_returns_nullptr",
+                         {unique_dir("auth_misconfig_factory_returns_nullptr")});
     // Misconfig branches the driver pins:
     //   - name-not-in-KeyStore (HEP-CORE-0040 §172)
     //   - empty keystore_name (C1 / #157 strict enforcement)
@@ -206,11 +196,12 @@ TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
     // the bind side and once on the connect side; each fires its
     // own LOGGER_ERROR line, and ExpectWorkerOk consumes one
     // substring per matched line.
-    ExpectWorkerOk(w, {}, {
-        "not present in KeyStore",
-        "keystore_name MUST be non-empty",
-        "keystore_name MUST be non-empty",
-    });
+    ExpectWorkerOk(w, {},
+                   {
+                       "not present in KeyStore",
+                       "keystore_name MUST be non-empty",
+                       "keystore_name MUST be non-empty",
+                   });
 }
 
 // AUTH_TODO §C5 (#161) — anti-recursion test for the HEP-CORE-0035 §2
@@ -227,9 +218,8 @@ TEST_F(ZmqQueueAuthTest, Misconfig_FactoryReturnsNullptr)
 // no data session.
 TEST_F(ZmqQueueAuthTest, NullMechClient_HandshakeFails)
 {
-    auto w = SpawnWorker(
-        "zmq_queue_auth.auth_null_mech_client_handshake_fails",
-        {unique_dir("auth_null_mech_client_handshake_fails")});
+    auto w = SpawnWorker("zmq_queue_auth.auth_null_mech_client_handshake_fails",
+                         {unique_dir("auth_null_mech_client_handshake_fails")});
     ExpectWorkerOk(w);
 }
 

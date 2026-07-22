@@ -52,8 +52,7 @@ class HubConnection
     std::unique_ptr<hub::BrokerRequestComm> brc;
 
     HubConnection(std::string endpoint, std::string pubkey) noexcept
-        : broker_endpoint(std::move(endpoint))
-        , broker_pubkey(std::move(pubkey))
+        : broker_endpoint(std::move(endpoint)), broker_pubkey(std::move(pubkey))
     {
     }
 
@@ -63,4 +62,4 @@ class HubConnection
     HubConnection &operator=(HubConnection &&) noexcept = default;
 };
 
-}  // namespace pylabhub::scripting
+} // namespace pylabhub::scripting

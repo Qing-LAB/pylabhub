@@ -100,15 +100,13 @@ TEST_F(InboxQueueTest, ItemSize_MatchesSchema)
 
 TEST_F(InboxQueueTest, SchemaMismatch_DifferentType_DropsFrame)
 {
-    auto w = SpawnWorker(
-        "hub_inbox_queue.schema_mismatch_different_type_drops_frame");
+    auto w = SpawnWorker("hub_inbox_queue.schema_mismatch_different_type_drops_frame");
     ExpectWorkerOk(w);
 }
 
 TEST_F(InboxQueueTest, SchemaMismatch_DifferentSize_DropsFrame)
 {
-    auto w = SpawnWorker(
-        "hub_inbox_queue.schema_mismatch_different_size_drops_frame");
+    auto w = SpawnWorker("hub_inbox_queue.schema_mismatch_different_size_drops_frame");
     ExpectWorkerOk(w);
 }
 
@@ -120,8 +118,7 @@ TEST_F(InboxQueueTest, ChecksumEnforced_Roundtrip)
 
 TEST_F(InboxQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
 {
-    auto w = SpawnWorker(
-        "hub_inbox_queue.checksum_manual_no_stamp_receiver_rejects");
+    auto w = SpawnWorker("hub_inbox_queue.checksum_manual_no_stamp_receiver_rejects");
     ExpectWorkerOk(w);
 }
 

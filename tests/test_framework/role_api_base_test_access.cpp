@@ -23,8 +23,7 @@ namespace pylabhub::scripting::test
 {
 
 #if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
-void RoleAPIBaseTestAccess::install_handler(
-    RoleAPIBase &api, std::unique_ptr<RoleHandler> handler)
+void RoleAPIBaseTestAccess::install_handler(RoleAPIBase &api, std::unique_ptr<RoleHandler> handler)
 {
     api.install_handler_for_test_(std::move(handler));
 }

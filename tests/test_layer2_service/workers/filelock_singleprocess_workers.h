@@ -39,8 +39,7 @@ int timed_lock(const std::string &resource_path);
 int sequential_acquire_release(const std::string &resource_path);
 
 /** get_expected_lock_fullname_for produces .lock and .dir.lock variants. */
-int get_expected_lock_fullname_for(const std::string &file_path,
-                                   const std::string &dir_path);
+int get_expected_lock_fullname_for(const std::string &file_path, const std::string &dir_path);
 
 /** Valid lock exposes locked_resource + canonical_lock_file paths. */
 int get_locked_resource_and_canonical_lock_path(const std::string &resource_path);

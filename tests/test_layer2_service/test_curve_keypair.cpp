@@ -47,13 +47,11 @@ namespace
 /// some punctuation).  Tests that need a "real" pubkey use this
 /// instead of a libsodium-generated keypair (we're testing the type
 /// validation, not the crypto).
-constexpr std::string_view kValidPub40 =
-    "ABCDEFGHIJabcdefghij0123456789.-:+=^!/*?";
+constexpr std::string_view kValidPub40 = "ABCDEFGHIJabcdefghij0123456789.-:+=^!/*?";
 
 /// Verify the constant we're handing to the factory is the right length
 /// for the test to mean what it says.
-static_assert(kValidPub40.size() == 40,
-              "kValidPub40 must be exactly 40 chars");
+static_assert(kValidPub40.size() == 40, "kValidPub40 must be exactly 40 chars");
 
 } // namespace
 
@@ -98,8 +96,7 @@ TEST(Z85PublicKeyTest, Validate_Empty_Throws)
     // string-taking ctor for an alternative "soft" interpretation of
     // empty.  Empty input to validate() is a programmer error.
     EXPECT_THROW(Z85PublicKey::validate(std::string{}), std::invalid_argument);
-    EXPECT_THROW(Z85PublicKey::validate(std::string_view{}),
-                 std::invalid_argument);
+    EXPECT_THROW(Z85PublicKey::validate(std::string_view{}), std::invalid_argument);
 }
 
 TEST(Z85PublicKeyTest, Validate_LengthError_DiagnosticNamesActualSize)
@@ -115,10 +112,10 @@ TEST(Z85PublicKeyTest, Validate_LengthError_DiagnosticNamesActualSize)
         EXPECT_NE(msg.find("length 7"), std::string::npos)
             << "Diagnostic must name the actual length so the caller "
                "can locate the misuse without re-reading the code.  "
-               "Got: " << msg;
-        EXPECT_NE(msg.find("40"), std::string::npos)
-            << "Diagnostic must name the required length.  Got: "
+               "Got: "
             << msg;
+        EXPECT_NE(msg.find("40"), std::string::npos)
+            << "Diagnostic must name the required length.  Got: " << msg;
         EXPECT_NE(msg.find("validate"), std::string::npos)
             << "Diagnostic must name the factory method so the caller "
                "knows which entry point rejected the input.  Got: "
@@ -137,7 +134,7 @@ TEST(Z85PublicKeyTest, Validate_NonZ85Character_Throws)
 TEST(Z85PublicKeyTest, Validate_NonZ85_DiagnosticNamesPosition)
 {
     std::string bad(40, 'A');
-    bad[17] = '\x01';  // SOH control char — clearly not in Z85.
+    bad[17] = '\x01'; // SOH control char — clearly not in Z85.
     try
     {
         (void)Z85PublicKey::validate(bad);
@@ -148,10 +145,10 @@ TEST(Z85PublicKeyTest, Validate_NonZ85_DiagnosticNamesPosition)
         const std::string msg{e.what()};
         EXPECT_NE(msg.find("position 17"), std::string::npos)
             << "Diagnostic must name the offending position so the "
-               "caller can localize.  Got: " << msg;
-        EXPECT_NE(msg.find("0x01"), std::string::npos)
-            << "Diagnostic must name the offending byte value.  Got: "
+               "caller can localize.  Got: "
             << msg;
+        EXPECT_NE(msg.find("0x01"), std::string::npos)
+            << "Diagnostic must name the offending byte value.  Got: " << msg;
     }
 }
 
@@ -197,9 +194,8 @@ TEST(Z85PublicKeyTest, DefaultCtor_IsNoexcept)
 {
     // The Standby sentinel must be a noexcept construction — it's
     // used in default member initializers across the codebase.
-    static_assert(noexcept(Z85PublicKey{}),
-                  "Default ctor must be noexcept — Standby sentinel "
-                  "appears in default-initialized fields");
+    static_assert(noexcept(Z85PublicKey{}), "Default ctor must be noexcept — Standby sentinel "
+                                            "appears in default-initialized fields");
 }
 
 TEST(Z85PublicKeyTest, ValidatedKey_IsNotEmpty)
@@ -235,24 +231,24 @@ TEST(Z85PublicKeyTest, Equality_DefaultCtorEqualToDefaultCtor)
 TEST(Z85PublicKeyTest, Copy_PreservesValue)
 {
     const auto a = Z85PublicKey::validate(kValidPub40);
-    Z85PublicKey b{a};        // copy ctor
+    Z85PublicKey b{a}; // copy ctor
     EXPECT_EQ(a, b);
 
     Z85PublicKey c;
-    c = a;                    // copy assignment
+    c = a; // copy assignment
     EXPECT_EQ(a, c);
 }
 
 TEST(Z85PublicKeyTest, Move_PreservesValue)
 {
     auto a = Z85PublicKey::validate(kValidPub40);
-    Z85PublicKey b{std::move(a)};   // move ctor
+    Z85PublicKey b{std::move(a)}; // move ctor
     EXPECT_EQ(b.view(), kValidPub40);
     EXPECT_EQ(b.str().size(), 40u);
 
     auto c = Z85PublicKey::validate(kValidPub40);
     Z85PublicKey d;
-    d = std::move(c);               // move assignment
+    d = std::move(c); // move assignment
     EXPECT_EQ(d.view(), kValidPub40);
     EXPECT_EQ(d.str().size(), 40u);
 }
@@ -264,8 +260,7 @@ TEST(Z85PublicKeyTest, View_PointsIntoStorage_StableAcrossReads)
     const auto p = Z85PublicKey::validate(kValidPub40);
     auto v1 = p.view();
     auto v2 = p.view();
-    EXPECT_EQ(v1.data(), v2.data())
-        << "view() must return a stable pointer into the underlying "
-           "storage so callers can pass it to libzmq sockopt without "
-           "an intermediate std::string copy.";
+    EXPECT_EQ(v1.data(), v2.data()) << "view() must return a stable pointer into the underlying "
+                                       "storage so callers can pass it to libzmq sockopt without "
+                                       "an intermediate std::string copy.";
 }

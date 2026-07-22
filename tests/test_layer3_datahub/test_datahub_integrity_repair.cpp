@@ -41,7 +41,8 @@ TEST_F(DatahubIntegrityRepairTest, FreshChecksumBlockPasses)
 
 TEST_F(DatahubIntegrityRepairTest, DetectsLayoutChecksumMismatch)
 {
-    auto proc = SpawnWorker("integrity_repair.validate_integrity_detects_layout_checksum_mismatch", {});
+    auto proc =
+        SpawnWorker("integrity_repair.validate_integrity_detects_layout_checksum_mismatch", {});
     // Worker calls datablock_validate_integrity TWICE (repair=false then
     // repair=true), each pass logging BOTH the layout-mismatch and the
     // consumer-create ERRORs — so 4 ERROR lines total.  Multiset
@@ -58,7 +59,8 @@ TEST_F(DatahubIntegrityRepairTest, DetectsLayoutChecksumMismatch)
 
 TEST_F(DatahubIntegrityRepairTest, DetectsMagicNumberCorruption)
 {
-    auto proc = SpawnWorker("integrity_repair.validate_integrity_detects_magic_number_corruption", {});
+    auto proc =
+        SpawnWorker("integrity_repair.validate_integrity_detects_magic_number_corruption", {});
     // Magic number corruption prevents open; recovery API logs LOGGER_ERROR "Failed to open".
     ExpectWorkerOk(proc, {}, {"recovery: Failed to open"});
 }

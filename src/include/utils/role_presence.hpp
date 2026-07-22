@@ -37,7 +37,7 @@
  */
 
 #include "utils/config/hub_ref_config.hpp"
-#include "utils/schema_types.hpp"   // hub::SchemaSpec (per-presence slot/fz schemas)
+#include "utils/schema_types.hpp" // hub::SchemaSpec (per-presence slot/fz schemas)
 
 #include <atomic>
 #include <cstdint>
@@ -141,22 +141,27 @@ enum class RoleKind : std::uint8_t
 /// behavior.  See HEP-CORE-0036 §4.3.3.
 enum class RegistrationState : std::uint8_t
 {
-    Unregistered      = 0,
+    Unregistered = 0,
     RegRequestPending = 1,
-    Registered        = 2,
-    Authorized        = 3,  // HEP-CORE-0036 §4.3.2 — Layer 3 armed
-    Deregistered      = 4,  // shifted from 3; voluntary teardown
+    Registered = 2,
+    Authorized = 3,   // HEP-CORE-0036 §4.3.2 — Layer 3 armed
+    Deregistered = 4, // shifted from 3; voluntary teardown
 };
 
 [[nodiscard]] inline const char *to_string(RegistrationState s) noexcept
 {
     switch (s)
     {
-    case RegistrationState::Unregistered:      return "Unregistered";
-    case RegistrationState::RegRequestPending: return "RegRequestPending";
-    case RegistrationState::Registered:        return "Registered";
-    case RegistrationState::Authorized:        return "Authorized";
-    case RegistrationState::Deregistered:      return "Deregistered";
+    case RegistrationState::Unregistered:
+        return "Unregistered";
+    case RegistrationState::RegRequestPending:
+        return "RegRequestPending";
+    case RegistrationState::Registered:
+        return "Registered";
+    case RegistrationState::Authorized:
+        return "Authorized";
+    case RegistrationState::Deregistered:
+        return "Deregistered";
     }
     return "<unknown>";
 }
@@ -168,10 +173,12 @@ enum class RegistrationState : std::uint8_t
 {
     switch (k)
     {
-    case RoleKind::Producer: return "producer";
-    case RoleKind::Consumer: return "consumer";
+    case RoleKind::Producer:
+        return "producer";
+    case RoleKind::Consumer:
+        return "consumer";
     }
-    return "";  // unreachable: switch is exhaustive over RoleKind values
+    return ""; // unreachable: switch is exhaustive over RoleKind values
 }
 
 class HubConnection;
@@ -214,9 +221,9 @@ class HubConnection;
 /// configuration).
 struct Presence
 {
-    config::HubRefConfig hub;        ///< Resolved (broker, broker_pubkey).
-    std::string          channel;    ///< Channel name on `hub`.
-    RoleKind             role_kind{RoleKind::Producer};
+    config::HubRefConfig hub; ///< Resolved (broker, broker_pubkey).
+    std::string channel;      ///< Channel name on `hub`.
+    RoleKind role_kind{RoleKind::Producer};
 
     /// Parsed schema for the data slot on this presence's channel.
     /// Resolved by the role's `build_presences_()` from the config's
@@ -228,7 +235,7 @@ struct Presence
     ///     `pylabhub::scripting::make_rx_opts`.
     ///   - `compute_*_message_info()` for engine-init params.
     ///   - `RoleHostCore::set_*_slot_size()` (size cached for hot path).
-    hub::SchemaSpec      slot_spec;
+    hub::SchemaSpec slot_spec;
 
     /// Parsed schema for the optional flexzone on this presence's
     /// channel.  May be empty (`!has_schema`) if the role declares
@@ -237,7 +244,7 @@ struct Presence
     /// `RoleHostCore::has_rx_fz()` / `has_tx_fz()` accessors — count
     /// presences whose `role_kind` matches and whose `fz_spec.has_schema`
     /// is true.
-    hub::SchemaSpec      fz_spec;
+    hub::SchemaSpec fz_spec;
 
     /// Non-owning pointer into the owning `RoleHandler::connections_`
     /// vector.  Set during dedup; nullptr before then.  The pointer is
@@ -257,8 +264,7 @@ struct Presence
     /// `Connecting` / etc. — those concerns live on
     /// `HubConnection`; this state is strictly about REG_REQ /
     /// DEREG_REQ admission with the broker.
-    std::atomic<RegistrationState> registration_state{
-        RegistrationState::Unregistered};
+    std::atomic<RegistrationState> registration_state{RegistrationState::Unregistered};
 
     // ── Move semantics ──────────────────────────────────────────────
     // `std::atomic<T>` is non-movable by default, so we provide an
@@ -272,34 +278,29 @@ struct Presence
     Presence &operator=(const Presence &) = delete;
 
     Presence(Presence &&other) noexcept
-        : hub(std::move(other.hub))
-        , channel(std::move(other.channel))
-        , role_kind(other.role_kind)
-        , slot_spec(std::move(other.slot_spec))
-        , fz_spec(std::move(other.fz_spec))
-        , connection(other.connection)
+        : hub(std::move(other.hub)), channel(std::move(other.channel)), role_kind(other.role_kind),
+          slot_spec(std::move(other.slot_spec)), fz_spec(std::move(other.fz_spec)),
+          connection(other.connection)
     {
-        registration_state.store(
-            other.registration_state.load(std::memory_order_relaxed),
-            std::memory_order_relaxed);
+        registration_state.store(other.registration_state.load(std::memory_order_relaxed),
+                                 std::memory_order_relaxed);
     }
 
     Presence &operator=(Presence &&other) noexcept
     {
         if (this != &other)
         {
-            hub        = std::move(other.hub);
-            channel    = std::move(other.channel);
-            role_kind  = other.role_kind;
-            slot_spec  = std::move(other.slot_spec);
-            fz_spec    = std::move(other.fz_spec);
+            hub = std::move(other.hub);
+            channel = std::move(other.channel);
+            role_kind = other.role_kind;
+            slot_spec = std::move(other.slot_spec);
+            fz_spec = std::move(other.fz_spec);
             connection = other.connection;
-            registration_state.store(
-                other.registration_state.load(std::memory_order_relaxed),
-                std::memory_order_relaxed);
+            registration_state.store(other.registration_state.load(std::memory_order_relaxed),
+                                     std::memory_order_relaxed);
         }
         return *this;
     }
 };
 
-}  // namespace pylabhub::scripting
+} // namespace pylabhub::scripting

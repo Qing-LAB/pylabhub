@@ -28,30 +28,26 @@ class LogCaptureFixtureTest : public IsolatedProcessTest
 
 TEST_F(LogCaptureFixtureTest, ExpectLogWarn_PermissiveAllows_NoFail)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.expect_log_warn_permissive_allows_no_fail");
+    auto w = SpawnWorker("log_capture_fixture.expect_log_warn_permissive_allows_no_fail");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, ExpectLogWarn_PermissiveSilentlyOK_WhenWarnDoesNotFire)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.expect_log_warn_permissive_silently_ok_"
-        "when_warn_does_not_fire");
+    auto w = SpawnWorker("log_capture_fixture.expect_log_warn_permissive_silently_ok_"
+                         "when_warn_does_not_fire");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, ExpectLogWarn_UndeclaredWarn_Fails)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.expect_log_warn_undeclared_warn_fails");
+    auto w = SpawnWorker("log_capture_fixture.expect_log_warn_undeclared_warn_fails");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, ExpectLogError_UndeclaredError_Fails)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.expect_log_error_undeclared_error_fails");
+    auto w = SpawnWorker("log_capture_fixture.expect_log_error_undeclared_error_fails");
     ExpectWorkerOk(w);
 }
 
@@ -83,35 +79,30 @@ TEST_F(LogCaptureFixtureTest, MustFireError_NotFired_Fails)
 
 TEST_F(LogCaptureFixtureTest, MustFireWarn_AlsoSatisfiesAllowlist)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.must_fire_warn_also_satisfies_allowlist");
+    auto w = SpawnWorker("log_capture_fixture.must_fire_warn_also_satisfies_allowlist");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, MustFire_MultipleEmissionsCountAsOneMatch)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.must_fire_multiple_emissions_count_as_one_match");
+    auto w = SpawnWorker("log_capture_fixture.must_fire_multiple_emissions_count_as_one_match");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, MustFire_TwoDistinctNeedlesBothMustMatch)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.must_fire_two_distinct_needles_both_must_match");
+    auto w = SpawnWorker("log_capture_fixture.must_fire_two_distinct_needles_both_must_match");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, MustFire_TwoDistinctNeedlesBothFire_NoFail)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.must_fire_two_distinct_needles_both_fire_no_fail");
+    auto w = SpawnWorker("log_capture_fixture.must_fire_two_distinct_needles_both_fire_no_fail");
     ExpectWorkerOk(w);
 }
 
 TEST_F(LogCaptureFixtureTest, MustFire_DistinctNeedlesEachConsumeOneLine)
 {
-    auto w = SpawnWorker(
-        "log_capture_fixture.must_fire_distinct_needles_each_consume_one_line");
+    auto w = SpawnWorker("log_capture_fixture.must_fire_distinct_needles_each_consume_one_line");
     ExpectWorkerOk(w);
 }

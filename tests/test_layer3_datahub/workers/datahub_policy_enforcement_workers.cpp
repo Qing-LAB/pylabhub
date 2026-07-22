@@ -6,7 +6,7 @@
 // - Tests verify that the RAII layer and C API enforce policies transparently
 // - Heartbeat tests use active_consumer_count from shared memory header as oracle
 #include "datahub_policy_enforcement_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -15,7 +15,7 @@
 #include <cstring>
 #include <chrono>
 #include <atomic>
-#include <unistd.h>  // #275-S2: ::dup, ::close — checksum_enforced_verify_detects_corruption inline consumer attach
+#include <unistd.h> // #275-S2: ::dup, ::close — checksum_enforced_verify_detects_corruption inline consumer attach
 
 using namespace pylabhub::hub;
 using namespace pylabhub::tests::helper;
@@ -41,19 +41,25 @@ struct PolicyData
 static_assert(std::is_trivially_copyable_v<PolicyData>);
 
 PYLABHUB_SCHEMA_BEGIN(PolicyFlexZone)
-    PYLABHUB_SCHEMA_MEMBER(sequence)
-    PYLABHUB_SCHEMA_MEMBER(flags)
+PYLABHUB_SCHEMA_MEMBER(sequence)
+PYLABHUB_SCHEMA_MEMBER(flags)
 PYLABHUB_SCHEMA_END(PolicyFlexZone)
 
 PYLABHUB_SCHEMA_BEGIN(PolicyData)
-    PYLABHUB_SCHEMA_MEMBER(value)
+PYLABHUB_SCHEMA_MEMBER(value)
 PYLABHUB_SCHEMA_END(PolicyData)
 
 namespace pylabhub::tests::worker::policy_enforcement
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // ============================================================================
 // Helpers
@@ -88,17 +94,21 @@ int checksum_enforced_write_read_roundtrip()
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write slot — checksum auto-updated on publish
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     ctx.flexzone().get().sequence = 1;
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 42;
                         break;
                     }
@@ -107,11 +117,15 @@ int checksum_enforced_write_read_roundtrip()
             // Read slot — checksum auto-verified on consume release
             bool read_ok = false;
             consumer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [&read_ok](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [&read_ok](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         EXPECT_EQ(r.content().get().value, 42u);
                         read_ok = true;
                         break;
@@ -124,7 +138,8 @@ int checksum_enforced_write_read_roundtrip()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_enforced_write_read_roundtrip ok\n");
         },
-        "checksum_enforced_write_read_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "checksum_enforced_write_read_roundtrip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -144,12 +159,13 @@ int checksum_enforced_flexzone_only_write()
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write only the flexzone — no slot publish
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     ctx.flexzone().get().sequence = 99;
                     ctx.flexzone().get().flags = 0xDEAD;
@@ -166,7 +182,8 @@ int checksum_enforced_flexzone_only_write()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_enforced_flexzone_only_write ok\n");
         },
-        "checksum_enforced_flexzone_only_write", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "checksum_enforced_flexzone_only_write", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -187,15 +204,19 @@ int checksum_enforced_verify_detects_corruption()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Write and publish one slot normally
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 999;
                         break;
                     }
@@ -209,8 +230,8 @@ int checksum_enforced_verify_detects_corruption()
             // Now attach consumer via the typed fd-source factory over the same memfd.
             const int rx_fd = ::dup(p.transport->borrow_fd());
             ASSERT_GE(rx_fd, 0);
-            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                ch, rx_fd, cfg);
+            auto consumer =
+                find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd, cfg);
             ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
@@ -221,9 +242,11 @@ int checksum_enforced_verify_detects_corruption()
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(ch);
-            fmt::print(stderr, "[policy_enforcement] checksum_enforced_verify_detects_corruption ok\n");
+            fmt::print(stderr,
+                       "[policy_enforcement] checksum_enforced_verify_detects_corruption ok\n");
         },
-        "checksum_enforced_verify_detects_corruption", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "checksum_enforced_verify_detects_corruption", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -243,15 +266,19 @@ int checksum_none_skips_update_verify()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Write one slot
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 77;
                         break;
                     }
@@ -259,12 +286,15 @@ int checksum_none_skips_update_verify()
 
             // Corrupt flexzone — no checksum computed, so no checksum to mismatch
             auto fz_span = producer->flexible_zone_span();
-            if (!fz_span.empty()) { fz_span[0] ^= std::byte{0xFF}; }
+            if (!fz_span.empty())
+            {
+                fz_span[0] ^= std::byte{0xFF};
+            }
 
             const int rx_fd = ::dup(p.transport->borrow_fd());
             ASSERT_GE(rx_fd, 0);
-            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                ch, rx_fd, cfg);
+            auto consumer =
+                find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd, cfg);
             ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
@@ -272,24 +302,30 @@ int checksum_none_skips_update_verify()
             // Consumer can still read the slot — release succeeds without verification
             bool read_ok = false;
             consumer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [&read_ok](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [&read_ok](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         read_ok = true;
                         break;
                     }
                 });
 
-            EXPECT_TRUE(read_ok) << "With ChecksumPolicy::None, read should succeed even after corruption";
+            EXPECT_TRUE(read_ok)
+                << "With ChecksumPolicy::None, read should succeed even after corruption";
 
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_none_skips_update_verify ok\n");
         },
-        "checksum_none_skips_update_verify", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "checksum_none_skips_update_verify", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -307,11 +343,12 @@ int checksum_manual_requires_explicit_call()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Write WITHOUT updating flexzone checksum
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                1000ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                1000ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     ctx.flexzone().get().sequence = 7;
                     // Manual policy: with_transaction does NOT auto-update checksum
@@ -319,7 +356,10 @@ int checksum_manual_requires_explicit_call()
                     ctx.suppress_flexzone_checksum(); // explicit opt-out (belt+suspenders)
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 55;
                         break;
                     }
@@ -327,8 +367,8 @@ int checksum_manual_requires_explicit_call()
 
             const int rx_fd = ::dup(p.transport->borrow_fd());
             ASSERT_GE(rx_fd, 0);
-            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                ch, rx_fd, cfg);
+            auto consumer =
+                find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd, cfg);
             ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
@@ -344,14 +384,16 @@ int checksum_manual_requires_explicit_call()
 
             // Now verify passes
             bool fz_valid_after = consumer->verify_checksum_flexible_zone();
-            EXPECT_TRUE(fz_valid_after) << "Flexzone checksum should be valid after explicit update";
+            EXPECT_TRUE(fz_valid_after)
+                << "Flexzone checksum should be valid after explicit update";
 
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] checksum_manual_requires_explicit_call ok\n");
         },
-        "checksum_manual_requires_explicit_call", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "checksum_manual_requires_explicit_call", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -371,14 +413,14 @@ int consumer_auto_registers_heartbeat_on_construction()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             EXPECT_EQ(producer->active_consumer_count(), 0u) << "No consumers yet";
 
             const int rx_fd = ::dup(p.transport->borrow_fd());
             ASSERT_GE(rx_fd, 0);
-            auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                ch, rx_fd, cfg);
+            auto consumer =
+                find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd, cfg);
             ::close(rx_fd);
             ASSERT_NE(consumer, nullptr);
 
@@ -386,9 +428,12 @@ int consumer_auto_registers_heartbeat_on_construction()
                 << "Consumer should auto-register heartbeat at construction";
 
             cleanup_test_datablock(ch);
-            fmt::print(stderr, "[policy_enforcement] consumer_auto_registers_heartbeat_on_construction ok\n");
+            fmt::print(
+                stderr,
+                "[policy_enforcement] consumer_auto_registers_heartbeat_on_construction ok\n");
         },
-        "consumer_auto_registers_heartbeat_on_construction", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "consumer_auto_registers_heartbeat_on_construction", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -406,13 +451,13 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             {
                 const int rx_fd = ::dup(p.transport->borrow_fd());
                 ASSERT_GE(rx_fd, 0);
-                auto consumer = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                    ch, rx_fd, cfg);
+                auto consumer =
+                    find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd, cfg);
                 ::close(rx_fd);
                 ASSERT_NE(consumer, nullptr);
 
@@ -423,9 +468,11 @@ int consumer_auto_unregisters_heartbeat_on_destroy()
                 << "Consumer should auto-unregister heartbeat on destruction";
 
             cleanup_test_datablock(ch);
-            fmt::print(stderr, "[policy_enforcement] consumer_auto_unregisters_heartbeat_on_destroy ok\n");
+            fmt::print(stderr,
+                       "[policy_enforcement] consumer_auto_unregisters_heartbeat_on_destroy ok\n");
         },
-        "consumer_auto_unregisters_heartbeat_on_destroy", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "consumer_auto_unregisters_heartbeat_on_destroy", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -443,14 +490,14 @@ int all_policy_consumers_have_heartbeat()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Two consumers attach via separate fd dups; both register in the
             // same heartbeat pool.
             const int rx_fd_a = ::dup(p.transport->borrow_fd());
             ASSERT_GE(rx_fd_a, 0);
-            auto consumer_a = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                ch, rx_fd_a, cfg);
+            auto consumer_a =
+                find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd_a, cfg);
             ::close(rx_fd_a);
             ASSERT_NE(consumer_a, nullptr);
 
@@ -458,8 +505,8 @@ int all_policy_consumers_have_heartbeat()
 
             const int rx_fd_b = ::dup(p.transport->borrow_fd());
             ASSERT_GE(rx_fd_b, 0);
-            auto consumer_b = find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(
-                ch, rx_fd_b, cfg);
+            auto consumer_b =
+                find_datablock_consumer_from_fd<PolicyFlexZone, PolicyData>(ch, rx_fd_b, cfg);
             ::close(rx_fd_b);
             ASSERT_NE(consumer_b, nullptr);
 
@@ -473,7 +520,8 @@ int all_policy_consumers_have_heartbeat()
             cleanup_test_datablock(ch);
             fmt::print(stderr, "[policy_enforcement] all_policy_consumers_have_heartbeat ok\n");
         },
-        "all_policy_consumers_have_heartbeat", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "all_policy_consumers_have_heartbeat", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -500,16 +548,20 @@ int sync_reader_producer_respects_consumer_position()
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Producer fills the single slot
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                500ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                500ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 1;
                         break;
                     }
@@ -518,26 +570,36 @@ int sync_reader_producer_respects_consumer_position()
             // Producer attempts second write with short timeout — should block
             bool timed_out = false;
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                100ms, [&timed_out](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                100ms,
+                [&timed_out](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(30ms))
                     {
-                        if (!r.is_ok()) { timed_out = true; break; }
+                        if (!r.is_ok())
+                        {
+                            timed_out = true;
+                            break;
+                        }
                         // Should not acquire a slot while consumer is behind
                         ADD_FAILURE() << "Producer should not have acquired slot";
                         break;
                     }
                 });
-            EXPECT_TRUE(timed_out) << "Producer should time out when Sequential_sync consumer is behind";
+            EXPECT_TRUE(timed_out)
+                << "Producer should time out when Sequential_sync consumer is behind";
 
             // Consumer reads — unblocks producer
             bool read_ok = false;
             consumer->with_transaction<PolicyFlexZone, PolicyData>(
-                500ms, [&read_ok](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                500ms,
+                [&read_ok](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         EXPECT_EQ(r.content().get().value, 1u);
                         read_ok = true;
                         break;
@@ -548,11 +610,15 @@ int sync_reader_producer_respects_consumer_position()
             // Producer can now write again
             bool write_ok = false;
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                500ms, [&write_ok](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                500ms,
+                [&write_ok](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(50ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 2;
                         write_ok = true;
                         break;
@@ -563,9 +629,11 @@ int sync_reader_producer_respects_consumer_position()
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(ch);
-            fmt::print(stderr, "[policy_enforcement] sync_reader_producer_respects_consumer_position ok\n");
+            fmt::print(stderr,
+                       "[policy_enforcement] sync_reader_producer_respects_consumer_position ok\n");
         },
-        "sync_reader_producer_respects_consumer_position", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "sync_reader_producer_respects_consumer_position", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -583,30 +651,37 @@ int producer_operator_increment_updates_heartbeat()
             auto p = make_fd_backed_producer_typed<PolicyFlexZone, PolicyData>(
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Capture producer heartbeat timestamp before the loop
             uint64_t ts_before = producer->last_heartbeat_ns();
 
             // Run with_transaction — operator++() should update the heartbeat
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                500ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                500ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(20ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 42;
                         break;
                     }
                 });
 
             uint64_t ts_after = producer->last_heartbeat_ns();
-            EXPECT_GE(ts_after, ts_before) << "Producer heartbeat should be updated after iterator loop";
+            EXPECT_GE(ts_after, ts_before)
+                << "Producer heartbeat should be updated after iterator loop";
 
             cleanup_test_datablock(ch);
-            fmt::print(stderr, "[policy_enforcement] producer_operator_increment_updates_heartbeat ok\n");
+            fmt::print(stderr,
+                       "[policy_enforcement] producer_operator_increment_updates_heartbeat ok\n");
         },
-        "producer_operator_increment_updates_heartbeat", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "producer_operator_increment_updates_heartbeat", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -625,16 +700,20 @@ int consumer_operator_increment_updates_heartbeat()
                 ch, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write one slot for the consumer to read
             producer->with_transaction<PolicyFlexZone, PolicyData>(
-                500ms, [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                500ms,
+                [](WriteTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(20ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         r.content().get().value = 99;
                         break;
                     }
@@ -645,7 +724,8 @@ int consumer_operator_increment_updates_heartbeat()
             // scan all slots for the first non-zero timestamp — that's the
             // active consumer's slot (matches the pre-S2c-6 scan over
             // `consumer_pid.load() != 0`).
-            auto find_active_consumer_hb = [&]() -> uint64_t {
+            auto find_active_consumer_hb = [&]() -> uint64_t
+            {
                 for (uint32_t i = 0; i < detail::MAX_CONSUMER_HEARTBEATS; ++i)
                 {
                     const uint64_t hb = producer->consumer_heartbeat_ns(i);
@@ -658,11 +738,15 @@ int consumer_operator_increment_updates_heartbeat()
 
             // Run with_transaction — operator++() should update consumer heartbeat
             consumer->with_transaction<PolicyFlexZone, PolicyData>(
-                500ms, [](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
+                500ms,
+                [](ReadTransactionContext<PolicyFlexZone, PolicyData> &ctx)
                 {
                     for (auto &r : ctx.slots(20ms))
                     {
-                        if (!r.is_ok()) { break; }
+                        if (!r.is_ok())
+                        {
+                            break;
+                        }
                         (void)r.content().get().value;
                         break;
                     }
@@ -670,12 +754,15 @@ int consumer_operator_increment_updates_heartbeat()
 
             uint64_t ts_after = find_active_consumer_hb();
 
-            EXPECT_GE(ts_after, ts_before) << "Consumer heartbeat should be updated after iterator loop";
+            EXPECT_GE(ts_after, ts_before)
+                << "Consumer heartbeat should be updated after iterator loop";
 
             cleanup_test_datablock(ch);
-            fmt::print(stderr, "[policy_enforcement] consumer_operator_increment_updates_heartbeat ok\n");
+            fmt::print(stderr,
+                       "[policy_enforcement] consumer_operator_increment_updates_heartbeat ok\n");
         },
-        "consumer_operator_increment_updates_heartbeat", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "consumer_operator_increment_updates_heartbeat", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::policy_enforcement

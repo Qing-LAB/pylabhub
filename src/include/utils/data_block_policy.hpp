@@ -53,10 +53,10 @@ namespace pylabhub::hub
  */
 enum class DataBlockPolicy : uint32_t
 {
-    Single       = 0,
+    Single = 0,
     DoubleBuffer = 1,
-    RingBuffer   = 2,
-    Unset        = 255 ///< Sentinel: must not be stored in header
+    RingBuffer = 2,
+    Unset = 255 ///< Sentinel: must not be stored in header
 };
 
 // ============================================================================
@@ -87,10 +87,10 @@ enum class DataBlockPolicy : uint32_t
  */
 enum class ConsumerSyncPolicy : uint32_t
 {
-    Latest_only   = 0, ///< Writer overwrites freely; reader jumps to newest committed slot
-    Sequential        = 1, ///< Ordered, single consumer; writer blocks when ring is full
-    Sequential_sync   = 2, ///< Ordered, multiple consumers; writer blocks on the slowest reader
-    Unset         = 255 ///< Sentinel: must not be stored in header
+    Latest_only = 0,     ///< Writer overwrites freely; reader jumps to newest committed slot
+    Sequential = 1,      ///< Ordered, single consumer; writer blocks when ring is full
+    Sequential_sync = 2, ///< Ordered, multiple consumers; writer blocks on the slowest reader
+    Unset = 255          ///< Sentinel: must not be stored in header
 };
 
 // ============================================================================
@@ -144,8 +144,8 @@ enum class DataBlockOpenMode : uint8_t
  */
 enum class ChecksumType
 {
-    BLAKE2b = 0,   ///< BLAKE2b-256 via libsodium (only value currently implemented)
-    Unset   = 255  ///< Sentinel: must not be stored in header
+    BLAKE2b = 0, ///< BLAKE2b-256 via libsodium (only value currently implemented)
+    Unset = 255  ///< Sentinel: must not be stored in header
 };
 
 /**
@@ -163,8 +163,8 @@ enum class ChecksumType
  * | Value    | write_commit() (stamp)              | read_acquire() (verify)                  |
  * |----------|-------------------------------------|------------------------------------------|
  * | None     | No stamp                            | No verify                                |
- * | Manual   | No auto-stamp (caller calls update_checksum() explicitly) | Always verify (catches missing stamps) |
- * | Enforced | Auto-stamp                          | Auto-verify                              |
+ * | Manual   | No auto-stamp (caller calls update_checksum() explicitly) | Always verify (catches
+ * missing stamps) | | Enforced | Auto-stamp                          | Auto-verify |
  *
  * **Safety contract:** The reader always verifies under Manual and Enforced.
  * If the writer (Manual) forgot to stamp, the reader rejects the slot.
@@ -203,15 +203,17 @@ namespace pylabhub
  * @return Parsed ConsumerSyncPolicy.
  * @throws std::runtime_error on unknown value.
  */
-inline hub::ConsumerSyncPolicy parse_consumer_sync_policy(
-    const std::string &s, const char *context = "config")
+inline hub::ConsumerSyncPolicy parse_consumer_sync_policy(const std::string &s,
+                                                          const char *context = "config")
 {
-    if (s == "latest_only")      return hub::ConsumerSyncPolicy::Latest_only;
-    if (s == "sequential")       return hub::ConsumerSyncPolicy::Sequential;
-    if (s == "sequential_sync")  return hub::ConsumerSyncPolicy::Sequential_sync;
-    throw std::runtime_error(
-        std::string(context) + ": invalid 'reader_sync_policy' = '" + s +
-        "' (expected 'latest_only', 'sequential', or 'sequential_sync')");
+    if (s == "latest_only")
+        return hub::ConsumerSyncPolicy::Latest_only;
+    if (s == "sequential")
+        return hub::ConsumerSyncPolicy::Sequential;
+    if (s == "sequential_sync")
+        return hub::ConsumerSyncPolicy::Sequential_sync;
+    throw std::runtime_error(std::string(context) + ": invalid 'reader_sync_policy' = '" + s +
+                             "' (expected 'latest_only', 'sequential', or 'sequential_sync')");
 }
 
 } // namespace pylabhub

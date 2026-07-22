@@ -46,9 +46,8 @@ class ZapRouterTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_zap_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                     ("plh_l2_zap_" + std::string(test_name) + "_" + std::to_string(::getpid()) +
+                      "_" + std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
         return p.string();
@@ -68,8 +67,7 @@ TEST_F(ZapRouterTest, HandshakeAcceptDenyCycle)
 
 TEST_F(ZapRouterTest, UnknownDomain_Denies)
 {
-    auto w = SpawnWorker("zap_router.unknown_domain_denies",
-                         {unique_dir("unknown_domain_denies")});
+    auto w = SpawnWorker("zap_router.unknown_domain_denies", {unique_dir("unknown_domain_denies")});
     ExpectWorkerOk(w);
 }
 
@@ -89,8 +87,7 @@ TEST_F(ZapRouterTest, DuplicateRegistration_Throws)
 
 TEST_F(ZapRouterTest, EmptyDomain_Throws)
 {
-    auto w = SpawnWorker("zap_router.empty_domain_throws",
-                         {unique_dir("empty_domain_throws")});
+    auto w = SpawnWorker("zap_router.empty_domain_throws", {unique_dir("empty_domain_throws")});
     ExpectWorkerOk(w);
 }
 
@@ -114,57 +111,50 @@ TEST_F(ZapRouterTest, PumpOne_WhenUnloaded_ReturnsFalse)
 
 TEST_F(ZapRouterTest, PumpOne_MalformedShortRequest_RepliesAndRecovers)
 {
-    auto w = SpawnWorker(
-        "zap_router.pump_one_malformed_short_request_replies_and_recovers",
-        {unique_dir("pump_one_malformed_short_request_replies_and_recovers")});
+    auto w = SpawnWorker("zap_router.pump_one_malformed_short_request_replies_and_recovers",
+                         {unique_dir("pump_one_malformed_short_request_replies_and_recovers")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZapRouterTest, PumpOne_BadVersion_Replies400)
 {
-    auto w = SpawnWorker(
-        "zap_router.pump_one_bad_version_replies_400",
-        {unique_dir("pump_one_bad_version_replies_400")});
+    auto w = SpawnWorker("zap_router.pump_one_bad_version_replies_400",
+                         {unique_dir("pump_one_bad_version_replies_400")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZapRouterTest, PumpOne_NonCurveMechanism_Replies400)
 {
-    auto w = SpawnWorker(
-        "zap_router.pump_one_non_curve_mechanism_replies_400",
-        {unique_dir("pump_one_non_curve_mechanism_replies_400")});
+    auto w = SpawnWorker("zap_router.pump_one_non_curve_mechanism_replies_400",
+                         {unique_dir("pump_one_non_curve_mechanism_replies_400")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZapRouterTest, Handshake_Deny_IncrementsDeniedCounter)
 {
-    auto w = SpawnWorker(
-        "zap_router.handshake_deny_increments_denied_counter",
-        {unique_dir("handshake_deny_increments_denied_counter")});
+    auto w = SpawnWorker("zap_router.handshake_deny_increments_denied_counter",
+                         {unique_dir("handshake_deny_increments_denied_counter")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZapRouterTest, Handshake_Allow_IncrementsAllowedCounter)
 {
-    auto w = SpawnWorker(
-        "zap_router.handshake_allow_increments_allowed_counter",
-        {unique_dir("handshake_allow_increments_allowed_counter")});
+    auto w = SpawnWorker("zap_router.handshake_allow_increments_allowed_counter",
+                         {unique_dir("handshake_allow_increments_allowed_counter")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZapRouterTest, Handle_MoveConstruct_TransfersOwnership)
 {
-    auto w = SpawnWorker(
-        "zap_router.handle_move_construct_transfers_ownership",
-        {unique_dir("handle_move_construct_transfers_ownership")});
+    auto w = SpawnWorker("zap_router.handle_move_construct_transfers_ownership",
+                         {unique_dir("handle_move_construct_transfers_ownership")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZapRouterTest, Handle_MoveAssign_ReleasesPreviousRegistration)
 {
-    auto w = SpawnWorker(
-        "zap_router.handle_move_assign_releases_previous_registration",
-        {unique_dir("handle_move_assign_releases_previous_registration")});
+    auto w = SpawnWorker("zap_router.handle_move_assign_releases_previous_registration",
+                         {unique_dir("handle_move_assign_releases_previous_registration")});
     ExpectWorkerOk(w);
 }
 
@@ -177,9 +167,8 @@ TEST_F(ZapRouterTest, Handle_MoveAssign_ReleasesPreviousRegistration)
 // poll thread.
 TEST_F(ZapRouterTest, Round3_UAF_DestructorBlocksUntilAdmissionReturns)
 {
-    auto w = SpawnWorker(
-        "zap_router.round3_uaf_destructor_blocks_until_admission_returns",
-        {unique_dir("round3_uaf_destructor_blocks_until_admission_returns")});
+    auto w = SpawnWorker("zap_router.round3_uaf_destructor_blocks_until_admission_returns",
+                         {unique_dir("round3_uaf_destructor_blocks_until_admission_returns")});
     ExpectWorkerOk(w);
 }
 
@@ -189,9 +178,8 @@ TEST_F(ZapRouterTest, Round3_UAF_DestructorBlocksUntilAdmissionReturns)
 // stays single-domain.
 TEST_F(ZapRouterTest, Round3_Reentrant_RegisterRefused)
 {
-    auto w = SpawnWorker(
-        "zap_router.round3_reentrant_register_refused",
-        {unique_dir("round3_reentrant_register_refused")});
+    auto w = SpawnWorker("zap_router.round3_reentrant_register_refused",
+                         {unique_dir("round3_reentrant_register_refused")});
     // The refused register emits an ERROR log — pin the exact head of
     // the message so a regression that silently allowed re-entrance
     // OR a different "reentrant" log (e.g. from another module) would
@@ -206,23 +194,20 @@ TEST_F(ZapRouterTest, Round3_Reentrant_RegisterRefused)
 // in stderr.
 TEST_F(ZapRouterTest, Round3_Reentrant_UnregisterPanics)
 {
-    auto w = SpawnWorker(
-        "zap_router.round3_reentrant_unregister_panics",
-        {unique_dir("round3_reentrant_unregister_panics")});
+    auto w = SpawnWorker("zap_router.round3_reentrant_unregister_panics",
+                         {unique_dir("round3_reentrant_unregister_panics")});
     w.wait_for_exit();
-    EXPECT_NE(w.exit_code(), 0)
-        << "Worker did not abort — reentrant unregister_domain_ "
-           "must PLH_PANIC because the router cannot recover from "
-           "an erase mid-admission (dangling map entry → UAF).";
+    EXPECT_NE(w.exit_code(), 0) << "Worker did not abort — reentrant unregister_domain_ "
+                                   "must PLH_PANIC because the router cannot recover from "
+                                   "an erase mid-admission (dangling map entry → UAF).";
     // Pin the unique tail of the unregister panic so an unrelated
     // failure that happens to mention `unregister_domain_` would not
     // be misread as success.
-    EXPECT_THAT(w.get_stderr(),
-                ::testing::HasSubstr(
-                    "reentrant call detected from inside a "
-                    "PeerAdmission decision"))
+    EXPECT_THAT(w.get_stderr(), ::testing::HasSubstr("reentrant call detected from inside a "
+                                                     "PeerAdmission decision"))
         << "Expected PLH_PANIC text from unregister_domain_ in stderr.  "
-           "Captured stderr:\n" << w.get_stderr();
+           "Captured stderr:\n"
+        << w.get_stderr();
 }
 
 // Pins the atomic counter PANIC in pump_one for concurrent pumpers.
@@ -230,20 +215,18 @@ TEST_F(ZapRouterTest, Round3_Reentrant_UnregisterPanics)
 // the counter race observes count > 1 and PANICs.
 TEST_F(ZapRouterTest, Round3_ConcurrentPumpers_Panic)
 {
-    auto w = SpawnWorker(
-        "zap_router.round3_concurrent_pumpers_panic",
-        {unique_dir("round3_concurrent_pumpers_panic")});
+    auto w = SpawnWorker("zap_router.round3_concurrent_pumpers_panic",
+                         {unique_dir("round3_concurrent_pumpers_panic")});
     w.wait_for_exit();
-    EXPECT_NE(w.exit_code(), 0)
-        << "Worker did not abort — two concurrent pumpers must "
-           "PLH_PANIC.  The libzmq REP socket FSM is single-threaded; "
-           "silent racing two pumpers corrupts the FSM and AUTH-2's "
-           "BRC pump would observe ETERM/EAGAIN unpredictably.";
+    EXPECT_NE(w.exit_code(), 0) << "Worker did not abort — two concurrent pumpers must "
+                                   "PLH_PANIC.  The libzmq REP socket FSM is single-threaded; "
+                                   "silent racing two pumpers corrupts the FSM and AUTH-2's "
+                                   "BRC pump would observe ETERM/EAGAIN unpredictably.";
     // Pin the unique tail "concurrent pumper detected" so other
     // PANICs that happen to name pump_one (e.g. future asserts in the
     // same function) would not satisfy this matcher.
-    EXPECT_THAT(w.get_stderr(),
-                ::testing::HasSubstr("concurrent pumper detected"))
+    EXPECT_THAT(w.get_stderr(), ::testing::HasSubstr("concurrent pumper detected"))
         << "Expected PLH_PANIC text from pump_one in stderr.  "
-           "Captured stderr:\n" << w.get_stderr();
+           "Captured stderr:\n"
+        << w.get_stderr();
 }

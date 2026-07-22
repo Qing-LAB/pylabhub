@@ -48,24 +48,21 @@
 // even without start() — the CURVE identity read is part of factory
 // setup.  SecureSubsystem + ZMQContext modules therefore need to be up
 // for the ZMQ-cell dispatch tests.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-    pylabhub::hub::GetZMQContextModule()
-)
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                             pylabhub::hub::GetZMQContextModule())
 
 class HubQueueFactoryTestEnvironment : public ::testing::Environment
 {
-public:
+  public:
     void SetUp() override
     {
         auto &ks = pylabhub::utils::security::secure().keys();
         if (!ks.has(pylabhub::utils::security::kRoleIdentityName))
         {
             const auto kp = pylabhub::tests::gen_curve_keypair();
-            ks.add_identity_from_z85(
-                pylabhub::utils::security::kRoleIdentityName,
-                kp.public_z85, kp.secret_z85);
+            ks.add_identity_from_z85(pylabhub::utils::security::kRoleIdentityName, kp.public_z85,
+                                     kp.secret_z85);
         }
     }
 };
@@ -82,9 +79,9 @@ using pylabhub::hub::RxOptions;
 using pylabhub::hub::SchemaFieldDesc;
 using pylabhub::hub::ShmQueue;
 using pylabhub::hub::Transport;
+using pylabhub::hub::transport_from_string;
 using pylabhub::hub::TxOptions;
 using pylabhub::hub::ZmqQueue;
-using pylabhub::hub::transport_from_string;
 
 std::vector<SchemaFieldDesc> make_slot_schema()
 {
@@ -92,7 +89,7 @@ std::vector<SchemaFieldDesc> make_slot_schema()
     // topology-factory tests use so both transports are happy.
     SchemaFieldDesc f;
     f.type_str = "uint32";
-    f.count    = 1;
+    f.count = 1;
     return {f};
 }
 
@@ -115,7 +112,7 @@ TEST(HubQueueFactory, TransportParser_Unknown_Nullopt)
 
 TEST(HubQueueFactory, ReaderBindingSide_Matrix)
 {
-    EXPECT_TRUE (Queue::reader_is_binding_side(ChannelTopology::FanIn));
+    EXPECT_TRUE(Queue::reader_is_binding_side(ChannelTopology::FanIn));
     EXPECT_FALSE(Queue::reader_is_binding_side(ChannelTopology::FanOut));
     EXPECT_FALSE(Queue::reader_is_binding_side(ChannelTopology::OneToOne));
 }
@@ -123,8 +120,8 @@ TEST(HubQueueFactory, ReaderBindingSide_Matrix)
 TEST(HubQueueFactory, WriterBindingSide_Matrix)
 {
     EXPECT_FALSE(Queue::writer_is_binding_side(ChannelTopology::FanIn));
-    EXPECT_TRUE (Queue::writer_is_binding_side(ChannelTopology::FanOut));
-    EXPECT_TRUE (Queue::writer_is_binding_side(ChannelTopology::OneToOne));
+    EXPECT_TRUE(Queue::writer_is_binding_side(ChannelTopology::FanOut));
+    EXPECT_TRUE(Queue::writer_is_binding_side(ChannelTopology::OneToOne));
 }
 
 // ── Gate 1: (FanIn, Shm) refused ───────────────────────────────────
@@ -132,24 +129,20 @@ TEST(HubQueueFactory, WriterBindingSide_Matrix)
 TEST(HubQueueFactory, Gate1_FanInShm_ReaderRefused)
 {
     RxOptions opts;
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.channel_name = "gate1_reader";
     opts.consumer_uid = "consumer-uid";
-    auto q = Queue::create_reader(ChannelTopology::FanIn,
-                                  Transport::Shm,
-                                  std::move(opts));
+    auto q = Queue::create_reader(ChannelTopology::FanIn, Transport::Shm, std::move(opts));
     EXPECT_EQ(q, nullptr);
 }
 
 TEST(HubQueueFactory, Gate1_FanInShm_WriterRefused)
 {
     TxOptions opts;
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.channel_name = "gate1_writer";
     opts.producer_uid = "producer-uid";
-    auto q = Queue::create_writer(ChannelTopology::FanIn,
-                                  Transport::Shm,
-                                  std::move(opts));
+    auto q = Queue::create_writer(ChannelTopology::FanIn, Transport::Shm, std::move(opts));
     EXPECT_EQ(q, nullptr);
 }
 
@@ -158,55 +151,47 @@ TEST(HubQueueFactory, Gate1_FanInShm_WriterRefused)
 TEST(HubQueueFactory, Dispatch_OneToOneShm_Reader_IsShmQueue)
 {
     RxOptions opts;
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.channel_name = "dispatch_1_1_shm_r";
     opts.consumer_uid = "consumer-uid";
-    auto q = Queue::create_reader(ChannelTopology::OneToOne,
-                                  Transport::Shm,
-                                  std::move(opts));
+    auto q = Queue::create_reader(ChannelTopology::OneToOne, Transport::Shm, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ShmQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ShmQueue *>(q.get()), nullptr);
 }
 
 TEST(HubQueueFactory, Dispatch_OneToOneShm_Writer_IsShmQueue)
 {
     TxOptions opts;
-    opts.slot_schema           = make_slot_schema();
-    opts.channel_name          = "dispatch_1_1_shm_w";
-    opts.producer_uid          = "producer-uid";
-    opts.ring_buffer_capacity  = 4;
-    auto q = Queue::create_writer(ChannelTopology::OneToOne,
-                                  Transport::Shm,
-                                  std::move(opts));
+    opts.slot_schema = make_slot_schema();
+    opts.channel_name = "dispatch_1_1_shm_w";
+    opts.producer_uid = "producer-uid";
+    opts.ring_buffer_capacity = 4;
+    auto q = Queue::create_writer(ChannelTopology::OneToOne, Transport::Shm, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ShmQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ShmQueue *>(q.get()), nullptr);
 }
 
 TEST(HubQueueFactory, Dispatch_FanOutShm_Reader_IsShmQueue)
 {
     RxOptions opts;
-    opts.slot_schema  = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.channel_name = "dispatch_fanout_shm_r";
     opts.consumer_uid = "consumer-uid";
-    auto q = Queue::create_reader(ChannelTopology::FanOut,
-                                  Transport::Shm,
-                                  std::move(opts));
+    auto q = Queue::create_reader(ChannelTopology::FanOut, Transport::Shm, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ShmQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ShmQueue *>(q.get()), nullptr);
 }
 
 TEST(HubQueueFactory, Dispatch_FanOutShm_Writer_IsShmQueue)
 {
     TxOptions opts;
-    opts.slot_schema           = make_slot_schema();
-    opts.channel_name          = "dispatch_fanout_shm_w";
-    opts.producer_uid          = "producer-uid";
-    opts.ring_buffer_capacity  = 4;
-    auto q = Queue::create_writer(ChannelTopology::FanOut,
-                                  Transport::Shm,
-                                  std::move(opts));
+    opts.slot_schema = make_slot_schema();
+    opts.channel_name = "dispatch_fanout_shm_w";
+    opts.producer_uid = "producer-uid";
+    opts.ring_buffer_capacity = 4;
+    auto q = Queue::create_writer(ChannelTopology::FanOut, Transport::Shm, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ShmQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ShmQueue *>(q.get()), nullptr);
 }
 
 // ── Dispatch: ZMQ legal cells produce ZmqQueue ─────────────────────
@@ -218,14 +203,12 @@ TEST(HubQueueFactory, Dispatch_FanOutShm_Writer_IsShmQueue)
 TEST(HubQueueFactory, Dispatch_FanInZmq_Reader_IsZmqQueue)
 {
     RxOptions opts;
-    opts.slot_schema   = make_slot_schema();
-    opts.endpoint_hint = "tcp://127.0.0.1:*";  // binding side (fan-in consumer)
-    opts.instance_id   = "test:fanin-zmq-r:tx";
-    auto q = Queue::create_reader(ChannelTopology::FanIn,
-                                  Transport::Zmq,
-                                  std::move(opts));
+    opts.slot_schema = make_slot_schema();
+    opts.endpoint_hint = "tcp://127.0.0.1:*"; // binding side (fan-in consumer)
+    opts.instance_id = "test:fanin-zmq-r:tx";
+    auto q = Queue::create_reader(ChannelTopology::FanIn, Transport::Zmq, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ZmqQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ZmqQueue *>(q.get()), nullptr);
 }
 
 TEST(HubQueueFactory, Dispatch_FanInZmq_Writer_IsZmqQueue)
@@ -234,37 +217,31 @@ TEST(HubQueueFactory, Dispatch_FanInZmq_Writer_IsZmqQueue)
     opts.slot_schema = make_slot_schema();
     // Fan-in producer dials — leave endpoint_hint empty (Standby).
     opts.instance_id = "test:fanin-zmq-w:tx";
-    auto q = Queue::create_writer(ChannelTopology::FanIn,
-                                  Transport::Zmq,
-                                  std::move(opts));
+    auto q = Queue::create_writer(ChannelTopology::FanIn, Transport::Zmq, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ZmqQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ZmqQueue *>(q.get()), nullptr);
 }
 
 TEST(HubQueueFactory, Dispatch_FanOutZmq_Writer_IsZmqQueue)
 {
     TxOptions opts;
-    opts.slot_schema   = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.endpoint_hint = "tcp://127.0.0.1:*"; // fan-out producer binds
-    opts.instance_id   = "test:fanout-zmq-w:tx";
-    auto q = Queue::create_writer(ChannelTopology::FanOut,
-                                  Transport::Zmq,
-                                  std::move(opts));
+    opts.instance_id = "test:fanout-zmq-w:tx";
+    auto q = Queue::create_writer(ChannelTopology::FanOut, Transport::Zmq, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ZmqQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ZmqQueue *>(q.get()), nullptr);
 }
 
 TEST(HubQueueFactory, Dispatch_OneToOneZmq_Writer_IsZmqQueue)
 {
     TxOptions opts;
-    opts.slot_schema   = make_slot_schema();
+    opts.slot_schema = make_slot_schema();
     opts.endpoint_hint = "tcp://127.0.0.1:*"; // one-to-one producer binds
-    opts.instance_id   = "test:1-1-zmq-w:tx";
-    auto q = Queue::create_writer(ChannelTopology::OneToOne,
-                                  Transport::Zmq,
-                                  std::move(opts));
+    opts.instance_id = "test:1-1-zmq-w:tx";
+    auto q = Queue::create_writer(ChannelTopology::OneToOne, Transport::Zmq, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_NE(dynamic_cast<ZmqQueue*>(q.get()), nullptr);
+    EXPECT_NE(dynamic_cast<ZmqQueue *>(q.get()), nullptr);
 }
 
 } // namespace

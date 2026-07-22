@@ -40,7 +40,10 @@
 #include <string>
 #include <string_view>
 
-namespace pylabhub::config { class RoleConfig; }
+namespace pylabhub::config
+{
+class RoleConfig;
+}
 namespace pylabhub::scripting
 {
 // RoleHostBase is a typedef (EngineHost<RoleAPIBase>) — forward-declare
@@ -79,9 +82,8 @@ struct RoleRuntimeInfo
     /// build-time dependency of pylabhub-utils consumers.  Symbol
     /// resolution at the binary's link step pulls in the static lib's
     /// definition.
-    using HostFactory = std::unique_ptr<scripting::RoleHostBase>(*)(
-        pylabhub::config::RoleConfig config,
-        std::atomic<bool> *shutdown_flag);
+    using HostFactory = std::unique_ptr<scripting::RoleHostBase> (*)(
+        pylabhub::config::RoleConfig config, std::atomic<bool> *shutdown_flag);
     HostFactory host_factory = nullptr;
 
     /// Role-specific JSON parser — extracts role_data<T> from the full
@@ -91,8 +93,7 @@ struct RoleRuntimeInfo
     /// Signature mirrors @c config::RoleConfig::RoleParser. std::function
     /// implicitly accepts a function pointer, so callers pass
     /// @c info->config_parser directly to @c RoleConfig::load_from_directory.
-    using ConfigParser = std::any(*)(const nlohmann::json &,
-                                     const config::RoleConfig &);
+    using ConfigParser = std::any (*)(const nlohmann::json &, const config::RoleConfig &);
     ConfigParser config_parser = nullptr;
 };
 
@@ -109,9 +110,9 @@ class PYLABHUB_UTILS_EXPORT RoleRegistry
         explicit RuntimeBuilder(std::string_view role_type);
         ~RuntimeBuilder();
 
-        RuntimeBuilder(const RuntimeBuilder &)            = delete;
+        RuntimeBuilder(const RuntimeBuilder &) = delete;
         RuntimeBuilder &operator=(const RuntimeBuilder &) = delete;
-        RuntimeBuilder(RuntimeBuilder &&) noexcept        = default;
+        RuntimeBuilder(RuntimeBuilder &&) noexcept = default;
         RuntimeBuilder &operator=(RuntimeBuilder &&) noexcept = default;
 
         RuntimeBuilder &role_label(std::string_view label);
@@ -127,7 +128,7 @@ class PYLABHUB_UTILS_EXPORT RoleRegistry
 
       private:
         RoleRuntimeInfo entry_;
-        bool            committed_ = false;
+        bool committed_ = false;
     };
 
     /// Begin a runtime registration for @p role_type (long form —

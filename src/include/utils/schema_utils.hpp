@@ -17,8 +17,8 @@
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/schema_field_layout.hpp"
 #include "utils/schema_loader.hpp"
-#include "utils/schema_record.hpp"  // SchemaRecord (HEP-CORE-0034)
-#include "utils/security/secure_subsystem.hpp"  // secure().compute_blake2b_array
+#include "utils/schema_record.hpp"             // SchemaRecord (HEP-CORE-0034)
+#include "utils/security/secure_subsystem.hpp" // secure().compute_blake2b_array
 
 #include "utils/json_fwd.hpp"
 
@@ -48,10 +48,9 @@ inline SchemaSpec parse_schema_json(const nlohmann::json &schema_obj)
     // part of the schema fingerprint (§6.3); a missing packing field
     // would silently default to one mode and collide with the other.
     if (!schema_obj.contains("packing"))
-        throw std::runtime_error(
-            "Schema: 'packing' field is required (HEP-CORE-0034 §6.2). "
-            "Set \"packing\": \"aligned\" for natural C-struct layout or "
-            "\"packing\": \"packed\" for no-padding layout.");
+        throw std::runtime_error("Schema: 'packing' field is required (HEP-CORE-0034 §6.2). "
+                                 "Set \"packing\": \"aligned\" for natural C-struct layout or "
+                                 "\"packing\": \"packed\" for no-padding layout.");
     spec.packing = schema_obj["packing"].get<std::string>();
     if (spec.packing != "aligned" && spec.packing != "packed")
         throw std::runtime_error("Schema: 'packing' must be 'aligned' or 'packed'");
@@ -64,32 +63,30 @@ inline SchemaSpec parse_schema_json(const nlohmann::json &schema_obj)
         if (!f.contains("name") || !f["name"].is_string())
             throw std::runtime_error("Schema: each field must have a string 'name'");
         if (!f.contains("type") || !f["type"].is_string())
-            throw std::runtime_error(
-                "Schema: field '" + f["name"].get<std::string>() + "' missing 'type'");
+            throw std::runtime_error("Schema: field '" + f["name"].get<std::string>() +
+                                     "' missing 'type'");
 
         FieldDef fd;
-        fd.name     = f["name"].get<std::string>();
+        fd.name = f["name"].get<std::string>();
         fd.type_str = f["type"].get<std::string>();
-        fd.count    = f.value("count",  uint32_t{1});
-        fd.length   = f.value("length", uint32_t{0});
+        fd.count = f.value("count", uint32_t{1});
+        fd.length = f.value("length", uint32_t{0});
 
         static constexpr std::array<std::string_view, 13> kValidTypes = {
-            "bool", "int8", "int16", "int32", "int64",
-            "uint8", "uint16", "uint32", "uint64",
-            "float32", "float64", "string", "bytes"};
+            "bool",   "int8",   "int16",   "int32",   "int64",  "uint8", "uint16",
+            "uint32", "uint64", "float32", "float64", "string", "bytes"};
         if (!std::any_of(kValidTypes.begin(), kValidTypes.end(),
-                [&fd](std::string_view t) { return t == fd.type_str; }))
-            throw std::runtime_error(
-                "Schema: field '" + fd.name + "' has unknown type '" + fd.type_str + "'");
+                         [&fd](std::string_view t) { return t == fd.type_str; }))
+            throw std::runtime_error("Schema: field '" + fd.name + "' has unknown type '" +
+                                     fd.type_str + "'");
 
         if (fd.count == 0)
-            throw std::runtime_error(
-                "Schema: field '" + fd.name + "' has 'count' = 0 (must be >= 1)");
+            throw std::runtime_error("Schema: field '" + fd.name +
+                                     "' has 'count' = 0 (must be >= 1)");
 
         if ((fd.type_str == "string" || fd.type_str == "bytes") && fd.length == 0)
-            throw std::runtime_error(
-                "Schema: field '" + fd.name + "' of type '" + fd.type_str +
-                "' requires 'length' > 0");
+            throw std::runtime_error("Schema: field '" + fd.name + "' of type '" + fd.type_str +
+                                     "' requires 'length' > 0");
 
         spec.fields.push_back(std::move(fd));
     }
@@ -106,7 +103,7 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
 {
     SchemaSpec spec;
     spec.has_schema = true;
-    spec.packing    = layout.packing;  // HEP-CORE-0034 — propagate per-section packing
+    spec.packing = layout.packing; // HEP-CORE-0034 — propagate per-section packing
 
     for (const auto &sf : layout.fields)
     {
@@ -115,14 +112,14 @@ inline SchemaSpec schema_entry_to_spec(const schema::SchemaLayoutDef &layout)
         if (sf.type == "char")
         {
             fd.type_str = "string";
-            fd.length   = sf.count;
-            fd.count    = 1;
+            fd.length = sf.count;
+            fd.count = 1;
         }
         else
         {
             fd.type_str = sf.type;
-            fd.count    = sf.count;
-            fd.length   = 0;
+            fd.count = sf.count;
+            fd.length = 0;
         }
         spec.fields.push_back(std::move(fd));
     }
@@ -160,17 +157,15 @@ inline SchemaSpec resolve_named_schema(const std::string &schema_id, bool use_fl
     auto it = std::find_if(entries.begin(), entries.end(),
                            [&](const auto &p) { return p.second.schema_id == schema_id; });
     if (it == entries.end())
-        throw std::runtime_error(
-            std::string("[") + label + "] Named schema '" + schema_id +
-            "' not found in role-side schema cache (search dirs: " +
-            std::to_string(search_dirs.size()) + ")");
+        throw std::runtime_error(std::string("[") + label + "] Named schema '" + schema_id +
+                                 "' not found in role-side schema cache (search dirs: " +
+                                 std::to_string(search_dirs.size()) + ")");
 
-    const auto &entry  = it->second;
+    const auto &entry = it->second;
     const auto &layout = use_flexzone ? entry.flexzone : entry.slot;
     if (layout.fields.empty())
-        throw std::runtime_error(
-            std::string("[") + label + "] Named schema '" + schema_id +
-            "' has no " + (use_flexzone ? "flexzone" : "slot") + " fields");
+        throw std::runtime_error(std::string("[") + label + "] Named schema '" + schema_id +
+                                 "' has no " + (use_flexzone ? "flexzone" : "slot") + " fields");
     return schema_entry_to_spec(layout);
 }
 
@@ -216,14 +211,18 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
 inline std::string canonical_fields_str(const SchemaSpec &spec)
 {
     std::string out;
-    bool        first = true;
+    bool first = true;
     for (const auto &f : spec.fields)
     {
-        if (!first) out += '|';
+        if (!first)
+            out += '|';
         first = false;
-        out += f.name;    out += ':';
-        out += f.type_str; out += ':';
-        out += std::to_string(f.count);  out += ':';
+        out += f.name;
+        out += ':';
+        out += f.type_str;
+        out += ':';
+        out += std::to_string(f.count);
+        out += ':';
         out += std::to_string(f.length);
     }
     return out;
@@ -256,8 +255,8 @@ inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const Schema
         canonical += fz_spec.packing;
     }
 
-    const auto hash = pylabhub::utils::security::secure().compute_blake2b_array(
-        canonical.data(), canonical.size());
+    const auto hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
+                                                                                canonical.size());
     return std::string(reinterpret_cast<const char *>(hash.data()), hash.size());
 }
 
@@ -270,11 +269,10 @@ inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const Schema
 /// `schema_hash`.  Identical algorithm to `compute_schema_hash` above
 /// — just operating on already-canonical wire strings instead of
 /// SchemaSpec inputs.
-inline std::array<uint8_t, 32>
-compute_canonical_hash_from_wire(const std::string &slot_blds,
-                                 const std::string &slot_packing,
-                                 const std::string &fz_blds   = {},
-                                 const std::string &fz_packing = {})
+inline std::array<uint8_t, 32> compute_canonical_hash_from_wire(const std::string &slot_blds,
+                                                                const std::string &slot_packing,
+                                                                const std::string &fz_blds = {},
+                                                                const std::string &fz_packing = {})
 {
     std::string canonical;
     canonical.reserve(slot_blds.size() + fz_blds.size() + 64);
@@ -292,15 +290,16 @@ compute_canonical_hash_from_wire(const std::string &slot_blds,
         canonical += slot_blds.empty() ? "|pack:" : "|fzpack:";
         canonical += fz_packing;
     }
-    return pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
+    return pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
+                                                                     canonical.size());
 }
 
 /// Result of `verify_request_fingerprint` (HEP-CORE-0034 §9, Job A).
 struct RequestFingerprint
 {
-    std::array<uint8_t, 32> hash{};        ///< recomputed wire fingerprint
-    bool                    consistent{true}; ///< false iff a non-empty claimed
-                                              ///< hash disagrees with `hash`
+    std::array<uint8_t, 32> hash{}; ///< recomputed wire fingerprint
+    bool consistent{true};          ///< false iff a non-empty claimed
+                                    ///< hash disagrees with `hash`
 };
 
 /// Request self-consistency pre-check (HEP-CORE-0034 §9 step 1 / §2.4 I4).
@@ -316,24 +315,20 @@ struct RequestFingerprint
 /// structure is present.  `claimed_hash_hex` empty means "no claim — just
 /// compute".  A `consistent == false` result maps to the wire code
 /// `FINGERPRINT_INCONSISTENT` at every caller.
-inline RequestFingerprint
-verify_request_fingerprint(const std::string &slot_blds,
-                           const std::string &slot_packing,
-                           const std::string &fz_blds,
-                           const std::string &fz_packing,
-                           const std::string &claimed_hash_hex)
+inline RequestFingerprint verify_request_fingerprint(const std::string &slot_blds,
+                                                     const std::string &slot_packing,
+                                                     const std::string &fz_blds,
+                                                     const std::string &fz_packing,
+                                                     const std::string &claimed_hash_hex)
 {
     RequestFingerprint out;
-    out.hash = compute_canonical_hash_from_wire(slot_blds, slot_packing,
-                                                fz_blds, fz_packing);
+    out.hash = compute_canonical_hash_from_wire(slot_blds, slot_packing, fz_blds, fz_packing);
     if (!claimed_hash_hex.empty())
     {
-        const std::string claimed =
-            ::pylabhub::format_tools::bytes_from_hex(claimed_hash_hex);
-        out.consistent =
-            claimed.size() == out.hash.size() &&
-            std::equal(claimed.begin(), claimed.end(),
-                       reinterpret_cast<const char *>(out.hash.data()));
+        const std::string claimed = ::pylabhub::format_tools::bytes_from_hex(claimed_hash_hex);
+        out.consistent = claimed.size() == out.hash.size() &&
+                         std::equal(claimed.begin(), claimed.end(),
+                                    reinterpret_cast<const char *>(out.hash.data()));
     }
     return out;
 }
@@ -365,22 +360,16 @@ to_hub_schema_record(const ::pylabhub::schema::SchemaEntry &entry)
     // us a SchemaSpec whose canonical_fields_str() exactly matches what
     // a wire client would build via the same conversion.
     auto slot_spec = schema_entry_to_spec(entry.slot);
-    auto fz_spec   = entry.has_flexzone() ? schema_entry_to_spec(entry.flexzone)
-                                           : SchemaSpec{};
+    auto fz_spec = entry.has_flexzone() ? schema_entry_to_spec(entry.flexzone) : SchemaSpec{};
 
     // Hub-globals are slot-canonical for citation purposes.  If a global
     // schema declares a flexzone, the canonical form folds it in too —
     // identical to the producer's path.
-    rec.blds    = canonical_fields_str(slot_spec);
+    rec.blds = canonical_fields_str(slot_spec);
     rec.packing = entry.slot.packing;
-    rec.hash    = compute_canonical_hash_from_wire(rec.blds,
-                                                    rec.packing,
-                                                    fz_spec.has_schema
-                                                        ? canonical_fields_str(fz_spec)
-                                                        : std::string{},
-                                                    fz_spec.has_schema
-                                                        ? entry.flexzone.packing
-                                                        : std::string{});
+    rec.hash = compute_canonical_hash_from_wire(
+        rec.blds, rec.packing, fz_spec.has_schema ? canonical_fields_str(fz_spec) : std::string{},
+        fz_spec.has_schema ? entry.flexzone.packing : std::string{});
     return rec;
 }
 
@@ -442,29 +431,27 @@ struct WireSchemaFields
 /// on either is treated as "not present" (the corresponding wire
 /// fields stay empty, which is the producer's signal that the role
 /// has no slot/flexzone for this side).
-inline WireSchemaFields
-make_wire_schema_fields(const nlohmann::json &slot_schema_json,
-                        const SchemaSpec     &slot_spec,
-                        const SchemaSpec     &fz_spec)
+inline WireSchemaFields make_wire_schema_fields(const nlohmann::json &slot_schema_json,
+                                                const SchemaSpec &slot_spec,
+                                                const SchemaSpec &fz_spec)
 {
     WireSchemaFields w;
     if (slot_schema_json.is_string())
         w.schema_id = slot_schema_json.get<std::string>();
     if (slot_spec.has_schema)
     {
-        w.schema_blds    = canonical_fields_str(slot_spec);
+        w.schema_blds = canonical_fields_str(slot_spec);
         w.schema_packing = slot_spec.packing;
     }
     if (fz_spec.has_schema)
     {
-        w.flexzone_blds    = canonical_fields_str(fz_spec);
+        w.flexzone_blds = canonical_fields_str(fz_spec);
         w.flexzone_packing = fz_spec.packing;
     }
     if (slot_spec.has_schema || fz_spec.has_schema)
     {
-        const auto h = compute_canonical_hash_from_wire(
-            w.schema_blds, w.schema_packing,
-            w.flexzone_blds, w.flexzone_packing);
+        const auto h = compute_canonical_hash_from_wire(w.schema_blds, w.schema_packing,
+                                                        w.flexzone_blds, w.flexzone_packing);
         w.schema_hash = pylabhub::format_tools::bytes_to_hex(
             {reinterpret_cast<const char *>(h.data()), h.size()});
     }
@@ -475,16 +462,22 @@ make_wire_schema_fields(const nlohmann::json &slot_schema_json,
 /// Empty fields in `w` are skipped — this preserves the
 /// "no schema fields → no Stage-2 verification" backward-compat path
 /// for roles that haven't declared a schema.
-inline void apply_producer_schema_fields(nlohmann::json         &reg_opts,
-                                         const WireSchemaFields &w)
+inline void apply_producer_schema_fields(nlohmann::json &reg_opts, const WireSchemaFields &w)
 {
-    if (!w.schema_id.empty())        reg_opts["schema_id"]        = w.schema_id;
-    if (!w.schema_owner.empty())     reg_opts["schema_owner"]     = w.schema_owner;
-    if (!w.schema_hash.empty())      reg_opts["schema_hash"]      = w.schema_hash;
-    if (!w.schema_blds.empty())      reg_opts["schema_blds"]      = w.schema_blds;
-    if (!w.schema_packing.empty())   reg_opts["schema_packing"]   = w.schema_packing;
-    if (!w.flexzone_blds.empty())    reg_opts["flexzone_blds"]    = w.flexzone_blds;
-    if (!w.flexzone_packing.empty()) reg_opts["flexzone_packing"] = w.flexzone_packing;
+    if (!w.schema_id.empty())
+        reg_opts["schema_id"] = w.schema_id;
+    if (!w.schema_owner.empty())
+        reg_opts["schema_owner"] = w.schema_owner;
+    if (!w.schema_hash.empty())
+        reg_opts["schema_hash"] = w.schema_hash;
+    if (!w.schema_blds.empty())
+        reg_opts["schema_blds"] = w.schema_blds;
+    if (!w.schema_packing.empty())
+        reg_opts["schema_packing"] = w.schema_packing;
+    if (!w.flexzone_blds.empty())
+        reg_opts["flexzone_blds"] = w.flexzone_blds;
+    if (!w.flexzone_packing.empty())
+        reg_opts["flexzone_packing"] = w.flexzone_packing;
 }
 
 /// Paste the consumer-side wire fields into a CONSUMER_REG_REQ payload.
@@ -501,18 +494,23 @@ inline void apply_producer_schema_fields(nlohmann::json         &reg_opts,
 ///     fields (when present) drive defense-in-depth verification.
 ///   - id absent + structure present → anonymous citation.
 ///   - all empty → no validation (legacy backward-compat).
-inline void apply_consumer_schema_fields(nlohmann::json         &reg_opts,
-                                         const WireSchemaFields &w)
+inline void apply_consumer_schema_fields(nlohmann::json &reg_opts, const WireSchemaFields &w)
 {
     // HEP-CORE-0034 §10.2 — every consumer-side wire field carries the
     // `expected_schema_*` / `expected_flexzone_*` prefix to mirror the
     // producer's `schema_*` / `flexzone_*` fields.
-    if (!w.schema_id.empty())        reg_opts["expected_schema_id"]        = w.schema_id;
-    if (!w.schema_hash.empty())      reg_opts["expected_schema_hash"]      = w.schema_hash;
-    if (!w.schema_blds.empty())      reg_opts["expected_schema_blds"]      = w.schema_blds;
-    if (!w.schema_packing.empty())   reg_opts["expected_schema_packing"]   = w.schema_packing;
-    if (!w.flexzone_blds.empty())    reg_opts["expected_flexzone_blds"]    = w.flexzone_blds;
-    if (!w.flexzone_packing.empty()) reg_opts["expected_flexzone_packing"] = w.flexzone_packing;
+    if (!w.schema_id.empty())
+        reg_opts["expected_schema_id"] = w.schema_id;
+    if (!w.schema_hash.empty())
+        reg_opts["expected_schema_hash"] = w.schema_hash;
+    if (!w.schema_blds.empty())
+        reg_opts["expected_schema_blds"] = w.schema_blds;
+    if (!w.schema_packing.empty())
+        reg_opts["expected_schema_packing"] = w.schema_packing;
+    if (!w.flexzone_blds.empty())
+        reg_opts["expected_flexzone_blds"] = w.flexzone_blds;
+    if (!w.flexzone_packing.empty())
+        reg_opts["expected_flexzone_packing"] = w.flexzone_packing;
 }
 
 // ── Schema size computation ──────────────────────────────────────────────────
@@ -548,8 +546,7 @@ inline size_t align_to_physical_page(size_t logical_size)
 // ── ZMQ/SHM schema field conversion ─────────────────────────────────────────
 
 /// Convert a SchemaSpec to a SchemaFieldDesc list for queue creation.
-inline std::vector<SchemaFieldDesc>
-schema_spec_to_zmq_fields(const SchemaSpec &spec)
+inline std::vector<SchemaFieldDesc> schema_spec_to_zmq_fields(const SchemaSpec &spec)
 {
     if (spec.fields.empty())
         throw std::runtime_error("fields must not be empty");

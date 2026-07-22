@@ -36,8 +36,8 @@ TEST_F(DatahubMutexTest, AttacherAcquiresAfterCreator)
     // Use ready-signal pipe for deterministic ordering: creator signals when mutex is created and
     // held, parent spawns attacher, attacher blocks until creator releases.
     std::string shm_name = make_test_channel_name("DBMutexSeq");
-    auto creator = SpawnWorkerWithReadySignal("datablock_mutex.acquire_and_release_creator_hold_long",
-                                              {shm_name});
+    auto creator = SpawnWorkerWithReadySignal(
+        "datablock_mutex.acquire_and_release_creator_hold_long", {shm_name});
     creator.wait_for_ready();
     auto attacher = SpawnWorker("datablock_mutex.acquire_and_release_attacher", {shm_name});
     creator.wait_for_exit();
@@ -128,8 +128,8 @@ TEST_F(DatahubMutexTest, TryLockForInfinite_BlocksUnderContention)
     //   - try_lock_for returns false → attacher exits 1 → test fails, or
     //   - T3 ≈ T1 (instant return) and T3 < T2 → ordering invariant fails.
     std::string shm_name = make_test_channel_name("DBMutexInfContend");
-    auto creator = SpawnWorkerWithReadySignal("datablock_mutex.acquire_creator_signal_then_hold",
-                                              {shm_name});
+    auto creator =
+        SpawnWorkerWithReadySignal("datablock_mutex.acquire_creator_signal_then_hold", {shm_name});
     creator.wait_for_ready(); // Creator holds lock now
     auto attacher = SpawnWorker("datablock_mutex.try_lock_infinite_with_timestamps", {shm_name});
     creator.wait_for_exit();
@@ -139,26 +139,24 @@ TEST_F(DatahubMutexTest, TryLockForInfinite_BlocksUnderContention)
     ASSERT_EQ(attacher.exit_code(), 0) << "Attacher failed:\n" << attacher.get_stderr();
 
     // Parse timestamps from worker stderr output
-    uint64_t t1_try      = extract_timestamp(attacher.get_stderr(), "TRY_TS");
-    uint64_t t2_release   = extract_timestamp(creator.get_stderr(), "RELEASE_TS");
-    uint64_t t3_acquired  = extract_timestamp(attacher.get_stderr(), "ACQUIRED_TS");
+    uint64_t t1_try = extract_timestamp(attacher.get_stderr(), "TRY_TS");
+    uint64_t t2_release = extract_timestamp(creator.get_stderr(), "RELEASE_TS");
+    uint64_t t3_acquired = extract_timestamp(attacher.get_stderr(), "ACQUIRED_TS");
 
     // Print parsed values for diagnostic verification
     std::fprintf(stderr,
-        "  Creator stderr:  %s\n"
-        "  Attacher stderr: %s\n"
-        "  T1(try)=%lu  T2(release)=%lu  T3(acquired)=%lu\n"
-        "  T2-T1 = %lu ms (lock held after attacher started trying)\n"
-        "  T3-T2 = %lu ms (acquire latency after release)\n"
-        "  T3-T1 = %lu ms (total blocked time)\n",
-        std::string(creator.get_stderr()).c_str(),
-        std::string(attacher.get_stderr()).c_str(),
-        static_cast<unsigned long>(t1_try),
-        static_cast<unsigned long>(t2_release),
-        static_cast<unsigned long>(t3_acquired),
-        static_cast<unsigned long>((t2_release - t1_try) / 1'000'000),
-        static_cast<unsigned long>((t3_acquired - t2_release) / 1'000'000),
-        static_cast<unsigned long>((t3_acquired - t1_try) / 1'000'000));
+                 "  Creator stderr:  %s\n"
+                 "  Attacher stderr: %s\n"
+                 "  T1(try)=%lu  T2(release)=%lu  T3(acquired)=%lu\n"
+                 "  T2-T1 = %lu ms (lock held after attacher started trying)\n"
+                 "  T3-T2 = %lu ms (acquire latency after release)\n"
+                 "  T3-T1 = %lu ms (total blocked time)\n",
+                 std::string(creator.get_stderr()).c_str(),
+                 std::string(attacher.get_stderr()).c_str(), static_cast<unsigned long>(t1_try),
+                 static_cast<unsigned long>(t2_release), static_cast<unsigned long>(t3_acquired),
+                 static_cast<unsigned long>((t2_release - t1_try) / 1'000'000),
+                 static_cast<unsigned long>((t3_acquired - t2_release) / 1'000'000),
+                 static_cast<unsigned long>((t3_acquired - t1_try) / 1'000'000));
 
     EXPECT_LT(t1_try, t2_release)
         << "Attacher must have started trying (T1) before creator released (T2)";

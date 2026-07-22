@@ -21,7 +21,7 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/timeout_constants.hpp"     // kMidTimeoutMs (join/shutdown defaults)
+#include "utils/timeout_constants.hpp" // kMidTimeoutMs (join/shutdown defaults)
 
 #include <atomic>
 #include <chrono>
@@ -89,8 +89,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
         ///
         /// Inline template to avoid std::function allocation on a hot
         /// shutdown path.
-        template <typename F>
-        void with_active_loop(F &&body)
+        template <typename F> void with_active_loop(F &&body)
         {
             // Defensive null checks: a SlotContext constructed without
             // the ThreadManager spawn-wrapper wiring (e.g. unit-test
@@ -100,7 +99,8 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
             // per-slot signal/quiescence machinery.  Production spawn
             // always wires both pointers, so this branch never fires
             // there.
-            if (!shutdown_requested_ || !active_loop_depth_) return;
+            if (!shutdown_requested_ || !active_loop_depth_)
+                return;
             if (shutdown_requested_->load(std::memory_order_acquire))
                 return;
             // Counter (NOT bool) so nested `with_active_loop` calls on
@@ -134,22 +134,22 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
         /// same thread** — the two APIs track different flags.
         void mark_active_loop_exited() noexcept;
 
-        SlotContext(const SlotContext &)            = delete;
+        SlotContext(const SlotContext &) = delete;
         SlotContext &operator=(const SlotContext &) = delete;
-        SlotContext(SlotContext &&)                 = delete;
-        SlotContext &operator=(SlotContext &&)      = delete;
+        SlotContext(SlotContext &&) = delete;
+        SlotContext &operator=(SlotContext &&) = delete;
 
       private:
         friend class ThreadManager;
         SlotContext(std::shared_ptr<std::atomic<bool>> exited,
-                    std::shared_ptr<std::atomic<int>>  depth,
+                    std::shared_ptr<std::atomic<int>> depth,
                     std::shared_ptr<std::atomic<bool>> shutdown) noexcept
-            : active_loop_exited_(std::move(exited))
-            , active_loop_depth_(std::move(depth))
-            , shutdown_requested_(std::move(shutdown))
-        {}
+            : active_loop_exited_(std::move(exited)), active_loop_depth_(std::move(depth)),
+              shutdown_requested_(std::move(shutdown))
+        {
+        }
         std::shared_ptr<std::atomic<bool>> active_loop_exited_;
-        std::shared_ptr<std::atomic<int>>  active_loop_depth_;
+        std::shared_ptr<std::atomic<int>> active_loop_depth_;
         std::shared_ptr<std::atomic<bool>> shutdown_requested_;
     };
 
@@ -207,10 +207,10 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// Diagnostic snapshot entry.
     struct ThreadInfo
     {
-        std::string                          name;
-        bool                                 alive;   ///< joinable() at snapshot time
-        std::chrono::steady_clock::duration  elapsed; ///< wall time since spawn()
-        std::chrono::milliseconds            join_timeout;
+        std::string name;
+        bool alive;                                  ///< joinable() at snapshot time
+        std::chrono::steady_clock::duration elapsed; ///< wall time since spawn()
+        std::chrono::milliseconds join_timeout;
     };
 
     /// @param owner_tag  Owner tag / category (e.g., "prod", "cons", "proc",
@@ -232,20 +232,19 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     ///
     /// Throws std::invalid_argument if either string is empty — forgetting
     /// to provide identity is caught at construction, not runtime access.
-    ThreadManager(std::string owner_tag,
-                  std::string owner_id,
-                  std::chrono::milliseconds aggregate_shutdown_timeout
-                      = std::chrono::milliseconds{2 * pylabhub::kMidTimeoutMs});
+    ThreadManager(std::string owner_tag, std::string owner_id,
+                  std::chrono::milliseconds aggregate_shutdown_timeout = std::chrono::milliseconds{
+                      2 * pylabhub::kMidTimeoutMs});
 
     /// Destructor calls drain() (idempotent) and deregisters the dynamic
     /// lifecycle module. Safe to call from destructor chains; does not throw.
     ~ThreadManager();
 
     // Non-copyable, non-movable: fixed identity + lifecycle module binding.
-    ThreadManager(const ThreadManager &)            = delete;
+    ThreadManager(const ThreadManager &) = delete;
     ThreadManager &operator=(const ThreadManager &) = delete;
-    ThreadManager(ThreadManager &&)                 = delete;
-    ThreadManager &operator=(ThreadManager &&)      = delete;
+    ThreadManager(ThreadManager &&) = delete;
+    ThreadManager &operator=(ThreadManager &&) = delete;
 
     /// Spawn a named thread. The body lambda MUST periodically check the
     /// caller's stop condition and return when shutdown is requested.
@@ -260,14 +259,11 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// Spawn with explicit options.  Contract-aware overload — the body
     /// receives a `SlotContext &` it uses to call `mark_active_loop_exited()`
     /// at the moment it leaves its active loop (per HEP-CORE-0031 §4.1).
-    bool spawn(const std::string &                 name,
-               std::function<void(SlotContext &)>  body,
-               SpawnOptions                        opts);
+    bool spawn(const std::string &name, std::function<void(SlotContext &)> body, SpawnOptions opts);
 
     /// Spawn with default join timeout (5 seconds per-thread).  Contract-
     /// aware overload.
-    bool spawn(const std::string &                 name,
-               std::function<void(SlotContext &)>  body);
+    bool spawn(const std::string &name, std::function<void(SlotContext &)> body);
 
     /// Backwards-compatible overload — body takes no arguments.  Internally
     /// wraps the body in a SlotContext-ignoring trampoline.  For threads
@@ -277,14 +273,11 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// set).  Use the SlotContext overload above if the thread needs to
     /// signal loop exit BEFORE body return (e.g., to let the teardown
     /// caller release resources while the thread does post-loop cleanup).
-    bool spawn(const std::string &    name,
-               std::function<void()>  body,
-               SpawnOptions           opts);
+    bool spawn(const std::string &name, std::function<void()> body, SpawnOptions opts);
 
     /// Spawn with default join timeout (5 seconds per-thread).  Backwards-
     /// compatible overload.
-    bool spawn(const std::string &    name,
-               std::function<void()>  body);
+    bool spawn(const std::string &name, std::function<void()> body);
 
     /// Drain all managed threads (HEP-CORE-0031 §4.2 — master/peer
     /// orchestration added post-MD1.5).
@@ -408,8 +401,7 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// Polls in 10 ms granularity; the timeout bound is on wall-clock,
     /// not per-slot, so total wait never exceeds @p timeout regardless
     /// of slot count.
-    [[nodiscard]] std::size_t wait_for_quiescence(
-        std::chrono::milliseconds timeout) noexcept;
+    [[nodiscard]] std::size_t wait_for_quiescence(std::chrono::milliseconds timeout) noexcept;
 
     /// Query whether the named slot's active-loop-exited flag is set
     /// (per HEP-CORE-0031 §4.1).  Returns true iff a slot with this name
@@ -430,9 +422,8 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// shutdown contract before destroying `broker_comm_`.  Generalises
     /// to any externally-threaded class whose `pImpl` the caller intends
     /// to destroy.
-    [[nodiscard]] bool wait_for_active_loop_exit(
-        std::string_view          name,
-        std::chrono::milliseconds timeout) noexcept;
+    [[nodiscard]] bool wait_for_active_loop_exit(std::string_view name,
+                                                 std::chrono::milliseconds timeout) noexcept;
 
     /// Count of threads that were detached during the most recent drain()
     /// call (0 if no drain yet or last call was fully clean).

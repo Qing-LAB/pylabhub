@@ -24,7 +24,7 @@
  */
 #include "utils/hub_state.hpp"
 
-#include "utils/format_tools.hpp"  // bytes_to_hex — normalized schema diagnostics
+#include "utils/format_tools.hpp" // bytes_to_hex — normalized schema diagnostics
 #include "utils/naming.hpp"
 #include "utils/replay_guard.hpp" // shared sliding-window nonce dedup
 
@@ -44,9 +44,12 @@ const char *to_string(RoleState s) noexcept
 {
     switch (s)
     {
-    case RoleState::Connected:    return "Connected";
-    case RoleState::Pending:      return "Pending";
-    case RoleState::Disconnected: return "Disconnected";
+    case RoleState::Connected:
+        return "Connected";
+    case RoleState::Pending:
+        return "Pending";
+    case RoleState::Disconnected:
+        return "Disconnected";
     }
     return "Unknown";
 }
@@ -55,9 +58,12 @@ const char *to_string(PeerState s) noexcept
 {
     switch (s)
     {
-    case PeerState::Connecting:   return "Connecting";
-    case PeerState::Connected:    return "Connected";
-    case PeerState::Disconnected: return "Disconnected";
+    case PeerState::Connecting:
+        return "Connecting";
+    case PeerState::Connected:
+        return "Connected";
+    case PeerState::Disconnected:
+        return "Disconnected";
     }
     return "Unknown";
 }
@@ -66,10 +72,14 @@ const char *to_string(ChannelCloseReason r) noexcept
 {
     switch (r)
     {
-    case ChannelCloseReason::VoluntaryDereg:   return "VoluntaryDereg";
-    case ChannelCloseReason::HeartbeatTimeout: return "HeartbeatTimeout";
-    case ChannelCloseReason::AdminClose:       return "AdminClose";
-    case ChannelCloseReason::BrokerShutdown:   return "BrokerShutdown";
+    case ChannelCloseReason::VoluntaryDereg:
+        return "VoluntaryDereg";
+    case ChannelCloseReason::HeartbeatTimeout:
+        return "HeartbeatTimeout";
+    case ChannelCloseReason::AdminClose:
+        return "AdminClose";
+    case ChannelCloseReason::BrokerShutdown:
+        return "BrokerShutdown";
     }
     return "Unknown";
 }
@@ -78,10 +88,14 @@ const char *to_string(ChannelObservable o) noexcept
 {
     switch (o)
     {
-    case ChannelObservable::kAbsent:      return "absent";
-    case ChannelObservable::kRegistering: return "registering";
-    case ChannelObservable::kStalled:     return "stalled";
-    case ChannelObservable::kLive:        return "live";
+    case ChannelObservable::kAbsent:
+        return "absent";
+    case ChannelObservable::kRegistering:
+        return "registering";
+    case ChannelObservable::kStalled:
+        return "stalled";
+    case ChannelObservable::kLive:
+        return "live";
     }
     return "unknown";
 }
@@ -97,23 +111,28 @@ const char *to_string(ChannelTopology t) noexcept
 {
     switch (t)
     {
-    case ChannelTopology::FanIn:    return "fan-in";
-    case ChannelTopology::FanOut:   return "fan-out";
-    case ChannelTopology::OneToOne: return "one-to-one";
+    case ChannelTopology::FanIn:
+        return "fan-in";
+    case ChannelTopology::FanOut:
+        return "fan-out";
+    case ChannelTopology::OneToOne:
+        return "one-to-one";
     }
     return "unknown";
 }
 
 std::optional<ChannelTopology> parse(std::string_view s) noexcept
 {
-    if (s == "fan-in")     return ChannelTopology::FanIn;
-    if (s == "fan-out")    return ChannelTopology::FanOut;
-    if (s == "one-to-one") return ChannelTopology::OneToOne;
+    if (s == "fan-in")
+        return ChannelTopology::FanIn;
+    if (s == "fan-out")
+        return ChannelTopology::FanOut;
+    if (s == "one-to-one")
+        return ChannelTopology::OneToOne;
     return std::nullopt;
 }
 
-bool transport_compatible(ChannelTopology t,
-                          std::string_view data_transport) noexcept
+bool transport_compatible(ChannelTopology t, std::string_view data_transport) noexcept
 {
     if (t == ChannelTopology::FanIn && data_transport == "shm")
         return false;
@@ -122,10 +141,8 @@ bool transport_compatible(ChannelTopology t,
     return true;
 }
 
-const char *check_cardinality(ChannelTopology t,
-                              AdmissionSide   side,
-                              std::size_t     existing_producers,
-                              std::size_t     existing_consumers) noexcept
+const char *check_cardinality(ChannelTopology t, AdmissionSide side, std::size_t existing_producers,
+                              std::size_t existing_consumers) noexcept
 {
     const bool is_consumer = (side == AdmissionSide::Consumer);
     switch (t)
@@ -157,12 +174,12 @@ struct HubState::Impl
     mutable std::shared_mutex mu;
 
     std::unordered_map<std::string, ChannelEntry> channels;
-    std::unordered_map<std::string, RoleEntry>    roles;
-    std::unordered_map<std::string, BandEntry>    bands;
-    std::unordered_map<std::string, PeerEntry>    peers;
-    std::unordered_map<std::string, ShmBlockRef>  shm_blocks;
+    std::unordered_map<std::string, RoleEntry> roles;
+    std::unordered_map<std::string, BandEntry> bands;
+    std::unordered_map<std::string, PeerEntry> peers;
+    std::unordered_map<std::string, ShmBlockRef> shm_blocks;
     /// HEP-CORE-0034 §11.1 — owner-keyed schema records.
-    std::map<SchemaKey, schema::SchemaRecord>     schemas;
+    std::map<SchemaKey, schema::SchemaRecord> schemas;
     /// HEP-CORE-0036 §4.1 — per-channel access scaffolding (allowlist
     /// + SHM secret).  Broker-internal; NOT exposed through
     /// `HubStateSnapshot` because callers that need it (broker handlers
@@ -188,31 +205,30 @@ struct HubState::Impl
     // two callers.  Self-locked, so `nonce_seen` does not take `mu`.
     pylabhub::utils::ReplayGuard replay_guard;
 
-    BrokerCounters                                counters;
+    BrokerCounters counters;
 
     // Handler registries. Separate mutex so subscribe/unsubscribe and
     // event snapshotting are independent of state reads/writes.
-    mutable std::mutex     handlers_mu;
+    mutable std::mutex handlers_mu;
     std::atomic<HandlerId> next_handler_id{1}; // 0 reserved for kInvalidHandlerId
 
-    template <typename H>
-    struct Slot
+    template <typename H> struct Slot
     {
         HandlerId id;
-        H         handler;
+        H handler;
     };
 
-    std::vector<Slot<ChannelOpenedHandler>>        ch_opened;
+    std::vector<Slot<ChannelOpenedHandler>> ch_opened;
     std::vector<Slot<ChannelStatusChangedHandler>> ch_status_changed;
-    std::vector<Slot<ChannelClosedHandler>>        ch_closed;
-    std::vector<Slot<ConsumerAddedHandler>>        cons_added;
-    std::vector<Slot<ConsumerRemovedHandler>>      cons_removed;
-    std::vector<Slot<RoleRegisteredHandler>>       role_reg;
-    std::vector<Slot<RoleDisconnectedHandler>>     role_disc;
-    std::vector<Slot<BandJoinedHandler>>           band_joined;
-    std::vector<Slot<BandLeftHandler>>             band_left;
-    std::vector<Slot<PeerConnectedHandler>>        peer_conn;
-    std::vector<Slot<PeerDisconnectedHandler>>     peer_disc;
+    std::vector<Slot<ChannelClosedHandler>> ch_closed;
+    std::vector<Slot<ConsumerAddedHandler>> cons_added;
+    std::vector<Slot<ConsumerRemovedHandler>> cons_removed;
+    std::vector<Slot<RoleRegisteredHandler>> role_reg;
+    std::vector<Slot<RoleDisconnectedHandler>> role_disc;
+    std::vector<Slot<BandJoinedHandler>> band_joined;
+    std::vector<Slot<BandLeftHandler>> band_left;
+    std::vector<Slot<PeerConnectedHandler>> peer_conn;
+    std::vector<Slot<PeerDisconnectedHandler>> peer_disc;
 
     // ── HEP-CORE-0039 §3.1 capture metadata ────────────────────────────
     // `hub_uid` is set once via `HubState::set_hub_uid` during
@@ -220,8 +236,8 @@ struct HubState::Impl
     // `mu`.  `snapshot_seq_counter_` is incremented atomically on
     // every snapshot — the first live snapshot has seq == 1 (see
     // HEP-0039 §8.3 + §3.1 metadata table).
-    std::string                                    hub_uid;
-    std::atomic<std::uint64_t>                     snapshot_seq_counter_{0};
+    std::string hub_uid;
+    std::atomic<std::uint64_t> snapshot_seq_counter_{0};
 };
 
 HubState::HubState() : pImpl(std::make_unique<Impl>()) {}
@@ -239,23 +255,20 @@ HubStateSnapshot HubState::snapshot() const
 {
     std::shared_lock lk(pImpl->mu);
     HubStateSnapshot s;
-    s.channels      = pImpl->channels;
-    s.roles         = pImpl->roles;
-    s.bands         = pImpl->bands;
-    s.peers         = pImpl->peers;
-    s.shm_blocks    = pImpl->shm_blocks;
-    s.schemas       = pImpl->schemas;
-    s.counters      = pImpl->counters;
-    s.captured_at   = std::chrono::system_clock::now();
+    s.channels = pImpl->channels;
+    s.roles = pImpl->roles;
+    s.bands = pImpl->bands;
+    s.peers = pImpl->peers;
+    s.shm_blocks = pImpl->shm_blocks;
+    s.schemas = pImpl->schemas;
+    s.counters = pImpl->counters;
+    s.captured_at = std::chrono::system_clock::now();
     s.captured_mono = std::chrono::steady_clock::now();
-    s.hub_uid       = pImpl->hub_uid;
+    s.hub_uid = pImpl->hub_uid;
     // fetch_add returns the value BEFORE the add, so +1 gives 1 on
     // first call — matches HEP-0039 §3.1 "first live snapshot has
     // seq == 1; seq == 0 is reserved for default-constructed".
-    s.snapshot_seq  =
-        pImpl->snapshot_seq_counter_.fetch_add(
-            1, std::memory_order_relaxed) +
-        1;
+    s.snapshot_seq = pImpl->snapshot_seq_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
     return s;
 }
 
@@ -263,7 +276,8 @@ std::optional<ChannelEntry> HubState::channel(const std::string &name) const
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->channels.find(name);
-    if (it == pImpl->channels.end()) return std::nullopt;
+    if (it == pImpl->channels.end())
+        return std::nullopt;
     return it->second;
 }
 
@@ -271,7 +285,8 @@ std::optional<RoleEntry> HubState::role(const std::string &uid) const
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->roles.find(uid);
-    if (it == pImpl->roles.end()) return std::nullopt;
+    if (it == pImpl->roles.end())
+        return std::nullopt;
     return it->second;
 }
 
@@ -279,7 +294,8 @@ std::optional<BandEntry> HubState::band(const std::string &name) const
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->bands.find(name);
-    if (it == pImpl->bands.end()) return std::nullopt;
+    if (it == pImpl->bands.end())
+        return std::nullopt;
     return it->second;
 }
 
@@ -287,7 +303,8 @@ std::optional<PeerEntry> HubState::peer(const std::string &hub_uid) const
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->peers.find(hub_uid);
-    if (it == pImpl->peers.end()) return std::nullopt;
+    if (it == pImpl->peers.end())
+        return std::nullopt;
     return it->second;
 }
 
@@ -295,7 +312,8 @@ std::optional<ShmBlockRef> HubState::shm_block(const std::string &channel_name) 
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->shm_blocks.find(channel_name);
-    if (it == pImpl->shm_blocks.end()) return std::nullopt;
+    if (it == pImpl->shm_blocks.end())
+        return std::nullopt;
     return it->second;
 }
 
@@ -305,21 +323,22 @@ BrokerCounters HubState::counters() const
     return pImpl->counters;
 }
 
-std::optional<ChannelAccessEntry>
-HubState::channel_access(const std::string &channel_name) const
+std::optional<ChannelAccessEntry> HubState::channel_access(const std::string &channel_name) const
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->channel_access_index.find(channel_name);
-    if (it == pImpl->channel_access_index.end()) return std::nullopt;
+    if (it == pImpl->channel_access_index.end())
+        return std::nullopt;
     return it->second;
 }
 
-std::optional<schema::SchemaRecord>
-HubState::schema(const std::string &owner_uid, const std::string &schema_id) const
+std::optional<schema::SchemaRecord> HubState::schema(const std::string &owner_uid,
+                                                     const std::string &schema_id) const
 {
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->schemas.find(SchemaKey{owner_uid, schema_id});
-    if (it == pImpl->schemas.end()) return std::nullopt;
+    if (it == pImpl->schemas.end())
+        return std::nullopt;
     return it->second;
 }
 
@@ -338,39 +357,48 @@ nlohmann::json HubState::channel_metrics_snapshot(const std::string &channel) co
     // heartbeat").  Iterates the channel's `producers[]` + `consumers[]`
     // to bound the scan; for each, looks up the owning role and reads
     // the matching presence row.  O(producer_count + consumer_count).
-    nlohmann::json result    = nlohmann::json::object();
+    nlohmann::json result = nlohmann::json::object();
     nlohmann::json producers = nlohmann::json::object();
     nlohmann::json consumers = nlohmann::json::object();
     {
         std::shared_lock lk(pImpl->mu);
-        auto             cit = pImpl->channels.find(channel);
-        if (cit == pImpl->channels.end()) return result;
+        auto cit = pImpl->channels.find(channel);
+        if (cit == pImpl->channels.end())
+            return result;
 
         for (const auto &prod : cit->second.producers)
         {
-            if (prod.role_uid.empty()) continue;
+            if (prod.role_uid.empty())
+                continue;
             auto rit = pImpl->roles.find(prod.role_uid);
-            if (rit == pImpl->roles.end()) continue;
+            if (rit == pImpl->roles.end())
+                continue;
             const auto *p = rit->second.find_presence(channel, "producer");
-            if (p == nullptr || p->latest_metrics.is_null()) continue;
+            if (p == nullptr || p->latest_metrics.is_null())
+                continue;
             nlohmann::json one = p->latest_metrics;
             // pid is a per-channel-producer property, lives on
             // ChannelEntry.producers[].producer_pid (not on RolePresence).
-            one["pid"]               = prod.producer_pid;
+            one["pid"] = prod.producer_pid;
             producers[prod.role_uid] = std::move(one);
         }
         for (const auto &cons : cit->second.consumers)
         {
-            if (cons.role_uid.empty()) continue;
+            if (cons.role_uid.empty())
+                continue;
             auto rit = pImpl->roles.find(cons.role_uid);
-            if (rit == pImpl->roles.end()) continue;
+            if (rit == pImpl->roles.end())
+                continue;
             const auto *p = rit->second.find_presence(channel, "consumer");
-            if (p == nullptr || p->latest_metrics.is_null()) continue;
+            if (p == nullptr || p->latest_metrics.is_null())
+                continue;
             consumers[cons.role_uid] = p->latest_metrics;
         }
     }
-    if (!producers.empty()) result["producers"] = std::move(producers);
-    if (!consumers.empty()) result["consumers"] = std::move(consumers);
+    if (!producers.empty())
+        result["producers"] = std::move(producers);
+    if (!consumers.empty())
+        result["consumers"] = std::move(consumers);
     return result;
 }
 
@@ -383,31 +411,30 @@ template <typename Vec, typename H>
 HandlerId add_handler(std::mutex &mu, std::atomic<HandlerId> &next, Vec &v, H h)
 {
     std::lock_guard lk(mu);
-    HandlerId       id = next.fetch_add(1, std::memory_order_relaxed);
+    HandlerId id = next.fetch_add(1, std::memory_order_relaxed);
     v.push_back({id, std::move(h)});
     return id;
 }
 
-template <typename Vec>
-bool erase_handler(Vec &v, HandlerId id)
+template <typename Vec> bool erase_handler(Vec &v, HandlerId id)
 {
-    auto it = std::find_if(v.begin(), v.end(),
-                           [id](const auto &s) { return s.id == id; });
-    if (it == v.end()) return false;
+    auto it = std::find_if(v.begin(), v.end(), [id](const auto &s) { return s.id == id; });
+    if (it == v.end())
+        return false;
     v.erase(it);
     return true;
 }
 
 /// Snapshot handler list under handlers_mu, then return a copy. Caller
 /// fires handlers with all locks released.
-template <typename Vec>
-auto snapshot_handlers(std::mutex &mu, const Vec &v)
+template <typename Vec> auto snapshot_handlers(std::mutex &mu, const Vec &v)
 {
     using HT = decltype(std::declval<typename Vec::value_type>().handler);
     std::vector<HT> out;
     std::lock_guard lk(mu);
     out.reserve(v.size());
-    for (const auto &s : v) out.push_back(s.handler);
+    for (const auto &s : v)
+        out.push_back(s.handler);
     return out;
 }
 
@@ -415,74 +442,77 @@ auto snapshot_handlers(std::mutex &mu, const Vec &v)
 
 HandlerId HubState::subscribe_channel_opened(ChannelOpenedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->ch_opened, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->ch_opened, std::move(h));
 }
 HandlerId HubState::subscribe_channel_status_changed(ChannelStatusChangedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->ch_status_changed, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->ch_status_changed,
+                       std::move(h));
 }
 HandlerId HubState::subscribe_channel_closed(ChannelClosedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->ch_closed, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->ch_closed, std::move(h));
 }
 HandlerId HubState::subscribe_consumer_added(ConsumerAddedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->cons_added, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->cons_added, std::move(h));
 }
 HandlerId HubState::subscribe_consumer_removed(ConsumerRemovedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->cons_removed, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->cons_removed,
+                       std::move(h));
 }
 HandlerId HubState::subscribe_role_registered(RoleRegisteredHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->role_reg, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->role_reg, std::move(h));
 }
 HandlerId HubState::subscribe_role_disconnected(RoleDisconnectedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->role_disc, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->role_disc, std::move(h));
 }
 HandlerId HubState::subscribe_band_joined(BandJoinedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->band_joined, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->band_joined,
+                       std::move(h));
 }
 HandlerId HubState::subscribe_band_left(BandLeftHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->band_left, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->band_left, std::move(h));
 }
 HandlerId HubState::subscribe_peer_connected(PeerConnectedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->peer_conn, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->peer_conn, std::move(h));
 }
 HandlerId HubState::subscribe_peer_disconnected(PeerDisconnectedHandler h) const
 {
-    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id,
-                       pImpl->peer_disc, std::move(h));
+    return add_handler(pImpl->handlers_mu, pImpl->next_handler_id, pImpl->peer_disc, std::move(h));
 }
 
 void HubState::unsubscribe(HandlerId id) const noexcept
 {
-    if (id == kInvalidHandlerId) return;
+    if (id == kInvalidHandlerId)
+        return;
     std::lock_guard lk(pImpl->handlers_mu);
-    if (erase_handler(pImpl->ch_opened,         id)) return;
-    if (erase_handler(pImpl->ch_status_changed, id)) return;
-    if (erase_handler(pImpl->ch_closed,         id)) return;
-    if (erase_handler(pImpl->cons_added,        id)) return;
-    if (erase_handler(pImpl->cons_removed,      id)) return;
-    if (erase_handler(pImpl->role_reg,          id)) return;
-    if (erase_handler(pImpl->role_disc,         id)) return;
-    if (erase_handler(pImpl->band_joined,       id)) return;
-    if (erase_handler(pImpl->band_left,         id)) return;
-    if (erase_handler(pImpl->peer_conn,         id)) return;
+    if (erase_handler(pImpl->ch_opened, id))
+        return;
+    if (erase_handler(pImpl->ch_status_changed, id))
+        return;
+    if (erase_handler(pImpl->ch_closed, id))
+        return;
+    if (erase_handler(pImpl->cons_added, id))
+        return;
+    if (erase_handler(pImpl->cons_removed, id))
+        return;
+    if (erase_handler(pImpl->role_reg, id))
+        return;
+    if (erase_handler(pImpl->role_disc, id))
+        return;
+    if (erase_handler(pImpl->band_joined, id))
+        return;
+    if (erase_handler(pImpl->band_left, id))
+        return;
+    if (erase_handler(pImpl->peer_conn, id))
+        return;
     erase_handler(pImpl->peer_disc, id);
 }
 
@@ -504,14 +534,12 @@ namespace
 /// actually removed (caller fires `band_left` handler per entry with
 /// reason="role_closed").  Returns schemas evicted count.
 template <typename Impl>
-inline std::size_t cascade_role_terminal_cleanup_locked(
-    Impl &impl,
-    const std::string &uid,
-    std::vector<std::string> &bands_left_out)
+inline std::size_t cascade_role_terminal_cleanup_locked(Impl &impl, const std::string &uid,
+                                                        std::vector<std::string> &bands_left_out)
 {
     // Schema cascade.
     std::size_t schemas_evicted = 0;
-    for (auto sit = impl.schemas.begin(); sit != impl.schemas.end(); )
+    for (auto sit = impl.schemas.begin(); sit != impl.schemas.end();)
     {
         if (sit->first.first == uid)
         {
@@ -528,10 +556,10 @@ inline std::size_t cascade_role_terminal_cleanup_locked(
     // behaviour (the band's last member leaving deletes the band).
     bands_left_out.reserve(impl.bands.size());
     const auto now = std::chrono::steady_clock::now();
-    for (auto bit = impl.bands.begin(); bit != impl.bands.end(); )
+    for (auto bit = impl.bands.begin(); bit != impl.bands.end();)
     {
-        auto &m   = bit->second.members;
-        auto  old = m.size();
+        auto &m = bit->second.members;
+        auto old = m.size();
         m.erase(std::remove_if(m.begin(), m.end(),
                                [&](const BandMember &x) { return x.role_uid == uid; }),
                 m.end());
@@ -540,14 +568,16 @@ inline std::size_t cascade_role_terminal_cleanup_locked(
             bands_left_out.push_back(bit->first);
             bit->second.last_activity = now;
         }
-        if (m.empty()) bit = impl.bands.erase(bit);
-        else           ++bit;
+        if (m.empty())
+            bit = impl.bands.erase(bit);
+        else
+            ++bit;
     }
 
     return schemas_evicted;
 }
 
-}  // namespace
+} // namespace
 
 // ─── Private mutators (friend-only) ─────────────────────────────────────────
 
@@ -557,9 +587,10 @@ void HubState::_set_channel_opened(ChannelEntry entry)
     {
         std::unique_lock lk(pImpl->mu);
         auto [it, _] = pImpl->channels.insert_or_assign(entry.name, std::move(entry));
-        fired        = it->second;
+        fired = it->second;
     }
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_opened)) h(fired);
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_opened))
+        h(fired);
 }
 
 void HubState::_set_channel_closed(const std::string &name)
@@ -569,8 +600,10 @@ void HubState::_set_channel_closed(const std::string &name)
         std::unique_lock lk(pImpl->mu);
         erased = pImpl->channels.erase(name) > 0;
     }
-    if (!erased) return;
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_closed)) h(name);
+    if (!erased)
+        return;
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_closed))
+        h(name);
 }
 
 // Internal: atomic consumer append with topology + cardinality
@@ -582,20 +615,19 @@ void HubState::_set_channel_closed(const std::string &name)
 // Returns ConsumerAdmissionResult so `_on_consumer_joined` can decide
 // whether to fire downstream handlers (role registration, etc.).
 ConsumerAdmissionResult
-HubState::_add_consumer(const std::string&                        channel,
-                        ConsumerEntry                             entry,
-                        std::optional<ChannelTopology>            declared_topology,
-                        std::optional<ChannelSchemaInvariants>    open_schema,
+HubState::_add_consumer(const std::string &channel, ConsumerEntry entry,
+                        std::optional<ChannelTopology> declared_topology,
+                        std::optional<ChannelSchemaInvariants> open_schema,
                         std::optional<ChannelTransportInvariants> open_transport)
 {
     ConsumerAdmissionResult result;
-    ConsumerEntry           fired;
-    ChannelEntry            fired_channel;
-    bool                    did_open_channel = false;
+    ConsumerEntry fired;
+    ChannelEntry fired_channel;
+    bool did_open_channel = false;
 
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel);
+        auto it = pImpl->channels.find(channel);
 
         if (it == pImpl->channels.end())
         {
@@ -606,28 +638,26 @@ HubState::_add_consumer(const std::string&                        channel,
             // Otherwise silent-skip (matches pre-topology behavior:
             // "the wire hasn't reached a state where this consumer can
             // be admitted").
-            const bool consumer_is_opener =
-                declared_topology.has_value() &&
-                *declared_topology == ChannelTopology::FanIn &&
-                open_schema.has_value() &&
-                open_transport.has_value();
-            if (!consumer_is_opener) return result;
+            const bool consumer_is_opener = declared_topology.has_value() &&
+                                            *declared_topology == ChannelTopology::FanIn &&
+                                            open_schema.has_value() && open_transport.has_value();
+            if (!consumer_is_opener)
+                return result;
 
-            const char* open_err = nullptr;
-            ChannelEntry* new_entry = _open_channel_locked(
-                channel, *open_schema, *open_transport,
-                ChannelTopology::FanIn, open_err);
+            const char *open_err = nullptr;
+            ChannelEntry *new_entry = _open_channel_locked(channel, *open_schema, *open_transport,
+                                                           ChannelTopology::FanIn, open_err);
             if (!new_entry)
             {
                 result.topology_error_code = open_err;
                 return result;
             }
             new_entry->consumers.push_back(std::move(entry));
-            fired            = new_entry->consumers.back();
-            fired_channel    = *new_entry;
+            fired = new_entry->consumers.back();
+            fired_channel = *new_entry;
             did_open_channel = true;
-            result.admitted        = true;
-            result.channel_opened  = true;
+            result.admitted = true;
+            result.channel_opened = true;
             result.invariant_result = InvariantSetResult::Created;
         }
         else
@@ -649,11 +679,9 @@ HubState::_add_consumer(const std::string&                        channel,
             // uid-only per HEP-CORE-0033 §G2.2.0b + HEP-CORE-0023 §2.1;
             // pid is metadata, not identity, so a pid collision does
             // NOT qualify as re-registration.
-            auto is_dupe = [&](const ConsumerEntry &c) noexcept {
-                return !entry.role_uid.empty() && c.role_uid == entry.role_uid;
-            };
-            const bool is_reregistration =
-                std::any_of(cons.begin(), cons.end(), is_dupe);
+            auto is_dupe = [&](const ConsumerEntry &c) noexcept
+            { return !entry.role_uid.empty() && c.role_uid == entry.role_uid; };
+            const bool is_reregistration = std::any_of(cons.begin(), cons.end(), is_dupe);
 
             if (!is_reregistration)
             {
@@ -666,15 +694,15 @@ HubState::_add_consumer(const std::string&                        channel,
                 }
             }
 
-            cons.erase(std::remove_if(cons.begin(), cons.end(), is_dupe),
-                       cons.end());
+            cons.erase(std::remove_if(cons.begin(), cons.end(), is_dupe), cons.end());
             cons.push_back(std::move(entry));
-            fired                   = cons.back();
-            result.admitted         = true;
+            fired = cons.back();
+            result.admitted = true;
             result.invariant_result = InvariantSetResult::IdempotentEqual;
         }
     }
-    if (!result.admitted) return result;
+    if (!result.admitted)
+        return result;
 
     // Fire handlers post-lock.  ch_opened first (mirrors
     // _on_producer_added's ordering) so subscribers see the channel
@@ -694,10 +722,11 @@ void HubState::_remove_consumer(const std::string &channel, const std::string &r
     bool removed = false;
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel);
-        if (it == pImpl->channels.end()) return;
+        auto it = pImpl->channels.find(channel);
+        if (it == pImpl->channels.end())
+            return;
         auto &cons = it->second.consumers;
-        auto  old  = cons.size();
+        auto old = cons.size();
         cons.erase(std::remove_if(cons.begin(), cons.end(),
                                   [&](const ConsumerEntry &c) { return c.role_uid == role_uid; }),
                    cons.end());
@@ -723,7 +752,8 @@ void HubState::_remove_consumer(const std::string &channel, const std::string &r
             }
         }
     }
-    if (!removed) return;
+    if (!removed)
+        return;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->cons_removed))
         h(channel, role_uid);
 }
@@ -734,9 +764,10 @@ void HubState::_set_role_registered(RoleEntry entry)
     {
         std::unique_lock lk(pImpl->mu);
         auto [it, _] = pImpl->roles.insert_or_assign(entry.uid, std::move(entry));
-        fired        = it->second;
+        fired = it->second;
     }
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg)) h(fired);
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
+        h(fired);
 }
 
 void HubState::_set_role_disconnected(const std::string &uid)
@@ -762,22 +793,25 @@ void HubState::_set_role_disconnected(const std::string &uid)
     // then `band_left(band, uid)` per affected band.  Subscribers
     // (script runner; broker BAND_LEAVE_NOTIFY) observe state with the
     // role already gone.
-    bool                      fire           = false;
-    std::size_t               schemas_evicted = 0;
-    std::vector<std::string>  bands_left;
-    std::string               role_name;  // captured pre-erase for BAND_LEAVE_NOTIFY payload
+    bool fire = false;
+    std::size_t schemas_evicted = 0;
+    std::vector<std::string> bands_left;
+    std::string role_name; // captured pre-erase for BAND_LEAVE_NOTIFY payload
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->roles.find(uid);
-        if (it == pImpl->roles.end()) return;  // idempotent — already gone
+        auto it = pImpl->roles.find(uid);
+        if (it == pImpl->roles.end())
+            return; // idempotent — already gone
         fire = true;
         role_name = it->second.name;
         schemas_evicted = cascade_role_terminal_cleanup_locked(*pImpl, uid, bands_left);
         pImpl->counters.schema_evicted_total += schemas_evicted;
         pImpl->roles.erase(it);
     }
-    if (!fire) return;
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc)) h(uid);
+    if (!fire)
+        return;
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc))
+        h(uid);
     for (const auto &band_name : bands_left)
     {
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
@@ -798,23 +832,27 @@ void HubState::_dispatch_role_disconnected_if_dead(const std::string &uid)
     // schema + band cleanup.  Step 5i (2026-05-11) added the band
     // cascade so role-lifetime band membership tracking works for
     // every terminal-cleanup path, not just channel-close.
-    bool                      fire           = false;
-    std::size_t               schemas_evicted = 0;
-    std::vector<std::string>  bands_left;
-    std::string               role_name;  // captured pre-erase for BAND_LEAVE_NOTIFY payload
+    bool fire = false;
+    std::size_t schemas_evicted = 0;
+    std::vector<std::string> bands_left;
+    std::string role_name; // captured pre-erase for BAND_LEAVE_NOTIFY payload
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->roles.find(uid);
-        if (it == pImpl->roles.end()) return;       // already cleaned up
-        if (it->second.any_presence_alive()) return; // re-armed; skip
+        auto it = pImpl->roles.find(uid);
+        if (it == pImpl->roles.end())
+            return; // already cleaned up
+        if (it->second.any_presence_alive())
+            return; // re-armed; skip
         fire = true;
         role_name = it->second.name;
         schemas_evicted = cascade_role_terminal_cleanup_locked(*pImpl, uid, bands_left);
         pImpl->counters.schema_evicted_total += schemas_evicted;
         pImpl->roles.erase(it);
     }
-    if (!fire) return;
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc)) h(uid);
+    if (!fire)
+        return;
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_disc))
+        h(uid);
     for (const auto &band_name : bands_left)
     {
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
@@ -827,30 +865,33 @@ void HubState::_set_band_joined(const std::string &band, BandMember member)
     BandMember fired;
     {
         std::unique_lock lk(pImpl->mu);
-        auto &           b = pImpl->bands[band];
-        if (b.name.empty()) b.name = band;
+        auto &b = pImpl->bands[band];
+        if (b.name.empty())
+            b.name = band;
         auto &m = b.members;
         m.erase(std::remove_if(m.begin(), m.end(),
                                [&](const BandMember &x) { return x.role_uid == member.role_uid; }),
                 m.end());
         m.push_back(std::move(member));
         b.last_activity = std::chrono::steady_clock::now();
-        fired           = m.back();
+        fired = m.back();
     }
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_joined)) h(band, fired);
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_joined))
+        h(band, fired);
 }
 
 void HubState::_set_band_left(const std::string &band, const std::string &role_uid,
-                                const std::string &reason)
+                              const std::string &reason)
 {
-    bool        fire = false;
-    std::string role_name;  // captured pre-erase for the handler
+    bool fire = false;
+    std::string role_name; // captured pre-erase for the handler
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->bands.find(band);
-        if (it == pImpl->bands.end()) return;
-        auto &m   = it->second.members;
-        auto  old = m.size();
+        auto it = pImpl->bands.find(band);
+        if (it == pImpl->bands.end())
+            return;
+        auto &m = it->second.members;
+        auto old = m.size();
         // Snapshot role_name from the departing member (BAND_LEAVE_NOTIFY
         // wire body requires it per HEP-CORE-0030 §5.3).
         for (const auto &x : m)
@@ -864,11 +905,13 @@ void HubState::_set_band_left(const std::string &band, const std::string &role_u
         m.erase(std::remove_if(m.begin(), m.end(),
                                [&](const BandMember &x) { return x.role_uid == role_uid; }),
                 m.end());
-        fire                      = m.size() < old;
-        it->second.last_activity  = std::chrono::steady_clock::now();
-        if (m.empty()) pImpl->bands.erase(it);
+        fire = m.size() < old;
+        it->second.last_activity = std::chrono::steady_clock::now();
+        if (m.empty())
+            pImpl->bands.erase(it);
     }
-    if (!fire) return;
+    if (!fire)
+        return;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->band_left))
         h(band, role_uid, role_name, reason);
 }
@@ -879,12 +922,13 @@ void HubState::_set_peer_connected(PeerEntry entry)
     {
         std::unique_lock lk(pImpl->mu);
         const std::string uid = entry.uid;
-        entry.state           = PeerState::Connected;
-        entry.last_seen       = std::chrono::steady_clock::now();
-        auto [it, _]          = pImpl->peers.insert_or_assign(uid, std::move(entry));
-        fired                 = it->second;
+        entry.state = PeerState::Connected;
+        entry.last_seen = std::chrono::steady_clock::now();
+        auto [it, _] = pImpl->peers.insert_or_assign(uid, std::move(entry));
+        fired = it->second;
     }
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_conn)) h(fired);
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_conn))
+        h(fired);
 }
 
 void HubState::_set_peer_disconnected(const std::string &hub_uid)
@@ -892,21 +936,23 @@ void HubState::_set_peer_disconnected(const std::string &hub_uid)
     bool fire = false;
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->peers.find(hub_uid);
-        if (it == pImpl->peers.end()) return;
+        auto it = pImpl->peers.find(hub_uid);
+        if (it == pImpl->peers.end())
+            return;
         if (it->second.state != PeerState::Disconnected)
         {
             it->second.state = PeerState::Disconnected;
-            fire             = true;
+            fire = true;
         }
     }
-    if (!fire) return;
-    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_disc)) h(hub_uid);
+    if (!fire)
+        return;
+    for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->peer_disc))
+        h(hub_uid);
 }
 
 bool HubState::_set_producer_zmq_node_endpoint(const std::string &channel_name,
-                                                const std::string &role_uid,
-                                                std::string        endpoint)
+                                               const std::string &role_uid, std::string endpoint)
 {
     // Per-producer endpoint update (HEP-CORE-0021 §16.3).  Identifier
     // validation is the caller's responsibility (broker
@@ -915,21 +961,22 @@ bool HubState::_set_producer_zmq_node_endpoint(const std::string &channel_name,
     if (channel_name.empty() || role_uid.empty() || endpoint.empty())
         return false;
     std::unique_lock lk(pImpl->mu);
-    auto             it = pImpl->channels.find(channel_name);
-    if (it == pImpl->channels.end()) return false;
+    auto it = pImpl->channels.find(channel_name);
+    if (it == pImpl->channels.end())
+        return false;
     return it->second.set_producer_zmq_node_endpoint(role_uid, std::move(endpoint));
 }
 
-bool HubState::_set_channel_data_endpoint(const std::string &channel_name,
-                                           std::string        endpoint)
+bool HubState::_set_channel_data_endpoint(const std::string &channel_name, std::string endpoint)
 {
     // Channel-scope endpoint update (HEP-CORE-0017 §3.3.0 binding-side
     // ownership).  Identifier validation is the caller's responsibility.
     if (channel_name.empty() || endpoint.empty())
         return false;
     std::unique_lock lk(pImpl->mu);
-    auto             it = pImpl->channels.find(channel_name);
-    if (it == pImpl->channels.end()) return false;
+    auto it = pImpl->channels.find(channel_name);
+    if (it == pImpl->channels.end())
+        return false;
     it->second.set_data_endpoint(std::move(endpoint));
     return true;
 }
@@ -992,29 +1039,27 @@ namespace
 /// that erases a presence (`on_dereg`, `on_pending_timeout`) is the
 /// inverse of this push.  If somehow a Disconnected row leaks into
 /// `presences[]` in the future, audit those erasure sites first.
-inline void upsert_presence_row_locked(
-    RoleEntry          &role,
-    const std::string  &channel,
-    const std::string  &role_type,
-    std::chrono::steady_clock::time_point now)
+inline void upsert_presence_row_locked(RoleEntry &role, const std::string &channel,
+                                       const std::string &role_type,
+                                       std::chrono::steady_clock::time_point now)
 {
-    if (channel.empty() || role_type.empty()) return;
-    if (role.find_presence(channel, role_type) != nullptr) return;
+    if (channel.empty() || role_type.empty())
+        return;
+    if (role.find_presence(channel, role_type) != nullptr)
+        return;
     RolePresence p;
-    p.channel               = channel;
-    p.role_type             = role_type;
-    p.state                 = RoleState::Connected;
-    p.first_heartbeat_seen  = false;          // "registering" sub-state
-    p.last_heartbeat        = now;            // re-stamped on first HB
-    p.state_since           = now;
+    p.channel = channel;
+    p.role_type = role_type;
+    p.state = RoleState::Connected;
+    p.first_heartbeat_seen = false; // "registering" sub-state
+    p.last_heartbeat = now;         // re-stamped on first HB
+    p.state_since = now;
     role.presences.push_back(std::move(p));
 }
 
 template <typename Impl>
-RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
-                             const std::string &pubkey_z85,
-                             const std::string &added_channel,
-                             const std::string &role_type,
+RoleEntry upsert_role_locked(Impl &impl, const std::string &uid, const std::string &pubkey_z85,
+                             const std::string &added_channel, const std::string &role_type,
                              std::chrono::steady_clock::time_point heartbeat_when)
 {
     // Derived fields from uid — uid is the source of truth for tag/name
@@ -1024,21 +1069,23 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
     // (op-entry validation should have caught it). Treat as defensive
     // no-op: return an empty placeholder; the mutator's null-uid guard
     // is the first line of defense.
-    if (!parts) return {};
+    if (!parts)
+        return {};
 
-    const std::string derived_tag (parts->tag);
+    const std::string derived_tag(parts->tag);
     const std::string derived_name(parts->name);
 
     std::unique_lock lk(impl.mu);
-    auto             it = impl.roles.find(uid);
+    auto it = impl.roles.find(uid);
     if (it == impl.roles.end())
     {
         RoleEntry r;
-        r.uid        = uid;
-        r.name       = derived_name;
-        r.short_tag   = derived_tag;
+        r.uid = uid;
+        r.name = derived_name;
+        r.short_tag = derived_tag;
         r.pubkey_z85 = pubkey_z85;
-        if (!added_channel.empty()) r.channels.push_back(added_channel);
+        if (!added_channel.empty())
+            r.channels.push_back(added_channel);
         // Eager presence creation per HEP-CORE-0023 §2.6: the presence
         // row is created at REG time so DISC_REQ before the first
         // heartbeat resolves to "registering" (`!first_heartbeat_seen`)
@@ -1050,12 +1097,12 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
     auto &ex = it->second;
     // name + short_tag are derived caches — re-derive on every upsert
     // so the invariant short_tag == extract_short_tag(uid) always holds.
-    ex.name     = derived_name;
+    ex.name = derived_name;
     ex.short_tag = derived_tag;
-    if (!pubkey_z85.empty()) ex.pubkey_z85 = pubkey_z85;
+    if (!pubkey_z85.empty())
+        ex.pubkey_z85 = pubkey_z85;
     if (!added_channel.empty() &&
-        std::find(ex.channels.begin(), ex.channels.end(), added_channel) ==
-            ex.channels.end())
+        std::find(ex.channels.begin(), ex.channels.end(), added_channel) == ex.channels.end())
     {
         ex.channels.push_back(added_channel);
     }
@@ -1073,8 +1120,7 @@ RoleEntry upsert_role_locked(Impl &impl, const std::string &uid,
 /// Bumps the sys.invalid_identifier_rejected counter without taking
 /// any public mutator path (those might themselves run validation).
 /// Used by `_on_*` ops when they silent-drop on malformed input.
-template <typename Impl>
-void bump_invalid_identifier(Impl &impl) noexcept
+template <typename Impl> void bump_invalid_identifier(Impl &impl) noexcept
 {
     std::unique_lock lk(impl.mu);
     ++impl.counters.msg_type_counts["sys.invalid_identifier_rejected"];
@@ -1102,8 +1148,7 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     // contain a single producer per test call.
     for (const auto &prod : entry.producers)
     {
-        if (!prod.role_uid.empty() &&
-            !is_valid_identifier(prod.role_uid, IdentifierKind::RoleUid))
+        if (!prod.role_uid.empty() && !is_valid_identifier(prod.role_uid, IdentifierKind::RoleUid))
         {
             bump_invalid_identifier(*pImpl);
             return;
@@ -1113,8 +1158,7 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     // '<base>@<version>' schema_id would fail `Schema` grammar and get
     // silent-dropped here, surfacing bugs at the HubState boundary
     // (wire-handler layer G2.2.1+ will also reject with an error reply).
-    if (!entry.schema_id.empty() &&
-        !is_valid_identifier(entry.schema_id, IdentifierKind::Schema))
+    if (!entry.schema_id.empty() && !is_valid_identifier(entry.schema_id, IdentifierKind::Schema))
     {
         bump_invalid_identifier(*pImpl);
         return;
@@ -1125,35 +1169,31 @@ void HubState::_on_channel_registered(ChannelEntry entry)
     // entry with one ProducerEntry per call.  Production REG_REQ
     // routes through `_on_producer_added` (Wave M2.5 step 3); that
     // op creates role/presence per admitted ProducerEntry.
-    const std::string channel_name    = entry.name;
-    const std::string producer_uid    = entry.producers.empty()
-                                           ? std::string{}
-                                           : entry.producers.front().role_uid;
+    const std::string channel_name = entry.name;
+    const std::string producer_uid =
+        entry.producers.empty() ? std::string{} : entry.producers.front().role_uid;
     // Wave M2.5 step 6.5: pubkey lives on ProducerEntry, not channel-
     // scope.  Read from the first producer (test-only legacy path
     // accepts one producer per call).
-    const std::string producer_pubkey = entry.producers.empty()
-                                           ? std::string{}
-                                           : entry.producers.front().zmq_pubkey;
+    const std::string producer_pubkey =
+        entry.producers.empty() ? std::string{} : entry.producers.front().zmq_pubkey;
     // HEP-CORE-0036 §5b.4: data_transport == "shm" classifies SHM; the
     // SHM block path is the channel name.
-    const bool        has_shm         = (entry.data_transport == "shm");
+    const bool has_shm = (entry.data_transport == "shm");
 
     _set_channel_opened(std::move(entry));
 
     if (!producer_uid.empty())
     {
-        RoleEntry fired = upsert_role_locked(
-            *pImpl, producer_uid, producer_pubkey, channel_name,
-            /*role_type=*/"producer",
-            std::chrono::steady_clock::now());
+        RoleEntry fired =
+            upsert_role_locked(*pImpl, producer_uid, producer_pubkey, channel_name,
+                               /*role_type=*/"producer", std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
 
     if (has_shm)
         _set_shm_block(ShmBlockRef{channel_name, channel_name});
-
 }
 
 // Shared channel-open primitive per HEP-CORE-0017 §3.3.0.  Called
@@ -1168,13 +1208,11 @@ void HubState::_on_channel_registered(ChannelEntry entry)
 // is left to callers because their handler ordering also involves
 // role-registration + shm-block cascades that differ between the
 // producer-side and consumer-side admission paths.
-ChannelEntry*
-HubState::_open_channel_locked(
-    const std::string&                 channel_name,
-    const ChannelSchemaInvariants&     schema,
-    const ChannelTransportInvariants&  transport,
-    ChannelTopology                    topology,
-    const char*&                       topology_error_code)
+ChannelEntry *HubState::_open_channel_locked(const std::string &channel_name,
+                                             const ChannelSchemaInvariants &schema,
+                                             const ChannelTransportInvariants &transport,
+                                             ChannelTopology topology,
+                                             const char *&topology_error_code)
 {
     topology_error_code = nullptr;
 
@@ -1185,17 +1223,16 @@ HubState::_open_channel_locked(
     }
 
     ChannelEntry entry;
-    entry.name           = channel_name;
-    entry.schema_hash    = schema.schema_hash;
+    entry.name = channel_name;
+    entry.schema_hash = schema.schema_hash;
     // schema_version retired per C2 — version rides inside schema_id.
-    entry.schema_id      = schema.schema_id;
-    entry.schema_blds    = schema.schema_blds;
-    entry.schema_owner   = schema.schema_owner;
+    entry.schema_id = schema.schema_id;
+    entry.schema_blds = schema.schema_blds;
+    entry.schema_owner = schema.schema_owner;
     entry.data_transport = transport.data_transport;
-    entry.topology       = topology;
+    entry.topology = topology;
 
-    auto [it, inserted] = pImpl->channels.insert_or_assign(
-        channel_name, std::move(entry));
+    auto [it, inserted] = pImpl->channels.insert_or_assign(channel_name, std::move(entry));
     (void)inserted;
     return &it->second;
 }
@@ -1204,11 +1241,10 @@ HubState::_open_channel_locked(
 // topology, cardinality, uid conflict) happen under the writer lock
 // held for the mutation — no snapshot-then-mutate window.
 ProducerAdmissionResult
-HubState::_on_producer_added(const std::string&              channel_name,
-                              ChannelSchemaInvariants         schema,
-                              ChannelTransportInvariants      transport,
-                              std::optional<ChannelTopology>  declared_topology,
-                              ProducerEntry                   producer)
+HubState::_on_producer_added(const std::string &channel_name, ChannelSchemaInvariants schema,
+                             ChannelTransportInvariants transport,
+                             std::optional<ChannelTopology> declared_topology,
+                             ProducerEntry producer)
 {
     ProducerAdmissionResult result;
 
@@ -1237,18 +1273,18 @@ HubState::_on_producer_added(const std::string&              channel_name,
     // Capture pieces needed for role/shm side-effects before taking the
     // writer lock (so we don't hold the writer lock across handler
     // dispatch).
-    const std::string producer_uid     = producer.role_uid;
-    const std::string producer_pubkey  = producer.zmq_pubkey;
+    const std::string producer_uid = producer.role_uid;
+    const std::string producer_pubkey = producer.zmq_pubkey;
     // HEP-CORE-0036 §5b.4: data_transport == "shm" is the canonical
     // SHM classifier; the SHM block name is the channel name.
-    const bool        has_shm          = (transport.data_transport == "shm");
+    const bool has_shm = (transport.data_transport == "shm");
 
     ChannelEntry fired_entry;
-    bool         did_fire_open = false;
+    bool did_fire_open = false;
 
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel_name);
+        auto it = pImpl->channels.find(channel_name);
 
         if (it == pImpl->channels.end())
         {
@@ -1258,10 +1294,9 @@ HubState::_on_producer_added(const std::string&              channel_name,
             // fresh channel (0 producers, 0 consumers).
             const ChannelTopology effective_topology =
                 declared_topology.value_or(ChannelTopology::OneToOne);
-            const char* open_err = nullptr;
-            ChannelEntry* new_entry = _open_channel_locked(
-                channel_name, schema, transport, effective_topology,
-                open_err);
+            const char *open_err = nullptr;
+            ChannelEntry *new_entry =
+                _open_channel_locked(channel_name, schema, transport, effective_topology, open_err);
             if (!new_entry)
             {
                 result.topology_error_code = open_err;
@@ -1279,10 +1314,10 @@ HubState::_on_producer_added(const std::string&              channel_name,
                 pImpl->channels.erase(channel_name);
                 return result;
             }
-            fired_entry             = *new_entry;
-            did_fire_open           = true;
+            fired_entry = *new_entry;
+            did_fire_open = true;
             result.invariant_result = InvariantSetResult::Created;
-            result.channel_opened   = true;
+            result.channel_opened = true;
         }
         else
         {
@@ -1292,8 +1327,9 @@ HubState::_on_producer_added(const std::string&              channel_name,
             // (SCHEMA_MISMATCH / TRANSPORT_MISMATCH before topology
             // gate; topology-mismatch before cardinality).
             const auto &cur = it->second;
-            auto reject_invariant = [&](const char *name) {
-                result.invariant_result     = InvariantSetResult::RejectedMismatch;
+            auto reject_invariant = [&](const char *name)
+            {
+                result.invariant_result = InvariantSetResult::RejectedMismatch;
                 result.mismatched_invariant = name;
             };
             // Schema invariants (hash / id / blds / owner) are NOT re-checked
@@ -1311,7 +1347,10 @@ HubState::_on_producer_added(const std::string&              channel_name,
             // guard, since there is only one writer.)  Transport is a separate
             // invariant with no front-door equivalent, so it is checked here.
             if (cur.data_transport != transport.data_transport)
-                                                              { reject_invariant("data_transport"); return result; }
+            {
+                reject_invariant("data_transport");
+                return result;
+            }
 
             // Topology declaration check.  Empty inherits stored;
             // explicit non-matching → TOPOLOGY_MISMATCH.  Immutable
@@ -1329,16 +1368,15 @@ HubState::_on_producer_added(const std::string&              channel_name,
             // gate is skipped in this branch so we don't mask
             // UID_CONFLICT behind a topology-cardinality error code.
             const bool same_uid_reregister =
-                !producer.role_uid.empty() &&
-                cur.find_producer(producer.role_uid) != nullptr;
+                !producer.role_uid.empty() && cur.find_producer(producer.role_uid) != nullptr;
 
             if (!same_uid_reregister)
             {
                 // Cardinality gate under stored topology.  Reflects live
                 // counts because we hold the writer lock — no TOCTOU.
-                if (const char *err = topology::check_cardinality(
-                        cur.topology, topology::AdmissionSide::Producer,
-                        cur.producers.size(), cur.consumers.size()))
+                if (const char *err =
+                        topology::check_cardinality(cur.topology, topology::AdmissionSide::Producer,
+                                                    cur.producers.size(), cur.consumers.size()))
                 {
                     result.topology_error_code = err;
                     return result;
@@ -1346,7 +1384,7 @@ HubState::_on_producer_added(const std::string&              channel_name,
             }
 
             result.invariant_result = InvariantSetResult::IdempotentEqual;
-            result.producer_result  = it->second.add_producer(std::move(producer));
+            result.producer_result = it->second.add_producer(std::move(producer));
             if (result.producer_result != AddProducerResult::Created)
                 return result;
             result.channel_opened = false;
@@ -1380,8 +1418,7 @@ HubState::_on_producer_added(const std::string&              channel_name,
             auto acc_it = pImpl->channel_access_index.find(channel_name);
             if (acc_it != pImpl->channel_access_index.end())
             {
-                acc_it->second.ledger
-                    .reset_role_confirmation(producer_uid);
+                acc_it->second.ledger.reset_role_confirmation(producer_uid);
             }
         }
     } // release writer lock before firing handlers.
@@ -1394,10 +1431,9 @@ HubState::_on_producer_added(const std::string&              channel_name,
 
     if (!producer_uid.empty())
     {
-        RoleEntry fired = upsert_role_locked(
-            *pImpl, producer_uid, producer_pubkey, channel_name,
-            /*role_type=*/"producer",
-            std::chrono::steady_clock::now());
+        RoleEntry fired =
+            upsert_role_locked(*pImpl, producer_uid, producer_pubkey, channel_name,
+                               /*role_type=*/"producer", std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
@@ -1411,27 +1447,27 @@ HubState::_on_producer_added(const std::string&              channel_name,
 // Wave M2.5 step 4 — additive producer-drop op.  See
 // `docs/tech_draft/controlled_access_api_design.md` §7 step 4 +
 // HEP-CORE-0023 §2.1.1 atomic teardown rule.
-RemoveProducerResult
-HubState::_on_producer_dropped(const std::string& channel_name,
-                                const std::string& role_uid,
-                                ChannelCloseReason reason)
+RemoveProducerResult HubState::_on_producer_dropped(const std::string &channel_name,
+                                                    const std::string &role_uid,
+                                                    ChannelCloseReason reason)
 {
     RemoveProducerResult result{false, false};
 
     // Identifier validation at the op-entry boundary.
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        !is_valid_identifier(role_uid,    IdentifierKind::RoleUid))
+        !is_valid_identifier(role_uid, IdentifierKind::RoleUid))
     {
         bump_invalid_identifier(*pImpl);
         return result;
     }
 
     bool is_last_producer = false;
-    bool transitioned     = false;
+    bool transitioned = false;
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel_name);
-        if (it == pImpl->channels.end()) return result;  // removed=false
+        auto it = pImpl->channels.find(channel_name);
+        if (it == pImpl->channels.end())
+            return result; // removed=false
 
         // Probe before mutating: is the uid registered, and is it the
         // LAST producer on this channel?
@@ -1445,13 +1481,14 @@ HubState::_on_producer_dropped(const std::string& channel_name,
         //    dispatch iff the role has no other alive presence.
         //  - Last (this drop empties the channel): leave the producer
         //    in the list and call `_on_channel_closed` below.
-        if (it->second.find_producer(role_uid) == nullptr) return result;
+        if (it->second.find_producer(role_uid) == nullptr)
+            return result;
         is_last_producer = (it->second.producer_count() == 1);
         if (!is_last_producer)
         {
             auto rm = it->second.remove_producer(role_uid);
-            result.removed             = rm.removed;
-            result.channel_now_empty   = false;  // by construction
+            result.removed = rm.removed;
+            result.channel_now_empty = false; // by construction
             auto rit = pImpl->roles.find(role_uid);
             if (rit != pImpl->roles.end())
             {
@@ -1483,7 +1520,8 @@ HubState::_on_producer_dropped(const std::string& channel_name,
     {
         // Wave M3 step 5c: dispatch terminal cleanup iff the producer's
         // role is now fully Disconnected.  Cheap no-op otherwise.
-        if (transitioned) _dispatch_role_disconnected_if_dead(role_uid);
+        if (transitioned)
+            _dispatch_role_disconnected_if_dead(role_uid);
         return result;
     }
 
@@ -1493,7 +1531,7 @@ HubState::_on_producer_dropped(const std::string& channel_name,
     // cleanup for each (schema cascade fires from dispatch per
     // HEP-CORE-0034 §7.2 owner-lifetime).
     _on_channel_closed(channel_name, reason);
-    result.removed           = true;
+    result.removed = true;
     result.channel_now_empty = true;
     return result;
 }
@@ -1525,10 +1563,12 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         {
             producer_uids.reserve(it->second.producers.size());
             for (const auto &p : it->second.producers)
-                if (!p.role_uid.empty()) producer_uids.push_back(p.role_uid);
+                if (!p.role_uid.empty())
+                    producer_uids.push_back(p.role_uid);
             consumer_uids.reserve(it->second.consumers.size());
             for (const auto &c : it->second.consumers)
-                if (!c.role_uid.empty()) consumer_uids.push_back(c.role_uid);
+                if (!c.role_uid.empty())
+                    consumer_uids.push_back(c.role_uid);
         }
     }
 
@@ -1538,7 +1578,8 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         for (const auto &producer_uid : producer_uids)
         {
             auto rit = pImpl->roles.find(producer_uid);
-            if (rit == pImpl->roles.end()) continue;
+            if (rit == pImpl->roles.end())
+                continue;
             // Wave M3 step 5b: route presence termination through the
             // controlled-access API.  `on_dereg` is any-state →
             // Disconnected; idempotent if already Disconnected.
@@ -1551,7 +1592,8 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
         for (const auto &consumer_uid : consumer_uids)
         {
             auto rit = pImpl->roles.find(consumer_uid);
-            if (rit == pImpl->roles.end()) continue;
+            if (rit == pImpl->roles.end())
+                continue;
             (void)rit->second.on_dereg(name, "consumer");
             (void)rit->second.drop_channel_if_orphaned(name);
         }
@@ -1577,10 +1619,9 @@ void HubState::_on_channel_closed(const std::string &name, ChannelCloseReason wh
 }
 
 ConsumerAdmissionResult
-HubState::_on_consumer_joined(const std::string&                        channel,
-                              ConsumerEntry                             consumer,
-                              std::optional<ChannelTopology>            declared_topology,
-                              std::optional<ChannelSchemaInvariants>    open_schema,
+HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer,
+                              std::optional<ChannelTopology> declared_topology,
+                              std::optional<ChannelSchemaInvariants> open_schema,
                               std::optional<ChannelTransportInvariants> open_transport)
 {
     // Grammar failures — see the parallel branch in
@@ -1601,17 +1642,16 @@ HubState::_on_consumer_joined(const std::string&                        channel,
 
     const std::string consumer_uid = consumer.role_uid;
 
-    auto result = _add_consumer(channel, std::move(consumer),
-                                 declared_topology,
-                                 open_schema, open_transport);
-    if (!result.admitted) return result;
+    auto result =
+        _add_consumer(channel, std::move(consumer), declared_topology, open_schema, open_transport);
+    if (!result.admitted)
+        return result;
 
     if (!consumer_uid.empty())
     {
-        RoleEntry fired = upsert_role_locked(
-            *pImpl, consumer_uid, /*pubkey*/ {}, channel,
-            /*role_type=*/"consumer",
-            std::chrono::steady_clock::now());
+        RoleEntry fired =
+            upsert_role_locked(*pImpl, consumer_uid, /*pubkey*/ {}, channel,
+                               /*role_type=*/"consumer", std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
@@ -1636,24 +1676,25 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
     // is maintained via `drop_channel_if_orphaned`.  Terminal cleanup
     // (entry erase) is decided after lock release by
     // `_dispatch_role_disconnected_if_dead`.
-    if (role_uid.empty()) return;
+    if (role_uid.empty())
+        return;
     {
         std::unique_lock lk(pImpl->mu);
         auto it = pImpl->roles.find(role_uid);
-        if (it == pImpl->roles.end()) return;
+        if (it == pImpl->roles.end())
+            return;
         (void)it->second.on_dereg(channel, "consumer");
         (void)it->second.drop_channel_if_orphaned(channel);
     }
     _dispatch_role_disconnected_if_dead(role_uid);
 }
 
-HeartbeatEffect HubState::_on_heartbeat(const std::string                   &channel,
-                             const std::string                   &role_uid,
-                             const std::string                   &role_type,
-                             std::chrono::steady_clock::time_point when,
-                             const std::optional<nlohmann::json> &metrics)
+HeartbeatEffect HubState::_on_heartbeat(const std::string &channel, const std::string &role_uid,
+                                        const std::string &role_type,
+                                        std::chrono::steady_clock::time_point when,
+                                        const std::optional<nlohmann::json> &metrics)
 {
-    HeartbeatEffect eff_out;  // default-constructed: presence_found = false
+    HeartbeatEffect eff_out; // default-constructed: presence_found = false
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
     {
@@ -1664,15 +1705,17 @@ HeartbeatEffect HubState::_on_heartbeat(const std::string                   &cha
     // matching `(uid, channel, role_type)` presence row.  Presence
     // rows are created eagerly at REG time (§2.6); a heartbeat
     // for an unknown presence is a no-op.
-    if (role_uid.empty() || role_type.empty()) return eff_out;
+    if (role_uid.empty() || role_type.empty())
+        return eff_out;
 
-    bool              observable_changed = false;
-    ChannelEntry      fired_entry;
+    bool observable_changed = false;
+    ChannelEntry fired_entry;
     ChannelObservable new_obs = ChannelObservable::kAbsent;
     {
         std::unique_lock lk(pImpl->mu);
-        auto             rit = pImpl->roles.find(role_uid);
-        if (rit == pImpl->roles.end()) return eff_out;
+        auto rit = pImpl->roles.find(role_uid);
+        if (rit == pImpl->roles.end())
+            return eff_out;
 
         // Route the presence-row FSM mutation through RoleEntry's
         // controlled-access API.  The method updates last_heartbeat +
@@ -1689,10 +1732,10 @@ HeartbeatEffect HubState::_on_heartbeat(const std::string                   &cha
         //       per-presence metrics setter.  A future
         //       `RoleEntry::set_presence_metrics(channel, role_type,
         //       metrics)` would absorb the post-lock block below.
-        const HeartbeatEffect eff =
-            rit->second.on_heartbeat(channel, role_type, when);
-        if (!eff.presence_found) return eff_out;
-        eff_out = eff;  // surface to caller (broker layer logs first-tick)
+        const HeartbeatEffect eff = rit->second.on_heartbeat(channel, role_type, when);
+        if (!eff.presence_found)
+            return eff_out;
+        eff_out = eff; // surface to caller (broker layer logs first-tick)
 
         // Recovery from Pending counts as pending_to_ready (HEP-0023 §2.5).
         if (eff.prev_state == RoleState::Pending)
@@ -1705,7 +1748,7 @@ HeartbeatEffect HubState::_on_heartbeat(const std::string                   &cha
             auto *p = rit->second.find_presence(channel, role_type);
             if (p != nullptr)
             {
-                p->latest_metrics       = *metrics;
+                p->latest_metrics = *metrics;
                 p->metrics_collected_at = std::chrono::system_clock::now();
             }
         }
@@ -1714,31 +1757,27 @@ HeartbeatEffect HubState::_on_heartbeat(const std::string                   &cha
         // transition flips the channel's observable.  Producer-presences
         // only — consumer transitions don't affect channel observability.
         const bool transitioned_to_live =
-            !eff.was_first_heartbeat_seen ||
-            eff.prev_state != RoleState::Connected;
+            !eff.was_first_heartbeat_seen || eff.prev_state != RoleState::Connected;
         if (role_type == "producer" && transitioned_to_live)
         {
             auto cit = pImpl->channels.find(channel);
             if (cit != pImpl->channels.end())
             {
-                fired_entry        = cit->second;
-                new_obs            = compute_channel_observable(
-                                         cit->second, pImpl->roles);
+                fired_entry = cit->second;
+                new_obs = compute_channel_observable(cit->second, pImpl->roles);
                 observable_changed = true;
             }
         }
     }
     if (observable_changed)
     {
-        for (auto &h : snapshot_handlers(pImpl->handlers_mu,
-                                         pImpl->ch_status_changed))
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_status_changed))
             h(fired_entry, new_obs);
     }
     return eff_out;
 }
 
-void HubState::_on_heartbeat_timeout(const std::string &channel,
-                                     const std::string &role_uid,
+void HubState::_on_heartbeat_timeout(const std::string &channel, const std::string &role_uid,
                                      const std::string &role_type)
 {
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
@@ -1747,7 +1786,8 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
         bump_invalid_identifier(*pImpl);
         return;
     }
-    if (role_uid.empty() || role_type.empty()) return;
+    if (role_uid.empty() || role_type.empty())
+        return;
     // HEP-CORE-0023 §2.1: per-presence Connected → Pending.  The role
     // is NOT marked Disconnected here — Pending means "suspicious, may
     // recover via the next heartbeat".  Disconnection (if any) happens
@@ -1755,23 +1795,24 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
     // ChannelStatusChangedHandler fan-out) tracks producer presence
     // only; consumer-presence transitions update the FSM + counter but
     // do not affect channel state.
-    const bool        is_producer  = (role_type == "producer");
-    bool              transitioned = false;
-    ChannelEntry      fired_entry;
+    const bool is_producer = (role_type == "producer");
+    bool transitioned = false;
+    ChannelEntry fired_entry;
     ChannelObservable new_obs = ChannelObservable::kAbsent;
     {
         std::unique_lock lk(pImpl->mu);
         auto rit = pImpl->roles.find(role_uid);
-        if (rit == pImpl->roles.end()) return;
+        if (rit == pImpl->roles.end())
+            return;
 
         // Wave M3 step 3: route FSM transition through the controlled-
         // access API.  `first_heartbeat_seen` is NOT a gate — the
         // registered-but-never-heartbeat case demotes via this same
         // path once `last_heartbeat` (stamped at REG_REQ time) ages
         // past ready_timeout.
-        const TransitionEffect te =
-            rit->second.on_heartbeat_timeout(channel, role_type);
-        if (te != TransitionEffect::ToPending) return;
+        const TransitionEffect te = rit->second.on_heartbeat_timeout(channel, role_type);
+        if (te != TransitionEffect::ToPending)
+            return;
         ++pImpl->counters.ready_to_pending_total;
         transitioned = true;
 
@@ -1781,22 +1822,20 @@ void HubState::_on_heartbeat_timeout(const std::string &channel,
             if (it != pImpl->channels.end())
             {
                 fired_entry = it->second;
-                new_obs     = compute_channel_observable(it->second, pImpl->roles);
+                new_obs = compute_channel_observable(it->second, pImpl->roles);
             }
         }
     }
     if (transitioned && is_producer)
     {
-        for (auto &h : snapshot_handlers(pImpl->handlers_mu,
-                                         pImpl->ch_status_changed))
+        for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->ch_status_changed))
             h(fired_entry, new_obs);
     }
 }
 
-RemoveProducerResult
-HubState::_on_pending_timeout(const std::string &channel,
-                               const std::string &role_uid,
-                               const std::string &role_type)
+RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
+                                                   const std::string &role_uid,
+                                                   const std::string &role_type)
 {
     RemoveProducerResult result{false, false};
 
@@ -1806,7 +1845,8 @@ HubState::_on_pending_timeout(const std::string &channel,
         bump_invalid_identifier(*pImpl);
         return result;
     }
-    if (role_type.empty()) return result;
+    if (role_type.empty())
+        return result;
 
     // ── Consumer-presence path ─────────────────────────────────────
     // HEP-CORE-0023 §2.1 + §2.1.1: consumer-presence Pending →
@@ -1822,14 +1862,16 @@ HubState::_on_pending_timeout(const std::string &channel,
         {
             std::unique_lock lk(pImpl->mu);
             auto it = pImpl->channels.find(channel);
-            if (it == pImpl->channels.end()) return result;
+            if (it == pImpl->channels.end())
+                return result;
 
             auto rit = pImpl->roles.find(role_uid);
-            if (rit == pImpl->roles.end()) return result;
+            if (rit == pImpl->roles.end())
+                return result;
 
-            const TransitionEffect te =
-                rit->second.on_pending_timeout(channel, "consumer");
-            if (te != TransitionEffect::ToDisconnected) return result;
+            const TransitionEffect te = rit->second.on_pending_timeout(channel, "consumer");
+            if (te != TransitionEffect::ToDisconnected)
+                return result;
             ++pImpl->counters.pending_to_deregistered_total;
             eligible = true;
 
@@ -1838,11 +1880,12 @@ HubState::_on_pending_timeout(const std::string &channel,
             // consumer-presence (e.g., presence created without an
             // accompanying CONSUMER_REG_REQ).  Reflect the actual
             // mutation in `result.removed`.
-            result.removed           = it->second.remove_consumer(role_uid);
+            result.removed = it->second.remove_consumer(role_uid);
             result.channel_now_empty = false;
             (void)rit->second.drop_channel_if_orphaned(channel);
         }
-        if (eligible) _dispatch_role_disconnected_if_dead(role_uid);
+        if (eligible)
+            _dispatch_role_disconnected_if_dead(role_uid);
         return result;
     }
 
@@ -1866,25 +1909,28 @@ HubState::_on_pending_timeout(const std::string &channel,
     // schema eviction from `_on_channel_closed` directly into the
     // dispatch path (cascade_role_terminal_cleanup_locked).
     bool is_last_producer = false;
-    bool eligible         = false;
+    bool eligible = false;
     {
         std::unique_lock lk(pImpl->mu);
-        auto             it = pImpl->channels.find(channel);
-        if (it == pImpl->channels.end()) return result;
-        if (it->second.find_producer(role_uid) == nullptr) return result;
+        auto it = pImpl->channels.find(channel);
+        if (it == pImpl->channels.end())
+            return result;
+        if (it->second.find_producer(role_uid) == nullptr)
+            return result;
 
         auto rit = pImpl->roles.find(role_uid);
-        if (rit == pImpl->roles.end()) return result;
+        if (rit == pImpl->roles.end())
+            return result;
 
         // Wave M3 step 3: route FSM transition through the controlled-
         // access API.  `on_pending_timeout` is a no-op when the
         // presence is not Pending — handles the lost-race case
         // (concurrent timer fires) without re-entering teardown.
-        const TransitionEffect te =
-            rit->second.on_pending_timeout(channel, "producer");
-        if (te != TransitionEffect::ToDisconnected) return result;
+        const TransitionEffect te = rit->second.on_pending_timeout(channel, "producer");
+        if (te != TransitionEffect::ToDisconnected)
+            return result;
         ++pImpl->counters.pending_to_deregistered_total;
-        eligible         = true;
+        eligible = true;
         is_last_producer = (it->second.producer_count() == 1);
         if (!is_last_producer)
         {
@@ -1892,8 +1938,8 @@ HubState::_on_pending_timeout(const std::string &channel,
             // survives.  Producer-presence FSM already transitioned
             // Disconnected above via on_pending_timeout; maintain the
             // `channels` cache invariant (Wave M3 step 5d).
-            auto rm                  = it->second.remove_producer(role_uid);
-            result.removed           = rm.removed;
+            auto rm = it->second.remove_producer(role_uid);
+            result.removed = rm.removed;
             result.channel_now_empty = false;
             (void)rit->second.drop_channel_if_orphaned(channel);
             // HEP-CORE-0042 §5.4: kDead heartbeat is a normative
@@ -1913,14 +1959,15 @@ HubState::_on_pending_timeout(const std::string &channel,
         // this uid → dispatch fires terminal cleanup for the role.
     }
 
-    if (!eligible) return result;
+    if (!eligible)
+        return result;
     if (is_last_producer)
     {
         // Atomic channel teardown — `_on_channel_closed` dispatches
         // role-disconnect terminal cleanup for every producer uid
         // (Wave M3 step 5b, 2026-05-11).
         _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
-        result.removed           = true;
+        result.removed = true;
         result.channel_now_empty = true;
     }
     else
@@ -1954,14 +2001,12 @@ void HubState::_on_band_joined(const std::string &band, BandMember member)
 
     if (!role_uid.empty())
     {
-        RoleEntry fired = upsert_role_locked(
-            *pImpl, role_uid, /*pubkey*/ {}, /*channel*/ {},
-            /*role_type=*/{},   // band membership; no presence row
-            std::chrono::steady_clock::now());
+        RoleEntry fired = upsert_role_locked(*pImpl, role_uid, /*pubkey*/ {}, /*channel*/ {},
+                                             /*role_type=*/{}, // band membership; no presence row
+                                             std::chrono::steady_clock::now());
         for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->role_reg))
             h(fired);
     }
-
 }
 
 void HubState::_on_band_left(const std::string &band, const std::string &role_uid)
@@ -2025,10 +2070,9 @@ void HubState::_on_channel_access_closed(const std::string &channel_name)
 }
 
 void HubState::_on_consumer_authorized(const std::string &channel_name,
-                                        const std::string &pubkey_z85)
+                                       const std::string &pubkey_z85)
 {
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        pubkey_z85.empty())
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || pubkey_z85.empty())
     {
         bump_invalid_identifier(*pImpl);
         return;
@@ -2037,7 +2081,7 @@ void HubState::_on_consumer_authorized(const std::string &channel_name,
     auto it = pImpl->channel_access_index.find(channel_name);
     if (it == pImpl->channel_access_index.end())
     {
-        return;  // no-op per contract
+        return; // no-op per contract
     }
     // Ledger's `admit` is idempotent (no-bump on re-admit) and captures
     // the admission version.  Later `is_visible_to` calls use that
@@ -2046,11 +2090,9 @@ void HubState::_on_consumer_authorized(const std::string &channel_name,
     it->second.ledger.admit(pubkey_z85);
 }
 
-void HubState::_on_consumer_revoked(const std::string &channel_name,
-                                     const std::string &pubkey_z85)
+void HubState::_on_consumer_revoked(const std::string &channel_name, const std::string &pubkey_z85)
 {
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        pubkey_z85.empty())
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || pubkey_z85.empty())
     {
         bump_invalid_identifier(*pImpl);
         return;
@@ -2059,7 +2101,7 @@ void HubState::_on_consumer_revoked(const std::string &channel_name,
     auto it = pImpl->channel_access_index.find(channel_name);
     if (it == pImpl->channel_access_index.end())
     {
-        return;  // no-op per contract
+        return; // no-op per contract
     }
     // Ledger's `revoke` always bumps current_version (revocation is a
     // state-change signal for role confirmations to catch up to).
@@ -2070,19 +2112,17 @@ void HubState::_on_consumer_revoked(const std::string &channel_name,
     it->second.ledger.revoke(pubkey_z85);
 }
 
-std::uint64_t
-HubState::producer_instance(const std::string &producer_role_uid) const
+std::uint64_t HubState::producer_instance(const std::string &producer_role_uid) const
 {
-    if (producer_role_uid.empty()) return 0;
+    if (producer_role_uid.empty())
+        return 0;
     std::shared_lock lk(pImpl->mu);
     auto it = pImpl->producer_instance.find(producer_role_uid);
     return (it == pImpl->producer_instance.end()) ? 0 : it->second;
 }
 
-bool
-HubState::nonce_seen(std::string_view role_uid,
-                      std::string_view client_nonce,
-                      std::uint64_t     window_ms)
+bool HubState::nonce_seen(std::string_view role_uid, std::string_view client_nonce,
+                          std::uint64_t window_ms)
 {
     // I-REPLAY-BOUND: freshness check + record.  Delegates to the shared
     // `ReplayGuard` (self-locked, so no `pImpl->mu` here).  Returns true
@@ -2092,17 +2132,14 @@ HubState::nonce_seen(std::string_view role_uid,
     // no caller-supplied timestamp, so client wall time cannot reach the
     // dedup window (see ReplayGuard header).  The caller's separate skew
     // gate consumes the client stamp.
-    return pImpl->replay_guard.check_and_record(role_uid, client_nonce,
-                                                window_ms);
+    return pImpl->replay_guard.check_and_record(role_uid, client_nonce, window_ms);
 }
 
-std::uint64_t
-HubState::_on_role_confirmed(const std::string &channel_name,
-                              const std::string &role_uid,
-                              std::uint64_t      applied_version)
+std::uint64_t HubState::_on_role_confirmed(const std::string &channel_name,
+                                           const std::string &role_uid,
+                                           std::uint64_t applied_version)
 {
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        role_uid.empty())
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || role_uid.empty())
     {
         bump_invalid_identifier(*pImpl);
         return 0;
@@ -2122,13 +2159,11 @@ HubState::_on_role_confirmed(const std::string &channel_name,
     return it->second.ledger.confirm(role_uid, applied_version);
 }
 
-bool
-HubState::is_role_registered_on_channel(const std::string &channel_name,
-                                          const std::string &role_uid,
-                                          const std::string &role_type) const
+bool HubState::is_role_registered_on_channel(const std::string &channel_name,
+                                             const std::string &role_uid,
+                                             const std::string &role_type) const
 {
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        role_uid.empty())
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || role_uid.empty())
     {
         return false;
     }
@@ -2141,26 +2176,23 @@ HubState::is_role_registered_on_channel(const std::string &channel_name,
     const auto &ch = it->second;
     if (role_type == "consumer")
     {
-        return std::any_of(
-            ch.consumers.begin(), ch.consumers.end(),
-            [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
+        return std::any_of(ch.consumers.begin(), ch.consumers.end(),
+                           [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
     }
     if (role_type == "producer")
     {
-        return std::any_of(
-            ch.producers.begin(), ch.producers.end(),
-            [&](const ProducerEntry &p) { return p.role_uid == role_uid; });
+        return std::any_of(ch.producers.begin(), ch.producers.end(),
+                           [&](const ProducerEntry &p) { return p.role_uid == role_uid; });
     }
     return false;
 }
 
-std::optional<bool>
-HubState::is_pubkey_visible_to(const std::string &channel_name,
-                                const std::string &binding_role_uid,
-                                const std::string &pubkey_z85) const
+std::optional<bool> HubState::is_pubkey_visible_to(const std::string &channel_name,
+                                                   const std::string &binding_role_uid,
+                                                   const std::string &pubkey_z85) const
 {
-    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
-        binding_role_uid.empty() || pubkey_z85.empty())
+    if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || binding_role_uid.empty() ||
+        pubkey_z85.empty())
     {
         return std::nullopt;
     }
@@ -2173,13 +2205,12 @@ HubState::is_pubkey_visible_to(const std::string &channel_name,
     return it->second.ledger.is_visible_to(binding_role_uid, pubkey_z85);
 }
 
-void HubState::_on_message_processed(const std::string &msg_type,
-                                     std::size_t        bytes_in,
-                                     std::size_t        bytes_out)
+void HubState::_on_message_processed(const std::string &msg_type, std::size_t bytes_in,
+                                     std::size_t bytes_out)
 {
     std::unique_lock lk(pImpl->mu);
     ++pImpl->counters.msg_type_counts[msg_type];
-    pImpl->counters.bytes_in_total  += bytes_in;
+    pImpl->counters.bytes_in_total += bytes_in;
     pImpl->counters.bytes_out_total += bytes_out;
 }
 
@@ -2203,7 +2234,7 @@ schema::SchemaRegOutcome HubState::_on_schema_registered(schema::SchemaRecord re
         return O::kForbiddenOwner;
 
     std::unique_lock lk(pImpl->mu);
-    const SchemaKey  key{rec.owner_uid, rec.schema_id};
+    const SchemaKey key{rec.owner_uid, rec.schema_id};
 
     auto it = pImpl->schemas.find(key);
     if (it != pImpl->schemas.end())
@@ -2225,16 +2256,18 @@ schema::SchemaRegOutcome HubState::_on_schema_registered(schema::SchemaRecord re
 
 std::size_t HubState::_on_schemas_evicted_for_owner(const std::string &owner_uid)
 {
-    if (owner_uid.empty()) return 0;
+    if (owner_uid.empty())
+        return 0;
 
     // Hub-globals (owner=="hub") must never be evicted by this op — they
     // only leave HubState when the hub process exits.
-    if (owner_uid == "hub") return 0;
+    if (owner_uid == "hub")
+        return 0;
 
-    std::size_t        removed = 0;
+    std::size_t removed = 0;
     {
         std::unique_lock lk(pImpl->mu);
-        for (auto it = pImpl->schemas.begin(); it != pImpl->schemas.end(); )
+        for (auto it = pImpl->schemas.begin(); it != pImpl->schemas.end();)
         {
             if (it->first.first == owner_uid)
             {
@@ -2251,8 +2284,7 @@ std::size_t HubState::_on_schemas_evicted_for_owner(const std::string &owner_uid
     return removed;
 }
 
-schema::CitationOutcome
-HubState::_validate_schema_citation(const SchemaCitationInput &in)
+schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitationInput &in)
 {
     using R = schema::CitationOutcome::Reason;
     schema::CitationOutcome out{R::kOk, {}};
@@ -2261,16 +2293,12 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
     // rejection names BOTH sides on the failing axis so an operator reads the
     // exact cause from the message.  An empty id renders as "(anonymous)" and
     // an empty owner as "(none)"; hashes render as their first 8 hex chars.
-    auto show_id = [](const std::string &s) {
-        return s.empty() ? std::string("(anonymous)") : ("'" + s + "'");
-    };
-    auto show_owner = [](const std::string &s) {
-        return s.empty() ? std::string("(none)") : ("'" + s + "'");
-    };
-    auto short_hash = [](const std::array<uint8_t, 32> &h) {
-        return pylabhub::format_tools::bytes_to_hex(
-            {reinterpret_cast<const char *>(h.data()), 4});
-    };
+    auto show_id = [](const std::string &s)
+    { return s.empty() ? std::string("(anonymous)") : ("'" + s + "'"); };
+    auto show_owner = [](const std::string &s)
+    { return s.empty() ? std::string("(none)") : ("'" + s + "'"); };
+    auto short_hash = [](const std::array<uint8_t, 32> &h)
+    { return pylabhub::format_tools::bytes_to_hex({reinterpret_cast<const char *>(h.data()), 4}); };
 
     // ── Step 2 (HEP-CORE-0034 §9 matching contract) — channel match ──────────
     // The channel's stored schema is the source of truth.  A joiner must match
@@ -2282,9 +2310,8 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
     if (in.expected_hash != in.channel_hash)
     {
         out.reason = R::kFingerprintMismatch;
-        out.detail = "schema fingerprint mismatch: channel hash=" +
-                     short_hash(in.channel_hash) + "… cited hash=" +
-                     short_hash(in.expected_hash) + "…";
+        out.detail = "schema fingerprint mismatch: channel hash=" + short_hash(in.channel_hash) +
+                     "… cited hash=" + short_hash(in.expected_hash) + "…";
     }
     // (b) schema_id must be EXACTLY equal.  This enforces the named/anonymous
     //     symmetry: a named citation against an anonymous channel, an anonymous
@@ -2301,13 +2328,11 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
     // (c) Owner axis — asserted only by a producer named citation (consumers
     //     cite by id only and never claim an owner, so this is skipped for
     //     them; an anonymous producer likewise makes no owner claim).
-    else if (!in.cited_id.empty() && !in.cited_owner.empty() &&
-             in.cited_owner != in.channel_owner)
+    else if (!in.cited_id.empty() && !in.cited_owner.empty() && in.cited_owner != in.channel_owner)
     {
         out.reason = R::kSchemaOwnerMismatch;
-        out.detail = "schema owner mismatch: channel owner=" +
-                     show_owner(in.channel_owner) + " claimed owner=" +
-                     show_owner(in.cited_owner);
+        out.detail = "schema owner mismatch: channel owner=" + show_owner(in.channel_owner) +
+                     " claimed owner=" + show_owner(in.cited_owner);
     }
     // ── Step 3 (HEP §9.1) — named-registry check ─────────────────────────────
     // An explicit registry citation (producer adopting a hub-global, Path C)
@@ -2320,9 +2345,8 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
     {
         const std::string &owner = in.channel_owner;
         const bool owner_is_channel_producer =
-            std::find(in.channel_producer_uids.begin(),
-                      in.channel_producer_uids.end(),
-                      owner) != in.channel_producer_uids.end();
+            std::find(in.channel_producer_uids.begin(), in.channel_producer_uids.end(), owner) !=
+            in.channel_producer_uids.end();
         if (owner != "hub" && !owner_is_channel_producer)
         {
             out.reason = R::kCrossCitation;
@@ -2337,18 +2361,17 @@ HubState::_validate_schema_citation(const SchemaCitationInput &in)
             if (it == pImpl->schemas.end())
             {
                 out.reason = R::kUnknownSchema;
-                out.detail = "schema unknown: no registry record under (owner=" +
-                             show_owner(owner) + ", id=" + show_id(in.channel_id) +
-                             ")";
+                out.detail =
+                    "schema unknown: no registry record under (owner=" + show_owner(owner) +
+                    ", id=" + show_id(in.channel_id) + ")";
             }
             else if (it->second.hash != in.channel_hash)
             {
                 out.reason = R::kFingerprintMismatch;
-                out.detail = "schema fingerprint mismatch: registry record (owner=" +
-                             show_owner(owner) + ", id=" + show_id(in.channel_id) +
-                             ") hash=" + short_hash(it->second.hash) +
-                             "… differs from channel hash=" +
-                             short_hash(in.channel_hash) + "…";
+                out.detail =
+                    "schema fingerprint mismatch: registry record (owner=" + show_owner(owner) +
+                    ", id=" + show_id(in.channel_id) + ") hash=" + short_hash(it->second.hash) +
+                    "… differs from channel hash=" + short_hash(in.channel_hash) + "…";
             }
         }
     }

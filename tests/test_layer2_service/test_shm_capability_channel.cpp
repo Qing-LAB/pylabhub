@@ -50,11 +50,11 @@
 
 namespace fs = std::filesystem;
 
-using pylabhub::utils::security::IShmCapabilityConsumer;
-using pylabhub::utils::security::IShmCapabilityProducer;
 using pylabhub::utils::security::attach_shm_capability_consumer;
 using pylabhub::utils::security::attach_shm_capability_consumer_from_socket;
 using pylabhub::utils::security::create_shm_capability_producer;
+using pylabhub::utils::security::IShmCapabilityConsumer;
+using pylabhub::utils::security::IShmCapabilityProducer;
 
 // ── Compile-time interface pins ─────────────────────────────────────────
 //
@@ -83,18 +83,16 @@ class ShmCapabilityChannelTest : public ::testing::Test
         for (const auto &p : paths_)
         {
             std::error_code ec;
-            fs::remove(p, ec);  // best-effort; producer dtor already unlinks
+            fs::remove(p, ec); // best-effort; producer dtor already unlinks
         }
         paths_.clear();
     }
 
-    std::string
-    unique_socket_path(const char *tag)
+    std::string unique_socket_path(const char *tag)
     {
         static std::atomic<int> ctr{0};
-        fs::path                p = fs::temp_directory_path() /
-                     ("plh_l2_shmcap_" + std::string(tag) + "_" +
-                      std::to_string(::getpid()) + "_" +
+        fs::path p = fs::temp_directory_path() /
+                     ("plh_l2_shmcap_" + std::string(tag) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)) + ".sock");
         paths_.push_back(p);
         return p.string();
@@ -115,9 +113,9 @@ class ShmCapabilityChannelTest : public ::testing::Test
 // auto-tracking).
 TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
 {
-    constexpr size_t  kSize     = 4096;
+    constexpr size_t kSize = 4096;
     constexpr uint64_t kSentinel = 0xDEADBEEFCAFEBABEULL;
-    constexpr uint64_t kReply    = 0x12345678ABCDEF01ULL;
+    constexpr uint64_t kReply = 0x12345678ABCDEF01ULL;
 
     const std::string path = unique_socket_path("roundtrip");
 
@@ -131,22 +129,22 @@ TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
     std::memcpy(producer_span.data(), &kSentinel, sizeof(kSentinel));
 
     std::unique_ptr<IShmCapabilityConsumer> consumer;
-    std::exception_ptr                      consumer_ex;
-    std::thread                             consumer_thread{[&] {
-        try
+    std::exception_ptr consumer_ex;
+    std::thread consumer_thread{
+        [&]
         {
-            consumer = attach_shm_capability_consumer(
-                path, std::chrono::milliseconds{2000});
-        }
-        catch (...)
-        {
-            consumer_ex = std::current_exception();
-        }
-    }};
+            try
+            {
+                consumer = attach_shm_capability_consumer(path, std::chrono::milliseconds{2000});
+            }
+            catch (...)
+            {
+                consumer_ex = std::current_exception();
+            }
+        }};
 
     auto peer = producer->accept_one(std::chrono::milliseconds{2000});
-    ASSERT_TRUE(peer.has_value())
-        << "accept_one timed out before the consumer connected";
+    ASSERT_TRUE(peer.has_value()) << "accept_one timed out before the consumer connected";
     EXPECT_GT(peer->peer_socket_fd, 0);
     EXPECT_EQ(peer->uid, ::getuid())
         << "SO_PEERCRED must report the test process's uid in a "
@@ -156,8 +154,7 @@ TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
     ASSERT_TRUE(producer->send_capability(peer->peer_socket_fd));
 
     consumer_thread.join();
-    ASSERT_FALSE(consumer_ex)
-        << "consumer ctor threw — the round-trip flow is broken";
+    ASSERT_FALSE(consumer_ex) << "consumer ctor threw — the round-trip flow is broken";
     ASSERT_NE(consumer, nullptr);
     ASSERT_EQ(consumer->size(), kSize)
         << "consumer size must match producer size (fstat must read the "
@@ -167,9 +164,8 @@ TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
     ASSERT_EQ(consumer_span.size(), kSize);
     uint64_t received{};
     std::memcpy(&received, consumer_span.data(), sizeof(received));
-    EXPECT_EQ(received, kSentinel)
-        << "consumer's mapping must show the bytes the producer wrote — "
-           "the SCM_RIGHTS fd is the same kernel object on both sides";
+    EXPECT_EQ(received, kSentinel) << "consumer's mapping must show the bytes the producer wrote — "
+                                      "the SCM_RIGHTS fd is the same kernel object on both sides";
 
     // Reverse direction: consumer writes, producer reads.  Pins that the
     // capability is RW for both sides (not split as producer-write /
@@ -177,8 +173,7 @@ TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
     std::memcpy(consumer_span.data() + 64, &kReply, sizeof(kReply));
     uint64_t roundtrip{};
     std::memcpy(&roundtrip, producer_span.data() + 64, sizeof(roundtrip));
-    EXPECT_EQ(roundtrip, kReply)
-        << "producer must see writes the consumer makes — RW capability";
+    EXPECT_EQ(roundtrip, kReply) << "producer must see writes the consumer makes — RW capability";
 
     // Caller owns peer->peer_socket_fd per the AcceptedPeer ownership
     // contract; close it before the producer goes out of scope.
@@ -190,11 +185,11 @@ TEST_F(ShmCapabilityChannelTest, RoundTrip_ConsumerSeesProducerWrites)
 TEST_F(ShmCapabilityChannelTest, AcceptOneReturnsNulloptOnTimeout)
 {
     const std::string path = unique_socket_path("timeout");
-    auto              producer = create_shm_capability_producer(1024);
+    auto producer = create_shm_capability_producer(1024);
     ASSERT_TRUE(producer->bind_endpoint(path));
 
-    const auto start   = std::chrono::steady_clock::now();
-    auto       peer    = producer->accept_one(std::chrono::milliseconds{50});
+    const auto start = std::chrono::steady_clock::now();
+    auto peer = producer->accept_one(std::chrono::milliseconds{50});
     const auto elapsed = std::chrono::steady_clock::now() - start;
 
     EXPECT_FALSE(peer.has_value())
@@ -215,13 +210,11 @@ TEST_F(ShmCapabilityChannelTest, ConsumerThrowsOnNonexistentEndpoint)
     // A pseudo-random suffix in the path keeps this test independent of
     // any concurrent test that might use the same naming scheme.
     const std::string nonexistent =
-        "/tmp/plh_no_such_socket_for_test_" + std::to_string(::getpid()) +
-        "_a8f3.sock";
+        "/tmp/plh_no_such_socket_for_test_" + std::to_string(::getpid()) + "_a8f3.sock";
     EXPECT_THROW(
         {
-            auto c = attach_shm_capability_consumer(
-                nonexistent, std::chrono::milliseconds{100});
-            (void) c;
+            auto c = attach_shm_capability_consumer(nonexistent, std::chrono::milliseconds{100});
+            (void)c;
         },
         std::runtime_error);
 }
@@ -241,7 +234,7 @@ TEST_F(ShmCapabilityChannelTest, ProducerCtorRejectsZeroSize)
     EXPECT_THROW(
         {
             auto p = create_shm_capability_producer(0);
-            (void) p;
+            (void)p;
         },
         std::invalid_argument);
 }
@@ -276,45 +269,44 @@ TEST_F(ShmCapabilityChannelTest, BindEndpointTwiceFails)
 
 TEST_F(ShmCapabilityChannelTest, BindAndDialAcceptUnixSchemeURI)
 {
-    constexpr size_t   kSize = 4096;
-    const std::string  path  = unique_socket_path("uri_scheme");
-    const std::string  uri   = "unix://" + path;
+    constexpr size_t kSize = 4096;
+    const std::string path = unique_socket_path("uri_scheme");
+    const std::string uri = "unix://" + path;
 
     auto producer = create_shm_capability_producer(kSize);
     ASSERT_TRUE(producer->bind_endpoint(uri))
         << "bind_endpoint must accept the canonical `unix://` URI "
            "shape — HEP-CORE-0041 §5.1.";
 
-    EXPECT_TRUE(fs::exists(path))
-        << "bind must create the socket file at the STRIPPED path, "
-           "not at the literal `unix://<path>` string.";
+    EXPECT_TRUE(fs::exists(path)) << "bind must create the socket file at the STRIPPED path, "
+                                     "not at the literal `unix://<path>` string.";
     EXPECT_FALSE(fs::exists("unix:" + path))
         << "No file with a `unix:` prefix component should exist — "
            "that would be the unstripped-URI regression.";
 
     // Consumer dial — also via URI.
     std::unique_ptr<IShmCapabilityConsumer> consumer;
-    std::exception_ptr                      consumer_ex;
-    std::thread                             consumer_thread{[&] {
-        try
+    std::exception_ptr consumer_ex;
+    std::thread consumer_thread{
+        [&]
         {
-            consumer = attach_shm_capability_consumer(
-                uri, std::chrono::milliseconds{2000});
-        }
-        catch (...)
-        {
-            consumer_ex = std::current_exception();
-        }
-    }};
+            try
+            {
+                consumer = attach_shm_capability_consumer(uri, std::chrono::milliseconds{2000});
+            }
+            catch (...)
+            {
+                consumer_ex = std::current_exception();
+            }
+        }};
 
     auto peer = producer->accept_one(std::chrono::milliseconds{2000});
     ASSERT_TRUE(peer.has_value());
     ASSERT_TRUE(producer->send_capability(peer->peer_socket_fd));
 
     consumer_thread.join();
-    ASSERT_FALSE(consumer_ex)
-        << "attach_shm_capability_consumer must dial via the same URI "
-           "shape the producer published — both ends strip identically.";
+    ASSERT_FALSE(consumer_ex) << "attach_shm_capability_consumer must dial via the same URI "
+                                 "shape the producer published — both ends strip identically.";
     ASSERT_NE(consumer, nullptr);
     EXPECT_EQ(consumer->size(), kSize);
 
@@ -336,9 +328,8 @@ TEST_F(ShmCapabilityChannelTest, BindCreatesMissingParentDirectory)
     // Generate a nested parent dir that does not exist yet.
     const fs::path nested_parent =
         fs::temp_directory_path() /
-        ("plh_l2_shmcap_mkdir_" + std::to_string(::getpid()) + "_" +
-         std::to_string(::getpid()));
-    paths_.push_back(nested_parent);  // best-effort cleanup
+        ("plh_l2_shmcap_mkdir_" + std::to_string(::getpid()) + "_" + std::to_string(::getpid()));
+    paths_.push_back(nested_parent); // best-effort cleanup
     const std::string sock = (nested_parent / "the.sock").string();
     paths_.push_back(sock);
 
@@ -355,11 +346,9 @@ TEST_F(ShmCapabilityChannelTest, BindCreatesMissingParentDirectory)
     // Parent dir must be mode 0700 (owner-only); HEP-0041 §5.1
     // hardening contract.
     const fs::file_status st = fs::status(nested_parent);
-    const fs::perms       owner_all =
-        fs::perms::owner_read | fs::perms::owner_write |
-        fs::perms::owner_exec;
-    const fs::perms group_others_mask =
-        fs::perms::group_all | fs::perms::others_all;
+    const fs::perms owner_all =
+        fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec;
+    const fs::perms group_others_mask = fs::perms::group_all | fs::perms::others_all;
     EXPECT_EQ(st.permissions() & owner_all, owner_all)
         << "owner-all bits must be set on the parent dir.";
     EXPECT_EQ(st.permissions() & group_others_mask, fs::perms::none)
@@ -384,7 +373,7 @@ TEST_F(ShmCapabilityChannelTest, BindRefusesWhenLivePeerHoldsThePath)
     const std::string path = unique_socket_path("h3d_live");
 
     // First producer takes the path successfully.
-    auto first  = create_shm_capability_producer(1024);
+    auto first = create_shm_capability_producer(1024);
     ASSERT_TRUE(first->bind_endpoint(path));
 
     // Second producer attempts the same path — the H3d probe must
@@ -411,9 +400,7 @@ TEST_F(ShmCapabilityChannelTest, BindCleansUpStaleSocketFile)
         addr.sun_family = AF_UNIX;
         ASSERT_LT(path.size(), sizeof(addr.sun_path));
         std::memcpy(addr.sun_path, path.c_str(), path.size());
-        ASSERT_EQ(::bind(sk, reinterpret_cast<const sockaddr *>(&addr),
-                          sizeof(addr)),
-                  0);
+        ASSERT_EQ(::bind(sk, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr)), 0);
         // CLOSE without listen() — connect() to this path returns
         // ECONNREFUSED (file exists, no listener accepts).
         ::close(sk);
@@ -438,8 +425,7 @@ TEST_F(ShmCapabilityChannelTest, BindCleansUpStaleSocketFile)
 TEST_F(ShmCapabilityChannelTest, RejectsMultiFdTruncatedScmRights)
 {
     int sv[2];
-    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0)
-        << std::strerror(errno);
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0) << std::strerror(errno);
 
     // Attach FOUR fds.  The consumer's 1-fd control buffer is CMSG_SPACE(int)
     // = 24 bytes on LP64, which (after the 16-byte cmsghdr) actually fits TWO
@@ -447,30 +433,30 @@ TEST_F(ShmCapabilityChannelTest, RejectsMultiFdTruncatedScmRights)
     // MSG_CTRUNC.  Four fds overflow that capacity: the kernel installs the
     // first two, discards the rest, and sets MSG_CTRUNC — exercising the guard.
     constexpr int kNumFds = 4;
-    int           fds[kNumFds];
+    int fds[kNumFds];
     for (int i = 0; i < kNumFds; ++i)
     {
         fds[i] = ::dup(STDERR_FILENO);
         ASSERT_GE(fds[i], 0);
     }
 
-    char  iov_byte = 0;
+    char iov_byte = 0;
     iovec iov{&iov_byte, 1};
     union
     {
-        char    buf[CMSG_SPACE(kNumFds * sizeof(int))];
+        char buf[CMSG_SPACE(kNumFds * sizeof(int))];
         cmsghdr align;
     } u{};
     std::memset(u.buf, 0, sizeof(u.buf));
     msghdr msg{};
-    msg.msg_iov        = &iov;
-    msg.msg_iovlen     = 1;
-    msg.msg_control    = u.buf;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = u.buf;
     msg.msg_controllen = sizeof(u.buf);
-    cmsghdr *cmsg    = CMSG_FIRSTHDR(&msg);
+    cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
     cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type  = SCM_RIGHTS;
-    cmsg->cmsg_len   = CMSG_LEN(kNumFds * sizeof(int));
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(kNumFds * sizeof(int));
     std::memcpy(CMSG_DATA(cmsg), fds, kNumFds * sizeof(int));
     ASSERT_EQ(::sendmsg(sv[0], &msg, 0), 1) << std::strerror(errno);
     for (int i = 0; i < kNumFds; ++i)
@@ -482,8 +468,7 @@ TEST_F(ShmCapabilityChannelTest, RejectsMultiFdTruncatedScmRights)
     std::string err;
     try
     {
-        (void)attach_shm_capability_consumer_from_socket(
-            sv[1], std::chrono::milliseconds{2000});
+        (void)attach_shm_capability_consumer_from_socket(sv[1], std::chrono::milliseconds{2000});
     }
     catch (const std::exception &e)
     {

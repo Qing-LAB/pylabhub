@@ -18,11 +18,12 @@
  * |-----------------|-------------------------------------|----------------|
  * | `library`       | Binary ↔ shared library (SO)        | SOVERSION |
  * | `shm`           | Producer ↔ Consumer (same SHM)      | `SharedMemoryHeader` binary layout |
- * | `broker_proto`  | Role ↔ Broker (control plane)       | JSON over ZMQ multipart `['C'][msg_type][json]` |
- * | `zmq_frame`     | Role ↔ Role (ZMQ data plane)        | msgpack `[magic, tag, seq, payload, checksum]` |
- * | `script_api`    | Framework ↔ Python/Lua scripts      | pybind11 + LuaJIT API |
- * | `script_engine` | Framework ↔ NativeEngine plugins    | C++ `ScriptEngine` virtual interface |
- * | `config`        | User JSON files ↔ Binary            | allowed-keys sets per parser |
+ * | `broker_proto`  | Role ↔ Broker (control plane)       | JSON over ZMQ multipart
+ * `['C'][msg_type][json]` | | `zmq_frame`     | Role ↔ Role (ZMQ data plane)        | msgpack
+ * `[magic, tag, seq, payload, checksum]` | | `script_api`    | Framework ↔ Python/Lua scripts |
+ * pybind11 + LuaJIT API | | `script_engine` | Framework ↔ NativeEngine plugins    | C++
+ * `ScriptEngine` virtual interface | | `config`        | User JSON files ↔ Binary            |
+ * allowed-keys sets per parser |
  *
  * ## Bump rules (same for every axis)
  *
@@ -142,8 +143,8 @@ struct ComponentVersions
 // equality so a drift in either location is a compile error.
 // ============================================================================
 
-inline constexpr uint8_t kShmMajor             = 1;
-inline constexpr uint8_t kShmMinor             = 0;
+inline constexpr uint8_t kShmMajor = 1;
+inline constexpr uint8_t kShmMinor = 0;
 // broker_proto 1 → 2 (Wave M1.4, 2026-05-11): METRICS_REPORT_REQ retired;
 // metrics piggyback on HEARTBEAT_REQ per HEP-CORE-0019 §2.3 Phase 6.
 // Old clients sending METRICS_REPORT_REQ receive UNKNOWN_MSG_TYPE error.
@@ -224,12 +225,12 @@ inline constexpr uint8_t kShmMinor             = 0;
 //     Bidirectional D3 confirmation with instance_id guard
 //     (HEP-CORE-0042 §5.5.2).  Handler stub in this bump; full impl
 //     lands in Phase 2.2+.
-inline constexpr uint8_t kBrokerProtoMajor     = 7;
-inline constexpr uint8_t kBrokerProtoMinor     = 0;
-inline constexpr uint8_t kZmqFrameMajor        = 1;
-inline constexpr uint8_t kZmqFrameMinor        = 0;
-inline constexpr uint8_t kScriptApiMajor       = 1;
-inline constexpr uint8_t kScriptApiMinor       = 0;
+inline constexpr uint8_t kBrokerProtoMajor = 7;
+inline constexpr uint8_t kBrokerProtoMinor = 0;
+inline constexpr uint8_t kZmqFrameMajor = 1;
+inline constexpr uint8_t kZmqFrameMinor = 0;
+inline constexpr uint8_t kScriptApiMajor = 1;
+inline constexpr uint8_t kScriptApiMinor = 0;
 // script_engine 1.0 → 1.1: pending_script_engine_request_count() added
 // with base-class default returning 0 (2026-04-21, commit 4e30fa3).
 // script_engine 1.1 → 1.2: RoleHostBase (non-template class) promoted
@@ -241,14 +242,14 @@ inline constexpr uint8_t kScriptApiMinor       = 0;
 // library get unresolved-symbol failures).  The build_id strict check
 // under PYLABHUB_STRICT_ABI_CHECK / Debug catches stale-binary cases;
 // this axis bump is the declared-axis signal for the rename.
-inline constexpr uint8_t kScriptEngineMajor    = 1;
-inline constexpr uint8_t kScriptEngineMinor    = 2;
+inline constexpr uint8_t kScriptEngineMajor = 1;
+inline constexpr uint8_t kScriptEngineMinor = 2;
 // config 1.0 → 1.1: nested-key whitelist rolled out across 4 sub-parsers
 // (script/auth/identity/startup, 2026-04-22, commit fffd095).  Additive
 // rejection behaviour — any existing valid config still loads; only
 // previously-silent typos now raise at load time.
-inline constexpr uint8_t kConfigMajor          = 1;
-inline constexpr uint8_t kConfigMinor          = 1;
+inline constexpr uint8_t kConfigMajor = 1;
+inline constexpr uint8_t kConfigMinor = 1;
 
 // ============================================================================
 // Compile-time capture of the caller's view
@@ -269,12 +270,18 @@ consteval ComponentVersions compiled_against_here() noexcept
         static_cast<uint16_t>(PYLABHUB_VERSION_MAJOR),
         static_cast<uint16_t>(PYLABHUB_VERSION_MINOR),
         static_cast<uint16_t>(PYLABHUB_VERSION_ROLLING),
-        kShmMajor,           kShmMinor,
-        kBrokerProtoMajor,   kBrokerProtoMinor,
-        kZmqFrameMajor,      kZmqFrameMinor,
-        kScriptApiMajor,     kScriptApiMinor,
-        kScriptEngineMajor,  kScriptEngineMinor,
-        kConfigMajor,        kConfigMinor,
+        kShmMajor,
+        kShmMinor,
+        kBrokerProtoMajor,
+        kBrokerProtoMinor,
+        kZmqFrameMajor,
+        kZmqFrameMinor,
+        kScriptApiMajor,
+        kScriptApiMinor,
+        kScriptEngineMajor,
+        kScriptEngineMinor,
+        kConfigMajor,
+        kConfigMinor,
     };
 }
 
@@ -290,7 +297,7 @@ consteval ComponentVersions compiled_against_here() noexcept
 struct AbiExpectation
 {
     ComponentVersions versions;
-    const char       *build_id;   // nullptr → skip build-id check
+    const char *build_id; // nullptr → skip build-id check
 };
 
 /**
@@ -301,8 +308,7 @@ struct AbiExpectation
  */
 consteval AbiExpectation abi_expected_here() noexcept
 {
-#if defined(PYLABHUB_HAVE_BUILD_ID) && \
-    (defined(PYLABHUB_STRICT_ABI_CHECK) || !defined(NDEBUG))
+#if defined(PYLABHUB_HAVE_BUILD_ID) && (defined(PYLABHUB_STRICT_ABI_CHECK) || !defined(NDEBUG))
     return AbiExpectation{compiled_against_here(), PYLABHUB_BUILD_ID};
 #else
     return AbiExpectation{compiled_against_here(), nullptr};
@@ -319,18 +325,18 @@ consteval AbiExpectation abi_expected_here() noexcept
  */
 struct AbiCheckResult
 {
-    bool        compatible;       ///< false → caller should abort
-    std::string message;          ///< human-readable one-liner
+    bool compatible;     ///< false → caller should abort
+    std::string message; ///< human-readable one-liner
     struct MismatchFlags
     {
-        bool library        = false;
-        bool shm            = false;
-        bool broker_proto   = false;
-        bool zmq_frame      = false;
-        bool script_api     = false;
-        bool script_engine  = false;
-        bool config         = false;
-        bool build_id       = false;  ///< only meaningful under major_mismatch
+        bool library = false;
+        bool shm = false;
+        bool broker_proto = false;
+        bool zmq_frame = false;
+        bool script_api = false;
+        bool script_engine = false;
+        bool config = false;
+        bool build_id = false; ///< only meaningful under major_mismatch
     };
     MismatchFlags major_mismatch;
     /// Per-axis MINOR-version drift.  `compatible` is unaffected by
@@ -404,14 +410,14 @@ struct AbiPeerVerdict
 {
     enum class Kind
     {
-        Ok,             ///< identical envelopes on all 7 axes
-        BuildOnly,      ///< build_id differs but no axis differs
-        MinorMismatch,  ///< at least one minor axis drift, no major
-        MajorMismatch,  ///< at least one major axis flagged
+        Ok,            ///< identical envelopes on all 7 axes
+        BuildOnly,     ///< build_id differs but no axis differs
+        MinorMismatch, ///< at least one minor axis drift, no major
+        MajorMismatch, ///< at least one major axis flagged
     };
-    Kind        kind;
-    std::string major_axes;   ///< comma-separated names of major-drifted axes
-    std::string minor_axes;   ///< comma-separated names of minor-drifted axes
+    Kind kind;
+    std::string major_axes; ///< comma-separated names of major-drifted axes
+    std::string minor_axes; ///< comma-separated names of minor-drifted axes
 };
 
 PYLABHUB_UTILS_EXPORT

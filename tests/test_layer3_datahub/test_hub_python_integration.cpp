@@ -25,7 +25,6 @@ class HubPythonIntegrationTest : public IsolatedProcessTest
 
 TEST_F(HubPythonIntegrationTest, RealPythonScript_OnInitOnStop_FireAndLog)
 {
-    auto w = SpawnWorker(
-        "hub_python_integration.realpythonscript_oninit_onstop_fireandlog");
+    auto w = SpawnWorker("hub_python_integration.realpythonscript_oninit_onstop_fireandlog");
     ExpectWorkerOk(w);
 }

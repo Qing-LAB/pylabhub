@@ -55,7 +55,8 @@ namespace broker_service
 int hub_state_accessor_returns_external_aggregate()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             // Seed KeyStore under the canonical name so BrokerService
             // ctor's `hub_identity` lookup succeeds.  This is the
             // POSITIVE side of the ctor's KeyStore contract; the
@@ -71,7 +72,7 @@ int hub_state_accessor_returns_external_aggregate()
             pylabhub::broker::BrokerService broker(cfg, state);
 
             const auto &state_ref = broker.hub_state();
-            auto        snap      = state_ref.snapshot();
+            auto snap = state_ref.snapshot();
             EXPECT_TRUE(snap.channels.empty());
             EXPECT_TRUE(snap.roles.empty());
             EXPECT_TRUE(snap.bands.empty());
@@ -91,7 +92,8 @@ int hub_state_accessor_returns_external_aggregate()
 int ctor_missing_hub_identity_throws_logic_error()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             namespace sec = pylabhub::utils::security;
 
             // Seed an UNRELATED name so the KeyStore is non-empty but
@@ -101,8 +103,8 @@ int ctor_missing_hub_identity_throws_logic_error()
             // "broker_identity") silently pass — this assertion forces
             // the ctor to use the exact HEP-CORE-0040 §172 contract name.
             const auto kp = pylabhub::tests::gen_curve_keypair();
-            sec::secure().keys().add_identity_from_z85(
-                "not_hub_identity", kp.public_z85, kp.secret_z85);
+            sec::secure().keys().add_identity_from_z85("not_hub_identity", kp.public_z85,
+                                                       kp.secret_z85);
 
             pylabhub::hub::HubState state;
             pylabhub::broker::BrokerService::Config cfg;
@@ -111,10 +113,9 @@ int ctor_missing_hub_identity_throws_logic_error()
             try
             {
                 pylabhub::broker::BrokerService broker(cfg, state);
-                ADD_FAILURE()
-                    << "Expected BrokerService ctor to throw "
-                       "std::logic_error when 'hub_identity' is "
-                       "absent from KeyStore; ctor returned normally.";
+                ADD_FAILURE() << "Expected BrokerService ctor to throw "
+                                 "std::logic_error when 'hub_identity' is "
+                                 "absent from KeyStore; ctor returned normally.";
             }
             catch (const std::logic_error &e)
             {
@@ -127,11 +128,10 @@ int ctor_missing_hub_identity_throws_logic_error()
             }
             catch (const std::exception &e)
             {
-                ADD_FAILURE()
-                    << "Ctor threw, but the type must be "
-                       "std::logic_error (programmer-error contract, "
-                       "HEP-CORE-0035 §4.6.5 no-bypass).  Got: "
-                    << typeid(e).name() << ": " << e.what();
+                ADD_FAILURE() << "Ctor threw, but the type must be "
+                                 "std::logic_error (programmer-error contract, "
+                                 "HEP-CORE-0035 §4.6.5 no-bypass).  Got: "
+                              << typeid(e).name() << ": " << e.what();
             }
         },
         "broker_service::ctor_missing_hub_identity_throws_logic_error",
@@ -154,11 +154,11 @@ struct BrokerServiceRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "broker_service")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "broker_service")
                 {
                     return -1;
                 }

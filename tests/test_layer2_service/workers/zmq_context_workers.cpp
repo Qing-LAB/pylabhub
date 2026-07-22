@@ -34,8 +34,8 @@
 #include <thread>
 #include <vector>
 
-using pylabhub::hub::GetZMQContextModule;
 using pylabhub::hub::get_zmq_context;
+using pylabhub::hub::GetZMQContextModule;
 using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 
@@ -54,8 +54,8 @@ int get_context_returns_valid()
                 (void)ctx;
             });
         },
-        "zmq_context::get_context_returns_valid",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::get_context_returns_valid", Logger::GetLifecycleModule(),
+        GetZMQContextModule());
 }
 
 int get_context_same_instance()
@@ -65,11 +65,10 @@ int get_context_same_instance()
         {
             zmq::context_t &ctx1 = get_zmq_context();
             zmq::context_t &ctx2 = get_zmq_context();
-            EXPECT_EQ(&ctx1, &ctx2)
-                << "get_zmq_context() should return the same instance";
+            EXPECT_EQ(&ctx1, &ctx2) << "get_zmq_context() should return the same instance";
         },
-        "zmq_context::get_context_same_instance",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::get_context_same_instance", Logger::GetLifecycleModule(),
+        GetZMQContextModule());
 }
 
 int create_socket_works()
@@ -83,8 +82,7 @@ int create_socket_works()
                 sock.close();
             });
         },
-        "zmq_context::create_socket_works",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::create_socket_works", Logger::GetLifecycleModule(), GetZMQContextModule());
 }
 
 int apply_socket_policy_tcp_connect_sets_all()
@@ -101,8 +99,8 @@ int apply_socket_policy_tcp_connect_sets_all()
             // mutation localization).
             zmq::context_t &ctx = get_zmq_context();
             zmq::socket_t sock(ctx, zmq::socket_type::dealer);
-            ::pylabhub::utils::apply_socket_policy(
-                sock, ::pylabhub::utils::ZmqSocketRole::TcpConnect);
+            ::pylabhub::utils::apply_socket_policy(sock,
+                                                   ::pylabhub::utils::ZmqSocketRole::TcpConnect);
 
             EXPECT_EQ(sock.get(zmq::sockopt::linger), 0);
             EXPECT_EQ(sock.get(zmq::sockopt::sndtimeo), 500);
@@ -115,8 +113,8 @@ int apply_socket_policy_tcp_connect_sets_all()
 
             sock.close();
         },
-        "zmq_context::apply_socket_policy_tcp_connect_sets_all",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::apply_socket_policy_tcp_connect_sets_all", Logger::GetLifecycleModule(),
+        GetZMQContextModule());
 }
 
 int apply_socket_policy_tcp_bind_subset()
@@ -129,8 +127,7 @@ int apply_socket_policy_tcp_bind_subset()
             // -1).  Verifies role-based branching in the helper.
             zmq::context_t &ctx = get_zmq_context();
             zmq::socket_t sock(ctx, zmq::socket_type::router);
-            ::pylabhub::utils::apply_socket_policy(
-                sock, ::pylabhub::utils::ZmqSocketRole::TcpBind);
+            ::pylabhub::utils::apply_socket_policy(sock, ::pylabhub::utils::ZmqSocketRole::TcpBind);
 
             EXPECT_EQ(sock.get(zmq::sockopt::linger), 0);
             EXPECT_EQ(sock.get(zmq::sockopt::sndtimeo), 500);
@@ -145,8 +142,8 @@ int apply_socket_policy_tcp_bind_subset()
 
             sock.close();
         },
-        "zmq_context::apply_socket_policy_tcp_bind_subset",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::apply_socket_policy_tcp_bind_subset", Logger::GetLifecycleModule(),
+        GetZMQContextModule());
 }
 
 int apply_socket_policy_inproc_signal_minimal()
@@ -161,8 +158,8 @@ int apply_socket_policy_inproc_signal_minimal()
             // for inproc which isn't subject to TCP teardown).
             zmq::context_t &ctx = get_zmq_context();
             zmq::socket_t sock(ctx, zmq::socket_type::pair);
-            ::pylabhub::utils::apply_socket_policy(
-                sock, ::pylabhub::utils::ZmqSocketRole::InprocSignal);
+            ::pylabhub::utils::apply_socket_policy(sock,
+                                                   ::pylabhub::utils::ZmqSocketRole::InprocSignal);
 
             EXPECT_EQ(sock.get(zmq::sockopt::linger), 0)
                 << "InprocSignal MUST still set linger=0 (clean shutdown).";
@@ -176,8 +173,8 @@ int apply_socket_policy_inproc_signal_minimal()
 
             sock.close();
         },
-        "zmq_context::apply_socket_policy_inproc_signal_minimal",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::apply_socket_policy_inproc_signal_minimal", Logger::GetLifecycleModule(),
+        GetZMQContextModule());
 }
 
 int multithread_get_context_safe()
@@ -187,12 +184,11 @@ int multithread_get_context_safe()
         {
             constexpr int kThreads = 4;
             std::vector<zmq::context_t *> results(kThreads, nullptr);
-            std::vector<std::thread>      threads;
+            std::vector<std::thread> threads;
 
             for (int i = 0; i < kThreads; ++i)
             {
-                threads.emplace_back(
-                    [&results, i]() { results[i] = &get_zmq_context(); });
+                threads.emplace_back([&results, i]() { results[i] = &get_zmq_context(); });
             }
             for (auto &t : threads)
                 t.join();
@@ -200,12 +196,11 @@ int multithread_get_context_safe()
             for (int i = 1; i < kThreads; ++i)
             {
                 EXPECT_EQ(results[i], results[0])
-                    << "thread " << i
-                    << " got a different context pointer than thread 0";
+                    << "thread " << i << " got a different context pointer than thread 0";
             }
         },
-        "zmq_context::multithread_get_context_safe",
-        Logger::GetLifecycleModule(), GetZMQContextModule());
+        "zmq_context::multithread_get_context_safe", Logger::GetLifecycleModule(),
+        GetZMQContextModule());
 }
 
 } // namespace zmq_context
@@ -225,8 +220,7 @@ struct ZmqContextWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "zmq_context")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "zmq_context")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::zmq_context;
@@ -246,8 +240,7 @@ struct ZmqContextWorkerRegistrar
                 if (sc == "apply_socket_policy_inproc_signal_minimal")
                     return apply_socket_policy_inproc_signal_minimal();
 
-                fmt::print(stderr,
-                           "[zmq_context] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[zmq_context] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

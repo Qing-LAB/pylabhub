@@ -20,16 +20,15 @@ namespace pylabhub::consumer
 /// building at startup (before broker discovery).
 struct ConsumerFields
 {
-    nlohmann::json in_slot_schema_json;      ///< Optional. Input slot schema for ctypes.
-    nlohmann::json in_flexzone_schema_json;  ///< Optional. Flexzone schema (null = no flexzone).
+    nlohmann::json in_slot_schema_json;     ///< Optional. Input slot schema for ctypes.
+    nlohmann::json in_flexzone_schema_json; ///< Optional. Flexzone schema (null = no flexzone).
 };
 
 /// Parse consumer-specific fields from JSON.
-inline std::any parse_consumer_fields(const nlohmann::json &j,
-                                       const config::RoleConfig & /*cfg*/)
+inline std::any parse_consumer_fields(const nlohmann::json &j, const config::RoleConfig & /*cfg*/)
 {
     ConsumerFields cf;
-    cf.in_slot_schema_json     = j.value("in_slot_schema",     nlohmann::json{});
+    cf.in_slot_schema_json = j.value("in_slot_schema", nlohmann::json{});
     cf.in_flexzone_schema_json = j.value("in_flexzone_schema", nlohmann::json{});
     return cf;
 }

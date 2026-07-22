@@ -21,21 +21,20 @@ namespace pylabhub::config
 
 struct IdentityConfig
 {
-    std::string uid;                    ///< Role UID, e.g., "prod.tempsensor.uid12345678"
-    std::string name;                   ///< Human-readable name
-    std::string log_level{"info"};      ///< "debug", "info", "warn", "error"
+    std::string uid;               ///< Role UID, e.g., "prod.tempsensor.uid12345678"
+    std::string name;              ///< Human-readable name
+    std::string log_level{"info"}; ///< "debug", "info", "warn", "error"
 };
 
 /// Parse identity from the role-specific JSON section.
 /// @param j         Root JSON object.
 /// @param role_type  Role type: "producer", "consumer", "processor".
 ///                  Determines the JSON section name and UID prefix.
-inline IdentityConfig parse_identity_config(const nlohmann::json &j,
-                                             std::string_view role_type)
+inline IdentityConfig parse_identity_config(const nlohmann::json &j, std::string_view role_type)
 {
     if (!j.contains(std::string(role_type)) || !j[std::string(role_type)].is_object())
-        throw std::runtime_error(
-            std::string(role_type) + " config: missing '" + std::string(role_type) + "' object");
+        throw std::runtime_error(std::string(role_type) + " config: missing '" +
+                                 std::string(role_type) + "' object");
 
     const auto &sect = j[std::string(role_type)];
     // Reject unknown nested keys in the role-tag block.  The block
@@ -45,19 +44,18 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
     {
         const auto &k = it.key();
         if (k != "uid" && k != "name" && k != "log_level" && k != "auth")
-            throw std::runtime_error(
-                std::string(role_type) + ": unknown config key '"
-                + std::string(role_type) + "." + k + "'");
+            throw std::runtime_error(std::string(role_type) + ": unknown config key '" +
+                                     std::string(role_type) + "." + k + "'");
     }
     IdentityConfig ic;
-    ic.uid       = sect.value("uid",       "");
-    ic.name      = sect.value("name",      "");
+    ic.uid = sect.value("uid", "");
+    ic.name = sect.value("name", "");
     ic.log_level = sect.value("log_level", "info");
 
     // Short tag for logging (pre-lifecycle).
-    const char *short_tag = (role_type == "producer") ? "prod"
-                          : (role_type == "consumer") ? "cons"
-                          : "proc";
+    const char *short_tag = (role_type == "producer")   ? "prod"
+                            : (role_type == "consumer") ? "cons"
+                                                        : "proc";
 
     // HEP-CORE-0024 §3.4.2 (revised 2026-06-04, mirrors
     // HEP-CORE-0033 §6.3 hub-side change): empty or absent role uid
@@ -67,24 +65,23 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
     // helper (visible inline as `[default: ...]`).
     if (ic.uid.empty())
     {
-        throw std::runtime_error(
-            std::string(role_type) + ": '" + std::string(role_type) +
-            ".uid' is empty or missing.  Run `plh_role --init --role " +
-            std::string(short_tag) + " --uid <uid>` (one-shot) or "
-            "`plh_role --skeleton` + edit + `plh_role --keygen` "
-            "(manual) — see HEP-CORE-0024 §3.4.2.  Required format: "
-            "HEP-CORE-0033 §G2.2.0b RoleUid grammar '" +
-            std::string(short_tag) + ".<name>.uid<8hex>', e.g. '" +
-            std::string(short_tag) + ".main.uid3a7f2b1c'.");
+        throw std::runtime_error(std::string(role_type) + ": '" + std::string(role_type) +
+                                 ".uid' is empty or missing.  Run `plh_role --init --role " +
+                                 std::string(short_tag) +
+                                 " --uid <uid>` (one-shot) or "
+                                 "`plh_role --skeleton` + edit + `plh_role --keygen` "
+                                 "(manual) — see HEP-CORE-0024 §3.4.2.  Required format: "
+                                 "HEP-CORE-0033 §G2.2.0b RoleUid grammar '" +
+                                 std::string(short_tag) + ".<name>.uid<8hex>', e.g. '" +
+                                 std::string(short_tag) + ".main.uid3a7f2b1c'.");
     }
-    if (!pylabhub::hub::is_valid_identifier(
-            ic.uid, pylabhub::hub::IdentifierKind::RoleUid))
+    if (!pylabhub::hub::is_valid_identifier(ic.uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
-        throw std::runtime_error(
-            std::string(role_type) + ": invalid '" + std::string(role_type) +
-            ".uid' = '" + ic.uid + "'.  Must follow HEP-CORE-0033 "
-            "§G2.2.0b RoleUid grammar '<tag>.<name>.uid<8hex>', e.g. '" +
-            std::string(short_tag) + ".main.uid3a7f2b1c'.");
+        throw std::runtime_error(std::string(role_type) + ": invalid '" + std::string(role_type) +
+                                 ".uid' = '" + ic.uid +
+                                 "'.  Must follow HEP-CORE-0033 "
+                                 "§G2.2.0b RoleUid grammar '<tag>.<name>.uid<8hex>', e.g. '" +
+                                 std::string(short_tag) + ".main.uid3a7f2b1c'.");
     }
 
     // The uid is structurally valid — now verify its tag matches
@@ -93,11 +90,10 @@ inline IdentityConfig parse_identity_config(const nlohmann::json &j,
     const auto parts = pylabhub::hub::parse_role_uid(ic.uid);
     if (!parts || parts->tag != short_tag)
     {
-        throw std::runtime_error(
-            std::string(role_type) + ": uid '" + ic.uid +
-            "' has tag '" + (parts ? std::string(parts->tag) : std::string{}) +
-            "' but is declared in the '" + std::string(role_type) +
-            "' block (expected tag '" + std::string(short_tag) + "').");
+        throw std::runtime_error(std::string(role_type) + ": uid '" + ic.uid + "' has tag '" +
+                                 (parts ? std::string(parts->tag) : std::string{}) +
+                                 "' but is declared in the '" + std::string(role_type) +
+                                 "' block (expected tag '" + std::string(short_tag) + "').");
     }
 
     return ic;

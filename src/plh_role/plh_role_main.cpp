@@ -27,9 +27,9 @@
  * `register_<role>_runtime()` pair and extend `kRegistrars` in your fork.
  */
 
-#include "producer_init.hpp"       // src/producer/ (via CMake PRIVATE include)
-#include "consumer_init.hpp"       // src/consumer/
-#include "processor_init.hpp"      // src/processor/
+#include "producer_init.hpp"  // src/producer/ (via CMake PRIVATE include)
+#include "consumer_init.hpp"  // src/consumer/
+#include "processor_init.hpp" // src/processor/
 
 // engine_factory.hpp removed — engine is constructed in host's
 // worker_main_ Step 0 via the forward-declared scripting::create_engine
@@ -43,19 +43,19 @@
 #include "utils/engine_host.hpp"
 #include "utils/role_main_helpers.hpp"
 #include "utils/role_registry.hpp"
-#include "utils/script_engine_factory.hpp"  // scripting::init_scripting / ensure_python
+#include "utils/script_engine_factory.hpp"            // scripting::init_scripting / ensure_python
 #include "utils/security/key_store.hpp"               // HEP-CORE-0040 §172
-#include "utils/security/secure_subsystem.hpp" // HEP-CORE-0040 §4
+#include "utils/security/secure_subsystem.hpp"        // HEP-CORE-0040 §4
 #include "utils/security/zap_router.hpp"              // ZapPumpThread (AUTH-2 / #162)
-#include "utils/thread_manager.hpp"  // process_detached_count for exit code
-#include "../scripting/python_interpreter_module.hpp"  // ensure_python_interpreter_loaded
+#include "utils/thread_manager.hpp"                   // process_detached_count for exit code
+#include "../scripting/python_interpreter_module.hpp" // ensure_python_interpreter_loaded
 
-#include "plh_datahub.hpp"   // LifecycleGuard + hub/utils prelude
-#include "plh_version_registry.hpp"  // HEP-CORE-0032 ABI check
+#include "plh_datahub.hpp"          // LifecycleGuard + hub/utils prelude
+#include "plh_version_registry.hpp" // HEP-CORE-0032 ABI check
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>      // fprintf in check_abi failure branch
+#include <cstdio> // fprintf in check_abi failure branch
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -67,8 +67,8 @@
 
 using namespace pylabhub::utils;
 namespace scripting = pylabhub::scripting;
-namespace cli       = pylabhub::cli;
-namespace role_cli  = pylabhub::role_cli;
+namespace cli = pylabhub::cli;
+namespace role_cli = pylabhub::role_cli;
 
 // ── Dispatch map: role tag → (init registrar, runtime registrar) ─────────────
 
@@ -101,7 +101,8 @@ void print_available_roles(std::ostream &os)
     bool first = true;
     for (const auto &[tag, _] : kRegistrars())
     {
-        if (!first) os << ", ";
+        if (!first)
+            os << ", ";
         os << tag;
         first = false;
     }
@@ -132,15 +133,14 @@ const RoleRuntimeInfo *register_and_lookup(const role_cli::RoleArgs &args)
     // Register BOTH the init content (for --init subcommand) and the
     // runtime content (for run/validate/keygen). Cheap; harmless if
     // only one is actually needed.
-    (it->second.first)();   // register_<role>_init
-    (it->second.second)();  // register_<role>_runtime
+    (it->second.first)();  // register_<role>_init
+    (it->second.second)(); // register_<role>_runtime
 
     const RoleRuntimeInfo *info = RoleRegistry::get_runtime(args.role);
     if (!info)
     {
         // Would only happen if register_<role>_runtime misbehaved.
-        std::cerr << "Internal error: runtime registration failed for '"
-                  << args.role << "'.\n";
+        std::cerr << "Internal error: runtime registration failed for '" << args.role << "'.\n";
         return nullptr;
     }
     return info;
@@ -151,24 +151,20 @@ const RoleRuntimeInfo *register_and_lookup(const role_cli::RoleArgs &args)
 int do_init(const role_cli::RoleArgs &args)
 {
     namespace fs = std::filesystem;
-    const fs::path dir = args.role_dir.empty()
-                             ? fs::current_path()
-                             : fs::path(args.role_dir);
+    const fs::path dir = args.role_dir.empty() ? fs::current_path() : fs::path(args.role_dir);
 
-    const auto name_opt = cli::resolve_init_name(
-        args.init_name,
-        "Role name (human-readable, e.g. 'TempSensor'): ");
+    const auto name_opt =
+        cli::resolve_init_name(args.init_name, "Role name (human-readable, e.g. 'TempSensor'): ");
     if (!name_opt)
         return 1;
 
     RoleDirectory::LogInitOverrides log_overrides;
     log_overrides.max_size_mb = args.log_max_size_mb;
-    log_overrides.backups     = args.log_backups;
+    log_overrides.backups = args.log_backups;
 
     // args.role here is the long form and matches the RoleDirectory key
     // registered by register_<role>_init().
-    return RoleDirectory::init_directory(
-        dir, args.role, *name_opt, log_overrides);
+    return RoleDirectory::init_directory(dir, args.role, *name_opt, log_overrides);
 }
 
 } // namespace
@@ -189,24 +185,22 @@ int main(int argc, char *argv[])
     // version" cases the per-axis check cannot see.
     {
         constexpr auto kAbiExpected = pylabhub::version::abi_expected_here();
-        const auto abi = pylabhub::version::check_abi(
-            kAbiExpected.versions, kAbiExpected.build_id);
+        const auto abi = pylabhub::version::check_abi(kAbiExpected.versions, kAbiExpected.build_id);
         if (!abi.compatible)
         {
             std::fprintf(stderr,
-                "[plh_role] ABI mismatch — refusing to run.\n"
-                "  %s\n"
-                "  Rebuild this binary against the installed library, "
-                "or reinstall a matching library.\n",
-                abi.message.c_str());
+                         "[plh_role] ABI mismatch — refusing to run.\n"
+                         "  %s\n"
+                         "  Rebuild this binary against the installed library, "
+                         "or reinstall a matching library.\n",
+                         abi.message.c_str());
             return 2;
         }
     }
 
     std::atomic<bool> g_shutdown{false};
 
-    pylabhub::InteractiveSignalHandler signal_handler(
-        {.binary_name = "plh_role"}, &g_shutdown);
+    pylabhub::InteractiveSignalHandler signal_handler({.binary_name = "plh_role"}, &g_shutdown);
     signal_handler.install();
 
     // Register the dispatching ScriptEngine factory with the utils-side
@@ -286,18 +280,15 @@ int main(int argc, char *argv[])
         }
 
         const auto pw_opt = cli::get_new_password(
-            info->role_type.c_str(),
-            "PYLABHUB_ROLE_PASSWORD",
-            "Role vault password (empty = no encryption): ",
-            "Confirm password: ");
+            info->role_type.c_str(), "PYLABHUB_ROLE_PASSWORD",
+            "Role vault password (empty = no encryption): ", "Confirm password: ");
         if (!pw_opt)
             return 1;
 
         try
         {
             const auto pubkey = c.create_keypair(*pw_opt);
-            std::cout << info->role_label << " vault written to: "
-                      << c.auth().keyfile << "\n"
+            std::cout << info->role_label << " vault written to: " << c.auth().keyfile << "\n"
                       << "  role_uid   : " << c.identity().uid << "\n"
                       << "  public_key : " << pubkey << "\n";
         }
@@ -344,9 +335,7 @@ int main(int argc, char *argv[])
     if (!c.auth().keyfile.empty())
     {
         const auto vault_password = cli::get_password(
-            info->role_type.c_str(),
-            "PYLABHUB_ROLE_PASSWORD",
-            "Role vault password: ");
+            info->role_type.c_str(), "PYLABHUB_ROLE_PASSWORD", "Role vault password: ");
         if (!vault_password)
             return 1;
         try
@@ -397,7 +386,10 @@ int main(int argc, char *argv[])
     auto host = info->host_factory(std::move(*config), &g_shutdown);
     host->set_validate_only(args.validate_only);
 
-    try { host->startup_(); }
+    try
+    {
+        host->startup_();
+    }
     catch (const std::exception &e)
     {
         std::cerr << "Startup failed: " << e.what() << "\n";
@@ -420,38 +412,35 @@ int main(int argc, char *argv[])
 
     if (!host->is_running())
     {
-        std::cerr << "Failed to start " << info->role_type
-                  << " — loop did not start.\n";
+        std::cerr << "Failed to start " << info->role_type << " — loop did not start.\n";
         host->shutdown_();
         return 1;
     }
 
     // ── Status callback (generic: shows role + channel info from config) ──
     const auto start_time = std::chrono::steady_clock::now();
-    signal_handler.set_status_callback([&]() -> std::string
-    {
-        const auto elapsed = std::chrono::steady_clock::now() - start_time;
-        const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
-        const auto &cfg = host->config();
-        // Show input/output channels when set; cfg.in_channel() /
-        // out_channel() return empty for sides the role doesn't use.
-        std::string channels;
-        if (!cfg.in_channel().empty())
-            channels += fmt::format("  in_channel:  {}\n", cfg.in_channel());
-        if (!cfg.out_channel().empty())
-            channels += fmt::format("  out_channel: {}\n", cfg.out_channel());
-        return fmt::format(
-            "  pyLabHub {} (plh_role, role={}, script={})\n"
-            "  Config:    {}\n"
-            "  UID:       {}\n"
-            "{}"
-            "  Uptime:    {}h {}m {}s",
-            pylabhub::platform::get_version_string(),
-            info->role_type, cfg.script().type,
-            config_dir, cfg.identity().uid,
-            channels,
-            secs / 3600, (secs % 3600) / 60, secs % 60);
-    });
+    signal_handler.set_status_callback(
+        [&]() -> std::string
+        {
+            const auto elapsed = std::chrono::steady_clock::now() - start_time;
+            const auto secs = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            const auto &cfg = host->config();
+            // Show input/output channels when set; cfg.in_channel() /
+            // out_channel() return empty for sides the role doesn't use.
+            std::string channels;
+            if (!cfg.in_channel().empty())
+                channels += fmt::format("  in_channel:  {}\n", cfg.in_channel());
+            if (!cfg.out_channel().empty())
+                channels += fmt::format("  out_channel: {}\n", cfg.out_channel());
+            return fmt::format("  pyLabHub {} (plh_role, role={}, script={})\n"
+                               "  Config:    {}\n"
+                               "  UID:       {}\n"
+                               "{}"
+                               "  Uptime:    {}h {}m {}s",
+                               pylabhub::platform::get_version_string(), info->role_type,
+                               cfg.script().type, config_dir, cfg.identity().uid, channels,
+                               secs / 3600, (secs % 3600) / 60, secs % 60);
+        });
 
     scripting::run_role_main_loop(g_shutdown, *host, "[plh_role]");
     host->shutdown_();

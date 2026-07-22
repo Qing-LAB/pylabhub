@@ -57,7 +57,7 @@ namespace pylabhub::utils
 
 class ReplayGuard
 {
-public:
+  public:
     /// Trusted clock: returns a monotonically non-decreasing time in ms.
     /// Production installs a steady clock; tests inject a fake to drive
     /// time deterministically.  NEVER wired to a client-supplied value.
@@ -70,8 +70,7 @@ public:
 
     /// Test / advanced seam: inject the trusted clock.  An empty `clock`
     /// falls back to the steady clock (fail-safe — never a null call).
-    explicit ReplayGuard(ClockFn clock)
-        : clock_(clock ? std::move(clock) : ClockFn{&steady_now_ms})
+    explicit ReplayGuard(ClockFn clock) : clock_(clock ? std::move(clock) : ClockFn{&steady_now_ms})
     {
     }
 
@@ -83,9 +82,8 @@ public:
     /// The reference time is read from the guard's OWN trusted clock — see
     /// the SECURITY-CRITICAL note in the file header.  `window_ms` MUST be
     /// >= 2 * the caller's skew tolerance.
-    [[nodiscard]] bool check_and_record(std::string_view  identity,
-                                        std::string_view  nonce,
-                                        std::uint64_t     window_ms)
+    [[nodiscard]] bool check_and_record(std::string_view identity, std::string_view nonce,
+                                        std::uint64_t window_ms)
     {
         if (identity.empty() || nonce.empty())
             return false;
@@ -96,12 +94,9 @@ public:
 
         // Prune-on-access: drop entries older than (now_ms - window_ms).
         // Underflow-safe: if window_ms > now_ms, use 0 as the floor.
-        const std::uint64_t cutoff =
-            (now_ms > window_ms) ? (now_ms - window_ms) : 0;
+        const std::uint64_t cutoff = (now_ms > window_ms) ? (now_ms - window_ms) : 0;
         entries.erase(std::remove_if(entries.begin(), entries.end(),
-                                     [cutoff](const Entry &e) {
-                                         return e.recorded_ms < cutoff;
-                                     }),
+                                     [cutoff](const Entry &e) { return e.recorded_ms < cutoff; }),
                       entries.end());
 
         for (const auto &e : entries)
@@ -112,10 +107,10 @@ public:
         return true;
     }
 
-private:
+  private:
     struct Entry
     {
-        std::string   nonce;
+        std::string nonce;
         std::uint64_t recorded_ms; ///< trusted-clock time this entry was stored
     };
 
@@ -123,14 +118,13 @@ private:
     /// (window comparisons) are meaningful, which is all the guard uses.
     static std::uint64_t steady_now_ms()
     {
-        return static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-                .count());
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::steady_clock::now().time_since_epoch())
+                                              .count());
     }
 
-    ClockFn                                             clock_;
-    std::mutex                                          mu_;
+    ClockFn clock_;
+    std::mutex mu_;
     std::unordered_map<std::string, std::vector<Entry>> by_identity_;
 };
 

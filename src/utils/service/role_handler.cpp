@@ -2,8 +2,8 @@
  * @file role_handler.cpp
  * @brief RoleHandler dedup + index build (M3) + network state ops (M4a).
  *
- * Per HEP-CORE-0019 + docs/archive/transient-2026-06-02/role_host_template_design.md §5, RoleHandler is
- * a state holder + routing helper:
+ * Per HEP-CORE-0019 + docs/archive/transient-2026-06-02/role_host_template_design.md §5,
+ * RoleHandler is a state holder + routing helper:
  *   - M3: topology (presences) + dedup (connections) + indexes.
  *   - M4a: per-connection BRC allocation + connect/disconnect.
  *   - M4b: four-class dispatch (send_class_A/B/C/D).
@@ -21,13 +21,12 @@
 #include "utils/logger.hpp"
 #include "utils/role_api_base.hpp"
 
-#include <nlohmann/json.hpp>   // full json type for find_presence_from_notification
+#include <nlohmann/json.hpp> // full json type for find_presence_from_notification
 
 namespace pylabhub::scripting
 {
 
-RoleHandler::RoleHandler(std::vector<Presence> presences)
-    : presences_(std::move(presences))
+RoleHandler::RoleHandler(std::vector<Presence> presences) : presences_(std::move(presences))
 {
     build_connections_();
     build_channel_index_();
@@ -64,8 +63,7 @@ void RoleHandler::build_connections_()
         HubConnection *match = nullptr;
         for (auto &c : connections_)
         {
-            if (c.broker_endpoint == p.hub.broker &&
-                c.broker_pubkey   == p.hub.broker_pubkey)
+            if (c.broker_endpoint == p.hub.broker && c.broker_pubkey == p.hub.broker_pubkey)
             {
                 match = &c;
                 break;
@@ -121,22 +119,19 @@ void RoleHandler::build_channel_index_()
     }
 }
 
-const Presence *
-RoleHandler::find_presence_for_channel(const std::string &channel) const noexcept
+const Presence *RoleHandler::find_presence_for_channel(const std::string &channel) const noexcept
 {
     auto it = channel_index_.find(channel);
     return (it == channel_index_.end()) ? nullptr : it->second;
 }
 
-Presence *
-RoleHandler::find_presence_for_channel(const std::string &channel) noexcept
+Presence *RoleHandler::find_presence_for_channel(const std::string &channel) noexcept
 {
     auto it = channel_index_.find(channel);
     return (it == channel_index_.end()) ? nullptr : it->second;
 }
 
-std::size_t
-RoleHandler::presence_count_for_channel(const std::string &channel) const noexcept
+std::size_t RoleHandler::presence_count_for_channel(const std::string &channel) const noexcept
 {
     std::size_t n = 0;
     for (const auto &p : presences_)
@@ -193,12 +188,12 @@ bool RoleHandler::start_connections(const RoleAPIBase &owner)
 
         hub::BrokerRequestComm::Config cfg;
         cfg.broker_endpoint = c.broker_endpoint;
-        cfg.broker_pubkey   = c.broker_pubkey;
+        cfg.broker_pubkey = c.broker_pubkey;
         // HEP-CORE-0040 §172: BRC reads the role's CURVE identity at
         // connect time via `secure().keys().with_seckey(kRoleIdentityName, ...)`
         // + `pubkey(...)`.  No plumbing through Config.
-        cfg.role_uid        = owner.uid();
-        cfg.role_name       = owner.name();
+        cfg.role_uid = owner.uid();
+        cfg.role_name = owner.name();
 
         if (!c.brc->connect(cfg))
         {
@@ -222,7 +217,8 @@ void RoleHandler::stop_connections() noexcept
 {
     for (auto &c : connections_)
     {
-        if (!c.brc) continue;
+        if (!c.brc)
+            continue;
         c.brc->disconnect();
         c.brc.reset();
     }
@@ -232,12 +228,13 @@ void RoleHandler::stop_connections() noexcept
 // Routing primitives (Wave-B M4b)
 // ============================================================================
 
-hub::BrokerRequestComm *
-RoleHandler::brc_for_channel(const std::string &channel) const noexcept
+hub::BrokerRequestComm *RoleHandler::brc_for_channel(const std::string &channel) const noexcept
 {
     auto it = channel_index_.find(channel);
-    if (it == channel_index_.end())   return nullptr;
-    if (it->second->connection == nullptr) return nullptr;
+    if (it == channel_index_.end())
+        return nullptr;
+    if (it->second->connection == nullptr)
+        return nullptr;
     return it->second->connection->brc.get();
 }
 
@@ -248,23 +245,25 @@ hub::BrokerRequestComm *RoleHandler::brc_for_role() const noexcept
     // about a role, not about hub-specific state.  Today we pick the
     // first connection by construction order.  If the role has no
     // connections (zero presences), return nullptr.
-    if (connections_.empty()) return nullptr;
+    if (connections_.empty())
+        return nullptr;
     return connections_[0].brc.get();
 }
 
-hub::BrokerRequestComm *
-RoleHandler::brc_for_band(const std::string &band_name) const noexcept
+hub::BrokerRequestComm *RoleHandler::brc_for_band(const std::string &band_name) const noexcept
 {
     auto it = band_index_.find(band_name);
-    if (it == band_index_.end())   return nullptr;
-    if (it->second->connection == nullptr) return nullptr;
+    if (it == band_index_.end())
+        return nullptr;
+    if (it->second->connection == nullptr)
+        return nullptr;
     return it->second->connection->brc.get();
 }
 
-void RoleHandler::on_band_joined(const std::string &band_name,
-                                  const Presence    *presence) noexcept
+void RoleHandler::on_band_joined(const std::string &band_name, const Presence *presence) noexcept
 {
-    if (band_name.empty() || presence == nullptr) return;
+    if (band_name.empty() || presence == nullptr)
+        return;
     // map::operator[] overwrites — consistent with the docstring's
     // "calling with the same band_name but a different presence
     // overwrites" rule.  const_cast: band_index_ stores non-const
@@ -285,17 +284,18 @@ bool RoleHandler::is_in_band(const std::string &band_name) const noexcept
     return band_index_.find(band_name) != band_index_.end();
 }
 
-RoleHandler::DisconnectReap RoleHandler::mark_connection_disconnected(
-    const HubConnection *dead_conn) noexcept
+RoleHandler::DisconnectReap
+RoleHandler::mark_connection_disconnected(const HubConnection *dead_conn) noexcept
 {
     DisconnectReap reap;
-    if (dead_conn == nullptr) return reap;
+    if (dead_conn == nullptr)
+        return reap;
     for (auto &p : presences_)
     {
-        if (p.connection != dead_conn) continue;
+        if (p.connection != dead_conn)
+            continue;
         const auto cur = p.registration_state.load(std::memory_order_acquire);
-        if (cur != RegistrationState::Authorized &&
-            cur != RegistrationState::Registered &&
+        if (cur != RegistrationState::Authorized && cur != RegistrationState::Registered &&
             cur != RegistrationState::RegRequestPending)
             continue;
 
@@ -331,8 +331,7 @@ RoleHandler::DisconnectReap RoleHandler::mark_connection_disconnected(
         // as `Unregistered`.  No oscillation: a follow-up `register_*`
         // from the script is a deliberate action that honestly walks
         // `Unregistered → RegRequestPending → ...` from scratch.
-        p.registration_state.store(RegistrationState::Unregistered,
-                                    std::memory_order_release);
+        p.registration_state.store(RegistrationState::Unregistered, std::memory_order_release);
         ++reap.presences_transitioned;
     }
     // S4-5 (2026-05-19, HEP-CORE-0030 amendment): band routing also
@@ -341,7 +340,7 @@ RoleHandler::DisconnectReap RoleHandler::mark_connection_disconnected(
     // hand the band name back to the caller so an
     // `on_band_lost(band, "hub_dead")` notification can fire (caller
     // dispatches; this method just collects).
-    for (auto it = band_index_.begin(); it != band_index_.end(); )
+    for (auto it = band_index_.begin(); it != band_index_.end();)
     {
         Presence *p = it->second;
         if (p != nullptr && p->connection == dead_conn)
@@ -358,9 +357,8 @@ RoleHandler::DisconnectReap RoleHandler::mark_connection_disconnected(
 }
 
 const Presence *
-RoleHandler::find_presence_from_notification(
-    const std::string    & /*msg_type*/,
-    const nlohmann::json &body) const noexcept
+RoleHandler::find_presence_from_notification(const std::string & /*msg_type*/,
+                                             const nlohmann::json &body) const noexcept
 {
     // Class A — body has `channel_name` (HEP-CORE-0007 wire field on
     // CHANNEL_CLOSING_NOTIFY / CONSUMER_DIED_NOTIFY / CHANNEL_EVENT_NOTIFY).
@@ -374,7 +372,8 @@ RoleHandler::find_presence_from_notification(
             if (!channel.empty())
             {
                 auto idx = channel_index_.find(channel);
-                if (idx != channel_index_.end()) return idx->second;
+                if (idx != channel_index_.end())
+                    return idx->second;
             }
         }
 
@@ -390,7 +389,8 @@ RoleHandler::find_presence_from_notification(
             if (!band.empty())
             {
                 auto idx = band_index_.find(band);
-                if (idx != band_index_.end()) return idx->second;
+                if (idx != band_index_.end())
+                    return idx->second;
             }
         }
     }
@@ -402,4 +402,4 @@ RoleHandler::find_presence_from_notification(
     return nullptr;
 }
 
-}  // namespace pylabhub::scripting
+} // namespace pylabhub::scripting

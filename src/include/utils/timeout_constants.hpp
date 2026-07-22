@@ -31,27 +31,28 @@
 #include <cstdint>
 
 #ifndef PYLABHUB_SHORT_TIMEOUT_MS
-#  define PYLABHUB_SHORT_TIMEOUT_MS 1000   ///< 1 s
+#define PYLABHUB_SHORT_TIMEOUT_MS 1000 ///< 1 s
 #endif
 #ifndef PYLABHUB_MID_TIMEOUT_MS
-#  define PYLABHUB_MID_TIMEOUT_MS   5000   ///< 5 s
+#define PYLABHUB_MID_TIMEOUT_MS 5000 ///< 5 s
 #endif
 #ifndef PYLABHUB_LONG_TIMEOUT_MS
-#  define PYLABHUB_LONG_TIMEOUT_MS  60000  ///< 60 s (reserved)
+#define PYLABHUB_LONG_TIMEOUT_MS 60000 ///< 60 s (reserved)
 #endif
 
 // ── Heartbeat / role liveness defaults (HEP-CORE-0023 §2.5) ─────────────────
 #ifndef PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS
-#  define PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS 500   ///< 2 Hz client cadence
+#define PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS 500 ///< 2 Hz client cadence
 #endif
 #ifndef PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS
-#  define PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS 10    ///< Ready -> Pending after 10 missed
+#define PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS 10 ///< Ready -> Pending after 10 missed
 #endif
 #ifndef PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS
-#  define PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS 10  ///< Pending -> deregistered after +10 missed
+#define PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS 10 ///< Pending -> deregistered after +10 missed
 #endif
 
-namespace pylabhub {
+namespace pylabhub
+{
 
 /// Lifecycle shutdown timeout for lightweight modules (JsonConfig, crypto, HubConfig).
 inline constexpr int kShortTimeoutMs = PYLABHUB_SHORT_TIMEOUT_MS;
@@ -76,12 +77,10 @@ inline constexpr int kAdminPollIntervalMs = 100;
 inline constexpr int kDefaultHeartbeatIntervalMs = PYLABHUB_DEFAULT_HEARTBEAT_INTERVAL_MS;
 
 /// Default missed-heartbeat count before Ready -> Pending demotion.
-inline constexpr uint32_t kDefaultReadyMissHeartbeats =
-    PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS;
+inline constexpr uint32_t kDefaultReadyMissHeartbeats = PYLABHUB_DEFAULT_READY_MISS_HEARTBEATS;
 
 /// Default missed-heartbeat count before Pending -> deregistered + CHANNEL_CLOSING_NOTIFY.
-inline constexpr uint32_t kDefaultPendingMissHeartbeats =
-    PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS;
+inline constexpr uint32_t kDefaultPendingMissHeartbeats = PYLABHUB_DEFAULT_PENDING_MISS_HEARTBEATS;
 
 /// discover_producer() / DISC_REQ retry sleep slice.
 /// Defaults to kDefaultHeartbeatIntervalMs so the client retries roughly once

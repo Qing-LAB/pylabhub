@@ -7,7 +7,7 @@
 
 #include "utils/security/key_store.hpp"
 
-#include "hub_script_runner.hpp"          // private header — HubScriptRunner ctor
+#include "hub_script_runner.hpp" // private header — HubScriptRunner ctor
 #include "utils/admin_service.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
@@ -16,7 +16,7 @@
 #include "utils/script_engine.hpp"        // ScriptEngine + InvokeResponse
 #include "utils/security/known_roles.hpp" // HEP-CORE-0035 §4.8 + Phase B
 #include "utils/thread_manager.hpp"
-#include "utils/timeout_constants.hpp"    // kAdminPollIntervalMs
+#include "utils/timeout_constants.hpp" // kAdminPollIntervalMs
 #include "utils/zmq_context.hpp"
 
 #include <atomic>
@@ -35,15 +35,13 @@ namespace pylabhub::hub_host
 
 struct HubHost::Impl
 {
-    explicit Impl(config::HubConfig c)
-        : cfg(std::move(c))
-    {}
+    explicit Impl(config::HubConfig c) : cfg(std::move(c)) {}
 
-    config::HubConfig                          cfg;
-    hub::HubState                              state;        // owned by HubHost
-    std::unique_ptr<broker::BrokerService>     broker;       // built in startup()
-    std::unique_ptr<admin::AdminService>       admin_svc;    // built in startup() if admin.enabled
-    std::unique_ptr<utils::ThreadManager>      thread_mgr;   // built in startup()
+    config::HubConfig cfg;
+    hub::HubState state;                              // owned by HubHost
+    std::unique_ptr<broker::BrokerService> broker;    // built in startup()
+    std::unique_ptr<admin::AdminService> admin_svc;   // built in startup() if admin.enabled
+    std::unique_ptr<utils::ThreadManager> thread_mgr; // built in startup()
 
     // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
     // engine_pre_startup REMOVED.  HubHost no longer holds the engine.
@@ -78,36 +76,35 @@ struct HubHost::Impl
     /// run-state of this host instance.
     enum class Phase : uint8_t
     {
-        Constructed,  // initial; startup() never succeeded
-        Running,      // startup() succeeded; cleanup pending
-        ShutDown,     // shutdown() called; terminal — single-use
+        Constructed, // initial; startup() never succeeded
+        Running,     // startup() succeeded; cleanup pending
+        ShutDown,    // shutdown() called; terminal — single-use
     };
-    std::atomic<Phase>                         phase{Phase::Constructed};
+    std::atomic<Phase> phase{Phase::Constructed};
 
     // Wake-up signal for run_main_loop().  Distinct from `phase`
     // because run_main_loop wakes on `request_shutdown()` (which
     // sets the flag) BEFORE phase transitions to ShutDown (which
     // happens later in `shutdown()`).
-    std::atomic<bool>                          shutdown_flag{false};
+    std::atomic<bool> shutdown_flag{false};
 
     // Bound endpoint + pubkey, populated when the broker fires
     // `on_ready` (post-bind, pre-poll-loop).  startup() blocks on the
     // ready future so the accessors below are populated by the time
     // it returns.  Survive shutdown for diagnostics.
-    std::string                                bound_endpoint;
-    std::string                                bound_pubkey;
+    std::string bound_endpoint;
+    std::string bound_pubkey;
 
     // Wake-up coordination for run_main_loop().
-    std::mutex                                 wake_mu;
-    std::condition_variable                    wake_cv;
+    std::mutex wake_mu;
+    std::condition_variable wake_cv;
 };
 
 // ============================================================================
 // Special members
 // ============================================================================
 
-HubHost::HubHost(config::HubConfig cfg)
-    : impl_(std::make_unique<Impl>(std::move(cfg)))
+HubHost::HubHost(config::HubConfig cfg) : impl_(std::make_unique<Impl>(std::move(cfg)))
 {
     // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
     // engine is no longer injected.  HubScriptRunner constructs it on
@@ -118,9 +115,7 @@ HubHost::HubHost(config::HubConfig cfg)
 HubHost::~HubHost()
 {
     // Idempotent shutdown if the caller didn't run it explicitly.
-    if (impl_ &&
-        impl_->phase.load(std::memory_order_acquire) ==
-            Impl::Phase::Running)
+    if (impl_ && impl_->phase.load(std::memory_order_acquire) == Impl::Phase::Running)
     {
         try
         {
@@ -149,17 +144,15 @@ void HubHost::startup()
     // Running (idempotent no-op) and from ShutDown (single-use after
     // shutdown — construct a new HubHost).
     Impl::Phase expected = Impl::Phase::Constructed;
-    if (!impl_->phase.compare_exchange_strong(
-            expected, Impl::Phase::Running,
-            std::memory_order_acq_rel))
+    if (!impl_->phase.compare_exchange_strong(expected, Impl::Phase::Running,
+                                              std::memory_order_acq_rel))
     {
         if (expected == Impl::Phase::Running)
             return; // idempotent: already running
         // expected == Impl::Phase::ShutDown
-        throw std::logic_error(
-            "HubHost::startup() called after shutdown() — this host "
-            "instance is single-use.  Construct a new HubHost instance "
-            "to start fresh.");
+        throw std::logic_error("HubHost::startup() called after shutdown() — this host "
+                               "instance is single-use.  Construct a new HubHost instance "
+                               "to start fresh.");
     }
 
     // Build BrokerService::Config from HubConfig.
@@ -170,16 +163,14 @@ void HubHost::startup()
     // KeyStore entry `"hub_identity"`.  Tests call it through the
     // same vault path.  Absence here means the caller skipped both —
     // a programmer error per HEP-0035 §4.6.5 (no-bypass discipline).
-    if (!pylabhub::utils::security::sodium_ready()
-     || !pylabhub::utils::security::secure().keys().has(
+    if (!pylabhub::utils::security::sodium_ready() ||
+        !pylabhub::utils::security::secure().keys().has(
             pylabhub::utils::security::kHubIdentityName))
     {
-        impl_->phase.store(Impl::Phase::Constructed,
-                           std::memory_order_release);
-        throw std::logic_error(
-            "HubHost::startup: KeyStore entry 'hub_identity' is absent — "
-            "load the vault keypair via `HubConfig::load_keypair(password)` "
-            "before calling startup() (HEP-CORE-0035 §2; HEP-CORE-0040 §171).");
+        impl_->phase.store(Impl::Phase::Constructed, std::memory_order_release);
+        throw std::logic_error("HubHost::startup: KeyStore entry 'hub_identity' is absent — "
+                               "load the vault keypair via `HubConfig::load_keypair(password)` "
+                               "before calling startup() (HEP-CORE-0035 §2; HEP-CORE-0040 §171).");
     }
     broker::BrokerService::Config bcfg;
     bcfg.endpoint = impl_->cfg.network().broker_endpoint;
@@ -196,8 +187,7 @@ void HubHost::startup()
     // empty, the broker logs `registered 0 hub-global schema record(s)`
     // and continues — no error.
     {
-        std::filesystem::path schemas_dir =
-            impl_->cfg.base_dir() / "schemas";
+        std::filesystem::path schemas_dir = impl_->cfg.base_dir() / "schemas";
         bcfg.schema_search_dirs.push_back(schemas_dir.string());
     }
 
@@ -213,23 +203,19 @@ void HubHost::startup()
 
     // Heartbeat-multiplier timeouts (HEP-CORE-0023 §2.5; HEP-0033 §6.4).
     const auto &hb = impl_->cfg.broker();
-    bcfg.heartbeat_interval =
-        std::chrono::milliseconds(hb.heartbeat_interval_ms);
-    bcfg.ready_miss_heartbeats   = hb.ready_miss_heartbeats;
+    bcfg.heartbeat_interval = std::chrono::milliseconds(hb.heartbeat_interval_ms);
+    bcfg.ready_miss_heartbeats = hb.ready_miss_heartbeats;
     bcfg.pending_miss_heartbeats = hb.pending_miss_heartbeats;
     if (hb.ready_timeout_ms.has_value())
-        bcfg.ready_timeout_override =
-            std::chrono::milliseconds(*hb.ready_timeout_ms);
+        bcfg.ready_timeout_override = std::chrono::milliseconds(*hb.ready_timeout_ms);
     if (hb.pending_timeout_ms.has_value())
-        bcfg.pending_timeout_override =
-            std::chrono::milliseconds(*hb.pending_timeout_ms);
+        bcfg.pending_timeout_override = std::chrono::milliseconds(*hb.pending_timeout_ms);
 
     // Checksum-repair policy (HEP-CORE-0007 §12.4 +
     // `BrokerService::Config::checksum_repair_policy`).  Translate the
     // HubConfig string to the production enum.
     if (hb.checksum_repair_policy == "notify_only")
-        bcfg.checksum_repair_policy =
-            broker::ChecksumRepairPolicy::NotifyOnly;
+        bcfg.checksum_repair_policy = broker::ChecksumRepairPolicy::NotifyOnly;
     else
         bcfg.checksum_repair_policy = broker::ChecksumRepairPolicy::None;
 
@@ -238,9 +224,9 @@ void HubHost::startup()
     for (const auto &p : impl_->cfg.federation().peers)
     {
         broker::FederationPeer fp;
-        fp.hub_uid         = p.uid;
+        fp.hub_uid = p.uid;
         fp.broker_endpoint = p.endpoint;
-        fp.pubkey_z85      = p.pubkey;
+        fp.pubkey_z85 = p.pubkey;
         // p.channels is currently absent in HubFederationConfig — see
         // HEP-CORE-0035; falls back to an empty relay list (no relay).
         bcfg.peers.push_back(std::move(fp));
@@ -252,31 +238,34 @@ void HubHost::startup()
     // contracted to fire exactly once per BrokerService instance; if
     // it fires twice, set_value will throw `future_error` which we
     // surface as a startup failure (catches a real broker bug).
-    auto ready_promise = std::make_shared<
-        std::promise<std::pair<std::string, std::string>>>();
-    auto ready_future  = ready_promise->get_future();
-    bcfg.on_ready = [ready_promise](const std::string &ep,
-                                     const std::string &pk)
-    {
-        ready_promise->set_value({ep, pk});
-    };
+    auto ready_promise = std::make_shared<std::promise<std::pair<std::string, std::string>>>();
+    auto ready_future = ready_promise->get_future();
+    bcfg.on_ready = [ready_promise](const std::string &ep, const std::string &pk)
+    { ready_promise->set_value({ep, pk}); };
 
     // Cleanup helper used by every failure branch below.  Must be
     // safe regardless of how far startup() got.  Restores the phase
     // to Constructed so the caller can retry after fixing whatever
     // caused the failure (e.g., port collision).
-    auto rollback_partial_startup = [this]() noexcept {
+    auto rollback_partial_startup = [this]() noexcept
+    {
         try
         {
             // Runner first (HEP-CORE-0033 §4.2 step 2 ordering — script
             // shuts down before admin/broker so any in-flight callbacks
             // complete).  shutdown_() is idempotent.
-            if (impl_->runner) impl_->runner->shutdown_();
-            if (impl_->admin_svc) impl_->admin_svc->stop();
-            if (impl_->broker) impl_->broker->stop();
-            if (impl_->thread_mgr) impl_->thread_mgr->drain();
+            if (impl_->runner)
+                impl_->runner->shutdown_();
+            if (impl_->admin_svc)
+                impl_->admin_svc->stop();
+            if (impl_->broker)
+                impl_->broker->stop();
+            if (impl_->thread_mgr)
+                impl_->thread_mgr->drain();
         }
-        catch (...) { /* swallow — already in error path */ }
+        catch (...)
+        { /* swallow — already in error path */
+        }
         impl_->runner.reset();
         impl_->admin_svc.reset();
         impl_->broker.reset();
@@ -284,21 +273,19 @@ void HubHost::startup()
         impl_->bound_endpoint.clear();
         impl_->bound_pubkey.clear();
         impl_->shutdown_flag.store(false, std::memory_order_release);
-        impl_->phase.store(Impl::Phase::Constructed,
-                            std::memory_order_release);
+        impl_->phase.store(Impl::Phase::Constructed, std::memory_order_release);
     };
 
     try
     {
         // Construct broker bound to our HubState (HEP-0033 §4 ownership).
-        impl_->broker = std::make_unique<broker::BrokerService>(
-            std::move(bcfg), impl_->state);
+        impl_->broker = std::make_unique<broker::BrokerService>(std::move(bcfg), impl_->state);
 
         // ThreadManager auto-registers as a dynamic lifecycle module
         // "ThreadManager:HubHost:<uid>".  Owns the broker thread (and,
         // in Phase 6.2, the admin thread) for bounded-join shutdown.
-        impl_->thread_mgr = std::make_unique<utils::ThreadManager>(
-            "HubHost", impl_->cfg.identity().uid);
+        impl_->thread_mgr =
+            std::make_unique<utils::ThreadManager>("HubHost", impl_->cfg.identity().uid);
 
         // Spawn broker thread.  Wrap the run() call in a try/catch
         // that forwards any exception to `ready_promise` so the
@@ -323,58 +310,54 @@ void HubHost::startup()
         auto *broker_ptr = impl_->broker.get();
         const std::string uid_for_log = impl_->cfg.identity().uid;
         if (!impl_->thread_mgr->spawn("broker",
-                                       [broker_ptr, ready_promise, uid_for_log]
-                                       {
-                                           try
-                                           {
-                                               broker_ptr->run();
-                                           }
-                                           catch (...)
-                                           {
-                                               // Capture before any other
-                                               // exception machinery rebinds
-                                               // current_exception().
-                                               auto broker_exc =
-                                                   std::current_exception();
-                                               try
-                                               {
-                                                   ready_promise->set_exception(
-                                                       broker_exc);
-                                               }
-                                               catch (const std::future_error &)
-                                               {
-                                                   // Promise already satisfied
-                                                   // — broker fired on_ready
-                                                   // successfully then died
-                                                   // mid-run.  Log the
-                                                   // ORIGINAL broker exception
-                                                   // so the failure isn't
-                                                   // silently swallowed; the
-                                                   // host's `request_shutdown`
-                                                   // path is responsible for
-                                                   // tearing down on detection.
-                                                   try
-                                                   {
-                                                       std::rethrow_exception(broker_exc);
-                                                   }
-                                                   catch (const std::exception &e)
-                                                   {
-                                                       LOGGER_ERROR(
-                                                           "[HubHost:{}] broker thread "
-                                                           "died after on_ready: {}",
-                                                           uid_for_log, e.what());
-                                                   }
-                                                   catch (...)
-                                                   {
-                                                       LOGGER_ERROR(
-                                                           "[HubHost:{}] broker thread "
-                                                           "died after on_ready "
-                                                           "(non-std exception)",
-                                                           uid_for_log);
-                                                   }
-                                               }
-                                           }
-                                       }))
+                                      [broker_ptr, ready_promise, uid_for_log]
+                                      {
+                                          try
+                                          {
+                                              broker_ptr->run();
+                                          }
+                                          catch (...)
+                                          {
+                                              // Capture before any other
+                                              // exception machinery rebinds
+                                              // current_exception().
+                                              auto broker_exc = std::current_exception();
+                                              try
+                                              {
+                                                  ready_promise->set_exception(broker_exc);
+                                              }
+                                              catch (const std::future_error &)
+                                              {
+                                                  // Promise already satisfied
+                                                  // — broker fired on_ready
+                                                  // successfully then died
+                                                  // mid-run.  Log the
+                                                  // ORIGINAL broker exception
+                                                  // so the failure isn't
+                                                  // silently swallowed; the
+                                                  // host's `request_shutdown`
+                                                  // path is responsible for
+                                                  // tearing down on detection.
+                                                  try
+                                                  {
+                                                      std::rethrow_exception(broker_exc);
+                                                  }
+                                                  catch (const std::exception &e)
+                                                  {
+                                                      LOGGER_ERROR("[HubHost:{}] broker thread "
+                                                                   "died after on_ready: {}",
+                                                                   uid_for_log, e.what());
+                                                  }
+                                                  catch (...)
+                                                  {
+                                                      LOGGER_ERROR("[HubHost:{}] broker thread "
+                                                                   "died after on_ready "
+                                                                   "(non-std exception)",
+                                                                   uid_for_log);
+                                                  }
+                                              }
+                                          }
+                                      }))
         {
             throw std::runtime_error(
                 "HubHost::startup: ThreadManager refused to spawn broker thread");
@@ -385,17 +368,15 @@ void HubHost::startup()
         // A healthy broker binds in <100 ms; the 5 s deadline now only
         // matters for genuinely hung threads (no exception, no on_ready
         // — should not happen in practice, but kept as a safety net).
-        const auto status =
-            ready_future.wait_for(std::chrono::seconds(5));
+        const auto status = ready_future.wait_for(std::chrono::seconds(5));
         if (status == std::future_status::timeout)
         {
-            throw std::runtime_error(
-                "HubHost::startup: broker did not signal ready within 5s "
-                "(broker thread is hung — neither bound nor exited)");
+            throw std::runtime_error("HubHost::startup: broker did not signal ready within 5s "
+                                     "(broker thread is hung — neither bound nor exited)");
         }
         auto info = ready_future.get(); // rethrows broker bind exception fast
         impl_->bound_endpoint = info.first;
-        impl_->bound_pubkey   = info.second;
+        impl_->bound_pubkey = info.second;
 
         // ── Phase 6.2 — AdminService (HEP-CORE-0033 §4.1 step 9) ───────────
         //
@@ -408,14 +389,10 @@ void HubHost::startup()
         if (impl_->cfg.admin().enabled)
         {
             impl_->admin_svc = std::make_unique<admin::AdminService>(
-                hub::get_zmq_context(),
-                impl_->cfg.admin(),
-                impl_->cfg.admin().admin_token,
-                *this);
+                hub::get_zmq_context(), impl_->cfg.admin(), impl_->cfg.admin().admin_token, *this);
 
             auto *admin_ptr = impl_->admin_svc.get();
-            if (!impl_->thread_mgr->spawn("admin",
-                                           [admin_ptr] { admin_ptr->run(); }))
+            if (!impl_->thread_mgr->spawn("admin", [admin_ptr] { admin_ptr->run(); }))
             {
                 throw std::runtime_error(
                     "HubHost::startup: ThreadManager refused to spawn admin thread");
@@ -445,9 +422,8 @@ void HubHost::startup()
             // HubHost stays the sole owner of HubConfig.  The engine
             // is constructed on the runner's worker thread in
             // worker_main_ Step 0 via scripting::create_engine.
-            impl_->runner = std::make_unique<scripting::HubScriptRunner>(
-                *this,
-                &impl_->shutdown_flag);
+            impl_->runner =
+                std::make_unique<scripting::HubScriptRunner>(*this, &impl_->shutdown_flag);
 
             // startup_() spawns the worker thread + blocks on its
             // ready_promise.  On worker startup failure (script load
@@ -460,11 +436,10 @@ void HubHost::startup()
             impl_->runner->startup_();
             if (!impl_->runner->is_running())
             {
-                throw std::runtime_error(
-                    "HubHost::startup: script runner failed to start "
-                    "(see preceding logs from HubScriptRunner / engine "
-                    "for the underlying cause — typically a script "
-                    "syntax error or missing callback).");
+                throw std::runtime_error("HubHost::startup: script runner failed to start "
+                                         "(see preceding logs from HubScriptRunner / engine "
+                                         "for the underlying cause — typically a script "
+                                         "syntax error or missing callback).");
             }
         }
     }
@@ -476,8 +451,8 @@ void HubHost::startup()
 
     // Phase was already set to Running by the CAS at the top of this
     // function.  Reaching here means the broker is bound and ready.
-    LOGGER_INFO("[HubHost:{}] startup complete (broker on {})",
-                impl_->cfg.identity().uid, impl_->bound_endpoint);
+    LOGGER_INFO("[HubHost:{}] startup complete (broker on {})", impl_->cfg.identity().uid,
+                impl_->bound_endpoint);
 }
 
 void HubHost::run_main_loop()
@@ -497,11 +472,9 @@ void HubHost::run_main_loop()
     while (!impl_->shutdown_flag.load(std::memory_order_acquire))
     {
         std::unique_lock<std::mutex> lk(impl_->wake_mu);
-        impl_->wake_cv.wait_for(
-            lk, std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
+        impl_->wake_cv.wait_for(lk, std::chrono::milliseconds(pylabhub::kAdminPollIntervalMs));
     }
-    LOGGER_INFO("[HubHost:{}] main loop woke for shutdown",
-                impl_->cfg.identity().uid);
+    LOGGER_INFO("[HubHost:{}] main loop woke for shutdown", impl_->cfg.identity().uid);
 }
 
 void HubHost::shutdown()
@@ -511,17 +484,15 @@ void HubHost::shutdown()
     // work.  Other concurrent callers (or repeated calls after
     // ShutDown) early-return without touching state.
     Impl::Phase expected = Impl::Phase::Running;
-    if (!impl_->phase.compare_exchange_strong(
-            expected, Impl::Phase::ShutDown,
-            std::memory_order_acq_rel))
+    if (!impl_->phase.compare_exchange_strong(expected, Impl::Phase::ShutDown,
+                                              std::memory_order_acq_rel))
     {
         // Either Constructed (never started — nothing to stop) or
         // already ShutDown (idempotent).  Either way, no-op.
         return;
     }
 
-    LOGGER_INFO("[HubHost:{}] shutdown initiated",
-                impl_->cfg.identity().uid);
+    LOGGER_INFO("[HubHost:{}] shutdown initiated", impl_->cfg.identity().uid);
 
     // Wake any thread blocked in run_main_loop().
     impl_->shutdown_flag.store(true, std::memory_order_release);
@@ -558,9 +529,9 @@ void HubHost::shutdown()
     // shutdown-driven scenario.
     if (impl_->admin_svc)
     {
-        impl_->admin_svc->stop();                       // atomic flag flip
+        impl_->admin_svc->stop(); // atomic flag flip
         if (impl_->thread_mgr)
-            (void) impl_->thread_mgr->join_named("admin");  // bounded join
+            (void)impl_->thread_mgr->join_named("admin"); // bounded join
     }
 
     // ── Runner shutdown ─────────────────────────────────────────────
@@ -597,8 +568,7 @@ void HubHost::shutdown()
         }
     }
 
-    LOGGER_INFO("[HubHost:{}] shutdown complete",
-                impl_->cfg.identity().uid);
+    LOGGER_INFO("[HubHost:{}] shutdown complete", impl_->cfg.identity().uid);
 }
 
 void HubHost::request_shutdown() noexcept
@@ -626,8 +596,7 @@ void HubHost::request_shutdown() noexcept
 
 bool HubHost::is_running() const noexcept
 {
-    return impl_->phase.load(std::memory_order_acquire) ==
-           Impl::Phase::Running;
+    return impl_->phase.load(std::memory_order_acquire) == Impl::Phase::Running;
 }
 
 // ============================================================================
@@ -649,9 +618,8 @@ const hub::HubState &HubHost::state() const noexcept
     return impl_->state;
 }
 
-bool HubHost::nonce_seen(std::string_view identity,
-                         std::string_view client_nonce,
-                         std::uint64_t    window_ms) noexcept
+bool HubHost::nonce_seen(std::string_view identity, std::string_view client_nonce,
+                         std::uint64_t window_ms) noexcept
 {
     // Forward to the one hub-wide dedup store on the owned HubState —
     // the same store the broker mutates through its HubState& (§4).  The

@@ -58,7 +58,7 @@ namespace pylabhub::schema
  */
 class PYLABHUB_UTILS_EXPORT SchemaLibrary
 {
-public:
+  public:
     // ── Loading ───────────────────────────────────────────────────────────────
 
     /**
@@ -108,8 +108,8 @@ public:
      * @throws std::invalid_argument if any field has an unknown type string.
      */
     static SchemaInfo compute_layout_info(const std::vector<SchemaFieldDef> &fields,
-                                          const std::string                 &packing = "aligned",
-                                          const std::string                 &name    = {});
+                                          const std::string &packing = "aligned",
+                                          const std::string &name = {});
 
     /**
      * @brief Return the default search directories for the current environment.
@@ -121,13 +121,13 @@ public:
     static std::vector<std::string> default_search_dirs();
 
     // SchemaLibrary is a stateless namespace-shell; no instances.
-    SchemaLibrary()                                = delete;
-    SchemaLibrary(const SchemaLibrary &)           = delete;
-    SchemaLibrary(SchemaLibrary &&)                = delete;
+    SchemaLibrary() = delete;
+    SchemaLibrary(const SchemaLibrary &) = delete;
+    SchemaLibrary(SchemaLibrary &&) = delete;
     SchemaLibrary &operator=(const SchemaLibrary &) = delete;
-    SchemaLibrary &operator=(SchemaLibrary &&)      = delete;
+    SchemaLibrary &operator=(SchemaLibrary &&) = delete;
 
-private:
+  private:
     /// Encode a 32-byte hash as a 64-char lowercase hex string. Internal helper.
     static std::string hash_to_hex(const std::array<uint8_t, 32> &h);
     friend std::vector<std::pair<std::string, SchemaEntry>>

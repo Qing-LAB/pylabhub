@@ -72,7 +72,8 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
             // Lock acquired
             break;
         }
-        // Lock held by another process. Use heartbeat-first: only check pid if heartbeat missing/stale.
+        // Lock held by another process. Use heartbeat-first: only check pid if heartbeat
+        // missing/stale.
         if (detail::is_writer_alive_impl(header, expected_lock))
         {
             // Valid contention, continue waiting or timeout
@@ -94,7 +95,8 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
                 }
                 break; // Acquired
             }
-            // Lost the reclaim race — another process grabbed it first; fall through to spin/timeout.
+            // Lost the reclaim race — another process grabbed it first; fall through to
+            // spin/timeout.
         }
 
         // Check for timeout if lock was not acquired or was valid contention.
@@ -115,8 +117,7 @@ SlotAcquireResult acquire_write(SlotRWState *slot_rw_state, SharedMemoryHeader *
     // readers see a non-COMMITTED state immediately and bail out, while existing in-progress
     // readers (reader_count > 0) drain naturally. FREE slots have no readers, so we skip
     // the DRAINING transition — no readers can be holding a FREE slot.
-    SlotRWState::SlotState prev_state =
-        slot_rw_state->slot_state.load(std::memory_order_acquire);
+    SlotRWState::SlotState prev_state = slot_rw_state->slot_state.load(std::memory_order_acquire);
     bool entered_draining = (prev_state == SlotRWState::SlotState::COMMITTED);
 
     if (entered_draining)
@@ -213,11 +214,13 @@ void commit_write(SlotRWState *slot_rw_state, SharedMemoryHeader *header, uint64
 {
     slot_rw_state->write_generation.fetch_add(
         1, std::memory_order_release); // Step 1: Increment generation counter
-    slot_rw_state->slot_state.store(SlotRWState::SlotState::COMMITTED,
-                                    std::memory_order_release); // Step 2: Transition to COMMITTED state
+    slot_rw_state->slot_state.store(
+        SlotRWState::SlotState::COMMITTED,
+        std::memory_order_release); // Step 2: Transition to COMMITTED state
     if (header != nullptr)
     {
-        detail::update_commit_index(header, slot_id); // Step 3: Store slot_id in commit_index (makes visible to consumers)
+        detail::update_commit_index(
+            header, slot_id); // Step 3: Store slot_id in commit_index (makes visible to consumers)
         detail::increment_metric_total_commits(header); // Metric: commit count
     }
     // Memory ordering: All writes before this release are visible to
@@ -277,7 +280,8 @@ SlotAcquireResult acquire_read(SlotRWState *slot_rw_state, SharedMemoryHeader *h
 // ============================================================================
 // 4.2.4 Reader Validation (Wrap-Around Detection)
 // ============================================================================
-/// Returns false if generation changed (wrap-around or slot overwritten); in-flight read is then invalid.
+/// Returns false if generation changed (wrap-around or slot overwritten); in-flight read is then
+/// invalid.
 bool validate_read_impl(SlotRWState *slot_rw_state, SharedMemoryHeader *header,
                         uint64_t captured_gen)
 {

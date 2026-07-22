@@ -30,32 +30,35 @@ namespace pylabhub::scripting
 
 // ── Detection idiom for the test_set_out_slots_written member ────────
 
-template <typename T, typename = void>
-struct has_test_set_out_slots_written : std::false_type {};
+template <typename T, typename = void> struct has_test_set_out_slots_written : std::false_type
+{
+};
 
 template <typename T>
 struct has_test_set_out_slots_written<
-    T,
-    std::void_t<decltype(std::declval<T &>().test_set_out_slots_written(0))>>
-    : std::true_type {};
+    T, std::void_t<decltype(std::declval<T &>().test_set_out_slots_written(0))>> : std::true_type
+{
+};
 
-template <typename T, typename = void>
-struct has_test_set_in_slots_received : std::false_type {};
+template <typename T, typename = void> struct has_test_set_in_slots_received : std::false_type
+{
+};
 
 template <typename T>
 struct has_test_set_in_slots_received<
-    T,
-    std::void_t<decltype(std::declval<T &>().test_set_in_slots_received(0))>>
-    : std::true_type {};
+    T, std::void_t<decltype(std::declval<T &>().test_set_in_slots_received(0))>> : std::true_type
+{
+};
 
-template <typename T, typename = void>
-struct has_test_set_out_drop_count : std::false_type {};
+template <typename T, typename = void> struct has_test_set_out_drop_count : std::false_type
+{
+};
 
 template <typename T>
 struct has_test_set_out_drop_count<
-    T,
-    std::void_t<decltype(std::declval<T &>().test_set_out_drop_count(0))>>
-    : std::true_type {};
+    T, std::void_t<decltype(std::declval<T &>().test_set_out_drop_count(0))>> : std::true_type
+{
+};
 
 TEST(BuildFlagInvariants, RoleHostCore_TestSetMutators_MatchDebugNDebugDisposition)
 {

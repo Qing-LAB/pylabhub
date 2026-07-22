@@ -22,8 +22,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::c_api_validation
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // Returns a fully-valid baseline config.
 static DataBlockConfig make_valid_config(uint32_t capacity = 2)
@@ -61,7 +67,8 @@ int validate_integrity_on_fresh_datablock()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "validate_integrity_on_fresh_datablock", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "validate_integrity_on_fresh_datablock", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -81,7 +88,8 @@ int validate_integrity_nonexistent_fails()
                 << "datablock_validate_integrity must not return RECOVERY_SUCCESS for a "
                    "non-existent DataBlock";
         },
-        "validate_integrity_nonexistent_fails", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "validate_integrity_nonexistent_fails", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -110,7 +118,8 @@ int get_metrics_fresh_has_zero_commits()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "get_metrics_fresh_has_zero_commits", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "get_metrics_fresh_has_zero_commits", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -132,15 +141,17 @@ int diagnose_slot_fresh_is_free()
 
             SlotDiagnostic diag{};
             int rc = datablock_diagnose_slot(channel.c_str(), 0, &diag);
-            EXPECT_EQ(rc, 0) << "datablock_diagnose_slot must return 0 on slot 0 of a valid DataBlock";
-            EXPECT_EQ(diag.slot_state, 0u)  // SlotState::FREE == 0
+            EXPECT_EQ(rc, 0)
+                << "datablock_diagnose_slot must return 0 on slot 0 of a valid DataBlock";
+            EXPECT_EQ(diag.slot_state, 0u) // SlotState::FREE == 0
                 << "Slot 0 of a fresh DataBlock must be in state FREE (0)";
             EXPECT_EQ(diag.slot_index, 0u);
 
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "diagnose_slot_fresh_is_free", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "diagnose_slot_fresh_is_free", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -171,7 +182,8 @@ int diagnose_all_slots_returns_capacity()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "diagnose_all_slots_returns_capacity", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "diagnose_all_slots_returns_capacity", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_validation
@@ -193,8 +205,7 @@ struct CApiValidationWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "c_api_validation")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "c_api_validation")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::c_api_validation;

@@ -1,31 +1,30 @@
 #include "utils/broker_service.hpp"
 #include "utils/format_tools.hpp"
 #include "utils/hub_state.hpp"
-#include "utils/hub_queue_factory.hpp"  // Queue::reader_is_binding_side
-#include "utils/hub_state_queries.hpp"  // HEP-CORE-0039 for_each_presence_matching
+#include "utils/hub_queue_factory.hpp" // Queue::reader_is_binding_side
+#include "utils/hub_state_queries.hpp" // HEP-CORE-0039 for_each_presence_matching
 #include "utils/hub_state_json.hpp"
-#include "utils/naming.hpp"   // is_valid_identifier (audit R3.5)
+#include "utils/naming.hpp" // is_valid_identifier (audit R3.5)
 #include "utils/net_address.hpp"
-
 
 #include "utils/recovery_api.hpp"
 #include "utils/schema_loader.hpp"
-#include "utils/schema_utils.hpp"  // canonical_fields_str, compute_canonical_hash_from_wire
+#include "utils/schema_utils.hpp" // canonical_fields_str, compute_canonical_hash_from_wire
 
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
-#include "utils/security/curve_keypair.hpp"    // HEP-CORE-0035 §2 — shared keygen
-#include "utils/curve_socket.hpp"              // arm_curve_server (shared CURVE arm)
-#include "utils/security/key_store.hpp"        // HEP-CORE-0040 §172 — hub identity
-#include "utils/security/peer_admission.hpp"   // HEP-CORE-0035 Phase D
-#include "utils/security/zap_router.hpp"       // HEP-CORE-0035 Phase D
-#include "portable_atomic_shared_ptr.hpp"      // sibling header in src/utils/
-#include "plh_version_registry.hpp"            // HEP-CORE-0032 §8 ABI fingerprint
+#include "utils/security/curve_keypair.hpp"  // HEP-CORE-0035 §2 — shared keygen
+#include "utils/curve_socket.hpp"            // arm_curve_server (shared CURVE arm)
+#include "utils/security/key_store.hpp"      // HEP-CORE-0040 §172 — hub identity
+#include "utils/security/peer_admission.hpp" // HEP-CORE-0035 Phase D
+#include "utils/security/zap_router.hpp"     // HEP-CORE-0035 Phase D
+#include "portable_atomic_shared_ptr.hpp"    // sibling header in src/utils/
+#include "plh_version_registry.hpp"          // HEP-CORE-0032 §8 ABI fingerprint
 #include "utils/timeout_constants.hpp"
-#include "utils/wire_dispatch.hpp"              // HEP-CORE-0046 unified receive+validate
-#include "utils/wire_envelope.hpp"              // HEP-CORE-0046 §14 typed envelope
+#include "utils/wire_dispatch.hpp" // HEP-CORE-0046 unified receive+validate
+#include "utils/wire_envelope.hpp" // HEP-CORE-0046 §14 typed envelope
 #include "utils/zmq_context.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -59,12 +58,14 @@ constexpr char kFrameTypeControl = 'C';
 
 /// Convert a 64-char hex-encoded schema hash string ->std::array<uint8_t, 32>.
 /// Returns a zero-filled array on format error (wrong length or invalid hex).
-std::array<uint8_t, 32> hex_to_hash_array(const std::string& hex) noexcept
+std::array<uint8_t, 32> hex_to_hash_array(const std::string &hex) noexcept
 {
     std::array<uint8_t, 32> result{};
-    if (hex.size() != 64) return result;
+    if (hex.size() != 64)
+        return result;
     const auto decoded = format_tools::bytes_from_hex(hex);
-    if (decoded.size() != 32) return result; // invalid chars ->bytes_from_hex returned original
+    if (decoded.size() != 32)
+        return result; // invalid chars ->bytes_from_hex returned original
     std::memcpy(result.data(), decoded.data(), 32);
     return result;
 }
@@ -83,12 +84,21 @@ std::array<uint8_t, 32> hex_to_hash_array(const std::string& hex) noexcept
 // in the appropriate array below.
 
 constexpr std::array<std::string_view, 21> kRequestReplyTypes = {
-    "REG_REQ", "DISC_REQ", "DEREG_REQ",
-    "CONSUMER_REG_REQ", "CONSUMER_DEREG_REQ",
-    "ENDPOINT_UPDATE_REQ", "SCHEMA_REQ",
-    "CHANNEL_LIST_REQ", "METRICS_REQ", "SHM_BLOCK_QUERY_REQ",
-    "ROLE_PRESENCE_REQ", "ROLE_INFO_REQ",
-    "BAND_JOIN_REQ", "BAND_LEAVE_REQ", "BAND_MEMBERS_REQ",
+    "REG_REQ",
+    "DISC_REQ",
+    "DEREG_REQ",
+    "CONSUMER_REG_REQ",
+    "CONSUMER_DEREG_REQ",
+    "ENDPOINT_UPDATE_REQ",
+    "SCHEMA_REQ",
+    "CHANNEL_LIST_REQ",
+    "METRICS_REQ",
+    "SHM_BLOCK_QUERY_REQ",
+    "ROLE_PRESENCE_REQ",
+    "ROLE_INFO_REQ",
+    "BAND_JOIN_REQ",
+    "BAND_LEAVE_REQ",
+    "BAND_MEMBERS_REQ",
     "HUB_PEER_HELLO",
     // Producer queries the current channel-scope allowlist on receipt
     // of CHANNEL_AUTH_CHANGED_NOTIFY (or proactively at setup) per
@@ -137,27 +147,34 @@ constexpr std::array<std::string_view, 21> kRequestReplyTypes = {
 constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
     // M1.4 (2026-05-11) — `METRICS_REPORT_REQ` retired.  Metrics now
     // piggyback on `HEARTBEAT_NOTIFY` per HEP-CORE-0019 §2.3 Phase 6.
-    "HEARTBEAT_NOTIFY", "CHECKSUM_ERROR_REPORT",
+    "HEARTBEAT_NOTIFY",
+    "CHECKSUM_ERROR_REPORT",
     // Audit R3.6 (2026-05-17): CHANNEL_NOTIFY_REQ removed.  Role-side
     // BRC::send_notify was deleted in O1; federation peer-relay uses
     // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  No
     // caller exists anywhere in src/.  Old clients sending
     // CHANNEL_NOTIFY_REQ now receive UNKNOWN_MSG_TYPE.
-    "CHANNEL_BROADCAST_SEND_NOTIFY", "BAND_BROADCAST_SEND_NOTIFY",
+    "CHANNEL_BROADCAST_SEND_NOTIFY",
+    "BAND_BROADCAST_SEND_NOTIFY",
     "HUB_PEER_BYE",
     // Inbound on outbound DEALER (peer→us); not request-reply but valid:
-    "HUB_RELAY_MSG", "HUB_TARGETED_MSG",
+    "HUB_RELAY_MSG",
+    "HUB_TARGETED_MSG",
 };
 
 [[nodiscard]] bool is_request_reply(std::string_view t) noexcept
 {
-    for (auto x : kRequestReplyTypes) if (x == t) return true;
+    for (auto x : kRequestReplyTypes)
+        if (x == t)
+            return true;
     return false;
 }
 
 [[nodiscard]] bool is_fire_and_forget(std::string_view t) noexcept
 {
-    for (auto x : kFireAndForgetTypes) if (x == t) return true;
+    for (auto x : kFireAndForgetTypes)
+        if (x == t)
+            return true;
     return false;
 }
 
@@ -183,18 +200,17 @@ constexpr std::array<std::string_view, 8> kFireAndForgetTypes = {
 // §4.8.4.
 class BrokerCtrlAdmission final : public pylabhub::utils::security::PeerAdmission
 {
-public:
+  public:
     explicit BrokerCtrlAdmission(pylabhub::utils::security::PeerAllowlist initial)
     {
-        current_.store(std::make_shared<
-            pylabhub::utils::security::PeerAllowlist>(std::move(initial)));
+        current_.store(
+            std::make_shared<pylabhub::utils::security::PeerAllowlist>(std::move(initial)));
     }
 
-    bool set_peer_allowlist(
-        pylabhub::utils::security::PeerAllowlist allowlist) override
+    bool set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist) override
     {
-        current_.store(std::make_shared<
-            pylabhub::utils::security::PeerAllowlist>(std::move(allowlist)));
+        current_.store(
+            std::make_shared<pylabhub::utils::security::PeerAllowlist>(std::move(allowlist)));
         return true;
     }
 
@@ -202,22 +218,22 @@ public:
     peer_allowlist_snapshot() const override
     {
         auto p = current_.load();
-        if (!p) return std::nullopt;
+        if (!p)
+            return std::nullopt;
         return *p;
     }
 
     [[nodiscard]] bool
-    is_peer_allowed(
-        const pylabhub::utils::security::PeerIdentity &peer) const override
+    is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const override
     {
         auto p = current_.load();
-        if (!p) return false;
+        if (!p)
+            return false;
         return p->contains(peer);
     }
 
-private:
-    pylabhub::utils::detail::PortableAtomicSharedPtr<
-        pylabhub::utils::security::PeerAllowlist>
+  private:
+    pylabhub::utils::detail::PortableAtomicSharedPtr<pylabhub::utils::security::PeerAllowlist>
         current_;
 };
 
@@ -242,39 +258,32 @@ private:
 // only rejects ABI-major mismatches, not JSON parse failures).
 struct AbiFingerprintOutcome
 {
-    bool        reject = false;         ///< strict + MAJOR mismatch → true
-    std::string mismatched_axes;        ///< comma-separated axes (for error message)
+    bool reject = false;         ///< strict + MAJOR mismatch → true
+    std::string mismatched_axes; ///< comma-separated axes (for error message)
 };
 
-static AbiFingerprintOutcome
-log_peer_abi_fingerprint(const nlohmann::json &req,
-                          const std::string &role_uid,
-                          const char *event_prefix,
-                          const char *event_detail,
-                          bool strict_mode,
-                          const char *transport = nullptr)
+static AbiFingerprintOutcome log_peer_abi_fingerprint(const nlohmann::json &req,
+                                                      const std::string &role_uid,
+                                                      const char *event_prefix,
+                                                      const char *event_detail, bool strict_mode,
+                                                      const char *transport = nullptr)
 {
     // `transport` is non-null for CONSUMER_ATTACH_REQ ingest (values
     // "shm" / "zmq") per HEP-CORE-0032 §8.6.  null → REG_REQ /
     // CONSUMER_REG_REQ; the `transport='...'` slot is omitted from the
     // format string.  (2026-07-03 code review Finding #5.)
-    auto trans_slot = [&]() -> std::string {
-        return transport != nullptr
-            ? fmt::format(" transport='{}'", transport)
-            : std::string{};
-    };
+    auto trans_slot = [&]() -> std::string
+    { return transport != nullptr ? fmt::format(" transport='{}'", transport) : std::string{}; };
     AbiFingerprintOutcome outcome;
     // Absence path — no envelope on the wire (older role, or role
     // built before slice C shipped).  Log verdict='ABSENT' and
     // return; no verify call.  Strict mode does NOT reject on absence
     // — the wire field is optional until a broker_proto MAJOR bump
     // promotes it to required.
-    if (!req.contains("abi_fingerprint") ||
-        !req["abi_fingerprint"].is_object())
+    if (!req.contains("abi_fingerprint") || !req["abi_fingerprint"].is_object())
     {
-        LOGGER_INFO(
-            "[broker] event={} role='{}'{} verdict='ABSENT' mismatched_axes=''",
-            event_prefix, role_uid, trans_slot());
+        LOGGER_INFO("[broker] event={} role='{}'{} verdict='ABSENT' mismatched_axes=''",
+                    event_prefix, role_uid, trans_slot());
         return outcome;
     }
 
@@ -291,20 +300,17 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
     }
     catch (const std::exception &e)
     {
-        LOGGER_INFO(
-            "[broker] event={} role='{}'{} verdict='INVALID_ENVELOPE' "
-            "mismatched_axes='' error='{}'",
-            event_prefix, role_uid, trans_slot(), e.what());
+        LOGGER_INFO("[broker] event={} role='{}'{} verdict='INVALID_ENVELOPE' "
+                    "mismatched_axes='' error='{}'",
+                    event_prefix, role_uid, trans_slot(), e.what());
         return outcome;
     }
 
     // Optional sibling: build_id.  nullptr → skip build_id comparison.
-    const std::string build_id_str =
-        req.value("build_id", std::string{});
-    const char *peer_bid =
-        build_id_str.empty() ? nullptr : build_id_str.c_str();
+    const std::string build_id_str = req.value("build_id", std::string{});
+    const char *peer_bid = build_id_str.empty() ? nullptr : build_id_str.c_str();
 
-    const auto verdict    = pylabhub::version::verify_peer_versions(peer, peer_bid);
+    const auto verdict = pylabhub::version::verify_peer_versions(peer, peer_bid);
     const auto classified = pylabhub::version::classify_peer_verdict(verdict);
 
     // Map classifier Kind → §8.6 log verdict string, applying
@@ -323,11 +329,10 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
         verdict_str = "BUILD_ONLY";
         break;
     case pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch:
-        verdict_str = strict_mode ? "MAJOR_MISMATCH_REJECTED"
-                                   : "MAJOR_MISMATCH_ACCEPTED";
+        verdict_str = strict_mode ? "MAJOR_MISMATCH_REJECTED" : "MAJOR_MISMATCH_ACCEPTED";
         if (strict_mode)
         {
-            outcome.reject          = true;
+            outcome.reject = true;
             outcome.mismatched_axes = classified.major_axes;
         }
         break;
@@ -342,28 +347,24 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
             ? classified.minor_axes
             : classified.major_axes;
 
-    LOGGER_INFO(
-        "[broker] event={} role='{}'{} verdict='{}' mismatched_axes='{}'",
-        event_prefix, role_uid, trans_slot(), verdict_str, axes_for_log);
+    LOGGER_INFO("[broker] event={} role='{}'{} verdict='{}' mismatched_axes='{}'", event_prefix,
+                role_uid, trans_slot(), verdict_str, axes_for_log);
 
     // Detail line — §8.6 says emit only when verdict != OK.
     if (std::string_view(verdict_str) != "OK")
     {
-        LOGGER_INFO(
-            "[broker] event={} role='{}' role_versions='{}' broker_versions='{}'",
-            event_detail, role_uid,
-            fmt::format("lib={}.{}.{},shm={}.{},broker_proto={}.{},"
-                         "zmq_frame={}.{},script_api={}.{},"
-                         "script_engine={}.{},config={}.{}",
-                         peer.library_major, peer.library_minor,
-                         peer.library_rolling,
-                         peer.shm_major, peer.shm_minor,
-                         peer.broker_proto_major, peer.broker_proto_minor,
-                         peer.zmq_frame_major, peer.zmq_frame_minor,
-                         peer.script_api_major, peer.script_api_minor,
-                         peer.script_engine_major, peer.script_engine_minor,
-                         peer.config_major, peer.config_minor),
-            pylabhub::version::version_info_string());
+        LOGGER_INFO("[broker] event={} role='{}' role_versions='{}' broker_versions='{}'",
+                    event_detail, role_uid,
+                    fmt::format("lib={}.{}.{},shm={}.{},broker_proto={}.{},"
+                                "zmq_frame={}.{},script_api={}.{},"
+                                "script_engine={}.{},config={}.{}",
+                                peer.library_major, peer.library_minor, peer.library_rolling,
+                                peer.shm_major, peer.shm_minor, peer.broker_proto_major,
+                                peer.broker_proto_minor, peer.zmq_frame_major, peer.zmq_frame_minor,
+                                peer.script_api_major, peer.script_api_minor,
+                                peer.script_engine_major, peer.script_engine_minor,
+                                peer.config_major, peer.config_minor),
+                    pylabhub::version::version_info_string());
     }
     return outcome;
 }
@@ -376,7 +377,7 @@ log_peer_abi_fingerprint(const nlohmann::json &req,
 
 class BrokerServiceImpl
 {
-public:
+  public:
     ~BrokerServiceImpl()
     {
         // Wave M3 step 5f defensive cleanup: if run() exited abnormally
@@ -385,8 +386,7 @@ public:
         // here so HubState (which outlives BrokerServiceImpl) cannot
         // fire a lambda into a destroyed object.  Idempotent: no-op if
         // already unsubscribed or never subscribed.
-        if (hub_state_ != nullptr &&
-            band_left_handler_id_ != pylabhub::hub::kInvalidHandlerId)
+        if (hub_state_ != nullptr && band_left_handler_id_ != pylabhub::hub::kInvalidHandlerId)
         {
             hub_state_->unsubscribe(band_left_handler_id_);
             band_left_handler_id_ = pylabhub::hub::kInvalidHandlerId;
@@ -407,7 +407,7 @@ public:
     /// pointer.  In tests, the L3 fixture (`LocalBrokerHandle`) plays
     /// the HubHost role and owns the HubState alongside the broker.
     pylabhub::hub::HubState *hub_state_{nullptr};
-    std::atomic<bool>     stop_requested{false};
+    std::atomic<bool> stop_requested{false};
 
     /// HEP-CORE-0046 §14 unified receive+validate binder.  Owns the
     /// admission callbacks (known_roles lookup, key-rotation check,
@@ -458,12 +458,12 @@ public:
     ///   ms per HEP-CORE-0042 §5.5 taxonomy).
     struct PendingAttachEntry
     {
-        std::string                                    router_identity;
-        std::string                                    correlation_id;
-        std::string                                    consumer_pubkey;
-        std::string                                    consumer_role_uid;
-        std::uint64_t                                  target_version = 0;
-        std::chrono::steady_clock::time_point          enqueued_at;
+        std::string router_identity;
+        std::string correlation_id;
+        std::string consumer_pubkey;
+        std::string consumer_role_uid;
+        std::uint64_t target_version = 0;
+        std::chrono::steady_clock::time_point enqueued_at;
     };
 
     /// HEP-CORE-0042 §5.4 step 5 — pending attach queue.  Owned by the
@@ -488,10 +488,7 @@ public:
     /// Concurrency: mutations happen exclusively on the ROUTER dispatch
     /// thread (single-pumper, HEP-CORE-0036 §7.4).  No external mutex —
     /// the ROUTER pump serialises all writes and reads.
-    std::unordered_map<
-        std::string,
-        std::unordered_map<std::string,
-                            std::deque<PendingAttachEntry>>>
+    std::unordered_map<std::string, std::unordered_map<std::string, std::deque<PendingAttachEntry>>>
         pending_attach_queue_;
 
     /// HEP-CORE-0042 §5.4 step d — pending queue drain on APPLIED_REQ.
@@ -503,10 +500,8 @@ public:
     ///
     /// Called from `handle_channel_auth_applied_req` (Phase 2.3b).
     std::size_t drain_pending_attach_queue_for_producer_confirmed_(
-        zmq::socket_t&     socket,
-        const std::string& channel_name,
-        const std::string& producer_role_uid,
-        std::uint64_t      new_confirmed);
+        zmq::socket_t &socket, const std::string &channel_name,
+        const std::string &producer_role_uid, std::uint64_t new_confirmed);
 
     /// HEP-CORE-0042 §5.4 producer-disconnect + channel-close drains.
     /// Pops EVERY entry from `pending_attach_queue_[channel_name][producer_role_uid]`
@@ -520,14 +515,11 @@ public:
     /// - The three broker teardown paths that call
     ///   `_on_channel_access_closed` (channel_closing).
     std::size_t drain_pending_attach_queue_for_producer_denied_(
-        zmq::socket_t&     socket,
-        const std::string& channel_name,
-        const std::string& producer_role_uid,
-        const std::string& reason);
-    std::size_t drain_pending_attach_queue_for_channel_denied_(
-        zmq::socket_t&     socket,
-        const std::string& channel_name,
-        const std::string& reason);
+        zmq::socket_t &socket, const std::string &channel_name,
+        const std::string &producer_role_uid, const std::string &reason);
+    std::size_t drain_pending_attach_queue_for_channel_denied_(zmq::socket_t &socket,
+                                                               const std::string &channel_name,
+                                                               const std::string &reason);
 
     /// HEP-CORE-0042 §5.4 pending-entry timeout + §5.6
     /// producer_apply_wait_ms sweep.  Walks every (K, P) deque in
@@ -537,20 +529,19 @@ public:
     ///
     /// Called from `check_heartbeat_timeouts` (Phase 2.3c), piggybacked
     /// on the existing sweep cadence.  Returns total number drained.
-    std::size_t sweep_pending_attach_timeouts_(
-        zmq::socket_t&                        socket,
-        std::chrono::steady_clock::time_point now,
-        std::chrono::milliseconds             budget);
+    std::size_t sweep_pending_attach_timeouts_(zmq::socket_t &socket,
+                                               std::chrono::steady_clock::time_point now,
+                                               std::chrono::milliseconds budget);
 
     /// Serializes the run() thread's post-poll work against external
     /// readers (e.g. `list_channels_json_str()`).  HubState has its own
     /// internal mutex; this one only protects broker-private structures
     /// (request queues, federation session flags) and orders post-poll
     /// drainage with respect to external query callers.
-    mutable std::mutex    m_query_mu;
+    mutable std::mutex m_query_mu;
 
     /// Guards close_request_queue_ for thread-safe request_close_channel().
-    mutable std::mutex    m_close_req_mu;
+    mutable std::mutex m_close_req_mu;
     /// Script-requested channel closes; drained in run() post-poll phase under m_query_mu.
     std::deque<std::string> close_request_queue_;
 
@@ -569,7 +560,7 @@ public:
     /// the broker IO thread (same thread that fires HubState
     /// callbacks in production); off-thread firings (L2 tests with
     /// no broker running) see nullptr and no-op.
-    zmq::socket_t          *active_router_{nullptr};
+    zmq::socket_t *active_router_{nullptr};
     pylabhub::hub::HandlerId band_left_handler_id_{pylabhub::hub::kInvalidHandlerId};
 
     // The CTRL ZAP admission (HEP-CORE-0035 §4.8 + HEP-CORE-0036 §4.2)
@@ -580,9 +571,12 @@ public:
     // (per `zap_router.hpp:99`).
 
     /// Guards broadcast_request_queue_ for thread-safe request_broadcast_channel().
-    mutable std::mutex    m_broadcast_req_mu;
+    mutable std::mutex m_broadcast_req_mu;
     /// Admin-shell-requested broadcasts; drained in run() post-poll phase under m_query_mu.
-    struct BroadcastRequest { std::string channel, message, data; };
+    struct BroadcastRequest
+    {
+        std::string channel, message, data;
+    };
     std::deque<BroadcastRequest> broadcast_request_queue_;
 
     // ── Hub federation (HEP-CORE-0022) ─────────────────────────────────────
@@ -600,18 +594,21 @@ public:
     static constexpr std::chrono::seconds kRelayDedupeWindow{5};
     struct RelayDedupEntry
     {
-        std::string                            msg_id;
-        std::chrono::steady_clock::time_point  expiry;
+        std::string msg_id;
+        std::chrono::steady_clock::time_point expiry;
     };
-    std::deque<RelayDedupEntry>       relay_dedup_queue_; ///< Ordered by expiry (monotone insert)
-    std::unordered_set<std::string>   relay_dedup_set_;   ///< O(1) existence check
+    std::deque<RelayDedupEntry> relay_dedup_queue_;   ///< Ordered by expiry (monotone insert)
+    std::unordered_set<std::string> relay_dedup_set_; ///< O(1) existence check
 
     /// Monotone sequence counter for outgoing HUB_RELAY_MSG msg_id.
     uint64_t relay_seq_{0};
 
     /// Thread-safe queue for send_hub_targeted_msg().
-    struct HubTargetedRequest { std::string target_hub_uid, channel, payload; };
-    mutable std::mutex             m_hub_targeted_mu;
+    struct HubTargetedRequest
+    {
+        std::string target_hub_uid, channel, payload;
+    };
+    mutable std::mutex m_hub_targeted_mu;
     std::deque<HubTargetedRequest> hub_targeted_queue_;
 
     // ── Metrics store (HEP-CORE-0019) ──────────────────────────────────────
@@ -638,39 +635,31 @@ public:
     /// existing `handle_*` methods.  RejectedMessage variants build
     /// an ERROR envelope via `wire::dispatch::build_error_reply`
     /// and send it to the (already known) sender identity.
-    void dispatch_received(zmq::socket_t                                     &socket,
-                            ::pylabhub::wire::dispatch::ReceivedMessage      &&received);
+    void dispatch_received(zmq::socket_t &socket,
+                           ::pylabhub::wire::dispatch::ReceivedMessage &&received);
 
-    void process_message(zmq::socket_t&       socket,
-                         const zmq::message_t& identity,
-                         const std::string&    msg_type,
-                         const nlohmann::json& payload,
-                         std::size_t           bytes_in);
+    void process_message(zmq::socket_t &socket, const zmq::message_t &identity,
+                         const std::string &msg_type, const nlohmann::json &payload,
+                         std::size_t bytes_in);
 
     /// HEP-CORE-0033 §9.6: invoke `cfg.on_processing_error` if configured,
     /// catching any user-supplied callback exception (R2).  `identity` may
     /// be nullptr for failures that happen before the routing identity is
     /// known (peer-DEALER inbound, S1/S2 errors).
-    void emit_processing_error(const std::string&    msg_type,
-                               const std::string&    error_kind,
-                               const std::string&    detail,
-                               const zmq::message_t* identity);
+    void emit_processing_error(const std::string &msg_type, const std::string &error_kind,
+                               const std::string &detail, const zmq::message_t *identity);
 
-    nlohmann::json handle_reg_req(const nlohmann::json& req,
-                                   const zmq::message_t& identity,
-                                   zmq::socket_t&        socket);
+    nlohmann::json handle_reg_req(const nlohmann::json &req, const zmq::message_t &identity,
+                                  zmq::socket_t &socket);
     /// Always returns a response. The returned JSON's status field indicates
     /// the DISC response variant: "success" (DISC_ACK), "pending" (DISC_PENDING),
     /// or "error" (CHANNEL_NOT_FOUND). See HEP-CORE-0023 §2.2.
-    nlohmann::json handle_disc_req(const nlohmann::json& req);
-    nlohmann::json handle_dereg_req(const nlohmann::json& req, zmq::socket_t& socket);
-    nlohmann::json handle_consumer_reg_req(const nlohmann::json& req,
-                                           const zmq::message_t& identity,
-                                           zmq::socket_t&        socket);
-    nlohmann::json handle_consumer_dereg_req(zmq::socket_t& socket,
-                                              const nlohmann::json& req);
-    void           handle_heartbeat_req(zmq::socket_t&        socket,
-                                          const nlohmann::json& req);
+    nlohmann::json handle_disc_req(const nlohmann::json &req);
+    nlohmann::json handle_dereg_req(const nlohmann::json &req, zmq::socket_t &socket);
+    nlohmann::json handle_consumer_reg_req(const nlohmann::json &req,
+                                           const zmq::message_t &identity, zmq::socket_t &socket);
+    nlohmann::json handle_consumer_dereg_req(zmq::socket_t &socket, const nlohmann::json &req);
+    void handle_heartbeat_req(zmq::socket_t &socket, const nlohmann::json &req);
 
     /// `GET_CHANNEL_AUTH_REQ` handler (HEP-CORE-0036 §6.5).  Returns
     /// the channel's currently-admitted pubkey set (sourced from
@@ -681,7 +670,7 @@ public:
     /// registered producer of the named channel).
     /// Defence-in-depth: never return another channel's allowlist to a
     /// non-producer caller.
-    nlohmann::json handle_get_channel_auth_req(const nlohmann::json& req);
+    nlohmann::json handle_get_channel_auth_req(const nlohmann::json &req);
 
     /// `CONSUMER_ATTACH_REQ_SHM` handler (SHM binding, HEP-CORE-0041
     /// §9 D4 step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
@@ -701,7 +690,7 @@ public:
     /// instantiate the transport-agnostic coordination protocol; SHM
     /// is producer-initiated and stateless, ZMQ is consumer-initiated
     /// and stateful with the `confirmed_version` cache-tracking layer).
-    nlohmann::json handle_consumer_attach_req_shm(const nlohmann::json& req);
+    nlohmann::json handle_consumer_attach_req_shm(const nlohmann::json &req);
 
     /// `CONSUMER_ATTACH_REQ_ZMQ` handler (ZMQ binding, HEP-CORE-0042
     /// §6.2 Bindings.ZMQ + §5.4 handler flow).  Consumer-initiated
@@ -746,10 +735,8 @@ public:
     ///   (§5.4 producer-disconnect) + channel-close drain.  ⏳ pending.
     /// - Phase 2.3c timeout sweep (§5.6 producer_apply_wait_ms).
     ///   ⏳ pending.
-    nlohmann::json handle_consumer_attach_req_zmq(
-        const nlohmann::json& req,
-        zmq::socket_t&        socket,
-        const std::string&    router_identity);
+    nlohmann::json handle_consumer_attach_req_zmq(const nlohmann::json &req, zmq::socket_t &socket,
+                                                  const std::string &router_identity);
 
     /// `CHANNEL_AUTH_APPLIED_REQ` handler (HEP-CORE-0042 §5.5.2 +
     /// §5.4).  Producer P confirms it has applied allowlist snapshot
@@ -777,13 +764,11 @@ public:
     /// which queries the channel's `VersionedAdmissionLedger`
     /// (HEP-CORE-0042 §5.5.2 unified 2026-07-13
     /// INVARIANT-BIND-CONFIRM-2).
-    nlohmann::json handle_check_peer_ready_req(
-        const nlohmann::json      &req,
-        const zmq::message_t      &identity);
+    nlohmann::json handle_check_peer_ready_req(const nlohmann::json &req,
+                                               const zmq::message_t &identity);
 
-    nlohmann::json handle_channel_auth_applied_req(
-        const nlohmann::json& req,
-        zmq::socket_t&        socket);
+    nlohmann::json handle_channel_auth_applied_req(const nlohmann::json &req,
+                                                   zmq::socket_t &socket);
 
     /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to the BINDING
     /// side of the named channel (HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_
@@ -800,11 +785,9 @@ public:
     /// channel's allowlist via the matching
     /// `_on_consumer_authorized` / `_on_consumer_revoked` HubState op
     /// (for admitted/left; live fires from first-heartbeat detection).
-    void fire_channel_auth_changed_notify(zmq::socket_t&     socket,
-                                           const std::string& channel_name,
-                                           const std::string& phase,
-                                           const std::string& role_uid,
-                                           const std::string& role_type);
+    void fire_channel_auth_changed_notify(zmq::socket_t &socket, const std::string &channel_name,
+                                          const std::string &phase, const std::string &role_uid,
+                                          const std::string &role_type);
 
     /// HEP-CORE-0023 §2.5 — heartbeat negotiation block carried in
     /// REG_ACK / CONSUMER_REG_ACK.  Communicates the hub's tolerated
@@ -813,9 +796,9 @@ public:
     /// align its periodic-task schedule.  Always populated from
     /// `cfg.heartbeat_*` — no per-channel override.
     nlohmann::json heartbeat_ack_block() const;
-    nlohmann::json handle_endpoint_update_req(const nlohmann::json& req,
-                                               const zmq::message_t& identity);
-    nlohmann::json handle_schema_req(const nlohmann::json& req);
+    nlohmann::json handle_endpoint_update_req(const nlohmann::json &req,
+                                              const zmq::message_t &identity);
+    nlohmann::json handle_schema_req(const nlohmann::json &req);
 
     /// HEP-CORE-0034 Phase 4b — register hub-global schemas at broker startup.
     /// Walks `cfg.schema_search_dirs` via the stateless free function
@@ -828,7 +811,7 @@ public:
     /// @see HEP-CORE-0034 §2.4 I1+I2 (single mutator, single load pipeline)
     void load_hub_globals_();
 
-    void check_heartbeat_timeouts(zmq::socket_t& socket);
+    void check_heartbeat_timeouts(zmq::socket_t &socket);
 
     // ── Role-close cleanup API (HEP-CORE-0023 §2.5) ───────────────────────
     // Central hooks called at every dereg site so federation/band/future
@@ -836,19 +819,16 @@ public:
     // from the broker run() thread; `socket` is the broker's ROUTER for
     // emitting implicit notifications (e.g. BAND_LEAVE_NOTIFY to remaining
     // band members).
-    void on_channel_closed(zmq::socket_t& socket,
-                           const std::string& channel_name,
-                           const pylabhub::hub::ChannelEntry& entry,
-                           const std::string& reason);
-    void on_consumer_closed(zmq::socket_t& socket,
-                            const std::string& channel_name,
-                            const pylabhub::hub::ConsumerEntry& consumer,
-                            const std::string& reason);
+    void on_channel_closed(zmq::socket_t &socket, const std::string &channel_name,
+                           const pylabhub::hub::ChannelEntry &entry, const std::string &reason);
+    void on_consumer_closed(zmq::socket_t &socket, const std::string &channel_name,
+                            const pylabhub::hub::ConsumerEntry &consumer,
+                            const std::string &reason);
 
     // Per-module cleanup helpers (invoked by the hooks above).
-    void federation_on_channel_closed(const std::string& channel_name,
-                                       const pylabhub::hub::ChannelEntry& entry,
-                                       const std::string& reason);
+    void federation_on_channel_closed(const std::string &channel_name,
+                                      const pylabhub::hub::ChannelEntry &entry,
+                                      const std::string &reason);
     /// Wave M3 step 5f (2026-05-11): handler-driven BAND_LEAVE_NOTIFY
     /// fanout helper.  Reads the current member list (HubState already
     /// removed the leaving uid via its band cascade) and sends the
@@ -856,79 +836,60 @@ public:
     /// `band_on_role_closed` that also mutated HubState — now HubState
     /// owns the state mutation and this helper only fans out the wire
     /// notification.
-    void send_band_leave_notify(zmq::socket_t&     socket,
-                                 const std::string& band_name,
-                                 const std::string& role_uid,
-                                 const std::string& role_name,
-                                 const std::string& reason);
+    void send_band_leave_notify(zmq::socket_t &socket, const std::string &band_name,
+                                const std::string &role_uid, const std::string &role_name,
+                                const std::string &reason);
 
-    void send_closing_notify(zmq::socket_t&                            socket,
-                             const std::string&                        channel_name,
-                             const pylabhub::hub::ChannelEntry&        entry,
-                             const std::string&                        reason);
+    void send_closing_notify(zmq::socket_t &socket, const std::string &channel_name,
+                             const pylabhub::hub::ChannelEntry &entry, const std::string &reason);
 
-    void handle_checksum_error_report(zmq::socket_t&        socket,
-                                      const nlohmann::json& req);
+    void handle_checksum_error_report(zmq::socket_t &socket, const nlohmann::json &req);
 
     // CHANNEL_NOTIFY_REQ handler removed — audit R3.6 (2026-05-17).
 
-    void handle_channel_broadcast_req(zmq::socket_t&        socket,
-                                      const nlohmann::json& req);
+    void handle_channel_broadcast_req(zmq::socket_t &socket, const nlohmann::json &req);
 
     nlohmann::json handle_channel_list_req(const nlohmann::json &req);
 
     // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
-    nlohmann::json handle_band_join_req(const nlohmann::json& req,
-                                        const zmq::message_t& identity,
-                                        zmq::socket_t& socket);
-    nlohmann::json handle_band_leave_req(const nlohmann::json& req,
-                                          zmq::socket_t& socket);
-    void handle_band_broadcast_req(zmq::socket_t& socket,
-                                   const nlohmann::json& req,
-                                   const zmq::message_t& identity);
-    nlohmann::json handle_band_members_req(const nlohmann::json& req);
+    nlohmann::json handle_band_join_req(const nlohmann::json &req, const zmq::message_t &identity,
+                                        zmq::socket_t &socket);
+    nlohmann::json handle_band_leave_req(const nlohmann::json &req, zmq::socket_t &socket);
+    void handle_band_broadcast_req(zmq::socket_t &socket, const nlohmann::json &req,
+                                   const zmq::message_t &identity);
+    nlohmann::json handle_band_members_req(const nlohmann::json &req);
 
     // Phase 4: role presence + info queries.
-    nlohmann::json handle_role_presence_req(const nlohmann::json& req);
-    nlohmann::json handle_role_info_req(const nlohmann::json& req);
+    nlohmann::json handle_role_presence_req(const nlohmann::json &req);
+    nlohmann::json handle_role_info_req(const nlohmann::json &req);
 
     /// Push an unsolicited message to a specific ZMQ ROUTER identity (raw bytes).
-    static void send_to_identity(zmq::socket_t&     socket,
-                                 const std::string& identity,
-                                 const std::string& msg_type,
-                                 const nlohmann::json& body);
+    static void send_to_identity(zmq::socket_t &socket, const std::string &identity,
+                                 const std::string &msg_type, const nlohmann::json &body);
 
-    static void send_reply(zmq::socket_t&       socket,
-                           const zmq::message_t& identity,
-                           const std::string&    msg_type_ack,
-                           const nlohmann::json& body);
+    static void send_reply(zmq::socket_t &socket, const zmq::message_t &identity,
+                           const std::string &msg_type_ack, const nlohmann::json &body);
 
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    static nlohmann::json make_error(const std::string& correlation_id,
-                                     const std::string& error_code,
-                                     const std::string& message);
-
+    static nlohmann::json make_error(const std::string &correlation_id,
+                                     const std::string &error_code, const std::string &message);
 
     // ── Role state-machine metrics (HEP-CORE-0023 §2.5) ─────────────────
     // Owned by HubState (`BrokerCounters`) per HEP-CORE-0033 §8;
     // accessed via `hub_state_->counters()`.
 
     // ── Hub federation handlers (HEP-CORE-0022) ───────────────────────────
-    void handle_hub_peer_hello(zmq::socket_t&       socket,
-                               const zmq::message_t& identity,
-                               const nlohmann::json& payload);
-    void handle_hub_peer_bye(const nlohmann::json& payload);
-    void handle_hub_peer_hello_ack(const std::string& peer_hub_uid,
-                                   const nlohmann::json& payload);
-    void handle_hub_relay_msg(zmq::socket_t& socket, const nlohmann::json& payload);
-    void handle_hub_targeted_msg(const nlohmann::json& payload);
+    void handle_hub_peer_hello(zmq::socket_t &socket, const zmq::message_t &identity,
+                               const nlohmann::json &payload);
+    void handle_hub_peer_bye(const nlohmann::json &payload);
+    void handle_hub_peer_hello_ack(const std::string &peer_hub_uid, const nlohmann::json &payload);
+    void handle_hub_relay_msg(zmq::socket_t &socket, const nlohmann::json &payload);
+    void handle_hub_targeted_msg(const nlohmann::json &payload);
 
     /// Relay a CHANNEL_NOTIFY_REQ event to all inbound peers subscribed to channel.
-    void relay_notify_to_peers(zmq::socket_t&    socket,
-                                const std::string& channel,
-                                const std::string& event,
-                                const std::string& sender_uid,
-                                const std::string& data);
+    void relay_notify_to_peers(zmq::socket_t &socket, const std::string &channel,
+                               const std::string &event, const std::string &sender_uid,
+                               const std::string &data);
 
     /// Prune expired entries from relay_dedup_.
     void prune_relay_dedup();
@@ -958,8 +919,8 @@ void BrokerServiceImpl::run()
     // ROUTER socket.  Storing the ZAP handle as a member would let
     // the registration outlive run() and throw on a hypothetical
     // restart (`zap_router.hpp:99` — per-domain uniqueness).
-    std::unique_ptr<BrokerCtrlAdmission>                       ctrl_admission;
-    std::optional<pylabhub::utils::security::ZapDomainHandle>  ctrl_zap_handle;
+    std::unique_ptr<BrokerCtrlAdmission> ctrl_admission;
+    std::optional<pylabhub::utils::security::ZapDomainHandle> ctrl_zap_handle;
 
     // HEP-CORE-0035 §2 + §4.6.5 — CURVE-server and ZAP admission are
     // unconditional.  KeyStore presence of "hub_identity" is enforced
@@ -968,7 +929,7 @@ void BrokerServiceImpl::run()
     // half flows from LockedKey → libzmq inside `with_seckey` scope;
     // no std::string copy of the seckey lives at broker scope.
     namespace sec = pylabhub::utils::security;
-    auto      &ks = sec::secure().keys();
+    auto &ks = sec::secure().keys();
     // Shared CURVE-server arm (use-not-export) — the same helper the admin
     // console and inbox use; keyed with the hub broker identity.
     pylabhub::utils::arm_curve_server(router, sec::kHubIdentityName);
@@ -986,17 +947,15 @@ void BrokerServiceImpl::run()
     pylabhub::utils::security::PeerAllowlist initial;
     for (const auto &kr : cfg.known_roles)
     {
-        if (kr.pubkey_z85.empty()) continue;
-        initial.peers.insert(
-            pylabhub::utils::security::PeerIdentity{"curve",
-                                                    kr.pubkey_z85});
+        if (kr.pubkey_z85.empty())
+            continue;
+        initial.peers.insert(pylabhub::utils::security::PeerIdentity{"curve", kr.pubkey_z85});
     }
     for (const auto &peer : cfg.peers)
     {
-        if (peer.pubkey_z85.empty()) continue;
-        initial.peers.insert(
-            pylabhub::utils::security::PeerIdentity{"curve",
-                                                    peer.pubkey_z85});
+        if (peer.pubkey_z85.empty())
+            continue;
+        initial.peers.insert(pylabhub::utils::security::PeerIdentity{"curve", peer.pubkey_z85});
     }
     const auto allowlist_size = initial.peers.size();
 
@@ -1016,22 +975,17 @@ void BrokerServiceImpl::run()
     else
     {
         static std::atomic<std::uint64_t> ctrl_zap_seq{0};
-        const auto seq =
-            ctrl_zap_seq.fetch_add(1, std::memory_order_relaxed);
+        const auto seq = ctrl_zap_seq.fetch_add(1, std::memory_order_relaxed);
         zap_domain = "broker.ctrl." + std::to_string(seq);
     }
     ctrl_admission = std::make_unique<BrokerCtrlAdmission>(std::move(initial));
     router.set(zmq::sockopt::zap_domain, zap_domain);
-    ctrl_zap_handle.emplace(
-        pylabhub::utils::security::ZapRouter::instance()
-            .register_domain(zap_domain, *ctrl_admission));
+    ctrl_zap_handle.emplace(pylabhub::utils::security::ZapRouter::instance().register_domain(
+        zap_domain, *ctrl_admission));
 
     LOGGER_INFO("Broker: CTRL ZAP installed enforced on domain '{}' "
                 "({} known_roles + {} federation peers = {} allowed)",
-                zap_domain,
-                cfg.known_roles.size(),
-                cfg.peers.size(),
-                allowlist_size);
+                zap_domain, cfg.known_roles.size(), cfg.peers.size(), allowlist_size);
 
     router.bind(cfg.endpoint);
     const std::string bound = router.get(zmq::sockopt::last_endpoint);
@@ -1070,12 +1024,13 @@ void BrokerServiceImpl::run()
     // sweep timers run here), so `active_router_` is always valid at
     // handler-fire time.  L2 tests with no broker running see
     // `active_router_ == nullptr` and the handler no-ops.
-    active_router_       = &router;
+    active_router_ = &router;
     band_left_handler_id_ = hub_state_->subscribe_band_left(
-        [this](const std::string &band, const std::string &uid,
-               const std::string &role_name,
-               const std::string &reason) {
-            if (active_router_ == nullptr) return;
+        [this](const std::string &band, const std::string &uid, const std::string &role_name,
+               const std::string &reason)
+        {
+            if (active_router_ == nullptr)
+                return;
             send_band_leave_notify(*active_router_, band, uid, role_name, reason);
         });
 
@@ -1083,20 +1038,22 @@ void BrokerServiceImpl::run()
     // Stored as unique_ptr so socket handles remain stable in the pollitem_t vector.
     struct OutboundPeer
     {
-        const FederationPeer* cfg_entry;
-        zmq::socket_t                  socket;
+        const FederationPeer *cfg_entry;
+        zmq::socket_t socket;
     };
     std::vector<std::unique_ptr<OutboundPeer>> peer_sockets;
 
     if (!cfg.self_hub_uid.empty())
     {
-        for (const auto& peer_cfg : cfg.peers)
+        for (const auto &peer_cfg : cfg.peers)
         {
-            if (peer_cfg.broker_endpoint.empty()) continue;
+            if (peer_cfg.broker_endpoint.empty())
+                continue;
             auto ps = std::make_unique<OutboundPeer>();
             ps->cfg_entry = &peer_cfg;
             ps->socket = zmq::socket_t(ctx, zmq::socket_type::dealer);
-            ps->socket.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
+            ps->socket.set(zmq::sockopt::linger,
+                           0); // policy: always LINGER=0; see §ZMQ socket policy
 
             // HEP-CORE-0035 §2 — CURVE is unconditional on every wire.
             // A federation peer configured without a pubkey cannot
@@ -1112,15 +1069,10 @@ void BrokerServiceImpl::run()
                 // the bind ROUTER above.  Seckey bytes live only in
                 // LockedKey region; copied into libzmq's internal CURVE
                 // state inside `with_seckey` scope.
-                ps->socket.set(zmq::sockopt::curve_serverkey,
-                               peer_cfg.pubkey_z85);
-                ps->socket.set(zmq::sockopt::curve_publickey,
-                               ks.pubkey(sec::kHubIdentityName));
-                ks.with_seckey(sec::kHubIdentityName,
-                    [&](std::string_view seckey)
-                    {
-                        ps->socket.set(zmq::sockopt::curve_secretkey, seckey);
-                    });
+                ps->socket.set(zmq::sockopt::curve_serverkey, peer_cfg.pubkey_z85);
+                ps->socket.set(zmq::sockopt::curve_publickey, ks.pubkey(sec::kHubIdentityName));
+                ks.with_seckey(sec::kHubIdentityName, [&](std::string_view seckey)
+                               { ps->socket.set(zmq::sockopt::curve_secretkey, seckey); });
             }
 
             // Give the DEALER a stable routing-id so the peer can identify us.
@@ -1128,18 +1080,19 @@ void BrokerServiceImpl::run()
             ps->socket.set(zmq::sockopt::routing_id, dealer_id);
 
             ps->socket.connect(peer_cfg.broker_endpoint);
-            LOGGER_INFO("Broker: federation DEALER connected to peer '{}' at {}",
-                        peer_cfg.hub_uid, peer_cfg.broker_endpoint);
+            LOGGER_INFO("Broker: federation DEALER connected to peer '{}' at {}", peer_cfg.hub_uid,
+                        peer_cfg.broker_endpoint);
 
             // Send HUB_PEER_HELLO immediately after connect.
             // ZMQ queues the message until the connection is established.
             nlohmann::json hello;
-            hello["hub_uid"]              = cfg.self_hub_uid;
-            hello["subscribed_channels"]  = nlohmann::json::array(); // let peer decide from its config
-            hello["protocol_version"]     = 1;
-            const std::string hello_body  = hello.dump();
-            ps->socket.send(zmq::message_t(&kFrameTypeControl, 1),         zmq::send_flags::sndmore);
-            ps->socket.send(zmq::message_t("HUB_PEER_HELLO", 14),          zmq::send_flags::sndmore);
+            hello["hub_uid"] = cfg.self_hub_uid;
+            hello["subscribed_channels"] =
+                nlohmann::json::array(); // let peer decide from its config
+            hello["protocol_version"] = 1;
+            const std::string hello_body = hello.dump();
+            ps->socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
+            ps->socket.send(zmq::message_t("HUB_PEER_HELLO", 14), zmq::send_flags::sndmore);
             ps->socket.send(zmq::message_t(hello_body.data(), hello_body.size()),
                             zmq::send_flags::none);
 
@@ -1160,7 +1113,7 @@ void BrokerServiceImpl::run()
         std::vector<zmq::pollitem_t> items;
         items.reserve(1 + peer_sockets.size());
         items.push_back({router.handle(), 0, ZMQ_POLLIN, 0});
-        for (const auto& ps : peer_sockets)
+        for (const auto &ps : peer_sockets)
             items.push_back({ps->socket.handle(), 0, ZMQ_POLLIN, 0});
 
         zmq::poll(items, kPollTimeout);
@@ -1175,7 +1128,7 @@ void BrokerServiceImpl::run()
         // CTRL acceptance latency at ~kPollTimeout (acceptable for
         // registration; data path latency is unaffected because data
         // sockets pump from their own poll loops).
-        (void) pylabhub::utils::security::ZapRouter::instance().pump_one(
+        (void)pylabhub::utils::security::ZapRouter::instance().pump_one(
             std::chrono::milliseconds{0});
 
         // --- Post-poll phase (mutex held: all registry reads/writes are protected) ---
@@ -1189,7 +1142,7 @@ void BrokerServiceImpl::run()
                 pending_closes.assign(close_request_queue_.begin(), close_request_queue_.end());
                 close_request_queue_.clear();
             }
-            for (const auto& ch : pending_closes)
+            for (const auto &ch : pending_closes)
             {
                 auto hub_entry = hub_state_->channel(ch);
                 if (hub_entry.has_value())
@@ -1202,8 +1155,8 @@ void BrokerServiceImpl::run()
                     LOGGER_INFO("Broker: script-requested close for channel '{}'", ch);
                     send_closing_notify(router, ch, *hub_entry, "script_requested");
                     on_channel_closed(router, ch, *hub_entry, "script_requested");
-                    hub_state_->_on_channel_closed(
-                        ch, pylabhub::hub::ChannelCloseReason::AdminClose);
+                    hub_state_->_on_channel_closed(ch,
+                                                   pylabhub::hub::ChannelCloseReason::AdminClose);
                     // HEP-CORE-0036 §6.5 + HEP-CORE-0042 §5.4: drop the
                     // channel-access record.  Idempotent — safe even if
                     // _on_channel_access_opened was never called.
@@ -1215,8 +1168,7 @@ void BrokerServiceImpl::run()
                     // requested close variant).  Reply denied to every
                     // pending ATTACH_REQ_ZMQ so consumers get a bounded
                     // outcome even when the close was operator-initiated.
-                    drain_pending_attach_queue_for_channel_denied_(
-                        router, ch, "channel_closing");
+                    drain_pending_attach_queue_for_channel_denied_(router, ch, "channel_closing");
                 }
             }
 
@@ -1227,12 +1179,11 @@ void BrokerServiceImpl::run()
             std::vector<BroadcastRequest> pending_broadcasts;
             {
                 std::lock_guard<std::mutex> bcast_lk(m_broadcast_req_mu);
-                pending_broadcasts.assign(
-                    std::make_move_iterator(broadcast_request_queue_.begin()),
-                    std::make_move_iterator(broadcast_request_queue_.end()));
+                pending_broadcasts.assign(std::make_move_iterator(broadcast_request_queue_.begin()),
+                                          std::make_move_iterator(broadcast_request_queue_.end()));
                 broadcast_request_queue_.clear();
             }
-            for (const auto& br : pending_broadcasts)
+            for (const auto &br : pending_broadcasts)
             {
                 // Build a synthetic CHANNEL_BROADCAST_SEND_NOTIFY payload and delegate.
                 // sender_uid = self_hub_uid: the broadcast originates inside
@@ -1243,10 +1194,9 @@ void BrokerServiceImpl::run()
                 // is wired).
                 nlohmann::json req;
                 req["target_channel"] = br.channel;
-                req["sender_uid"]     = cfg.self_hub_uid.empty()
-                                            ? std::string("hub")
-                                            : cfg.self_hub_uid;
-                req["message"]        = br.message;
+                req["sender_uid"] =
+                    cfg.self_hub_uid.empty() ? std::string("hub") : cfg.self_hub_uid;
+                req["message"] = br.message;
                 if (!br.data.empty())
                     req["data"] = br.data;
                 handle_channel_broadcast_req(router, req);
@@ -1257,16 +1207,14 @@ void BrokerServiceImpl::run()
                 std::vector<HubTargetedRequest> pending_targeted;
                 {
                     std::lock_guard<std::mutex> ht_lk(m_hub_targeted_mu);
-                    pending_targeted.assign(
-                        std::make_move_iterator(hub_targeted_queue_.begin()),
-                        std::make_move_iterator(hub_targeted_queue_.end()));
+                    pending_targeted.assign(std::make_move_iterator(hub_targeted_queue_.begin()),
+                                            std::make_move_iterator(hub_targeted_queue_.end()));
                     hub_targeted_queue_.clear();
                 }
-                for (const auto& ht : pending_targeted)
+                for (const auto &ht : pending_targeted)
                 {
                     auto peer = hub_state_->peer(ht.target_hub_uid);
-                    if (!peer.has_value() ||
-                        peer->state != pylabhub::hub::PeerState::Connected ||
+                    if (!peer.has_value() || peer->state != pylabhub::hub::PeerState::Connected ||
                         peer->zmq_identity.empty())
                     {
                         LOGGER_WARN("Broker: send_hub_targeted_msg: peer '{}' not connected",
@@ -1275,9 +1223,9 @@ void BrokerServiceImpl::run()
                     }
                     nlohmann::json msg;
                     msg["target_hub_uid"] = ht.target_hub_uid;
-                    msg["channel_name"]   = ht.channel;
-                    msg["sender_uid"]     = cfg.self_hub_uid;
-                    msg["payload"]        = ht.payload;
+                    msg["channel_name"] = ht.channel;
+                    msg["sender_uid"] = cfg.self_hub_uid;
+                    msg["payload"] = ht.payload;
                     send_to_identity(router, peer->zmq_identity, "HUB_TARGETED_MSG", msg);
                     LOGGER_DEBUG("Broker: sent HUB_TARGETED_MSG to peer '{}'", ht.target_hub_uid);
                 }
@@ -1327,9 +1275,8 @@ void BrokerServiceImpl::run()
                     // `dispatch_received` turns into an ERROR reply — the
                     // security invariants are enforced HERE, not in the
                     // per-msg handlers.  See HEP-CORE-0046 "What is LIVE today".
-                    auto received =
-                        ::pylabhub::wire::dispatch::receive_and_validate(
-                            std::move(raw), admission_binder_.context);
+                    auto received = ::pylabhub::wire::dispatch::receive_and_validate(
+                        std::move(raw), admission_binder_.context);
                     dispatch_received(router, std::move(received));
                 }
             }
@@ -1338,11 +1285,13 @@ void BrokerServiceImpl::run()
             // DEALER receives: ['C', msg_type, json_body]  (3 frames, no identity)
             for (size_t i = 0; i < peer_sockets.size(); ++i)
             {
-                if ((items[1 + i].revents & ZMQ_POLLIN) == 0) continue;
+                if ((items[1 + i].revents & ZMQ_POLLIN) == 0)
+                    continue;
                 std::vector<zmq::message_t> peer_frames;
-                auto np = zmq::recv_multipart(peer_sockets[i]->socket,
-                                              std::back_inserter(peer_frames));
-                if (!np.has_value() || *np < 3) continue;
+                auto np =
+                    zmq::recv_multipart(peer_sockets[i]->socket, std::back_inserter(peer_frames));
+                if (!np.has_value() || *np < 3)
+                    continue;
                 try
                 {
                     const std::string peer_msg_type = peer_frames[1].to_string();
@@ -1350,8 +1299,8 @@ void BrokerServiceImpl::run()
                     nlohmann::json peer_payload = nlohmann::json::parse(peer_body_raw);
                     if (peer_msg_type == "HUB_PEER_HELLO_ACK")
                     {
-                        handle_hub_peer_hello_ack(
-                            peer_sockets[i]->cfg_entry->hub_uid, peer_payload);
+                        handle_hub_peer_hello_ack(peer_sockets[i]->cfg_entry->hub_uid,
+                                                  peer_payload);
                     }
                     else if (peer_msg_type == "HUB_RELAY_MSG")
                     {
@@ -1367,7 +1316,7 @@ void BrokerServiceImpl::run()
                                     peer_msg_type);
                     }
                 }
-                catch (const nlohmann::json::exception& e)
+                catch (const nlohmann::json::exception &e)
                 {
                     LOGGER_WARN("Broker: malformed JSON from peer DEALER: {}", e.what());
                 }
@@ -1381,16 +1330,18 @@ void BrokerServiceImpl::run()
         nlohmann::json bye;
         bye["hub_uid"] = cfg.self_hub_uid;
         const std::string bye_body = bye.dump();
-        for (auto& ps : peer_sockets)
+        for (auto &ps : peer_sockets)
         {
             try
             {
                 ps->socket.send(zmq::message_t(&kFrameTypeControl, 1), zmq::send_flags::sndmore);
-                ps->socket.send(zmq::message_t("HUB_PEER_BYE", 12),    zmq::send_flags::sndmore);
+                ps->socket.send(zmq::message_t("HUB_PEER_BYE", 12), zmq::send_flags::sndmore);
                 ps->socket.send(zmq::message_t(bye_body.data(), bye_body.size()),
                                 zmq::send_flags::none);
             }
-            catch (const zmq::error_t&) {} // best-effort on shutdown
+            catch (const zmq::error_t &)
+            {
+            } // best-effort on shutdown
             ps->socket.close();
         }
     }
@@ -1425,61 +1376,57 @@ namespace
 /// + known_roles + rotation checks) is already enforced.
 struct LegacyDispatchInputs
 {
-    std::string    msg_type;
+    std::string msg_type;
     nlohmann::json body_json;
-    std::string    identity_str;
+    std::string identity_str;
 };
 
-template <typename ValidatedT>
-LegacyDispatchInputs to_legacy(ValidatedT &&v, const char *msg_type)
+template <typename ValidatedT> LegacyDispatchInputs to_legacy(ValidatedT &&v, const char *msg_type)
 {
     LegacyDispatchInputs out;
-    out.msg_type     = msg_type;
-    out.body_json    = v.body.to_json();
+    out.msg_type = msg_type;
+    out.body_json = v.body.to_json();
     out.identity_str = v.identity();
     const std::string corr = v.correlation_id();
     if (!corr.empty())
         out.body_json["correlation_id"] = corr;
     return out;
 }
-}  // anonymous namespace
+} // anonymous namespace
 
-void BrokerServiceImpl::dispatch_received(
-    zmq::socket_t                                &socket,
-    ::pylabhub::wire::dispatch::ReceivedMessage &&received)
+void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
+                                          ::pylabhub::wire::dispatch::ReceivedMessage &&received)
 {
     namespace wd = ::pylabhub::wire::dispatch;
 
     // Helper to invoke `process_message` with a reconstructed identity
     // frame; the legacy handlers all take `zmq::message_t` for the
     // identity because they forward it to ROUTER send.
-    auto dispatch_legacy = [&](LegacyDispatchInputs &&li) {
-        zmq::message_t id_frame(li.identity_str.data(),
-                                 li.identity_str.size());
-        process_message(socket, id_frame, li.msg_type, li.body_json,
-                        li.body_json.dump().size());
+    auto dispatch_legacy = [&](LegacyDispatchInputs &&li)
+    {
+        zmq::message_t id_frame(li.identity_str.data(), li.identity_str.size());
+        process_message(socket, id_frame, li.msg_type, li.body_json, li.body_json.dump().size());
     };
 
     std::visit(
-        [&](auto &&v) {
+        [&](auto &&v)
+        {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, wd::RejectedMessage>)
             {
                 // Log — the enforcement wins here belong in operator logs.
-                const auto code_str =
-                    ::pylabhub::admission::to_wire_string(v.code);
+                const auto code_str = ::pylabhub::admission::to_wire_string(v.code);
                 LOGGER_WARN("Broker: admission rejected msg_type='{}' "
                             "identity='{}' corr_id='{}' error_code='{}' "
                             "field='{}' message='{}'",
-                            v.msg_type, v.identity, v.correlation_id,
-                            code_str, v.field, v.message);
+                            v.msg_type, v.identity, v.correlation_id, code_str, v.field, v.message);
                 // C12 resolution — per-code + total counters instead of
                 // a single opaque `sys.admission_rejected`.  The total
                 // is the aggregate operator monitors track; the
                 // per-code map surfaces which gate is firing.
                 hub_state_->_bump_counter("sys.admission_rejected_total");
-                hub_state_->_bump_counter(
-                    "sys.admission_rejected_by_code." + std::string{code_str});
+                hub_state_->_bump_counter("sys.admission_rejected_by_code." +
+                                          std::string{code_str});
                 // Only emit an ERROR envelope when the sender identity is
                 // recoverable (envelope parse got past Frame 0).  If the
                 // parse failed before that, we cannot address a reply
@@ -1494,7 +1441,8 @@ void BrokerServiceImpl::dispatch_received(
                     catch (const std::exception &e)
                     {
                         LOGGER_WARN("Broker: failed to send admission-"
-                                    "reject ERROR reply: {}", e.what());
+                                    "reject ERROR reply: {}",
+                                    e.what());
                     }
                 }
             }
@@ -1504,13 +1452,13 @@ void BrokerServiceImpl::dispatch_received(
                 // Body was validated for envelope_hash only.  Handler still
                 // takes JSON.  Injects corr_id for legacy compat.
                 const std::string msg_type = v.msg_type();
-                nlohmann::json body        = std::move(v.body);
-                const std::string corr     = v.correlation_id();
-                if (!corr.empty()) body["correlation_id"] = corr;
+                nlohmann::json body = std::move(v.body);
+                const std::string corr = v.correlation_id();
+                if (!corr.empty())
+                    body["correlation_id"] = corr;
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
-                process_message(socket, id_frame, msg_type, body,
-                                body.dump().size());
+                process_message(socket, id_frame, msg_type, body, body.dump().size());
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedRegReq>)
                 dispatch_legacy(to_legacy(std::move(v), "REG_REQ"));
@@ -1534,16 +1482,13 @@ void BrokerServiceImpl::dispatch_received(
         std::move(received));
 }
 
-void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
-                                        const zmq::message_t& identity,
-                                        const std::string&    msg_type,
-                                        const nlohmann::json& payload,
-                                        std::size_t           bytes_in)
+void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::message_t &identity,
+                                        const std::string &msg_type, const nlohmann::json &payload,
+                                        std::size_t bytes_in)
 {
     LOGGER_TRACE("Broker: dispatch {} channel='{}'", msg_type,
-                 payload.is_object()
-                     ? payload.value("channel_name", std::string{}) // HEP-0036 §5b
-                     : std::string{});
+                 payload.is_object() ? payload.value("channel_name", std::string{}) // HEP-0036 §5b
+                                     : std::string{});
 
     // HEP-CORE-0033 §9.3 S3: unknown msg_type — bump only sys.unknown_msg_type
     // (R1: do NOT pollute msg_type_counts with attacker-supplied strings),
@@ -1552,13 +1497,15 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     {
         LOGGER_WARN("Broker: unknown msg_type '{}'", msg_type);
         const std::string corr_id = payload.value("correlation_id", "");
-        try {
-            send_reply(socket, identity, "ERROR",
-                       make_error(corr_id, "UNKNOWN_MSG_TYPE",
-                                  "Unknown message type: " + msg_type));
-        } catch (const std::exception &re) {
-            LOGGER_WARN("Broker: failed to send UNKNOWN_MSG_TYPE ERROR reply: {}",
-                        re.what());
+        try
+        {
+            send_reply(
+                socket, identity, "ERROR",
+                make_error(corr_id, "UNKNOWN_MSG_TYPE", "Unknown message type: " + msg_type));
+        }
+        catch (const std::exception &re)
+        {
+            LOGGER_WARN("Broker: failed to send UNKNOWN_MSG_TYPE ERROR reply: {}", re.what());
         }
         hub_state_->_bump_counter("sys.unknown_msg_type");
         emit_processing_error(msg_type, "unknown_msg_type", msg_type, &identity);
@@ -1574,328 +1521,324 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
     try
     {
 
-    if (msg_type == "REG_REQ")
-    {
-        nlohmann::json resp = handle_reg_req(payload, identity, socket);
-        const std::string ack = (resp.value("status", "") == "success") ? "REG_ACK" : "ERROR";
-        if (ack == "REG_ACK")
+        if (msg_type == "REG_REQ")
         {
-            // "REG_ACK sending" marker (rung 2 of Pattern 4 ladder).
-            // Pin: channel + allowlist payload distinguish a registration ACK
-            // from REG_REQ rejections that already log via existing ERROR/WARN.
-            // `heartbeat_interval_ms` extracted from the REG_ACK heartbeat
-            // block (HEP-CORE-0023 §2.5) so Pattern 4 rung 3 can verify
-            // role honored the hub-authoritative cadence.  Defaults to 0
-            // if the broker shipped without a heartbeat block (legacy).
-            int hb_interval_ms = 0;
-            if (resp.contains("heartbeat") && resp["heartbeat"].is_object())
-                hb_interval_ms = resp["heartbeat"].value(
-                    "heartbeat_interval_ms", 0);
-            LOGGER_INFO("[broker] event=RegAckSending channel='{}' "
-                        "heartbeat_interval_ms={} initial_allowlist={}",
-                        resp.value("channel_name", "?"), // HEP-0036 §5b.5
-                        hb_interval_ms,
-                        resp.value("initial_allowlist",
-                                   nlohmann::json::array()).dump());
-        }
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "DISC_REQ")
-    {
-        // Three-response dispatch (HEP-CORE-0023 §2.2):
-        //   "success" -> DISC_ACK (channel Ready)
-        //   "pending" -> DISC_PENDING (client retries)
-        //   otherwise -> ERROR (CHANNEL_NOT_FOUND)
-        nlohmann::json resp = handle_disc_req(payload);
-        const std::string status = resp.value("status", "");
-        std::string ack;
-        if (status == "success")      ack = "DISC_ACK";
-        else if (status == "pending") ack = "DISC_PENDING";
-        else                          ack = "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "DEREG_REQ")
-    {
-        nlohmann::json resp = handle_dereg_req(payload, socket);
-        const std::string ack = (resp.value("status", "") == "success") ? "DEREG_ACK" : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "CONSUMER_REG_REQ")
-    {
-        nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
-        const std::string ack =
-            (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
-        if (ack == "CONSUMER_REG_ACK")
-        {
-            // Parallel to "REG_ACK sending" above.  Pins the
-            // HEP-CORE-0036 §6.4 producers[] payload the consumer
-            // role-host needs for its rx-queue CURVE allowlist.
-            // Empty `[]` is a legal value (no producers attached yet);
-            // ZMQ channels emit a populated list, SHM channels omit
-            // the key entirely (HEP-0036 §5.6).  The "[]" literal
-            // avoids constructing a temporary nlohmann::json::array()
-            // on every accepted REG_REQ; the .dump() cost is intrinsic
-            // to the marker shape (operational diagnostic value).
-            const std::string producers_dump =
-                resp.contains("producers") ? resp["producers"].dump() : "[]";
-            LOGGER_INFO("[broker] event=ConsumerRegAckSending channel='{}' "
-                        "producers={}",
-                        resp.value("channel_name", "?"),
-                        producers_dump);
-        }
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "GET_CHANNEL_AUTH_REQ")
-    {
-        // HEP-CORE-0036 §6.5 — producer pulls the current channel-scope
-        // allowlist.
-        nlohmann::json resp = handle_get_channel_auth_req(payload);
-        const std::string ack =
-            (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
-    {
-        // HEP-CORE-0041 §9 D4 = HEP-CORE-0042 §6.1 Bindings.SHM.  Producer's
-        // pre-attach confirmation for SHM transport.  Special-cased dispatch:
-        // "denied" is a normal auth decision, NOT a wire error.  Both
-        // "success" and "denied" map to CONSUMER_ATTACH_ACK_SHM so the
-        // producer's cache-divergence observer (HEP-0041 substep 1e) can
-        // distinguish a clean broker "no" from a transport failure.
-        nlohmann::json resp = handle_consumer_attach_req_shm(payload);
-        const std::string status = resp.value("status", "");
-        const std::string ack =
-            (status == "success" || status == "denied")
-                ? "CONSUMER_ATTACH_ACK_SHM"
-                : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "CONSUMER_ATTACH_REQ_ZMQ")
-    {
-        // HEP-CORE-0042 §6.2 Bindings.ZMQ + §5.4 handler flow.  Consumer-
-        // initiated pre-attach gate.  Fast-path replies are sent here;
-        // wait-path replies are DEFERRED per the §5.4 wait-path contract.
-        //
-        // Deferred-reply contract (Phase 2.3a shipped):
-        // - status="success" / "denied" / "timeout" → send CONSUMER_ATTACH_ACK_ZMQ.
-        // - status="pending" → SEND NOTHING.  The handler has already
-        //   enqueued the reply target (router identity + correlation_id)
-        //   into pending_attach_queue_.  The reply will be sent later by
-        //   handle_channel_auth_applied_req (§5.4 step d drain, Phase 2.3b),
-        //   the producer-disconnect / channel-close drain paths (Phase 2.3b),
-        //   or sweep_pending_attach_timeouts_ (§5.6 producer_apply_wait_ms, Phase 2.3c).
-        // - Anything else → send ERROR.
-        // `identity` is the ROUTER identity frame (zmq::message_t); the
-        // handler stores it as a string so the deferred-reply path can
-        // send back to this specific consumer.
-        const std::string identity_str(
-            static_cast<const char*>(identity.data()), identity.size());
-        nlohmann::json resp =
-            handle_consumer_attach_req_zmq(payload, socket, identity_str);
-        const std::string status = resp.value("status", "");
-        if (status == "pending")
-        {
-            // §5.4 wait-path: reply is deferred.  Do not send anything here.
-            // Log at TRACE level for debug; the enqueue site already
-            // LOGGER_INFO'd the full context.
-            LOGGER_TRACE("[broker] event=AttachReqZmqDeferred "
-                         "channel='{}' producer_uid='{}' (wait-path reply "
-                         "will be sent from drain/timeout paths)",
-                         resp.value("channel_name", ""),
-                         resp.value("producer_role_uid", ""));
-        }
-        else
-        {
-            const std::string ack =
-                (status == "success" || status == "denied" ||
-                 status == "timeout")
-                    ? "CONSUMER_ATTACH_ACK_ZMQ"
-                    : "ERROR";
+            nlohmann::json resp = handle_reg_req(payload, identity, socket);
+            const std::string ack = (resp.value("status", "") == "success") ? "REG_ACK" : "ERROR";
+            if (ack == "REG_ACK")
+            {
+                // "REG_ACK sending" marker (rung 2 of Pattern 4 ladder).
+                // Pin: channel + allowlist payload distinguish a registration ACK
+                // from REG_REQ rejections that already log via existing ERROR/WARN.
+                // `heartbeat_interval_ms` extracted from the REG_ACK heartbeat
+                // block (HEP-CORE-0023 §2.5) so Pattern 4 rung 3 can verify
+                // role honored the hub-authoritative cadence.  Defaults to 0
+                // if the broker shipped without a heartbeat block (legacy).
+                int hb_interval_ms = 0;
+                if (resp.contains("heartbeat") && resp["heartbeat"].is_object())
+                    hb_interval_ms = resp["heartbeat"].value("heartbeat_interval_ms", 0);
+                LOGGER_INFO("[broker] event=RegAckSending channel='{}' "
+                            "heartbeat_interval_ms={} initial_allowlist={}",
+                            resp.value("channel_name", "?"), // HEP-0036 §5b.5
+                            hb_interval_ms,
+                            resp.value("initial_allowlist", nlohmann::json::array()).dump());
+            }
             send_reply(socket, identity, ack, resp);
         }
-    }
-    else if (msg_type == "CHANNEL_AUTH_APPLIED_REQ")
-    {
-        // HEP-CORE-0042 §5.5.2.  Producer confirms allowlist snapshot
-        // applied; broker advances confirmed_version and drains pending
-        // ATTACH_REQ_ZMQ entries.  Phase 2.1 stub returns INTERNAL_ERROR
-        // → ERROR envelope.
-        nlohmann::json resp = handle_channel_auth_applied_req(payload, socket);
-        const std::string ack =
-            (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "CHECK_PEER_READY_REQ")
-    {
-        // HEP-CORE-0036 §6.6.3.  Dialing-side role pulls its
-        // readiness state before initiating the CURVE handshake.
-        // Read-only query against
-        // `ChannelAccessEntry.ledger` via `is_pubkey_visible_to`
-        // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).
-        nlohmann::json resp = handle_check_peer_ready_req(payload,
-                                                           identity);
-        const std::string status = resp.value("status", "");
-        const std::string ack =
-            (status == "ready" || status == "not_ready")
-                ? "CHECK_PEER_READY_ACK"
-                : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "CONSUMER_DEREG_REQ")
-    {
-        nlohmann::json resp = handle_consumer_dereg_req(socket, payload);
-        const std::string ack =
-            (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    else if (msg_type == "HEARTBEAT_NOTIFY")
-    {
-        // Fire-and-forget from client.  Presence FSM transitions (e.g.
-        // first-heartbeat sub-Live → Live; Pending → Connected recovery)
-        // happen inside hub_state_->_on_heartbeat() called from the handler.
-        // Socket is forwarded so the handler can fire
-        // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to the binding side
-        // on first-heartbeat detection (HEP-CORE-0007 lines 1819-1822).
-        handle_heartbeat_req(socket, payload);
-    }
-    else if (msg_type == "CHECKSUM_ERROR_REPORT")
-    {
-        // Cat 2: producer/consumer reports a slot checksum error.
-        // Fire-and-forget: no reply expected.
-        handle_checksum_error_report(socket, payload);
-    }
-    else if (msg_type == "SCHEMA_REQ")
-    {
-        // HEP-CORE-0016 Phase 3: consumer queries broker for channel schema info.
-        nlohmann::json resp = handle_schema_req(payload);
-        const std::string ack =
-            (resp.value("status", "") == "success") ? "SCHEMA_ACK" : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    // CHANNEL_NOTIFY_REQ dispatch removed (audit R3.6, 2026-05-17) —
-    // the wire path is dead end-to-end: O1 deleted role-side
-    // BRC::send_notify (no caller), and federation peer-relay uses
-    // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  Old
-    // clients receive UNKNOWN_MSG_TYPE via the dispatch fall-through.
-    else if (msg_type == "CHANNEL_BROADCAST_SEND_NOTIFY")
-    {
-        // Fire-and-forget: fan out broadcast to ALL members of a channel.
-        handle_channel_broadcast_req(socket, payload);
-    }
-    else if (msg_type == "CHANNEL_LIST_REQ")
-    {
-        // Synchronous: return list of registered channels.
-        nlohmann::json resp = handle_channel_list_req(payload);
-        LOGGER_TRACE("Broker: CHANNEL_LIST_ACK channels={}",
-                     resp.value("channels", nlohmann::json::array()).size());
-        send_reply(socket, identity, "CHANNEL_LIST_ACK", resp);
-    }
-    else if (msg_type == "METRICS_REQ")
-    {
-        // HEP-CORE-0019: query aggregated metrics.
-        nlohmann::json resp = handle_metrics_req(payload);
-        send_reply(socket, identity, "METRICS_ACK", resp);
-    }
-    else if (msg_type == "SHM_BLOCK_QUERY_REQ")
-    {
-        send_reply(socket, identity, "SHM_BLOCK_QUERY_ACK",
-                   handle_shm_block_query(payload));
-    }
-    else if (msg_type == "ROLE_PRESENCE_REQ")
-    {
-        // Phase 4: check if a role UID is alive in any channel.
-        nlohmann::json resp = handle_role_presence_req(payload);
-        send_reply(socket, identity, "ROLE_PRESENCE_ACK", resp);
-    }
-    else if (msg_type == "ROLE_INFO_REQ")
-    {
-        // Phase 4: return inbox connection info for a producer UID.
-        nlohmann::json resp = handle_role_info_req(payload);
-        send_reply(socket, identity, "ROLE_INFO_ACK", resp);
-    }
-    else if (msg_type == "HUB_PEER_HELLO")
-    {
-        // HEP-CORE-0022: inbound peer DEALER connected and is announcing itself.
-        handle_hub_peer_hello(socket, identity, payload);
-    }
-    else if (msg_type == "HUB_PEER_BYE")
-    {
-        // HEP-CORE-0022: peer is disconnecting gracefully.
-        handle_hub_peer_bye(payload);
-    }
-    else if (msg_type == "HUB_TARGETED_MSG")
-    {
-        // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER ->our ROUTER).
-        handle_hub_targeted_msg(payload);
-    }
-    else if (msg_type == "ENDPOINT_UPDATE_REQ")
-    {
-        // HEP-0021 §16: update a channel's endpoint after ephemeral port bind.
-        nlohmann::json resp = handle_endpoint_update_req(payload, identity);
-        const std::string ack =
-            (resp.value("status", "") == "success") ? "ENDPOINT_UPDATE_ACK" : "ERROR";
-        send_reply(socket, identity, ack, resp);
-    }
-    // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
-    else if (msg_type == "BAND_JOIN_REQ")
-    {
-        auto resp = handle_band_join_req(payload, identity, socket);
-        send_reply(socket, identity,
-            resp.value("status", "") == "success" ? "BAND_JOIN_ACK" : "ERROR", resp);
-    }
-    else if (msg_type == "BAND_LEAVE_REQ")
-    {
-        auto resp = handle_band_leave_req(payload, socket);
-        send_reply(socket, identity,
-            resp.value("status", "") == "success" ? "BAND_LEAVE_ACK" : "ERROR", resp);
-    }
-    else if (msg_type == "BAND_BROADCAST_SEND_NOTIFY")
-    {
-        handle_band_broadcast_req(socket, payload, identity);
-        // fire-and-forget — no reply
-    }
-    else if (msg_type == "BAND_MEMBERS_REQ")
-    {
-        auto resp = handle_band_members_req(payload);
-        // Audit R3.5: BAND_MEMBERS_REQ now can return INVALID_BAND_NAME.
-        // Match the BAND_JOIN/LEAVE dispatch shape — send ERROR when the
-        // handler emits a non-success status (validation rejection).
-        const std::string ack =
-            (resp.value("status", "") == "error") ? "ERROR" : "BAND_MEMBERS_ACK";
-        send_reply(socket, identity, ack, resp);
-    }
-    // No final `else` branch: unknown msg_types are short-circuited at the
-    // top of process_message (R1).  If we reach here, msg_type was on the
-    // known list but the dispatcher chain did not match — that is a code
-    // bug (added to is_known_msg_type but not to dispatch); log loudly.
-    else
-    {
-        LOGGER_ERROR("Broker: msg_type '{}' is classified as known but "
-                     "process_message has no dispatch branch — this is a "
-                     "broker bug",
-                     msg_type);
-    }
+        else if (msg_type == "DISC_REQ")
+        {
+            // Three-response dispatch (HEP-CORE-0023 §2.2):
+            //   "success" -> DISC_ACK (channel Ready)
+            //   "pending" -> DISC_PENDING (client retries)
+            //   otherwise -> ERROR (CHANNEL_NOT_FOUND)
+            nlohmann::json resp = handle_disc_req(payload);
+            const std::string status = resp.value("status", "");
+            std::string ack;
+            if (status == "success")
+                ack = "DISC_ACK";
+            else if (status == "pending")
+                ack = "DISC_PENDING";
+            else
+                ack = "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "DEREG_REQ")
+        {
+            nlohmann::json resp = handle_dereg_req(payload, socket);
+            const std::string ack = (resp.value("status", "") == "success") ? "DEREG_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "CONSUMER_REG_REQ")
+        {
+            nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
+            const std::string ack =
+                (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
+            if (ack == "CONSUMER_REG_ACK")
+            {
+                // Parallel to "REG_ACK sending" above.  Pins the
+                // HEP-CORE-0036 §6.4 producers[] payload the consumer
+                // role-host needs for its rx-queue CURVE allowlist.
+                // Empty `[]` is a legal value (no producers attached yet);
+                // ZMQ channels emit a populated list, SHM channels omit
+                // the key entirely (HEP-0036 §5.6).  The "[]" literal
+                // avoids constructing a temporary nlohmann::json::array()
+                // on every accepted REG_REQ; the .dump() cost is intrinsic
+                // to the marker shape (operational diagnostic value).
+                const std::string producers_dump =
+                    resp.contains("producers") ? resp["producers"].dump() : "[]";
+                LOGGER_INFO("[broker] event=ConsumerRegAckSending channel='{}' "
+                            "producers={}",
+                            resp.value("channel_name", "?"), producers_dump);
+            }
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "GET_CHANNEL_AUTH_REQ")
+        {
+            // HEP-CORE-0036 §6.5 — producer pulls the current channel-scope
+            // allowlist.
+            nlohmann::json resp = handle_get_channel_auth_req(payload);
+            const std::string ack =
+                (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
+        {
+            // HEP-CORE-0041 §9 D4 = HEP-CORE-0042 §6.1 Bindings.SHM.  Producer's
+            // pre-attach confirmation for SHM transport.  Special-cased dispatch:
+            // "denied" is a normal auth decision, NOT a wire error.  Both
+            // "success" and "denied" map to CONSUMER_ATTACH_ACK_SHM so the
+            // producer's cache-divergence observer (HEP-0041 substep 1e) can
+            // distinguish a clean broker "no" from a transport failure.
+            nlohmann::json resp = handle_consumer_attach_req_shm(payload);
+            const std::string status = resp.value("status", "");
+            const std::string ack =
+                (status == "success" || status == "denied") ? "CONSUMER_ATTACH_ACK_SHM" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "CONSUMER_ATTACH_REQ_ZMQ")
+        {
+            // HEP-CORE-0042 §6.2 Bindings.ZMQ + §5.4 handler flow.  Consumer-
+            // initiated pre-attach gate.  Fast-path replies are sent here;
+            // wait-path replies are DEFERRED per the §5.4 wait-path contract.
+            //
+            // Deferred-reply contract (Phase 2.3a shipped):
+            // - status="success" / "denied" / "timeout" → send CONSUMER_ATTACH_ACK_ZMQ.
+            // - status="pending" → SEND NOTHING.  The handler has already
+            //   enqueued the reply target (router identity + correlation_id)
+            //   into pending_attach_queue_.  The reply will be sent later by
+            //   handle_channel_auth_applied_req (§5.4 step d drain, Phase 2.3b),
+            //   the producer-disconnect / channel-close drain paths (Phase 2.3b),
+            //   or sweep_pending_attach_timeouts_ (§5.6 producer_apply_wait_ms, Phase 2.3c).
+            // - Anything else → send ERROR.
+            // `identity` is the ROUTER identity frame (zmq::message_t); the
+            // handler stores it as a string so the deferred-reply path can
+            // send back to this specific consumer.
+            const std::string identity_str(static_cast<const char *>(identity.data()),
+                                           identity.size());
+            nlohmann::json resp = handle_consumer_attach_req_zmq(payload, socket, identity_str);
+            const std::string status = resp.value("status", "");
+            if (status == "pending")
+            {
+                // §5.4 wait-path: reply is deferred.  Do not send anything here.
+                // Log at TRACE level for debug; the enqueue site already
+                // LOGGER_INFO'd the full context.
+                LOGGER_TRACE("[broker] event=AttachReqZmqDeferred "
+                             "channel='{}' producer_uid='{}' (wait-path reply "
+                             "will be sent from drain/timeout paths)",
+                             resp.value("channel_name", ""), resp.value("producer_role_uid", ""));
+            }
+            else
+            {
+                const std::string ack =
+                    (status == "success" || status == "denied" || status == "timeout")
+                        ? "CONSUMER_ATTACH_ACK_ZMQ"
+                        : "ERROR";
+                send_reply(socket, identity, ack, resp);
+            }
+        }
+        else if (msg_type == "CHANNEL_AUTH_APPLIED_REQ")
+        {
+            // HEP-CORE-0042 §5.5.2.  Producer confirms allowlist snapshot
+            // applied; broker advances confirmed_version and drains pending
+            // ATTACH_REQ_ZMQ entries.  Phase 2.1 stub returns INTERNAL_ERROR
+            // → ERROR envelope.
+            nlohmann::json resp = handle_channel_auth_applied_req(payload, socket);
+            const std::string ack =
+                (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "CHECK_PEER_READY_REQ")
+        {
+            // HEP-CORE-0036 §6.6.3.  Dialing-side role pulls its
+            // readiness state before initiating the CURVE handshake.
+            // Read-only query against
+            // `ChannelAccessEntry.ledger` via `is_pubkey_visible_to`
+            // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).
+            nlohmann::json resp = handle_check_peer_ready_req(payload, identity);
+            const std::string status = resp.value("status", "");
+            const std::string ack =
+                (status == "ready" || status == "not_ready") ? "CHECK_PEER_READY_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "CONSUMER_DEREG_REQ")
+        {
+            nlohmann::json resp = handle_consumer_dereg_req(socket, payload);
+            const std::string ack =
+                (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        else if (msg_type == "HEARTBEAT_NOTIFY")
+        {
+            // Fire-and-forget from client.  Presence FSM transitions (e.g.
+            // first-heartbeat sub-Live → Live; Pending → Connected recovery)
+            // happen inside hub_state_->_on_heartbeat() called from the handler.
+            // Socket is forwarded so the handler can fire
+            // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to the binding side
+            // on first-heartbeat detection (HEP-CORE-0007 lines 1819-1822).
+            handle_heartbeat_req(socket, payload);
+        }
+        else if (msg_type == "CHECKSUM_ERROR_REPORT")
+        {
+            // Cat 2: producer/consumer reports a slot checksum error.
+            // Fire-and-forget: no reply expected.
+            handle_checksum_error_report(socket, payload);
+        }
+        else if (msg_type == "SCHEMA_REQ")
+        {
+            // HEP-CORE-0016 Phase 3: consumer queries broker for channel schema info.
+            nlohmann::json resp = handle_schema_req(payload);
+            const std::string ack =
+                (resp.value("status", "") == "success") ? "SCHEMA_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        // CHANNEL_NOTIFY_REQ dispatch removed (audit R3.6, 2026-05-17) —
+        // the wire path is dead end-to-end: O1 deleted role-side
+        // BRC::send_notify (no caller), and federation peer-relay uses
+        // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  Old
+        // clients receive UNKNOWN_MSG_TYPE via the dispatch fall-through.
+        else if (msg_type == "CHANNEL_BROADCAST_SEND_NOTIFY")
+        {
+            // Fire-and-forget: fan out broadcast to ALL members of a channel.
+            handle_channel_broadcast_req(socket, payload);
+        }
+        else if (msg_type == "CHANNEL_LIST_REQ")
+        {
+            // Synchronous: return list of registered channels.
+            nlohmann::json resp = handle_channel_list_req(payload);
+            LOGGER_TRACE("Broker: CHANNEL_LIST_ACK channels={}",
+                         resp.value("channels", nlohmann::json::array()).size());
+            send_reply(socket, identity, "CHANNEL_LIST_ACK", resp);
+        }
+        else if (msg_type == "METRICS_REQ")
+        {
+            // HEP-CORE-0019: query aggregated metrics.
+            nlohmann::json resp = handle_metrics_req(payload);
+            send_reply(socket, identity, "METRICS_ACK", resp);
+        }
+        else if (msg_type == "SHM_BLOCK_QUERY_REQ")
+        {
+            send_reply(socket, identity, "SHM_BLOCK_QUERY_ACK", handle_shm_block_query(payload));
+        }
+        else if (msg_type == "ROLE_PRESENCE_REQ")
+        {
+            // Phase 4: check if a role UID is alive in any channel.
+            nlohmann::json resp = handle_role_presence_req(payload);
+            send_reply(socket, identity, "ROLE_PRESENCE_ACK", resp);
+        }
+        else if (msg_type == "ROLE_INFO_REQ")
+        {
+            // Phase 4: return inbox connection info for a producer UID.
+            nlohmann::json resp = handle_role_info_req(payload);
+            send_reply(socket, identity, "ROLE_INFO_ACK", resp);
+        }
+        else if (msg_type == "HUB_PEER_HELLO")
+        {
+            // HEP-CORE-0022: inbound peer DEALER connected and is announcing itself.
+            handle_hub_peer_hello(socket, identity, payload);
+        }
+        else if (msg_type == "HUB_PEER_BYE")
+        {
+            // HEP-CORE-0022: peer is disconnecting gracefully.
+            handle_hub_peer_bye(payload);
+        }
+        else if (msg_type == "HUB_TARGETED_MSG")
+        {
+            // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER ->our ROUTER).
+            handle_hub_targeted_msg(payload);
+        }
+        else if (msg_type == "ENDPOINT_UPDATE_REQ")
+        {
+            // HEP-0021 §16: update a channel's endpoint after ephemeral port bind.
+            nlohmann::json resp = handle_endpoint_update_req(payload, identity);
+            const std::string ack =
+                (resp.value("status", "") == "success") ? "ENDPOINT_UPDATE_ACK" : "ERROR";
+            send_reply(socket, identity, ack, resp);
+        }
+        // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
+        else if (msg_type == "BAND_JOIN_REQ")
+        {
+            auto resp = handle_band_join_req(payload, identity, socket);
+            send_reply(socket, identity,
+                       resp.value("status", "") == "success" ? "BAND_JOIN_ACK" : "ERROR", resp);
+        }
+        else if (msg_type == "BAND_LEAVE_REQ")
+        {
+            auto resp = handle_band_leave_req(payload, socket);
+            send_reply(socket, identity,
+                       resp.value("status", "") == "success" ? "BAND_LEAVE_ACK" : "ERROR", resp);
+        }
+        else if (msg_type == "BAND_BROADCAST_SEND_NOTIFY")
+        {
+            handle_band_broadcast_req(socket, payload, identity);
+            // fire-and-forget — no reply
+        }
+        else if (msg_type == "BAND_MEMBERS_REQ")
+        {
+            auto resp = handle_band_members_req(payload);
+            // Audit R3.5: BAND_MEMBERS_REQ now can return INVALID_BAND_NAME.
+            // Match the BAND_JOIN/LEAVE dispatch shape — send ERROR when the
+            // handler emits a non-success status (validation rejection).
+            const std::string ack =
+                (resp.value("status", "") == "error") ? "ERROR" : "BAND_MEMBERS_ACK";
+            send_reply(socket, identity, ack, resp);
+        }
+        // No final `else` branch: unknown msg_types are short-circuited at the
+        // top of process_message (R1).  If we reach here, msg_type was on the
+        // known list but the dispatcher chain did not match — that is a code
+        // bug (added to is_known_msg_type but not to dispatch); log loudly.
+        else
+        {
+            LOGGER_ERROR("Broker: msg_type '{}' is classified as known but "
+                         "process_message has no dispatch branch — this is a "
+                         "broker bug",
+                         msg_type);
+        }
 
     } // end try
     catch (const std::exception &e)
     {
         errored = true;
-        LOGGER_ERROR("Broker: handler exception for msg_type='{}': {}",
-                     msg_type, e.what());
+        LOGGER_ERROR("Broker: handler exception for msg_type='{}': {}", msg_type, e.what());
         // R3: ERROR reply only for request-reply types — the protocol
         // shape is fixed per msg_type, not per outcome.  Fire-and-forget
         // clients never expect a reply, even when the server errored.
         if (is_request_reply(msg_type))
         {
-            try {
-                send_reply(socket, identity, "ERROR",
-                           make_error(payload.value("correlation_id", ""),
-                                      "INTERNAL_ERROR", e.what()));
-            } catch (const std::exception &re) {
+            try
+            {
+                send_reply(
+                    socket, identity, "ERROR",
+                    make_error(payload.value("correlation_id", ""), "INTERNAL_ERROR", e.what()));
+            }
+            catch (const std::exception &re)
+            {
                 // R11: best-effort; swallow.
                 LOGGER_WARN("Broker: failed to send INTERNAL_ERROR reply for "
-                            "msg_type='{}': {}", msg_type, re.what());
-            } catch (...) {
+                            "msg_type='{}': {}",
+                            msg_type, re.what());
+            }
+            catch (...)
+            {
                 // Non-std exception type from a ZMQ send path —
                 // unexpected but we still don't want to abort the
                 // handler.  Log a generic line so the failure surfaces.
@@ -1921,28 +1864,32 @@ void BrokerServiceImpl::process_message(zmq::socket_t&       socket,
 // HEP-CORE-0033 §9.6: invoke the on_processing_error hook (if configured),
 // catching any user-supplied callback exception (R2) so it never escapes
 // past process_message.
-void BrokerServiceImpl::emit_processing_error(const std::string&    msg_type,
-                                               const std::string&    error_kind,
-                                               const std::string&    detail,
-                                               const zmq::message_t* identity)
+void BrokerServiceImpl::emit_processing_error(const std::string &msg_type,
+                                              const std::string &error_kind,
+                                              const std::string &detail,
+                                              const zmq::message_t *identity)
 {
-    if (!cfg.on_processing_error) return;
+    if (!cfg.on_processing_error)
+        return;
     pylabhub::broker::ProcessingError err;
-    err.msg_type   = msg_type;
+    err.msg_type = msg_type;
     err.error_kind = error_kind;
-    err.detail     = detail;
+    err.detail = detail;
     if (identity != nullptr && identity->size() > 0)
-        err.peer_identity = std::string(static_cast<const char*>(identity->data()),
-                                        identity->size());
-    try {
+        err.peer_identity =
+            std::string(static_cast<const char *>(identity->data()), identity->size());
+    try
+    {
         cfg.on_processing_error(err);
     }
-    catch (const std::exception &he) {
+    catch (const std::exception &he)
+    {
         LOGGER_ERROR("Broker: on_processing_error callback threw "
                      "(msg_type='{}', kind='{}'): {}",
                      msg_type, error_kind, he.what());
     }
-    catch (...) {
+    catch (...)
+    {
         LOGGER_ERROR("Broker: on_processing_error callback threw "
                      "(unknown exception type, msg_type='{}', kind='{}')",
                      msg_type, error_kind);
@@ -1953,14 +1900,14 @@ void BrokerServiceImpl::emit_processing_error(const std::string&    msg_type,
 // Handlers
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
-                                                   const zmq::message_t& identity,
-                                                   zmq::socket_t&        socket)
+nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
+                                                 const zmq::message_t &identity,
+                                                 zmq::socket_t &socket)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
-    const std::string role_name    = req.value("role_name", "");
-    const std::string role_uid     = req.value("role_uid", "");
+    const std::string role_name = req.value("role_name", "");
+    const std::string role_uid = req.value("role_uid", "");
 
     // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
     // check.  Empty or malformed channel_name / role_uid are rejected
@@ -1976,17 +1923,16 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // reject short-circuits without leaving broker state dirty.
     // Slice D (2026-07-03): strict mode gated on `cfg.strict_abi_mismatch`
     // (default false — rolling-upgrade friendly).
-    if (auto abi = log_peer_abi_fingerprint(
-            req, role_uid, "AbiFingerprintReceived", "AbiFingerprintDetail",
-            cfg.strict_abi_mismatch);
+    if (auto abi = log_peer_abi_fingerprint(req, role_uid, "AbiFingerprintReceived",
+                                            "AbiFingerprintDetail", cfg.strict_abi_mismatch);
         abi.reject)
     {
         return make_error(corr_id, "abi_major_mismatch",
-                           "ABI major-axis mismatch on: " + abi.mismatched_axes);
+                          "ABI major-axis mismatch on: " + abi.mismatched_axes);
     }
 
     const std::string attempted_schema = req.value("schema_hash", "");
-    const uint64_t    attempted_pid    = req.value("producer_pid", uint64_t{0});
+    const uint64_t attempted_pid = req.value("producer_pid", uint64_t{0});
 
     // Role identity is enforced by the CTRL ROUTER's ZAP handler at the
     // CURVE handshake (HEP-CORE-0035 §4.1): a role whose pubkey is not in
@@ -2004,10 +1950,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     const std::string producer_pubkey = req.value("zmq_pubkey", "");
     if (producer_pubkey.empty())
     {
-        LOGGER_WARN(
-            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-            "missing required `zmq_pubkey` (HEP-CORE-0036 §4.1 broker_proto>=6).",
-            channel_name, role_uid);
+        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "missing required `zmq_pubkey` (HEP-CORE-0036 §4.1 broker_proto>=6).",
+                    channel_name, role_uid);
         return make_error(corr_id, "INVALID_REQUEST",
                           "REG_REQ requires non-empty `zmq_pubkey` "
                           "(broker_proto>=6 / HEP-CORE-0036 §4.1)");
@@ -2019,10 +1964,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // handshake; reject at the wire to avoid polluting the
         // producer entry with a value that consumers would then use
         // as a broken `curve_serverkey`.
-        LOGGER_WARN(
-            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-            "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
-            channel_name, role_uid, producer_pubkey.size());
+        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
+                    channel_name, role_uid, producer_pubkey.size());
         return make_error(corr_id, "INVALID_REQUEST",
                           "REG_REQ `zmq_pubkey` length is " +
                               std::to_string(producer_pubkey.size()) +
@@ -2046,16 +1990,16 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // from REG_REQ.  See `docs/tech_draft/controlled_access_api_design.md`
     // §7.5.3 + `REVIEW_WaveM2.5_2026-05-10.md` F6/F7.
     pylabhub::hub::ProducerEntry primary_producer;
-    primary_producer.producer_pid      = attempted_pid;
+    primary_producer.producer_pid = attempted_pid;
     primary_producer.producer_hostname = req.value("producer_hostname", "");
-    primary_producer.role_name         = role_name;
-    primary_producer.role_uid          = role_uid;
-    primary_producer.inbox_endpoint    = req.value("inbox_endpoint", "");
+    primary_producer.role_name = role_name;
+    primary_producer.role_uid = role_uid;
+    primary_producer.inbox_endpoint = req.value("inbox_endpoint", "");
     primary_producer.inbox_schema_json = req.value("inbox_schema_json", "");
-    primary_producer.inbox_packing     = req.value("inbox_packing", "");
-    primary_producer.inbox_checksum    = req.value("inbox_checksum", "");
+    primary_producer.inbox_packing = req.value("inbox_packing", "");
+    primary_producer.inbox_checksum = req.value("inbox_checksum", "");
     primary_producer.zmq_node_endpoint = req.value("zmq_node_endpoint", "");
-    primary_producer.zmq_pubkey        = producer_pubkey;
+    primary_producer.zmq_pubkey = producer_pubkey;
     // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels carry the
     // producer's L2 capability-transport endpoint on REG_REQ; broker
     // stores it on the per-producer entry so the CONSUMER_REG_ACK
@@ -2068,8 +2012,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // CONSUMER_REG_ACK, and consumers will fail with a confusing
     // "connect to empty path" error after registration.  Symmetric
     // with the `zmq_pubkey` enforcement above for ZMQ channels.
-    primary_producer.shm_capability_endpoint =
-        req.value("shm_capability_endpoint", "");
+    primary_producer.shm_capability_endpoint = req.value("shm_capability_endpoint", "");
 
     // HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — `data_transport` is a
     // REQUIRED string field on REG_REQ, one of {"shm", "zmq"}.  No
@@ -2084,25 +2027,22 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // routes wire bugs to the right diagnostic.
     if (!req.contains("data_transport") || !req["data_transport"].is_string())
     {
-        LOGGER_WARN(
-            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-            "missing required `data_transport` field "
-            "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — must be string "
-            "'shm' or 'zmq').",
-            channel_name, role_uid);
+        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "missing required `data_transport` field "
+                    "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — must be string "
+                    "'shm' or 'zmq').",
+                    channel_name, role_uid);
         return make_error(corr_id, "INVALID_REQUEST",
                           "REG_REQ requires `data_transport` field "
                           "(string, 'shm' or 'zmq')");
     }
-    const std::string data_transport_req =
-        req["data_transport"].get<std::string>();
+    const std::string data_transport_req = req["data_transport"].get<std::string>();
     if (data_transport_req != "shm" && data_transport_req != "zmq")
     {
-        LOGGER_WARN(
-            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-            "`data_transport`='{}' is not one of {{\"shm\",\"zmq\"}} "
-            "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1).",
-            channel_name, role_uid, data_transport_req);
+        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "`data_transport`='{}' is not one of {{\"shm\",\"zmq\"}} "
+                    "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1).",
+                    channel_name, role_uid, data_transport_req);
         return make_error(corr_id, "INVALID_REQUEST",
                           "REG_REQ `data_transport`='" + data_transport_req +
                               "' is invalid; expected 'shm' or 'zmq'");
@@ -2115,16 +2055,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // would fail with a confusing "connect to empty path" error after
     // registration.  Symmetric with `zmq_pubkey` enforcement above for
     // ZMQ channels.
-    if (data_transport_req == "shm" &&
-        primary_producer.shm_capability_endpoint.empty())
+    if (data_transport_req == "shm" && primary_producer.shm_capability_endpoint.empty())
     {
-        LOGGER_WARN(
-            "Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-            "data_transport='shm' but `shm_capability_endpoint` is empty "
-            "(HEP-CORE-0041 §5.1 — SHM channels MUST publish their L2 "
-            "capability endpoint so the broker can echo it to authorized "
-            "consumers in CONSUMER_REG_ACK).",
-            channel_name, role_uid);
+        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "data_transport='shm' but `shm_capability_endpoint` is empty "
+                    "(HEP-CORE-0041 §5.1 — SHM channels MUST publish their L2 "
+                    "capability endpoint so the broker can echo it to authorized "
+                    "consumers in CONSUMER_REG_ACK).",
+                    channel_name, role_uid);
         return make_error(corr_id, "INVALID_REQUEST",
                           "REG_REQ data_transport='shm' requires non-empty "
                           "`shm_capability_endpoint` (HEP-CORE-0041 §5.1)");
@@ -2135,14 +2073,13 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     }
     // Producer ZMQ identity: captured here for future unsolicited pushes
     // (CHANNEL_CLOSING_NOTIFY / CHANNEL_ERROR_NOTIFY etc.).
-    primary_producer.zmq_identity.assign(
-        static_cast<const char*>(identity.data()), identity.size());
+    primary_producer.zmq_identity.assign(static_cast<const char *>(identity.data()),
+                                         identity.size());
 
     // HEP-0021 §16: reject registration if inbox_endpoint has unresolved port 0.
     if (!primary_producer.inbox_endpoint.empty())
     {
-        auto inbox_ep = pylabhub::validate_tcp_endpoint(
-            primary_producer.inbox_endpoint);
+        auto inbox_ep = pylabhub::validate_tcp_endpoint(primary_producer.inbox_endpoint);
         if (inbox_ep.ok() && inbox_ep.port == 0)
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_endpoint '{}' has port 0",
@@ -2192,45 +2129,44 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // SCHEMA_MISMATCH — the same wire code the backstop returns today.
         pylabhub::hub::SchemaCitationInput sin;
         sin.channel_owner = existing_opt->schema_owner;
-        sin.channel_id    = existing_opt->schema_id;
-        sin.channel_hash  = hex_to_hash_array(existing_opt->schema_hash);
+        sin.channel_id = existing_opt->schema_id;
+        sin.channel_hash = hex_to_hash_array(existing_opt->schema_hash);
         sin.channel_producer_uids.reserve(existing_opt->producers.size());
         for (const auto &p : existing_opt->producers)
             sin.channel_producer_uids.push_back(p.role_uid);
-        sin.cited_id      = req.value("schema_id", "");
+        sin.cited_id = req.value("schema_id", "");
         // Effective owner: an empty schema_owner means self-registration.
         const std::string claimed_owner = req.value("schema_owner", "");
-        sin.cited_owner   = claimed_owner.empty() ? role_uid : claimed_owner;
+        sin.cited_owner = claimed_owner.empty() ? role_uid : claimed_owner;
         sin.expected_hash = hex_to_hash_array(attempted_schema);
 
         if (const auto vc = hub_state_->_validate_schema_citation(sin); !vc.ok())
         {
             const std::string &existing_schema = existing_opt->schema_hash;
-            LOGGER_ERROR(
-                "Broker: schema match rejected [Cat1 schema mismatch] "
-                "channel='{}' producer_pid={}: {} (existing_hash={} attempted_hash={})",
-                channel_name, attempted_pid, vc.detail, existing_schema, attempted_schema);
+            LOGGER_ERROR("Broker: schema match rejected [Cat1 schema mismatch] "
+                         "channel='{}' producer_pid={}: {} (existing_hash={} attempted_hash={})",
+                         channel_name, attempted_pid, vc.detail, existing_schema, attempted_schema);
             nlohmann::json err;
-            err["channel_name"]          = channel_name;
-            err["event"]                 = "schema_mismatch_attempt";
-            err["existing_schema_hash"]  = existing_schema;
+            err["channel_name"] = channel_name;
+            err["event"] = "schema_mismatch_attempt";
+            err["existing_schema_hash"] = existing_schema;
             err["attempted_schema_hash"] = attempted_schema;
-            err["attempted_pid"]         = attempted_pid;
+            err["attempted_pid"] = attempted_pid;
             for (const auto &prod : existing_opt->producers)
             {
-                if (prod.zmq_identity.empty()) continue;
-                send_to_identity(socket, prod.zmq_identity,
-                                 "CHANNEL_ERROR_NOTIFY", err);
+                if (prod.zmq_identity.empty())
+                    continue;
+                send_to_identity(socket, prod.zmq_identity, "CHANNEL_ERROR_NOTIFY", err);
                 LOGGER_ERROR("Broker: CHANNEL_ERROR_NOTIFY to producer of '{}': "
                              "event={}, existing_hash={}, attempted_hash={}, "
                              "attempted_pid={}, target={}",
-                             channel_name, "schema_mismatch_attempt",
-                             existing_schema, attempted_schema, attempted_pid,
-                             prod.role_uid);
+                             channel_name, "schema_mismatch_attempt", existing_schema,
+                             attempted_schema, attempted_pid, prod.role_uid);
             }
             return make_error(corr_id, "SCHEMA_MISMATCH",
                               "Schema does not match existing registration for "
-                              "channel '" + channel_name + "': " + vc.detail);
+                              "channel '" +
+                                  channel_name + "': " + vc.detail);
         }
         // Matches — admission will append to existing producers[] via
         // _on_producer_added; consumers are preserved automatically.
@@ -2269,8 +2205,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // annotation is informational and does not by itself trigger
     // record creation.
     const std::string req_schema_packing = req.value("schema_packing", "");
-    const std::string req_schema_id_raw  = req.value("schema_id", "");
-    const std::string req_schema_owner   = req.value("schema_owner", "");
+    const std::string req_schema_id_raw = req.value("schema_id", "");
+    const std::string req_schema_owner = req.value("schema_owner", "");
 
     // Resolved schema_id / schema_owner for the channel invariants; set
     // by the path B/C blocks below, or left empty for anonymous channels.
@@ -2299,15 +2235,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // Stage-2 fingerprint check (slot + flexzone) — common to both
         // path B and path C.  HEP-CORE-0034 §6.3 / §10.1 — the canonical
         // form covers BOTH the slot and the flexzone when present.
-        const std::string req_flexzone_blds    = req.value("flexzone_blds", "");
+        const std::string req_flexzone_blds = req.value("flexzone_blds", "");
         const std::string req_flexzone_packing = req.value("flexzone_packing", "");
         // Job A — self-consistency: the producer's structure must hash to its
         // claimed schema_hash.  The shared pre-check is the ONE place a handler
         // recomputes the wire fingerprint (HEP-CORE-0034 §2.4 I4); its computed
         // hash is reused below for the record and any Path-C adoption compare.
         const auto fp_check = pylabhub::hub::verify_request_fingerprint(
-            schema_blds_in, req_schema_packing,
-            req_flexzone_blds, req_flexzone_packing, attempted_schema);
+            schema_blds_in, req_schema_packing, req_flexzone_blds, req_flexzone_packing,
+            attempted_schema);
         if (!fp_check.consistent)
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — schema_blds + "
@@ -2322,8 +2258,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         const auto h_recomputed = fp_check.hash;
 
         const bool is_path_c = (req_schema_owner == "hub");
-        const bool is_path_b = req_schema_owner.empty() ||
-                               req_schema_owner == role_uid;
+        const bool is_path_b = req_schema_owner.empty() || req_schema_owner == role_uid;
         if (!is_path_b && !is_path_c)
         {
             // Cross-owner attempt — third role's uid claimed.
@@ -2331,8 +2266,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                         "to register under foreign owner '{}'",
                         role_uid, req_schema_owner);
             return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
-                              "Producer cannot register schema under owner '" +
-                                  req_schema_owner + "' — only \"hub\" "
+                              "Producer cannot register schema under owner '" + req_schema_owner +
+                                  "' — only \"hub\" "
                                   "(adopt global) or self are permitted");
         }
 
@@ -2343,11 +2278,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             // named-registry branch (HEP-CORE-0034 §9 step 3 / §2.4 I4): the
             // record must exist and its fingerprint match the producer's.
             pylabhub::hub::SchemaCitationInput sin;
-            sin.channel_owner         = "hub";
-            sin.channel_id            = req_schema_id_raw;
-            sin.channel_hash          = h_recomputed; // computed-from-string
-            sin.cited_id              = req_schema_id_raw;
-            sin.expected_hash         = h_recomputed; // channel-match trivial
+            sin.channel_owner = "hub";
+            sin.channel_id = req_schema_id_raw;
+            sin.channel_hash = h_recomputed; // computed-from-string
+            sin.cited_id = req_schema_id_raw;
+            sin.expected_hash = h_recomputed; // channel-match trivial
             sin.check_registry_record = true; // Path C IS a registry citation
             const auto vc = hub_state_->_validate_schema_citation(sin);
             if (!vc.ok())
@@ -2360,27 +2295,26 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                 switch (vc.reason)
                 {
                     using R = ::pylabhub::schema::CitationOutcome::Reason;
-                    case R::kUnknownSchema:
-                        code = "SCHEMA_UNKNOWN";        // no such hub-global to adopt
-                        break;
-                    case R::kFingerprintMismatch:
-                        code = "FINGERPRINT_INCONSISTENT"; // exists, fingerprint differs
-                        break;
-                    default:
-                        code = "SCHEMA_MISMATCH";       // defensive
-                        break;
+                case R::kUnknownSchema:
+                    code = "SCHEMA_UNKNOWN"; // no such hub-global to adopt
+                    break;
+                case R::kFingerprintMismatch:
+                    code = "FINGERPRINT_INCONSISTENT"; // exists, fingerprint differs
+                    break;
+                default:
+                    code = "SCHEMA_MISMATCH"; // defensive
+                    break;
                 }
-                LOGGER_WARN(
-                    "Broker: schema match rejected — channel='{}' "
-                    "path=adopt-hub-global code={}: {}",
-                    channel_name, code, vc.detail);
+                LOGGER_WARN("Broker: schema match rejected — channel='{}' "
+                            "path=adopt-hub-global code={}: {}",
+                            channel_name, code, vc.detail);
                 return make_error(corr_id, code,
-                                  "Cannot adopt hub-global (hub, " +
-                                      req_schema_id_raw + "): " + vc.detail);
+                                  "Cannot adopt hub-global (hub, " + req_schema_id_raw +
+                                      "): " + vc.detail);
             }
             // Adoption succeeds.  Channel is owned by the hub-global,
             // not by the producer.
-            final_schema_id    = req_schema_id_raw;
+            final_schema_id = req_schema_id_raw;
             final_schema_owner = "hub";
         }
         else
@@ -2389,9 +2323,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             pylabhub::schema::SchemaRecord rec;
             rec.owner_uid = role_uid;
             rec.schema_id = req_schema_id_raw;
-            rec.hash      = h_recomputed;
-            rec.packing   = req_schema_packing;
-            rec.blds      = schema_blds_in;
+            rec.hash = h_recomputed;
+            rec.packing = req_schema_packing;
+            rec.blds = schema_blds_in;
 
             using O = pylabhub::schema::SchemaRegOutcome;
             const auto outcome = hub_state_->_on_schema_registered(rec);
@@ -2414,7 +2348,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
                                       "missing required fields");
             }
             // Created or Idempotent → success.
-            final_schema_id    = req_schema_id_raw;
+            final_schema_id = req_schema_id_raw;
             final_schema_owner = role_uid;
         }
     }
@@ -2437,10 +2371,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // Inbox info lives on ProducerEntry (HEP-CORE-0023 §2.1.1 + §2.6 +
     // HEP-CORE-0027) — read from the ProducerEntry we just built.
     const auto &p_inbox = primary_producer;
-    if (!p_inbox.inbox_endpoint.empty() &&
-        !p_inbox.inbox_schema_json.empty() &&
-        !p_inbox.inbox_packing.empty() &&
-        !role_uid.empty())
+    if (!p_inbox.inbox_endpoint.empty() && !p_inbox.inbox_schema_json.empty() &&
+        !p_inbox.inbox_packing.empty() && !role_uid.empty())
     {
         // Reject invalid packing strings up-front — mirrors the queue-layer
         // check in `hub_inbox_queue.cpp::validate_inbox_packing`.  Without
@@ -2485,8 +2417,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         }
         catch (const std::exception &ex)
         {
-            LOGGER_WARN("Broker: REG_REQ inbox_schema_json invalid for '{}': {}",
-                        channel_name, ex.what());
+            LOGGER_WARN("Broker: REG_REQ inbox_schema_json invalid for '{}': {}", channel_name,
+                        ex.what());
             return make_error(corr_id, "INBOX_SCHEMA_INVALID",
                               std::string("inbox_schema_json parse error: ") + ex.what());
         }
@@ -2496,10 +2428,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         pylabhub::schema::SchemaRecord rec;
         rec.owner_uid = role_uid;
         rec.schema_id = "inbox";
-        rec.hash      = pylabhub::utils::security::secure().compute_blake2b_array(
-            canonical.data(), canonical.size());
-        rec.packing   = p_inbox.inbox_packing;
-        rec.blds      = p_inbox.inbox_schema_json;
+        rec.hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
+                                                                             canonical.size());
+        rec.packing = p_inbox.inbox_packing;
+        rec.blds = p_inbox.inbox_schema_json;
 
         using O = pylabhub::schema::SchemaRegOutcome;
         const auto outcome = hub_state_->_on_schema_registered(rec);
@@ -2550,11 +2482,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // A reject in those remaining cases CAN leave an orphan schema record in
     // HubState.schemas (rare anomaly); broker logs ERROR.
     pylabhub::hub::ChannelSchemaInvariants schema_inv;
-    schema_inv.schema_hash    = attempted_schema;
+    schema_inv.schema_hash = attempted_schema;
     // schema_version retired per C2 — version rides inside schema_id.
-    schema_inv.schema_id      = final_schema_id;
-    schema_inv.schema_blds    = schema_blds_in;
-    schema_inv.schema_owner   = final_schema_owner;
+    schema_inv.schema_id = final_schema_id;
+    schema_inv.schema_blds = schema_blds_in;
+    schema_inv.schema_owner = final_schema_owner;
 
     pylabhub::hub::ChannelTransportInvariants transport_inv;
     // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
@@ -2562,7 +2494,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // (§6.1 + HEP-CORE-0041 §5.1); reuse the same local so the
     // persisted ChannelEntry.data_transport cannot drift from the
     // value the §5.1 endpoint check accepted.
-    transport_inv.data_transport    = data_transport_req;
+    transport_inv.data_transport = data_transport_req;
 
     // Topology wire parse.  Empty means "no wire declaration" —
     // HubState's atomic admission op treats this as "inherit stored"
@@ -2577,15 +2509,13 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             declared_topology = pylabhub::hub::topology::parse(wire);
             if (!declared_topology)
             {
-                LOGGER_WARN(
-                    "[broker] event=RegReqRejected reason='INVALID_REQUEST' "
-                    "role='{}' channel='{}' wire_topology='{}' "
-                    "detail='not one of fan-in|fan-out|one-to-one'",
-                    role_uid, channel_name, wire);
-                return make_error(
-                    corr_id, "INVALID_REQUEST",
-                    "REG_REQ channel_topology='" + wire +
-                        "' must be 'fan-in', 'fan-out', or 'one-to-one'");
+                LOGGER_WARN("[broker] event=RegReqRejected reason='INVALID_REQUEST' "
+                            "role='{}' channel='{}' wire_topology='{}' "
+                            "detail='not one of fan-in|fan-out|one-to-one'",
+                            role_uid, channel_name, wire);
+                return make_error(corr_id, "INVALID_REQUEST",
+                                  "REG_REQ channel_topology='" + wire +
+                                      "' must be 'fan-in', 'fan-out', or 'one-to-one'");
             }
         }
     }
@@ -2594,10 +2524,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // topology, cardinality, uid conflict) happen under the same
     // writer lock as the mutation.  No TOCTOU window.
     const auto admission = hub_state_->_on_producer_added(
-        channel_name,
-        std::move(schema_inv),
-        std::move(transport_inv),
-        declared_topology,
+        channel_name, std::move(schema_inv), std::move(transport_inv), declared_topology,
         std::move(primary_producer));
 
     // Outcome dispatch (order matches HubState's evaluation order).
@@ -2606,55 +2533,46 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // Defensive branch — production callers were already gated by
         // `validate_identity_fields`.  Fires only when a bypass path
         // (test-access) violates the precondition.
-        LOGGER_WARN(
-            "[broker] event=RegReqRejected reason='INVALID_REQUEST' "
-            "role='{}' channel='{}' detail='identifier grammar failure'",
-            role_uid, channel_name);
-        return make_error(
-            corr_id, "INVALID_REQUEST",
-            "REG_REQ rejected — identifier grammar failure "
-            "(HEP-CORE-0033 §G2.2.0b)");
+        LOGGER_WARN("[broker] event=RegReqRejected reason='INVALID_REQUEST' "
+                    "role='{}' channel='{}' detail='identifier grammar failure'",
+                    role_uid, channel_name);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ rejected — identifier grammar failure "
+                          "(HEP-CORE-0033 §G2.2.0b)");
     }
     if (admission.topology_error_code != nullptr)
     {
-        LOGGER_WARN(
-            "[broker] event=RegReqRejected reason='{}' role='{}' channel='{}'",
-            admission.topology_error_code, role_uid, channel_name);
-        return make_error(
-            corr_id, admission.topology_error_code,
-            std::string("REG_REQ rejected — topology gate '") +
-                admission.topology_error_code + "'");
+        LOGGER_WARN("[broker] event=RegReqRejected reason='{}' role='{}' channel='{}'",
+                    admission.topology_error_code, role_uid, channel_name);
+        return make_error(corr_id, admission.topology_error_code,
+                          std::string("REG_REQ rejected — topology gate '") +
+                              admission.topology_error_code + "'");
     }
-    if (admission.invariant_result ==
-        pylabhub::hub::InvariantSetResult::RejectedMismatch)
+    if (admission.invariant_result == pylabhub::hub::InvariantSetResult::RejectedMismatch)
     {
         const auto &field = admission.mismatched_invariant;
-        if (field == "schema_hash" ||
-            field == "schema_id"   || field == "schema_blds"    ||
+        if (field == "schema_hash" || field == "schema_id" || field == "schema_blds" ||
             field == "schema_owner")
         {
-            LOGGER_ERROR(
-                "Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
-                "(schema-class).  Anomaly: orphan schema record possible.",
-                channel_name, field);
+            LOGGER_ERROR("Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
+                         "(schema-class).  Anomaly: orphan schema record possible.",
+                         channel_name, field);
             return make_error(corr_id, "SCHEMA_MISMATCH",
                               "REG_REQ rejected — schema invariant '" + field +
                                   "' differs from existing channel registration");
         }
-        LOGGER_ERROR(
-            "Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
-            "(transport-class)", channel_name, field);
+        LOGGER_ERROR("Broker: REG_REQ for '{}' rejected — invariant mismatch on '{}' "
+                     "(transport-class)",
+                     channel_name, field);
         return make_error(corr_id, "TRANSPORT_MISMATCH",
                           "REG_REQ rejected — transport invariant '" + field +
                               "' differs from existing channel registration");
     }
-    if (admission.producer_result ==
-        pylabhub::hub::AddProducerResult::RejectedUidConflict)
+    if (admission.producer_result == pylabhub::hub::AddProducerResult::RejectedUidConflict)
     {
-        LOGGER_ERROR(
-            "Broker: REG_REQ for '{}' uid='{}' rejected — UID_CONFLICT "
-            "(uid already exists in HubState; possible residue or spoof)",
-            channel_name, role_uid);
+        LOGGER_ERROR("Broker: REG_REQ for '{}' uid='{}' rejected — UID_CONFLICT "
+                     "(uid already exists in HubState; possible residue or spoof)",
+                     channel_name, role_uid);
         return make_error(corr_id, "UID_CONFLICT",
                           "uid conflict, not trusting this connection, "
                           "try again with clean state");
@@ -2677,20 +2595,19 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     LOGGER_INFO("[broker] event=RegReqAccepted role='{}' channel='{}' producer_pubkey='{}' "
                 "schema_hash='{}' (pending first heartbeat){}",
                 role_uid, channel_name, producer_pubkey, attempted_schema,
-                admission.channel_opened ? " - channel opened"
-                                         : " - appended to existing");
+                admission.channel_opened ? " - channel opened" : " - appended to existing");
     nlohmann::json resp;
-    resp["status"]       = "success";
+    resp["status"] = "success";
     resp["channel_name"] = channel_name; // HEP-CORE-0036 §5b.5 canonical
-    resp["message"]      = "Producer registered successfully";
-    resp["heartbeat"]    = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
+    resp["message"] = "Producer registered successfully";
+    resp["heartbeat"] = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
     // HEP-CORE-0032 §8.2 — broker echoes its own ABI envelope on
     // REG_ACK so role-side verification per §8.7 sequence can compare
     // broker versions against role's own local ComponentVersions.
     // Field name `broker_abi_fingerprint` distinguishes from the
     // role-emitted `abi_fingerprint` on REG_REQ.
-    resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
-        pylabhub::version::current());
+    resp["broker_abi_fingerprint"] =
+        pylabhub::version::to_json_object(pylabhub::version::current());
     if (const char *bid = pylabhub::version::build_id())
     {
         resp["broker_build_id"] = bid;
@@ -2747,18 +2664,15 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     std::uint64_t snapshot_version = 0;
     auto ch_snapshot = hub_state_->channel(channel_name);
     const bool producer_is_dialing =
-        ch_snapshot.has_value() &&
-        ch_snapshot->topology == pylabhub::hub::ChannelTopology::FanIn;
+        ch_snapshot.has_value() && ch_snapshot->topology == pylabhub::hub::ChannelTopology::FanIn;
     if (producer_is_dialing)
     {
-        if (!ch_snapshot->consumers.empty() &&
-            !ch_snapshot->consumers.front().zmq_pubkey.empty() &&
-            ch_snapshot->data_endpoint.has_value() &&
-            !ch_snapshot->data_endpoint->empty())
+        if (!ch_snapshot->consumers.empty() && !ch_snapshot->consumers.front().zmq_pubkey.empty() &&
+            ch_snapshot->data_endpoint.has_value() && !ch_snapshot->data_endpoint->empty())
         {
             nlohmann::json entry;
-            entry["role_uid"]   = ch_snapshot->consumers.front().role_uid;
-            entry["endpoint"]   = *ch_snapshot->data_endpoint;
+            entry["role_uid"] = ch_snapshot->consumers.front().role_uid;
+            entry["endpoint"] = *ch_snapshot->data_endpoint;
             entry["pubkey_z85"] = ch_snapshot->consumers.front().zmq_pubkey;
             allowlist.push_back(std::move(entry));
             // Source snapshot_version from the ledger, not the retired
@@ -2768,8 +2682,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
             // version is still meaningful — it lets the producer
             // correlate the received endpoint/pubkey pair with the
             // channel's admission-state generation.
-            if (auto access = hub_state_->channel_access(channel_name);
-                access.has_value())
+            if (auto access = hub_state_->channel_access(channel_name); access.has_value())
             {
                 snapshot_version = access->ledger.current_version();
             }
@@ -2780,14 +2693,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // pending path (which would delay this REG_ACK entirely
         // until conditions clear) is a separate work item.
     }
-    else if (auto access = hub_state_->channel_access(channel_name);
-             access.has_value())
+    else if (auto access = hub_state_->channel_access(channel_name); access.has_value())
     {
         // for_each_admitted avoids the per-request vector allocation
         // that `admitted_snapshot()` would incur — this is a hot wire
         // path (every producer REG_ACK).
         access->ledger.for_each_admitted(
-            [&](const std::string &pk) {
+            [&](const std::string &pk)
+            {
                 nlohmann::json entry;
                 entry["pubkey_z85"] = pk;
                 allowlist.push_back(std::move(entry));
@@ -2849,8 +2762,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
     // initial_allowlist.  The consumer-side NOTIFY (line 3485)
     // handles admission on those topologies.
     if (auto ch = hub_state_->channel(channel_name);
-        ch.has_value() &&
-        ch->topology == pylabhub::hub::ChannelTopology::FanIn)
+        ch.has_value() && ch->topology == pylabhub::hub::ChannelTopology::FanIn)
     {
         // Admit producer's pubkey into the channel's unified ledger
         // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  The
@@ -2864,14 +2776,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json& req,
         // `snapshot_version`.
         hub_state_->_on_consumer_authorized(channel_name, producer_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
-                                           /*phase=*/"admitted",
-                                           /*role_uid=*/role_uid,
-                                           /*role_type=*/"producer");
+                                         /*phase=*/"admitted",
+                                         /*role_uid=*/role_uid,
+                                         /*role_type=*/"producer");
     }
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json &req)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -2883,8 +2795,8 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     // Take a single snapshot so the channel + producer-presence lookup
     // observe consistent state — channel teardown is atomic with the
     // producer-presence Disconnected transition (HEP-CORE-0023 §2.1).
-    const auto snap   = hub_state_->snapshot();
-    const auto cit    = snap.channels.find(channel_name);
+    const auto snap = hub_state_->snapshot();
+    const auto cit = snap.channels.find(channel_name);
 
     // ── HEP-CORE-0023 §2.2: Three-response state-machine dispatch ──────
     // Broker replies immediately based on the producer-presence state.
@@ -2909,19 +2821,23 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     for (const auto &prod : entry_ref.producers)
     {
         auto rit = snap.roles.find(prod.role_uid);
-        if (rit == snap.roles.end()) continue;
+        if (rit == snap.roles.end())
+            continue;
         const auto *p = rit->second.find_presence(channel_name, "producer");
-        if (p == nullptr) continue;
-        if (p->state == pylabhub::hub::RoleState::Disconnected) continue;
-        if (p->state == pylabhub::hub::RoleState::Connected &&
-            p->first_heartbeat_seen)
+        if (p == nullptr)
+            continue;
+        if (p->state == pylabhub::hub::RoleState::Disconnected)
+            continue;
+        if (p->state == pylabhub::hub::RoleState::Connected && p->first_heartbeat_seen)
         {
             presence = p;
             break;
         }
-        if (fallback == nullptr) fallback = p;
+        if (fallback == nullptr)
+            fallback = p;
     }
-    if (presence == nullptr) presence = fallback;
+    if (presence == nullptr)
+        presence = fallback;
 
     if (presence == nullptr)
     {
@@ -2929,28 +2845,26 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
         // (presence rows reaped while atomic teardown is in flight).
         // From the consumer's perspective this channel is not discoverable.
         LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> CHANNEL_NOT_FOUND "
-                     "(no live producer-presence)", channel_name);
+                     "(no live producer-presence)",
+                     channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
     }
 
-    if (!presence->first_heartbeat_seen ||
-        presence->state == pylabhub::hub::RoleState::Pending)
+    if (!presence->first_heartbeat_seen || presence->state == pylabhub::hub::RoleState::Pending)
     {
         // Producer registered but not yet Live — either we're still
         // awaiting the first heartbeat (presence Connected without
         // first_heartbeat_seen), or the heartbeat has stalled (presence
         // Pending).  Client is responsible for retry; reason field
         // distinguishes the two for diagnostics.
-        const char *reason = !presence->first_heartbeat_seen
-                                 ? "awaiting_first_heartbeat"
-                                 : "heartbeat_stalled";
-        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> DISC_PENDING ({})",
-                     channel_name, reason);
+        const char *reason =
+            !presence->first_heartbeat_seen ? "awaiting_first_heartbeat" : "heartbeat_stalled";
+        LOGGER_DEBUG("Broker: DISC_REQ for '{}' -> DISC_PENDING ({})", channel_name, reason);
         nlohmann::json resp;
-        resp["status"]       = "pending";
+        resp["status"] = "pending";
         resp["channel_name"] = channel_name;
-        resp["reason"]       = reason;
+        resp["reason"] = reason;
         if (!corr_id.empty())
             resp["correlation_id"] = corr_id;
         return resp;
@@ -2992,26 +2906,24 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
 
     LOGGER_INFO("Broker: discovered channel '{}'", channel_name);
     nlohmann::json resp;
-    resp["status"]            = "success";
-    resp["schema_hash"]       = entry_ref.schema_hash;
+    resp["status"] = "success";
+    resp["schema_hash"] = entry_ref.schema_hash;
     // schema_version retired per C2 — consumers can parse the version
     // from `schema_id` via `pylabhub::hub::parse_schema_id()` if needed.
     // metadata wire shape decided in §6.1: per-producer tree keyed by
     // role_uid (HEP-CORE-0007 §12.4 commit 25dc376).
-    resp["metadata"]          = entry_ref.aggregate_metadata_tree();
-    resp["consumer_count"]    =
-        static_cast<uint32_t>(entry_ref.consumers.size());
+    resp["metadata"] = entry_ref.aggregate_metadata_tree();
+    resp["consumer_count"] = static_cast<uint32_t>(entry_ref.consumers.size());
     // HEP-CORE-0036 §5b.4: `data_transport` is the canonical transport
     // classification; pre-§5b duplicates `shm_name`, `has_shared_memory`,
     // `channel_pattern` retired.
     // zmq_ctrl_endpoint / zmq_data_endpoint retired in Wave M2.5 step 2c.
     // zmq_pubkey + zmq_node_endpoint use first-producer transitional shape
     // until step 5 lifts them to per-producer arrays.
-    resp["zmq_pubkey"]        = (first_prod != nullptr ? first_prod->zmq_pubkey
-                                                       : std::string{});
-    resp["data_transport"]    = entry_ref.data_transport;
-    resp["zmq_node_endpoint"] = (first_prod != nullptr ? first_prod->zmq_node_endpoint
-                                                       : std::string{});
+    resp["zmq_pubkey"] = (first_prod != nullptr ? first_prod->zmq_pubkey : std::string{});
+    resp["data_transport"] = entry_ref.data_transport;
+    resp["zmq_node_endpoint"] =
+        (first_prod != nullptr ? first_prod->zmq_node_endpoint : std::string{});
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -3019,8 +2931,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json& req)
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
-                                                    zmq::socket_t&        socket)
+nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json &req, zmq::socket_t &socket)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -3029,7 +2940,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const uint64_t    producer_pid = req.value("producer_pid", uint64_t{0});
+    const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
     const std::string wire_role_uid = req.value("role_uid", "");
 
     // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
@@ -3050,8 +2961,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     {
         for (const auto &prod : entry->producers)
         {
-            if (prod.producer_pid == producer_pid &&
-                prod.role_uid     == wire_role_uid)
+            if (prod.producer_pid == producer_pid && prod.role_uid == wire_role_uid)
             {
                 target_role_uid = prod.role_uid;
                 break;
@@ -3076,9 +2986,8 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     // tells us whether the channel was torn down or not.
     const pylabhub::hub::ChannelEntry pre_drop = *entry;
 
-    auto drop = hub_state_->_on_producer_dropped(
-        channel_name, target_role_uid,
-        pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
+    auto drop = hub_state_->_on_producer_dropped(channel_name, target_role_uid,
+                                                 pylabhub::hub::ChannelCloseReason::VoluntaryDereg);
 
     if (!drop.removed)
     {
@@ -3086,10 +2995,10 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // before the call.  Race condition (presence already reaped
         // between resolve and drop) → treat as NOT_REGISTERED.
         LOGGER_WARN("Broker: DEREG_REQ for '{}' uid='{}' lost the race "
-                    "(producer no longer admitted)", channel_name, target_role_uid);
+                    "(producer no longer admitted)",
+                    channel_name, target_role_uid);
         return make_error(corr_id, "NOT_REGISTERED",
-                          "Channel '" + channel_name +
-                              "' producer no longer admitted (race)");
+                          "Channel '" + channel_name + "' producer no longer admitted (race)");
     }
 
     if (drop.channel_now_empty)
@@ -3108,8 +3017,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // HEP-CORE-0042 §5.4 channel-close drain — pop every pending
         // ATTACH_REQ_ZMQ across all producers of this channel and reply
         // {status="denied", reason="channel_closing"} to each.
-        drain_pending_attach_queue_for_channel_denied_(
-            socket, channel_name, "channel_closing");
+        drain_pending_attach_queue_for_channel_denied_(socket, channel_name, "channel_closing");
         // M1.4 (2026-05-11): no metrics_store_.erase needed — metrics
         // live on per-presence rows which are erased atomically by
         // `_on_channel_closed`'s cascade.
@@ -3123,8 +3031,8 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
         // {status="denied", reason="producer_not_live"}.  Pairs with the
         // confirmed_version[K][P] erase in
         // HubState::_on_producer_dropped for the non-last-producer path.
-        drain_pending_attach_queue_for_producer_denied_(
-            socket, channel_name, target_role_uid, "producer_not_live");
+        drain_pending_attach_queue_for_producer_denied_(socket, channel_name, target_role_uid,
+                                                        "producer_not_live");
         // Multi-producer channel survives: producer X left, the rest
         // continue.  No CHANNEL_CLOSING_NOTIFY (channel is still
         // alive).  Metrics for the channel stay (other producers'
@@ -3136,7 +3044,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     }
 
     nlohmann::json resp;
-    resp["status"]  = "success";
+    resp["status"] = "success";
     resp["message"] = "Producer deregistered successfully";
     if (!corr_id.empty())
     {
@@ -3145,18 +3053,18 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json& req,
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& req,
-                                                           const zmq::message_t& identity,
-                                                           zmq::socket_t&        socket)
+nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &req,
+                                                          const zmq::message_t &identity,
+                                                          zmq::socket_t &socket)
 {
-    const std::string corr_id      = req.value("correlation_id", "");
+    const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
     // broker_proto 4→5 (audit R3.5b, 2026-05-19): wire fields unified
     // across all gates onto `role_uid`/`role_name` (HEP-CORE-0033
     // §G2.2.0b — role tag is embedded in the uid; consumer-specific
     // names are redundant).  Old `consumer_uid`/`consumer_name` removed.
-    const std::string role_name    = req.value("role_name", "");
-    const std::string role_uid     = req.value("role_uid",  "");
+    const std::string role_name = req.value("role_name", "");
+    const std::string role_uid = req.value("role_uid", "");
 
     // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
     // check before any state-machine entry.  Pre-fix, an empty uid sailed
@@ -3175,13 +3083,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // REG_REQ handler above; strict mode gated on same
     // `cfg.strict_abi_mismatch` knob for symmetric behavior across
     // producer + consumer REG_REQ paths.
-    if (auto abi = log_peer_abi_fingerprint(
-            req, role_uid, "AbiFingerprintReceived", "AbiFingerprintDetail",
-            cfg.strict_abi_mismatch);
+    if (auto abi = log_peer_abi_fingerprint(req, role_uid, "AbiFingerprintReceived",
+                                            "AbiFingerprintDetail", cfg.strict_abi_mismatch);
         abi.reject)
     {
         return make_error(corr_id, "abi_major_mismatch",
-                           "ABI major-axis mismatch on: " + abi.mismatched_axes);
+                          "ABI major-axis mismatch on: " + abi.mismatched_axes);
     }
 
     // Topology wire parse (INVALID_REQUEST for garbage input).
@@ -3200,15 +3107,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
             declared_topology = pylabhub::hub::topology::parse(wire);
             if (!declared_topology)
             {
-                LOGGER_WARN(
-                    "[broker] event=ConsumerRegReqRejected reason='INVALID_REQUEST' "
-                    "role='{}' channel='{}' wire_topology='{}' "
-                    "detail='not one of fan-in|fan-out|one-to-one'",
-                    role_uid, channel_name, wire);
-                return make_error(
-                    corr_id, "INVALID_REQUEST",
-                    "CONSUMER_REG_REQ channel_topology='" + wire +
-                        "' must be 'fan-in', 'fan-out', or 'one-to-one'");
+                LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='INVALID_REQUEST' "
+                            "role='{}' channel='{}' wire_topology='{}' "
+                            "detail='not one of fan-in|fan-out|one-to-one'",
+                            role_uid, channel_name, wire);
+                return make_error(corr_id, "INVALID_REQUEST",
+                                  "CONSUMER_REG_REQ channel_topology='" + wire +
+                                      "' must be 'fan-in', 'fan-out', or 'one-to-one'");
             }
         }
     }
@@ -3218,7 +3123,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // checks — matches DISC_REQ's pattern at line ~1909 and avoids
     // any drift between separate snapshot calls.
     const auto snap = hub_state_->snapshot();
-    const auto cit  = snap.channels.find(channel_name);
+    const auto cit = snap.channels.find(channel_name);
 
     // Under fan-in the consumer opens the channel; a missing entry
     // routes to the open-path in `_on_consumer_joined` (which
@@ -3228,8 +3133,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // channel first — a missing entry there is a genuine
     // CHANNEL_NOT_FOUND.
     const bool consumer_will_open_channel =
-        cit == snap.channels.end() &&
-        declared_topology.has_value() &&
+        cit == snap.channels.end() && declared_topology.has_value() &&
         *declared_topology == pylabhub::hub::ChannelTopology::FanIn;
 
     if (cit == snap.channels.end() && !consumer_will_open_channel)
@@ -3244,9 +3148,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // gets created inside `_on_consumer_joined`, so downstream checks
     // that need a `channel_entry` are skipped in that branch.
     static const pylabhub::hub::ChannelEntry k_empty_channel_entry;
-    const auto &channel_entry = consumer_will_open_channel
-                                    ? k_empty_channel_entry
-                                    : cit->second;
+    const auto &channel_entry = consumer_will_open_channel ? k_empty_channel_entry : cit->second;
 
     // HEP-0021 §16: reject if first producer's ZMQ endpoint has unresolved
     // port 0 (single-producer shape — the "any ready producer" scan per
@@ -3258,11 +3160,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         auto ep_check = pylabhub::validate_tcp_endpoint(cons_first_prod->zmq_node_endpoint);
         if (ep_check.ok() && ep_check.port == 0)
         {
-            LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
-                        channel_name);
+            LOGGER_INFO(
+                "Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
+                channel_name);
             auto err = make_error(corr_id, "CHANNEL_NOT_READY",
-                              "ZMQ endpoint for channel '" + channel_name +
-                                  "' has unresolved port 0 (awaiting_endpoint)");
+                                  "ZMQ endpoint for channel '" + channel_name +
+                                      "' has unresolved port 0 (awaiting_endpoint)");
             err["reason"] = "awaiting_endpoint";
             return err;
         }
@@ -3299,19 +3202,24 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         !(declared_topology.has_value() &&
           *declared_topology == pylabhub::hub::ChannelTopology::FanIn))
     {
-        bool any_live          = false;
-        bool any_kRegistering  = false;  // Connected, !first_heartbeat
-        bool any_kStalled      = false;  // Pending
+        bool any_live = false;
+        bool any_kRegistering = false; // Connected, !first_heartbeat
+        bool any_kStalled = false;     // Pending
         for (const auto &prod : channel_entry.producers)
         {
             auto rit = snap.roles.find(prod.role_uid);
-            if (rit == snap.roles.end()) continue;
-            const auto *p =
-                rit->second.find_presence(channel_name, "producer");
-            if (p == nullptr) continue;
+            if (rit == snap.roles.end())
+                continue;
+            const auto *p = rit->second.find_presence(channel_name, "producer");
+            if (p == nullptr)
+                continue;
             if (p->state == pylabhub::hub::RoleState::Connected)
             {
-                if (p->first_heartbeat_seen) { any_live = true; break; }
+                if (p->first_heartbeat_seen)
+                {
+                    any_live = true;
+                    break;
+                }
                 any_kRegistering = true;
             }
             else if (p->state == pylabhub::hub::RoleState::Pending)
@@ -3323,38 +3231,34 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         {
             if (any_kRegistering)
             {
-                LOGGER_INFO(
-                    "Broker: CONSUMER_REG_REQ channel '{}' deferred — "
-                    "awaiting_first_heartbeat", channel_name);
-                auto err = make_error(
-                    corr_id, "CHANNEL_NOT_READY",
-                    "Channel '" + channel_name +
-                        "' is not ready (awaiting_first_heartbeat — "
-                        "producer registered but has not yet sent its "
-                        "first heartbeat)");
+                LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' deferred — "
+                            "awaiting_first_heartbeat",
+                            channel_name);
+                auto err = make_error(corr_id, "CHANNEL_NOT_READY",
+                                      "Channel '" + channel_name +
+                                          "' is not ready (awaiting_first_heartbeat — "
+                                          "producer registered but has not yet sent its "
+                                          "first heartbeat)");
                 err["reason"] = "awaiting_first_heartbeat";
                 return err;
             }
             if (any_kStalled)
             {
-                LOGGER_WARN(
-                    "Broker: CONSUMER_REG_REQ channel '{}' deferred — "
-                    "heartbeat_stalled", channel_name);
-                auto err = make_error(
-                    corr_id, "CHANNEL_NOT_READY",
-                    "Channel '" + channel_name +
-                        "' is not ready (heartbeat_stalled — producer "
-                        "missed its heartbeat window; HEP-CORE-0023 §2.6)");
+                LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' deferred — "
+                            "heartbeat_stalled",
+                            channel_name);
+                auto err = make_error(corr_id, "CHANNEL_NOT_READY",
+                                      "Channel '" + channel_name +
+                                          "' is not ready (heartbeat_stalled — producer "
+                                          "missed its heartbeat window; HEP-CORE-0023 §2.6)");
                 err["reason"] = "heartbeat_stalled";
                 return err;
             }
-            LOGGER_WARN(
-                "Broker: CONSUMER_REG_REQ channel '{}' rejected — all "
-                "producer-presences absent or Disconnected", channel_name);
-            return make_error(
-                corr_id, "CHANNEL_NOT_FOUND",
-                "Channel '" + channel_name +
-                    "' has no producer-presence alive");
+            LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' rejected — all "
+                        "producer-presences absent or Disconnected",
+                        channel_name);
+            return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                              "Channel '" + channel_name + "' has no producer-presence alive");
         }
     }
 
@@ -3364,8 +3268,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // arrival) `consumer_queue_type` becomes the channel's transport
     // invariant (set inside `_on_consumer_joined`).
     const std::string consumer_queue_type = req.value("consumer_queue_type", "");
-    if (!consumer_will_open_channel &&
-        !consumer_queue_type.empty() &&
+    if (!consumer_will_open_channel && !consumer_queue_type.empty() &&
         consumer_queue_type != channel_entry.data_transport)
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ transport mismatch on '{}': "
@@ -3399,18 +3302,18 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     //
     //   Empty: all expected_* empty → no validation (consumer signals
     //     "I don't care about schema").
-    const std::string expected_schema_id    = req.value("expected_schema_id", "");
-    const std::string expected_hash_hex     = req.value("expected_schema_hash", "");
-    const std::string expected_blds         = req.value("expected_schema_blds", "");
-    const std::string expected_packing      = req.value("expected_schema_packing", "");
+    const std::string expected_schema_id = req.value("expected_schema_id", "");
+    const std::string expected_hash_hex = req.value("expected_schema_hash", "");
+    const std::string expected_blds = req.value("expected_schema_blds", "");
+    const std::string expected_packing = req.value("expected_schema_packing", "");
     // HEP-0034 §10.3 — flexzone mirrors the producer-side wire fields
     // (Phase 5a).  When the consumer's structure includes flexzone, the
     // recomputed fingerprint must include it too — otherwise the
     // consumer-recomputed hash (slot+fz) won't match the channel's
     // stored hash (slot+fz from REG_REQ).  Same correctness gap that
     // Phase 4a fixed on the REG_REQ side; mirrored here for symmetry.
-    const std::string expected_fz_blds      = req.value("expected_flexzone_blds", "");
-    const std::string expected_fz_packing   = req.value("expected_flexzone_packing", "");
+    const std::string expected_fz_blds = req.value("expected_flexzone_blds", "");
+    const std::string expected_fz_packing = req.value("expected_flexzone_packing", "");
 
     // Validate the consumer's cited schema against the channel through the
     // single validator (HEP-CORE-0034 §9 / §2.4 I4).  When the consumer is
@@ -3418,17 +3321,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // yet — its expected_* BECOME the invariants inside `_on_consumer_joined` —
     // so this block is skipped; likewise when the consumer opts out (all
     // expected_* empty).
-    const bool has_any_expected =
-        !expected_schema_id.empty() || !expected_hash_hex.empty() ||
-        !expected_blds.empty() || !expected_packing.empty() ||
-        !expected_fz_blds.empty() || !expected_fz_packing.empty();
+    const bool has_any_expected = !expected_schema_id.empty() || !expected_hash_hex.empty() ||
+                                  !expected_blds.empty() || !expected_packing.empty() ||
+                                  !expected_fz_blds.empty() || !expected_fz_packing.empty();
     if (!consumer_will_open_channel && has_any_expected)
     {
         // Step 1 (Job A) — resolve the joiner's fingerprint.  Required-field
         // presence is mode-specific and stays here; the recompute +
         // self-consistency is the shared pre-check (the ONE place a handler
         // recomputes the wire hash — HEP-CORE-0034 §2.4 I4).
-        const bool named         = !expected_schema_id.empty();
+        const bool named = !expected_schema_id.empty();
         const bool has_structure = !expected_blds.empty() || !expected_packing.empty();
         if (named && expected_hash_hex.empty())
             return make_error(corr_id, "MISSING_HASH_FOR_NAMED_CITATION",
@@ -3440,10 +3342,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         {
             // Named-with-structure (defense-in-depth) or anonymous: the full
             // structure is required and the fingerprint is computed from it.
-            const char *miss_blds = named ? "MISSING_BLDS"
-                                          : "MISSING_BLDS_FOR_ANONYMOUS_CITATION";
-            const char *miss_pack = named ? "MISSING_PACKING"
-                                          : "MISSING_PACKING_FOR_ANONYMOUS_CITATION";
+            const char *miss_blds = named ? "MISSING_BLDS" : "MISSING_BLDS_FOR_ANONYMOUS_CITATION";
+            const char *miss_pack =
+                named ? "MISSING_PACKING" : "MISSING_PACKING_FOR_ANONYMOUS_CITATION";
             if (expected_blds.empty())
                 return make_error(corr_id, miss_blds,
                                   "citation requires expected_schema_blds "
@@ -3453,8 +3354,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                                   "citation requires expected_schema_packing "
                                   "(HEP-CORE-0034 §10.3)");
             const auto fp = pylabhub::hub::verify_request_fingerprint(
-                expected_blds, expected_packing,
-                expected_fz_blds, expected_fz_packing, expected_hash_hex);
+                expected_blds, expected_packing, expected_fz_blds, expected_fz_packing,
+                expected_hash_hex);
             if (!fp.consistent)
                 return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
                                   "expected_schema_hash does not match BLAKE2b-256 "
@@ -3470,12 +3371,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         // Step 2/3 — channel match + named-registry via the single validator.
         pylabhub::hub::SchemaCitationInput sin;
         sin.channel_owner = channel_entry.schema_owner;
-        sin.channel_id    = channel_entry.schema_id;
-        sin.channel_hash  = hex_to_hash_array(channel_entry.schema_hash);
+        sin.channel_id = channel_entry.schema_id;
+        sin.channel_hash = hex_to_hash_array(channel_entry.schema_hash);
         sin.channel_producer_uids.reserve(channel_entry.producers.size());
         for (const auto &p : channel_entry.producers)
             sin.channel_producer_uids.push_back(p.role_uid);
-        sin.cited_id      = expected_schema_id;
+        sin.cited_id = expected_schema_id;
         sin.expected_hash = joiner_hash;
 
         const auto vc = hub_state_->_validate_schema_citation(sin);
@@ -3487,10 +3388,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                 vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kSchemaIdMismatch
                     ? "SCHEMA_ID_MISMATCH"
                     : "SCHEMA_CITATION_REJECTED";
-            LOGGER_WARN(
-                "Broker: schema match rejected — channel='{}' consumer_uid='{}' "
-                "code={}: {}",
-                channel_name, role_uid, code, vc.detail);
+            LOGGER_WARN("Broker: schema match rejected — channel='{}' consumer_uid='{}' "
+                        "code={}: {}",
+                        channel_name, role_uid, code, vc.detail);
             return make_error(corr_id, code, vc.detail);
         }
     }
@@ -3502,14 +3402,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // deleted per §4.5 / §8 Phase 6.
 
     pylabhub::hub::ConsumerEntry entry;
-    entry.consumer_pid      = req.value("consumer_pid", uint64_t{0});
+    entry.consumer_pid = req.value("consumer_pid", uint64_t{0});
     entry.consumer_hostname = req.value("consumer_hostname", "");
-    entry.role_name         = role_name;
-    entry.role_uid          = role_uid;
-    entry.inbox_endpoint    = req.value("inbox_endpoint", "");
+    entry.role_name = role_name;
+    entry.role_uid = role_uid;
+    entry.inbox_endpoint = req.value("inbox_endpoint", "");
     entry.inbox_schema_json = req.value("inbox_schema_json", "");
-    entry.inbox_packing     = req.value("inbox_packing", "");
-    entry.inbox_checksum    = req.value("inbox_checksum", "");
+    entry.inbox_packing = req.value("inbox_packing", "");
+    entry.inbox_checksum = req.value("inbox_checksum", "");
     // HEP-CORE-0036 §6.5: the consumer's CURVE pubkey is REQUIRED on
     // the wire so the broker can populate the channel-scope
     // authorized-consumer allowlist via `_on_consumer_authorized` and
@@ -3520,10 +3420,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     const std::string consumer_pubkey = req.value("zmq_pubkey", "");
     if (consumer_pubkey.empty())
     {
-        LOGGER_WARN(
-            "Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
-            "missing required `zmq_pubkey` (HEP-CORE-0036 §6.5 broker_proto>=6).",
-            channel_name, role_uid);
+        LOGGER_WARN("Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "missing required `zmq_pubkey` (HEP-CORE-0036 §6.5 broker_proto>=6).",
+                    channel_name, role_uid);
         return make_error(corr_id, "INVALID_REQUEST",
                           "CONSUMER_REG_REQ requires non-empty `zmq_pubkey` "
                           "(broker_proto>=6 / HEP-CORE-0036 §6.5)");
@@ -3535,10 +3434,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
         // handshake; reject at the wire to avoid polluting the
         // channel allowlist with values that would silently deny
         // every connection attempt.
-        LOGGER_WARN(
-            "Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
-            "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
-            channel_name, role_uid, consumer_pubkey.size());
+        LOGGER_WARN("Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
+                    channel_name, role_uid, consumer_pubkey.size());
         return make_error(corr_id, "INVALID_REQUEST",
                           "CONSUMER_REG_REQ `zmq_pubkey` length is " +
                               std::to_string(consumer_pubkey.size()) +
@@ -3554,7 +3452,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // verify_known_role_binding retired (2026-07-14 task #46).
     entry.zmq_pubkey = consumer_pubkey;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
-    entry.zmq_identity.assign(static_cast<const char*>(identity.data()), identity.size());
+    entry.zmq_identity.assign(static_cast<const char *>(identity.data()), identity.size());
 
     // Atomic consumer-side admission — topology + cardinality checks
     // run under HubState's writer lock alongside the mutation.
@@ -3565,47 +3463,42 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // (HEP-CORE-0017 §3.3.0 binding-side rule).  The consumer's
     // expected_* fields become the channel's stored invariants;
     // subsequent producer REG_REQs must match them.
-    std::optional<pylabhub::hub::ChannelSchemaInvariants>    open_schema;
+    std::optional<pylabhub::hub::ChannelSchemaInvariants> open_schema;
     std::optional<pylabhub::hub::ChannelTransportInvariants> open_transport;
     if (consumer_will_open_channel)
     {
         pylabhub::hub::ChannelSchemaInvariants s;
-        s.schema_hash    = expected_hash_hex;
+        s.schema_hash = expected_hash_hex;
         // expected_schema_version retired per C2 — version rides inside
         // expected_schema_id (`$name.v<N>`) per HEP-CORE-0034 §5.1.
-        s.schema_id      = expected_schema_id;
-        s.schema_blds    = expected_blds;
-        s.schema_owner   = req.value("expected_schema_owner", std::string{});
+        s.schema_id = expected_schema_id;
+        s.schema_blds = expected_blds;
+        s.schema_owner = req.value("expected_schema_owner", std::string{});
         open_schema = std::move(s);
 
         pylabhub::hub::ChannelTransportInvariants t;
-        t.data_transport = consumer_queue_type.empty() ? std::string{"zmq"}
-                                                        : consumer_queue_type;
+        t.data_transport = consumer_queue_type.empty() ? std::string{"zmq"} : consumer_queue_type;
         open_transport = std::move(t);
     }
-    const auto cons_admission = hub_state_->_on_consumer_joined(
-        channel_name, std::move(entry), declared_topology,
-        std::move(open_schema), std::move(open_transport));
+    const auto cons_admission =
+        hub_state_->_on_consumer_joined(channel_name, std::move(entry), declared_topology,
+                                        std::move(open_schema), std::move(open_transport));
     if (cons_admission.invalid_identifier)
     {
-        LOGGER_WARN(
-            "[broker] event=ConsumerRegReqRejected reason='INVALID_REQUEST' "
-            "role='{}' channel='{}' detail='identifier grammar failure'",
-            role_uid, channel_name);
-        return make_error(
-            corr_id, "INVALID_REQUEST",
-            "CONSUMER_REG_REQ rejected — identifier grammar failure "
-            "(HEP-CORE-0033 §G2.2.0b)");
+        LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='INVALID_REQUEST' "
+                    "role='{}' channel='{}' detail='identifier grammar failure'",
+                    role_uid, channel_name);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_REG_REQ rejected — identifier grammar failure "
+                          "(HEP-CORE-0033 §G2.2.0b)");
     }
     if (cons_admission.topology_error_code != nullptr)
     {
-        LOGGER_WARN(
-            "[broker] event=ConsumerRegReqRejected reason='{}' role='{}' channel='{}'",
-            cons_admission.topology_error_code, role_uid, channel_name);
-        return make_error(
-            corr_id, cons_admission.topology_error_code,
-            std::string("CONSUMER_REG_REQ rejected — topology gate '") +
-                cons_admission.topology_error_code + "'");
+        LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='{}' role='{}' channel='{}'",
+                    cons_admission.topology_error_code, role_uid, channel_name);
+        return make_error(corr_id, cons_admission.topology_error_code,
+                          std::string("CONSUMER_REG_REQ rejected — topology gate '") +
+                              cons_admission.topology_error_code + "'");
     }
     // `admitted=false` with no `topology_error_code` = the atomic op's
     // silent-skip contract (channel vanished between the pre-check
@@ -3617,13 +3510,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // CHANNEL_NOT_FOUND so the client doesn't believe it registered.
     if (!cons_admission.admitted)
     {
-        LOGGER_WARN(
-            "[broker] event=ConsumerRegReqRejected reason='CHANNEL_NOT_FOUND' "
-            "role='{}' channel='{}' detail='race with channel teardown'",
-            role_uid, channel_name);
-        return make_error(
-            corr_id, "CHANNEL_NOT_FOUND",
-            "Channel '" + channel_name + "' vanished during admission");
+        LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='CHANNEL_NOT_FOUND' "
+                    "role='{}' channel='{}' detail='race with channel teardown'",
+                    role_uid, channel_name);
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel_name + "' vanished during admission");
     }
 
     // HEP-CORE-0036 §6.5 + §I11.1 + §6.6.2 — every channel admission
@@ -3677,18 +3568,18 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     // hasn't been populated yet; the join-existing-channel path uses
     // the stored topology from `channel_entry`.
     const auto effective_topology = consumer_will_open_channel
-        ? *declared_topology     // must be FanIn per the
-                                 // `consumer_will_open_channel` guard
-        : channel_entry.topology;
+                                        ? *declared_topology // must be FanIn per the
+                                                             // `consumer_will_open_channel` guard
+                                        : channel_entry.topology;
     const bool consumer_is_binding =
         pylabhub::hub::Queue::reader_is_binding_side(effective_topology);
     if (!consumer_is_binding)
     {
         hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
-                                           /*phase=*/"admitted",
-                                           /*role_uid=*/role_uid,
-                                           /*role_type=*/"consumer");
+                                         /*phase=*/"admitted",
+                                         /*role_uid=*/role_uid,
+                                         /*role_type=*/"consumer");
     }
 
     // HEP-CORE-0036 §6.4 — one-shot per accepted CONSUMER_REG_REQ; format
@@ -3698,15 +3589,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
                 "consumer_pubkey='{}'",
                 role_uid, channel_name, consumer_pubkey);
     nlohmann::json resp;
-    resp["status"]       = "success";
+    resp["status"] = "success";
     resp["channel_name"] = channel_name;
-    resp["message"]      = "Consumer registered successfully";
-    resp["heartbeat"]    = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
+    resp["message"] = "Consumer registered successfully";
+    resp["heartbeat"] = heartbeat_ack_block(); // HEP-CORE-0023 §2.5
     // HEP-CORE-0032 §8.2 — broker ABI envelope echo, symmetric with
     // REG_ACK path so consumer-side verification per §8.7 can use the
     // same broker_abi_fingerprint field name across both ACK shapes.
-    resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
-        pylabhub::version::current());
+    resp["broker_abi_fingerprint"] =
+        pylabhub::version::to_json_object(pylabhub::version::current());
     if (const char *bid = pylabhub::version::build_id())
     {
         resp["broker_build_id"] = bid;
@@ -3754,10 +3645,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     {
         resp["data_transport"] = ch_opt->data_transport;
         nlohmann::json producers_array = nlohmann::json::array();
-        for (const auto& p : ch_opt->producers)
+        for (const auto &p : ch_opt->producers)
         {
             nlohmann::json entry;
-            entry["role_uid"]   = p.role_uid;
+            entry["role_uid"] = p.role_uid;
             entry["pubkey_z85"] = p.zmq_pubkey;
             if (ch_opt->data_transport == "shm")
             {
@@ -3786,8 +3677,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json& 
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socket,
-                                                             const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socket,
+                                                            const nlohmann::json &req)
 {
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
@@ -3796,7 +3687,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const uint64_t    consumer_pid  = req.value("consumer_pid", uint64_t{0});
+    const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
     const std::string wire_role_uid = req.value("role_uid", "");
 
     // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
@@ -3814,10 +3705,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
         auto ch = hub_state_->channel(channel_name);
         if (ch.has_value())
         {
-            for (const auto& c : ch->consumers)
+            for (const auto &c : ch->consumers)
             {
-                if (c.consumer_pid == consumer_pid &&
-                    c.role_uid     == wire_role_uid)
+                if (c.consumer_pid == consumer_pid && c.role_uid == wire_role_uid)
                 {
                     closing_entry = c;
                     have_entry = true;
@@ -3833,10 +3723,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
                     "(pid={} role_uid='{}')",
                     channel_name, consumer_pid, wire_role_uid);
         return make_error(corr_id, "NOT_REGISTERED",
-                          "Consumer (pid=" + std::to_string(consumer_pid) +
-                              ", role_uid='" + wire_role_uid +
-                              "') not registered for channel '" +
-                              channel_name + "'");
+                          "Consumer (pid=" + std::to_string(consumer_pid) + ", role_uid='" +
+                              wire_role_uid + "') not registered for channel '" + channel_name +
+                              "'");
     }
 
     // Consumer voluntarily left.  `role_uid` was validated non-empty
@@ -3855,29 +3744,26 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
     // `_on_consumer_revoked` would be a no-op anyway).
     if (closing_entry.zmq_pubkey.size() != 40)
     {
-        LOGGER_ERROR(
-            "Broker: ConsumerEntry on channel='{}' role_uid='{}' has "
-            "invalid zmq_pubkey (length {}, expected 40 Z85 chars).  "
-            "This SHOULD NOT happen — CONSUMER_REG_REQ hard-rejects "
-            "empty / wrong-length pubkey at the wire (HEP-CORE-0035 §2 "
-            "unconditional CURVE).  System may be compromised; restart "
-            "the hub ASAP.  Skipping channel-access revocation.",
-            channel_name, closing_entry.role_uid,
-            closing_entry.zmq_pubkey.size());
+        LOGGER_ERROR("Broker: ConsumerEntry on channel='{}' role_uid='{}' has "
+                     "invalid zmq_pubkey (length {}, expected 40 Z85 chars).  "
+                     "This SHOULD NOT happen — CONSUMER_REG_REQ hard-rejects "
+                     "empty / wrong-length pubkey at the wire (HEP-CORE-0035 §2 "
+                     "unconditional CURVE).  System may be compromised; restart "
+                     "the hub ASAP.  Skipping channel-access revocation.",
+                     channel_name, closing_entry.role_uid, closing_entry.zmq_pubkey.size());
     }
     else
     {
-        hub_state_->_on_consumer_revoked(channel_name,
-                                          closing_entry.zmq_pubkey);
+        hub_state_->_on_consumer_revoked(channel_name, closing_entry.zmq_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
-                                           /*phase=*/"left",
-                                           /*role_uid=*/closing_entry.role_uid,
-                                           /*role_type=*/"consumer");
+                                         /*phase=*/"left",
+                                         /*role_uid=*/closing_entry.role_uid,
+                                         /*role_type=*/"consumer");
     }
 
     LOGGER_INFO("Broker: consumer deregistered from channel '{}'", channel_name);
     nlohmann::json resp;
-    resp["status"]  = "success";
+    resp["status"] = "success";
     resp["message"] = "Consumer deregistered successfully";
     if (!corr_id.empty())
     {
@@ -3888,17 +3774,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t& socke
 
 // ─── Channel-auth pull + notify helpers (HEP-CORE-0036 §6.5) ───────────────
 
-nlohmann::json
-BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
+nlohmann::json BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
 {
     // HEP-CORE-0036 §6.5 — producer pulls the channel-scope
     // authorized-consumer allowlist.
     // Request shape: { channel_name, role_uid, [correlation_id] }.
     // Reply (success): { status="success", allowlist=[z85, ...], corr_id }.
     // Reply (error):   { status="error", error_code, message, corr_id }.
-    const std::string corr_id      = req.value("correlation_id", "");
+    const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
-    const std::string caller_uid   = req.value("role_uid", "");
+    const std::string caller_uid = req.value("role_uid", "");
 
     if (channel_name.empty() || caller_uid.empty())
     {
@@ -3925,8 +3810,7 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' does not exist");
     }
-    const bool consumer_binds =
-        pylabhub::hub::Queue::reader_is_binding_side(ch->topology);
+    const bool consumer_binds = pylabhub::hub::Queue::reader_is_binding_side(ch->topology);
     bool caller_is_binding_side = false;
     if (consumer_binds)
     {
@@ -3959,20 +3843,16 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
         // preserves `PRODUCER_NOT_AUTHORIZED` for back-compat with
         // pre-topology-migration parsers; the message names the
         // binding-side rule that actually applies.
-        LOGGER_WARN(
-            "Broker: GET_CHANNEL_AUTH_REQ rejected — role_uid='{}' is "
-            "not the binding-side role of channel '{}' (topology={}, "
-            "expected {} to bind) (HEP-CORE-0036 §6.6)",
-            caller_uid, channel_name,
-            static_cast<int>(ch->topology),
-            consumer_binds ? "consumer" : "producer");
-        return make_error(
-            corr_id, "PRODUCER_NOT_AUTHORIZED",
-            "Caller role_uid='" + caller_uid +
-                "' is not the binding-side role of channel '" +
-                channel_name + "' (topology requires " +
-                std::string(consumer_binds ? "consumer" : "producer") +
-                " to bind)");
+        LOGGER_WARN("Broker: GET_CHANNEL_AUTH_REQ rejected — role_uid='{}' is "
+                    "not the binding-side role of channel '{}' (topology={}, "
+                    "expected {} to bind) (HEP-CORE-0036 §6.6)",
+                    caller_uid, channel_name, static_cast<int>(ch->topology),
+                    consumer_binds ? "consumer" : "producer");
+        return make_error(corr_id, "PRODUCER_NOT_AUTHORIZED",
+                          "Caller role_uid='" + caller_uid +
+                              "' is not the binding-side role of channel '" + channel_name +
+                              "' (topology requires " +
+                              std::string(consumer_binds ? "consumer" : "producer") + " to bind)");
     }
 
     // Read the current authoritative allowlist.  Two distinct
@@ -3999,19 +3879,18 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     auto access = hub_state_->channel_access(channel_name);
     if (!access.has_value())
     {
-        LOGGER_ERROR(
-            "Broker: GET_CHANNEL_AUTH_REQ for channel '{}' from role_uid='{}' "
-            "found a ChannelEntry but no ChannelAccessEntry — HubState "
-            "invariant may be broken (REG path should wire "
-            "`_on_channel_access_opened` on every channel admission).  "
-            "Returning empty allowlist (fail-closed on wire; operator "
-            "should investigate the log to distinguish 'no peers admitted "
-            "yet' from 'callback not wired on some open path').",
-            channel_name, caller_uid);
+        LOGGER_ERROR("Broker: GET_CHANNEL_AUTH_REQ for channel '{}' from role_uid='{}' "
+                     "found a ChannelEntry but no ChannelAccessEntry — HubState "
+                     "invariant may be broken (REG path should wire "
+                     "`_on_channel_access_opened` on every channel admission).  "
+                     "Returning empty allowlist (fail-closed on wire; operator "
+                     "should investigate the log to distinguish 'no peers admitted "
+                     "yet' from 'callback not wired on some open path').",
+                     channel_name, caller_uid);
         access = pylabhub::hub::ChannelAccessEntry{};
     }
     nlohmann::json resp;
-    resp["status"]       = "success";
+    resp["status"] = "success";
     resp["channel_name"] = channel_name;
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
@@ -4027,10 +3906,7 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     // `known_roles` view, not via this ACK).  Earlier 2026-06-10
     // `{role_uid, pubkey}` shape retired; see AUTH_TODO sub-6.1.
     nlohmann::json allowlist_arr = nlohmann::json::array();
-    access->ledger.for_each_admitted(
-        [&](const std::string &pk) {
-            allowlist_arr.push_back(pk);
-        });
+    access->ledger.for_each_admitted([&](const std::string &pk) { allowlist_arr.push_back(pk); });
     resp["allowlist"] = std::move(allowlist_arr);
 
     // HEP-CORE-0042 §5.5.4: GET_CHANNEL_AUTH_ACK echoes
@@ -4048,8 +3924,7 @@ BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
     return resp;
 }
 
-nlohmann::json
-BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
+nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 {
     // HEP-CORE-0041 §9 D4 step 4-5 — pre-attach broker confirmation.
     // Producer asks whether one specific consumer is currently
@@ -4072,14 +3947,14 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     //
     // Read-only against HubState — pure query, no mutation.
 
-    const std::string corr_id           = req.value("correlation_id", "");
-    const std::string channel_name      = req.value("channel_name", "");
-    const std::string consumer_pubkey   = req.value("consumer_pubkey", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
+    const std::string consumer_pubkey = req.value("consumer_pubkey", "");
     const std::string consumer_role_uid = req.value("consumer_role_uid", "");
-    const std::string caller_uid        = req.value("role_uid", "");
+    const std::string caller_uid = req.value("role_uid", "");
 
-    if (channel_name.empty() || consumer_pubkey.empty() ||
-        consumer_role_uid.empty() || caller_uid.empty())
+    if (channel_name.empty() || consumer_pubkey.empty() || consumer_role_uid.empty() ||
+        caller_uid.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST",
                           "CONSUMER_ATTACH_REQ_SHM requires non-empty "
@@ -4092,11 +3967,10 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     // already-registered producer (strict-mode reject already exercised
     // at REG_REQ if configured); redundant rejection here would be
     // heavy-handed.
-    (void)log_peer_abi_fingerprint(req, caller_uid,
-                                    "ConsumerAttachAbiReceived",
-                                    "ConsumerAttachAbiDetail",
-                                    /*strict_mode=*/false,
-                                    /*transport=*/"shm");
+    (void)log_peer_abi_fingerprint(req, caller_uid, "ConsumerAttachAbiReceived",
+                                   "ConsumerAttachAbiDetail",
+                                   /*strict_mode=*/false,
+                                   /*transport=*/"shm");
 
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
@@ -4121,15 +3995,13 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     }
     if (!caller_is_producer)
     {
-        LOGGER_WARN(
-            "Broker: CONSUMER_ATTACH_REQ_SHM rejected — role_uid='{}' is "
-            "not a registered producer of channel '{}' "
-            "(HEP-CORE-0041 §9 D4 PRODUCER_NOT_AUTHORIZED)",
-            caller_uid, channel_name);
+        LOGGER_WARN("Broker: CONSUMER_ATTACH_REQ_SHM rejected — role_uid='{}' is "
+                    "not a registered producer of channel '{}' "
+                    "(HEP-CORE-0041 §9 D4 PRODUCER_NOT_AUTHORIZED)",
+                    caller_uid, channel_name);
         return make_error(corr_id, "PRODUCER_NOT_AUTHORIZED",
                           "Caller role_uid='" + caller_uid +
-                              "' is not a registered producer of channel '" +
-                              channel_name + "'");
+                              "' is not a registered producer of channel '" + channel_name + "'");
     }
 
     auto access = hub_state_->channel_access(channel_name);
@@ -4139,28 +4011,25 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
         // handle_get_channel_auth_req: degrading to deny-all here
         // would silently lock every consumer out of a working
         // channel; INTERNAL_ERROR forces a hub restart instead.
-        LOGGER_ERROR(
-            "Broker: CONSUMER_ATTACH_REQ_SHM for channel '{}' from role_uid='{}' "
-            "found a ChannelEntry but no ChannelAccessEntry — HubState "
-            "invariant broken; returning INTERNAL_ERROR.",
-            channel_name, caller_uid);
+        LOGGER_ERROR("Broker: CONSUMER_ATTACH_REQ_SHM for channel '{}' from role_uid='{}' "
+                     "found a ChannelEntry but no ChannelAccessEntry — HubState "
+                     "invariant broken; returning INTERNAL_ERROR.",
+                     channel_name, caller_uid);
         return make_error(corr_id, "INTERNAL_ERROR",
-                          "ChannelAccessEntry missing for channel '" +
-                              channel_name + "'");
+                          "ChannelAccessEntry missing for channel '" + channel_name + "'");
     }
 
-    const bool authorized =
-        access->ledger.admission_version_of(consumer_pubkey).has_value();
+    const bool authorized = access->ledger.admission_version_of(consumer_pubkey).has_value();
 
     nlohmann::json resp;
-    resp["channel_name"]    = channel_name;
+    resp["channel_name"] = channel_name;
     resp["consumer_pubkey"] = consumer_pubkey;
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
     // HEP-CORE-0032 §8.2 — broker ABI envelope echo on
     // CONSUMER_ATTACH_ACK_SHM.  Symmetric with REG_ACK path.
-    resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
-        pylabhub::version::current());
+    resp["broker_abi_fingerprint"] =
+        pylabhub::version::to_json_object(pylabhub::version::current());
     if (const char *bid = pylabhub::version::build_id())
     {
         resp["broker_build_id"] = bid;
@@ -4169,20 +4038,18 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
     if (authorized)
     {
         resp["status"] = "success";
-        LOGGER_INFO(
-            "[broker] event=ConsumerAttachAuthorized channel='{}' "
-            "consumer_pubkey='{}' consumer_uid='{}' producer_uid='{}'",
-            channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
+        LOGGER_INFO("[broker] event=ConsumerAttachAuthorized channel='{}' "
+                    "consumer_pubkey='{}' consumer_uid='{}' producer_uid='{}'",
+                    channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
     }
     else
     {
-        resp["status"]        = "denied";
+        resp["status"] = "denied";
         resp["denial_reason"] = "consumer_pubkey not in channel allowlist";
-        LOGGER_INFO(
-            "[broker] event=ConsumerAttachDenied channel='{}' "
-            "consumer_pubkey='{}' consumer_uid='{}' producer_uid='{}' "
-            "reason='not_in_allowlist'",
-            channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
+        LOGGER_INFO("[broker] event=ConsumerAttachDenied channel='{}' "
+                    "consumer_pubkey='{}' consumer_uid='{}' producer_uid='{}' "
+                    "reason='not_in_allowlist'",
+                    channel_name, consumer_pubkey, consumer_role_uid, caller_uid);
     }
     return resp;
 }
@@ -4206,10 +4073,9 @@ BrokerServiceImpl::handle_consumer_attach_req_shm(const nlohmann::json &req)
 //                queue-state tests.  ✅ shipped + tested
 //                (WaitPathTimeoutOnMissingAppliedReq).
 
-nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
-    const nlohmann::json &req,
-    zmq::socket_t        &socket,
-    const std::string    &router_identity)
+nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(const nlohmann::json &req,
+                                                                 zmq::socket_t &socket,
+                                                                 const std::string &router_identity)
 {
     // HEP-CORE-0042 §5.4 handler flow — Phase 2.3a fast-path + wait-path
     // enqueue.  Fast-path (steps 1-4) synchronously replies success/denied.
@@ -4226,15 +4092,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     //   denied replies from the three teardown paths.
     // - Timeout sweep (§5.6 producer_apply_wait_ms, default 3000 ms):
     //   pops expired entries + sends timeout replies from sweep_pending_attach_timeouts_.
-    const std::string corr_id            = req.value("correlation_id", "");
-    const std::string channel_name       = req.value("channel_name", "");
-    const std::string consumer_role_uid  = req.value("consumer_role_uid", "");
-    const std::string consumer_pubkey    = req.value("consumer_pubkey", "");
-    const std::string producer_role_uid  = req.value("producer_role_uid", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
+    const std::string consumer_role_uid = req.value("consumer_role_uid", "");
+    const std::string consumer_pubkey = req.value("consumer_pubkey", "");
+    const std::string producer_role_uid = req.value("producer_role_uid", "");
 
     // Step 1: validate payload shape.
-    if (channel_name.empty() || consumer_pubkey.empty() ||
-        consumer_role_uid.empty() || producer_role_uid.empty())
+    if (channel_name.empty() || consumer_pubkey.empty() || consumer_role_uid.empty() ||
+        producer_role_uid.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST",
                           "CONSUMER_ATTACH_REQ_ZMQ requires non-empty "
@@ -4245,19 +4111,20 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // HEP-CORE-0032 §8 — log consumer's ABI fingerprint on ATTACH ingest.
     // Log-only (same rationale as SHM handler: consumer already passed
     // strict-mode REG_REQ if configured).
-    (void)log_peer_abi_fingerprint(req, consumer_role_uid,
-                                    "ConsumerAttachAbiReceived",
-                                    "ConsumerAttachAbiDetail",
-                                    /*strict_mode=*/false,
-                                    /*transport=*/"zmq");
+    (void)log_peer_abi_fingerprint(req, consumer_role_uid, "ConsumerAttachAbiReceived",
+                                   "ConsumerAttachAbiDetail",
+                                   /*strict_mode=*/false,
+                                   /*transport=*/"zmq");
 
-    auto make_denied = [&](const std::string &reason) {
+    auto make_denied = [&](const std::string &reason)
+    {
         nlohmann::json resp;
-        resp["status"]             = "denied";
-        resp["reason"]              = reason;
-        resp["channel_name"]        = channel_name;
-        resp["producer_role_uid"]   = producer_role_uid;
-        if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        resp["status"] = "denied";
+        resp["reason"] = reason;
+        resp["channel_name"] = channel_name;
+        resp["producer_role_uid"] = producer_role_uid;
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
         return resp;
     };
 
@@ -4282,11 +4149,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         return make_denied("consumer_not_in_channel_allowlist");
     }
     auto ch = hub_state_->channel(channel_name);
-    if (!ch.has_value()) return make_denied("producer_not_live");
-    const bool is_fan_in =
-        (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
-    if (!is_fan_in &&
-        !access->ledger.admission_version_of(consumer_pubkey).has_value())
+    if (!ch.has_value())
+        return make_denied("producer_not_live");
+    const bool is_fan_in = (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
+    if (!is_fan_in && !access->ledger.admission_version_of(consumer_pubkey).has_value())
     {
         return make_denied("consumer_not_in_channel_allowlist");
     }
@@ -4301,13 +4167,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // presence-state-aware "Connected+first_heartbeat_seen" gating (finer
     // than reap-based), a future phase may wire in a snapshot-lookup pattern
     // for finer producer-liveness gating.
-    bool        producer_registered = false;
+    bool producer_registered = false;
     std::string producer_zmq_identity;
     for (const auto &prod : ch->producers)
     {
         if (prod.role_uid == producer_role_uid)
         {
-            producer_registered  = true;
+            producer_registered = true;
             // Captured for the §5.4 step 5b targeted NOTIFY below.  May be
             // empty for pre-REG_ACK / partial-state producers; the wait-path
             // handles the empty case explicitly (see the send site).
@@ -4315,7 +4181,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
             break;
         }
     }
-    if (!producer_registered) return make_denied("producer_not_live");
+    if (!producer_registered)
+        return make_denied("producer_not_live");
 
     // Step 4: fast-path check — is producer P caught up to the current
     // allowlist version?
@@ -4325,21 +4192,21 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
 
     if (confirmed >= channel_version)
     {
-        LOGGER_DEBUG(
-            "[broker] event=AttachReqZmqFastPath channel='{}' "
-            "producer_uid='{}' consumer_uid='{}' confirmed_version={} "
-            "channel_version={} (HEP-CORE-0042 §5.4 fast-path admit)",
-            channel_name, producer_role_uid, consumer_role_uid,
-            confirmed, channel_version);
+        LOGGER_DEBUG("[broker] event=AttachReqZmqFastPath channel='{}' "
+                     "producer_uid='{}' consumer_uid='{}' confirmed_version={} "
+                     "channel_version={} (HEP-CORE-0042 §5.4 fast-path admit)",
+                     channel_name, producer_role_uid, consumer_role_uid, confirmed,
+                     channel_version);
         nlohmann::json resp;
-        resp["status"]            = "success";
-        resp["channel_name"]      = channel_name;
+        resp["status"] = "success";
+        resp["channel_name"] = channel_name;
         resp["producer_role_uid"] = producer_role_uid;
-        if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
         // HEP-CORE-0032 §8.2 — broker ABI envelope echo on
         // CONSUMER_ATTACH_ACK_ZMQ (fast-path success).
-        resp["broker_abi_fingerprint"] = pylabhub::version::to_json_object(
-            pylabhub::version::current());
+        resp["broker_abi_fingerprint"] =
+            pylabhub::version::to_json_object(pylabhub::version::current());
         if (const char *bid = pylabhub::version::build_id())
         {
             resp["broker_build_id"] = bid;
@@ -4374,23 +4241,21 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // producer-uid keyed inner map ensures FIFO ordering per (K, P)
     // — the drain per §5.4 step d walks the deque in order.
     PendingAttachEntry entry;
-    entry.router_identity   = router_identity;
-    entry.correlation_id    = corr_id;
-    entry.consumer_pubkey   = consumer_pubkey;
+    entry.router_identity = router_identity;
+    entry.correlation_id = corr_id;
+    entry.consumer_pubkey = consumer_pubkey;
     entry.consumer_role_uid = consumer_role_uid;
-    entry.target_version    = channel_version;
-    entry.enqueued_at       = std::chrono::steady_clock::now();
-    pending_attach_queue_[channel_name][producer_role_uid]
-        .push_back(std::move(entry));
+    entry.target_version = channel_version;
+    entry.enqueued_at = std::chrono::steady_clock::now();
+    pending_attach_queue_[channel_name][producer_role_uid].push_back(std::move(entry));
 
-    LOGGER_INFO(
-        "[broker] event=AttachReqZmqEnqueued channel='{}' producer_uid='{}' "
-        "consumer_uid='{}' consumer_pubkey='{}' target_version={} "
-        "confirmed_version={} queue_depth={} (HEP-CORE-0042 §5.4 wait-path; "
-        "firing CHANNEL_AUTH_CHANGED_NOTIFY doorbell)",
-        channel_name, producer_role_uid, consumer_role_uid, consumer_pubkey,
-        channel_version, confirmed,
-        pending_attach_queue_[channel_name][producer_role_uid].size());
+    LOGGER_INFO("[broker] event=AttachReqZmqEnqueued channel='{}' producer_uid='{}' "
+                "consumer_uid='{}' consumer_pubkey='{}' target_version={} "
+                "confirmed_version={} queue_depth={} (HEP-CORE-0042 §5.4 wait-path; "
+                "firing CHANNEL_AUTH_CHANGED_NOTIFY doorbell)",
+                channel_name, producer_role_uid, consumer_role_uid, consumer_pubkey,
+                channel_version, confirmed,
+                pending_attach_queue_[channel_name][producer_role_uid].size());
 
     // Targeted doorbell to producer P only — HEP-CORE-0042 §5.4 step 5b.
     // If P's zmq_identity was empty at step 3 capture time (pre-REG_ACK /
@@ -4408,27 +4273,24 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
         // the dialing-side role whose admission drove the allowlist
         // bump (the consumer that just registered).
         nlohmann::json notify;
-        notify["channel_name"]    = channel_name;
+        notify["channel_name"] = channel_name;
         notify["channel_version"] = channel_version;
-        notify["role_uid"]        = consumer_role_uid;
-        notify["role_type"]       = "consumer";
-        notify["phase"]           = "admitted";
-        send_to_identity(socket, producer_zmq_identity,
-                          "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
-        LOGGER_DEBUG(
-            "[broker] event=AttachWaitPathNotifyTargeted channel='{}' "
-            "producer_uid='{}' consumer_uid='{}' (HEP-CORE-0042 §5.4 "
-            "step 5b singular-P)",
-            channel_name, producer_role_uid, consumer_role_uid);
+        notify["role_uid"] = consumer_role_uid;
+        notify["role_type"] = "consumer";
+        notify["phase"] = "admitted";
+        send_to_identity(socket, producer_zmq_identity, "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
+        LOGGER_DEBUG("[broker] event=AttachWaitPathNotifyTargeted channel='{}' "
+                     "producer_uid='{}' consumer_uid='{}' (HEP-CORE-0042 §5.4 "
+                     "step 5b singular-P)",
+                     channel_name, producer_role_uid, consumer_role_uid);
     }
     else
     {
-        LOGGER_WARN(
-            "[broker] event=AttachWaitPathNotifySkipped channel='{}' "
-            "producer_uid='{}' (empty zmq_identity — producer in pre-REG_ACK "
-            "or partial state; producer will pick up allowlist via REG_ACK "
-            "initial_allowlist path and issue APPLIED_REQ when caught up)",
-            channel_name, producer_role_uid);
+        LOGGER_WARN("[broker] event=AttachWaitPathNotifySkipped channel='{}' "
+                    "producer_uid='{}' (empty zmq_identity — producer in pre-REG_ACK "
+                    "or partial state; producer will pick up allowlist via REG_ACK "
+                    "initial_allowlist path and issue APPLIED_REQ when caught up)",
+                    channel_name, producer_role_uid);
     }
 
     // Sentinel — dispatcher sees status="pending" and does NOT
@@ -4436,16 +4298,16 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(
     // sweep) will drain this entry and send the reply with the
     // captured router_identity + corr_id.
     nlohmann::json resp;
-    resp["status"]            = "pending";
-    resp["channel_name"]      = channel_name;
+    resp["status"] = "pending";
+    resp["channel_name"] = channel_name;
     resp["producer_role_uid"] = producer_role_uid;
-    if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
-    const nlohmann::json &req,
-    zmq::socket_t        &socket)
+nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(const nlohmann::json &req,
+                                                                  zmq::socket_t &socket)
 {
     // HEP-CORE-0042 §5.4 APPLIED_REQ handler.  Implements step (a)
     // stale-instance guard, step (b) reply, step (c) confirmed_version
@@ -4455,25 +4317,19 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // entry whose target_version has been surpassed.  See
     // docs/HEP/HEP-CORE-0042 §5.4 "Implementation status" for the
     // authoritative phase mapping.
-    const std::string corr_id            = req.value("correlation_id", "");
-    const std::string channel_name       = req.value("channel_name", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
     // HEP-CORE-0042 §5.5.2 amendment 2026-07-11: accept both the
     // producer-side wire (`producer_role_uid` field) and the amended
     // binding-side-role-agnostic wire (`role_uid` + optional
     // `role_type`).  Producer-only wire is back-compat: `role_type`
     // absent implies `"producer"`.
-    const std::string role_type          = req.value("role_type",
-                                                      std::string{"producer"});
-    const std::string legacy_prod_uid    = req.value("producer_role_uid",
-                                                      std::string{});
-    const std::string role_uid           =
-        req.contains("role_uid")
-            ? req.value("role_uid", std::string{})
-            : legacy_prod_uid;
-    const std::uint64_t incoming_instance = req.value("instance_id",
-                                                       std::uint64_t{0});
-    const std::uint64_t applied_version   = req.value("applied_version",
-                                                       std::uint64_t{0});
+    const std::string role_type = req.value("role_type", std::string{"producer"});
+    const std::string legacy_prod_uid = req.value("producer_role_uid", std::string{});
+    const std::string role_uid =
+        req.contains("role_uid") ? req.value("role_uid", std::string{}) : legacy_prod_uid;
+    const std::uint64_t incoming_instance = req.value("instance_id", std::uint64_t{0});
+    const std::uint64_t applied_version = req.value("applied_version", std::uint64_t{0});
 
     if (channel_name.empty() || role_uid.empty())
     {
@@ -4497,23 +4353,20 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     if (!hub_state_->channel(channel_name).has_value())
     {
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
-                          "CHANNEL_AUTH_APPLIED_REQ for channel '" +
-                              channel_name + "' — no such channel");
+                          "CHANNEL_AUTH_APPLIED_REQ for channel '" + channel_name +
+                              "' — no such channel");
     }
-    if (!hub_state_->is_role_registered_on_channel(channel_name, role_uid,
-                                                     role_type))
+    if (!hub_state_->is_role_registered_on_channel(channel_name, role_uid, role_type))
     {
-        LOGGER_WARN(
-            "[broker] event=ChannelAuthAppliedNotARoleOfChannel "
-            "channel='{}' role_uid='{}' role_type='{}' "
-            "(HEP-CORE-0042 §5.5.2 registration guard — rejecting to "
-            "prevent cross-role confirmed_version poisoning)",
-            channel_name, role_uid, role_type);
-        return make_error(
-            corr_id, "NOT_A_ROLE_OF_CHANNEL",
-            "CHANNEL_AUTH_APPLIED_REQ role_uid='" + role_uid +
-                "' is not a registered " + role_type +
-                " on channel '" + channel_name + "'");
+        LOGGER_WARN("[broker] event=ChannelAuthAppliedNotARoleOfChannel "
+                    "channel='{}' role_uid='{}' role_type='{}' "
+                    "(HEP-CORE-0042 §5.5.2 registration guard — rejecting to "
+                    "prevent cross-role confirmed_version poisoning)",
+                    channel_name, role_uid, role_type);
+        return make_error(corr_id, "NOT_A_ROLE_OF_CHANNEL",
+                          "CHANNEL_AUTH_APPLIED_REQ role_uid='" + role_uid +
+                              "' is not a registered " + role_type + " on channel '" +
+                              channel_name + "'");
     }
 
     if (role_type == "consumer")
@@ -4533,29 +4386,27 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
         // versioned_admission_ledger.hpp INVARIANT-BIND-CONFIRM-1
         // (Agent-1 bound guard).
         const std::uint64_t new_confirmed =
-            hub_state_->_on_role_confirmed(channel_name, role_uid,
-                                            applied_version);
+            hub_state_->_on_role_confirmed(channel_name, role_uid, applied_version);
 
-        LOGGER_INFO(
-            "[broker] event=ChannelAuthAppliedConsumer channel='{}' "
-            "consumer_uid='{}' applied_version={} confirmed_version={} "
-            "(HEP-CORE-0042 §5.5.2 unified — ledger.confirm advanced)",
-            channel_name, role_uid, applied_version, new_confirmed);
+        LOGGER_INFO("[broker] event=ChannelAuthAppliedConsumer channel='{}' "
+                    "consumer_uid='{}' applied_version={} confirmed_version={} "
+                    "(HEP-CORE-0042 §5.5.2 unified — ledger.confirm advanced)",
+                    channel_name, role_uid, applied_version, new_confirmed);
 
         nlohmann::json resp;
-        resp["status"]          = "ok";
-        resp["channel_name"]    = channel_name;
+        resp["status"] = "ok";
+        resp["channel_name"] = channel_name;
         resp["applied_version"] = new_confirmed;
-        if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+        if (!corr_id.empty())
+            resp["correlation_id"] = corr_id;
         return resp;
     }
 
     if (role_type != "producer")
     {
-        return make_error(
-            corr_id, "INVALID_REQUEST",
-            "CHANNEL_AUTH_APPLIED_REQ role_type must be 'producer' "
-            "or 'consumer' (or absent for producer back-compat)");
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CHANNEL_AUTH_APPLIED_REQ role_type must be 'producer' "
+                          "or 'consumer' (or absent for producer back-compat)");
     }
 
     // §5.4 step (a): stale-instance guard.  If the echoed instance_id
@@ -4566,16 +4417,13 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // conformance — full silent-drop-without-reply support lands with
     // Phase 2.4 timer wiring which will let us withhold the reply
     // entirely).
-    const std::uint64_t current_instance =
-        hub_state_->producer_instance(role_uid);
+    const std::uint64_t current_instance = hub_state_->producer_instance(role_uid);
     if (incoming_instance != current_instance)
     {
-        LOGGER_WARN(
-            "[broker] event=ChannelAuthAppliedStaleInstance channel='{}' "
-            "producer_uid='{}' incoming_instance={} current_instance={} "
-            "applied_version={} (HEP-CORE-0042 §5.2 stale-instance guard)",
-            channel_name, role_uid, incoming_instance,
-            current_instance, applied_version);
+        LOGGER_WARN("[broker] event=ChannelAuthAppliedStaleInstance channel='{}' "
+                    "producer_uid='{}' incoming_instance={} current_instance={} "
+                    "applied_version={} (HEP-CORE-0042 §5.2 stale-instance guard)",
+                    channel_name, role_uid, incoming_instance, current_instance, applied_version);
         return make_error(corr_id, "STALE_INSTANCE",
                           "CHANNEL_AUTH_APPLIED_REQ from stale producer "
                           "instance dropped per HEP-CORE-0042 §5.2");
@@ -4586,14 +4434,11 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // consumer branch uses.  Producer-side vs consumer-side is just
     // "which role_uid" — the ledger is role-agnostic.
     const std::uint64_t new_confirmed =
-        hub_state_->_on_role_confirmed(channel_name, role_uid,
-                                        applied_version);
+        hub_state_->_on_role_confirmed(channel_name, role_uid, applied_version);
 
-    LOGGER_INFO(
-        "[broker] event=ChannelAuthApplied channel='{}' producer_uid='{}' "
-        "instance={} applied_version={} confirmed_version={}",
-        channel_name, role_uid, incoming_instance, applied_version,
-        new_confirmed);
+    LOGGER_INFO("[broker] event=ChannelAuthApplied channel='{}' producer_uid='{}' "
+                "instance={} applied_version={} confirmed_version={}",
+                channel_name, role_uid, incoming_instance, applied_version, new_confirmed);
 
     // §5.4 step (d): drain pending_attach_queue_[K][P] of every entry
     // whose target_version has been surpassed by new_confirmed, and send
@@ -4601,27 +4446,27 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     // each drained entry.  Single-pumper ROUTER serialises drain vs.
     // reply; the drain-then-reply order below is intent-preserving per
     // §5.4 step d wording ("walk … and remove").
-    drain_pending_attach_queue_for_producer_confirmed_(
-        socket, channel_name, role_uid, new_confirmed);
+    drain_pending_attach_queue_for_producer_confirmed_(socket, channel_name, role_uid,
+                                                       new_confirmed);
 
     // §5.4 step (b): reply {status="ok", ...}.
     nlohmann::json resp;
-    resp["status"]           = "ok";
-    resp["channel_name"]     = channel_name;
-    resp["applied_version"]  = new_confirmed;
-    if (!corr_id.empty()) resp["correlation_id"] = corr_id;
+    resp["status"] = "ok";
+    resp["channel_name"] = channel_name;
+    resp["applied_version"] = new_confirmed;
+    if (!corr_id.empty())
+        resp["correlation_id"] = corr_id;
     return resp;
 }
 
-nlohmann::json
-BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
-                                                const zmq::message_t &)
+nlohmann::json BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
+                                                              const zmq::message_t &)
 {
     // HEP-CORE-0036 §6.6.3 — dialing-side role's readiness pull.
-    const std::string corr_id      = req.value("correlation_id", "");
+    const std::string corr_id = req.value("correlation_id", "");
     const std::string channel_name = req.value("channel_name", "");
-    const std::string role_uid     = req.value("role_uid", "");
-    const std::string pubkey_z85   = req.value("pubkey_z85", "");
+    const std::string role_uid = req.value("role_uid", "");
+    const std::string pubkey_z85 = req.value("pubkey_z85", "");
 
     if (channel_name.empty() || role_uid.empty() || pubkey_z85.empty())
     {
@@ -4645,34 +4490,27 @@ BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
     // A binding-side caller asking this question makes no operational
     // sense (they ARE the guard) — also rejected with the same code
     // so callers get one clear error rather than two.
-    const bool consumer_binds =
-        pylabhub::hub::Queue::reader_is_binding_side(ch->topology);
-    auto match_uid = [&](const auto &entry) {
-        return entry.role_uid == role_uid;
-    };
+    const bool consumer_binds = pylabhub::hub::Queue::reader_is_binding_side(ch->topology);
+    auto match_uid = [&](const auto &entry) { return entry.role_uid == role_uid; };
     // Dialing side is the mirror of the binding side: consumer under
     // fan-out / one-to-one, producer under fan-in.  Branch on
     // topology to avoid ternary over different container element
     // types (ProducerEntry vs ConsumerEntry).
-    const bool caller_is_dialing_side = consumer_binds
-        ? std::any_of(ch->producers.begin(), ch->producers.end(), match_uid)
-        : std::any_of(ch->consumers.begin(), ch->consumers.end(), match_uid);
+    const bool caller_is_dialing_side =
+        consumer_binds ? std::any_of(ch->producers.begin(), ch->producers.end(), match_uid)
+                       : std::any_of(ch->consumers.begin(), ch->consumers.end(), match_uid);
     if (!caller_is_dialing_side)
     {
-        LOGGER_WARN(
-            "Broker: CHECK_PEER_READY_REQ rejected — role_uid='{}' is not "
-            "the dialing-side role of channel '{}' (topology={}, expected "
-            "{} to dial) (HEP-CORE-0036 §6.6.3)",
-            role_uid, channel_name,
-            static_cast<int>(ch->topology),
-            consumer_binds ? "producer" : "consumer");
-        return make_error(
-            corr_id, "NOT_A_ROLE_OF_CHANNEL",
-            "Caller role_uid='" + role_uid +
-                "' is not the dialing-side role of channel '" +
-                channel_name + "' (topology requires " +
-                std::string(consumer_binds ? "producer" : "consumer") +
-                " to dial)");
+        LOGGER_WARN("Broker: CHECK_PEER_READY_REQ rejected — role_uid='{}' is not "
+                    "the dialing-side role of channel '{}' (topology={}, expected "
+                    "{} to dial) (HEP-CORE-0036 §6.6.3)",
+                    role_uid, channel_name, static_cast<int>(ch->topology),
+                    consumer_binds ? "producer" : "consumer");
+        return make_error(corr_id, "NOT_A_ROLE_OF_CHANNEL",
+                          "Caller role_uid='" + role_uid +
+                              "' is not the dialing-side role of channel '" + channel_name +
+                              "' (topology requires " +
+                              std::string(consumer_binds ? "producer" : "consumer") + " to dial)");
     }
 
     // HEP-CORE-0042 §5.5.2 INVARIANT-BIND-CONFIRM-2 — visibility query
@@ -4703,18 +4541,17 @@ BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
     }
     if (binding_role_uid.empty())
     {
-        LOGGER_WARN(
-            "Broker: CHECK_PEER_READY_REQ for channel '{}' — no "
-            "binding-side role present yet (consumer_binds={}); "
-            "responding not_ready (HEP-CORE-0042 §5.5.2)",
-            channel_name, consumer_binds);
+        LOGGER_WARN("Broker: CHECK_PEER_READY_REQ for channel '{}' — no "
+                    "binding-side role present yet (consumer_binds={}); "
+                    "responding not_ready (HEP-CORE-0042 §5.5.2)",
+                    channel_name, consumer_binds);
         resp["status"] = "not_ready";
         resp["reason"] = "not_confirmed";
         return resp;
     }
 
-    const auto ready_opt = hub_state_->is_pubkey_visible_to(
-        channel_name, binding_role_uid, pubkey_z85);
+    const auto ready_opt =
+        hub_state_->is_pubkey_visible_to(channel_name, binding_role_uid, pubkey_z85);
 
     if (!ready_opt.has_value())
     {
@@ -4725,14 +4562,13 @@ BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
         auto access = hub_state_->channel_access(channel_name);
         if (!access.has_value())
         {
-            LOGGER_ERROR(
-                "Broker: CHECK_PEER_READY_REQ for channel '{}' from "
-                "role_uid='{}' found a ChannelEntry but no "
-                "ChannelAccessEntry — HubState invariant may be broken "
-                "(REG path should wire `_on_channel_access_opened` on "
-                "every channel admission).  Responding not_ready "
-                "(fail-closed on wire).",
-                channel_name, role_uid);
+            LOGGER_ERROR("Broker: CHECK_PEER_READY_REQ for channel '{}' from "
+                         "role_uid='{}' found a ChannelEntry but no "
+                         "ChannelAccessEntry — HubState invariant may be broken "
+                         "(REG path should wire `_on_channel_access_opened` on "
+                         "every channel admission).  Responding not_ready "
+                         "(fail-closed on wire).",
+                         channel_name, role_uid);
             resp["status"] = "not_ready";
             resp["reason"] = "not_admitted";
             return resp;
@@ -4755,19 +4591,15 @@ BrokerServiceImpl::handle_check_peer_ready_req(const nlohmann::json &req,
     // as not_ready on the wire, differ only in `reason`.
     auto access = hub_state_->channel_access(channel_name);
     const bool admitted =
-        access.has_value() &&
-        access->ledger.admission_version_of(pubkey_z85).has_value();
+        access.has_value() && access->ledger.admission_version_of(pubkey_z85).has_value();
     resp["status"] = "not_ready";
     resp["reason"] = admitted ? "not_confirmed" : "not_admitted";
     return resp;
 }
 
-std::size_t
-BrokerServiceImpl::drain_pending_attach_queue_for_producer_confirmed_(
-    zmq::socket_t     &socket,
-    const std::string &channel_name,
-    const std::string &producer_role_uid,
-    std::uint64_t      new_confirmed)
+std::size_t BrokerServiceImpl::drain_pending_attach_queue_for_producer_confirmed_(
+    zmq::socket_t &socket, const std::string &channel_name, const std::string &producer_role_uid,
+    std::uint64_t new_confirmed)
 {
     // HEP-CORE-0042 §5.4 step d — drain success replies.  Walks the
     // (K, P) deque IN ORDER; per §5.4 step d "walk pending_attach_queue:
@@ -4778,9 +4610,11 @@ BrokerServiceImpl::drain_pending_attach_queue_for_producer_confirmed_(
     // — we stop at the first entry whose target_version is still
     // strictly greater than new_confirmed.
     auto ch_it = pending_attach_queue_.find(channel_name);
-    if (ch_it == pending_attach_queue_.end()) return 0;
+    if (ch_it == pending_attach_queue_.end())
+        return 0;
     auto p_it = ch_it->second.find(producer_role_uid);
-    if (p_it == ch_it->second.end()) return 0;
+    if (p_it == ch_it->second.end())
+        return 0;
 
     auto &queue = p_it->second;
     std::size_t drained = 0;
@@ -4788,13 +4622,12 @@ BrokerServiceImpl::drain_pending_attach_queue_for_producer_confirmed_(
     {
         const auto &entry = queue.front();
         nlohmann::json reply;
-        reply["status"]            = "success";
-        reply["channel_name"]      = channel_name;
+        reply["status"] = "success";
+        reply["channel_name"] = channel_name;
         reply["producer_role_uid"] = producer_role_uid;
         if (!entry.correlation_id.empty())
             reply["correlation_id"] = entry.correlation_id;
-        send_to_identity(socket, entry.router_identity,
-                          "CONSUMER_ATTACH_ACK_ZMQ", reply);
+        send_to_identity(socket, entry.router_identity, "CONSUMER_ATTACH_ACK_ZMQ", reply);
         queue.pop_front();
         ++drained;
     }
@@ -4808,20 +4641,16 @@ BrokerServiceImpl::drain_pending_attach_queue_for_producer_confirmed_(
 
     if (drained > 0)
     {
-        LOGGER_INFO(
-            "[broker] event=AttachQueueDrainedSuccess channel='{}' "
-            "producer_uid='{}' drained_count={} new_confirmed_version={} "
-            "(HEP-CORE-0042 §5.4 step d)",
-            channel_name, producer_role_uid, drained, new_confirmed);
+        LOGGER_INFO("[broker] event=AttachQueueDrainedSuccess channel='{}' "
+                    "producer_uid='{}' drained_count={} new_confirmed_version={} "
+                    "(HEP-CORE-0042 §5.4 step d)",
+                    channel_name, producer_role_uid, drained, new_confirmed);
     }
     return drained;
 }
 
-std::size_t
-BrokerServiceImpl::drain_pending_attach_queue_for_producer_denied_(
-    zmq::socket_t     &socket,
-    const std::string &channel_name,
-    const std::string &producer_role_uid,
+std::size_t BrokerServiceImpl::drain_pending_attach_queue_for_producer_denied_(
+    zmq::socket_t &socket, const std::string &channel_name, const std::string &producer_role_uid,
     const std::string &reason)
 {
     // HEP-CORE-0042 §5.4 producer-disconnect drain.  Empties the entire
@@ -4830,9 +4659,11 @@ BrokerServiceImpl::drain_pending_attach_queue_for_producer_denied_(
     // non-last-producer (reason="producer_not_live") as the pair to the
     // §5.4 confirmed_version reset on producer disconnect.
     auto ch_it = pending_attach_queue_.find(channel_name);
-    if (ch_it == pending_attach_queue_.end()) return 0;
+    if (ch_it == pending_attach_queue_.end())
+        return 0;
     auto p_it = ch_it->second.find(producer_role_uid);
-    if (p_it == ch_it->second.end()) return 0;
+    if (p_it == ch_it->second.end())
+        return 0;
 
     auto &queue = p_it->second;
     std::size_t drained = 0;
@@ -4840,37 +4671,33 @@ BrokerServiceImpl::drain_pending_attach_queue_for_producer_denied_(
     {
         const auto &entry = queue.front();
         nlohmann::json reply;
-        reply["status"]            = "denied";
-        reply["reason"]             = reason;
-        reply["channel_name"]      = channel_name;
+        reply["status"] = "denied";
+        reply["reason"] = reason;
+        reply["channel_name"] = channel_name;
         reply["producer_role_uid"] = producer_role_uid;
         if (!entry.correlation_id.empty())
             reply["correlation_id"] = entry.correlation_id;
-        send_to_identity(socket, entry.router_identity,
-                          "CONSUMER_ATTACH_ACK_ZMQ", reply);
+        send_to_identity(socket, entry.router_identity, "CONSUMER_ATTACH_ACK_ZMQ", reply);
         queue.pop_front();
         ++drained;
     }
 
     ch_it->second.erase(p_it);
-    if (ch_it->second.empty()) pending_attach_queue_.erase(ch_it);
+    if (ch_it->second.empty())
+        pending_attach_queue_.erase(ch_it);
 
     if (drained > 0)
     {
-        LOGGER_INFO(
-            "[broker] event=AttachQueueDrainedDenied channel='{}' "
-            "producer_uid='{}' reason='{}' drained_count={} "
-            "(HEP-CORE-0042 §5.4 producer-disconnect drain)",
-            channel_name, producer_role_uid, reason, drained);
+        LOGGER_INFO("[broker] event=AttachQueueDrainedDenied channel='{}' "
+                    "producer_uid='{}' reason='{}' drained_count={} "
+                    "(HEP-CORE-0042 §5.4 producer-disconnect drain)",
+                    channel_name, producer_role_uid, reason, drained);
     }
     return drained;
 }
 
-std::size_t
-BrokerServiceImpl::drain_pending_attach_queue_for_channel_denied_(
-    zmq::socket_t     &socket,
-    const std::string &channel_name,
-    const std::string &reason)
+std::size_t BrokerServiceImpl::drain_pending_attach_queue_for_channel_denied_(
+    zmq::socket_t &socket, const std::string &channel_name, const std::string &reason)
 {
     // HEP-CORE-0042 §5.4 channel-close drain.  Empties every producer's
     // deque for the named channel and sends a denied reply for each
@@ -4878,25 +4705,25 @@ BrokerServiceImpl::drain_pending_attach_queue_for_channel_denied_(
     // _on_channel_access_closed (reason="channel_closing"): last-producer
     // DEREG_REQ, last-producer heartbeat-timeout, script-requested close.
     auto ch_it = pending_attach_queue_.find(channel_name);
-    if (ch_it == pending_attach_queue_.end()) return 0;
+    if (ch_it == pending_attach_queue_.end())
+        return 0;
 
     std::size_t drained = 0;
     for (auto &kv : ch_it->second)
     {
         const std::string &producer_uid = kv.first;
-        auto              &queue        = kv.second;
+        auto &queue = kv.second;
         while (!queue.empty())
         {
             const auto &entry = queue.front();
             nlohmann::json reply;
-            reply["status"]            = "denied";
-            reply["reason"]             = reason;
-            reply["channel_name"]      = channel_name;
+            reply["status"] = "denied";
+            reply["reason"] = reason;
+            reply["channel_name"] = channel_name;
             reply["producer_role_uid"] = producer_uid;
             if (!entry.correlation_id.empty())
                 reply["correlation_id"] = entry.correlation_id;
-            send_to_identity(socket, entry.router_identity,
-                              "CONSUMER_ATTACH_ACK_ZMQ", reply);
+            send_to_identity(socket, entry.router_identity, "CONSUMER_ATTACH_ACK_ZMQ", reply);
             queue.pop_front();
             ++drained;
         }
@@ -4905,19 +4732,18 @@ BrokerServiceImpl::drain_pending_attach_queue_for_channel_denied_(
 
     if (drained > 0)
     {
-        LOGGER_INFO(
-            "[broker] event=AttachQueueDrainedDeniedChannel channel='{}' "
-            "reason='{}' drained_count={} "
-            "(HEP-CORE-0042 §5.4 channel-close drain)",
-            channel_name, reason, drained);
+        LOGGER_INFO("[broker] event=AttachQueueDrainedDeniedChannel channel='{}' "
+                    "reason='{}' drained_count={} "
+                    "(HEP-CORE-0042 §5.4 channel-close drain)",
+                    channel_name, reason, drained);
     }
     return drained;
 }
 
-std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
-    zmq::socket_t                        &socket,
-    std::chrono::steady_clock::time_point now,
-    std::chrono::milliseconds             budget)
+std::size_t
+BrokerServiceImpl::sweep_pending_attach_timeouts_(zmq::socket_t &socket,
+                                                  std::chrono::steady_clock::time_point now,
+                                                  std::chrono::milliseconds budget)
 {
     // HEP-CORE-0042 §5.4 pending-entry timeout + §5.6
     // producer_apply_wait_ms sweep.  Walks every (K, P) deque; pops
@@ -4936,11 +4762,9 @@ std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
     // spawn_bounded #283 lands the finer-grained primitive later).
     std::size_t total_drained = 0;
 
-    for (auto ch_it = pending_attach_queue_.begin();
-          ch_it != pending_attach_queue_.end(); )
+    for (auto ch_it = pending_attach_queue_.begin(); ch_it != pending_attach_queue_.end();)
     {
-        for (auto p_it = ch_it->second.begin();
-              p_it != ch_it->second.end(); )
+        for (auto p_it = ch_it->second.begin(); p_it != ch_it->second.end();)
         {
             auto &queue = p_it->second;
             std::size_t drained_this_pair = 0;
@@ -4948,14 +4772,13 @@ std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
             {
                 const auto &entry = queue.front();
                 nlohmann::json reply;
-                reply["status"]            = "timeout";
-                reply["reason"]             = "producer_did_not_confirm_within_budget";
-                reply["channel_name"]      = ch_it->first;
+                reply["status"] = "timeout";
+                reply["reason"] = "producer_did_not_confirm_within_budget";
+                reply["channel_name"] = ch_it->first;
                 reply["producer_role_uid"] = p_it->first;
                 if (!entry.correlation_id.empty())
                     reply["correlation_id"] = entry.correlation_id;
-                send_to_identity(socket, entry.router_identity,
-                                  "CONSUMER_ATTACH_ACK_ZMQ", reply);
+                send_to_identity(socket, entry.router_identity, "CONSUMER_ATTACH_ACK_ZMQ", reply);
                 queue.pop_front();
                 ++drained_this_pair;
                 ++total_drained;
@@ -4963,13 +4786,12 @@ std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
 
             if (drained_this_pair > 0)
             {
-                LOGGER_WARN(
-                    "[broker] event=AttachQueueDrainedTimeout channel='{}' "
-                    "producer_uid='{}' drained_count={} budget_ms={} "
-                    "(HEP-CORE-0042 §5.4 pending-entry timeout — producer "
-                    "did not APPLIED_REQ within budget)",
-                    ch_it->first, p_it->first, drained_this_pair,
-                    static_cast<long long>(budget.count()));
+                LOGGER_WARN("[broker] event=AttachQueueDrainedTimeout channel='{}' "
+                            "producer_uid='{}' drained_count={} budget_ms={} "
+                            "(HEP-CORE-0042 §5.4 pending-entry timeout — producer "
+                            "did not APPLIED_REQ within budget)",
+                            ch_it->first, p_it->first, drained_this_pair,
+                            static_cast<long long>(budget.count()));
             }
 
             if (queue.empty())
@@ -4985,12 +4807,11 @@ std::size_t BrokerServiceImpl::sweep_pending_attach_timeouts_(
     return total_drained;
 }
 
-void BrokerServiceImpl::fire_channel_auth_changed_notify(
-    zmq::socket_t&     socket,
-    const std::string& channel_name,
-    const std::string& phase,
-    const std::string& role_uid,
-    const std::string& role_type)
+void BrokerServiceImpl::fire_channel_auth_changed_notify(zmq::socket_t &socket,
+                                                         const std::string &channel_name,
+                                                         const std::string &phase,
+                                                         const std::string &role_uid,
+                                                         const std::string &role_type)
 {
     // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1803-1864;
     // topology migration 2026-07-08) + HEP-CORE-0036 §6.5.  Fan a
@@ -5010,12 +4831,11 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
         // (binding-side peers who were live during the mutation will
         // pick up the change via REG_ACK.initial_allowlist on the
         // next reconnect).
-        LOGGER_WARN(
-            "Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out skipped — "
-            "channel '{}' no longer exists in HubState (probable race "
-            "with concurrent channel teardown; phase='{}' role_uid='{}' "
-            "role_type='{}').",
-            channel_name, phase, role_uid, role_type);
+        LOGGER_WARN("Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out skipped — "
+                    "channel '{}' no longer exists in HubState (probable race "
+                    "with concurrent channel teardown; phase='{}' role_uid='{}' "
+                    "role_type='{}').",
+                    channel_name, phase, role_uid, role_type);
         return;
     }
     // Payload per HEP-CORE-0007 lines 1840-1849.  channel_version:
@@ -5026,9 +4846,8 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
     // ChannelEntry.channel_version field which was never written and
     // shipped 0 to every subscriber.
     nlohmann::json notify;
-    notify["channel_name"]    = channel_name;
-    if (auto access = hub_state_->channel_access(channel_name);
-        access.has_value())
+    notify["channel_name"] = channel_name;
+    if (auto access = hub_state_->channel_access(channel_name); access.has_value())
     {
         notify["channel_version"] = access->ledger.current_version();
     }
@@ -5036,18 +4855,18 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
     {
         notify["channel_version"] = std::uint64_t{0};
     }
-    notify["role_uid"]        = role_uid;
-    notify["role_type"]       = role_type;
-    notify["phase"]           = phase;
+    notify["role_uid"] = role_uid;
+    notify["role_type"] = role_type;
+    notify["phase"] = phase;
 
     // Fan-out target dispatch (HEP-CORE-0007 line 1806).  Fan-in's
     // binding side is the consumer; fan-out / one-to-one's binding
     // side is the producer.  Under the singular-side ownership
     // model, the binding-side collection has size 1 in steady state,
     // but iteration handles the transient overlap window.
-    std::size_t fanned              = 0;
+    std::size_t fanned = 0;
     std::size_t skipped_no_identity = 0;
-    auto fan_to = [&](const std::string& identity)
+    auto fan_to = [&](const std::string &identity)
     {
         if (identity.empty())
         {
@@ -5067,10 +4886,8 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
         LOGGER_INFO("[broker] event=ChannelAuthChangedNotifyFanning "
                     "channel='{}' phase='{}' role_uid='{}' role_type='{}' "
                     "target_identity_hex='{}' target_identity_bytes={}",
-                    channel_name, phase, role_uid, role_type,
-                    identity_hex, identity.size());
-        send_to_identity(socket, identity,
-                          "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
+                    channel_name, phase, role_uid, role_type, identity_hex, identity.size());
+        send_to_identity(socket, identity, "CHANNEL_AUTH_CHANGED_NOTIFY", notify);
         ++fanned;
     };
     std::size_t binding_side_total = 0;
@@ -5093,29 +4910,25 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(
         // operators can investigate whether a peer is stuck not
         // receiving notifies — which would degrade to "stale allowlist
         // until peer's next reconnect" per the §6.5 drift window.
-        LOGGER_WARN(
-            "Broker: CHANNEL_AUTH_CHANGED_NOTIFY for channel '{}' "
-            "skipped {} binding-side peer(s) with empty zmq_identity "
-            "(transient or partial state); fanned to {} peer(s).",
-            channel_name, skipped_no_identity, fanned);
+        LOGGER_WARN("Broker: CHANNEL_AUTH_CHANGED_NOTIFY for channel '{}' "
+                    "skipped {} binding-side peer(s) with empty zmq_identity "
+                    "(transient or partial state); fanned to {} peer(s).",
+                    channel_name, skipped_no_identity, fanned);
     }
     LOGGER_DEBUG("Broker: CHANNEL_AUTH_CHANGED_NOTIFY fan-out for "
                  "channel '{}' phase='{}' role_uid='{}' role_type='{}' "
                  "to {} of {} binding-side peer(s)",
-                 channel_name, phase, role_uid, role_type,
-                 fanned, binding_side_total);
+                 channel_name, phase, role_uid, role_type, fanned, binding_side_total);
 }
 
-void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
-                                              const nlohmann::json& req)
+void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohmann::json &req)
 {
     const std::string channel_name = req.value("channel_name", "");
     // Audit R3.5b (2026-05-19): channel_name grammar check at the gate
     // (HEP-CORE-0033 §G2.2.0b).  HEARTBEAT_NOTIFY is fire-and-forget so
     // we log + drop on failure (no reply path) — matches the existing
     // pattern for missing uid/role_type further below.
-    if (!pylabhub::hub::is_valid_identifier(
-            channel_name, pylabhub::hub::IdentifierKind::Channel))
+    if (!pylabhub::hub::is_valid_identifier(channel_name, pylabhub::hub::IdentifierKind::Channel))
     {
         LOGGER_WARN("Broker: HEARTBEAT_NOTIFY dropped — invalid "
                     "channel_name '{}' (HEP-CORE-0033 §G2.2.0b)",
@@ -5131,7 +4944,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     // the producer's; consumer heartbeats refresh their own presence
     // and never flip the channel observable.
     const auto snap = hub_state_->snapshot();
-    const auto cit  = snap.channels.find(channel_name);
+    const auto cit = snap.channels.find(channel_name);
     if (cit == snap.channels.end())
     {
         LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for unknown channel '{}'", channel_name);
@@ -5145,11 +4958,12 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     for (const auto &prod : cit->second.producers)
     {
         auto rit = snap.roles.find(prod.role_uid);
-        if (rit == snap.roles.end()) continue;
+        if (rit == snap.roles.end())
+            continue;
         const auto *pp = rit->second.find_presence(channel_name, "producer");
-        if (pp == nullptr) continue;
-        if (pp->state == pylabhub::hub::RoleState::Connected &&
-            pp->first_heartbeat_seen)
+        if (pp == nullptr)
+            continue;
+        if (pp->state == pylabhub::hub::RoleState::Connected && pp->first_heartbeat_seen)
         {
             was_pending = false;
             break;
@@ -5164,10 +4978,10 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     // the wire key `uid` → `role_uid` for cross-message consistency.
     // Missing/empty fields → silent drop with WARN log (HEARTBEAT_NOTIFY
     // is fire-and-forget so there is no reply path for INVALID_REQUEST).
-    const std::string wire_uid       = req.value("role_uid",  std::string{});
+    const std::string wire_uid = req.value("role_uid", std::string{});
     const std::string wire_role_type = req.value("role_type", std::string{});
-    LOGGER_DEBUG("Broker: HEARTBEAT_NOTIFY channel='{}' role_uid='{}' role_type='{}'",
-                 channel_name, wire_uid, wire_role_type);
+    LOGGER_DEBUG("Broker: HEARTBEAT_NOTIFY channel='{}' role_uid='{}' role_type='{}'", channel_name,
+                 wire_uid, wire_role_type);
 
     if (wire_uid.empty() || wire_role_type.empty())
     {
@@ -5181,8 +4995,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     // check (HEP-CORE-0033 §G2.2.0b).  Tag must match role_type:
     // producer → {prod, proc}; consumer → {cons, proc}.  Drop with
     // WARN log (fire-and-forget; no reply path).
-    if (!pylabhub::hub::is_valid_identifier(
-            wire_uid, pylabhub::hub::IdentifierKind::RoleUid))
+    if (!pylabhub::hub::is_valid_identifier(wire_uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
         LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' dropped — invalid "
                     "role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
@@ -5215,7 +5028,8 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     if (was_pending && wire_role_type == "producer")
     {
         LOGGER_INFO("Broker: channel '{}' producer-presence sub-Live "
-                    "(may transition to Live on this heartbeat)", channel_name);
+                    "(may transition to Live on this heartbeat)",
+                    channel_name);
     }
 
     if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
@@ -5236,11 +5050,8 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
     if (req.contains("metrics") && req["metrics"].is_object())
         metrics_opt = req["metrics"];
 
-    const auto eff = hub_state_->_on_heartbeat(channel_name,
-                                                wire_uid,
-                                                wire_role_type,
-                                                std::chrono::steady_clock::now(),
-                                                metrics_opt);
+    const auto eff = hub_state_->_on_heartbeat(channel_name, wire_uid, wire_role_type,
+                                               std::chrono::steady_clock::now(), metrics_opt);
 
     // Metrics observability (HEP-CORE-0019 §2.3): when a heartbeat carries
     // a metrics object, log the stored per-presence metrics so an operator
@@ -5253,8 +5064,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
         LOGGER_INFO("[broker] event=HeartbeatMetricsStored channel='{}' "
                     "role_uid='{}' role_type='{}' producer_pid={} metrics={}",
                     channel_name, wire_uid, wire_role_type,
-                    req.value("producer_pid", std::uint64_t{0}),
-                    metrics_opt->dump());
+                    req.value("producer_pid", std::uint64_t{0}), metrics_opt->dump());
     }
 
     // HEP-CORE-0023 §2.5 telemetry — first-heartbeat observability.
@@ -5284,18 +5094,15 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
         auto ch = hub_state_->channel(channel_name);
         if (ch.has_value())
         {
-            const bool is_fan_in =
-                (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
-            const bool is_dialing_side =
-                (is_fan_in && wire_role_type == "producer") ||
-                (!is_fan_in && wire_role_type == "consumer");
+            const bool is_fan_in = (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
+            const bool is_dialing_side = (is_fan_in && wire_role_type == "producer") ||
+                                         (!is_fan_in && wire_role_type == "consumer");
             if (is_dialing_side)
             {
-                fire_channel_auth_changed_notify(
-                    socket, channel_name,
-                    /*phase=*/"live",
-                    /*role_uid=*/wire_uid,
-                    /*role_type=*/wire_role_type);
+                fire_channel_auth_changed_notify(socket, channel_name,
+                                                 /*phase=*/"live",
+                                                 /*role_uid=*/wire_uid,
+                                                 /*role_type=*/wire_role_type);
             }
         }
     }
@@ -5305,13 +5112,13 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t&        socket,
 // ENDPOINT_UPDATE_REQ handler (HEP-0021 §16)
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
-    const nlohmann::json &req, const zmq::message_t &identity)
+nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(const nlohmann::json &req,
+                                                             const zmq::message_t &identity)
 {
-    const std::string corr_id       = req.value("correlation_id", "");
-    const std::string channel_name  = req.value("channel_name", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string channel_name = req.value("channel_name", "");
     const std::string endpoint_type = req.value("endpoint_type", "");
-    const std::string endpoint      = req.value("endpoint", "");
+    const std::string endpoint = req.value("endpoint", "");
 
     if (channel_name.empty() || endpoint_type.empty() || endpoint.empty())
     {
@@ -5345,7 +5152,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     // identity mechanism.
     const std::string sender_id(static_cast<const char *>(identity.data()), identity.size());
     std::string sender_role_uid;
-    bool        sender_is_consumer_binding = false;
+    bool sender_is_consumer_binding = false;
     for (const auto &prod : entry->producers)
     {
         if (sender_id == prod.zmq_identity)
@@ -5354,8 +5161,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
             break;
         }
     }
-    if (sender_role_uid.empty() &&
-        entry->topology == pylabhub::hub::ChannelTopology::FanIn)
+    if (sender_role_uid.empty() && entry->topology == pylabhub::hub::ChannelTopology::FanIn)
     {
         for (const auto &cons : entry->consumers)
         {
@@ -5371,7 +5177,8 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     {
         LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' rejected — "
                     "sender is not a registered producer or fan-in "
-                    "consumer of the channel", channel_name);
+                    "consumer of the channel",
+                    channel_name);
         return make_error(corr_id, "NOT_CHANNEL_OWNER",
                           "Sender is not the binding side of channel '" + channel_name + "'");
     }
@@ -5385,13 +5192,15 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
         // inbox lives per-ProducerEntry; scan each.
         for (const auto &prod : entry->producers)
         {
-            if (prod.inbox_endpoint.empty()) continue;
+            if (prod.inbox_endpoint.empty())
+                continue;
             auto inbox_check = pylabhub::validate_tcp_endpoint(prod.inbox_endpoint);
             if (inbox_check.ok() && inbox_check.port == 0)
             {
                 LOGGER_ERROR("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox (producer '{}') — "
                              "current port is 0; inbox endpoint should be resolved before "
-                             "registration", channel_name, prod.role_uid);
+                             "registration",
+                             channel_name, prod.role_uid);
             }
         }
         LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox rejected — "
@@ -5405,8 +5214,7 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     if (endpoint_type != "zmq_node")
     {
         return make_error(corr_id, "UNKNOWN_ENDPOINT_TYPE",
-                          "endpoint_type must be 'zmq_node', got: '" +
-                              endpoint_type + "'");
+                          "endpoint_type must be 'zmq_node', got: '" + endpoint_type + "'");
     }
 
     // Idempotency + apply.  Two backing stores depending on which side
@@ -5415,10 +5223,10 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     //   producer                        → ProducerEntry.zmq_node_endpoint
     //     (legacy per-producer scope, HEP-CORE-0021 §16.3 — retires as
     //      producers migrate to the topology-model data_endpoint).
-    const std::string current_value = sender_is_consumer_binding
-        ? entry->data_endpoint.value_or(std::string{})
-        : entry->producer_zmq_node_endpoint(sender_role_uid)
-              .value_or(std::string{});
+    const std::string current_value =
+        sender_is_consumer_binding
+            ? entry->data_endpoint.value_or(std::string{})
+            : entry->producer_zmq_node_endpoint(sender_role_uid).value_or(std::string{});
     auto current = pylabhub::validate_tcp_endpoint(current_value);
     if (current.ok() && current.port != 0)
     {
@@ -5432,11 +5240,9 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
         {
             LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} "
                         "rejected — already set to '{}', cannot change to '{}'",
-                        channel_name, sender_role_uid, endpoint_type,
-                        current_value, endpoint);
+                        channel_name, sender_role_uid, endpoint_type, current_value, endpoint);
             return make_error(corr_id, "ENDPOINT_ALREADY_SET",
-                              endpoint_type + " endpoint already set to '" +
-                                  current_value + "'");
+                              endpoint_type + " endpoint already set to '" + current_value + "'");
         }
     }
     else
@@ -5444,12 +5250,12 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
         LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' role='{}' {} "
                     "updated to '{}'",
                     channel_name, sender_role_uid,
-                    sender_is_consumer_binding ? "consumer(binding)" : "producer",
-                    endpoint_type, endpoint);
+                    sender_is_consumer_binding ? "consumer(binding)" : "producer", endpoint_type,
+                    endpoint);
         const bool applied = sender_is_consumer_binding
-            ? hub_state_->_set_channel_data_endpoint(channel_name, endpoint)
-            : hub_state_->_set_producer_zmq_node_endpoint(
-                  channel_name, sender_role_uid, endpoint);
+                                 ? hub_state_->_set_channel_data_endpoint(channel_name, endpoint)
+                                 : hub_state_->_set_producer_zmq_node_endpoint(
+                                       channel_name, sender_role_uid, endpoint);
         if (!applied)
         {
             LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' lost the race "
@@ -5487,13 +5293,13 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
 void BrokerServiceImpl::load_hub_globals_()
 {
     const auto dirs = cfg.schema_search_dirs.empty()
-        ? pylabhub::schema::SchemaLibrary::default_search_dirs()
-        : cfg.schema_search_dirs;
+                          ? pylabhub::schema::SchemaLibrary::default_search_dirs()
+                          : cfg.schema_search_dirs;
 
     const auto entries = pylabhub::schema::load_all_from_dirs(dirs);
 
     using O = pylabhub::schema::SchemaRegOutcome;
-    std::size_t created    = 0;
+    std::size_t created = 0;
     std::size_t idempotent = 0;
     std::size_t conflicted = 0;
 
@@ -5504,35 +5310,33 @@ void BrokerServiceImpl::load_hub_globals_()
         // the SHM-header form (`SchemaInfo::hash`) is NOT used here
         // (§2.4 I6 — the two forms are different by design).
         auto rec = pylabhub::hub::to_hub_schema_record(entry);
-        const std::string id_for_log = rec.schema_id;  // captured before move
+        const std::string id_for_log = rec.schema_id; // captured before move
 
         const auto outcome = hub_state_->_on_schema_registered(std::move(rec));
         switch (outcome)
         {
-            case O::kCreated:
-                ++created;
-                break;
-            case O::kIdempotent:
-                ++idempotent;
-                break;
-            case O::kHashMismatchSelf:
-                LOGGER_WARN(
-                    "Broker: hub-global schema '{}' from '{}' rejected as "
-                    "hash_mismatch_self — another (hub, {}) entry already "
-                    "registered with a different fingerprint",
-                    id_for_log, path, id_for_log);
-                ++conflicted;
-                break;
-            case O::kForbiddenOwner:
-                // Defensive — owner is set to "hub" by to_hub_schema_record;
-                // this branch indicates an invariant violation in the
-                // translator.
-                LOGGER_ERROR(
-                    "Broker: hub-global schema '{}' from '{}' rejected as "
-                    "forbidden_owner — internal invariant violation",
-                    id_for_log, path);
-                ++conflicted;
-                break;
+        case O::kCreated:
+            ++created;
+            break;
+        case O::kIdempotent:
+            ++idempotent;
+            break;
+        case O::kHashMismatchSelf:
+            LOGGER_WARN("Broker: hub-global schema '{}' from '{}' rejected as "
+                        "hash_mismatch_self — another (hub, {}) entry already "
+                        "registered with a different fingerprint",
+                        id_for_log, path, id_for_log);
+            ++conflicted;
+            break;
+        case O::kForbiddenOwner:
+            // Defensive — owner is set to "hub" by to_hub_schema_record;
+            // this branch indicates an invariant violation in the
+            // translator.
+            LOGGER_ERROR("Broker: hub-global schema '{}' from '{}' rejected as "
+                         "forbidden_owner — internal invariant violation",
+                         id_for_log, path);
+            ++conflicted;
+            break;
         }
     }
     LOGGER_INFO("Broker: registered {} hub-global schema record(s) "
@@ -5544,7 +5348,7 @@ void BrokerServiceImpl::load_hub_globals_()
 // SCHEMA_REQ handler (HEP-CORE-0034 §10.3)
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json &req)
 {
     // Defensive: null or non-object payloads would throw inside `value()`
     // below (`json.exception.type_error.306`), which would escape past
@@ -5564,28 +5368,25 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
     // forward; the legacy `channel_name` form below is retained for
     // backward compatibility (Phase 3a clients that still ask for
     // schemas by channel).
-    const std::string req_owner     = req.value("owner", "");
+    const std::string req_owner = req.value("owner", "");
     const std::string req_schema_id = req.value("schema_id", "");
     if (!req_owner.empty() && !req_schema_id.empty())
     {
         const auto rec = hub_state_->schema(req_owner, req_schema_id);
         if (!rec.has_value())
         {
-            LOGGER_WARN("Broker: SCHEMA_REQ no record under ({}, {})",
-                        req_owner, req_schema_id);
+            LOGGER_WARN("Broker: SCHEMA_REQ no record under ({}, {})", req_owner, req_schema_id);
             return make_error(corr_id, "SCHEMA_UNKNOWN",
-                              "No schema record under (" + req_owner + ", " +
-                                  req_schema_id + ")");
+                              "No schema record under (" + req_owner + ", " + req_schema_id + ")");
         }
         nlohmann::json resp;
-        resp["status"]    = "success";
-        resp["owner"]     = rec->owner_uid;
+        resp["status"] = "success";
+        resp["owner"] = rec->owner_uid;
         resp["schema_id"] = rec->schema_id;
-        resp["packing"]   = rec->packing;
-        resp["blds"]      = rec->blds;
-        resp["schema_hash"] =
-            format_tools::bytes_to_hex({reinterpret_cast<const char *>(rec->hash.data()),
-                                         rec->hash.size()});
+        resp["packing"] = rec->packing;
+        resp["blds"] = rec->blds;
+        resp["schema_hash"] = format_tools::bytes_to_hex(
+            {reinterpret_cast<const char *>(rec->hash.data()), rec->hash.size()});
         if (!corr_id.empty())
             resp["correlation_id"] = corr_id;
         return resp;
@@ -5609,12 +5410,12 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
                           "Channel '" + channel_name + "' is not registered");
     }
     nlohmann::json resp;
-    resp["status"]       = "success";
+    resp["status"] = "success";
     resp["channel_name"] = channel_name;
-    resp["schema_id"]    = entry->schema_id;
-    resp["schema_owner"] = entry->schema_owner;  // HEP-0034 — empty for legacy channels
-    resp["blds"]         = entry->schema_blds;
-    resp["schema_hash"]  = entry->schema_hash;
+    resp["schema_id"] = entry->schema_id;
+    resp["schema_owner"] = entry->schema_owner; // HEP-0034 — empty for legacy channels
+    resp["blds"] = entry->schema_blds;
+    resp["schema_hash"] = entry->schema_hash;
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -5629,10 +5430,9 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json& req)
 nlohmann::json BrokerServiceImpl::heartbeat_ack_block() const
 {
     nlohmann::json hb;
-    hb["heartbeat_interval_ms"]    = static_cast<int64_t>(
-        cfg.heartbeat_interval.count());
-    hb["ready_miss_heartbeats"]    = cfg.ready_miss_heartbeats;
-    hb["pending_miss_heartbeats"]  = cfg.pending_miss_heartbeats;
+    hb["heartbeat_interval_ms"] = static_cast<int64_t>(cfg.heartbeat_interval.count());
+    hb["ready_miss_heartbeats"] = cfg.ready_miss_heartbeats;
+    hb["pending_miss_heartbeats"] = cfg.pending_miss_heartbeats;
     return hb;
 }
 
@@ -5640,19 +5440,19 @@ nlohmann::json BrokerServiceImpl::heartbeat_ack_block() const
 // Heartbeat timeout detection
 // ============================================================================
 
-void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
+void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t &socket)
 {
     // Two-pass role liveness state machine (HEP-CORE-0023 §2.5).
     // Pass 1: Ready -> Pending on heartbeat absence (producer presumed unresponsive).
     // Pass 2: Pending -> deregistered immediately on extended absence
     //         (no Closing/grace — producer is presumed dead, no one to wait for).
     // Timeouts are ALWAYS enforced; effective_*_timeout() is floored at 1 heartbeat.
-    const auto ready_timeout   = cfg.effective_ready_timeout();
+    const auto ready_timeout = cfg.effective_ready_timeout();
     const auto pending_timeout = cfg.effective_pending_timeout();
-    const auto attach_budget   = cfg.effective_producer_apply_wait();
+    const auto attach_budget = cfg.effective_producer_apply_wait();
 
     const auto snap = hub_state_->snapshot();
-    const auto now  = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
 
     // HEP-CORE-0042 §5.4 pending-entry timeout sweep — piggybacked on
     // the heartbeat-timeout cadence.  Runs BEFORE the Pass 1/2
@@ -5693,27 +5493,26 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     {
         std::string channel;
         std::string role_uid;
-        std::string role_type;  ///< "producer" | "consumer"
+        std::string role_type; ///< "producer" | "consumer"
     };
     std::vector<Pass1Decision> p1;
     for (const auto &[channel_name, entry] : snap.channels)
     {
         pylabhub::hub::for_each_presence_matching(
             entry, snap.roles,
-            [&](const pylabhub::hub::RolePresence &p) {
-                return p.state == pylabhub::hub::RoleState::Connected
-                    && (now - p.last_heartbeat) >= ready_timeout;
+            [&](const pylabhub::hub::RolePresence &p)
+            {
+                return p.state == pylabhub::hub::RoleState::Connected &&
+                       (now - p.last_heartbeat) >= ready_timeout;
             },
-            [&](const pylabhub::hub::PresenceSweepTarget &t) {
+            [&](const pylabhub::hub::PresenceSweepTarget &t)
+            {
                 Pass1Decision d;
-                d.channel  = t.channel;
-                d.role_uid =
-                    (t.party == pylabhub::hub::PartyKind::Producer
-                         ? t.producer->role_uid
-                         : t.consumer->role_uid);
+                d.channel = t.channel;
+                d.role_uid = (t.party == pylabhub::hub::PartyKind::Producer ? t.producer->role_uid
+                                                                            : t.consumer->role_uid);
                 d.role_type =
-                    (t.party == pylabhub::hub::PartyKind::Producer
-                         ? "producer" : "consumer");
+                    (t.party == pylabhub::hub::PartyKind::Producer ? "producer" : "consumer");
                 p1.push_back(std::move(d));
             });
     }
@@ -5766,33 +5565,35 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
     const auto snap2 = hub_state_->snapshot();
     struct Pass2Decision
     {
-        pylabhub::hub::PartyKind                       party;
-        std::string                                    channel;
-        std::string                                    role_uid;
-        pylabhub::hub::ChannelEntry                    pre_drop_channel;
-        std::optional<pylabhub::hub::ConsumerEntry>    pre_drop_consumer;
+        pylabhub::hub::PartyKind party;
+        std::string channel;
+        std::string role_uid;
+        pylabhub::hub::ChannelEntry pre_drop_channel;
+        std::optional<pylabhub::hub::ConsumerEntry> pre_drop_consumer;
     };
     for (const auto &[channel_name, entry] : snap2.channels)
     {
         std::vector<Pass2Decision> p2;
         pylabhub::hub::for_each_presence_matching(
             entry, snap2.roles,
-            [&](const pylabhub::hub::RolePresence &p) {
-                return p.state == pylabhub::hub::RoleState::Pending
-                    && (now - p.state_since) >= pending_timeout;
+            [&](const pylabhub::hub::RolePresence &p)
+            {
+                return p.state == pylabhub::hub::RoleState::Pending &&
+                       (now - p.state_since) >= pending_timeout;
             },
-            [&](const pylabhub::hub::PresenceSweepTarget &t) {
+            [&](const pylabhub::hub::PresenceSweepTarget &t)
+            {
                 Pass2Decision d;
-                d.party             = t.party;
-                d.channel           = t.channel;
-                d.pre_drop_channel  = *t.channel_entry;
+                d.party = t.party;
+                d.channel = t.channel;
+                d.pre_drop_channel = *t.channel_entry;
                 if (t.party == pylabhub::hub::PartyKind::Producer)
                 {
                     d.role_uid = t.producer->role_uid;
                 }
                 else
                 {
-                    d.role_uid          = t.consumer->role_uid;
+                    d.role_uid = t.consumer->role_uid;
                     d.pre_drop_consumer = *t.consumer;
                 }
                 p2.push_back(std::move(d));
@@ -5808,24 +5609,21 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         bool channel_torn_down = false;
         for (const auto &d : p2)
         {
-            if (d.party != pylabhub::hub::PartyKind::Producer) continue;
+            if (d.party != pylabhub::hub::PartyKind::Producer)
+                continue;
 
-            LOGGER_WARN(
-                "Broker: producer '{}' on '{}' reclaimed from Pending "
-                "(no heartbeat within {} ms)",
-                d.role_uid, d.channel, pending_timeout.count());
+            LOGGER_WARN("Broker: producer '{}' on '{}' reclaimed from Pending "
+                        "(no heartbeat within {} ms)",
+                        d.role_uid, d.channel, pending_timeout.count());
 
-            auto drop = hub_state_->_on_pending_timeout(
-                d.channel, d.role_uid, "producer");
+            auto drop = hub_state_->_on_pending_timeout(d.channel, d.role_uid, "producer");
             if (drop.removed && drop.channel_now_empty)
             {
                 // Last-producer drop → atomic channel teardown.
                 // Notify consumers + federation peers using the
                 // pre_drop snapshot (the channel record is now gone).
-                send_closing_notify(socket, d.channel, d.pre_drop_channel,
-                                    "pending_timeout");
-                on_channel_closed(socket, d.channel, d.pre_drop_channel,
-                                  "pending_timeout");
+                send_closing_notify(socket, d.channel, d.pre_drop_channel, "pending_timeout");
+                on_channel_closed(socket, d.channel, d.pre_drop_channel, "pending_timeout");
                 // HEP-CORE-0036 §6.5 + HEP-CORE-0042 §5.4: drop the
                 // channel-access record now that the channel is gone.
                 // Idempotent — safe even if _on_channel_access_opened
@@ -5848,12 +5646,13 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 // pending ATTACH_REQ_ZMQ across all producers of this
                 // channel.  Symmetric with the VoluntaryDereg last-
                 // producer path in handle_dereg_req.
-                drain_pending_attach_queue_for_channel_denied_(
-                    socket, d.channel, "channel_closing");
+                drain_pending_attach_queue_for_channel_denied_(socket, d.channel,
+                                                               "channel_closing");
                 // M1.4 (2026-05-11): no metrics_store_.erase — see
                 // comment at handle_dereg_req last-producer path.
                 LOGGER_INFO("Broker: channel '{}' torn down (last "
-                            "producer presence-timeout)", d.channel);
+                            "producer presence-timeout)",
+                            d.channel);
                 channel_torn_down = true;
                 break;
             }
@@ -5865,14 +5664,13 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
                 // with HubState::_on_pending_timeout's
                 // confirmed_version[K][P] erase (2.2 close-out) on the
                 // non-last-producer branch.
-                drain_pending_attach_queue_for_producer_denied_(
-                    socket, d.channel, d.role_uid, "producer_not_live");
+                drain_pending_attach_queue_for_producer_denied_(socket, d.channel, d.role_uid,
+                                                                "producer_not_live");
                 LOGGER_INFO("Broker: producer '{}' dropped on '{}' "
                             "(presence-timeout; {} producer(s) remain — "
                             "channel survives)",
                             d.role_uid, d.channel,
-                            static_cast<uint32_t>(
-                                d.pre_drop_channel.producer_count() - 1));
+                            static_cast<uint32_t>(d.pre_drop_channel.producer_count() - 1));
             }
         }
 
@@ -5880,20 +5678,21 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         // Skip on torn-down channels — `_on_channel_closed` already
         // demoted every consumer-presence on this channel to
         // Disconnected and the surviving consumer list is empty.
-        if (channel_torn_down) continue;
+        if (channel_torn_down)
+            continue;
 
         for (const auto &d : p2)
         {
-            if (d.party != pylabhub::hub::PartyKind::Consumer) continue;
+            if (d.party != pylabhub::hub::PartyKind::Consumer)
+                continue;
 
-            LOGGER_WARN(
-                "Broker: consumer '{}' on '{}' reclaimed from Pending "
-                "(no heartbeat within {} ms)",
-                d.role_uid, d.channel, pending_timeout.count());
+            LOGGER_WARN("Broker: consumer '{}' on '{}' reclaimed from Pending "
+                        "(no heartbeat within {} ms)",
+                        d.role_uid, d.channel, pending_timeout.count());
 
-            auto drop = hub_state_->_on_pending_timeout(
-                d.channel, d.role_uid, "consumer");
-            if (!drop.removed) continue;
+            auto drop = hub_state_->_on_pending_timeout(d.channel, d.role_uid, "consumer");
+            if (!drop.removed)
+                continue;
 
             // Fan out CONSUMER_DIED_NOTIFY with reason="heartbeat_timeout"
             // to every producer on the channel.  Producers consume the
@@ -5904,26 +5703,25 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             // `proc.` is embedded in the value) — replaces the legacy
             // `consumer_uid` field for cross-message uniformity.
             const auto &pre_drop_consumer = *d.pre_drop_consumer;
-            const auto &pre_drop_channel  = d.pre_drop_channel;
+            const auto &pre_drop_channel = d.pre_drop_channel;
             nlohmann::json notify;
-            notify["channel_name"]      = d.channel;
-            notify["role_uid"]          = pre_drop_consumer.role_uid;
-            notify["consumer_pid"]      = pre_drop_consumer.consumer_pid;
+            notify["channel_name"] = d.channel;
+            notify["role_uid"] = pre_drop_consumer.role_uid;
+            notify["consumer_pid"] = pre_drop_consumer.consumer_pid;
             notify["consumer_hostname"] = pre_drop_consumer.consumer_hostname;
-            notify["reason"]            = "heartbeat_timeout";
+            notify["reason"] = "heartbeat_timeout";
             pylabhub::hub::for_each_party_identity(
                 pre_drop_channel, pylabhub::hub::PartyKind::Producer,
-                [&](std::string_view zmq_identity,
-                    std::string_view producer_uid) {
-                    send_to_identity(socket, std::string(zmq_identity),
-                                     "CONSUMER_DIED_NOTIFY", notify);
+                [&](std::string_view zmq_identity, std::string_view producer_uid)
+                {
+                    send_to_identity(socket, std::string(zmq_identity), "CONSUMER_DIED_NOTIFY",
+                                     notify);
                     LOGGER_INFO("Broker: CONSUMER_DIED_NOTIFY to producer of '{}': "
                                 "role_uid={} reason=heartbeat_timeout target_role={}",
                                 d.channel, d.role_uid, producer_uid);
                 });
             // Federation / observer fan-out.
-            on_consumer_closed(socket, d.channel, pre_drop_consumer,
-                               "heartbeat_timeout");
+            on_consumer_closed(socket, d.channel, pre_drop_consumer, "heartbeat_timeout");
 
             // Revoke admission on reclaim.  The consumer presence has just
             // gone Pending→Disconnected on the heartbeat FSM (HEP-CORE-0023
@@ -5936,8 +5734,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
             // ConsumerEntry always carries a valid key.
             if (pre_drop_consumer.zmq_pubkey.size() == 40)
             {
-                hub_state_->_on_consumer_revoked(d.channel,
-                                                 pre_drop_consumer.zmq_pubkey);
+                hub_state_->_on_consumer_revoked(d.channel, pre_drop_consumer.zmq_pubkey);
                 fire_channel_auth_changed_notify(socket, d.channel,
                                                  /*phase=*/"left",
                                                  /*role_uid=*/pre_drop_consumer.role_uid,
@@ -5946,17 +5743,16 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t& socket)
         }
     }
 }
-void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     socket,
-                                             const std::string&                 channel_name,
-                                             const pylabhub::hub::ChannelEntry& entry,
-                                             const std::string&                 reason)
+void BrokerServiceImpl::send_closing_notify(zmq::socket_t &socket, const std::string &channel_name,
+                                            const pylabhub::hub::ChannelEntry &entry,
+                                            const std::string &reason)
 {
     nlohmann::json body;
     body["channel_name"] = channel_name;
-    body["reason"]       = reason;
+    body["reason"] = reason;
 
     // Notify all registered consumers.
-    for (const auto& consumer : entry.consumers)
+    for (const auto &consumer : entry.consumers)
     {
         if (consumer.zmq_identity.empty())
         {
@@ -5965,10 +5761,10 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
         try
         {
             send_to_identity(socket, consumer.zmq_identity, "CHANNEL_CLOSING_NOTIFY", body);
-            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->consumer pid={}",
-                        channel_name, consumer.consumer_pid);
+            LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->consumer pid={}", channel_name,
+                        consumer.consumer_pid);
         }
-        catch (const zmq::error_t& e)
+        catch (const zmq::error_t &e)
         {
             LOGGER_WARN("Broker: failed to notify consumer pid={} for '{}': {}",
                         consumer.consumer_pid, channel_name, e.what());
@@ -5978,18 +5774,18 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
     // Also notify every registered producer (HEP-CORE-0023 §2.1.1).
     for (const auto &prod : entry.producers)
     {
-        if (prod.zmq_identity.empty()) continue;
+        if (prod.zmq_identity.empty())
+            continue;
         try
         {
-            send_to_identity(socket, prod.zmq_identity, "CHANNEL_CLOSING_NOTIFY",
-                             body);
+            send_to_identity(socket, prod.zmq_identity, "CHANNEL_CLOSING_NOTIFY", body);
             LOGGER_INFO("Broker: CHANNEL_CLOSING_NOTIFY for '{}' ->producer pid={} role={}",
                         channel_name, prod.producer_pid, prod.role_uid);
         }
-        catch (const zmq::error_t& e)
+        catch (const zmq::error_t &e)
         {
-            LOGGER_WARN("Broker: failed to notify producer {} for '{}': {}",
-                        prod.role_uid, channel_name, e.what());
+            LOGGER_WARN("Broker: failed to notify producer {} for '{}': {}", prod.role_uid,
+                        channel_name, e.what());
         }
     }
 }
@@ -5998,10 +5794,10 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t&                     s
 // Role-close cleanup API (HEP-CORE-0023 §2.5)
 // ============================================================================
 
-void BrokerServiceImpl::on_channel_closed(zmq::socket_t&                     /*socket*/,
-                                           const std::string&                 channel_name,
-                                           const pylabhub::hub::ChannelEntry& entry,
-                                           const std::string&                 reason)
+void BrokerServiceImpl::on_channel_closed(zmq::socket_t & /*socket*/,
+                                          const std::string &channel_name,
+                                          const pylabhub::hub::ChannelEntry &entry,
+                                          const std::string &reason)
 {
     // Wave M3 step 5f (2026-05-11) — band cleanup MOVED from this
     // per-producer imperative loop into HubState's terminal-cleanup
@@ -6015,10 +5811,10 @@ void BrokerServiceImpl::on_channel_closed(zmq::socket_t&                     /*s
     federation_on_channel_closed(channel_name, entry, reason);
 }
 
-void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      /*socket*/,
-                                            const std::string&                  /*channel_name*/,
-                                            const pylabhub::hub::ConsumerEntry& /*consumer*/,
-                                            const std::string&                  /*reason*/)
+void BrokerServiceImpl::on_consumer_closed(zmq::socket_t & /*socket*/,
+                                           const std::string & /*channel_name*/,
+                                           const pylabhub::hub::ConsumerEntry & /*consumer*/,
+                                           const std::string & /*reason*/)
 {
     // Wave M3 step 5f (2026-05-11) — see `on_channel_closed`.  Consumer
     // role-disconnect band cleanup is also handler-driven now.  This
@@ -6027,10 +5823,9 @@ void BrokerServiceImpl::on_consumer_closed(zmq::socket_t&                      /
     // observability).
 }
 
-void BrokerServiceImpl::federation_on_channel_closed(
-    const std::string&                          /*channel_name*/,
-    const pylabhub::hub::ChannelEntry&          /*entry*/,
-    const std::string&                          /*reason*/)
+void BrokerServiceImpl::federation_on_channel_closed(const std::string & /*channel_name*/,
+                                                     const pylabhub::hub::ChannelEntry & /*entry*/,
+                                                     const std::string & /*reason*/)
 {
     // No broker-internal index to maintain (relay targets are computed
     // on-the-fly from `hub_state_->snapshot().peers`).  Stale channel-name
@@ -6039,13 +5834,13 @@ void BrokerServiceImpl::federation_on_channel_closed(
     // channel is gone, no NOTIFY arrives.
 }
 
-void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&     socket,
-                                                 const std::string& band_name,
-                                                 const std::string& role_uid,
-                                                 const std::string& role_name,
-                                                 const std::string& reason)
+void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t &socket, const std::string &band_name,
+                                               const std::string &role_uid,
+                                               const std::string &role_name,
+                                               const std::string &reason)
 {
-    if (role_uid.empty() || band_name.empty()) return;
+    if (role_uid.empty() || band_name.empty())
+        return;
     // HubState has already removed the leaving uid from band members
     // (under the writer lock, before firing this handler).  Query the
     // current member list and notify each remaining member.  If the
@@ -6053,10 +5848,11 @@ void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&     socket,
     // nullopt and there's nothing to notify.
     // Log the leave regardless of whether the band survived (matches
     // prior imperative behaviour so diagnostic output is consistent).
-    LOGGER_INFO("Broker: role '{}' removed from band '{}' (reason={})",
-                role_uid, band_name, reason);
+    LOGGER_INFO("Broker: role '{}' removed from band '{}' (reason={})", role_uid, band_name,
+                reason);
     auto remaining = hub_state_->band(band_name);
-    if (!remaining.has_value()) return;  // auto-deleted; no NOTIFY targets
+    if (!remaining.has_value())
+        return; // auto-deleted; no NOTIFY targets
     // BandLeaveNotifyBody REQUIRED fields per wire_bodies.cpp:323 =
     // {band, role_uid, role_name}.  role_name is captured pre-erase by
     // HubState::_set_band_left and threaded through the handler; empty
@@ -6064,26 +5860,26 @@ void BrokerServiceImpl::send_band_leave_notify(zmq::socket_t&     socket,
     // for wire consistency; downstream body-class construction would
     // reject on empty string anyway.
     nlohmann::json notify;
-    notify["band"]      = band_name;     // HEP-CORE-0030 §5.1 wire key
-    notify["role_uid"]  = role_uid;
+    notify["band"] = band_name; // HEP-CORE-0030 §5.1 wire key
+    notify["role_uid"] = role_uid;
     notify["role_name"] = role_name;
-    notify["reason"]    = reason;
-    for (const auto& m : remaining->members)
+    notify["reason"] = reason;
+    for (const auto &m : remaining->members)
     {
         if (!m.zmq_identity.empty())
             send_to_identity(socket, m.zmq_identity, "BAND_LEAVE_NOTIFY", notify);
     }
 }
 
-void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socket,
-                                                      const nlohmann::json& req)
+void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t &socket,
+                                                     const nlohmann::json &req)
 {
-    const auto channel   = req.value("channel_name", std::string{});
-    const auto slot      = req.value("slot_index", -1);
-    const auto pid       = req.value("reporter_pid", uint64_t{0});
+    const auto channel = req.value("channel_name", std::string{});
+    const auto slot = req.value("slot_index", -1);
+    const auto pid = req.value("reporter_pid", uint64_t{0});
     const auto error_str = req.value("error", std::string{});
-    LOGGER_WARN("Broker: Cat2 checksum error on '{}' slot={} pid={} err='{}'", channel, slot,
-                pid, error_str);
+    LOGGER_WARN("Broker: Cat2 checksum error on '{}' slot={} pid={} err='{}'", channel, slot, pid,
+                error_str);
 
     if (cfg.checksum_repair_policy == ChecksumRepairPolicy::NotifyOnly)
     {
@@ -6092,18 +5888,18 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
         {
             nlohmann::json fwd = req;
             fwd["broker_action"] = "notify_only";
-            for (const auto& consumer : entry->consumers)
+            for (const auto &consumer : entry->consumers)
             {
                 if (!consumer.zmq_identity.empty())
                 {
-                    send_to_identity(socket, consumer.zmq_identity, "CHANNEL_EVENT_NOTIFY",
-                                     fwd);
+                    send_to_identity(socket, consumer.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
                 }
             }
             // Fan-out to every producer (HEP-CORE-0023 §2.1.1).
             for (const auto &prod : entry->producers)
             {
-                if (prod.zmq_identity.empty()) continue;
+                if (prod.zmq_identity.empty())
+                    continue;
                 send_to_identity(socket, prod.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
             }
             LOGGER_INFO("Broker: CHANNEL_EVENT_NOTIFY ->all members of '{}': "
@@ -6134,12 +5930,12 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t&        socke
 // (broker emits CHANNEL_BROADCAST_DELIVER_NOTIFY to each recipient).
 // ============================================================================
 
-void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socket,
-                                                      const nlohmann::json& req)
+void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t &socket,
+                                                     const nlohmann::json &req)
 {
     const auto target_channel = req.value("target_channel", std::string{});
-    const auto sender_uid     = req.value("sender_uid",     std::string{});
-    const auto message        = req.value("message",        std::string{});
+    const auto sender_uid = req.value("sender_uid", std::string{});
+    const auto message = req.value("message", std::string{});
 
     if (target_channel.empty())
     {
@@ -6158,22 +5954,23 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
     // Build the broadcast notification body.
     nlohmann::json fwd;
     fwd["channel_name"] = target_channel;
-    fwd["event"]        = "broadcast";
-    fwd["sender_uid"]   = sender_uid;
-    fwd["message"]      = message;
+    fwd["event"] = "broadcast";
+    fwd["sender_uid"] = sender_uid;
+    fwd["message"] = message;
     if (req.contains("data") && req["data"].is_string())
         fwd["data"] = req["data"];
 
     // Fan out to ALL consumers.
-    for (const auto& consumer : entry->consumers)
+    for (const auto &consumer : entry->consumers)
     {
         if (consumer.zmq_identity.empty())
             continue;
         try
         {
-            send_to_identity(socket, consumer.zmq_identity, "CHANNEL_BROADCAST_DELIVER_NOTIFY", fwd);
+            send_to_identity(socket, consumer.zmq_identity, "CHANNEL_BROADCAST_DELIVER_NOTIFY",
+                             fwd);
         }
-        catch (const zmq::error_t& e)
+        catch (const zmq::error_t &e)
         {
             LOGGER_WARN("Broker: broadcast to consumer pid={} for '{}' failed: {}",
                         consumer.consumer_pid, target_channel, e.what());
@@ -6183,30 +5980,30 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t&        socke
     // Also send to every registered producer (HEP-CORE-0023 §2.1.1).
     for (const auto &prod : entry->producers)
     {
-        if (prod.zmq_identity.empty()) continue;
+        if (prod.zmq_identity.empty())
+            continue;
         try
         {
-            send_to_identity(socket, prod.zmq_identity,
-                             "CHANNEL_BROADCAST_DELIVER_NOTIFY", fwd);
+            send_to_identity(socket, prod.zmq_identity, "CHANNEL_BROADCAST_DELIVER_NOTIFY", fwd);
         }
-        catch (const zmq::error_t& e)
+        catch (const zmq::error_t &e)
         {
-            LOGGER_WARN("Broker: broadcast to producer {} for '{}' failed: {}",
-                        prod.role_uid, target_channel, e.what());
+            LOGGER_WARN("Broker: broadcast to producer {} for '{}' failed: {}", prod.role_uid,
+                        target_channel, e.what());
         }
     }
 
-    LOGGER_DEBUG("Broker: CHANNEL_BROADCAST_SEND_NOTIFY '{}' msg='{}' ->{} consumers + {} producer(s)",
-                 target_channel, message, entry->consumers.size(),
-                 entry->producers.size());
+    LOGGER_DEBUG(
+        "Broker: CHANNEL_BROADCAST_SEND_NOTIFY '{}' msg='{}' ->{} consumers + {} producer(s)",
+        target_channel, message, entry->consumers.size(), entry->producers.size());
 
     // HEP-CORE-0022: relay to federation peers subscribed to this channel.
     // [BR6] Use fixed event name "broadcast" and put the message in the payload field,
     // consistent with how CHANNEL_EVENT_NOTIFY delivers local broadcast events.
     const std::string data_str = req.contains("data") && req["data"].is_string()
-                                     ? req["data"].get<std::string>() : std::string{};
-    const std::string relay_payload = data_str.empty() ? message
-                                                       : message + "|" + data_str;
+                                     ? req["data"].get<std::string>()
+                                     : std::string{};
+    const std::string relay_payload = data_str.empty() ? message : message + "|" + data_str;
     relay_notify_to_peers(socket, target_channel, "broadcast", sender_uid, relay_payload);
 }
 
@@ -6222,30 +6019,28 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req(const nlohmann::json &
 
     nlohmann::json channels = nlohmann::json::array();
     const auto snap = hub_state_->snapshot();
-    for (const auto& [name, entry] : snap.channels)
+    for (const auto &[name, entry] : snap.channels)
     {
         nlohmann::json ch;
-        ch["name"]            = name;
+        ch["name"] = name;
         // Multi-producer channels (HEP-CORE-0023 §2.1.1): expose the
         // full list as `producer_uids`; `producer_uid` is the first
         // for back-compat with single-producer admin clients.
         nlohmann::json producer_uids = nlohmann::json::array();
-        for (const auto &p : entry.producers) producer_uids.push_back(p.role_uid);
-        ch["producer_uids"]  = std::move(producer_uids);
-        ch["producer_uid"]   = entry.producers.empty()
-                                   ? std::string{}
-                                   : entry.producers.front().role_uid;
+        for (const auto &p : entry.producers)
+            producer_uids.push_back(p.role_uid);
+        ch["producer_uids"] = std::move(producer_uids);
+        ch["producer_uid"] =
+            entry.producers.empty() ? std::string{} : entry.producers.front().role_uid;
         // producer_pid of the first producer (0 if none) — admin/list
         // introspection field consumed by broker-admin list tests.
-        ch["producer_pid"]   = entry.producers.empty()
-                                   ? std::uint64_t{0}
-                                   : entry.producers.front().producer_pid;
-        ch["schema_id"]      = entry.schema_id;
+        ch["producer_pid"] =
+            entry.producers.empty() ? std::uint64_t{0} : entry.producers.front().producer_pid;
+        ch["schema_id"] = entry.schema_id;
         ch["consumer_count"] = entry.consumers.size();
         // HEP-CORE-0023 §2.2 — channel state is the protocol-defined
         // `observable`, derived from the producer-presence row.
-        ch["observable"] = pylabhub::hub::to_string(
-            pylabhub::hub::observe_channel(entry, snap));
+        ch["observable"] = pylabhub::hub::to_string(pylabhub::hub::observe_channel(entry, snap));
         channels.push_back(std::move(ch));
     }
     resp["channels"] = std::move(channels);
@@ -6258,13 +6053,13 @@ nlohmann::json BrokerServiceImpl::handle_channel_list_req(const nlohmann::json &
 // ROLE_PRESENCE_REQ / ROLE_INFO_REQ (Phase 4)
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json &req)
 {
     // HEP-CORE-0007 §"ROLE_PRESENCE_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ; old `uid` form retired
     // 2026-05-09 as part of the protocol-doc-vs-code unification).
     const std::string corr_id = req.value("correlation_id", "");
-    const std::string uid     = req.value("role_uid", "");
+    const std::string uid = req.value("role_uid", "");
     if (uid.empty())
     {
         // Standard error envelope per HEP-CORE-0007 §12.3 + §12.4a
@@ -6285,32 +6080,31 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     // Scan all channels: check every producer + each consumer
     // (HEP-CORE-0023 §2.1.1 multi-producer aware).
     const auto snap = hub_state_->snapshot();
-    for (const auto& [name, entry] : snap.channels)
+    for (const auto &[name, entry] : snap.channels)
     {
         if (entry.find_producer(uid) != nullptr)
         {
             nlohmann::json resp;
             resp["present"] = true;
             resp["channel"] = name;
-            resp["role"]    = "producer";
+            resp["role"] = "producer";
             if (!corr_id.empty())
                 resp["correlation_id"] = corr_id;
-            LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as producer on '{}'",
-                         uid, name);
+            LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as producer on '{}'", uid, name);
             return resp;
         }
-        for (const auto& c : entry.consumers)
+        for (const auto &c : entry.consumers)
         {
             if (!c.role_uid.empty() && c.role_uid == uid)
             {
                 nlohmann::json resp;
                 resp["present"] = true;
                 resp["channel"] = name;
-                resp["role"]    = "consumer";
+                resp["role"] = "consumer";
                 if (!corr_id.empty())
                     resp["correlation_id"] = corr_id;
-                LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as consumer on '{}'",
-                             uid, name);
+                LOGGER_DEBUG("Broker: ROLE_PRESENCE_REQ uid='{}' found as consumer on '{}'", uid,
+                             name);
                 return resp;
             }
         }
@@ -6324,13 +6118,13 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json&
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json &req)
 {
     // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid`
     // (unified with REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ;
     // old `uid` form retired 2026-05-09).
     const std::string corr_id = req.value("correlation_id", "");
-    const std::string uid     = req.value("role_uid", "");
+    const std::string uid = req.value("role_uid", "");
     if (uid.empty())
     {
         // Standard error envelope per HEP-CORE-0007 §12.3 + §12.4a
@@ -6354,25 +6148,25 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
     // receiver's identity pubkey as curve_serverkey, so ROLE_INFO_ACK
     // carries it.  The receiver's identity pubkey is its known_roles
     // entry (single-key model I6 — same key it presents on data sockets).
-    const auto inbox_receiver_pubkey =
-        [this](const std::string &target_uid) -> std::string {
-            for (const auto &kr : cfg.known_roles)
-                if (kr.uid == target_uid)
-                    return kr.pubkey_z85;
-            return {};
-        };
+    const auto inbox_receiver_pubkey = [this](const std::string &target_uid) -> std::string
+    {
+        for (const auto &kr : cfg.known_roles)
+            if (kr.uid == target_uid)
+                return kr.pubkey_z85;
+        return {};
+    };
     const auto snap = hub_state_->snapshot();
-    for (const auto& [name, entry] : snap.channels)
+    for (const auto &[name, entry] : snap.channels)
     {
         const auto *prod = entry.find_producer(uid);
         if (prod != nullptr)
         {
             nlohmann::json resp;
-            resp["found"]           = !prod->inbox_endpoint.empty();
-            resp["channel"]         = name;
-            resp["inbox_endpoint"]  = prod->inbox_endpoint;
-            resp["inbox_packing"]   = prod->inbox_packing;
-            resp["inbox_checksum"]  = prod->inbox_checksum;
+            resp["found"] = !prod->inbox_endpoint.empty();
+            resp["channel"] = name;
+            resp["inbox_endpoint"] = prod->inbox_endpoint;
+            resp["inbox_packing"] = prod->inbox_packing;
+            resp["inbox_checksum"] = prod->inbox_checksum;
             resp["inbox_receiver_pubkey_z85"] = inbox_receiver_pubkey(uid);
             if (!prod->inbox_schema_json.empty())
             {
@@ -6401,25 +6195,25 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
             }
             if (!corr_id.empty())
                 resp["correlation_id"] = corr_id;
-            LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'",
-                         uid, name, prod->inbox_endpoint);
+            LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'", uid, name,
+                         prod->inbox_endpoint);
             return resp;
         }
     }
 
     // Search consumer entries across all channels.
-    for (const auto& [name, entry] : snap.channels)
+    for (const auto &[name, entry] : snap.channels)
     {
-        for (const auto& cons : entry.consumers)
+        for (const auto &cons : entry.consumers)
         {
             if (!cons.role_uid.empty() && cons.role_uid == uid)
             {
                 nlohmann::json resp;
-                resp["found"]           = !cons.inbox_endpoint.empty();
-                resp["channel"]         = name;
-                resp["inbox_endpoint"]  = cons.inbox_endpoint;
-                resp["inbox_packing"]   = cons.inbox_packing;
-                resp["inbox_checksum"]  = cons.inbox_checksum;
+                resp["found"] = !cons.inbox_endpoint.empty();
+                resp["channel"] = name;
+                resp["inbox_endpoint"] = cons.inbox_endpoint;
+                resp["inbox_packing"] = cons.inbox_packing;
+                resp["inbox_checksum"] = cons.inbox_checksum;
                 resp["inbox_receiver_pubkey_z85"] = inbox_receiver_pubkey(uid);
                 if (!cons.inbox_schema_json.empty())
                 {
@@ -6466,10 +6260,8 @@ nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json& req
 // send_to_identity — push unsolicited message to a connected DEALER by raw identity
 // ============================================================================
 
-void BrokerServiceImpl::send_to_identity(zmq::socket_t&        socket,
-                                          const std::string&    identity,
-                                          const std::string&    msg_type,
-                                          const nlohmann::json& body)
+void BrokerServiceImpl::send_to_identity(zmq::socket_t &socket, const std::string &identity,
+                                         const std::string &msg_type, const nlohmann::json &body)
 {
     // HEP-CORE-0046 §14 wire envelope.  Extract correlation_id from the
     // body (handlers echo it, or NOTIFY sites leave it empty — is_notify
@@ -6479,14 +6271,12 @@ void BrokerServiceImpl::send_to_identity(zmq::socket_t&        socket,
     try
     {
         zmq::multipart_t wire =
-            ::pylabhub::wire::WireEnvelope::build_router_send(
-                identity, msg_type, corr_id, body);
+            ::pylabhub::wire::WireEnvelope::build_router_send(identity, msg_type, corr_id, body);
         wire.send(socket);
     }
     catch (const std::exception &e)
     {
-        LOGGER_WARN("Broker: send_to_identity '{}' failed: {}",
-                    msg_type, e.what());
+        LOGGER_WARN("Broker: send_to_identity '{}' failed: {}", msg_type, e.what());
     }
 }
 
@@ -6494,10 +6284,8 @@ void BrokerServiceImpl::send_to_identity(zmq::socket_t&        socket,
 // Helpers
 // ============================================================================
 
-void BrokerServiceImpl::send_reply(zmq::socket_t&       socket,
-                                   const zmq::message_t& identity,
-                                   const std::string&    msg_type_ack,
-                                   const nlohmann::json& body)
+void BrokerServiceImpl::send_reply(zmq::socket_t &socket, const zmq::message_t &identity,
+                                   const std::string &msg_type_ack, const nlohmann::json &body)
 {
     LOGGER_TRACE("Broker: send {} status='{}'", msg_type_ack, body.value("status", ""));
     // HEP-CORE-0046 §14 wire envelope.  correlation_id echoed from the
@@ -6506,32 +6294,29 @@ void BrokerServiceImpl::send_reply(zmq::socket_t&       socket,
     // = corr_id).  Empty is allowed only for _NOTIFY suffix — send_reply
     // is only used for REQ replies so a missing echo is a bug we want
     // loud (envelope build will throw).
-    const std::string identity_str(
-        static_cast<const char *>(identity.data()), identity.size());
+    const std::string identity_str(static_cast<const char *>(identity.data()), identity.size());
     const std::string corr_id = body.value("correlation_id", std::string{});
     try
     {
-        zmq::multipart_t wire =
-            ::pylabhub::wire::WireEnvelope::build_router_send(
-                identity_str, msg_type_ack, corr_id, body);
+        zmq::multipart_t wire = ::pylabhub::wire::WireEnvelope::build_router_send(
+            identity_str, msg_type_ack, corr_id, body);
         wire.send(socket);
     }
     catch (const std::exception &e)
     {
-        LOGGER_WARN("Broker: send_reply '{}' failed: {}",
-                    msg_type_ack, e.what());
+        LOGGER_WARN("Broker: send_reply '{}' failed: {}", msg_type_ack, e.what());
     }
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-nlohmann::json BrokerServiceImpl::make_error(const std::string& correlation_id,
-                                              const std::string& error_code,
-                                              const std::string& message)
+nlohmann::json BrokerServiceImpl::make_error(const std::string &correlation_id,
+                                             const std::string &error_code,
+                                             const std::string &message)
 {
     nlohmann::json err;
-    err["status"]     = "error";
+    err["status"] = "error";
     err["error_code"] = error_code;
-    err["message"]    = message;
+    err["message"] = message;
     if (!correlation_id.empty())
     {
         err["correlation_id"] = correlation_id;
@@ -6543,7 +6328,7 @@ nlohmann::json BrokerServiceImpl::make_error(const std::string& correlation_id,
 // BrokerService — Pimpl delegation
 // ============================================================================
 
-BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
+BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
     : pImpl(std::make_unique<BrokerServiceImpl>())
 {
     // HEP-CORE-0035 §2 — CURVE is unconditional.
@@ -6555,15 +6340,14 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
     // programmer error (no-bypass discipline, §4.6.5).
     namespace sec = pylabhub::utils::security;
     if (!sec::sodium_ready() || !sec::secure().keys().has(sec::kHubIdentityName))
-        throw std::logic_error(
-            "BrokerService: KeyStore entry 'hub_identity' is REQUIRED "
-            "(HEP-CORE-0035 §2; HEP-CORE-0040 §172).  Production: "
-            "route through HubHost::startup (HubConfig::load_keypair "
-            "seeds the KeyStore from HubVault).  Tests: call "
-            "`pylabhub::tests::seed_curve_identities(setup)` before "
-            "building the broker.");
+        throw std::logic_error("BrokerService: KeyStore entry 'hub_identity' is REQUIRED "
+                               "(HEP-CORE-0035 §2; HEP-CORE-0040 §172).  Production: "
+                               "route through HubHost::startup (HubConfig::load_keypair "
+                               "seeds the KeyStore from HubVault).  Tests: call "
+                               "`pylabhub::tests::seed_curve_identities(setup)` before "
+                               "building the broker.");
     pImpl->cfg = std::move(cfg);
-    pImpl->hub_state_ = &state;  // non-owning; HubHost (or test fixture) owns it
+    pImpl->hub_state_ = &state; // non-owning; HubHost (or test fixture) owns it
 
     // HEP-CORE-0046 §14.5 admission binder — bind the callbacks the
     // wire::dispatch::receive_and_validate call needs.  Constructed
@@ -6578,17 +6362,16 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // hub's known_roles table (loaded from vault/known_roles.json
         // at HubHost startup, or seeded by tests).
         impl->admission_binder_.callbacks.lookup_known_role =
-            [impl](std::string_view uid, std::string_view pubkey)
-                -> ::pylabhub::admission::KnownRoleLookup {
+            [impl](std::string_view uid,
+                   std::string_view pubkey) -> ::pylabhub::admission::KnownRoleLookup
+        {
             for (const auto &kr : impl->cfg.known_roles)
             {
                 if (kr.uid == uid)
                 {
                     if (kr.pubkey_z85 == pubkey)
-                        return ::pylabhub::admission::KnownRoleLookup::
-                            binding_matches;
-                    return ::pylabhub::admission::KnownRoleLookup::
-                        pubkey_mismatch;
+                        return ::pylabhub::admission::KnownRoleLookup::binding_matches;
+                    return ::pylabhub::admission::KnownRoleLookup::pubkey_mismatch;
                 }
             }
             return ::pylabhub::admission::KnownRoleLookup::uid_unknown;
@@ -6604,20 +6387,19 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // I-REPLAY-BOUND: nonce dedup delegated to HubState's per-role
         // sliding-window map (`nonce_seen` returns true = fresh).
         impl->admission_binder_.callbacks.record_and_check_nonce =
-            [impl](std::string_view uid, std::string_view nonce) {
-                // No timestamp crosses here — the ReplayGuard owns its
-                // trusted monotonic clock (see ReplayGuard header).
-                return impl->hub_state_->nonce_seen(
-                    uid, nonce,
-                    impl->admission_binder_.context.nonce_window_ms);
-            };
+            [impl](std::string_view uid, std::string_view nonce)
+        {
+            // No timestamp crosses here — the ReplayGuard owns its
+            // trusted monotonic clock (see ReplayGuard header).
+            return impl->hub_state_->nonce_seen(uid, nonce,
+                                                impl->admission_binder_.context.nonce_window_ms);
+        };
 
-        impl->admission_binder_.callbacks.wall_now_ms = []() {
+        impl->admission_binder_.callbacks.wall_now_ms = []()
+        {
             using namespace std::chrono;
             return static_cast<std::uint64_t>(
-                duration_cast<milliseconds>(
-                    system_clock::now().time_since_epoch())
-                    .count());
+                duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
         };
 
         // Ambient context knobs.  No `broker_proto` field on
@@ -6633,7 +6415,7 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // (the tolerance bounds both the original acceptance and the
         // replay), so the nonce must be remembered that long or a late-but-
         // skew-valid replay finds its nonce pruned and is wrongly admitted.
-        impl->admission_binder_.context.nonce_window_ms   = 60'000ULL;
+        impl->admission_binder_.context.nonce_window_ms = 60'000ULL;
         impl->admission_binder_.finalize();
     }
 
@@ -6658,10 +6440,9 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         sec::secure().keys().remove("broker.observer");
         pImpl->broker_observer_pubkey_z85 =
             sec::secure().keys().generate_and_add_identity("broker.observer");
-        LOGGER_INFO(
-            "[broker] event=BrokerObserverKeypairGenerated "
-            "pubkey_z85='{}'",
-            pImpl->broker_observer_pubkey_z85);
+        LOGGER_INFO("[broker] event=BrokerObserverKeypairGenerated "
+                    "pubkey_z85='{}'",
+                    pImpl->broker_observer_pubkey_z85);
     }
     catch (const std::exception &e)
     {
@@ -6670,17 +6451,16 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState& state)
         // heartbeat-piggyback.  Log at ERROR so the degradation is
         // visible without crashing production brokers on a corner
         // case (e.g., name collision under test double-init).
-        LOGGER_ERROR(
-            "[broker] event=BrokerObserverKeypairGenerationFailed "
-            "reason='{}' (SHM metrics will fall back to heartbeat "
-            "source; HEP-CORE-0041 §D1(d) task #317 C.2.a)",
-            e.what());
+        LOGGER_ERROR("[broker] event=BrokerObserverKeypairGenerationFailed "
+                     "reason='{}' (SHM metrics will fall back to heartbeat "
+                     "source; HEP-CORE-0041 §D1(d) task #317 C.2.a)",
+                     e.what());
     }
 }
 
 BrokerService::~BrokerService() = default;
 
-const pylabhub::hub::HubState& BrokerService::hub_state() const
+const pylabhub::hub::HubState &BrokerService::hub_state() const
 {
     return *pImpl->hub_state_;
 }
@@ -6712,16 +6492,13 @@ std::string BrokerService::list_channels_json_str() const
         for (const auto &p : entry.producers)
             producer_pids.push_back(p.producer_pid);
         result.push_back(nlohmann::json{
-            {"name",           name},
-            {"schema_hash",    entry.schema_hash},
+            {"name", name},
+            {"schema_hash", entry.schema_hash},
             {"consumer_count", static_cast<int>(entry.consumers.size())},
-            {"producer_pid",   entry.producers.empty()
-                                 ? uint64_t{0}
-                                 : entry.producers.front().producer_pid},
-            {"producer_pids",  std::move(producer_pids)},
-            {"observable",     pylabhub::hub::to_string(
-                                   pylabhub::hub::observe_channel(entry, snap))}
-        });
+            {"producer_pid",
+             entry.producers.empty() ? uint64_t{0} : entry.producers.front().producer_pid},
+            {"producer_pids", std::move(producer_pids)},
+            {"observable", pylabhub::hub::to_string(pylabhub::hub::observe_channel(entry, snap))}});
     }
     return result.dump();
 }
@@ -6734,11 +6511,10 @@ ChannelSnapshot BrokerService::query_channel_snapshot() const
     for (const auto &[name, entry] : hub_snap.channels)
     {
         ChannelSnapshotEntry e;
-        e.name               = name;
-        e.observable         = pylabhub::hub::to_string(
-            pylabhub::hub::observe_channel(entry, hub_snap));
-        e.consumer_count     = static_cast<int>(entry.consumers.size());
-        e.schema_hash        = entry.schema_hash;
+        e.name = name;
+        e.observable = pylabhub::hub::to_string(pylabhub::hub::observe_channel(entry, hub_snap));
+        e.consumer_count = static_cast<int>(entry.consumers.size());
+        e.schema_hash = entry.schema_hash;
         // Multi-producer (HEP-CORE-0023 §2.1.1): parallel uid/pid
         // vectors; no first-producer back-compat scalars (retired in
         // Wave M2.5 step 2c — admin clients must iterate the lists).
@@ -6766,7 +6542,7 @@ RoleStateMetrics BrokerService::query_role_state_metrics() const
     };
 }
 
-std::string BrokerService::query_metrics_json_str(const std::string& channel) const
+std::string BrokerService::query_metrics_json_str(const std::string &channel) const
 {
     // M1.4 (2026-05-11): metrics live on HubState's per-presence rows
     // (HEP-CORE-0019 §2.3 Phase 6).  Same shape as legacy query_metrics:
@@ -6788,23 +6564,23 @@ std::string BrokerService::query_metrics_json_str(const std::string& channel) co
     return resp.dump();
 }
 
-nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json& req) const
+nlohmann::json BrokerServiceImpl::handle_shm_block_query(const nlohmann::json &req) const
 {
     return collect_shm_info(req.value("channel", ""));
 }
 
-nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) const
+nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string &channel) const
 {
     // Snapshot under HubState's own lock (inside snapshot()), then read SHM
     // outside any broker locks.  HEP-CORE-0036 §5b.4: the SHM segment name
     // is the channel name; no separate `shm_name` field exists anywhere.
     struct BlockInfo
     {
-        std::string                                channel;
-        uint64_t                                   producer_pid{0};
-        std::string                                producer_uid;
-        std::string                                producer_name;
-        std::vector<pylabhub::hub::ConsumerEntry>  consumers;
+        std::string channel;
+        uint64_t producer_pid{0};
+        std::string producer_uid;
+        std::string producer_name;
+        std::vector<pylabhub::hub::ConsumerEntry> consumers;
     };
 
     std::vector<BlockInfo> blocks;
@@ -6819,16 +6595,16 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
             if (entry.data_transport != "shm")
                 continue;
             BlockInfo bi;
-            bi.channel       = name;
+            bi.channel = name;
             // SHM channels are physically single-producer (HEP-CORE-0023
             // §2.1.1), so reading the first producer is correct here.
             if (const auto *fp = entry.first_producer())
             {
-                bi.producer_pid  = fp->producer_pid;
-                bi.producer_uid  = fp->role_uid;
+                bi.producer_pid = fp->producer_pid;
+                bi.producer_uid = fp->role_uid;
                 bi.producer_name = fp->role_name;
             }
-            bi.consumers     = entry.consumers;
+            bi.consumers = entry.consumers;
             blocks.push_back(std::move(bi));
         }
     }
@@ -6839,23 +6615,23 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
     result["status"] = "success";
     nlohmann::json arr = nlohmann::json::array();
 
-    for (const auto& bi : blocks)
+    for (const auto &bi : blocks)
     {
         nlohmann::json blk;
-        blk["channel"]  = bi.channel;
+        blk["channel"] = bi.channel;
 
         nlohmann::json prod;
-        prod["pid"]  = bi.producer_pid;
-        prod["uid"]  = bi.producer_uid;
+        prod["pid"] = bi.producer_pid;
+        prod["uid"] = bi.producer_uid;
         prod["name"] = bi.producer_name;
         blk["producer"] = std::move(prod);
 
         nlohmann::json cons_arr = nlohmann::json::array();
-        for (const auto& ce : bi.consumers)
+        for (const auto &ce : bi.consumers)
         {
             nlohmann::json c;
-            c["pid"]  = ce.consumer_pid;
-            c["uid"]  = ce.role_uid;
+            c["pid"] = ce.consumer_pid;
+            c["uid"] = ce.role_uid;
             c["name"] = ce.role_name;
             cons_arr.push_back(std::move(c));
         }
@@ -6865,31 +6641,31 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
         if (::datablock_get_metrics(bi.channel.c_str(), &m) == 0)
         {
             nlohmann::json sm;
-            sm["slot_count"]                  = m.slot_count;
-            sm["commit_index"]                = m.commit_index;
-            sm["total_slots_written"]         = m.total_slots_written;
-            sm["total_slots_read"]            = m.total_slots_read;
-            sm["total_bytes_written"]         = m.total_bytes_written;
-            sm["total_bytes_read"]            = m.total_bytes_read;
-            sm["writer_timeout_count"]        = m.writer_timeout_count;
-            sm["writer_lock_timeout_count"]   = m.writer_lock_timeout_count;
+            sm["slot_count"] = m.slot_count;
+            sm["commit_index"] = m.commit_index;
+            sm["total_slots_written"] = m.total_slots_written;
+            sm["total_slots_read"] = m.total_slots_read;
+            sm["total_bytes_written"] = m.total_bytes_written;
+            sm["total_bytes_read"] = m.total_bytes_read;
+            sm["writer_timeout_count"] = m.writer_timeout_count;
+            sm["writer_lock_timeout_count"] = m.writer_lock_timeout_count;
             sm["writer_reader_timeout_count"] = m.writer_reader_timeout_count;
-            sm["writer_blocked_total_ns"]     = m.writer_blocked_total_ns;
-            sm["write_lock_contention"]       = m.write_lock_contention;
-            sm["write_generation_wraps"]      = m.write_generation_wraps;
-            sm["reader_not_ready_count"]      = m.reader_not_ready_count;
-            sm["reader_race_detected"]        = m.reader_race_detected;
-            sm["reader_validation_failed"]    = m.reader_validation_failed;
-            sm["reader_peak_count"]           = m.reader_peak_count;
-            sm["checksum_failures"]           = m.checksum_failures;
-            sm["slot_acquire_errors"]         = m.slot_acquire_errors;
-            sm["slot_commit_errors"]          = m.slot_commit_errors;
-            sm["schema_mismatch_count"]       = m.schema_mismatch_count;
-            sm["recovery_actions_count"]      = m.recovery_actions_count;
-            sm["last_error_code"]             = m.last_error_code;
-            sm["last_error_timestamp_ns"]     = m.last_error_timestamp_ns;
-            sm["uptime_seconds"]              = m.uptime_seconds;
-            sm["creation_timestamp_ns"]       = m.creation_timestamp_ns;
+            sm["writer_blocked_total_ns"] = m.writer_blocked_total_ns;
+            sm["write_lock_contention"] = m.write_lock_contention;
+            sm["write_generation_wraps"] = m.write_generation_wraps;
+            sm["reader_not_ready_count"] = m.reader_not_ready_count;
+            sm["reader_race_detected"] = m.reader_race_detected;
+            sm["reader_validation_failed"] = m.reader_validation_failed;
+            sm["reader_peak_count"] = m.reader_peak_count;
+            sm["checksum_failures"] = m.checksum_failures;
+            sm["slot_acquire_errors"] = m.slot_acquire_errors;
+            sm["slot_commit_errors"] = m.slot_commit_errors;
+            sm["schema_mismatch_count"] = m.schema_mismatch_count;
+            sm["recovery_actions_count"] = m.recovery_actions_count;
+            sm["last_error_code"] = m.last_error_code;
+            sm["last_error_timestamp_ns"] = m.last_error_timestamp_ns;
+            sm["uptime_seconds"] = m.uptime_seconds;
+            sm["creation_timestamp_ns"] = m.creation_timestamp_ns;
             blk["shm_metrics"] = std::move(sm);
         }
         else
@@ -6904,7 +6680,7 @@ nlohmann::json BrokerServiceImpl::collect_shm_info(const std::string& channel) c
     return result;
 }
 
-std::string BrokerService::collect_shm_info_json(const std::string& channel) const
+std::string BrokerService::collect_shm_info_json(const std::string &channel) const
 {
     return pImpl->collect_shm_info(channel).dump();
 }
@@ -6929,11 +6705,9 @@ inline std::string fmt_time(std::chrono::system_clock::time_point tp)
 
 /// Predicate: identity selector matches when the list is empty (no filter)
 /// or the candidate appears in it.
-inline bool include(const std::vector<std::string> &filter,
-                     const std::string &candidate)
+inline bool include(const std::vector<std::string> &filter, const std::string &candidate)
 {
-    return filter.empty() ||
-           std::find(filter.begin(), filter.end(), candidate) != filter.end();
+    return filter.empty() || std::find(filter.begin(), filter.end(), candidate) != filter.end();
 }
 
 // Entry-type serializers (`channel_to_json` / `role_to_json` /
@@ -6945,19 +6719,17 @@ inline bool include(const std::vector<std::string> &filter,
 nlohmann::json filter_to_json(const pylabhub::hub::MetricsFilter &f)
 {
     nlohmann::json j;
-    j["categories"] = std::vector<std::string>(f.categories.begin(),
-                                                 f.categories.end());
+    j["categories"] = std::vector<std::string>(f.categories.begin(), f.categories.end());
     j["channels"] = f.channels;
-    j["roles"]    = f.roles;
-    j["bands"]    = f.bands;
-    j["peers"]    = f.peers;
+    j["roles"] = f.roles;
+    j["bands"] = f.bands;
+    j["peers"] = f.peers;
     return j;
 }
 
 } // anonymous namespace
 
-nlohmann::json
-BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
+nlohmann::json BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
 {
     namespace mc = pylabhub::hub::metrics_category;
 
@@ -6968,9 +6740,9 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
     pylabhub::hub::HubStateSnapshot snap = pImpl->hub_state_->snapshot();
 
     nlohmann::json result;
-    result["status"]     = "success";
+    result["status"] = "success";
     result["queried_at"] = fmt_time(std::chrono::system_clock::now());
-    result["filter"]     = filter_to_json(filter);
+    result["filter"] = filter_to_json(filter);
 
     // ── channels ───────────────────────────────────────────────────────
     if (filter.wants(mc::kChannel))
@@ -7054,12 +6826,10 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
                 continue;
             // Reuse the existing collector (returns {status, blocks:[...]} ).
             auto info = pImpl->collect_shm_info(ch);
-            if (info.contains("blocks") && info["blocks"].is_array() &&
-                !info["blocks"].empty())
+            if (info.contains("blocks") && info["blocks"].is_array() && !info["blocks"].empty())
             {
                 auto block = info["blocks"].front();
-                block["_collected_at"] = fmt_time(
-                    std::chrono::system_clock::now());
+                block["_collected_at"] = fmt_time(std::chrono::system_clock::now());
                 shm_blocks[ch] = std::move(block);
             }
         }
@@ -7074,13 +6844,12 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
         {
             const std::string flat = key.first + ":" + key.second;
             nlohmann::json sj;
-            sj["owner_uid"]    = key.first;
-            sj["schema_id"]    = key.second;
-            sj["packing"]      = rec.packing;
-            sj["blds"]         = rec.blds;
-            sj["hash"]         = pylabhub::format_tools::bytes_to_hex(
-                std::string_view(reinterpret_cast<const char *>(rec.hash.data()),
-                                  rec.hash.size()));
+            sj["owner_uid"] = key.first;
+            sj["schema_id"] = key.second;
+            sj["packing"] = rec.packing;
+            sj["blds"] = rec.blds;
+            sj["hash"] = pylabhub::format_tools::bytes_to_hex(
+                std::string_view(reinterpret_cast<const char *>(rec.hash.data()), rec.hash.size()));
             sj["_collected_at"] = fmt_time(rec.registered_at);
             schemas[flat] = std::move(sj);
         }
@@ -7090,24 +6859,22 @@ BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &filter) const
     return result;
 }
 
-void BrokerService::request_close_channel(const std::string& name)
+void BrokerService::request_close_channel(const std::string &name)
 {
     LOGGER_TRACE("Broker: request_close_channel('{}')", name);
     std::lock_guard<std::mutex> lk(pImpl->m_close_req_mu);
     pImpl->close_request_queue_.push_back(name);
 }
 
-void BrokerService::request_broadcast_channel(const std::string& channel,
-                                              const std::string& message,
-                                              const std::string& data)
+void BrokerService::request_broadcast_channel(const std::string &channel,
+                                              const std::string &message, const std::string &data)
 {
     std::lock_guard<std::mutex> lk(pImpl->m_broadcast_req_mu);
     pImpl->broadcast_request_queue_.push_back({channel, message, data});
 }
 
-void BrokerService::send_hub_targeted_msg(const std::string& target_hub_uid,
-                                          const std::string& channel,
-                                          const std::string& payload)
+void BrokerService::send_hub_targeted_msg(const std::string &target_hub_uid,
+                                          const std::string &channel, const std::string &payload)
 {
     std::lock_guard<std::mutex> lk(pImpl->m_hub_targeted_mu);
     pImpl->hub_targeted_queue_.push_back({target_hub_uid, channel, payload});
@@ -7161,9 +6928,8 @@ nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
 // Hub Federation handlers (HEP-CORE-0022)
 // ============================================================================
 
-void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
-                                               const zmq::message_t& identity,
-                                               const nlohmann::json& payload)
+void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t &socket, const zmq::message_t &identity,
+                                              const nlohmann::json &payload)
 {
     const std::string peer_hub_uid = payload.value("hub_uid", "");
     if (peer_hub_uid.empty())
@@ -7177,7 +6943,7 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     // Reject inbound HELLO from any hub_uid not found in cfg.peers.
     std::vector<std::string> relay_channels;
     bool peer_configured = false;
-    for (const auto& pc : cfg.peers)
+    for (const auto &pc : cfg.peers)
     {
         if (pc.hub_uid == peer_hub_uid)
         {
@@ -7198,7 +6964,7 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
         return;
     }
 
-    const std::string identity_str(static_cast<const char*>(identity.data()), identity.size());
+    const std::string identity_str(static_cast<const char *>(identity.data()), identity.size());
 
     // [BR2] If this peer was already Connected (reconnect after crash), fire
     // on_hub_disconnected for the old entry before overwriting it.  HubState's
@@ -7215,24 +6981,31 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
     }
 
     pylabhub::hub::PeerEntry pe;
-    pe.uid             = peer_hub_uid;
-    pe.zmq_identity    = identity_str;
-    pe.relay_channels  = relay_channels;
-    pe.last_seen       = std::chrono::steady_clock::now();
+    pe.uid = peer_hub_uid;
+    pe.zmq_identity = identity_str;
+    pe.relay_channels = relay_channels;
+    pe.last_seen = std::chrono::steady_clock::now();
     // state defaults to Connecting; _on_peer_connected forces Connected.
     hub_state_->_on_peer_connected(std::move(pe));
 
-    LOGGER_INFO("Broker: federation peer '{}' connected; relay_channels=[{}]",
-                peer_hub_uid, [&]{
+    LOGGER_INFO("Broker: federation peer '{}' connected; relay_channels=[{}]", peer_hub_uid,
+                [&]
+                {
                     std::string s;
-                    for (const auto& c : relay_channels) { if (!s.empty()) s+=','; s+=c; }
-                    return s; }());
+                    for (const auto &c : relay_channels)
+                    {
+                        if (!s.empty())
+                            s += ',';
+                        s += c;
+                    }
+                    return s;
+                }());
 
     // Send ACK.
     nlohmann::json ack;
-    ack["status"]            = "ok";
+    ack["status"] = "ok";
     ack["accepted_channels"] = relay_channels;
-    ack["hub_uid"]           = cfg.self_hub_uid;
+    ack["hub_uid"] = cfg.self_hub_uid;
     send_reply(socket, identity, "HUB_PEER_HELLO_ACK", ack);
 
     // [BR1] Fire on_hub_connected only if not already notified (prevents double-fire
@@ -7241,13 +7014,15 @@ void BrokerServiceImpl::handle_hub_peer_hello(zmq::socket_t&        socket,
         cfg.on_hub_connected(peer_hub_uid);
 }
 
-void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json& payload)
+void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json &payload)
 {
     const std::string peer_hub_uid = payload.value("hub_uid", "");
-    if (peer_hub_uid.empty()) return;
+    if (peer_hub_uid.empty())
+        return;
 
     auto pre = hub_state_->peer(peer_hub_uid);
-    if (!pre.has_value() || pre->state != pylabhub::hub::PeerState::Connected) return;
+    if (!pre.has_value() || pre->state != pylabhub::hub::PeerState::Connected)
+        return;
 
     // HEP-CORE-0033 §8 retention: peer entry stays with state=Disconnected;
     // observable via snapshot until grace eviction (deferred work).
@@ -7259,8 +7034,8 @@ void BrokerServiceImpl::handle_hub_peer_bye(const nlohmann::json& payload)
         cfg.on_hub_disconnected(peer_hub_uid);
 }
 
-void BrokerServiceImpl::handle_hub_peer_hello_ack(const std::string&    peer_hub_uid,
-                                                    const nlohmann::json& payload)
+void BrokerServiceImpl::handle_hub_peer_hello_ack(const std::string &peer_hub_uid,
+                                                  const nlohmann::json &payload)
 {
     const std::string status = payload.value("status", "error");
     if (status == "ok")
@@ -7272,13 +7047,12 @@ void BrokerServiceImpl::handle_hub_peer_hello_ack(const std::string&    peer_hub
     }
     else
     {
-        LOGGER_WARN("Broker: federation HUB_PEER_HELLO_ACK from '{}': status={}",
-                    peer_hub_uid, status);
+        LOGGER_WARN("Broker: federation HUB_PEER_HELLO_ACK from '{}': status={}", peer_hub_uid,
+                    status);
     }
 }
 
-void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
-                                              const nlohmann::json& payload)
+void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t &socket, const nlohmann::json &payload)
 {
     // Protocol invariant: relay=true means never re-relay to our own peers.
     // [BR7] Check dedup using O(1) set lookup; insert into ordered deque for O(expired) prune.
@@ -7295,10 +7069,10 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
         relay_dedup_queue_.push_back({msg_id, expiry});
     }
 
-    const std::string channel      = payload.value("channel_name",   "");
-    const std::string event        = payload.value("event",          "");
-    const std::string sender_uid   = payload.value("sender_uid",     "");
-    const std::string originator   = payload.value("originator_uid", "");
+    const std::string channel = payload.value("channel_name", "");
+    const std::string event = payload.value("event", "");
+    const std::string sender_uid = payload.value("sender_uid", "");
+    const std::string originator = payload.value("originator_uid", "");
 
     if (channel.empty())
     {
@@ -7319,85 +7093,92 @@ void BrokerServiceImpl::handle_hub_relay_msg(zmq::socket_t&        socket,
     // [BR3] Include originator_uid (non-empty = relayed from federation peer) so the script
     // can detect the relay origin and avoid re-notifying (which would create an app-level loop).
     nlohmann::json fwd;
-    fwd["channel_name"]   = channel;
-    fwd["event"]          = event;
-    fwd["sender_uid"]     = sender_uid;
-    fwd["originator_uid"] = originator;  // Non-empty = relayed from a federation peer
+    fwd["channel_name"] = channel;
+    fwd["event"] = event;
+    fwd["sender_uid"] = sender_uid;
+    fwd["originator_uid"] = originator; // Non-empty = relayed from a federation peer
     if (payload.contains("payload"))
         fwd["data"] = payload["payload"];
 
     for (const auto &prod : entry->producers)
     {
-        if (prod.zmq_identity.empty()) continue;
+        if (prod.zmq_identity.empty())
+            continue;
         send_to_identity(socket, prod.zmq_identity, "CHANNEL_EVENT_NOTIFY", fwd);
     }
     LOGGER_DEBUG("Broker: HUB_RELAY_MSG '{}' event='{}' from hub '{}' ->{} local producer(s)",
                  channel, event, originator, entry->producers.size());
 }
 
-void BrokerServiceImpl::handle_hub_targeted_msg(const nlohmann::json& payload)
+void BrokerServiceImpl::handle_hub_targeted_msg(const nlohmann::json &payload)
 {
     // [BR4] Log a warning so operators know targeted messages are being silently dropped.
     if (!cfg.on_hub_message)
     {
         const std::string ch = payload.value("channel_name", "?");
-        LOGGER_WARN("Broker: HUB_TARGETED_MSG for channel '{}' dropped — on_hub_message not configured",
-                    ch);
+        LOGGER_WARN(
+            "Broker: HUB_TARGETED_MSG for channel '{}' dropped — on_hub_message not configured",
+            ch);
         return;
     }
 
-    const std::string channel    = payload.value("channel_name", "");
-    const std::string p_payload  = payload.value("payload",      "");
-    const std::string sender_uid = payload.value("sender_uid",   "");
+    const std::string channel = payload.value("channel_name", "");
+    const std::string p_payload = payload.value("payload", "");
+    const std::string sender_uid = payload.value("sender_uid", "");
     cfg.on_hub_message(channel, p_payload, sender_uid);
 }
 
-void BrokerServiceImpl::relay_notify_to_peers(zmq::socket_t&     socket,
-                                               const std::string& channel,
-                                               const std::string& event,
-                                               const std::string& sender_uid,
-                                               const std::string& data)
+void BrokerServiceImpl::relay_notify_to_peers(zmq::socket_t &socket, const std::string &channel,
+                                              const std::string &event,
+                                              const std::string &sender_uid,
+                                              const std::string &data)
 {
-    if (cfg.self_hub_uid.empty()) return;
+    if (cfg.self_hub_uid.empty())
+        return;
 
     // Compute relay targets from HubState's PeerEntry data (state==Connected
     // AND channel ∈ relay_channels).  For a small N of peers this is fine;
     // a precomputed reverse index is documented as a future optimization.
     const auto snap = hub_state_->snapshot();
     std::vector<std::string> targets;
-    for (const auto& [uid, peer] : snap.peers)
+    for (const auto &[uid, peer] : snap.peers)
     {
-        if (peer.state != pylabhub::hub::PeerState::Connected) continue;
-        if (peer.zmq_identity.empty()) continue;
-        if (std::find(peer.relay_channels.begin(), peer.relay_channels.end(), channel)
-            == peer.relay_channels.end()) continue;
+        if (peer.state != pylabhub::hub::PeerState::Connected)
+            continue;
+        if (peer.zmq_identity.empty())
+            continue;
+        if (std::find(peer.relay_channels.begin(), peer.relay_channels.end(), channel) ==
+            peer.relay_channels.end())
+            continue;
         targets.push_back(peer.zmq_identity);
     }
-    if (targets.empty()) return;
+    if (targets.empty())
+        return;
 
     const std::string msg_id = cfg.self_hub_uid + ":" + std::to_string(relay_seq_++);
 
-    for (const auto& peer_identity : targets)
+    for (const auto &peer_identity : targets)
     {
         nlohmann::json relay;
-        relay["relay"]          = true;
-        relay["channel_name"]   = channel;
+        relay["relay"] = true;
+        relay["channel_name"] = channel;
         relay["originator_uid"] = cfg.self_hub_uid;
-        relay["msg_id"]         = msg_id;
-        relay["event"]          = event;
-        relay["sender_uid"]     = sender_uid;
-        if (!data.empty()) relay["payload"] = data;
+        relay["msg_id"] = msg_id;
+        relay["event"] = event;
+        relay["sender_uid"] = sender_uid;
+        if (!data.empty())
+            relay["payload"] = data;
 
         try
         {
             send_to_identity(socket, peer_identity, "HUB_RELAY_MSG", relay);
-            LOGGER_DEBUG("Broker: relayed '{}' event='{}' to peer identity '{}'",
-                         channel, event, peer_identity);
+            LOGGER_DEBUG("Broker: relayed '{}' event='{}' to peer identity '{}'", channel, event,
+                         peer_identity);
         }
-        catch (const zmq::error_t& e)
+        catch (const zmq::error_t &e)
         {
-            LOGGER_WARN("Broker: relay to peer '{}' for channel '{}' failed: {}",
-                        peer_identity, channel, e.what());
+            LOGGER_WARN("Broker: relay to peer '{}' for channel '{}' failed: {}", peer_identity,
+                        channel, e.what());
         }
     }
 }
@@ -7417,18 +7198,17 @@ void BrokerServiceImpl::prune_relay_dedup()
 // Band pub/sub handlers (HEP-CORE-0030)
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_band_join_req(
-    const nlohmann::json& req,
-    const zmq::message_t& identity,
-    zmq::socket_t& socket)
+nlohmann::json BrokerServiceImpl::handle_band_join_req(const nlohmann::json &req,
+                                                       const zmq::message_t &identity,
+                                                       zmq::socket_t &socket)
 {
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.  The C++
     // variable holds the band identifier (`!`-prefixed per §3); name
     // it `band` to match the wire and the HEP — completes the
     // 2026-04-11 rename refactor (`8d3ee1e`) for the wire layer.
-    const std::string corr_id   = req.value("correlation_id", "");
-    const std::string band      = req.value("band", "");
-    const std::string role_uid  = req.value("role_uid", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string band = req.value("band", "");
+    const std::string role_uid = req.value("role_uid", "");
     const std::string role_name = req.value("role_name", "");
 
     if (band.empty() || role_uid.empty())
@@ -7449,7 +7229,8 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     {
         LOGGER_WARN("Broker: BAND_JOIN_REQ rejected — invalid band "
                     "identifier '{}' (HEP-CORE-0030 §3 — must be "
-                    "`!`-prefixed dotted identifier)", band);
+                    "`!`-prefixed dotted identifier)",
+                    band);
         return make_error(corr_id, "INVALID_BAND_NAME",
                           "Band identifier failed validation "
                           "(HEP-CORE-0030 §3 grammar)");
@@ -7471,32 +7252,30 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     // the wire pipeline only checks `role_uid` + `channel_name`, not
     // `band`.
     if (!role_name.empty() &&
-        !pylabhub::hub::is_valid_identifier(
-            role_name, pylabhub::hub::IdentifierKind::RoleName))
+        !pylabhub::hub::is_valid_identifier(role_name, pylabhub::hub::IdentifierKind::RoleName))
     {
         LOGGER_WARN("Broker: BAND_JOIN_REQ rejected on band '{}' "
-                     "uid='{}' — invalid role_name '{}' "
-                     "(HEP-CORE-0033 §G2.2.0b)",
-                     band, role_uid, role_name);
+                    "uid='{}' — invalid role_name '{}' "
+                    "(HEP-CORE-0033 §G2.2.0b)",
+                    band, role_uid, role_name);
         return make_error(corr_id, "INVALID_REQUEST",
                           "role_name '" + role_name +
                               "' failed grammar validation "
                               "(HEP-CORE-0033 §G2.2.0b)");
     }
 
-    const std::string id_str(
-        static_cast<const char *>(identity.data()), identity.size());
+    const std::string id_str(static_cast<const char *>(identity.data()), identity.size());
 
     // Notify existing members before adding the new one.  Read from HubState
     // snapshot so the strict identifier validation has the final say on
     // which bands/members exist.
     nlohmann::json notify;
-    notify["band"]      = band;
-    notify["role_uid"]  = role_uid;
+    notify["band"] = band;
+    notify["role_uid"] = role_uid;
     notify["role_name"] = role_name;
     if (auto pre_band = hub_state_->band(band); pre_band.has_value())
     {
-        for (const auto& m : pre_band->members)
+        for (const auto &m : pre_band->members)
         {
             if (!m.zmq_identity.empty())
                 send_to_identity(socket, m.zmq_identity, "BAND_JOIN_NOTIFY", notify);
@@ -7504,8 +7283,8 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     }
 
     pylabhub::hub::BandMember member;
-    member.role_uid     = role_uid;
-    member.role_name    = role_name;
+    member.role_uid = role_uid;
+    member.role_name = role_name;
     member.zmq_identity = id_str;
     hub_state_->_on_band_joined(band, std::move(member));
 
@@ -7514,31 +7293,27 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(
     nlohmann::json members_json = nlohmann::json::array();
     if (auto post_band = hub_state_->band(band); post_band.has_value())
     {
-        for (const auto& m : post_band->members)
+        for (const auto &m : post_band->members)
         {
-            members_json.push_back({
-                {"role_uid",  m.role_uid},
-                {"role_name", m.role_name}
-            });
+            members_json.push_back({{"role_uid", m.role_uid}, {"role_name", m.role_name}});
         }
     }
 
     nlohmann::json resp;
-    resp["status"]  = "success";
-    resp["band"]    = band;
+    resp["status"] = "success";
+    resp["band"] = band;
     resp["members"] = std::move(members_json);
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_band_leave_req(
-    const nlohmann::json& req,
-    zmq::socket_t& /*socket*/)
+nlohmann::json BrokerServiceImpl::handle_band_leave_req(const nlohmann::json &req,
+                                                        zmq::socket_t & /*socket*/)
 {
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.
-    const std::string corr_id  = req.value("correlation_id", "");
-    const std::string band     = req.value("band", "");
+    const std::string corr_id = req.value("correlation_id", "");
+    const std::string band = req.value("band", "");
     const std::string role_uid = req.value("role_uid", "");
 
     if (band.empty() || role_uid.empty())
@@ -7553,7 +7328,8 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     if (!pylabhub::hub::is_valid_identifier(band, pylabhub::hub::IdentifierKind::Band))
     {
         LOGGER_WARN("Broker: BAND_LEAVE_REQ rejected — invalid band "
-                    "identifier '{}'", band);
+                    "identifier '{}'",
+                    band);
         return make_error(corr_id, "INVALID_BAND_NAME",
                           "Band identifier failed validation "
                           "(HEP-CORE-0030 §3 grammar)");
@@ -7586,9 +7362,13 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     bool was_member = false;
     if (auto pre = hub_state_->band(band); pre.has_value())
     {
-        for (const auto& m : pre->members)
+        for (const auto &m : pre->members)
         {
-            if (m.role_uid == role_uid) { was_member = true; break; }
+            if (m.role_uid == role_uid)
+            {
+                was_member = true;
+                break;
+            }
         }
     }
     if (!was_member)
@@ -7598,8 +7378,10 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
                     "membership rule)",
                     role_uid, band);
         return make_error(corr_id, "NOT_A_MEMBER",
-                          "Sender '" + role_uid + "' is not a member "
-                          "of band '" + band + "'");
+                          "Sender '" + role_uid +
+                              "' is not a member "
+                              "of band '" +
+                              band + "'");
     }
     hub_state_->_on_band_left(band, role_uid);
     LOGGER_INFO("Broker: BAND_LEAVE '{}' role='{}'", band, role_uid);
@@ -7611,20 +7393,19 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(
     return resp;
 }
 
-void BrokerServiceImpl::handle_band_broadcast_req(
-    zmq::socket_t& socket,
-    const nlohmann::json& req,
-    const zmq::message_t& /*identity*/)
+void BrokerServiceImpl::handle_band_broadcast_req(zmq::socket_t &socket, const nlohmann::json &req,
+                                                  const zmq::message_t & /*identity*/)
 {
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.
     // broker_proto 4→5 (audit R3.5b, 2026-05-19): the sender field
     // was renamed `sender_uid` → `role_uid` for consistency with all
     // other gates.  The sender IS a role, no different identifier
     // shape — uniform naming simplifies role-side code.
-    const std::string band_name = req.value("band",     "");
-    const std::string role_uid  = req.value("role_uid", "");
+    const std::string band_name = req.value("band", "");
+    const std::string role_uid = req.value("role_uid", "");
 
-    if (band_name.empty()) return;
+    if (band_name.empty())
+        return;
 
     // Audit R3.5 (2026-05-17): silent-drop on invalid identifier.
     // BAND_BROADCAST_SEND_NOTIFY is fire-and-forget so there is no error
@@ -7634,14 +7415,14 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     if (!pylabhub::hub::is_valid_identifier(band_name, pylabhub::hub::IdentifierKind::Band))
     {
         LOGGER_WARN("Broker: BAND_BROADCAST_SEND_NOTIFY dropped — invalid band "
-                    "identifier '{}' (HEP-CORE-0030 §3)", band_name);
+                    "identifier '{}' (HEP-CORE-0030 §3)",
+                    band_name);
         return;
     }
     // Audit R3.5b (2026-05-19): role_uid grammar + tag check.  Any
     // role may broadcast — accept {prod, cons, proc}.  Drop with
     // WARN log (fire-and-forget).
-    if (!pylabhub::hub::is_valid_identifier(
-            role_uid, pylabhub::hub::IdentifierKind::RoleUid))
+    if (!pylabhub::hub::is_valid_identifier(role_uid, pylabhub::hub::IdentifierKind::RoleUid))
     {
         LOGGER_WARN("Broker: BAND_BROADCAST_SEND_NOTIFY dropped on band '{}' — "
                     "invalid role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
@@ -7666,9 +7447,13 @@ void BrokerServiceImpl::handle_band_broadcast_req(
         return;
     }
     bool sender_is_member = false;
-    for (const auto& m : band->members)
+    for (const auto &m : band->members)
     {
-        if (m.role_uid == role_uid) { sender_is_member = true; break; }
+        if (m.role_uid == role_uid)
+        {
+            sender_is_member = true;
+            break;
+        }
     }
     if (!sender_is_member)
     {
@@ -7680,25 +7465,26 @@ void BrokerServiceImpl::handle_band_broadcast_req(
     }
 
     nlohmann::json notify;
-    notify["band"]      = band_name;
-    notify["role_uid"]  = role_uid;
-    notify["body"]      = req.value("body", nlohmann::json::object());
+    notify["band"] = band_name;
+    notify["role_uid"] = role_uid;
+    notify["body"] = req.value("body", nlohmann::json::object());
 
     std::size_t recipients = 0;
-    for (const auto& m : band->members)
+    for (const auto &m : band->members)
     {
-        if (m.role_uid == role_uid) continue;
-        if (m.zmq_identity.empty()) continue;
+        if (m.role_uid == role_uid)
+            continue;
+        if (m.zmq_identity.empty())
+            continue;
         send_to_identity(socket, m.zmq_identity, "BAND_BROADCAST_DELIVER_NOTIFY", notify);
         ++recipients;
     }
 
-    LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' ->{} recipients",
-                 band_name, role_uid, recipients);
+    LOGGER_DEBUG("Broker: BAND_BROADCAST '{}' from '{}' ->{} recipients", band_name, role_uid,
+                 recipients);
 }
 
-nlohmann::json BrokerServiceImpl::handle_band_members_req(
-    const nlohmann::json& req)
+nlohmann::json BrokerServiceImpl::handle_band_members_req(const nlohmann::json &req)
 {
     // Wire payload key is `band` per HEP-CORE-0030 §5.1.
     const std::string band_name = req.value("band", "");
@@ -7720,7 +7506,8 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
         !pylabhub::hub::is_valid_identifier(band_name, pylabhub::hub::IdentifierKind::Band))
     {
         LOGGER_WARN("Broker: BAND_MEMBERS_REQ rejected — invalid band "
-                    "identifier '{}'", band_name);
+                    "identifier '{}'",
+                    band_name);
         return make_error(corr_id, "INVALID_BAND_NAME",
                           "Band identifier failed validation "
                           "(HEP-CORE-0030 §3 grammar)");
@@ -7729,17 +7516,14 @@ nlohmann::json BrokerServiceImpl::handle_band_members_req(
     nlohmann::json members_json = nlohmann::json::array();
     if (auto band = hub_state_->band(band_name); band.has_value())
     {
-        for (const auto& m : band->members)
+        for (const auto &m : band->members)
         {
-            members_json.push_back({
-                {"role_uid",  m.role_uid},
-                {"role_name", m.role_name}
-            });
+            members_json.push_back({{"role_uid", m.role_uid}, {"role_name", m.role_name}});
         }
     }
 
     nlohmann::json resp;
-    resp["band"]    = band_name;
+    resp["band"] = band_name;
     resp["members"] = std::move(members_json);
     if (!corr_id.empty())
     {

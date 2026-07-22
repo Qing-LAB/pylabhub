@@ -114,7 +114,6 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
         return static_cast<AccessFlags>(static_cast<int>(a) | static_cast<int>(b));
     }
 
-
     /**
      * @class TransactionProxy
      * @brief A short-lived, rvalue-only proxy to execute a read or write transaction.
@@ -417,7 +416,8 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
     bool private_load_from_disk_unsafe(std::error_code *err_code) noexcept;
     bool private_commit_to_disk_unsafe(const nlohmann::json &snapshot,
                                        std::error_code *err_code) noexcept;
-    static void atomic_write_json(const std::filesystem::path &target, const nlohmann::json &json_snapshot,
+    static void atomic_write_json(const std::filesystem::path &target,
+                                  const nlohmann::json &json_snapshot,
                                   std::error_code *err_code) noexcept;
 
     // NEW: private helper to clear/set dirty without exposing Impl.
@@ -619,15 +619,15 @@ class PYLABHUB_UTILS_EXPORT JsonConfig
             // process holds the lock and hangs (e.g. NFS stale lock), we
             // fail with an error the caller can handle, rather than blocking
             // the entire program indefinitely.
-            constexpr int kLockRetries   = 3;
-            constexpr auto kLockTimeout  = std::chrono::seconds(2);
+            constexpr int kLockRetries = 3;
+            constexpr auto kLockTimeout = std::chrono::seconds(2);
             for (int attempt = 0; attempt < kLockRetries; ++attempt)
             {
                 fLock.emplace(path, /*is_directory=*/false, kLockTimeout);
                 if (fLock->valid())
                     break;
-                LOGGER_WARN("JsonConfig: file lock timeout on '{}' (attempt {}/{})",
-                            path.string(), attempt + 1, kLockRetries);
+                LOGGER_WARN("JsonConfig: file lock timeout on '{}' (attempt {}/{})", path.string(),
+                            attempt + 1, kLockRetries);
                 fLock.reset();
             }
             if (!fLock || !fLock->valid())

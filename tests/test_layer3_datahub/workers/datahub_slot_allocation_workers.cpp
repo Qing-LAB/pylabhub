@@ -42,8 +42,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::slot_allocation
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 static DataBlockConfig make_config(size_t logical_size, uint32_t capacity)
 {
@@ -107,8 +113,7 @@ int varied_schema_sizes_allocation()
                     << "Failed to create producer for schema_size=" << schema_sz;
 
                 // Inspect header via fd-source diagnostic handle.
-                auto diag = open_datablock_for_diagnostic_from_fd(
-                    prod.transport->borrow_fd());
+                auto diag = open_datablock_for_diagnostic_from_fd(prod.transport->borrow_fd());
                 ASSERT_NE(diag, nullptr)
                     << "Failed to open diagnostic for schema_size=" << schema_sz;
                 auto *hdr = diag->header();
@@ -118,13 +123,11 @@ int varied_schema_sizes_allocation()
                     << "schema_size=" << schema_sz
                     << " expected slot stride=" << expected_slot_stride;
 
-                EXPECT_EQ(hdr->ring_buffer_capacity, kCapacity)
-                    << "schema_size=" << schema_sz;
+                EXPECT_EQ(hdr->ring_buffer_capacity, kCapacity) << "schema_size=" << schema_sz;
 
                 size_t min_total = kCapacity * expected_slot_stride;
                 EXPECT_GE(hdr->total_block_size, min_total)
-                    << "schema_size=" << schema_sz
-                    << " total_block_size=" << hdr->total_block_size
+                    << "schema_size=" << schema_sz << " total_block_size=" << hdr->total_block_size
                     << " must be >= " << min_total;
 
                 // Verify slot buffer size matches expected stride
@@ -138,7 +141,8 @@ int varied_schema_sizes_allocation()
                 // FdBackedProducer dtor releases producer → transport.
             }
         },
-        "varied_schema_sizes_allocation", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "varied_schema_sizes_allocation", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -153,10 +157,10 @@ int ring_buffer_scaling()
         []()
         {
             // Test a representative set of capacities from 1 to 1000
-            const std::vector<uint32_t> capacities = {
-                1, 2, 3, 4, 8, 16, 32, 64, 100, 128, 256, 500, 1000};
+            const std::vector<uint32_t> capacities = {1,  2,   3,   4,   8,   16,  32,
+                                                      64, 100, 128, 256, 500, 1000};
 
-            constexpr size_t kSchemaSize = 4112; // demo-like schema
+            constexpr size_t kSchemaSize = 4112;                            // demo-like schema
             const size_t expected_stride = round_to_cacheline(kSchemaSize); // 4160
 
             for (uint32_t cap : capacities)
@@ -170,21 +174,18 @@ int ring_buffer_scaling()
                 ASSERT_NE(prod.producer, nullptr)
                     << "Failed to create producer for capacity=" << cap;
 
-                auto diag = open_datablock_for_diagnostic_from_fd(
-                    prod.transport->borrow_fd());
+                auto diag = open_datablock_for_diagnostic_from_fd(prod.transport->borrow_fd());
                 ASSERT_NE(diag, nullptr);
                 auto *hdr = diag->header();
                 ASSERT_NE(hdr, nullptr);
 
-                EXPECT_EQ(hdr->ring_buffer_capacity, cap)
-                    << "capacity=" << cap;
+                EXPECT_EQ(hdr->ring_buffer_capacity, cap) << "capacity=" << cap;
                 EXPECT_EQ(hdr->logical_unit_size, static_cast<uint32_t>(expected_stride))
                     << "capacity=" << cap;
 
                 size_t min_total = cap * expected_stride;
                 EXPECT_GE(hdr->total_block_size, min_total)
-                    << "capacity=" << cap
-                    << " total_block_size=" << hdr->total_block_size
+                    << "capacity=" << cap << " total_block_size=" << hdr->total_block_size
                     << " must be >= " << min_total;
 
                 // Verify we can acquire at least one slot
@@ -197,7 +198,8 @@ int ring_buffer_scaling()
                 // FdBackedProducer dtor releases producer → transport.
             }
         },
-        "ring_buffer_scaling", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "ring_buffer_scaling", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -240,8 +242,7 @@ int write_read_roundtrip_varied_sizes()
                 {
                     auto wh = pair.producer->acquire_write_slot(5000);
                     ASSERT_NE(wh, nullptr)
-                        << "Write acquire failed at i=" << i
-                        << " schema_size=" << schema_sz;
+                        << "Write acquire failed at i=" << i << " schema_size=" << schema_sz;
 
                     auto buf = wh->buffer_span();
                     ASSERT_EQ(buf.size_bytes(), slot_stride);
@@ -266,8 +267,7 @@ int write_read_roundtrip_varied_sizes()
                 {
                     auto rh = pair.consumer->acquire_consume_slot(5000);
                     ASSERT_NE(rh, nullptr)
-                        << "Read acquire failed at i=" << i
-                        << " schema_size=" << schema_sz;
+                        << "Read acquire failed at i=" << i << " schema_size=" << schema_sz;
 
                     auto buf = rh->buffer_span();
                     ASSERT_EQ(buf.size_bytes(), slot_stride);
@@ -277,9 +277,8 @@ int write_read_roundtrip_varied_sizes()
                     for (size_t b = 0; b < check_len; ++b)
                     {
                         uint8_t expected = static_cast<uint8_t>((i + b) & 0xFF);
-                        EXPECT_EQ(ptr[b], expected)
-                            << "Mismatch at slot=" << i << " byte=" << b
-                            << " schema_size=" << schema_sz;
+                        EXPECT_EQ(ptr[b], expected) << "Mismatch at slot=" << i << " byte=" << b
+                                                    << " schema_size=" << schema_sz;
                         if (ptr[b] != expected)
                             break; // one failure message is enough
                     }
@@ -290,8 +289,8 @@ int write_read_roundtrip_varied_sizes()
                 // FdBackedDataBlock dtor releases consumer → producer → transport.
             }
         },
-        "write_read_roundtrip_varied_sizes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "write_read_roundtrip_varied_sizes", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::slot_allocation
@@ -313,8 +312,7 @@ struct SlotAllocationWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "slot_allocation")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "slot_allocation")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::slot_allocation;
@@ -324,8 +322,7 @@ struct SlotAllocationWorkerRegistrar
                     return ring_buffer_scaling();
                 if (scenario == "write_read_roundtrip_varied_sizes")
                     return write_read_roundtrip_varied_sizes();
-                fmt::print(stderr, "ERROR: Unknown slot_allocation scenario '{}'\n",
-                           scenario);
+                fmt::print(stderr, "ERROR: Unknown slot_allocation scenario '{}'\n", scenario);
                 return 1;
             });
     }

@@ -42,8 +42,7 @@ class DatahubStressRaiiTest : public IsolatedProcessTest
 TEST_F(DatahubStressRaiiTest, MultiProcessFullCapacityStress)
 {
     // Channel name includes PID so concurrent test runs don't conflict.
-    const std::string channel =
-        "stress_raii_full_" + std::to_string(pylabhub::platform::get_pid());
+    const std::string channel = "stress_raii_full_" + std::to_string(pylabhub::platform::get_pid());
 
     // Orchestrator spawns producer + 2 consumers; coordinates via DataBlock ready signal.
     auto proc = SpawnWorker("stress_raii.multi_process_stress_orchestrator", {channel});
@@ -54,8 +53,7 @@ TEST_F(DatahubStressRaiiTest, MultiProcessFullCapacityStress)
 
 TEST_F(DatahubStressRaiiTest, SingleReaderBackpressure)
 {
-    const std::string channel =
-        "stress_raii_bp_" + std::to_string(pylabhub::platform::get_pid());
+    const std::string channel = "stress_raii_bp_" + std::to_string(pylabhub::platform::get_pid());
 
     auto proc = SpawnWorker("stress_raii.backpressure_orchestrator", {channel});
     ExpectWorkerOk(proc);

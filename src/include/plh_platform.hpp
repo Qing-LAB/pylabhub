@@ -194,7 +194,6 @@ PYLABHUB_UTILS_EXPORT void shm_close(ShmHandle *h);
  */
 PYLABHUB_UTILS_EXPORT void shm_unlink(const char *name);
 
-
 /**
  * @brief Gets the native thread ID for the calling thread.
  * @return A 64-bit unsigned integer representing the thread ID.

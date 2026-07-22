@@ -38,8 +38,8 @@
 
 namespace py = pybind11;
 using namespace pylabhub::scripting;
-using pylabhub::hub::SchemaSpec;
 using pylabhub::hub::FieldDef;
+using pylabhub::hub::SchemaSpec;
 
 // ============================================================================
 // Test fixture — one interpreter per process (pybind11 constraint)
@@ -48,10 +48,7 @@ using pylabhub::hub::FieldDef;
 class SlotViewHelpersTest : public ::testing::Test
 {
   public:
-    static void SetUpTestSuite()
-    {
-        interp_ = new py::scoped_interpreter{};
-    }
+    static void SetUpTestSuite() { interp_ = new py::scoped_interpreter{}; }
 
     static void TearDownTestSuite()
     {
@@ -75,8 +72,8 @@ SchemaSpec make_int32_spec()
     SchemaSpec spec;
     spec.has_schema = true;
 
-    spec.packing    = "aligned";
-    spec.fields     = {{"x", "int32", 1, 0}};
+    spec.packing = "aligned";
+    spec.fields = {{"x", "int32", 1, 0}};
     return spec;
 }
 
@@ -86,8 +83,8 @@ SchemaSpec make_multi_spec()
     SchemaSpec spec;
     spec.has_schema = true;
 
-    spec.packing    = "aligned";
-    spec.fields     = {{"a", "int32", 1, 0}, {"b", "float32", 1, 0}, {"c", "uint8", 4, 0}};
+    spec.packing = "aligned";
+    spec.fields = {{"a", "int32", 1, 0}, {"b", "float32", 1, 0}, {"c", "uint8", 4, 0}};
     return spec;
 }
 
@@ -96,8 +93,8 @@ SchemaSpec make_packed_uint32_spec()
     SchemaSpec spec;
     spec.has_schema = true;
 
-    spec.packing    = "packed";
-    spec.fields     = {{"val", "uint32", 1, 0}};
+    spec.packing = "packed";
+    spec.fields = {{"val", "uint32", 1, 0}};
     return spec;
 }
 
@@ -105,7 +102,7 @@ SchemaSpec make_packed_uint32_spec()
 py::object ctypes_type(const SchemaSpec &spec, const char *name, size_t &sz_out)
 {
     py::object t = build_ctypes_struct(spec, name);
-    sz_out       = ctypes_sizeof(t);
+    sz_out = ctypes_sizeof(t);
     return t;
 }
 
@@ -113,7 +110,7 @@ py::object ctypes_type(const SchemaSpec &spec, const char *name, size_t &sz_out)
 py::object ctypes_type_ro(const SchemaSpec &spec, const char *name, size_t &sz_out)
 {
     py::object t = build_ctypes_struct(spec, name);
-    sz_out       = ctypes_sizeof(t);
+    sz_out = ctypes_sizeof(t);
     return wrap_as_readonly_ctypes(t);
 }
 
@@ -142,8 +139,7 @@ TEST_F(SlotViewHelpersTest, ReadSide_NoSchema_ReturnsPyBytes)
     SchemaSpec no_schema; // has_schema = false
     std::array<uint8_t, 4> buf = {0xAA, 0xBB, 0xCC, 0xDD};
 
-    py::object result =
-        make_slot_view(no_schema, py::none(), buf.data(), 4, /*is_read_side=*/true);
+    py::object result = make_slot_view(no_schema, py::none(), buf.data(), 4, /*is_read_side=*/true);
 
     ASSERT_TRUE(py::isinstance<py::bytes>(result));
     auto raw = result.cast<std::string>();
@@ -173,9 +169,9 @@ TEST_F(SlotViewHelpersTest, WriteSide_NoSchema_ReturnsBytearray)
 
 TEST_F(SlotViewHelpersTest, WriteSide_Ctypes_CanWriteField)
 {
-    auto   spec = make_int32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type(spec, "Int32FrameW3", sz);
+    auto spec = make_int32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type(spec, "Int32FrameW3", sz);
 
     std::array<uint8_t, 4> buf = {};
     py::object inst = make_slot_view(spec, type, buf.data(), sz, /*is_read_side=*/false);
@@ -192,9 +188,9 @@ TEST_F(SlotViewHelpersTest, WriteSide_Ctypes_CanWriteField)
 
 TEST_F(SlotViewHelpersTest, WriteSide_Ctypes_WriteModifiesMemory)
 {
-    auto   spec = make_int32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type(spec, "Int32FrameW4", sz);
+    auto spec = make_int32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type(spec, "Int32FrameW4", sz);
 
     std::array<uint8_t, 4> buf = {};
     py::object inst = make_slot_view(spec, type, buf.data(), sz, /*is_read_side=*/false);
@@ -215,11 +211,11 @@ TEST_F(SlotViewHelpersTest, WriteSide_Ctypes_WriteModifiesMemory)
 
 TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_CanReadField)
 {
-    auto   spec = make_int32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type_ro(spec, "Int32FrameR5", sz);
+    auto spec = make_int32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type_ro(spec, "Int32FrameR5", sz);
 
-    int32_t    val  = 99;
+    int32_t val = 99;
     py::object inst = make_slot_view(spec, type, &val, sz, /*is_read_side=*/true);
 
     py::dict ns;
@@ -234,15 +230,15 @@ TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_CanReadField)
 
 TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_WriteRaisesAttributeError)
 {
-    auto   spec = make_int32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type_ro(spec, "Int32FrameR6", sz);
+    auto spec = make_int32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type_ro(spec, "Int32FrameR6", sz);
 
-    int32_t    val  = 0;
+    int32_t val = 0;
     py::object inst = make_slot_view(spec, type, &val, sz, /*is_read_side=*/true);
 
-    py::dict    ns;
-    ns["inst"]      = inst;
+    py::dict ns;
+    ns["inst"] = inst;
     std::string err = try_exec("inst.x = 55", ns);
 
     EXPECT_FALSE(err.empty()) << "Expected AttributeError, got no exception";
@@ -258,15 +254,15 @@ TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_WriteRaisesAttributeError)
 
 TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_ErrorMsgContainsFieldName)
 {
-    auto   spec = make_int32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type_ro(spec, "Int32FrameR7", sz);
+    auto spec = make_int32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type_ro(spec, "Int32FrameR7", sz);
 
-    int32_t    val  = 0;
+    int32_t val = 0;
     py::object inst = make_slot_view(spec, type, &val, sz, /*is_read_side=*/true);
 
-    py::dict    ns;
-    ns["inst"]      = inst;
+    py::dict ns;
+    ns["inst"] = inst;
     std::string err = try_exec("inst.x = 1", ns);
 
     EXPECT_NE(err.find("x"), std::string::npos)
@@ -283,9 +279,9 @@ TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_ErrorMsgContainsFieldName)
 
 TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_RawBufferAccess)
 {
-    auto   spec = make_int32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type_ro(spec, "Int32FrameR8", sz);
+    auto spec = make_int32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type_ro(spec, "Int32FrameR8", sz);
 
     int32_t val = 0x01020304;
     py::object inst = make_slot_view(spec, type, &val, sz, /*is_read_side=*/true);
@@ -310,9 +306,9 @@ assert len(mv) == 4, f"expected 4 elements, got {len(mv)}"
 
 TEST_F(SlotViewHelpersTest, WriteSide_Ctypes_MultiField)
 {
-    auto   spec = make_multi_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type(spec, "MultiFrameW9", sz);
+    auto spec = make_multi_spec();
+    size_t sz = 0;
+    auto type = ctypes_type(spec, "MultiFrameW9", sz);
 
     std::vector<uint8_t> buf(sz, 0);
     py::object inst = make_slot_view(spec, type, buf.data(), sz, /*is_read_side=*/false);
@@ -328,21 +324,21 @@ TEST_F(SlotViewHelpersTest, WriteSide_Ctypes_MultiField)
 
 TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_MultiField_ReadsAllFields)
 {
-    auto   spec = make_multi_spec();
-    size_t sz   = 0;
+    auto spec = make_multi_spec();
+    size_t sz = 0;
 
     // Populate via write-side view
-    auto   wtype = ctypes_type(spec, "MultiFrameW10", sz);
+    auto wtype = ctypes_type(spec, "MultiFrameW10", sz);
     std::vector<uint8_t> buf(sz, 0);
-    py::object           wobj = make_slot_view(spec, wtype, buf.data(), sz, false);
-    py::dict             wns;
+    py::object wobj = make_slot_view(spec, wtype, buf.data(), sz, false);
+    py::dict wns;
     wns["w"] = wobj;
     py::exec("w.a = -123; w.b = 2.5; w.c[0] = 77", py::globals(), wns);
 
     // Read via read-side (readonly-wrapped) view over the same buffer
-    auto   rtype = ctypes_type_ro(spec, "MultiFrameR10", sz);
+    auto rtype = ctypes_type_ro(spec, "MultiFrameR10", sz);
     py::object robj = make_slot_view(spec, rtype, buf.data(), sz, true);
-    py::dict   rns;
+    py::dict rns;
     rns["r"] = robj;
     py::exec("va = r.a; vb = r.b; vc0 = r.c[0]", py::globals(), rns);
 
@@ -357,12 +353,12 @@ TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_MultiField_ReadsAllFields)
 
 TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_AllFieldsBlockWrite)
 {
-    auto   spec = make_multi_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type_ro(spec, "MultiFrameRO11", sz);
+    auto spec = make_multi_spec();
+    size_t sz = 0;
+    auto type = ctypes_type_ro(spec, "MultiFrameRO11", sz);
 
     std::vector<uint8_t> buf(sz, 0);
-    py::object           inst = make_slot_view(spec, type, buf.data(), sz, true);
+    py::object inst = make_slot_view(spec, type, buf.data(), sz, true);
 
     py::dict ns;
     ns["inst"] = inst;
@@ -378,9 +374,9 @@ TEST_F(SlotViewHelpersTest, ReadSide_Ctypes_AllFieldsBlockWrite)
 
 TEST_F(SlotViewHelpersTest, WrapAsReadonly_StandaloneDirectTest)
 {
-    auto       spec      = make_int32_spec();
+    auto spec = make_int32_spec();
     py::object base_type = build_ctypes_struct(spec, "DirectBase12");
-    py::object ro_type   = wrap_as_readonly_ctypes(base_type);
+    py::object ro_type = wrap_as_readonly_ctypes(base_type);
 
     // Name should include "Readonly"
     std::string name = ro_type.attr("__name__").cast<std::string>();
@@ -388,16 +384,16 @@ TEST_F(SlotViewHelpersTest, WrapAsReadonly_StandaloneDirectTest)
 
     // ro_type must be a subclass of base_type
     py::module_ builtins = py::module_::import("builtins");
-    bool        is_sub   = builtins.attr("issubclass")(ro_type, base_type).cast<bool>();
+    bool is_sub = builtins.attr("issubclass")(ro_type, base_type).cast<bool>();
     EXPECT_TRUE(is_sub) << "Readonly wrapper must inherit from base ctypes struct";
 
     // Instance: writes raise, reads work
-    int32_t    val  = 5;
+    int32_t val = 5;
     py::object inst = ro_type.attr("from_buffer")(
         py::memoryview::from_memory(&val, sizeof(val), /*readonly=*/false));
 
-    py::dict    ns;
-    ns["inst"]      = inst;
+    py::dict ns;
+    ns["inst"] = inst;
     std::string err = try_exec("inst.x = 99", ns);
     EXPECT_NE(err.find("AttributeError"), std::string::npos) << "Got: " << err;
 
@@ -415,9 +411,8 @@ TEST_F(SlotViewHelpersTest, WriteSide_ArrayModule_DataZeroCopy)
 {
     // Use a writable memoryview backed by our C++ buffer
     std::array<double, 3> buf = {0.0, 0.0, 0.0};
-    auto mv = py::memoryview::from_memory(buf.data(),
-                                           static_cast<py::ssize_t>(sizeof(buf)),
-                                           /*readonly=*/false);
+    auto mv = py::memoryview::from_memory(buf.data(), static_cast<py::ssize_t>(sizeof(buf)),
+                                          /*readonly=*/false);
 
     py::dict ns;
     ns["mv"] = mv;
@@ -426,7 +421,8 @@ TEST_F(SlotViewHelpersTest, WriteSide_ArrayModule_DataZeroCopy)
     py::exec(R"(
 import struct
 struct.pack_into('ddd', mv, 0, 1.1, 2.2, 3.3)
-)", py::globals(), ns);
+)",
+             py::globals(), ns);
 
     EXPECT_DOUBLE_EQ(buf[0], 1.1);
     EXPECT_DOUBLE_EQ(buf[1], 2.2);
@@ -442,9 +438,8 @@ struct.pack_into('ddd', mv, 0, 1.1, 2.2, 3.3)
 TEST_F(SlotViewHelpersTest, ReadSide_ArrayModule_DataReadable_AndWriteBlocked)
 {
     std::array<double, 3> buf = {10.0, 20.0, 30.0};
-    auto mv = py::memoryview::from_memory(buf.data(),
-                                           static_cast<py::ssize_t>(sizeof(buf)),
-                                           /*readonly=*/true);
+    auto mv = py::memoryview::from_memory(buf.data(), static_cast<py::ssize_t>(sizeof(buf)),
+                                          /*readonly=*/true);
 
     py::dict ns;
     ns["mv"] = mv;
@@ -453,7 +448,8 @@ TEST_F(SlotViewHelpersTest, ReadSide_ArrayModule_DataReadable_AndWriteBlocked)
     py::exec(R"(
 import struct
 v0, v1, v2 = struct.unpack_from('ddd', mv, 0)
-)", py::globals(), ns);
+)",
+             py::globals(), ns);
     EXPECT_DOUBLE_EQ(ns["v0"].cast<double>(), 10.0);
     EXPECT_DOUBLE_EQ(ns["v1"].cast<double>(), 20.0);
     EXPECT_DOUBLE_EQ(ns["v2"].cast<double>(), 30.0);
@@ -462,7 +458,8 @@ v0, v1, v2 = struct.unpack_from('ddd', mv, 0)
     std::string err = try_exec(R"(
 import struct
 struct.pack_into('d', mv, 0, 99.0)
-)", ns);
+)",
+                               ns);
     EXPECT_FALSE(err.empty()) << "Expected error on write to read-only memoryview";
 
     // Backing memory must NOT have changed
@@ -475,9 +472,9 @@ struct.pack_into('d', mv, 0, 99.0)
 
 TEST_F(SlotViewHelpersTest, WriteSide_PackedStruct_CanWrite)
 {
-    auto   spec = make_packed_uint32_spec();
-    size_t sz   = 0;
-    auto   type = ctypes_type(spec, "PackedFrame15", sz);
+    auto spec = make_packed_uint32_spec();
+    size_t sz = 0;
+    auto type = ctypes_type(spec, "PackedFrame15", sz);
 
     std::array<uint8_t, 4> buf = {};
     py::object inst = make_slot_view(spec, type, buf.data(), sz, /*is_read_side=*/false);

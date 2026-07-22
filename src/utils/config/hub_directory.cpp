@@ -24,10 +24,7 @@ namespace pylabhub::utils
 
 // ── Special members ──────────────────────────────────────────────────────────
 
-HubDirectory::HubDirectory(std::filesystem::path base) noexcept
-    : base_(std::move(base))
-{
-}
+HubDirectory::HubDirectory(std::filesystem::path base) noexcept : base_(std::move(base)) {}
 HubDirectory::~HubDirectory() = default;
 HubDirectory::HubDirectory(HubDirectory &&) noexcept = default;
 HubDirectory &HubDirectory::operator=(HubDirectory &&) noexcept = default;
@@ -53,9 +50,8 @@ HubDirectory HubDirectory::create(const std::filesystem::path &base)
         std::error_code ec;
         fs::create_directories(p, ec);
         if (ec)
-            throw std::runtime_error(
-                "HubDirectory: cannot create directory '" + p.string() +
-                "': " + ec.message());
+            throw std::runtime_error("HubDirectory: cannot create directory '" + p.string() +
+                                     "': " + ec.message());
     };
 
     make_dir(base / "logs");
@@ -70,9 +66,7 @@ HubDirectory HubDirectory::create(const std::filesystem::path &base)
     if (::chmod(vp.c_str(), 0700) != 0)
     {
         // Non-fatal: vault was created; warn but don't abort.
-        std::fprintf(stderr,
-                     "[hub_dir] Warning: could not set 0700 on vault '%s'\n",
-                     vp.c_str());
+        std::fprintf(stderr, "[hub_dir] Warning: could not set 0700 on vault '%s'\n", vp.c_str());
     }
 #endif
 
@@ -82,14 +76,12 @@ HubDirectory HubDirectory::create(const std::filesystem::path &base)
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
 std::filesystem::path HubDirectory::script_entry(std::string_view script_path,
-                                                  std::string_view type) const
+                                                 std::string_view type) const
 {
     namespace fs = std::filesystem;
 
     const fs::path sp(script_path);
-    const fs::path resolved = sp.is_absolute()
-                              ? sp
-                              : fs::weakly_canonical(base_ / sp);
+    const fs::path resolved = sp.is_absolute() ? sp : fs::weakly_canonical(base_ / sp);
 
     // Mirrors RoleDirectory::script_entry — Python: __init__.py, Lua: init.lua.
     const char *entry = (type == "lua") ? "init.lua" : "__init__.py";
@@ -101,8 +93,7 @@ std::filesystem::path HubDirectory::script_entry(std::string_view script_path,
 bool HubDirectory::has_standard_layout() const
 {
     namespace fs = std::filesystem;
-    return fs::is_directory(base_ / "logs") &&
-           fs::is_directory(base_ / "run") &&
+    return fs::is_directory(base_ / "logs") && fs::is_directory(base_ / "run") &&
            fs::is_directory(base_ / "vault");
     // script/ and schemas/ are OPTIONAL per HEP-0033 §7 — not checked.
 }
@@ -110,15 +101,14 @@ bool HubDirectory::has_standard_layout() const
 // ── Security diagnostics ──────────────────────────────────────────────────────
 
 void HubDirectory::warn_if_keyfile_in_hub_dir(const std::filesystem::path &hub_base,
-                                                const std::string           &keyfile)
+                                              const std::string &keyfile)
 {
     // Containment check (canonicalize both, component-wise prefix
     // compare) lives in the shared security utility next to
     // `resolve_keyfile_path`; the threat-model narrative below is
     // hub-specific and stays here.
     std::string canonicalize_err;
-    if (!pylabhub::utils::security::keyfile_inside_base_dir(
-            keyfile, hub_base, &canonicalize_err))
+    if (!pylabhub::utils::security::keyfile_inside_base_dir(keyfile, hub_base, &canonicalize_err))
     {
         // Surface a soft warn if canonicalization failed so the
         // operator isn't left in the dark about a check that quietly
@@ -163,18 +153,18 @@ namespace
 /// auth/access fields deferred to HEP-0035).  The vault filename
 /// embeds the hub UID (HEP-CORE-0033 §6.5 — revised 2026-05-31) so
 /// multiple hubs sharing a vault directory do not collide.
-nlohmann::json build_hub_json_template(const std::string &uid,
-                                        const std::string &name)
+nlohmann::json build_hub_json_template(const std::string &uid, const std::string &name)
 {
     return nlohmann::json{
-        {"hub", {
-            {"uid",       uid},
-            {"name",      name},
-            {"log_level", "info"},
-            {"auth",      {{"keyfile", "vault/" + uid + ".vault"}}},
-        }},
-        {"script",               {{"type", "python"}, {"path", "."}}},
-        {"python_venv",          ""},
+        {"hub",
+         {
+             {"uid", uid},
+             {"name", name},
+             {"log_level", "info"},
+             {"auth", {{"keyfile", "vault/" + uid + ".vault"}}},
+         }},
+        {"script", {{"type", "python"}, {"path", "."}}},
+        {"python_venv", ""},
         {"stop_on_script_error", false},
         // Hub script tick (HEP-CORE-0033 Phase 7).  Same shape and
         // semantics as the role-side data loop's pacing — see
@@ -182,59 +172,64 @@ nlohmann::json build_hub_json_template(const std::string &uid,
         // gives `on_tick(api)` once per second; switch to `max_rate`
         // for continuous polling, or omit/raise the period for slower
         // ticks.  `loop_timing` is REQUIRED at parse time.
-        {"loop_timing",          "fixed_rate"},
-        {"target_period_ms",     1000},
-        {"logging", {
-            {"file_path",    ""},
-            {"max_size_mb",  10},
-            {"backups",      5},
-            {"timestamped",  true},
-        }},
-        {"network", {
-            // Default to loopback so single-machine demos work out of
-            // the box.  The same string is read by role-side
-            // `HubRefConfig::parse_hub_ref_config` as the *connect*
-            // target — `tcp://0.0.0.0:5570` would have been a correct
-            // bind address but an unreachable connect target.
-            // Operators deploying cross-host edit this to the hub's
-            // externally-visible address.  See HEP-CORE-0033 §6.2.
-            {"broker_endpoint", "tcp://127.0.0.1:5570"},
-            {"broker_bind",     true},
-            {"zmq_io_threads",  1},
-        }},
-        {"admin", {
-            {"enabled",        true},
-            {"endpoint",       "tcp://127.0.0.1:5600"},
-        }},
-        {"broker", {
-            {"heartbeat_interval_ms",   ::pylabhub::kDefaultHeartbeatIntervalMs},
-            {"ready_miss_heartbeats",   ::pylabhub::kDefaultReadyMissHeartbeats},
-            {"pending_miss_heartbeats", ::pylabhub::kDefaultPendingMissHeartbeats},
-        }},
-        {"federation", {
-            {"enabled",            false},
-            {"peers",              nlohmann::json::array()},
-            {"forward_timeout_ms", 2000},
-        }},
-        {"state", {
-            {"disconnected_grace_ms",    60000},
-            {"max_disconnected_entries", 1000},
-        }},
+        {"loop_timing", "fixed_rate"},
+        {"target_period_ms", 1000},
+        {"logging",
+         {
+             {"file_path", ""},
+             {"max_size_mb", 10},
+             {"backups", 5},
+             {"timestamped", true},
+         }},
+        {"network",
+         {
+             // Default to loopback so single-machine demos work out of
+             // the box.  The same string is read by role-side
+             // `HubRefConfig::parse_hub_ref_config` as the *connect*
+             // target — `tcp://0.0.0.0:5570` would have been a correct
+             // bind address but an unreachable connect target.
+             // Operators deploying cross-host edit this to the hub's
+             // externally-visible address.  See HEP-CORE-0033 §6.2.
+             {"broker_endpoint", "tcp://127.0.0.1:5570"},
+             {"broker_bind", true},
+             {"zmq_io_threads", 1},
+         }},
+        {"admin",
+         {
+             {"enabled", true},
+             {"endpoint", "tcp://127.0.0.1:5600"},
+         }},
+        {"broker",
+         {
+             {"heartbeat_interval_ms", ::pylabhub::kDefaultHeartbeatIntervalMs},
+             {"ready_miss_heartbeats", ::pylabhub::kDefaultReadyMissHeartbeats},
+             {"pending_miss_heartbeats", ::pylabhub::kDefaultPendingMissHeartbeats},
+         }},
+        {"federation",
+         {
+             {"enabled", false},
+             {"peers", nlohmann::json::array()},
+             {"forward_timeout_ms", 2000},
+         }},
+        {"state",
+         {
+             {"disconnected_grace_ms", 60000},
+             {"max_disconnected_entries", 1000},
+         }},
     };
 }
 
 } // namespace
 
-int HubDirectory::init_directory(const std::filesystem::path &dir,
-                                  const std::string &name,
-                                  const LogInitOverrides &log)
+int HubDirectory::init_directory(const std::filesystem::path &dir, const std::string &name,
+                                 const LogInitOverrides &log)
 {
     namespace fs = std::filesystem;
 
     if (name.empty())
     {
         fmt::print(stderr, "init_directory: error: hub name is required — "
-                   "caller must resolve name before calling init_directory()\n");
+                           "caller must resolve name before calling init_directory()\n");
         return 1;
     }
 
@@ -243,7 +238,8 @@ int HubDirectory::init_directory(const std::filesystem::path &dir,
     const fs::path json_path = target_dir / "hub.json";
     if (fs::exists(json_path))
     {
-        fmt::print(stderr, "init_directory: error: hub.json already exists at "
+        fmt::print(stderr,
+                   "init_directory: error: hub.json already exists at "
                    "'{}'. Remove it first or choose a different directory.\n",
                    json_path.string());
         return 1;
@@ -272,13 +268,11 @@ int HubDirectory::init_directory(const std::filesystem::path &dir,
     if (log.backups.has_value())
         j["logging"]["backups"] = *log.backups;
 
-
     {
         std::ofstream out(json_path);
         if (!out)
         {
-            fmt::print(stderr, "init_directory: error: cannot write '{}'\n",
-                       json_path.string());
+            fmt::print(stderr, "init_directory: error: cannot write '{}'\n", json_path.string());
             return 1;
         }
         out << j.dump(2) << "\n";

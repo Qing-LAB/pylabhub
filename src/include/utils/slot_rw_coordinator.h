@@ -28,7 +28,7 @@ namespace pylabhub::hub
 {
 struct SlotRWState;
 struct SharedMemoryHeader;
-}
+} // namespace pylabhub::hub
 #endif
 
 #ifdef __cplusplus
@@ -51,11 +51,12 @@ extern "C"
     /**
      * @brief Acquires a write lock for a SlotRWState.
      * @param rw_state Pointer to the SlotRWState structure in shared memory.
-     * @param timeout_ms Maximum time to wait in milliseconds. 0 = non-blocking, -1 = no timeout (wait forever), >0 = wait up to N ms.
+     * @param timeout_ms Maximum time to wait in milliseconds. 0 = non-blocking, -1 = no timeout
+     * (wait forever), >0 = wait up to N ms.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    SlotAcquireResult slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT SlotAcquireResult
+    slot_rw_acquire_write(pylabhub::hub::SlotRWState *rw_state, int timeout_ms);
 
     /**
      * @brief Commits data written to a slot, making it visible to readers.
@@ -78,9 +79,8 @@ extern "C"
      * @param out_generation Pointer to a uint64_t to store the captured write generation.
      * @return SLOT_ACQUIRE_OK on success, or an error code.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    SlotAcquireResult slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state,
-                                           uint64_t *out_generation);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT SlotAcquireResult
+    slot_rw_acquire_read(pylabhub::hub::SlotRWState *rw_state, uint64_t *out_generation);
 
     /**
      * @brief Validates that a slot has not been overwritten since read acquisition.
@@ -88,8 +88,8 @@ extern "C"
      * @param generation The write generation captured during acquire_read.
      * @return true if the slot is still valid, false if it was overwritten.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    bool slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT bool
+    slot_rw_validate_read(pylabhub::hub::SlotRWState *rw_state, uint64_t generation);
 
     /**
      * @brief Releases previously acquired read access to a slot.
@@ -109,8 +109,8 @@ extern "C"
     typedef struct
     {
         /* State snapshot (not reset by reset_metrics) */
-        uint64_t commit_index;  /**< Last committed slot id (monotonic). */
-        uint32_t slot_count;    /**< Ring buffer capacity (number of slots). */
+        uint64_t commit_index; /**< Last committed slot id (monotonic). */
+        uint32_t slot_count;   /**< Ring buffer capacity (number of slots). */
         uint32_t _reserved_metrics_pad;
         /* Metrics (reset by slot_rw_reset_metrics) */
         uint64_t writer_timeout_count;
@@ -137,7 +137,7 @@ extern "C"
         uint64_t heartbeat_sent_count;
         uint64_t heartbeat_failed_count;
         uint64_t last_heartbeat_ns;
-        uint64_t total_slots_written;  /**< Total commits so far (0 = no commits yet). */
+        uint64_t total_slots_written; /**< Total commits so far (0 = no commits yet). */
         uint64_t total_slots_read;
         uint64_t total_bytes_written;
         uint64_t total_bytes_read;
@@ -147,26 +147,26 @@ extern "C"
 
     /**
      * @brief Retrieves current metrics and state snapshot from the shared memory header.
-     * 
+     *
      * Provides a comprehensive snapshot of DataBlock performance and error metrics:
      * - **State**: commit_index (last committed slot), slot_count (ring buffer capacity)
      * - **Writer metrics**: Various timeout counts, lock contention, blocked time
      * - **Reader metrics**: Race detection, validation failures, peak concurrent readers
      * - **Error tracking**: Last error timestamp, error codes, sequence numbers
      * - **Performance**: Total slots/bytes written and read, uptime, creation timestamp
-     * 
+     *
      * This function uses relaxed memory ordering for efficient snapshots. Metrics are
      * consistent within reasonable bounds but may not reflect absolute ordering with
      * concurrent operations.
-     * 
+     *
      * @param shared_memory_header Pointer to the SharedMemoryHeader (must not be null).
      * @param out_metrics Pointer to a DataBlockMetrics struct to fill (must not be null).
      * @return 0 on success, -1 if either pointer is null.
-     * 
+     *
      * @note This is a C API function - no exceptions, returns error codes.
      * @note Thread-safe and can be called concurrently with normal operations.
      * @note For C++ API, use DataBlockProducer::get_metrics() or DataBlockConsumer::get_metrics()
-     * 
+     *
      * @par Usage from C++
      * @code
      * auto header = get_shared_memory_header();  // From your access method
@@ -177,40 +177,40 @@ extern "C"
      * }
      * @endcode
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    int slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
-                            DataBlockMetrics *out_metrics);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    slot_rw_get_metrics(const pylabhub::hub::SharedMemoryHeader *shared_memory_header,
+                        DataBlockMetrics *out_metrics);
 
     /**
      * @brief Resets all metric counters in the shared memory header to zero.
-     * 
+     *
      * Resets performance and error counters while preserving state information:
      * - **Reset**: All timeout counts, contention metrics, error counts, performance counters
      * - **Preserved**: commit_index, slot_count (state snapshot fields in DataBlockMetrics)
-     * 
+     *
      * Useful for measuring metrics over specific time intervals or after resolving issues.
-     * 
+     *
      * @param shared_memory_header Pointer to the SharedMemoryHeader (must not be null).
      * @return 0 on success, -1 if pointer is null.
-     * 
+     *
      * @warning Use cautiously in production - resets diagnostic history.
      * @note This is a C API function - no exceptions, returns error codes.
      * @note Thread-safe but should be coordinated with monitoring systems.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    int slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    slot_rw_reset_metrics(pylabhub::hub::SharedMemoryHeader *shared_memory_header);
 
     /**
      * @brief Lightweight accessors for single values (one load each). Use instead of full
      * slot_rw_get_metrics() when only one or a few values are needed (e.g. "has any commit?").
      * @return 0 if header is null or invalid; otherwise the stored value.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    uint64_t slot_rw_get_total_slots_written(const pylabhub::hub::SharedMemoryHeader *header);
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    uint64_t slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header);
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    uint32_t slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT uint64_t
+    slot_rw_get_total_slots_written(const pylabhub::hub::SharedMemoryHeader *header);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT uint64_t
+    slot_rw_get_commit_index(const pylabhub::hub::SharedMemoryHeader *header);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT uint32_t
+    slot_rw_get_slot_count(const pylabhub::hub::SharedMemoryHeader *header);
 
     // === Identity API ===
 
@@ -222,9 +222,9 @@ extern "C"
      */
     typedef struct
     {
-        char hub_uid[40];       ///< Hub unique ID (null-terminated hex string; empty = not set)
-        char hub_name[64];      ///< Hub human-readable name (null-terminated; empty = not set)
-        char producer_uid[40];  ///< Producer unique ID (null-terminated hex string; empty = not set)
+        char hub_uid[40];      ///< Hub unique ID (null-terminated hex string; empty = not set)
+        char hub_name[64];     ///< Hub human-readable name (null-terminated; empty = not set)
+        char producer_uid[40]; ///< Producer unique ID (null-terminated hex string; empty = not set)
         char producer_name[64]; ///< Producer human-readable name (null-terminated; empty = not set)
     } plh_channel_identity_t;
 
@@ -236,9 +236,9 @@ extern "C"
      */
     typedef struct
     {
-        char consumer_uid[40];      ///< Consumer unique ID (null-terminated hex string; empty = not set)
-        char consumer_name[32];     ///< Consumer human-readable name (null-terminated; empty = not set)
-        uint64_t consumer_pid;      ///< Consumer OS PID (never 0 in a valid entry)
+        char consumer_uid[40]; ///< Consumer unique ID (null-terminated hex string; empty = not set)
+        char consumer_name[32]; ///< Consumer human-readable name (null-terminated; empty = not set)
+        uint64_t consumer_pid;  ///< Consumer OS PID (never 0 in a valid entry)
         uint64_t last_heartbeat_ns; ///< Last heartbeat monotonic timestamp (ns; 0 = no heartbeat)
         int slot_index;             ///< Heartbeat slot index [0, MAX_CONSUMER_HEARTBEATS)
     } plh_consumer_identity_t;
@@ -253,9 +253,9 @@ extern "C"
      * @param out    Pointer to a plh_channel_identity_t struct to fill (must not be null).
      * @return 0 on success, -1 if either pointer is null.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    int slot_rw_get_channel_identity(const pylabhub::hub::SharedMemoryHeader *header,
-                                     plh_channel_identity_t *out);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    slot_rw_get_channel_identity(const pylabhub::hub::SharedMemoryHeader *header,
+                                 plh_channel_identity_t *out);
 
     /**
      * @brief Lists all active consumers currently registered in the heartbeat table.
@@ -269,11 +269,9 @@ extern "C"
      * @param out_count       Set to the number of entries written (must not be null).
      * @return 0 on success, -1 on invalid arguments.
      */
-    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT
-    int slot_rw_list_consumers(const pylabhub::hub::SharedMemoryHeader *header,
-                               plh_consumer_identity_t *out_array,
-                               int array_capacity,
-                               int *out_count);
+    PYLABHUB_NODISCARD PYLABHUB_UTILS_EXPORT int
+    slot_rw_list_consumers(const pylabhub::hub::SharedMemoryHeader *header,
+                           plh_consumer_identity_t *out_array, int array_capacity, int *out_count);
 
     // === Error Handling ===
     /**

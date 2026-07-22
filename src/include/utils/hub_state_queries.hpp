@@ -46,7 +46,11 @@ namespace pylabhub::hub
 
 /// Distinguishes which side of a channel a helper is walking.
 /// Used by `for_each_party_identity` and `PresenceSweepTarget`.
-enum class PartyKind { Producer, Consumer };
+enum class PartyKind
+{
+    Producer,
+    Consumer
+};
 
 /// Result of `find_role_attachments` — one entry per `(channel,
 /// role_type)` row the role is attached to.  Exactly one of
@@ -54,10 +58,10 @@ enum class PartyKind { Producer, Consumer };
 /// role is NOT attached as on this channel).
 struct RoleAttachment
 {
-    std::string           channel;
-    std::string           role_type;            ///< "producer" | "consumer"
-    const ProducerEntry  *producer{nullptr};
-    const ConsumerEntry  *consumer{nullptr};
+    std::string channel;
+    std::string role_type; ///< "producer" | "consumer"
+    const ProducerEntry *producer{nullptr};
+    const ConsumerEntry *consumer{nullptr};
 };
 
 /// Payload passed to the `for_each_presence_matching` visitor.
@@ -74,12 +78,12 @@ struct RoleAttachment
 /// channel before the mutator erases it from live state).
 struct PresenceSweepTarget
 {
-    PartyKind             party;
-    const ProducerEntry  *producer{nullptr};
-    const ConsumerEntry  *consumer{nullptr};
-    RolePresence          presence;             ///< copied
-    std::string           channel;
-    const ChannelEntry   *channel_entry{nullptr};
+    PartyKind party;
+    const ProducerEntry *producer{nullptr};
+    const ConsumerEntry *consumer{nullptr};
+    RolePresence presence; ///< copied
+    std::string channel;
+    const ChannelEntry *channel_entry{nullptr};
 };
 
 // ─── Helper: resolve a producer's presence row ──────────────────────────────
@@ -88,24 +92,24 @@ namespace detail
 {
 
 template <typename RolesMap>
-inline const RolePresence *
-resolve_producer_presence(const std::string &channel_name,
-                           const std::string &role_uid,
-                           const RolesMap    &roles) noexcept
+inline const RolePresence *resolve_producer_presence(const std::string &channel_name,
+                                                     const std::string &role_uid,
+                                                     const RolesMap &roles) noexcept
 {
     auto it = roles.find(role_uid);
-    if (it == roles.end()) return nullptr;
+    if (it == roles.end())
+        return nullptr;
     return it->second.find_presence(channel_name, "producer");
 }
 
 template <typename RolesMap>
-inline const RolePresence *
-resolve_consumer_presence(const std::string &channel_name,
-                           const std::string &role_uid,
-                           const RolesMap    &roles) noexcept
+inline const RolePresence *resolve_consumer_presence(const std::string &channel_name,
+                                                     const std::string &role_uid,
+                                                     const RolesMap &roles) noexcept
 {
     auto it = roles.find(role_uid);
-    if (it == roles.end()) return nullptr;
+    if (it == roles.end())
+        return nullptr;
     return it->second.find_presence(channel_name, "consumer");
 }
 
@@ -122,15 +126,11 @@ resolve_consumer_presence(const std::string &channel_name,
 ///
 /// Visitor signature: `void(const ProducerEntry &, const RolePresence *)`.
 template <typename RolesMap, typename Fn>
-inline void
-for_each_producer_with_presence(const ChannelEntry &ch,
-                                 const RolesMap     &roles,
-                                 Fn                 fn)
+inline void for_each_producer_with_presence(const ChannelEntry &ch, const RolesMap &roles, Fn fn)
 {
     for (const auto &prod : ch.producers)
     {
-        const RolePresence *p =
-            detail::resolve_producer_presence(ch.name, prod.role_uid, roles);
+        const RolePresence *p = detail::resolve_producer_presence(ch.name, prod.role_uid, roles);
         fn(prod, p);
     }
 }
@@ -138,15 +138,11 @@ for_each_producer_with_presence(const ChannelEntry &ch,
 /// Symmetric consumer-side walker.  Visitor signature:
 /// `void(const ConsumerEntry &, const RolePresence *)`.
 template <typename RolesMap, typename Fn>
-inline void
-for_each_consumer_with_presence(const ChannelEntry &ch,
-                                 const RolesMap     &roles,
-                                 Fn                 fn)
+inline void for_each_consumer_with_presence(const ChannelEntry &ch, const RolesMap &roles, Fn fn)
 {
     for (const auto &cons : ch.consumers)
     {
-        const RolePresence *p =
-            detail::resolve_consumer_presence(ch.name, cons.role_uid, roles);
+        const RolePresence *p = detail::resolve_consumer_presence(ch.name, cons.role_uid, roles);
         fn(cons, p);
     }
 }
@@ -163,19 +159,19 @@ for_each_consumer_with_presence(const ChannelEntry &ch,
 /// per-producer broker message?" — Phase D's `CHANNEL_AUTH_UPDATE`
 /// emitter is one consumer.
 template <typename RolesMap>
-inline std::vector<const ProducerEntry *>
-enumerate_live_producers(const ChannelEntry &ch,
-                          const RolesMap     &roles)
+inline std::vector<const ProducerEntry *> enumerate_live_producers(const ChannelEntry &ch,
+                                                                   const RolesMap &roles)
 {
     std::vector<const ProducerEntry *> out;
     out.reserve(ch.producers.size());
-    for_each_producer_with_presence(
-        ch, roles,
-        [&](const ProducerEntry &prod, const RolePresence *p) {
-            if (p == nullptr) return;
-            if (ch.observe(p) == ChannelObservable::kLive)
-                out.push_back(&prod);
-        });
+    for_each_producer_with_presence(ch, roles,
+                                    [&](const ProducerEntry &prod, const RolePresence *p)
+                                    {
+                                        if (p == nullptr)
+                                            return;
+                                        if (ch.observe(p) == ChannelObservable::kLive)
+                                            out.push_back(&prod);
+                                    });
     return out;
 }
 
@@ -186,14 +182,12 @@ enumerate_live_producers(const ChannelEntry &ch,
 /// channel, its role is missing, its presence row is missing, or
 /// its observable is sub-Live.
 template <typename RolesMap>
-inline bool
-is_producer_live(const ChannelEntry &ch,
-                  const std::string &role_uid,
-                  const RolesMap    &roles) noexcept
+inline bool is_producer_live(const ChannelEntry &ch, const std::string &role_uid,
+                             const RolesMap &roles) noexcept
 {
-    if (ch.find_producer(role_uid) == nullptr) return false;
-    const RolePresence *p =
-        detail::resolve_producer_presence(ch.name, role_uid, roles);
+    if (ch.find_producer(role_uid) == nullptr)
+        return false;
+    const RolePresence *p = detail::resolve_producer_presence(ch.name, role_uid, roles);
     return p != nullptr && ch.observe(p) == ChannelObservable::kLive;
 }
 
@@ -207,27 +201,24 @@ is_producer_live(const ChannelEntry &ch,
 /// Visitor signature:
 /// `void(std::string_view zmq_identity, std::string_view role_uid)`.
 template <typename Fn>
-inline void
-for_each_party_identity(const ChannelEntry &ch,
-                         PartyKind          kind,
-                         Fn                fn)
+inline void for_each_party_identity(const ChannelEntry &ch, PartyKind kind, Fn fn)
 {
     if (kind == PartyKind::Producer)
     {
         for (const auto &prod : ch.producers)
         {
-            if (prod.zmq_identity.empty()) continue;
-            fn(std::string_view{prod.zmq_identity},
-               std::string_view{prod.role_uid});
+            if (prod.zmq_identity.empty())
+                continue;
+            fn(std::string_view{prod.zmq_identity}, std::string_view{prod.role_uid});
         }
     }
     else
     {
         for (const auto &cons : ch.consumers)
         {
-            if (cons.zmq_identity.empty()) continue;
-            fn(std::string_view{cons.zmq_identity},
-               std::string_view{cons.role_uid});
+            if (cons.zmq_identity.empty())
+                continue;
+            fn(std::string_view{cons.zmq_identity}, std::string_view{cons.role_uid});
         }
     }
 }
@@ -243,22 +234,19 @@ for_each_party_identity(const ChannelEntry &ch,
 /// Visit order: channels iterated in `snap.channels` order (which
 /// is `unordered_map` order — NOT guaranteed sorted); for each
 /// channel producers are checked before consumers.
-inline std::vector<RoleAttachment>
-find_role_attachments(const HubStateSnapshot &snap,
-                       const std::string     &uid)
+inline std::vector<RoleAttachment> find_role_attachments(const HubStateSnapshot &snap,
+                                                         const std::string &uid)
 {
     std::vector<RoleAttachment> out;
     for (const auto &[name, ch] : snap.channels)
     {
         if (const ProducerEntry *prod = ch.find_producer(uid))
         {
-            out.push_back(
-                RoleAttachment{name, "producer", prod, nullptr});
+            out.push_back(RoleAttachment{name, "producer", prod, nullptr});
         }
         if (const ConsumerEntry *cons = ch.find_consumer(uid))
         {
-            out.push_back(
-                RoleAttachment{name, "consumer", nullptr, cons});
+            out.push_back(RoleAttachment{name, "consumer", nullptr, cons});
         }
     }
     return out;
@@ -310,37 +298,34 @@ find_role_attachments(const HubStateSnapshot &snap,
 /// same tick.  See HEP-CORE-0039 §6 "Two-passes-with-cross-pass-
 /// dependency note" for the canonical statement.
 template <typename RolesMap, typename Pred, typename Fn>
-inline void
-for_each_presence_matching(const ChannelEntry &ch,
-                            const RolesMap     &roles,
-                            Pred               pred,
-                            Fn                 fn)
+inline void for_each_presence_matching(const ChannelEntry &ch, const RolesMap &roles, Pred pred,
+                                       Fn fn)
 {
     for (const auto &prod : ch.producers)
     {
-        const RolePresence *p =
-            detail::resolve_producer_presence(ch.name, prod.role_uid, roles);
-        if (p == nullptr || !pred(*p)) continue;
+        const RolePresence *p = detail::resolve_producer_presence(ch.name, prod.role_uid, roles);
+        if (p == nullptr || !pred(*p))
+            continue;
         PresenceSweepTarget t;
-        t.party         = PartyKind::Producer;
-        t.producer      = &prod;
-        t.consumer      = nullptr;
-        t.presence      = *p;
-        t.channel       = ch.name;
+        t.party = PartyKind::Producer;
+        t.producer = &prod;
+        t.consumer = nullptr;
+        t.presence = *p;
+        t.channel = ch.name;
         t.channel_entry = &ch;
         fn(t);
     }
     for (const auto &cons : ch.consumers)
     {
-        const RolePresence *p =
-            detail::resolve_consumer_presence(ch.name, cons.role_uid, roles);
-        if (p == nullptr || !pred(*p)) continue;
+        const RolePresence *p = detail::resolve_consumer_presence(ch.name, cons.role_uid, roles);
+        if (p == nullptr || !pred(*p))
+            continue;
         PresenceSweepTarget t;
-        t.party         = PartyKind::Consumer;
-        t.producer      = nullptr;
-        t.consumer      = &cons;
-        t.presence      = *p;
-        t.channel       = ch.name;
+        t.party = PartyKind::Consumer;
+        t.producer = nullptr;
+        t.consumer = &cons;
+        t.presence = *p;
+        t.channel = ch.name;
         t.channel_entry = &ch;
         fn(t);
     }
@@ -349,22 +334,22 @@ for_each_presence_matching(const ChannelEntry &ch,
 // ─── producer_uids / consumer_uids ──────────────────────────────────────────
 
 /// Extract producer `role_uid`s from @p ch in declaration order.
-inline std::vector<std::string>
-producer_uids(const ChannelEntry &ch)
+inline std::vector<std::string> producer_uids(const ChannelEntry &ch)
 {
     std::vector<std::string> out;
     out.reserve(ch.producers.size());
-    for (const auto &prod : ch.producers) out.push_back(prod.role_uid);
+    for (const auto &prod : ch.producers)
+        out.push_back(prod.role_uid);
     return out;
 }
 
 /// Extract consumer `role_uid`s from @p ch in declaration order.
-inline std::vector<std::string>
-consumer_uids(const ChannelEntry &ch)
+inline std::vector<std::string> consumer_uids(const ChannelEntry &ch)
 {
     std::vector<std::string> out;
     out.reserve(ch.consumers.size());
-    for (const auto &cons : ch.consumers) out.push_back(cons.role_uid);
+    for (const auto &cons : ch.consumers)
+        out.push_back(cons.role_uid);
     return out;
 }
 

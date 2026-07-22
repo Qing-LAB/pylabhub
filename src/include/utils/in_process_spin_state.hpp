@@ -87,8 +87,9 @@ class InProcessSpinState
             backoff(i++);
     }
 
-    /** Try to acquire with timeout using the given token. Uses std::chrono (header-only; cross-process code uses platform::monotonic_time_ns).
-     *  Timeout convention: 0 = non-blocking, < 0 = wait indefinitely, > 0 = wait up to N ms. */
+    /** Try to acquire with timeout using the given token. Uses std::chrono (header-only;
+     * cross-process code uses platform::monotonic_time_ns). Timeout convention: 0 = non-blocking, <
+     * 0 = wait indefinitely, > 0 = wait up to N ms. */
     bool try_lock_for_with_token(int timeout_ms, uint64_t token) noexcept
     {
         if (detail::try_acquire_token(&state_, token))
@@ -104,8 +105,7 @@ class InProcessSpinState
                 backoff(iteration++);
             return true;
         }
-        auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::milliseconds(timeout_ms);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         while (std::chrono::steady_clock::now() < deadline)
         {
             if (detail::try_acquire_token(&state_, token))
@@ -134,15 +134,9 @@ class InProcessSpinState
         out_token = token;
     }
 
-    void unlock(uint64_t token) noexcept
-    {
-        detail::release_token(&state_, token);
-    }
+    void unlock(uint64_t token) noexcept { detail::release_token(&state_, token); }
 
-    bool is_locked() const noexcept
-    {
-        return detail::token_lock_held(&state_);
-    }
+    bool is_locked() const noexcept { return detail::token_lock_held(&state_); }
 
     SharedSpinLockState *state() noexcept { return &state_; }
     const SharedSpinLockState *state() const noexcept { return &state_; }

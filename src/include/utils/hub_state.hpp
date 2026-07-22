@@ -36,7 +36,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
-#include "utils/schema_record.hpp"  // SchemaRecord, SchemaRegOutcome, CitationOutcome
+#include "utils/schema_record.hpp" // SchemaRecord, SchemaRegOutcome, CitationOutcome
 #include "utils/versioned_admission_ledger.hpp"
 
 #include <array>
@@ -50,14 +50,14 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>  // std::pair
+#include <utility> // std::pair
 #include <vector>
 
 namespace pylabhub::broker
 {
 class BrokerService;
 class BrokerServiceImpl; ///< pImpl; grants the impl class friend access too.
-}
+} // namespace pylabhub::broker
 
 namespace pylabhub::admission
 {
@@ -99,8 +99,8 @@ enum class ChannelCloseReason
     BrokerShutdown,   ///< Broker process is stopping.
 };
 
-PYLABHUB_UTILS_EXPORT const char *to_string(RoleState          s) noexcept;
-PYLABHUB_UTILS_EXPORT const char *to_string(PeerState          s) noexcept;
+PYLABHUB_UTILS_EXPORT const char *to_string(RoleState s) noexcept;
+PYLABHUB_UTILS_EXPORT const char *to_string(PeerState s) noexcept;
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelCloseReason r) noexcept;
 
 /// Derived view of a channel's current observability, computed from the
@@ -115,10 +115,10 @@ PYLABHUB_UTILS_EXPORT const char *to_string(ChannelCloseReason r) noexcept;
 ///   - Connected +  first_heartbeat_seen       → kLive
 enum class ChannelObservable
 {
-    kAbsent,       ///< No producer registered, or producer-presence Disconnected.
-    kRegistering,  ///< Producer registered, no heartbeat received yet.
-    kStalled,      ///< Producer-presence Pending (heartbeats stalled but recoverable).
-    kLive,         ///< Producer-presence Connected with fresh heartbeats.
+    kAbsent,      ///< No producer registered, or producer-presence Disconnected.
+    kRegistering, ///< Producer registered, no heartbeat received yet.
+    kStalled,     ///< Producer-presence Pending (heartbeats stalled but recoverable).
+    kLive,        ///< Producer-presence Connected with fresh heartbeats.
 };
 
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelObservable o) noexcept;
@@ -145,9 +145,9 @@ PYLABHUB_UTILS_EXPORT const char *to_string(ChannelObservable o) noexcept;
 /// together as one policy surface.
 enum class ChannelTopology
 {
-    FanIn,     ///< N producers → 1 consumer.  ZMQ only.  Consumer is BINDING side.
-    FanOut,    ///< 1 producer → N consumers.  ZMQ or SHM.  Producer is BINDING side.
-    OneToOne,  ///< 1 producer → 1 consumer.   ZMQ or SHM.  Producer is BINDING side.
+    FanIn,    ///< N producers → 1 consumer.  ZMQ only.  Consumer is BINDING side.
+    FanOut,   ///< 1 producer → N consumers.  ZMQ or SHM.  Producer is BINDING side.
+    OneToOne, ///< 1 producer → 1 consumer.   ZMQ or SHM.  Producer is BINDING side.
 };
 
 namespace topology
@@ -158,8 +158,8 @@ namespace topology
 /// admission table without a read-hostile boolean argument.
 enum class AdmissionSide
 {
-    Producer,  ///< REG_REQ from a producer role.
-    Consumer,  ///< CONSUMER_REG_REQ from a consumer role.
+    Producer, ///< REG_REQ from a producer role.
+    Consumer, ///< CONSUMER_REG_REQ from a consumer role.
 };
 
 /// Enum ↔ wire string.  Round-trips with `parse` for the three
@@ -170,17 +170,15 @@ PYLABHUB_UTILS_EXPORT const char *to_string(ChannelTopology t) noexcept;
 /// if the input is not one of the three canonical wire values.
 /// Callers (broker REG_REQ handlers) translate an empty optional
 /// into the `INVALID_REQUEST` error code per tech draft §5.1.
-PYLABHUB_UTILS_EXPORT std::optional<ChannelTopology>
-parse(std::string_view s) noexcept;
+PYLABHUB_UTILS_EXPORT std::optional<ChannelTopology> parse(std::string_view s) noexcept;
 
 /// True iff `t` is valid for `data_transport` per HEP-CORE-0017
 /// §3.3.0 decision matrix.  Only rejected combination is
 /// `FanIn × "shm"` (SHM is physically single-producer).  Unknown
 /// transports return `false` defensively — callers should have
 /// already validated at the earlier data_transport parse gate.
-PYLABHUB_UTILS_EXPORT bool
-transport_compatible(ChannelTopology t,
-                     std::string_view data_transport) noexcept;
+PYLABHUB_UTILS_EXPORT bool transport_compatible(ChannelTopology t,
+                                                std::string_view data_transport) noexcept;
 
 /// Cardinality gate for the broker's REG_REQ / CONSUMER_REG_REQ
 /// admission.  Called BEFORE any state mutation per tech draft
@@ -197,11 +195,9 @@ transport_compatible(ChannelTopology t,
 ///   channel exceeds cardinality 1.
 ///
 /// HEP-CORE-0007 §12.4a for error-code semantics.
-PYLABHUB_UTILS_EXPORT const char *
-check_cardinality(ChannelTopology t,
-                  AdmissionSide   side,
-                  std::size_t     existing_producers,
-                  std::size_t     existing_consumers) noexcept;
+PYLABHUB_UTILS_EXPORT const char *check_cardinality(ChannelTopology t, AdmissionSide side,
+                                                    std::size_t existing_producers,
+                                                    std::size_t existing_consumers) noexcept;
 
 } // namespace topology
 
@@ -219,7 +215,7 @@ inline const char *to_string(ChannelTopology t) noexcept
 /// Consumer attached to a channel.
 struct ConsumerEntry
 {
-    uint64_t    consumer_pid{0};
+    uint64_t consumer_pid{0};
     std::string consumer_hostname;
     std::string zmq_identity; ///< ROUTER identity for direct notifications.
 
@@ -246,8 +242,7 @@ struct ConsumerEntry
     std::string inbox_packing;  ///< "aligned" | "packed"
     std::string inbox_checksum; ///< "enforced" | "manual" | "none"
 
-    std::chrono::system_clock::time_point connected_at{
-        std::chrono::system_clock::now()};
+    std::chrono::system_clock::time_point connected_at{std::chrono::system_clock::now()};
 };
 
 /// Producer attached to a channel.  Parallel shape to ConsumerEntry —
@@ -260,7 +255,7 @@ struct ConsumerEntry
 /// preserve each producer's distinct inbox routing.
 struct ProducerEntry
 {
-    uint64_t    producer_pid{0};
+    uint64_t producer_pid{0};
     std::string producer_hostname;
     std::string zmq_identity; ///< ROUTER identity for direct notifications.
 
@@ -332,8 +327,7 @@ struct ProducerEntry
     /// `ChannelEntry::aggregate_metadata_tree()`.
     nlohmann::json metadata;
 
-    std::chrono::system_clock::time_point connected_at{
-        std::chrono::system_clock::now()};
+    std::chrono::system_clock::time_point connected_at{std::chrono::system_clock::now()};
 };
 
 // ─── Controlled-access API result types (Wave M2.5) ───────────────────────
@@ -443,27 +437,27 @@ struct ChannelAccessEntry
 
 enum class AddProducerResult
 {
-    Created,                 ///< Appended; out-pointer (if requested) points
-                             ///< to the new ProducerEntry in `producers[]`.
-    RejectedUidConflict,     ///< `find_producer(role_uid)` returned non-null.
-                             ///< Channel state unchanged.  Broker surfaces
-                             ///< `UID_CONFLICT` on the wire.
+    Created,             ///< Appended; out-pointer (if requested) points
+                         ///< to the new ProducerEntry in `producers[]`.
+    RejectedUidConflict, ///< `find_producer(role_uid)` returned non-null.
+                         ///< Channel state unchanged.  Broker surfaces
+                         ///< `UID_CONFLICT` on the wire.
 };
 
 enum class AddConsumerResult
 {
-    Created,                 ///< Appended; out-pointer (if requested) points
-                             ///< to the new ConsumerEntry in `consumers[]`.
-    RejectedUidConflict,     ///< Existing ConsumerEntry with this role_uid.
+    Created,             ///< Appended; out-pointer (if requested) points
+                         ///< to the new ConsumerEntry in `consumers[]`.
+    RejectedUidConflict, ///< Existing ConsumerEntry with this role_uid.
 };
 
 struct RemoveProducerResult
 {
-    bool removed;             ///< True iff a producer with the given uid
-                              ///< was present and has been erased.
-    bool channel_now_empty;   ///< True iff `producers.empty()` after the
-                              ///< removal.  Broker uses this to decide
-                              ///< whether to trigger `_on_channel_closed`.
+    bool removed;           ///< True iff a producer with the given uid
+                            ///< was present and has been erased.
+    bool channel_now_empty; ///< True iff `producers.empty()` after the
+                            ///< removal.  Broker uses this to decide
+                            ///< whether to trigger `_on_channel_closed`.
 };
 
 /// Result of a `ChannelEntry::set_invariant_*` call.  Channel-wide
@@ -472,12 +466,12 @@ struct RemoveProducerResult
 /// setters either match byte-for-byte (idempotent) or are rejected.
 enum class InvariantSetResult
 {
-    Created,                 ///< Field(s) had no prior value; set succeeded.
-    IdempotentEqual,         ///< Existing value equals the requested value;
-                             ///< no change made.
-    RejectedMismatch,        ///< Existing value differs.  Channel state
-                             ///< unchanged.  Broker surfaces the appropriate
-                             ///< Cat-1 error (e.g., `SCHEMA_MISMATCH`).
+    Created,          ///< Field(s) had no prior value; set succeeded.
+    IdempotentEqual,  ///< Existing value equals the requested value;
+                      ///< no change made.
+    RejectedMismatch, ///< Existing value differs.  Channel state
+                      ///< unchanged.  Broker surfaces the appropriate
+                      ///< Cat-1 error (e.g., `SCHEMA_MISMATCH`).
 };
 
 /// Composite result from `HubState::_on_producer_added` — the atomic
@@ -493,7 +487,7 @@ struct ProducerAdmissionResult
     /// `RejectedUidConflict` (UID_CONFLICT wire error) otherwise.
     /// Only meaningful when `invariant_result == Created ||
     /// IdempotentEqual` AND `topology_error_code == nullptr`.
-    AddProducerResult  producer_result{AddProducerResult::Created};
+    AddProducerResult producer_result{AddProducerResult::Created};
 
     /// `Created` for a fresh channel; `IdempotentEqual` when the
     /// incoming invariants match the existing channel's;
@@ -512,7 +506,7 @@ struct ProducerAdmissionResult
     ///     against the effective topology.
     /// Broker returns the code verbatim.  Channel state unchanged
     /// when set.  Checked BEFORE `invariant_result` / `producer_result`.
-    const char *       topology_error_code{nullptr};
+    const char *topology_error_code{nullptr};
 
     /// True when the op-entry identifier-grammar check rejected the
     /// call (invalid `channel_name`, `role_uid`, or `schema_id`).
@@ -521,19 +515,19 @@ struct ProducerAdmissionResult
     /// is defensive; test-access callers may bypass the pre-gate.
     /// Broker maps to `INVALID_REQUEST` on the wire.  Checked BEFORE
     /// `topology_error_code`.
-    bool               invalid_identifier{false};
+    bool invalid_identifier{false};
 
     /// True iff this admission opened a fresh channel record (first
     /// producer).  Caller uses this to decide whether to fire the
     /// `ch_opened` handler chain + emit HEP-CORE-0034 schema-record
     /// creation events.  False when admitting onto an existing channel.
-    bool               channel_opened{false};
+    bool channel_opened{false};
 
     /// Names which invariant didn't match, when `invariant_result ==
     /// RejectedMismatch`.  One of: `"schema_hash"`, `"schema_id"`,
     /// `"schema_blds"`, `"schema_owner"`, `"data_transport"`.
     /// Empty on success.
-    std::string        mismatched_invariant;
+    std::string mismatched_invariant;
 };
 
 /// Composite result from `HubState::_on_consumer_joined` — the atomic
@@ -548,19 +542,19 @@ struct ConsumerAdmissionResult
     /// on an existing channel.  False when `topology_error_code` is
     /// set (rejection) OR when the channel doesn't exist (matches the
     /// pre-existing "silent skip" behavior of `_add_consumer`).
-    bool         admitted{false};
+    bool admitted{false};
 
     /// Non-null on topology/cardinality rejection.  Values:
     /// `"TOPOLOGY_MISMATCH"`, `"FAN_IN_IS_SINGLE_CONSUMER"`,
     /// `"ONE_TO_ONE_CARDINALITY_VIOLATED"`.
-    const char * topology_error_code{nullptr};
+    const char *topology_error_code{nullptr};
 
     /// True when the op-entry identifier-grammar check rejected the
     /// call.  Defensive branch — pre-gated in production by
     /// `BrokerServiceImpl::validate_identity_fields`.  Broker maps to
     /// `INVALID_REQUEST` on the wire.  Checked BEFORE
     /// `topology_error_code`; when `true`, `admitted=false`.
-    bool         invalid_identifier{false};
+    bool invalid_identifier{false};
 
     /// True iff this admission opened a fresh channel record.  Only
     /// set on the fan-in consumer path per HEP-CORE-0017 §3.3.0 —
@@ -573,7 +567,7 @@ struct ConsumerAdmissionResult
     /// `ProducerAdmissionResult::channel_opened` semantics — caller
     /// uses this to decide whether to fire the `ch_opened` handler
     /// chain and any schema-registration side effects.
-    bool         channel_opened{false};
+    bool channel_opened{false};
 
     /// `Created` when the channel-open branch fired successfully;
     /// `IdempotentEqual` on join-existing-channel path; unset
@@ -588,17 +582,17 @@ struct ConsumerAdmissionResult
 /// Channel registered with the broker.
 struct ChannelEntry
 {
-    std::string name;          ///< Key in HubState::channels.  Also
-                               ///< serves as the SHM block identifier
-                               ///< (HEP-CORE-0036 §5b.4 — pre-§5b
-                               ///< `shm_name` was a duplicate of this).
-    std::string schema_hash;   ///< Hex (64 chars).  Channel-wide
-                               ///< invariant — all producers MUST
-                               ///< agree (HEP-CORE-0023 §2.1.1).
+    std::string name;        ///< Key in HubState::channels.  Also
+                             ///< serves as the SHM block identifier
+                             ///< (HEP-CORE-0036 §5b.4 — pre-§5b
+                             ///< `shm_name` was a duplicate of this).
+    std::string schema_hash; ///< Hex (64 chars).  Channel-wide
+                             ///< invariant — all producers MUST
+                             ///< agree (HEP-CORE-0023 §2.1.1).
     // C2 resolution: `schema_version` field retired here too.  Version
     // rides inside `schema_id` (`$name.v<N>`) per HEP-CORE-0033 §G2.2.0b;
     // no separate integer needed.
-    std::string schema_id;     ///< Named-schema id; empty = anonymous.
+    std::string schema_id; ///< Named-schema id; empty = anonymous.
     std::string schema_blds;
 
     /// HEP-CORE-0034 §11 — foreign key into `HubState.schemas`.  When
@@ -625,7 +619,7 @@ struct ChannelEntry
     // zmq_ctrl_endpoint / zmq_data_endpoint retired Wave M2.5 step 2c.
     // zmq_pubkey retired Wave M2.5 step 6.5 — per-producer CURVE
     // pubkey lives on `ProducerEntry.zmq_pubkey` (HEP-CORE-0021 §5.2).
-    std::string    data_transport{"shm"};
+    std::string data_transport{"shm"};
     // Channel-scope `zmq_node_endpoint` retired in Wave M2.5 step 6.5
     // (2026-05-10).  Per-producer endpoint lives on
     // `ProducerEntry.zmq_node_endpoint` (HEP-CORE-0021 §16.3).
@@ -690,8 +684,7 @@ struct ChannelEntry
     // distinct inbox routing per producer — the prior channel-wide
     // scalar fields would have silently overwritten on second REG_REQ.
 
-    std::chrono::system_clock::time_point created_at{
-        std::chrono::system_clock::now()};
+    std::chrono::system_clock::time_point created_at{std::chrono::system_clock::now()};
 
     // ── Producer-list helpers ───────────────────────────────────────
     //
@@ -721,13 +714,15 @@ struct ChannelEntry
     const ProducerEntry *find_producer(const std::string &role_uid) const noexcept
     {
         for (const auto &p : producers)
-            if (p.role_uid == role_uid) return &p;
+            if (p.role_uid == role_uid)
+                return &p;
         return nullptr;
     }
     ProducerEntry *find_producer(const std::string &role_uid) noexcept
     {
         for (auto &p : producers)
-            if (p.role_uid == role_uid) return &p;
+            if (p.role_uid == role_uid)
+                return &p;
         return nullptr;
     }
 
@@ -756,7 +751,7 @@ struct ChannelEntry
 
     [[nodiscard]] std::size_t producer_count() const noexcept { return producers.size(); }
     [[nodiscard]] std::size_t consumer_count() const noexcept { return consumers.size(); }
-    [[nodiscard]] bool        is_shm() const noexcept { return data_transport == "shm"; }
+    [[nodiscard]] bool is_shm() const noexcept { return data_transport == "shm"; }
 
     /// Find the ConsumerEntry for `role_uid`, or nullptr.  Mirror of
     /// `find_producer` for symmetry — used by the new `add_consumer`
@@ -764,13 +759,15 @@ struct ChannelEntry
     const ConsumerEntry *find_consumer(const std::string &role_uid) const noexcept
     {
         for (const auto &c : consumers)
-            if (c.role_uid == role_uid) return &c;
+            if (c.role_uid == role_uid)
+                return &c;
         return nullptr;
     }
     ConsumerEntry *find_consumer(const std::string &role_uid) noexcept
     {
         for (auto &c : consumers)
-            if (c.role_uid == role_uid) return &c;
+            if (c.role_uid == role_uid)
+                return &c;
         return nullptr;
     }
 
@@ -781,13 +778,13 @@ struct ChannelEntry
     /// on a fan-out or 1-to-1 channel is rejected BEFORE reaching this
     /// method.  Transport × topology admissibility (e.g., fan-in × shm)
     /// is likewise pre-gated at channel creation.
-    AddProducerResult add_producer(ProducerEntry p,
-                                    ProducerEntry **out = nullptr)
+    AddProducerResult add_producer(ProducerEntry p, ProducerEntry **out = nullptr)
     {
         if (find_producer(p.role_uid) != nullptr)
             return AddProducerResult::RejectedUidConflict;
         producers.push_back(std::move(p));
-        if (out != nullptr) *out = &producers.back();
+        if (out != nullptr)
+            *out = &producers.back();
         return AddProducerResult::Created;
     }
 
@@ -808,13 +805,13 @@ struct ChannelEntry
     }
 
     /// Strict additive consumer admission (symmetric to add_producer).
-    AddConsumerResult add_consumer(ConsumerEntry c,
-                                    ConsumerEntry **out = nullptr)
+    AddConsumerResult add_consumer(ConsumerEntry c, ConsumerEntry **out = nullptr)
     {
         if (find_consumer(c.role_uid) != nullptr)
             return AddConsumerResult::RejectedUidConflict;
         consumers.push_back(std::move(c));
-        if (out != nullptr) *out = &consumers.back();
+        if (out != nullptr)
+            *out = &consumers.back();
         return AddConsumerResult::Created;
     }
 
@@ -836,18 +833,18 @@ struct ChannelEntry
     /// Update the per-producer inbox metadata (HEP-CORE-0027 §3).
     /// Returns true iff the producer was found.  Inbox is per-producer:
     /// each producer on a Fan-In channel keeps its own inbox routing.
-    bool set_producer_inbox(std::string_view role_uid,
-                             std::string endpoint, std::string schema_json,
-                             std::string packing,  std::string checksum) noexcept
+    bool set_producer_inbox(std::string_view role_uid, std::string endpoint,
+                            std::string schema_json, std::string packing,
+                            std::string checksum) noexcept
     {
         for (auto &p : producers)
         {
             if (p.role_uid == role_uid)
             {
-                p.inbox_endpoint    = std::move(endpoint);
+                p.inbox_endpoint = std::move(endpoint);
                 p.inbox_schema_json = std::move(schema_json);
-                p.inbox_packing     = std::move(packing);
-                p.inbox_checksum    = std::move(checksum);
+                p.inbox_packing = std::move(packing);
+                p.inbox_checksum = std::move(checksum);
                 return true;
             }
         }
@@ -855,18 +852,18 @@ struct ChannelEntry
     }
 
     /// Symmetric per-consumer inbox setter.
-    bool set_consumer_inbox(std::string_view role_uid,
-                             std::string endpoint, std::string schema_json,
-                             std::string packing,  std::string checksum) noexcept
+    bool set_consumer_inbox(std::string_view role_uid, std::string endpoint,
+                            std::string schema_json, std::string packing,
+                            std::string checksum) noexcept
     {
         for (auto &c : consumers)
         {
             if (c.role_uid == role_uid)
             {
-                c.inbox_endpoint    = std::move(endpoint);
+                c.inbox_endpoint = std::move(endpoint);
                 c.inbox_schema_json = std::move(schema_json);
-                c.inbox_packing     = std::move(packing);
-                c.inbox_checksum    = std::move(checksum);
+                c.inbox_packing = std::move(packing);
+                c.inbox_checksum = std::move(checksum);
                 return true;
             }
         }
@@ -877,8 +874,7 @@ struct ChannelEntry
     /// Returns true iff the producer was found.  Distinct from the
     /// channel-scope `ChannelEntry::zmq_node_endpoint` which is
     /// retained during step 2a for callers not yet migrated.
-    bool set_producer_zmq_node_endpoint(std::string_view role_uid,
-                                          std::string endpoint) noexcept
+    bool set_producer_zmq_node_endpoint(std::string_view role_uid, std::string endpoint) noexcept
     {
         for (auto &p : producers)
         {
@@ -896,8 +892,7 @@ struct ChannelEntry
     /// has its own keypair; CONSUMER_REG_ACK exposes per-producer
     /// pubkey for ZMQ ctrl socket auth.  Distinct from the deprecated
     /// channel-scope `ChannelEntry::zmq_pubkey`.
-    bool set_producer_zmq_pubkey(std::string_view role_uid,
-                                   std::string pubkey) noexcept
+    bool set_producer_zmq_pubkey(std::string_view role_uid, std::string pubkey) noexcept
     {
         for (auto &p : producers)
         {
@@ -918,7 +913,7 @@ struct ChannelEntry
     /// channel, so the producers[] vector has exactly one element when
     /// this setter is called.
     bool set_producer_shm_capability_endpoint(std::string_view role_uid,
-                                                std::string endpoint) noexcept
+                                              std::string endpoint) noexcept
     {
         for (auto &p : producers)
         {
@@ -933,21 +928,21 @@ struct ChannelEntry
 
     /// Look up a producer's CURVE public key (empty if uid missing or
     /// pubkey not set).
-    std::optional<std::string>
-    producer_zmq_pubkey(std::string_view role_uid) const
+    std::optional<std::string> producer_zmq_pubkey(std::string_view role_uid) const
     {
         for (const auto &p : producers)
-            if (p.role_uid == role_uid) return p.zmq_pubkey;
+            if (p.role_uid == role_uid)
+                return p.zmq_pubkey;
         return std::nullopt;
     }
 
     /// Look up a producer's data-plane ZMQ endpoint; nullopt if the
     /// uid is not registered on this channel.
-    std::optional<std::string>
-    producer_zmq_node_endpoint(std::string_view role_uid) const
+    std::optional<std::string> producer_zmq_node_endpoint(std::string_view role_uid) const
     {
         for (const auto &p : producers)
-            if (p.role_uid == role_uid) return p.zmq_node_endpoint;
+            if (p.role_uid == role_uid)
+                return p.zmq_node_endpoint;
         return std::nullopt;
     }
 
@@ -966,10 +961,7 @@ struct ChannelEntry
     /// by the `ENDPOINT_UPDATE_REQ` handler after validating the
     /// sender is the BINDING side.  Idempotent for repeated calls
     /// with the same value.
-    void set_data_endpoint(std::string endpoint) noexcept
-    {
-        data_endpoint = std::move(endpoint);
-    }
+    void set_data_endpoint(std::string endpoint) noexcept { data_endpoint = std::move(endpoint); }
 
     // ── end topology-migration mutators ──────────────────────────────
 
@@ -977,8 +969,7 @@ struct ChannelEntry
     /// Returns true iff the producer was found.  Producers may
     /// publish orthogonal blobs; channel-level read paths aggregate
     /// them via `aggregate_metadata_tree()`.
-    bool set_producer_metadata(std::string_view role_uid,
-                                nlohmann::json blob) noexcept
+    bool set_producer_metadata(std::string_view role_uid, nlohmann::json blob) noexcept
     {
         for (auto &p : producers)
         {
@@ -995,7 +986,8 @@ struct ChannelEntry
     const nlohmann::json *producer_metadata(std::string_view role_uid) const noexcept
     {
         for (const auto &p : producers)
-            if (p.role_uid == role_uid) return &p.metadata;
+            if (p.role_uid == role_uid)
+                return &p.metadata;
         return nullptr;
     }
 
@@ -1018,7 +1010,8 @@ struct ChannelEntry
         nlohmann::json out = nlohmann::json::object();
         for (const auto &p : producers)
         {
-            if (!p.metadata.is_null()) out[p.role_uid] = p.metadata;
+            if (!p.metadata.is_null())
+                out[p.role_uid] = p.metadata;
         }
         return out;
     }
@@ -1030,19 +1023,16 @@ struct BandMember
     std::string role_uid;
     std::string role_name;
     std::string zmq_identity;
-    std::chrono::steady_clock::time_point joined_at{
-        std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point joined_at{std::chrono::steady_clock::now()};
 };
 
 /// Named messaging band (HEP-CORE-0030).
 struct BandEntry
 {
-    std::string             name;
+    std::string name;
     std::vector<BandMember> members;
-    std::chrono::steady_clock::time_point created_at{
-        std::chrono::steady_clock::now()};
-    std::chrono::steady_clock::time_point last_activity{
-        std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point created_at{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_activity{std::chrono::steady_clock::now()};
 };
 
 /// One per-`(channel, role_type)` row under a RoleEntry.  A role with N
@@ -1058,23 +1048,21 @@ struct BandEntry
 /// see `ChannelEntry::observe()`.
 struct RolePresence
 {
-    std::string channel;    ///< Channel this presence is registered on.
-    std::string role_type;  ///< "producer" | "consumer".
+    std::string channel;   ///< Channel this presence is registered on.
+    std::string role_type; ///< "producer" | "consumer".
 
-    RoleState   state{RoleState::Connected};
+    RoleState state{RoleState::Connected};
     /// Set true once at least one HEARTBEAT_REQ matching this presence's
     /// `(uid, channel, role_type)` has been received.  False between
     /// REG_REQ acceptance and first heartbeat.  DISC_REQ uses this to
     /// distinguish "registered but no heartbeat yet" (DISC_PENDING with
     /// reason="awaiting_first_heartbeat") from "live" (DISC_ACK).
-    bool        first_heartbeat_seen{false};
+    bool first_heartbeat_seen{false};
 
-    std::chrono::steady_clock::time_point last_heartbeat{
-        std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_heartbeat{std::chrono::steady_clock::now()};
     /// Wall-clock instant of the last FSM transition (Connected ↔ Pending,
     /// or initial Connected on REG).  Used by sweep loops and diagnostics.
-    std::chrono::steady_clock::time_point state_since{
-        std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point state_since{std::chrono::steady_clock::now()};
 
     /// Monotonic count of `HEARTBEAT_REQ` messages received and applied
     /// for this presence (i.e. that reached `RoleEntry::on_heartbeat`).
@@ -1087,7 +1075,7 @@ struct RolePresence
     /// Reaped automatically when the presence row is removed.
     std::uint64_t heartbeats_received{0};
 
-    nlohmann::json                        latest_metrics;
+    nlohmann::json latest_metrics;
     std::chrono::system_clock::time_point metrics_collected_at{};
 };
 
@@ -1102,12 +1090,12 @@ struct RolePresence
 
 enum class AddPresenceResult
 {
-    Created,              ///< Appended a new RolePresence row.
-    RejectedDuplicate,    ///< A presence for `(channel, role_type)` already
-                          ///< exists.  Same-tuple re-add is bookkeeping
-                          ///< residue — admission refused.  Caller path
-                          ///< depends on context; this surface is purely
-                          ///< data-structure consistency.
+    Created,           ///< Appended a new RolePresence row.
+    RejectedDuplicate, ///< A presence for `(channel, role_type)` already
+                       ///< exists.  Same-tuple re-add is bookkeeping
+                       ///< residue — admission refused.  Caller path
+                       ///< depends on context; this surface is purely
+                       ///< data-structure consistency.
 };
 
 /// Coarse transition outcome from RoleEntry FSM-transition methods.
@@ -1116,14 +1104,14 @@ enum class AddPresenceResult
 /// type (heartbeat-only — counters depend on prev_state).
 enum class TransitionEffect
 {
-    NoChange,        ///< Presence not found, or already in target state.
-    Refreshed,       ///< last_heartbeat updated; no FSM transition.
-    NewlyConnected,  ///< First heartbeat seen, or recovery from Pending
-                     ///< or Disconnected — caller reads `prev_state` on
-                     ///< the result struct for counter decisions.
-    ToPending,       ///< Connected → Pending (heartbeat timeout).
-    ToDisconnected,  ///< Pending → Disconnected (pending timeout) or
-                     ///< Connected → Disconnected (DEREG / forced).
+    NoChange,       ///< Presence not found, or already in target state.
+    Refreshed,      ///< last_heartbeat updated; no FSM transition.
+    NewlyConnected, ///< First heartbeat seen, or recovery from Pending
+                    ///< or Disconnected — caller reads `prev_state` on
+                    ///< the result struct for counter decisions.
+    ToPending,      ///< Connected → Pending (heartbeat timeout).
+    ToDisconnected, ///< Pending → Disconnected (pending timeout) or
+                    ///< Connected → Disconnected (DEREG / forced).
 };
 
 /// Rich return for `RoleEntry::on_heartbeat`.  Callers that need
@@ -1134,17 +1122,20 @@ enum class TransitionEffect
 /// unconditionally transition to Connected per HEP-CORE-0023 §2.1.
 struct HeartbeatEffect
 {
-    bool      presence_found{false};
+    bool presence_found{false};
     RoleState prev_state{RoleState::Disconnected};
-    bool      was_first_heartbeat_seen{false};  ///< Before this heartbeat.
+    bool was_first_heartbeat_seen{false}; ///< Before this heartbeat.
 
     /// Coarse classification for callers that only need the enum.
     TransitionEffect to_transition_effect() const noexcept
     {
-        if (!presence_found) return TransitionEffect::NoChange;
+        if (!presence_found)
+            return TransitionEffect::NoChange;
         // First-heartbeat OR recovery from non-Connected.
-        if (!was_first_heartbeat_seen) return TransitionEffect::NewlyConnected;
-        if (prev_state != RoleState::Connected) return TransitionEffect::NewlyConnected;
+        if (!was_first_heartbeat_seen)
+            return TransitionEffect::NewlyConnected;
+        if (prev_state != RoleState::Connected)
+            return TransitionEffect::NewlyConnected;
         return TransitionEffect::Refreshed;
     }
 };
@@ -1152,13 +1143,12 @@ struct HeartbeatEffect
 /// Registered role (plh_role process). Independent of channel membership.
 struct RoleEntry
 {
-    std::string uid;       ///< Key in HubState::roles.
+    std::string uid; ///< Key in HubState::roles.
     std::string name;
-    std::string short_tag;  ///< "prod" / "cons" / "proc" or a custom tag.
+    std::string short_tag; ///< "prod" / "cons" / "proc" or a custom tag.
     std::vector<std::string> channels;
 
-    std::chrono::system_clock::time_point first_seen{
-        std::chrono::system_clock::now()};
+    std::chrono::system_clock::time_point first_seen{std::chrono::system_clock::now()};
 
     std::string pubkey_z85; ///< Role's CurveZMQ public key (Z85, 40 chars).
 
@@ -1180,17 +1170,18 @@ struct RoleEntry
     /// (typically 1, occasionally 2 for processors).  Inline so callers
     /// in tests / headers don't need a library symbol.
     const RolePresence *find_presence(const std::string &channel,
-                                       const std::string &role_type) const noexcept
+                                      const std::string &role_type) const noexcept
     {
         for (const auto &p : presences)
-            if (p.channel == channel && p.role_type == role_type) return &p;
+            if (p.channel == channel && p.role_type == role_type)
+                return &p;
         return nullptr;
     }
-    RolePresence *find_presence(const std::string &channel,
-                                 const std::string &role_type) noexcept
+    RolePresence *find_presence(const std::string &channel, const std::string &role_type) noexcept
     {
         for (auto &p : presences)
-            if (p.channel == channel && p.role_type == role_type) return &p;
+            if (p.channel == channel && p.role_type == role_type)
+                return &p;
         return nullptr;
     }
 
@@ -1205,10 +1196,7 @@ struct RoleEntry
     /// role-reaper (`_dispatch_role_disconnected_if_dead`) to decide
     /// whether to delete the whole `RoleEntry` when its last presence
     /// transitions Disconnected.
-    [[nodiscard]] bool any_presence_alive() const noexcept
-    {
-        return !presences.empty();
-    }
+    [[nodiscard]] bool any_presence_alive() const noexcept { return !presences.empty(); }
 
     // ── Wave M3 controlled-access API (additive step 1, 2026-05-11) ──
     //
@@ -1224,29 +1212,28 @@ struct RoleEntry
     /// presence scope).  Caller maintains the `channels` cache
     /// invariant (decision #1, 2026-05-11): on `Created`, append
     /// the channel to `channels` if not already present.
-    AddPresenceResult add_presence(std::string channel_,
-                                    std::string role_type_,
-                                    RolePresence **out = nullptr)
+    AddPresenceResult add_presence(std::string channel_, std::string role_type_,
+                                   RolePresence **out = nullptr)
     {
         if (find_presence(channel_, role_type_) != nullptr)
             return AddPresenceResult::RejectedDuplicate;
         RolePresence p;
-        p.channel              = std::move(channel_);
-        p.role_type            = std::move(role_type_);
-        p.state                = RoleState::Connected;
+        p.channel = std::move(channel_);
+        p.role_type = std::move(role_type_);
+        p.state = RoleState::Connected;
         p.first_heartbeat_seen = false;
-        p.last_heartbeat       = std::chrono::steady_clock::now();
-        p.state_since          = p.last_heartbeat;
+        p.last_heartbeat = std::chrono::steady_clock::now();
+        p.state_since = p.last_heartbeat;
         presences.push_back(std::move(p));
-        if (out != nullptr) *out = &presences.back();
+        if (out != nullptr)
+            *out = &presences.back();
         return AddPresenceResult::Created;
     }
 
     /// Remove a presence row.  Returns true iff erased.  Caller
     /// maintains `channels` cache: drop the channel from `channels`
     /// when no other presence references it (decision #1).
-    bool remove_presence(std::string_view channel_,
-                          std::string_view role_type_) noexcept
+    bool remove_presence(std::string_view channel_, std::string_view role_type_) noexcept
     {
         for (auto it = presences.begin(); it != presences.end(); ++it)
         {
@@ -1267,40 +1254,42 @@ struct RoleEntry
     /// state post-§2 per the BrokerCounters docstring).
     /// Mutating only the matched (channel, role_type) presence — never
     /// touches sibling rows.  Per HEP-CORE-0023 §2.5.2.
-    HeartbeatEffect on_heartbeat(std::string_view channel_,
-                                  std::string_view role_type_,
-                                  std::chrono::steady_clock::time_point when)
+    HeartbeatEffect on_heartbeat(std::string_view channel_, std::string_view role_type_,
+                                 std::chrono::steady_clock::time_point when)
     {
         HeartbeatEffect r;
         for (auto &p : presences)
         {
-            if (p.channel != channel_ || p.role_type != role_type_) continue;
-            r.presence_found            = true;
-            r.prev_state                = p.state;
-            r.was_first_heartbeat_seen  = p.first_heartbeat_seen;
-            p.last_heartbeat            = when;
-            p.first_heartbeat_seen      = true;
-            p.heartbeats_received      += 1;  // §2.5 telemetry (#223)
+            if (p.channel != channel_ || p.role_type != role_type_)
+                continue;
+            r.presence_found = true;
+            r.prev_state = p.state;
+            r.was_first_heartbeat_seen = p.first_heartbeat_seen;
+            p.last_heartbeat = when;
+            p.first_heartbeat_seen = true;
+            p.heartbeats_received += 1; // §2.5 telemetry (#223)
             if (p.state != RoleState::Connected)
             {
-                p.state       = RoleState::Connected;
+                p.state = RoleState::Connected;
                 p.state_since = when;
             }
             return r;
         }
-        return r;  // presence_found == false
+        return r; // presence_found == false
     }
 
     /// Heartbeat-timeout handler.  Connected → Pending only; any other
     /// state is a no-op.  Per HEP-CORE-0023 §2.1 first-pass demotion.
     TransitionEffect on_heartbeat_timeout(std::string_view channel_,
-                                           std::string_view role_type_) noexcept
+                                          std::string_view role_type_) noexcept
     {
         for (auto &p : presences)
         {
-            if (p.channel != channel_ || p.role_type != role_type_) continue;
-            if (p.state != RoleState::Connected) return TransitionEffect::NoChange;
-            p.state       = RoleState::Pending;
+            if (p.channel != channel_ || p.role_type != role_type_)
+                continue;
+            if (p.state != RoleState::Connected)
+                return TransitionEffect::NoChange;
+            p.state = RoleState::Pending;
             p.state_since = std::chrono::steady_clock::now();
             return TransitionEffect::ToPending;
         }
@@ -1318,12 +1307,14 @@ struct RoleEntry
     /// only deletes the presence row; the caller (`_on_pending_timeout`)
     /// runs `drop_channel_if_orphaned` next.
     TransitionEffect on_pending_timeout(std::string_view channel_,
-                                         std::string_view role_type_) noexcept
+                                        std::string_view role_type_) noexcept
     {
         for (auto it = presences.begin(); it != presences.end(); ++it)
         {
-            if (it->channel != channel_ || it->role_type != role_type_) continue;
-            if (it->state != RoleState::Pending) return TransitionEffect::NoChange;
+            if (it->channel != channel_ || it->role_type != role_type_)
+                continue;
+            if (it->state != RoleState::Pending)
+                return TransitionEffect::NoChange;
             presences.erase(it);
             return TransitionEffect::ToDisconnected;
         }
@@ -1335,12 +1326,12 @@ struct RoleEntry
     /// `ToDisconnected` iff a row was erased; `NoChange` if no
     /// matching row existed (already gone — idempotent).  Per
     /// HEP-CORE-0023 §2.1.
-    TransitionEffect on_dereg(std::string_view channel_,
-                               std::string_view role_type_) noexcept
+    TransitionEffect on_dereg(std::string_view channel_, std::string_view role_type_) noexcept
     {
         for (auto it = presences.begin(); it != presences.end(); ++it)
         {
-            if (it->channel != channel_ || it->role_type != role_type_) continue;
+            if (it->channel != channel_ || it->role_type != role_type_)
+                continue;
             presences.erase(it);
             return TransitionEffect::ToDisconnected;
         }
@@ -1363,18 +1354,19 @@ struct RoleEntry
     {
         for (const auto &p : presences)
         {
-            if (p.channel == channel_) return false;  // still referenced
+            if (p.channel == channel_)
+                return false; // still referenced
         }
         auto it = std::find(channels.begin(), channels.end(), channel_);
-        if (it == channels.end()) return false;
+        if (it == channels.end())
+            return false;
         channels.erase(it);
         return true;
     }
 };
 
 // ChannelEntry::observe — defined inline after RolePresence is complete.
-inline ChannelObservable
-ChannelEntry::observe(const RolePresence *producer) const noexcept
+inline ChannelObservable ChannelEntry::observe(const RolePresence *producer) const noexcept
 {
     if (producer == nullptr)
         return ChannelObservable::kAbsent;
@@ -1384,7 +1376,7 @@ ChannelEntry::observe(const RolePresence *producer) const noexcept
         return ChannelObservable::kRegistering;
     if (producer->state == RoleState::Pending)
         return ChannelObservable::kStalled;
-    return ChannelObservable::kLive;  // Connected + first_heartbeat_seen
+    return ChannelObservable::kLive; // Connected + first_heartbeat_seen
 }
 
 /// Federation peer (direct-connected hub, HEP-CORE-0022).
@@ -1393,11 +1385,10 @@ ChannelEntry::observe(const RolePresence *producer) const noexcept
 /// but with tag==`hub` (HEP-0033 §G2.2.0b). Example: `hub.lab1.pid42`.
 struct PeerEntry
 {
-    std::string uid;      ///< Peer hub UID; key in HubState::peers. Must validate as PeerUid.
+    std::string uid; ///< Peer hub UID; key in HubState::peers. Must validate as PeerUid.
     std::string endpoint;
-    PeerState   state{PeerState::Connecting};
-    std::chrono::steady_clock::time_point last_seen{
-        std::chrono::steady_clock::now()};
+    PeerState state{PeerState::Connecting};
+    std::chrono::steady_clock::time_point last_seen{std::chrono::steady_clock::now()};
     std::string pubkey_z85;
     std::vector<std::string> relay_channels; ///< Channels we relay TO this peer.
 
@@ -1439,9 +1430,9 @@ struct BrokerCounters
 
     // Loop instrumentation.
     uint64_t bytes_in_total{0};
-    uint64_t bytes_out_total{0};   // Always 0 today — multi-target fan-out
-                                   // makes per-message accounting ambiguous;
-                                   // see HEP-CORE-0033 §9.4.
+    uint64_t bytes_out_total{0}; // Always 0 today — multi-target fan-out
+                                 // makes per-message accounting ambiguous;
+                                 // see HEP-CORE-0033 §9.4.
 
     // Per-message-type counts (kept opaque to stay extensible).
     // `msg_type_counts[type]` bumps for every dispatch-completed message
@@ -1487,23 +1478,21 @@ using SchemaKey = std::pair<std::string, std::string>;
 struct HubStateSnapshot
 {
     std::unordered_map<std::string, ChannelEntry> channels;
-    std::unordered_map<std::string, RoleEntry>    roles;
-    std::unordered_map<std::string, BandEntry>    bands;
-    std::unordered_map<std::string, PeerEntry>    peers;
-    std::unordered_map<std::string, ShmBlockRef>  shm_blocks;
+    std::unordered_map<std::string, RoleEntry> roles;
+    std::unordered_map<std::string, BandEntry> bands;
+    std::unordered_map<std::string, PeerEntry> peers;
+    std::unordered_map<std::string, ShmBlockRef> shm_blocks;
     /// HEP-CORE-0034 §11.1 — owner-keyed schema records.
     /// `std::map` (not unordered) so iteration is deterministic for tests
     /// and admin diagnostics; the table is small (one record per role
     /// + hub-globals) so the log-N cost is irrelevant.
-    std::map<SchemaKey, schema::SchemaRecord>     schemas;
-    BrokerCounters                                counters;
-    std::chrono::system_clock::time_point         captured_at{
-        std::chrono::system_clock::now()};
+    std::map<SchemaKey, schema::SchemaRecord> schemas;
+    BrokerCounters counters;
+    std::chrono::system_clock::time_point captured_at{std::chrono::system_clock::now()};
     /// HEP-CORE-0039 §3.1 capture metadata.
-    std::chrono::steady_clock::time_point         captured_mono{
-        std::chrono::steady_clock::now()};
-    std::string                                   hub_uid;
-    std::uint64_t                                 snapshot_seq{0};
+    std::chrono::steady_clock::time_point captured_mono{std::chrono::steady_clock::now()};
+    std::string hub_uid;
+    std::uint64_t snapshot_seq{0};
 };
 
 /// Resolve a channel's current observable from a hub snapshot.  Scans
@@ -1526,31 +1515,44 @@ struct HubStateSnapshot
 /// transition).  Both paths use `std::unordered_map<std::string,
 /// RoleEntry>` — the template avoids duplicating the scan logic.
 template <typename RolesMap>
-inline ChannelObservable
-compute_channel_observable(const ChannelEntry &ch, const RolesMap &roles) noexcept
+inline ChannelObservable compute_channel_observable(const ChannelEntry &ch,
+                                                    const RolesMap &roles) noexcept
 {
-    if (ch.producers.empty()) return ChannelObservable::kAbsent;
+    if (ch.producers.empty())
+        return ChannelObservable::kAbsent;
 
-    bool any_live        = false;
+    bool any_live = false;
     bool any_registering = false;
-    bool any_stalled     = false;
+    bool any_stalled = false;
     for (const auto &prod : ch.producers)
     {
         auto rit = roles.find(prod.role_uid);
-        if (rit == roles.end()) continue;
+        if (rit == roles.end())
+            continue;
         const auto *p = rit->second.find_presence(ch.name, "producer");
-        if (p == nullptr) continue;
+        if (p == nullptr)
+            continue;
         switch (ch.observe(p))
         {
-        case ChannelObservable::kLive:        any_live = true;        break;
-        case ChannelObservable::kRegistering: any_registering = true; break;
-        case ChannelObservable::kStalled:     any_stalled = true;     break;
-        case ChannelObservable::kAbsent:                              break;
+        case ChannelObservable::kLive:
+            any_live = true;
+            break;
+        case ChannelObservable::kRegistering:
+            any_registering = true;
+            break;
+        case ChannelObservable::kStalled:
+            any_stalled = true;
+            break;
+        case ChannelObservable::kAbsent:
+            break;
         }
     }
-    if (any_live)        return ChannelObservable::kLive;
-    if (any_registering) return ChannelObservable::kRegistering;
-    if (any_stalled)     return ChannelObservable::kStalled;
+    if (any_live)
+        return ChannelObservable::kLive;
+    if (any_registering)
+        return ChannelObservable::kRegistering;
+    if (any_stalled)
+        return ChannelObservable::kStalled;
     return ChannelObservable::kAbsent;
 }
 
@@ -1558,8 +1560,8 @@ compute_channel_observable(const ChannelEntry &ch, const RolesMap &roles) noexce
 /// `HubStateSnapshot` and get the channel's observable.  Delegates to
 /// the templated `compute_channel_observable`; kept for source-level
 /// compatibility with existing call sites.
-inline ChannelObservable
-observe_channel(const ChannelEntry &ch, const HubStateSnapshot &snap) noexcept
+inline ChannelObservable observe_channel(const ChannelEntry &ch,
+                                         const HubStateSnapshot &snap) noexcept
 {
     return compute_channel_observable(ch, snap.roles);
 }
@@ -1571,7 +1573,10 @@ inline constexpr HandlerId kInvalidHandlerId = 0;
 
 // ─── Friend forward-decls ───────────────────────────────────────────────────
 
-namespace test { struct HubStateTestAccess; } // test-only friend shim
+namespace test
+{
+struct HubStateTestAccess;
+} // namespace test
 
 // ─── Schema-citation validation input (HEP-CORE-0034 §9 / §2.4 I4) ───────────
 
@@ -1589,18 +1594,18 @@ struct SchemaCitationInput
     // `compute_canonical_hash_from_wire`, so a packing difference changes the
     // hash and is caught by the hash comparison.  (`ChannelEntry` likewise
     // stores no separate packing.)
-    std::string              channel_owner;   ///< "" = unnamed (role-provided)
-    std::string              channel_id;      ///< "" = unnamed (role-provided)
-    std::array<uint8_t, 32>  channel_hash{};  ///< wire fingerprint (packing folded in)
+    std::string channel_owner;                      ///< "" = unnamed (role-provided)
+    std::string channel_id;                         ///< "" = unnamed (role-provided)
+    std::array<uint8_t, 32> channel_hash{};         ///< wire fingerprint (packing folded in)
     std::vector<std::string> channel_producer_uids; ///< for the cross-citation rule
 
     // The joiner's claim.
-    std::string              cited_id;        ///< "" = joiner names no id
-    std::string              cited_owner;     ///< joiner's claimed schema owner;
-                                              ///< "" = joiner names no owner
-                                              ///< (consumers) → owner check skipped
-    std::array<uint8_t, 32>  expected_hash{}; ///< computed-from-string when a
-                                              ///< structure was supplied
+    std::string cited_id;                    ///< "" = joiner names no id
+    std::string cited_owner;                 ///< joiner's claimed schema owner;
+                                             ///< "" = joiner names no owner
+                                             ///< (consumers) → owner check skipped
+    std::array<uint8_t, 32> expected_hash{}; ///< computed-from-string when a
+                                             ///< structure was supplied
 
     /// Run the named-registry check (§9 step 3): the cited owner must be hub
     /// or a channel producer AND `(owner, id)` must exist in the registry with
@@ -1610,7 +1615,7 @@ struct SchemaCitationInput
     /// channel's already-established schema and must NOT require a registry
     /// record, since a channel opened by a consumer (fan-in) sets its
     /// invariants without creating one.
-    bool                     check_registry_record{false};
+    bool check_registry_record{false};
 };
 
 // ─── HubState ───────────────────────────────────────────────────────────────
@@ -1620,10 +1625,10 @@ class PYLABHUB_UTILS_EXPORT HubState
   public:
     HubState();
     ~HubState();
-    HubState(const HubState &)            = delete;
+    HubState(const HubState &) = delete;
     HubState &operator=(const HubState &) = delete;
-    HubState(HubState &&)                 = delete;
-    HubState &operator=(HubState &&)      = delete;
+    HubState(HubState &&) = delete;
+    HubState &operator=(HubState &&) = delete;
 
     /// Set the hub identifier used to stamp snapshots
     /// (`HubStateSnapshot::hub_uid`).  Called once during HubHost
@@ -1634,13 +1639,13 @@ class PYLABHUB_UTILS_EXPORT HubState
     void set_hub_uid(std::string hub_uid);
 
     // ── Read-only accessors (shared lock; copy out) ─────────────────────
-    [[nodiscard]] HubStateSnapshot            snapshot() const;
+    [[nodiscard]] HubStateSnapshot snapshot() const;
     [[nodiscard]] std::optional<ChannelEntry> channel(const std::string &name) const;
-    [[nodiscard]] std::optional<RoleEntry>    role(const std::string &uid) const;
-    [[nodiscard]] std::optional<BandEntry>    band(const std::string &name) const;
-    [[nodiscard]] std::optional<PeerEntry>    peer(const std::string &hub_uid) const;
-    [[nodiscard]] std::optional<ShmBlockRef>  shm_block(const std::string &channel_name) const;
-    [[nodiscard]] BrokerCounters              counters() const;
+    [[nodiscard]] std::optional<RoleEntry> role(const std::string &uid) const;
+    [[nodiscard]] std::optional<BandEntry> band(const std::string &name) const;
+    [[nodiscard]] std::optional<PeerEntry> peer(const std::string &hub_uid) const;
+    [[nodiscard]] std::optional<ShmBlockRef> shm_block(const std::string &channel_name) const;
+    [[nodiscard]] BrokerCounters counters() const;
 
     /// HEP-CORE-0036 §4.1 — per-channel access scaffolding.  Returns
     /// the channel's `ChannelAccessEntry` if the broker has opened an
@@ -1658,8 +1663,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// stale-instance guard in
     /// `handle_channel_auth_applied_req`: reject APPLIED_REQ whose
     /// echoed `instance_id` does not match the current instance.
-    [[nodiscard]] std::uint64_t
-    producer_instance(const std::string &producer_role_uid) const;
+    [[nodiscard]] std::uint64_t producer_instance(const std::string &producer_role_uid) const;
 
     /// I-REPLAY-BOUND anti-replay dedup for REG-family messages
     /// (HEP-CORE-0046 §8.1).  Records the
@@ -1689,10 +1693,8 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///
     /// Wall-clock skew is caller-checked BEFORE calling this method — skew
     /// is a distinct wire-level reject, not a dedup event.
-    [[nodiscard]] bool
-    nonce_seen(std::string_view role_uid,
-                std::string_view client_nonce,
-                std::uint64_t     window_ms);
+    [[nodiscard]] bool nonce_seen(std::string_view role_uid, std::string_view client_nonce,
+                                  std::uint64_t window_ms);
 
     /// HEP-CORE-0042 §5.4 + §5.5.2 (unified 2026-07-13) — advance
     /// `ledger.confirm(role_uid, applied_version)` for the named
@@ -1706,10 +1708,8 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// Renamed from `_on_producer_confirmed` (2026-07-13) — the old
     /// name reflected the pre-unification per-producer semantics and
     /// is now misleading.
-    std::uint64_t
-    _on_role_confirmed(const std::string &channel_name,
-                       const std::string &role_uid,
-                       std::uint64_t      applied_version);
+    std::uint64_t _on_role_confirmed(const std::string &channel_name, const std::string &role_uid,
+                                     std::uint64_t applied_version);
 
     /// HEP-CORE-0036 §6.6.3 + HEP-CORE-0042 §5.5.2 INVARIANT-BIND-
     /// CONFIRM-2 — the core dialing-role readiness query.  Returns
@@ -1729,10 +1729,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// which used a set-snapshot mechanism (`_on_binding_confirmed`
     /// copying current `authorized_consumer_pubkeys` at APPLIED_REQ
     /// time — race-prone, see test #2480 evidence 2026-07-12).
-    [[nodiscard]] std::optional<bool>
-    is_pubkey_visible_to(const std::string &channel_name,
-                          const std::string &binding_role_uid,
-                          const std::string &pubkey_z85) const;
+    [[nodiscard]] std::optional<bool> is_pubkey_visible_to(const std::string &channel_name,
+                                                           const std::string &binding_role_uid,
+                                                           const std::string &pubkey_z85) const;
 
     /// HEP-CORE-0042 §5.5.2 registration guard primitive (2026-07-13).
     /// Returns true iff `role_uid` is currently registered on
@@ -1749,10 +1748,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// the handlers share one primitive with tested semantics
     /// (mismatched role_type, empty channel, empty role_uid all
     /// deterministic).
-    [[nodiscard]] bool
-    is_role_registered_on_channel(const std::string &channel_name,
-                                    const std::string &role_uid,
-                                    const std::string &role_type) const;
+    [[nodiscard]] bool is_role_registered_on_channel(const std::string &channel_name,
+                                                     const std::string &role_uid,
+                                                     const std::string &role_type) const;
 
     /// Wave M1.4 (2026-05-11) — per-channel metrics aggregator.
     ///
@@ -1773,34 +1771,32 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// non-null `latest_metrics`.  Metrics live on per-presence rows
     /// per HEP-CORE-0019 §2.3 Phase 6; this aggregator replaces the
     /// retired `BrokerServiceImpl::metrics_store_` path (M1.4).
-    [[nodiscard]] nlohmann::json
-    channel_metrics_snapshot(const std::string &channel) const;
+    [[nodiscard]] nlohmann::json channel_metrics_snapshot(const std::string &channel) const;
 
     /// Look up one schema record by `(owner_uid, schema_id)`.  Returns
     /// nullopt if the record does not exist.  Per HEP-CORE-0034 §11 the
     /// hub is the authoritative source for schema records — citers should
     /// ground their assumptions in this lookup, not in their local
     /// `<role_dir>/schemas/` cache.
-    [[nodiscard]] std::optional<schema::SchemaRecord>
-    schema(const std::string &owner_uid, const std::string &schema_id) const;
+    [[nodiscard]] std::optional<schema::SchemaRecord> schema(const std::string &owner_uid,
+                                                             const std::string &schema_id) const;
 
     /// Number of schema records currently stored.  Cheap read; useful for
     /// tests and admin diagnostics.
     [[nodiscard]] std::size_t schema_count() const;
 
     // ── Event subscription ──────────────────────────────────────────────
-    using ChannelOpenedHandler        = std::function<void(const ChannelEntry &)>;
+    using ChannelOpenedHandler = std::function<void(const ChannelEntry &)>;
     using ChannelStatusChangedHandler =
         std::function<void(const ChannelEntry &, ChannelObservable)>;
-    using ChannelClosedHandler        = std::function<void(const std::string & /*name*/)>;
-    using ConsumerAddedHandler        = std::function<void(const std::string & /*channel*/,
-                                                           const ConsumerEntry &)>;
-    using ConsumerRemovedHandler      = std::function<void(const std::string & /*channel*/,
-                                                           const std::string & /*role_uid*/)>;
-    using RoleRegisteredHandler       = std::function<void(const RoleEntry &)>;
-    using RoleDisconnectedHandler     = std::function<void(const std::string & /*role_uid*/)>;
-    using BandJoinedHandler           = std::function<void(const std::string & /*band*/,
-                                                           const BandMember &)>;
+    using ChannelClosedHandler = std::function<void(const std::string & /*name*/)>;
+    using ConsumerAddedHandler =
+        std::function<void(const std::string & /*channel*/, const ConsumerEntry &)>;
+    using ConsumerRemovedHandler =
+        std::function<void(const std::string & /*channel*/, const std::string & /*role_uid*/)>;
+    using RoleRegisteredHandler = std::function<void(const RoleEntry &)>;
+    using RoleDisconnectedHandler = std::function<void(const std::string & /*role_uid*/)>;
+    using BandJoinedHandler = std::function<void(const std::string & /*band*/, const BandMember &)>;
     /// `reason` is the wire-protocol reason for the leave (HEP-CORE-0030
     /// BAND_LEAVE_NOTIFY): `"voluntary"` for BAND_LEAVE_REQ, `"role_closed"`
     /// for role-disconnect cascade.  Wave M3 step 5f (2026-05-11) added
@@ -1811,12 +1807,11 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// wire field per HEP-CORE-0030 §5.3 (BandLeaveNotifyBody schema).
     /// Post-leave the member has been erased from the band; the handler
     /// receives the pre-erase name snapshot.
-    using BandLeftHandler             = std::function<void(const std::string & /*band*/,
-                                                           const std::string & /*role_uid*/,
-                                                           const std::string & /*role_name*/,
-                                                           const std::string & /*reason*/)>;
-    using PeerConnectedHandler        = std::function<void(const PeerEntry &)>;
-    using PeerDisconnectedHandler     = std::function<void(const std::string & /*hub_uid*/)>;
+    using BandLeftHandler =
+        std::function<void(const std::string & /*band*/, const std::string & /*role_uid*/,
+                           const std::string & /*role_name*/, const std::string & /*reason*/)>;
+    using PeerConnectedHandler = std::function<void(const PeerEntry &)>;
+    using PeerDisconnectedHandler = std::function<void(const std::string & /*hub_uid*/)>;
 
     // Subscription / dispatch is logically `const` on the observable
     // HubState data: the `handlers_mu` mutex is `mutable` (declared in
@@ -1837,7 +1832,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     HandlerId subscribe_band_left(BandLeftHandler h) const;
     HandlerId subscribe_peer_connected(PeerConnectedHandler h) const;
     HandlerId subscribe_peer_disconnected(PeerDisconnectedHandler h) const;
-    void      unsubscribe(HandlerId id) const noexcept;
+    void unsubscribe(HandlerId id) const noexcept;
 
   private:
     friend class ::pylabhub::broker::BrokerService;
@@ -1873,18 +1868,15 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// creation — the topology decides who opens.  This primitive
     /// factors that decision out of the role-specific admission
     /// paths so one place defines what "opening a channel" means.
-    ChannelEntry*
-    _open_channel_locked(const std::string&                 channel_name,
-                         const ChannelSchemaInvariants&     schema,
-                         const ChannelTransportInvariants&  transport,
-                         ChannelTopology                    topology,
-                         const char*&                       topology_error_code);
+    ChannelEntry *_open_channel_locked(const std::string &channel_name,
+                                       const ChannelSchemaInvariants &schema,
+                                       const ChannelTransportInvariants &transport,
+                                       ChannelTopology topology, const char *&topology_error_code);
 
     ConsumerAdmissionResult
-    _add_consumer(const std::string&                        channel,
-                  ConsumerEntry                             entry,
-                  std::optional<ChannelTopology>            declared_topology,
-                  std::optional<ChannelSchemaInvariants>    open_schema    = std::nullopt,
+    _add_consumer(const std::string &channel, ConsumerEntry entry,
+                  std::optional<ChannelTopology> declared_topology,
+                  std::optional<ChannelSchemaInvariants> open_schema = std::nullopt,
                   std::optional<ChannelTransportInvariants> open_transport = std::nullopt);
     void _remove_consumer(const std::string &channel, const std::string &role_uid);
     void _set_role_registered(RoleEntry entry);
@@ -1893,7 +1885,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// `reason` carries the wire-protocol reason ("voluntary" /
     /// "role_closed") through to the `BandLeftHandler`.  See M3 step 5f.
     void _set_band_left(const std::string &band, const std::string &role_uid,
-                         const std::string &reason);
+                        const std::string &reason);
     void _set_peer_connected(PeerEntry entry);
     void _set_peer_disconnected(const std::string &hub_uid);
 
@@ -1906,8 +1898,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// responsibility (broker handler runs `validate_tcp_endpoint`
     /// before calling this).
     bool _set_producer_zmq_node_endpoint(const std::string &channel_name,
-                                          const std::string &role_uid,
-                                          std::string        endpoint);
+                                         const std::string &role_uid, std::string endpoint);
 
     /// Set channel-scope `data_endpoint` per HEP-CORE-0017 §3.3.0
     /// binding-side ownership model.  Called by the broker's
@@ -1917,8 +1908,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// repeated calls with the same value.  Returns true iff the
     /// channel exists.  Endpoint validation is the caller's
     /// responsibility.
-    bool _set_channel_data_endpoint(const std::string &channel_name,
-                                     std::string        endpoint);
+    bool _set_channel_data_endpoint(const std::string &channel_name, std::string endpoint);
 
     void _set_shm_block(ShmBlockRef ref);
     void _bump_counter(const std::string &key, uint64_t n = 1);
@@ -1986,12 +1976,11 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///
     /// Design authority: tech draft §5.1 rules 1-4 (topology admission)
     /// + HEP-CORE-0007 §12.3/§12.4a (wire schema + error codes).
-    ProducerAdmissionResult
-    _on_producer_added(const std::string&                channel_name,
-                       ChannelSchemaInvariants           schema,
-                       ChannelTransportInvariants        transport,
-                       std::optional<ChannelTopology>    declared_topology,
-                       ProducerEntry                     producer);
+    ProducerAdmissionResult _on_producer_added(const std::string &channel_name,
+                                               ChannelSchemaInvariants schema,
+                                               ChannelTransportInvariants transport,
+                                               std::optional<ChannelTopology> declared_topology,
+                                               ProducerEntry producer);
 
     /// Wave M2.5 step 4 controlled-access DEREG_REQ / producer-drop
     /// entry point.  Replaces `_on_channel_closed`-as-DEREG-handler:
@@ -2016,10 +2005,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///
     /// Pre-conditions: writer lock taken internally.  Channel-mismatch
     /// validation done by the op-entry boundary; `reason` is logged.
-    RemoveProducerResult
-    _on_producer_dropped(const std::string&    channel_name,
-                          const std::string&    role_uid,
-                          ChannelCloseReason    reason);
+    RemoveProducerResult _on_producer_dropped(const std::string &channel_name,
+                                              const std::string &role_uid,
+                                              ChannelCloseReason reason);
 
     void _on_channel_closed(const std::string &name, ChannelCloseReason why);
 
@@ -2044,10 +2032,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///   path from the join-existing path so the caller can decide
     ///   whether to fire the ch_opened handler chain.
     ConsumerAdmissionResult
-    _on_consumer_joined(const std::string&                        channel,
-                        ConsumerEntry                             consumer,
-                        std::optional<ChannelTopology>            declared_topology,
-                        std::optional<ChannelSchemaInvariants>    open_schema    = std::nullopt,
+    _on_consumer_joined(const std::string &channel, ConsumerEntry consumer,
+                        std::optional<ChannelTopology> declared_topology,
+                        std::optional<ChannelSchemaInvariants> open_schema = std::nullopt,
                         std::optional<ChannelTransportInvariants> open_transport = std::nullopt);
     void _on_consumer_left(const std::string &channel, const std::string &role_uid);
     /// Refresh the presence row matching `(channel, role_uid, role_type)`.
@@ -2061,11 +2048,10 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// first heartbeat for a presence).  On no-op (unknown role / empty
     /// uid), `presence_found == false`; callers should treat that as
     /// "nothing to do".
-    HeartbeatEffect _on_heartbeat(const std::string                       &channel,
-                       const std::string                           &role_uid,
-                       const std::string                           &role_type,
-                       std::chrono::steady_clock::time_point        when,
-                       const std::optional<nlohmann::json>         &metrics);
+    HeartbeatEffect _on_heartbeat(const std::string &channel, const std::string &role_uid,
+                                  const std::string &role_type,
+                                  std::chrono::steady_clock::time_point when,
+                                  const std::optional<nlohmann::json> &metrics);
     /// Connected → Pending transition for the `(channel, role_uid,
     /// role_type)` presence (HEP-CORE-0023 §2.1).  Producer + consumer
     /// transitions both bump `ready_to_pending_total` ("ready" is the
@@ -2074,8 +2060,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// `ChannelStatusChangedHandler` (consumer presence does not
     /// affect `ChannelObservable` per §2.1).  `role_type` MUST be
     /// `"producer"` or `"consumer"`.
-    void _on_heartbeat_timeout(const std::string &channel,
-                               const std::string &role_uid,
+    void _on_heartbeat_timeout(const std::string &channel, const std::string &role_uid,
                                const std::string &role_type);
     /// Pending → Disconnected transition for the `(channel, role_uid,
     /// role_type)` presence (HEP-CORE-0023 §2.1 + §2.1.1).  Bumps
@@ -2100,10 +2085,9 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// Idempotent in all role_type branches: if the presence is already
     /// Disconnected or the matching channel/role row is gone, returns
     /// `{removed=false, channel_now_empty=false}` without state mutation.
-    RemoveProducerResult
-    _on_pending_timeout(const std::string &channel,
-                         const std::string &role_uid,
-                         const std::string &role_type);
+    RemoveProducerResult _on_pending_timeout(const std::string &channel,
+                                             const std::string &role_uid,
+                                             const std::string &role_type);
 
     /// Wave M3 step 5b (2026-05-11): production trigger for the
     /// terminal cleanup defined at `_set_role_disconnected`.  Atomic
@@ -2142,9 +2126,8 @@ class PYLABHUB_UTILS_EXPORT HubState
     void _on_band_left(const std::string &band, const std::string &role_uid);
     void _on_peer_connected(PeerEntry peer);
     void _on_peer_disconnected(const std::string &hub_uid);
-    void _on_message_processed(const std::string &msg_type,
-                               std::size_t        bytes_in,
-                               std::size_t        bytes_out);
+    void _on_message_processed(const std::string &msg_type, std::size_t bytes_in,
+                               std::size_t bytes_out);
 
     // ── Channel-access capability ops (HEP-CORE-0036 §4.1) ──────────────
     //
@@ -2179,15 +2162,13 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// exists (callers should `_on_channel_access_opened` first, but
     /// out-of-order calls are silently dropped per the safe-default
     /// invariant).
-    void _on_consumer_authorized(const std::string &channel_name,
-                                  const std::string &pubkey_z85);
+    void _on_consumer_authorized(const std::string &channel_name, const std::string &pubkey_z85);
 
     /// Remove a consumer pubkey from the channel's allowlist on
     /// CONSUMER_DEREG_REQ / consumer-presence pending-timeout /
     /// consumer-PID-death.  Idempotent: no-op if `pubkey_z85` is not
     /// in the allowlist, or no channel-access record exists.
-    void _on_consumer_revoked(const std::string &channel_name,
-                               const std::string &pubkey_z85);
+    void _on_consumer_revoked(const std::string &channel_name, const std::string &pubkey_z85);
 
     // ── Schema-registry capability ops (HEP-CORE-0034 §11) ──────────────
     //
@@ -2255,8 +2236,7 @@ class PYLABHUB_UTILS_EXPORT HubState
      * (`SCHEMA_MISMATCH` for a producer, `SCHEMA_CITATION_REJECTED` /
      * `SCHEMA_ID_MISMATCH` for a consumer — HEP-CORE-0034 §10.4).
      */
-    schema::CitationOutcome
-    _validate_schema_citation(const SchemaCitationInput &in);
+    schema::CitationOutcome _validate_schema_citation(const SchemaCitationInput &in);
 
     struct Impl;
 #if defined(_MSC_VER)

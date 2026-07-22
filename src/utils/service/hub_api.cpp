@@ -15,17 +15,17 @@
 
 #include "utils/hub_api.hpp"
 
-#include "utils/broker_service.hpp"      // query_metrics for HubAPI::metrics()
-#include "utils/config/hub_config.hpp"   // host.config().raw() / .identity()
-#include "utils/hub_host.hpp"            // backref for metrics path
-#include "utils/hub_metrics_filter.hpp"  // empty MetricsFilter = all categories
-#include "utils/hub_state.hpp"           // HubState::channel/role/band/peer/snapshot
-#include "utils/hub_state_json.hpp"      // channel_to_json / role_to_json / etc.
-#include "utils/logger.hpp"              // LOGGER_INFO/WARN/ERROR/DEBUG
-#include "utils/role_host_core.hpp"      // IncomingMessage, RoleHostCore
-#include "utils/script_engine.hpp"       // ScriptEngine::invoke / eval
+#include "utils/broker_service.hpp"     // query_metrics for HubAPI::metrics()
+#include "utils/config/hub_config.hpp"  // host.config().raw() / .identity()
+#include "utils/hub_host.hpp"           // backref for metrics path
+#include "utils/hub_metrics_filter.hpp" // empty MetricsFilter = all categories
+#include "utils/hub_state.hpp"          // HubState::channel/role/band/peer/snapshot
+#include "utils/hub_state_json.hpp"     // channel_to_json / role_to_json / etc.
+#include "utils/logger.hpp"             // LOGGER_INFO/WARN/ERROR/DEBUG
+#include "utils/role_host_core.hpp"     // IncomingMessage, RoleHostCore
+#include "utils/script_engine.hpp"      // ScriptEngine::invoke / eval
 #include "utils/thread_manager.hpp"
-#include "utils/timeout_constants.hpp"   // kDefaultAugmentTimeoutHeartbeats
+#include "utils/timeout_constants.hpp" // kDefaultAugmentTimeoutHeartbeats
 
 #include <atomic>
 #include <stdexcept>
@@ -37,33 +37,29 @@ namespace pylabhub::hub_host
 
 struct HubAPI::Impl
 {
-    Impl(scripting::RoleHostCore &core,
-         std::string              short_tag,
-         std::string              uid)
-        : core(core)
-        , short_tag(std::move(short_tag))
-        , uid(std::move(uid))
-        , thread_mgr(this->short_tag, this->uid)
-        , augment_timeout_ms(
-              static_cast<int64_t>(pylabhub::kDefaultAugmentTimeoutHeartbeats)
-              * static_cast<int64_t>(pylabhub::kDefaultHeartbeatIntervalMs))
-    {}
+    Impl(scripting::RoleHostCore &core, std::string short_tag, std::string uid)
+        : core(core), short_tag(std::move(short_tag)), uid(std::move(uid)),
+          thread_mgr(this->short_tag, this->uid),
+          augment_timeout_ms(static_cast<int64_t>(pylabhub::kDefaultAugmentTimeoutHeartbeats) *
+                             static_cast<int64_t>(pylabhub::kDefaultHeartbeatIntervalMs))
+    {
+    }
 
-    scripting::RoleHostCore       &core;             // owned by EngineHost
-    std::string                    short_tag;         // "hub"
-    std::string                    uid;              // hub instance uid
+    scripting::RoleHostCore &core; // owned by EngineHost
+    std::string short_tag;         // "hub"
+    std::string uid;               // hub instance uid
 
     /// HubAPI's own ThreadManager — auto-registered as
     /// "ThreadManager:hub:<uid>" dynamic LifecycleGuard module.  Same
     /// shape RoleAPIBase uses; bounded-join shutdown applies uniformly.
-    utils::ThreadManager           thread_mgr;
+    utils::ThreadManager thread_mgr;
 
     /// Backref to the outer HubHost.  Set by HubScriptRunner immediately
     /// after EngineHost::startup_() constructs HubAPI.  Read accessors
     /// (`list_channels`, `get_role`, …) and control delegates
     /// (`close_channel`, …) read state and call mutators through this.
     /// Non-owning.
-    HubHost                       *host{nullptr};
+    HubHost *host{nullptr};
 
     /// Script engine pointer — set by HubScriptRunner before any
     /// dispatch call.  Non-owning (engine owned by EngineHost).
@@ -71,22 +67,20 @@ struct HubAPI::Impl
     /// HEP-CORE-0033 §4.2 step 2 drains admin (and broker, when
     /// HUB_TARGETED_ACK lands) BEFORE the runner destroys the engine
     /// + this HubAPI.  Wired in `set_engine`, never reset.
-    scripting::ScriptEngine       *engine{nullptr};
+    scripting::ScriptEngine *engine{nullptr};
 
     /// HEP-CORE-0033 §12.2.2 augment timeout — atomic so the worker-
     /// thread setter (`set_augment_timeout`) and the admin/broker
     /// reader (`augment_timeout_ms`) interleave safely without a
     /// mutex.  Semantics: -1=infinite, 0=non-blocking, >0=N ms.
-    std::atomic<int64_t>           augment_timeout_ms;
+    std::atomic<int64_t> augment_timeout_ms;
 };
 
 // ============================================================================
 // Construction / destruction
 // ============================================================================
 
-HubAPI::HubAPI(scripting::RoleHostCore &core,
-                std::string             short_tag,
-                std::string             uid)
+HubAPI::HubAPI(scripting::RoleHostCore &core, std::string short_tag, std::string uid)
 {
     if (short_tag.empty())
         throw std::invalid_argument("HubAPI: short_tag must be non-empty");
@@ -143,14 +137,14 @@ void HubAPI::dispatch_event(const scripting::IncomingMessage &msg)
     // callback signal as an error — many scripts only register a subset
     // of events).
     const std::string callback = "on_" + msg.event;
-    (void) impl_->engine->invoke(callback, msg.details);
+    (void)impl_->engine->invoke(callback, msg.details);
 }
 
 void HubAPI::dispatch_tick()
 {
     if (!impl_->engine)
         return;
-    (void) impl_->engine->invoke("on_tick");
+    (void)impl_->engine->invoke("on_tick");
 }
 
 // ============================================================================
@@ -266,7 +260,7 @@ nlohmann::json HubAPI::get_channel(const std::string &name) const
     // the "best of all producers" observable (HEP-CORE-0023 §2.1.1,
     // multi-producer).
     const auto snap = impl_->host->state().snapshot();
-    const auto cit  = snap.channels.find(name);
+    const auto cit = snap.channels.find(name);
     if (cit == snap.channels.end())
         return nullptr;
     const auto obs = pylabhub::hub::observe_channel(cit->second, snap);
@@ -361,9 +355,8 @@ void HubAPI::close_channel(const std::string &name)
     impl_->host->broker().request_close_channel(name);
 }
 
-void HubAPI::broadcast_channel(const std::string &channel,
-                                const std::string &message,
-                                const std::string &data)
+void HubAPI::broadcast_channel(const std::string &channel, const std::string &message,
+                               const std::string &data)
 {
     if (!impl_->host)
         return;
@@ -410,20 +403,15 @@ bool is_valid_event_name(std::string_view s) noexcept
     if (s.empty())
         return false;
     auto leading = static_cast<unsigned char>(s.front());
-    const bool leading_ok =
-        (leading >= 'a' && leading <= 'z') ||
-        (leading >= 'A' && leading <= 'Z') ||
-        (leading == '_');
+    const bool leading_ok = (leading >= 'a' && leading <= 'z') ||
+                            (leading >= 'A' && leading <= 'Z') || (leading == '_');
     if (!leading_ok)
         return false;
     for (size_t i = 1; i < s.size(); ++i)
     {
         auto c = static_cast<unsigned char>(s[i]);
-        const bool ok =
-            (c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') ||
-            (c == '_');
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || (c == '_');
         if (!ok)
             return false;
     }
@@ -432,13 +420,11 @@ bool is_valid_event_name(std::string_view s) noexcept
 
 } // namespace
 
-void HubAPI::post_event(const std::string &name,
-                         const nlohmann::json &data)
+void HubAPI::post_event(const std::string &name, const nlohmann::json &data)
 {
     if (!is_valid_event_name(name))
-        throw std::invalid_argument(
-            "HubAPI::post_event: invalid event name '" + name +
-            "' (must be a valid C identifier)");
+        throw std::invalid_argument("HubAPI::post_event: invalid event name '" + name +
+                                    "' (must be a valid C identifier)");
 
     // Build the IncomingMessage.  Event prefix `app_` reserves the
     // user-posted namespace away from built-in events
@@ -446,8 +432,8 @@ void HubAPI::post_event(const std::string &name,
     // §12.2.3.  Worker-side dispatch_event prepends `on_`, so the
     // script's callback name is `on_app_<name>`.
     scripting::IncomingMessage m;
-    m.event   = "app_" + name;
-    m.sender  = impl_->uid;     // hub uid; consistent with broker-posted events
+    m.event = "app_" + name;
+    m.sender = impl_->uid; // hub uid; consistent with broker-posted events
     m.details = data;
 
     impl_->core.enqueue_message(std::move(m));
@@ -486,11 +472,8 @@ namespace
 /// (HEP-CORE-0033 §12.2.2): -1=infinite, 0=non-blocking, >0=N ms.
 /// On TimedOut / ScriptError / EngineShutdown the response is left
 /// unchanged — caller ships the default it built.
-void run_augment(scripting::ScriptEngine *engine,
-                 const std::string         &callback,
-                 const nlohmann::json      &args,
-                 nlohmann::json            &response,
-                 int64_t                    timeout_ms)
+void run_augment(scripting::ScriptEngine *engine, const std::string &callback,
+                 const nlohmann::json &args, nlohmann::json &response, int64_t timeout_ms)
 {
     if (!engine)
         return;
@@ -499,52 +482,45 @@ void run_augment(scripting::ScriptEngine *engine,
 
     auto resp = engine->invoke_returning(callback, args, timeout_ms);
     if (resp.status != scripting::InvokeStatus::Ok)
-        return;  // script error / engine shutdown / timeout — keep default
+        return; // script error / engine shutdown / timeout — keep default
     if (resp.value.is_null())
-        return;  // script returned None/nil — keep default response
+        return; // script returned None/nil — keep default response
     response = std::move(resp.value);
 }
 
 } // namespace
 
-void HubAPI::augment_query_metrics(const nlohmann::json &params,
-                                    nlohmann::json &response)
+void HubAPI::augment_query_metrics(const nlohmann::json &params, nlohmann::json &response)
 {
     nlohmann::json args = nlohmann::json::object();
-    args["params"]   = params;
+    args["params"] = params;
     args["response"] = response;
-    run_augment(impl_->engine, "on_query_metrics", args, response,
-                augment_timeout_ms());
+    run_augment(impl_->engine, "on_query_metrics", args, response, augment_timeout_ms());
 }
 
 void HubAPI::augment_list_roles(nlohmann::json &response)
 {
     nlohmann::json args = nlohmann::json::object();
     args["response"] = response;
-    run_augment(impl_->engine, "on_list_roles", args, response,
-                augment_timeout_ms());
+    run_augment(impl_->engine, "on_list_roles", args, response, augment_timeout_ms());
 }
 
-void HubAPI::augment_get_channel(const std::string &name,
+void HubAPI::augment_get_channel(const std::string &name, nlohmann::json &response)
+{
+    nlohmann::json args = nlohmann::json::object();
+    args["name"] = name;
+    args["response"] = response;
+    run_augment(impl_->engine, "on_get_channel", args, response, augment_timeout_ms());
+}
+
+void HubAPI::augment_peer_message(const std::string &peer_uid, const nlohmann::json &msg,
                                   nlohmann::json &response)
 {
     nlohmann::json args = nlohmann::json::object();
-    args["name"]     = name;
-    args["response"] = response;
-    run_augment(impl_->engine, "on_get_channel", args, response,
-                augment_timeout_ms());
-}
-
-void HubAPI::augment_peer_message(const std::string &peer_uid,
-                                   const nlohmann::json &msg,
-                                   nlohmann::json &response)
-{
-    nlohmann::json args = nlohmann::json::object();
     args["peer_uid"] = peer_uid;
-    args["msg"]      = msg;
+    args["msg"] = msg;
     args["response"] = response;
-    run_augment(impl_->engine, "on_peer_message", args, response,
-                augment_timeout_ms());
+    run_augment(impl_->engine, "on_peer_message", args, response, augment_timeout_ms());
 }
 
 } // namespace pylabhub::hub_host

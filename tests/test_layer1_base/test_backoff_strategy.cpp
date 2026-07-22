@@ -110,15 +110,20 @@ TEST(BackoffStrategyTest, ThreePhase_Phase2_Microsleep)
 TEST(BackoffStrategyTest, ThreePhase_Phase3_LinearGrowth)
 {
     ThreePhaseBackoff backoff;
-    struct TestCase { int iteration; uint64_t min_expected_us; uint64_t max_expected_us; };
+    struct TestCase
+    {
+        int iteration;
+        uint64_t min_expected_us;
+        uint64_t max_expected_us;
+    };
     // Upper bounds generous: OS scheduler adds 1-20ms jitter even for short sleeps.
     // Critical property is the lower bound (sleep actually occurs) and that later
     // iterations sleep longer than earlier ones (verified separately).
     std::vector<TestCase> test_cases = {
-        {10, 5, 50000},     // ~10us minimum, allow up to 50ms for scheduler variance
-        {20, 100, 50000},   // ~200us minimum
-        {50, 250, 50000},   // ~500us minimum
-        {100, 500, 50000},  // ~1000us minimum
+        {10, 5, 50000},    // ~10us minimum, allow up to 50ms for scheduler variance
+        {20, 100, 50000},  // ~200us minimum
+        {50, 250, 50000},  // ~500us minimum
+        {100, 500, 50000}, // ~1000us minimum
     };
     for (const auto &tc : test_cases)
     {
@@ -133,36 +138,42 @@ TEST(BackoffStrategyTest, ThreePhase_IsMonotonicallyIncreasing)
     // Minimum over several runs suppresses OS scheduler jitter.
     // sleep_for() sleeps AT LEAST the requested duration, so the minimum
     // converges to the actual sleep floor rather than scheduler-inflated values.
-    auto min_time_us = [](int iter, int runs) {
+    auto min_time_us = [](int iter, int runs)
+    {
         ThreePhaseBackoff b;
         uint64_t min = UINT64_MAX;
-        for (int r = 0; r < runs; ++r) {
+        for (int r = 0; r < runs; ++r)
+        {
             uint64_t t = measure_backoff_time_us(b, iter);
-            if (t < min) min = t;
+            if (t < min)
+                min = t;
         }
         return min;
     };
 
     // Warmup: first precise_sleep call initializes a thread-local timer handle
     // on Windows.  Pay that cost once with a throwaway iteration.
-    { ThreePhaseBackoff warmup; warmup(20); }
+    {
+        ThreePhaseBackoff warmup;
+        warmup(20);
+    }
 
     const int RUNS = 10;
-    uint64_t t50  = min_time_us(50, RUNS);
+    uint64_t t50 = min_time_us(50, RUNS);
     uint64_t t200 = min_time_us(200, RUNS);
     uint64_t t500 = min_time_us(500, RUNS);
 
-    EXPECT_LT(t50, t200)  << "iter=200 (~2000us) should sleep longer than iter=50 (~500us)";
+    EXPECT_LT(t50, t200) << "iter=200 (~2000us) should sleep longer than iter=50 (~500us)";
     EXPECT_LT(t200, t500) << "iter=500 (~5000us) should sleep longer than iter=200 (~2000us)";
 }
 
 TEST(BackoffStrategyTest, ThreePhase_HelperFunction)
 {
     auto start = std::chrono::high_resolution_clock::now();
-    backoff(50);   // Should sleep ~500us via the convenience function
+    backoff(50); // Should sleep ~500us via the convenience function
     auto end = std::chrono::high_resolution_clock::now();
     uint64_t time_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    EXPECT_GE(time_us, 250u)   << "backoff(50) too fast";
+    EXPECT_GE(time_us, 250u) << "backoff(50) too fast";
     EXPECT_LE(time_us, 50000u) << "backoff(50) too slow";
 }
 
@@ -183,9 +194,9 @@ TEST(BackoffStrategyTest, BackoffFreeFunction_Compiles)
 
 TEST(BackoffStrategyTest, Constant_DefaultDelay)
 {
-    ConstantBackoff backoff;   // Default: 100us
+    ConstantBackoff backoff; // Default: 100us
     uint64_t time_us = measure_backoff_time_us(backoff, 0);
-    EXPECT_GE(time_us, 50u)   << "ConstantBackoff default too fast";
+    EXPECT_GE(time_us, 50u) << "ConstantBackoff default too fast";
     EXPECT_LE(time_us, 5000u) << "ConstantBackoff default too slow";
 }
 
@@ -193,7 +204,7 @@ TEST(BackoffStrategyTest, Constant_CustomDelay)
 {
     ConstantBackoff backoff(200us);
     uint64_t time_us = measure_backoff_time_us(backoff, 0);
-    EXPECT_GE(time_us, 100u)  << "ConstantBackoff(200us) too fast";
+    EXPECT_GE(time_us, 100u) << "ConstantBackoff(200us) too fast";
     EXPECT_LE(time_us, 5000u) << "ConstantBackoff(200us) too slow";
 }
 
@@ -206,8 +217,9 @@ TEST(BackoffStrategyTest, Constant_IterationIndependent)
     for (int i = 0; i < 10; ++i)
     {
         uint64_t time_us = measure_backoff_time_us(backoff, i);
-        EXPECT_GE(time_us, 50u)    << "ConstantBackoff(100us) should sleep ≥50us (iter=" << i << ")";
-        EXPECT_LE(time_us, 20000u) << "ConstantBackoff(100us) should not exceed 20ms (iter=" << i << ")";
+        EXPECT_GE(time_us, 50u) << "ConstantBackoff(100us) should sleep ≥50us (iter=" << i << ")";
+        EXPECT_LE(time_us, 20000u)
+            << "ConstantBackoff(100us) should not exceed 20ms (iter=" << i << ")";
     }
 }
 
@@ -264,11 +276,16 @@ TEST(BackoffStrategyTest, Aggressive_Phase2_ShortSleep)
 TEST(BackoffStrategyTest, Aggressive_Phase3_QuadraticGrowth)
 {
     AggressiveBackoff backoff;
-    struct TestCase { int iteration; uint64_t min_expected_us; uint64_t max_expected_us; };
+    struct TestCase
+    {
+        int iteration;
+        uint64_t min_expected_us;
+        uint64_t max_expected_us;
+    };
     std::vector<TestCase> test_cases = {
-        {6, 100, 50000},    // 360us minimum; allow up to 50ms for scheduler variance
-        {10, 500, 50000},   // 1000us minimum
-        {20, 2000, 50000},  // 4000us minimum
+        {6, 100, 50000},   // 360us minimum; allow up to 50ms for scheduler variance
+        {10, 500, 50000},  // 1000us minimum
+        {20, 2000, 50000}, // 4000us minimum
     };
     for (const auto &tc : test_cases)
     {
@@ -301,13 +318,14 @@ TEST(BackoffStrategyTest, Comparison_ThreePhaseVsAggressive)
         AggressiveBackoff ab;
         uint64_t et = measure_backoff_time_us(eb, 20);
         uint64_t at = measure_backoff_time_us(ab, 20);
-        if (et < exp_min) exp_min = et;
-        if (at < agg_min) agg_min = at;
+        if (et < exp_min)
+            exp_min = et;
+        if (at < agg_min)
+            agg_min = at;
     }
     // Aggressive: 20^2 * 10 = 4000us; ThreePhase: 20 * 10 = 200us.
-    EXPECT_GT(agg_min, exp_min)
-        << "AggressiveBackoff(iter=20, ~4000us) should sleep longer than "
-           "ThreePhaseBackoff(iter=20, ~200us)";
+    EXPECT_GT(agg_min, exp_min) << "AggressiveBackoff(iter=20, ~4000us) should sleep longer than "
+                                   "ThreePhaseBackoff(iter=20, ~200us)";
 }
 
 TEST(BackoffStrategyTest, Comparison_NoBackoffVsConstant)
@@ -321,10 +339,12 @@ TEST(BackoffStrategyTest, Comparison_NoBackoffVsConstant)
     uint64_t no_min = UINT64_MAX, const_min = UINT64_MAX;
     for (int r = 0; r < kRuns; ++r)
     {
-        uint64_t no_t    = measure_backoff_time_us(no_backoff, 0);
+        uint64_t no_t = measure_backoff_time_us(no_backoff, 0);
         uint64_t const_t = measure_backoff_time_us(const_backoff, 0);
-        if (no_t < no_min)       no_min    = no_t;
-        if (const_t < const_min) const_min = const_t;
+        if (no_t < no_min)
+            no_min = no_t;
+        if (const_t < const_min)
+            const_min = const_t;
     }
     // Under CI we relax 10x → 3x: a runner slow enough to give
     // ConstantBackoff(100us) a 5000us reading is also slow enough to
@@ -336,8 +356,8 @@ TEST(BackoffStrategyTest, Comparison_NoBackoffVsConstant)
 #endif
     EXPECT_LT(no_min * kRatio, const_min)
         << "NoBackoff should be significantly faster than ConstantBackoff "
-           "(no_min=" << no_min << "us, const_min=" << const_min
-        << "us, required ratio=" << kRatio << "x)";
+           "(no_min="
+        << no_min << "us, const_min=" << const_min << "us, required ratio=" << kRatio << "x)";
 }
 
 // ============================================================================
@@ -353,14 +373,16 @@ TEST(BackoffStrategyTest, UsagePattern_RetryLoop)
     auto start = std::chrono::high_resolution_clock::now();
     while (!success && iteration < max_iterations)
     {
-        if (iteration == 10) success = true;
-        if (!success) backoff(iteration++);
+        if (iteration == 10)
+            success = true;
+        if (!success)
+            backoff(iteration++);
     }
     auto end = std::chrono::high_resolution_clock::now();
     uint64_t total_time_us =
         std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    EXPECT_TRUE(success)              << "Retry loop should eventually succeed";
-    EXPECT_EQ(iteration, 10)          << "Should succeed on 10th iteration";
+    EXPECT_TRUE(success) << "Retry loop should eventually succeed";
+    EXPECT_EQ(iteration, 10) << "Should succeed on 10th iteration";
     EXPECT_LT(total_time_us, 50'000u) << "Retry loop took too long";
 }
 
@@ -369,12 +391,12 @@ TEST(BackoffStrategyTest, UsagePattern_FastTests)
     NoBackoff backoff;
     int iterations = 1000;
     auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iterations; ++i) backoff(i);
+    for (int i = 0; i < iterations; ++i)
+        backoff(i);
     auto end = std::chrono::high_resolution_clock::now();
     uint64_t total_time_us =
         std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
     // 1000 iterations of NoBackoff should be extremely fast (< 1ms on a quiet
     // workstation).  Relax to ci_upper(1ms) for CI runners.
-    EXPECT_LT(total_time_us, ci_upper(1000u))
-        << "NoBackoff should allow very fast test execution";
+    EXPECT_LT(total_time_us, ci_upper(1000u)) << "NoBackoff should allow very fast test execution";
 }

@@ -52,7 +52,8 @@ void zmq_context_shutdown()
     auto *ctx = g_context.load(std::memory_order_acquire);
     if (ctx == nullptr)
     {
-        return; // idempotent: safe if called twice (e.g. both GetZMQContextModule and GetLifecycleModule registered)
+        return; // idempotent: safe if called twice (e.g. both GetZMQContextModule and
+                // GetLifecycleModule registered)
     }
     // Belt-and-suspenders: signal any blocking socket operations to return with
     // ETERM before calling zmq_ctx_term().  With ZMQ_BLOCKY=0 (set at creation),

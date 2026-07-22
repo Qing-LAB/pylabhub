@@ -63,11 +63,12 @@ namespace detail
 #endif
 inline constexpr size_t PAGE_ALIGNMENT = PYLABHUB_PHYSICAL_PAGE_SIZE;
 
-/// Producer heartbeat: at PRODUCER_HEARTBEAT_OFFSET, [0]=producer_id, [1]=producer_last_heartbeat_ns.
+/// Producer heartbeat: at PRODUCER_HEARTBEAT_OFFSET, [0]=producer_id,
+/// [1]=producer_last_heartbeat_ns.
 inline std::atomic<uint64_t> *producer_heartbeat_id_ptr(SharedMemoryHeader *header)
 {
     return reinterpret_cast<std::atomic<uint64_t> *>(header->reserved_header +
-                                                    PRODUCER_HEARTBEAT_OFFSET);
+                                                     PRODUCER_HEARTBEAT_OFFSET);
 }
 inline const std::atomic<uint64_t> *producer_heartbeat_id_ptr(const SharedMemoryHeader *header)
 {
@@ -77,7 +78,7 @@ inline const std::atomic<uint64_t> *producer_heartbeat_id_ptr(const SharedMemory
 inline std::atomic<uint64_t> *producer_heartbeat_ns_ptr(SharedMemoryHeader *header)
 {
     return reinterpret_cast<std::atomic<uint64_t> *>(header->reserved_header +
-                                                    PRODUCER_HEARTBEAT_OFFSET) +
+                                                     PRODUCER_HEARTBEAT_OFFSET) +
            1;
 }
 inline const std::atomic<uint64_t> *producer_heartbeat_ns_ptr(const SharedMemoryHeader *header)
@@ -90,7 +91,8 @@ inline const std::atomic<uint64_t> *producer_heartbeat_ns_ptr(const SharedMemory
 /// Update producer heartbeat. Call on slot commit and on explicit update_heartbeat().
 inline void update_producer_heartbeat_impl(SharedMemoryHeader *header, uint64_t pid)
 {
-    if (header == nullptr) {
+    if (header == nullptr)
+    {
         return;
     }
     uint64_t now = pylabhub::platform::monotonic_time_ns();
@@ -106,50 +108,66 @@ inline void update_producer_heartbeat_impl(SharedMemoryHeader *header, uint64_t 
 
 // === Metrics Access Functions ===
 
-inline void increment_metric_writer_timeout(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_writer_timeout(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->writer_timeout_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-inline void increment_metric_writer_lock_timeout(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_writer_lock_timeout(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->writer_lock_timeout_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-inline void increment_metric_writer_reader_timeout(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_writer_reader_timeout(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->writer_reader_timeout_count.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-inline void add_metric_writer_blocked_ns(SharedMemoryHeader* header, uint64_t elapsed_ns) noexcept {
-    if (header != nullptr) {
+inline void add_metric_writer_blocked_ns(SharedMemoryHeader *header, uint64_t elapsed_ns) noexcept
+{
+    if (header != nullptr)
+    {
         header->writer_blocked_total_ns.fetch_add(elapsed_ns, std::memory_order_relaxed);
     }
 }
 
-inline void increment_metric_write_lock_contention(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_write_lock_contention(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->write_lock_contention.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-inline void increment_metric_reader_race_detected(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_reader_race_detected(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->reader_race_detected.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-inline void increment_metric_reader_validation_failed(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_reader_validation_failed(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->reader_validation_failed.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
-inline void increment_metric_slot_acquire_errors(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_slot_acquire_errors(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->slot_acquire_errors.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -158,8 +176,10 @@ inline void increment_metric_slot_acquire_errors(SharedMemoryHeader* header) noe
  * Increment total commit count. Called on every successful slot commit.
  * Memory ordering: release (synchronizes with readers checking commit progress).
  */
-inline void increment_metric_total_commits(SharedMemoryHeader* header) noexcept {
-    if (header != nullptr) {
+inline void increment_metric_total_commits(SharedMemoryHeader *header) noexcept
+{
+    if (header != nullptr)
+    {
         header->total_slots_written.fetch_add(1, std::memory_order_release);
     }
 }
@@ -170,7 +190,8 @@ inline void increment_metric_total_commits(SharedMemoryHeader* header) noexcept 
  *
  * @return Total commits, or 0 if header is null.
  */
-inline uint64_t get_total_commits(const SharedMemoryHeader* header) noexcept {
+inline uint64_t get_total_commits(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->total_slots_written.load(std::memory_order_acquire) : 0;
 }
 
@@ -179,22 +200,24 @@ inline uint64_t get_total_commits(const SharedMemoryHeader* header) noexcept {
  *
  * @return true if at least one commit has been made, false otherwise.
  */
-inline bool has_any_commits(const SharedMemoryHeader* header) noexcept {
+inline bool has_any_commits(const SharedMemoryHeader *header) noexcept
+{
     return get_total_commits(header) > 0;
 }
 
 /**
  * Update peak reader count metric if current count exceeds stored peak.
  */
-inline void update_reader_peak_count(SharedMemoryHeader* header, uint32_t current_count) noexcept {
-    if (header == nullptr) {
+inline void update_reader_peak_count(SharedMemoryHeader *header, uint32_t current_count) noexcept
+{
+    if (header == nullptr)
+    {
         return;
     }
     uint64_t peak = header->reader_peak_count.load(std::memory_order_relaxed);
     while (current_count > peak &&
-           !header->reader_peak_count.compare_exchange_weak(peak, current_count,
-                                                            std::memory_order_relaxed,
-                                                            std::memory_order_relaxed))
+           !header->reader_peak_count.compare_exchange_weak(
+               peak, current_count, std::memory_order_relaxed, std::memory_order_relaxed))
     {
     }
 }
@@ -205,16 +228,20 @@ inline void update_reader_peak_count(SharedMemoryHeader* header, uint32_t curren
  * Get the current commit index (last committed slot ID).
  * Memory ordering: acquire.
  */
-inline uint64_t get_commit_index(const SharedMemoryHeader* header) noexcept {
-    return (header != nullptr) ? header->commit_index.load(std::memory_order_acquire) : std::numeric_limits<uint64_t>::max();
+inline uint64_t get_commit_index(const SharedMemoryHeader *header) noexcept
+{
+    return (header != nullptr) ? header->commit_index.load(std::memory_order_acquire)
+                               : std::numeric_limits<uint64_t>::max();
 }
 
 /**
  * Update commit index to the given slot_id.
  * Memory ordering: release.
  */
-inline void update_commit_index(SharedMemoryHeader* header, uint64_t slot_id) noexcept {
-    if (header != nullptr) {
+inline void update_commit_index(SharedMemoryHeader *header, uint64_t slot_id) noexcept
+{
+    if (header != nullptr)
+    {
         header->commit_index.store(slot_id, std::memory_order_release);
     }
 }
@@ -222,59 +249,70 @@ inline void update_commit_index(SharedMemoryHeader* header, uint64_t slot_id) no
 /**
  * Get the current write index.
  */
-inline uint64_t get_write_index(const SharedMemoryHeader* header) noexcept {
+inline uint64_t get_write_index(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->write_index.load(std::memory_order_acquire) : 0;
 }
 
 /**
  * Get the current read index (for Sequential policy).
  */
-inline uint64_t get_read_index(const SharedMemoryHeader* header) noexcept {
+inline uint64_t get_read_index(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->read_index.load(std::memory_order_acquire) : 0;
 }
 
 // === Config Access Functions (read-only) ===
 
-inline DataBlockPolicy get_policy(const SharedMemoryHeader* header) noexcept {
+inline DataBlockPolicy get_policy(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->policy : DataBlockPolicy::Unset;
 }
 
-inline ConsumerSyncPolicy get_consumer_sync_policy(const SharedMemoryHeader* header) noexcept {
+inline ConsumerSyncPolicy get_consumer_sync_policy(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->consumer_sync_policy : ConsumerSyncPolicy::Unset;
 }
 
-inline uint32_t get_ring_buffer_capacity(const SharedMemoryHeader* header) noexcept {
+inline uint32_t get_ring_buffer_capacity(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->ring_buffer_capacity : 0;
 }
 
-inline uint32_t get_physical_page_size(const SharedMemoryHeader* header) noexcept {
+inline uint32_t get_physical_page_size(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->physical_page_size : 0;
 }
 
-inline uint32_t get_logical_unit_size(const SharedMemoryHeader* header) noexcept {
+inline uint32_t get_logical_unit_size(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->logical_unit_size : 0;
 }
 
-inline ChecksumType get_checksum_type(const SharedMemoryHeader* header) noexcept {
-    return (header != nullptr) ? static_cast<ChecksumType>(header->checksum_type) : ChecksumType::Unset;
+inline ChecksumType get_checksum_type(const SharedMemoryHeader *header) noexcept
+{
+    return (header != nullptr) ? static_cast<ChecksumType>(header->checksum_type)
+                               : ChecksumType::Unset;
 }
 
-inline ChecksumPolicy get_checksum_policy(const SharedMemoryHeader* header) noexcept {
+inline ChecksumPolicy get_checksum_policy(const SharedMemoryHeader *header) noexcept
+{
     return (header != nullptr) ? header->checksum_policy : ChecksumPolicy::None;
 }
 
 // End of Centralized Access Functions
 // ============================================================================
 
-
 /// Returns true if producer heartbeat exists for this pid and is fresh (within threshold).
 inline bool is_producer_heartbeat_fresh(const SharedMemoryHeader *header, uint64_t pid)
 {
-    if (header == nullptr || pid == 0) {
+    if (header == nullptr || pid == 0)
+    {
         return false;
     }
     uint64_t stored_id = producer_heartbeat_id_ptr(header)->load(std::memory_order_acquire);
-    if (stored_id != pid) {
+    if (stored_id != pid)
+    {
         return false;
     }
     uint64_t stored_ns = producer_heartbeat_ns_ptr(header)->load(std::memory_order_acquire);
@@ -282,13 +320,16 @@ inline bool is_producer_heartbeat_fresh(const SharedMemoryHeader *header, uint64
     return (now - stored_ns) <= PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS;
 }
 
-/// Returns true if writer (pid) is alive. Uses producer heartbeat if fresh; otherwise is_process_alive.
+/// Returns true if writer (pid) is alive. Uses producer heartbeat if fresh; otherwise
+/// is_process_alive.
 inline bool is_writer_alive_impl(const SharedMemoryHeader *header, uint64_t pid)
 {
-    if (pid == 0) {
+    if (pid == 0)
+    {
         return false;
     }
-    if (header != nullptr && is_producer_heartbeat_fresh(header, pid)) {
+    if (header != nullptr && is_producer_heartbeat_fresh(header, pid))
+    {
         return true;
     }
     return pylabhub::platform::is_process_alive(pid);
@@ -308,11 +349,11 @@ namespace internal
 using pylabhub::utils::backoff;
 
 // Import version constants from public header
+using pylabhub::hub::detail::CONSUMER_READ_POSITIONS_OFFSET;
 using pylabhub::hub::detail::HEADER_VERSION_MAJOR;
 using pylabhub::hub::detail::HEADER_VERSION_MINOR;
 using pylabhub::hub::detail::MAX_CONSUMER_HEARTBEATS;
 using pylabhub::hub::detail::MAX_SHARED_SPINLOCKS;
-using pylabhub::hub::detail::CONSUMER_READ_POSITIONS_OFFSET;
 using pylabhub::hub::detail::PRODUCER_HEARTBEAT_OFFSET;
 using pylabhub::hub::detail::PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS;
 
@@ -323,11 +364,11 @@ inline std::atomic<uint64_t> *consumer_next_read_slot_ptr(SharedMemoryHeader *he
                                                           size_t slot_index)
 {
     return reinterpret_cast<std::atomic<uint64_t> *>(header->reserved_header +
-                                                    CONSUMER_READ_POSITIONS_OFFSET) +
+                                                     CONSUMER_READ_POSITIONS_OFFSET) +
            slot_index;
 }
 inline const std::atomic<uint64_t> *consumer_next_read_slot_ptr(const SharedMemoryHeader *header,
-                                                                 size_t slot_index)
+                                                                size_t slot_index)
 {
     return reinterpret_cast<const std::atomic<uint64_t> *>(header->reserved_header +
                                                            CONSUMER_READ_POSITIONS_OFFSET) +
@@ -343,10 +384,12 @@ constexpr uint64_t kNanosecondsPerMillisecond = 1'000'000ULL;
 ///   timeout_ms >  0 : wait up to N ms
 inline bool spin_elapsed_ms_exceeded(uint64_t start_time_ns, int timeout_ms)
 {
-    if (timeout_ms == 0) {
+    if (timeout_ms == 0)
+    {
         return true; // non-blocking: expire immediately on first miss
     }
-    if (timeout_ms < 0) {
+    if (timeout_ms < 0)
+    {
         return false; // infinite: never expire
     }
     const uint64_t timeout_ns = static_cast<uint64_t>(timeout_ms) * kNanosecondsPerMillisecond;
@@ -358,11 +401,18 @@ inline bool spin_elapsed_ms_exceeded(uint64_t start_time_ns, int timeout_ms)
 /// Cached in a static local on first call — the env var is not expected to change at runtime.
 inline int get_attach_timeout_ms() noexcept
 {
-    static int cached = []() -> int {
+    static int cached = []() -> int
+    {
         const char *env = std::getenv("PYLABHUB_DATABLOCK_ATTACH_TIMEOUT_MS");
         if (env)
         {
-            try { return std::stoi(env); } catch (...) {}
+            try
+            {
+                return std::stoi(env);
+            }
+            catch (...)
+            {
+            }
         }
         return 5000;
     }();
@@ -400,9 +450,11 @@ inline const char *slot_buffer_ptr(const char *base, size_t slot_index, size_t s
  * Used by DataBlockConsumer::acquire_consume_slot.
  * @return Next slot_id to try, or INVALID_SLOT_ID if none available yet.
  */
-inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- (header, last_seen_or_consumed_slot_id, heartbeat_slot) order is fixed by API
-                                      uint64_t last_seen_or_consumed_slot_id,
-                                      int heartbeat_slot)
+inline uint64_t get_next_slot_to_read(
+    const SharedMemoryHeader
+        *header, // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- (header,
+                 // last_seen_or_consumed_slot_id, heartbeat_slot) order is fixed by API
+    uint64_t last_seen_or_consumed_slot_id, int heartbeat_slot)
 {
     const ConsumerSyncPolicy policy = header->consumer_sync_policy;
     if (policy == ConsumerSyncPolicy::Latest_only)
@@ -433,9 +485,8 @@ inline uint64_t get_next_slot_to_read(const SharedMemoryHeader *header, // NOLIN
     {
         return INVALID_SLOT_ID;
     }
-    uint64_t next =
-        consumer_next_read_slot_ptr(header, static_cast<size_t>(heartbeat_slot))
-            ->load(std::memory_order_acquire);
+    uint64_t next = consumer_next_read_slot_ptr(header, static_cast<size_t>(heartbeat_slot))
+                        ->load(std::memory_order_acquire);
     if (header->commit_index.load(std::memory_order_acquire) < next)
     {
         return INVALID_SLOT_ID;

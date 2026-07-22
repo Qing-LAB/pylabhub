@@ -62,21 +62,20 @@ namespace fs = std::filesystem;
 
 using pylabhub::hub::ChecksumType;
 using pylabhub::hub::ConsumerSyncPolicy;
+using pylabhub::hub::create_datablock_producer_from_fd_impl;
+using pylabhub::hub::datablock_layout_total_size;
 using pylabhub::hub::DataBlockConfig;
 using pylabhub::hub::DataBlockPageSize;
 using pylabhub::hub::DataBlockPolicy;
-using pylabhub::hub::create_datablock_producer_from_fd_impl;
-using pylabhub::hub::datablock_layout_total_size;
 using pylabhub::hub::find_datablock_consumer_from_fd_impl;
 using pylabhub::utils::security::attach_shm_capability_consumer;
 using pylabhub::utils::security::create_shm_capability_producer;
 
 // Register binary-wide lifecycle: Logger + SecureSubsystem + DataBlock.
 // DataBlock depends on the other two (per its module def).
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-    pylabhub::hub::GetDataBlockModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                             pylabhub::hub::GetDataBlockModule())
 
 namespace
 {
@@ -84,17 +83,17 @@ namespace
 DataBlockConfig make_test_config()
 {
     DataBlockConfig cfg;
-    cfg.policy               = DataBlockPolicy::RingBuffer;
+    cfg.policy = DataBlockPolicy::RingBuffer;
     cfg.consumer_sync_policy = ConsumerSyncPolicy::Latest_only;
-    cfg.physical_page_size   = DataBlockPageSize::Size4K;
-    cfg.logical_unit_size    = 0; // → resolves to physical_page_size (4K)
+    cfg.physical_page_size = DataBlockPageSize::Size4K;
+    cfg.logical_unit_size = 0; // → resolves to physical_page_size (4K)
     cfg.ring_buffer_capacity = 4;
-    cfg.flex_zone_size       = 4096;
-    cfg.checksum_type        = ChecksumType::BLAKE2b;
-    cfg.hub_uid              = "test-hub";
-    cfg.hub_name             = "TestHub";
-    cfg.producer_uid         = "test-producer";
-    cfg.producer_name        = "TestProducer";
+    cfg.flex_zone_size = 4096;
+    cfg.checksum_type = ChecksumType::BLAKE2b;
+    cfg.hub_uid = "test-hub";
+    cfg.hub_name = "TestHub";
+    cfg.producer_uid = "test-producer";
+    cfg.producer_name = "TestProducer";
     return cfg;
 }
 
@@ -103,22 +102,22 @@ DataBlockConfig make_test_config()
 // at a stripped-down level for in-process test plumbing.
 bool send_fd(int socket_fd, int fd)
 {
-    char         dummy = 'X';
+    char dummy = 'X';
     struct iovec iov{};
     iov.iov_base = &dummy;
-    iov.iov_len  = 1;
+    iov.iov_len = 1;
 
-    char           cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
-    struct msghdr  msg{};
-    msg.msg_iov        = &iov;
-    msg.msg_iovlen     = 1;
-    msg.msg_control    = cmsgbuf;
+    char cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
+    struct msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsgbuf;
     msg.msg_controllen = sizeof(cmsgbuf);
 
     struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-    cmsg->cmsg_level     = SOL_SOCKET;
-    cmsg->cmsg_type      = SCM_RIGHTS;
-    cmsg->cmsg_len       = CMSG_LEN(sizeof(int));
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
     std::memcpy(CMSG_DATA(cmsg), &fd, sizeof(int));
 
     return ::sendmsg(socket_fd, &msg, 0) == 1;
@@ -127,16 +126,16 @@ bool send_fd(int socket_fd, int fd)
 // Receive an fd via SCM_RIGHTS from `socket_fd`.  Returns -1 on failure.
 int recv_fd(int socket_fd)
 {
-    char         dummy = 0;
+    char dummy = 0;
     struct iovec iov{};
     iov.iov_base = &dummy;
-    iov.iov_len  = 1;
+    iov.iov_len = 1;
 
-    char           cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
-    struct msghdr  msg{};
-    msg.msg_iov        = &iov;
-    msg.msg_iovlen     = 1;
-    msg.msg_control    = cmsgbuf;
+    char cmsgbuf[CMSG_SPACE(sizeof(int))] = {};
+    struct msghdr msg{};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsgbuf;
     msg.msg_controllen = sizeof(cmsgbuf);
 
     ssize_t n = ::recvmsg(socket_fd, &msg, 0);
@@ -181,15 +180,14 @@ class DataBlockFdBasedTest : public ::testing::Test
 
     fs::path make_socket_path(const char *suffix)
     {
-        const auto p = fs::path("/tmp") /
-                       (std::string("plh_l2_dbfd_") + std::to_string(::getpid()) + "_" +
-                        suffix + ".sock");
+        const auto p = fs::path("/tmp") / (std::string("plh_l2_dbfd_") +
+                                           std::to_string(::getpid()) + "_" + suffix + ".sock");
         paths_.push_back(p);
         return p;
     }
 
   private:
-    std::vector<int>      owned_fds_;
+    std::vector<int> owned_fds_;
     std::vector<fs::path> paths_;
 };
 
@@ -206,8 +204,8 @@ class DataBlockFdBasedTest : public ::testing::Test
 // flexible zone proves the underlying mmap is shared.
 TEST_F(DataBlockFdBasedTest, ProducerCreate_ConsumerAttach_FlexZoneRoundTrip)
 {
-    DataBlockConfig cfg    = make_test_config();
-    const size_t    total  = datablock_layout_total_size(cfg);
+    DataBlockConfig cfg = make_test_config();
+    const size_t total = datablock_layout_total_size(cfg);
     ASSERT_GT(total, 0u);
 
     // Producer-owned memfd, sized for the layout.
@@ -226,8 +224,7 @@ TEST_F(DataBlockFdBasedTest, ProducerCreate_ConsumerAttach_FlexZoneRoundTrip)
     // the receiver gets a distinct fd (different small integer) backing
     // the same kernel object.
     int sv[2];
-    ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sv))
-        << "socketpair failed: errno=" << errno;
+    ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) << "socketpair failed: errno=" << errno;
     track_fd(sv[0]);
     track_fd(sv[1]);
 
@@ -235,17 +232,14 @@ TEST_F(DataBlockFdBasedTest, ProducerCreate_ConsumerAttach_FlexZoneRoundTrip)
     int received_fd = recv_fd(sv[1]);
     ASSERT_GE(received_fd, 0) << "recv_fd failed: errno=" << errno;
     track_fd(received_fd);
-    ASSERT_NE(received_fd, memfd)
-        << "received fd should be a distinct integer from the producer's";
+    ASSERT_NE(received_fd, memfd) << "received fd should be a distinct integer from the producer's";
 
     auto consumer = find_datablock_consumer_from_fd_impl(
         "fd-test-consumer", received_fd,
         /*expected_config=*/&cfg,
-        /*flexzone_schema=*/nullptr, /*datablock_schema=*/nullptr,
-        "consumer-A", "ConsumerA");
-    ASSERT_NE(consumer, nullptr)
-        << "consumer factory returned nullptr — header validation in "
-           "attach_consumer_state_ failed; mmap likely not shared.";
+        /*flexzone_schema=*/nullptr, /*datablock_schema=*/nullptr, "consumer-A", "ConsumerA");
+    ASSERT_NE(consumer, nullptr) << "consumer factory returned nullptr — header validation in "
+                                    "attach_consumer_state_ failed; mmap likely not shared.";
 
     // Round-trip a sentinel byte through the flexible zone.  Producer
     // and consumer have separate mmaps (different virtual addresses)
@@ -274,8 +268,8 @@ TEST_F(DataBlockFdBasedTest, ProducerCreate_ConsumerAttach_FlexZoneRoundTrip)
 // after attach_shm_capability_consumer + recv_capability.
 TEST_F(DataBlockFdBasedTest, EndToEnd_ViaShmCapability_RoundTrip)
 {
-    DataBlockConfig cfg    = make_test_config();
-    const size_t    total  = datablock_layout_total_size(cfg);
+    DataBlockConfig cfg = make_test_config();
+    const size_t total = datablock_layout_total_size(cfg);
 
     auto producer_cap = create_shm_capability_producer(total);
     ASSERT_NE(producer_cap, nullptr);
@@ -284,47 +278,49 @@ TEST_F(DataBlockFdBasedTest, EndToEnd_ViaShmCapability_RoundTrip)
     ASSERT_TRUE(producer_cap->bind_endpoint(sock_path.string()));
 
     std::atomic<bool> consumer_ready{false};
-    std::atomic<int>  consumer_observed_byte{-1};
-    std::thread       consumer_thread([&] {
-        try
+    std::atomic<int> consumer_observed_byte{-1};
+    std::thread consumer_thread(
+        [&]
         {
-            // attach_shm_capability_consumer connects + recvs + mmaps in a
-            // single step.  No separate recv_capability call.
-            auto consumer_cap = attach_shm_capability_consumer(sock_path.string(),
-                                                               std::chrono::seconds{5});
-            if (consumer_cap == nullptr)
+            try
             {
-                return;
+                // attach_shm_capability_consumer connects + recvs + mmaps in a
+                // single step.  No separate recv_capability call.
+                auto consumer_cap =
+                    attach_shm_capability_consumer(sock_path.string(), std::chrono::seconds{5});
+                if (consumer_cap == nullptr)
+                {
+                    return;
+                }
+                int cfd = consumer_cap->borrow_fd();
+                if (cfd < 0)
+                {
+                    return;
+                }
+                auto consumer_db = find_datablock_consumer_from_fd_impl(
+                    "fd-e2e-consumer", cfd,
+                    /*expected_config=*/&cfg,
+                    /*flexzone_schema=*/nullptr, /*datablock_schema=*/nullptr, "consumer-E2E",
+                    "ConsumerE2E");
+                if (consumer_db == nullptr)
+                {
+                    return;
+                }
+                auto flex = consumer_db->flexible_zone_span();
+                if (flex.empty())
+                {
+                    return;
+                }
+                consumer_observed_byte.store(
+                    static_cast<int>(std::to_integer<unsigned int>(flex[0])),
+                    std::memory_order_release);
+                consumer_ready.store(true, std::memory_order_release);
             }
-            int cfd = consumer_cap->borrow_fd();
-            if (cfd < 0)
+            catch (...)
             {
-                return;
+                // Test failure surfaces via consumer_ready remaining false.
             }
-            auto consumer_db = find_datablock_consumer_from_fd_impl(
-                "fd-e2e-consumer", cfd,
-                /*expected_config=*/&cfg,
-                /*flexzone_schema=*/nullptr, /*datablock_schema=*/nullptr,
-                "consumer-E2E", "ConsumerE2E");
-            if (consumer_db == nullptr)
-            {
-                return;
-            }
-            auto flex = consumer_db->flexible_zone_span();
-            if (flex.empty())
-            {
-                return;
-            }
-            consumer_observed_byte.store(
-                static_cast<int>(std::to_integer<unsigned int>(flex[0])),
-                std::memory_order_release);
-            consumer_ready.store(true, std::memory_order_release);
-        }
-        catch (...)
-        {
-            // Test failure surfaces via consumer_ready remaining false.
-        }
-    });
+        });
 
     // Producer side: accept the connection, then write the sentinel
     // BEFORE sending the cap so the consumer is guaranteed to see it
@@ -359,15 +355,14 @@ TEST_F(DataBlockFdBasedTest, EndToEnd_ViaShmCapability_RoundTrip)
 // message.
 TEST_F(DataBlockFdBasedTest, CreateFromFd_SizeMismatch_Throws)
 {
-    DataBlockConfig cfg    = make_test_config();
-    const size_t    total  = datablock_layout_total_size(cfg);
+    DataBlockConfig cfg = make_test_config();
+    const size_t total = datablock_layout_total_size(cfg);
     ASSERT_GT(total, 4096u);
 
     int memfd = ::memfd_create("plh_l2_dbfd_undersize", MFD_CLOEXEC);
     ASSERT_GE(memfd, 0);
     track_fd(memfd);
-    ASSERT_EQ(0, ::ftruncate(memfd, static_cast<off_t>(total - 4096)))
-        << "ftruncate failed";
+    ASSERT_EQ(0, ::ftruncate(memfd, static_cast<off_t>(total - 4096))) << "ftruncate failed";
 
     EXPECT_THROW(
         {

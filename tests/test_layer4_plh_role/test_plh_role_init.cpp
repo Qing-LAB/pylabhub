@@ -23,11 +23,11 @@ namespace
 
 struct RoleSpec
 {
-    std::string_view role;              // "producer" / "consumer" / "processor"
-    std::string_view uid_prefix;        // "prod." / "cons." / "proc."
-    std::string_view role_json_key;     // "producer" / "consumer" / "processor"
+    std::string_view role;                // "producer" / "consumer" / "processor"
+    std::string_view uid_prefix;          // "prod." / "cons." / "proc."
+    std::string_view role_json_key;       // "producer" / "consumer" / "processor"
     std::string_view default_loop_timing; // producer=fixed_rate; cons/proc=max_rate
-    bool             expects_target_period_ms;
+    bool expects_target_period_ms;
 };
 
 // PrintTo for gtest's UniversalPrinter — used by `--gtest_list_tests`
@@ -44,8 +44,7 @@ inline void PrintTo(const RoleSpec &s, std::ostream *os)
 }
 
 // Parametrized fixture: each PlhRoleInitTest.<name> runs 3x, one per role.
-class PlhRoleInitTest : public PlhRoleCliTest,
-                        public ::testing::WithParamInterface<RoleSpec>
+class PlhRoleInitTest : public PlhRoleCliTest, public ::testing::WithParamInterface<RoleSpec>
 {
 };
 
@@ -53,18 +52,14 @@ class PlhRoleInitTest : public PlhRoleCliTest,
 // (the "heartbeat data source" shape); consumer/processor default to
 // max_rate (they react to upstream data, no intrinsic cadence).
 // target_period_ms is only emitted for fixed_rate templates.
-INSTANTIATE_TEST_SUITE_P(
-    Roles, PlhRoleInitTest,
-    ::testing::Values(
-        RoleSpec{"producer",  "prod.", "producer",
-                 "fixed_rate", /*expects_target_period_ms=*/true},
-        RoleSpec{"consumer",  "cons.", "consumer",
-                 "max_rate",   /*expects_target_period_ms=*/false},
-        RoleSpec{"processor", "proc.", "processor",
-                 "max_rate",   /*expects_target_period_ms=*/false}),
-    [](const auto &info) {
-        return std::string(info.param.role);
-    });
+INSTANTIATE_TEST_SUITE_P(Roles, PlhRoleInitTest,
+                         ::testing::Values(RoleSpec{"producer", "prod.", "producer", "fixed_rate",
+                                                    /*expects_target_period_ms=*/true},
+                                           RoleSpec{"consumer", "cons.", "consumer", "max_rate",
+                                                    /*expects_target_period_ms=*/false},
+                                           RoleSpec{"processor", "proc.", "processor", "max_rate",
+                                                    /*expects_target_period_ms=*/false}),
+                         [](const auto &info) { return std::string(info.param.role); });
 
 // ── Success paths ───────────────────────────────────────────────────────────
 
@@ -78,38 +73,35 @@ TEST_P(PlhRoleInitTest, CreatesDirectoryStructure)
     const auto dir = tmp("init_layout");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string(), "--name", "TestRole"});
-    EXPECT_EQ(p.wait_for_exit(), 0)
-        << "stderr:\n" << p.get_stderr();
+                    {"--role", std::string(s.role), dir.string(), "--name", "TestRole"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
     // (a) Config file exists.
     const fs::path cfg_path = dir / (std::string(s.role) + ".json");
-    EXPECT_TRUE(fs::exists(cfg_path))
-        << s.role << ".json missing";
+    EXPECT_TRUE(fs::exists(cfg_path)) << s.role << ".json missing";
 
     // (b) Script package — BOTH files (template uses __init__.py →
     // from .callbacks import ...).  A regression that skipped
     // callbacks.py would leave __init__.py referencing a missing
     // module; validate would fail.
     const fs::path init_py = dir / "script" / "python" / "__init__.py";
-    const fs::path cb_py   = dir / "script" / "python" / "callbacks.py";
-    EXPECT_TRUE(fs::exists(init_py))  << "__init__.py missing";
-    EXPECT_TRUE(fs::exists(cb_py))    << "callbacks.py missing";
+    const fs::path cb_py = dir / "script" / "python" / "callbacks.py";
+    EXPECT_TRUE(fs::exists(init_py)) << "__init__.py missing";
+    EXPECT_TRUE(fs::exists(cb_py)) << "callbacks.py missing";
     EXPECT_GT(fs::file_size(init_py), 0u) << "__init__.py is empty";
-    EXPECT_GT(fs::file_size(cb_py),   0u) << "callbacks.py is empty";
+    EXPECT_GT(fs::file_size(cb_py), 0u) << "callbacks.py is empty";
 
     // (c) Runtime directories exist and are directories (not files).
-    EXPECT_TRUE(fs::is_directory(dir / "vault"))  << "vault/ missing";
-    EXPECT_TRUE(fs::is_directory(dir / "logs"))   << "logs/ missing";
-    EXPECT_TRUE(fs::is_directory(dir / "run"))    << "run/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "vault")) << "vault/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "logs")) << "logs/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "run")) << "run/ missing";
 
     // (d) Config parses as valid JSON.  A regression that wrote a
     // truncated/corrupt config would pass (a)+(c) trivially.
     const auto j = read_json(cfg_path);
     EXPECT_FALSE(j.is_null()) << "generated config is not valid JSON";
-    EXPECT_TRUE(j.is_object())
-        << "generated config must be a JSON object at top level";
+    EXPECT_TRUE(j.is_object()) << "generated config must be a JSON object at top level";
 }
 
 /// --init generates a config whose identity fields follow the role-tagged
@@ -123,8 +115,7 @@ TEST_P(PlhRoleInitTest, DefaultValues)
     const auto dir = tmp("init_defaults");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string(),
-         "--name", "DefaultTest"});
+                    {"--role", std::string(s.role), dir.string(), "--name", "DefaultTest"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
@@ -174,19 +165,15 @@ TEST_P(PlhRoleInitTest, DefaultValues)
     //   producer          → "fixed_rate" (+ target_period_ms)
     //   consumer/processor → "max_rate"   (no target_period_ms)
     ASSERT_TRUE(j.contains("loop_timing")) << "config missing 'loop_timing'";
-    EXPECT_EQ(j["loop_timing"].get<std::string>(),
-              std::string(s.default_loop_timing))
+    EXPECT_EQ(j["loop_timing"].get<std::string>(), std::string(s.default_loop_timing))
         << "loop_timing default mismatch for " << s.role;
-    EXPECT_EQ(j.contains("target_period_ms"),
-              s.expects_target_period_ms)
-        << "target_period_ms presence mismatch for " << s.role
-        << " — expected "
+    EXPECT_EQ(j.contains("target_period_ms"), s.expects_target_period_ms)
+        << "target_period_ms presence mismatch for " << s.role << " — expected "
         << (s.expects_target_period_ms ? "present" : "absent");
 
     // (g) stop_on_script_error defaults to false — user opts in
     // explicitly for strict error handling.
-    ASSERT_TRUE(j.contains("stop_on_script_error"))
-        << "config missing 'stop_on_script_error'";
+    ASSERT_TRUE(j.contains("stop_on_script_error")) << "config missing 'stop_on_script_error'";
     EXPECT_FALSE(j["stop_on_script_error"].get<bool>())
         << "stop_on_script_error must default to false";
 
@@ -208,7 +195,7 @@ TEST_P(PlhRoleInitTest, DefaultAuthKeyfileIsCanonicalDefault)
     const auto dir = tmp("init_auth");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string(), "--name", "AuthTest"});
+                    {"--role", std::string(s.role), dir.string(), "--name", "AuthTest"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
@@ -217,17 +204,14 @@ TEST_P(PlhRoleInitTest, DefaultAuthKeyfileIsCanonicalDefault)
 
     // auth is INSIDE the identity block (RoleConfig::auth() reads from
     // there), not at top level.
-    EXPECT_FALSE(j.contains("auth"))
-        << "auth block must NOT be at top level — it lives under the "
-        << s.role_json_key << " identity block";
+    EXPECT_FALSE(j.contains("auth")) << "auth block must NOT be at top level — it lives under the "
+                                     << s.role_json_key << " identity block";
     ASSERT_TRUE(j.contains(std::string(s.role_json_key)));
-    ASSERT_TRUE(j[std::string(s.role_json_key)].contains("auth"))
-        << "identity block missing auth";
+    ASSERT_TRUE(j[std::string(s.role_json_key)].contains("auth")) << "identity block missing auth";
 
     // Need the actual UID the binary generated to compute the expected
     // canonical default.
-    const std::string uid =
-        j[std::string(s.role_json_key)]["uid"].get<std::string>();
+    const std::string uid = j[std::string(s.role_json_key)]["uid"].get<std::string>();
     const std::string expected_keyfile = "vault/" + uid + ".vault";
     EXPECT_EQ(j[std::string(s.role_json_key)]["auth"]["keyfile"].get<std::string>(),
               expected_keyfile)
@@ -250,9 +234,8 @@ TEST_P(PlhRoleInitTest, LogOverridesThreadThrough)
     const auto dir = tmp("init_logs");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string(), "--name", "LogTest",
-         "--log-maxsize", "25",
-         "--log-backups", "7"});
+                    {"--role", std::string(s.role), dir.string(), "--name", "LogTest",
+                     "--log-maxsize", "25", "--log-backups", "7"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
@@ -276,9 +259,9 @@ TEST_P(PlhRoleInitTest, LogBackupsUnlimitedSentinel)
     const auto &s = GetParam();
     const auto dir = tmp("init_logs_unlim");
 
-    WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string(), "--name", "LogTest",
-         "--log-backups", "-1"});
+    WorkerProcess p(
+        plh_role_binary(), "--init",
+        {"--role", std::string(s.role), dir.string(), "--name", "LogTest", "--log-backups", "-1"});
     ASSERT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
@@ -302,9 +285,8 @@ TEST_P(PlhRoleInitTest, InitOutputValidates)
 
     // Step 1: --init populates dir with config + script package.
     WorkerProcess init_p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string(), "--name", "RTTest"});
-    ASSERT_EQ(init_p.wait_for_exit(), 0)
-        << "init failed; stderr:\n" << init_p.get_stderr();
+                         {"--role", std::string(s.role), dir.string(), "--name", "RTTest"});
+    ASSERT_EQ(init_p.wait_for_exit(), 0) << "init failed; stderr:\n" << init_p.get_stderr();
     expect_no_unexpected_errors(init_p);
 
     // Step 2: --keygen mints the vault.  Under HEP-CORE-0035 §2 +
@@ -319,10 +301,9 @@ TEST_P(PlhRoleInitTest, InitOutputValidates)
     // exercises the run-directory-style entry path that production
     // deployments use.
     WorkerProcess val_p(plh_role_binary(), "--role",
-        {std::string(s.role), dir.string(), "--validate"});
-    ASSERT_EQ(val_p.wait_for_exit(), 0)
-        << "validate of init-produced config failed; stderr:\n"
-        << val_p.get_stderr();
+                        {std::string(s.role), dir.string(), "--validate"});
+    ASSERT_EQ(val_p.wait_for_exit(), 0) << "validate of init-produced config failed; stderr:\n"
+                                        << val_p.get_stderr();
     expect_no_unexpected_errors(val_p);
     EXPECT_NE(val_p.get_stdout().find("Validation passed"), std::string::npos)
         << "validate should print 'Validation passed' on success; got stdout:\n"
@@ -341,21 +322,21 @@ TEST_P(PlhRoleInitTest, NoNameNonInteractiveExitsWithError)
     const auto dir = tmp("init_noname");
 
     // No --name flag; stdin is the test's pipe (non-interactive).
-    WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", std::string(s.role), dir.string()});
-    const int rc = p.wait_for_exit(10);  // 10s cap — must not hang.
-    ASSERT_NE(rc, 0)
-        << "non-interactive --init without --name must fail, got rc=" << rc
-        << "\nstderr:\n" << p.get_stderr();
+    WorkerProcess p(plh_role_binary(), "--init", {"--role", std::string(s.role), dir.string()});
+    const int rc = p.wait_for_exit(10); // 10s cap — must not hang.
+    ASSERT_NE(rc, 0) << "non-interactive --init without --name must fail, got rc=" << rc
+                     << "\nstderr:\n"
+                     << p.get_stderr();
 
     // Diagnostic must mention "name" so the user knows what to fix.
     // Case-insensitive search to tolerate "Name required" vs "name".
     const std::string &err = p.get_stderr();
     std::string err_lc = err;
     std::transform(err_lc.begin(), err_lc.end(), err_lc.begin(),
-                    [](char c){ return std::tolower(c); });
+                   [](char c) { return std::tolower(c); });
     EXPECT_NE(err_lc.find("name"), std::string::npos)
-        << "stderr should mention 'name' to help the user; got:\n" << err;
+        << "stderr should mention 'name' to help the user; got:\n"
+        << err;
 }
 
 } // namespace

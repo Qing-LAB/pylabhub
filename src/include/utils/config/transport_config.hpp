@@ -27,11 +27,11 @@ enum class Transport : uint8_t
 
 struct TransportConfig
 {
-    Transport   transport{Transport::Shm};
-    std::string zmq_endpoint;                                    ///< Required when transport==Zmq.
-    bool        zmq_bind{true};                                  ///< Bind (true) or connect (false).
-    size_t      zmq_buffer_depth{hub::kZmqDefaultBufferDepth};   ///< Internal ring depth.
-    std::string zmq_overflow_policy{"drop"};                     ///< "drop" or "block".
+    Transport transport{Transport::Shm};
+    std::string zmq_endpoint;                             ///< Required when transport==Zmq.
+    bool zmq_bind{true};                                  ///< Bind (true) or connect (false).
+    size_t zmq_buffer_depth{hub::kZmqDefaultBufferDepth}; ///< Internal ring depth.
+    std::string zmq_overflow_policy{"drop"};              ///< "drop" or "block".
     // NOTE: packing is NOT a transport-level knob.  It comes from the
     // schema (SchemaSpec::packing, set by parse_schema_json).  The
     // schema is the contract between the script and the slot layout
@@ -46,9 +46,8 @@ struct TransportConfig
 /// @param j         Root JSON object.
 /// @param direction "in" or "out".
 /// @param tag       Context tag for error messages.
-inline TransportConfig parse_transport_config(const nlohmann::json &j,
-                                               const char *direction,
-                                               const char *tag)
+inline TransportConfig parse_transport_config(const nlohmann::json &j, const char *direction,
+                                              const char *tag)
 {
     const std::string pfx = std::string(direction) + "_";
 
@@ -68,48 +67,51 @@ inline TransportConfig parse_transport_config(const nlohmann::json &j,
         // Users saw an obscure REG_ACK failure with no config-time
         // hint that SHM is unsupported.  Fail fast, name the platform,
         // point at the tracking task.
-        throw std::invalid_argument(
-            std::string(tag) + ": '" + pfx + "transport = \"shm\"' is not "
-            "supported on this platform (HEP-CORE-0041 Phase 1 ships only "
-            "a Linux backend; FreeBSD/macOS/Windows tracked as #259/#260/"
-            "#261).  Use \"" + pfx + "transport\": \"zmq\" instead, or "
-            "wait for the per-platform backend to ship.");
+        throw std::invalid_argument(std::string(tag) + ": '" + pfx +
+                                    "transport = \"shm\"' is not "
+                                    "supported on this platform (HEP-CORE-0041 Phase 1 ships only "
+                                    "a Linux backend; FreeBSD/macOS/Windows tracked as #259/#260/"
+                                    "#261).  Use \"" +
+                                    pfx +
+                                    "transport\": \"zmq\" instead, or "
+                                    "wait for the per-platform backend to ship.");
 #endif
         tc.transport = Transport::Shm;
     }
     else if (transport_str == "zmq")
         tc.transport = Transport::Zmq;
     else if (!transport_str.empty())
-        throw std::invalid_argument(
-            std::string(tag) + ": '" + pfx + "transport' must be \"shm\" or \"zmq\", got: \"" +
-            transport_str + "\"");
+        throw std::invalid_argument(std::string(tag) + ": '" + pfx +
+                                    "transport' must be \"shm\" or \"zmq\", got: \"" +
+                                    transport_str + "\"");
 
-    tc.zmq_endpoint   = j.value(pfx + "zmq_endpoint", std::string{});
-    tc.zmq_bind       = j.value(pfx + "zmq_bind", true);
-    tc.zmq_buffer_depth = j.value(pfx + "zmq_buffer_depth",
-                                   static_cast<size_t>(hub::kZmqDefaultBufferDepth));
+    tc.zmq_endpoint = j.value(pfx + "zmq_endpoint", std::string{});
+    tc.zmq_bind = j.value(pfx + "zmq_bind", true);
+    tc.zmq_buffer_depth =
+        j.value(pfx + "zmq_buffer_depth", static_cast<size_t>(hub::kZmqDefaultBufferDepth));
     tc.zmq_overflow_policy = j.value(pfx + "zmq_overflow_policy", std::string{"drop"});
 
     // Validate ZMQ fields when transport is ZMQ.
     if (tc.transport == Transport::Zmq)
     {
         if (tc.zmq_endpoint.empty())
-            throw std::invalid_argument(
-                std::string(tag) + ": '" + pfx + "zmq_endpoint' is required when " +
-                pfx + "transport is \"zmq\"");
+            throw std::invalid_argument(std::string(tag) + ": '" + pfx +
+                                        "zmq_endpoint' is required when " + pfx +
+                                        "transport is \"zmq\"");
 
         auto ep_result = pylabhub::validate_tcp_endpoint(tc.zmq_endpoint);
         if (!ep_result.ok())
-            throw std::invalid_argument(
-                std::string(tag) + ": invalid " + pfx + "zmq_endpoint: " + ep_result.error);
+            throw std::invalid_argument(std::string(tag) + ": invalid " + pfx +
+                                        "zmq_endpoint: " + ep_result.error);
 
         if (tc.zmq_buffer_depth == 0)
-            throw std::invalid_argument(
-                std::string(tag) + ": '" + pfx + "zmq_buffer_depth' must be > 0");
+            throw std::invalid_argument(std::string(tag) + ": '" + pfx +
+                                        "zmq_buffer_depth' must be > 0");
 
         if (tc.zmq_overflow_policy != "drop" && tc.zmq_overflow_policy != "block")
             throw std::invalid_argument(
-                std::string(tag) + ": '" + pfx + "zmq_overflow_policy' must be \"drop\" or \"block\", got: \"" +
+                std::string(tag) + ": '" + pfx +
+                "zmq_overflow_policy' must be \"drop\" or \"block\", got: \"" +
                 tc.zmq_overflow_policy + "\"");
     }
 

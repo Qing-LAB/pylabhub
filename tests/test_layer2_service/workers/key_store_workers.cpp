@@ -14,12 +14,12 @@
 #include "utils/security/secure_buffer.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
-#include <zmq.h>  // zmq_z85_encode — compute expected pubkey at the test
-                  // boundary (HEP-CORE-0040 §8.5.2; #291 follow-up).
+#include <zmq.h> // zmq_z85_encode — compute expected pubkey at the test
+                 // boundary (HEP-CORE-0040 §8.5.2; #291 follow-up).
 
-#include <sodium.h>  // sodium_malloc / sodium_free — used by sodium_smoke
+#include <sodium.h> // sodium_malloc / sodium_free — used by sodium_smoke
 
-#include "curve_test_setup.h"      // make_curve_setup + seed_curve_identities (box test)
+#include "curve_test_setup.h" // make_curve_setup + seed_curve_identities (box test)
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -31,7 +31,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdio>
-#include <cstdlib>  // std::getenv — used by sodium_smoke
+#include <cstdlib> // std::getenv — used by sodium_smoke
 #include <cstring>
 #include <mutex>
 #include <span>
@@ -105,7 +105,8 @@ namespace
 int sodium_smoke(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             // SMS ctor runs sodium_init() (idempotent inside libsodium).
             // We are NOT constructing a KeyStore here — the smoke test is
             // strictly about the allocator, not about KeyStore behavior.
@@ -136,31 +137,28 @@ int sodium_smoke(const char * /*tmpdir*/)
             // the wrong tree.
             const bool is_ci = (std::getenv("CI") != nullptr);
             const char *failure_hint = is_ci
-                ? "ENV LIKELY (CI): investigate page-size mismatch, "
-                  "RLIMIT_MEMLOCK, libsodium build flags or sandboxing "
-                  "in the runner image BEFORE chasing KeyStore test "
-                  "failures — the 12-test storm in 2026-06-16 CI had "
-                  "this exact signature."
-                : "REGRESSION LIKELY (local dev): sodium does not break "
-                  "spontaneously on a stable workstation.  Likely "
-                  "causes, in order: (1) a recent production-code "
-                  "change has corrupted the allocator state (look at "
-                  "KeyStore / SecureSubsystem / curve_keypair "
-                  "edits); (2) system libsodium is being loaded over "
-                  "our bundled libsodium (check LD_LIBRARY_PATH and "
-                  "linker output); (3) the libsodium build under "
-                  "third_party/ is stale or corrupt (clean build).  "
-                  "Investigate THIS, NOT environment, before opening "
-                  "an environment ticket.";
+                                           ? "ENV LIKELY (CI): investigate page-size mismatch, "
+                                             "RLIMIT_MEMLOCK, libsodium build flags or sandboxing "
+                                             "in the runner image BEFORE chasing KeyStore test "
+                                             "failures — the 12-test storm in 2026-06-16 CI had "
+                                             "this exact signature."
+                                           : "REGRESSION LIKELY (local dev): sodium does not break "
+                                             "spontaneously on a stable workstation.  Likely "
+                                             "causes, in order: (1) a recent production-code "
+                                             "change has corrupted the allocator state (look at "
+                                             "KeyStore / SecureSubsystem / curve_keypair "
+                                             "edits); (2) system libsodium is being loaded over "
+                                             "our bundled libsodium (check LD_LIBRARY_PATH and "
+                                             "linker output); (3) the libsodium build under "
+                                             "third_party/ is stale or corrupt (clean build).  "
+                                             "Investigate THIS, NOT environment, before opening "
+                                             "an environment ticket.";
 
-            for (std::size_t sz : {std::size_t{32},
-                                   std::size_t{40},
-                                   std::size_t{80}})
+            for (std::size_t sz : {std::size_t{32}, std::size_t{40}, std::size_t{80}})
             {
                 void *p = ::sodium_malloc(sz);
-                ASSERT_NE(p, nullptr)
-                    << "sodium_malloc(" << sz << ") returned NULL.\n"
-                    << failure_hint;
+                ASSERT_NE(p, nullptr) << "sodium_malloc(" << sz << ") returned NULL.\n"
+                                      << failure_hint;
                 // Touch each byte so a page-protection corruption that
                 // sodium_malloc itself wouldn't catch would SIGSEGV here,
                 // before sodium_free's own assertions run.
@@ -168,19 +166,15 @@ int sodium_smoke(const char * /*tmpdir*/)
                 ::sodium_free(p);
             }
         },
-        "key_store::sodium_smoke",
-        Logger::GetLifecycleModule(),
+        "key_store::sodium_smoke", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
-
-
-
 
 int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             // HEP-CORE-0040 §8.5.2 (#291, 2026-06-26) — raw 64-byte
             // layout (pub_raw[32] || sec_raw[32]).  Distinct per-byte
             // pattern (NOT uniform fills) catches off-by-one slice
@@ -199,34 +193,33 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
             // KeyStore internals (single source of truth = libzmq's
             // zmq_z85_encode of the same raw bytes).
             char expected_pub_z85[41] = {};
-            ASSERT_NE(zmq_z85_encode(
-                expected_pub_z85,
-                reinterpret_cast<const uint8_t *>(packed.data()),
-                32), nullptr) << "test setup: zmq_z85_encode(pub) failed";
+            ASSERT_NE(zmq_z85_encode(expected_pub_z85,
+                                     reinterpret_cast<const uint8_t *>(packed.data()), 32),
+                      nullptr)
+                << "test setup: zmq_z85_encode(pub) failed";
 
             secure().keys().add_identity("role_identity", std::span<std::byte>(packed));
 
             // pubkey() returns Z85(raw_pub) — 40 ASCII chars.
             const auto pub = secure().keys().pubkey("role_identity");
             ASSERT_EQ(pub.size(), 40u);
-            EXPECT_EQ(std::string(pub),
-                      std::string(expected_pub_z85, 40))
+            EXPECT_EQ(std::string(pub), std::string(expected_pub_z85, 40))
                 << "pubkey() returned different Z85 than zmq_z85_encode of "
                    "raw bytes — KeyStore Z85 encoding boundary broken";
 
             // with_seckey() invokes callback with RAW 32 bytes
             // (HEP-CORE-0040 §8.5.2) — verify byte-by-byte AND verify
             // callback was invoked (not just "no exception thrown").
-            bool        callback_fired = false;
+            bool callback_fired = false;
             std::string captured;
             secure().keys().with_seckey("role_identity",
-                [&](std::string_view sec) {
-                    callback_fired = true;
-                    captured.assign(sec.data(), sec.size());
-                });
-            EXPECT_TRUE(callback_fired)
-                << "with_seckey returned without invoking the callback";
-            ASSERT_EQ(captured.size(), 32u);  // raw seckey, not Z85
+                                        [&](std::string_view sec)
+                                        {
+                                            callback_fired = true;
+                                            captured.assign(sec.data(), sec.size());
+                                        });
+            EXPECT_TRUE(callback_fired) << "with_seckey returned without invoking the callback";
+            ASSERT_EQ(captured.size(), 32u); // raw seckey, not Z85
             for (std::size_t i = 0; i < 32; ++i)
             {
                 EXPECT_EQ(static_cast<unsigned char>(captured[i]),
@@ -242,8 +235,8 @@ int add_identity_then_pubkey_and_with_seckey_roundtrip(const char * /*tmpdir*/)
 int add_identity_zeros_source(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             // HEP-CORE-0040 §8.5.2 — raw 64-byte storage layout.
             SecureBuffer<64> buf;
             // Fill with non-zero pattern.
@@ -255,19 +248,17 @@ int add_identity_zeros_source(const char * /*tmpdir*/)
 
             // Source buffer must be zeroed.
             for (std::size_t i = 0; i < sp.size(); ++i)
-                EXPECT_EQ(static_cast<unsigned>(sp[i]), 0u)
-                    << "byte " << i << " not zeroed";
+                EXPECT_EQ(static_cast<unsigned>(sp[i]), 0u) << "byte " << i << " not zeroed";
         },
-        "key_store::add_identity_zeros_source",
-        Logger::GetLifecycleModule(),
+        "key_store::add_identity_zeros_source", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int pubkey_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             // Populate one entry so we can verify the missing-key path
             // didn't accidentally mutate map state.
             auto kp = TestKeypair::make('A', 'Z');
@@ -275,9 +266,12 @@ int pubkey_on_missing_throws(const char * /*tmpdir*/)
             EXPECT_EQ(secure().keys().size(), 1u);
 
             bool threw_with_right_message = false;
-            try {
+            try
+            {
                 (void)secure().keys().pubkey("missing-key-xyz");
-            } catch (const std::out_of_range &e) {
+            }
+            catch (const std::out_of_range &e)
+            {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("pubkey"), std::string::npos)
                     << "exception what() should name the accessor: " << what;
@@ -292,55 +286,58 @@ int pubkey_on_missing_throws(const char * /*tmpdir*/)
             EXPECT_TRUE(secure().keys().has("role_identity"));
             EXPECT_FALSE(secure().keys().has("missing-key-xyz"));
         },
-        "key_store::pubkey_on_missing_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::pubkey_on_missing_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int with_seckey_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             auto kp = TestKeypair::make('A', 'Z');
             secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
 
             bool callback_invoked = false;
             bool threw_with_right_message = false;
-            try {
+            try
+            {
                 secure().keys().with_seckey("missing-key-xyz",
-                    [&](std::string_view) { callback_invoked = true; });
-            } catch (const std::out_of_range &e) {
+                                            [&](std::string_view) { callback_invoked = true; });
+            }
+            catch (const std::out_of_range &e)
+            {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("with_seckey"), std::string::npos);
                 EXPECT_NE(what.find("missing-key-xyz"), std::string::npos);
                 threw_with_right_message = true;
             }
             EXPECT_TRUE(threw_with_right_message);
-            EXPECT_FALSE(callback_invoked)
-                << "callback must NEVER fire on missing-key path";
+            EXPECT_FALSE(callback_invoked) << "callback must NEVER fire on missing-key path";
 
             // Post-throw state unchanged.
             EXPECT_EQ(secure().keys().size(), 1u);
             EXPECT_TRUE(secure().keys().has("role_identity"));
         },
-        "key_store::with_seckey_on_missing_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::with_seckey_on_missing_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             std::array<std::byte, 8> dummy{};
             secure().keys().add_raw("vault:x", std::span<std::byte>(dummy));
 
             bool threw_with_right_message = false;
-            try {
+            try
+            {
                 (void)secure().keys().lookup_raw("missing-key-xyz");
-            } catch (const std::out_of_range &e) {
+            }
+            catch (const std::out_of_range &e)
+            {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("lookup_raw"), std::string::npos);
                 EXPECT_NE(what.find("missing-key-xyz"), std::string::npos);
@@ -351,16 +348,15 @@ int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
             EXPECT_EQ(secure().keys().size(), 1u);
             EXPECT_TRUE(secure().keys().has("vault:x"));
         },
-        "key_store::lookup_raw_on_missing_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::lookup_raw_on_missing_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             // Fill raw with a recognizable pattern to verify it survives.
             std::array<std::byte, 16> raw;
             for (std::size_t i = 0; i < raw.size(); ++i)
@@ -369,9 +365,12 @@ int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
             secure().keys().add_raw("vault:script-secret", std::span<std::byte>(raw));
 
             bool threw_with_right_message = false;
-            try {
+            try
+            {
                 (void)secure().keys().pubkey("vault:script-secret");
-            } catch (const std::out_of_range &e) {
+            }
+            catch (const std::out_of_range &e)
+            {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("pubkey"), std::string::npos);
                 EXPECT_NE(what.find("vault:script-secret"), std::string::npos);
@@ -388,21 +387,19 @@ int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
             ASSERT_EQ(bytes.size(), 16u);
             for (std::size_t i = 0; i < bytes.size(); ++i)
             {
-                EXPECT_EQ(static_cast<unsigned>(bytes[i]),
-                          static_cast<unsigned>(0x40 + i))
+                EXPECT_EQ(static_cast<unsigned>(bytes[i]), static_cast<unsigned>(0x40 + i))
                     << "raw byte " << i << " corrupted by failed pubkey() call";
             }
         },
-        "key_store::pubkey_on_raw_entry_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::pubkey_on_raw_entry_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             std::array<std::byte, 16> raw;
             for (std::size_t i = 0; i < raw.size(); ++i)
                 raw[i] = static_cast<std::byte>(0x80 + i);
@@ -410,10 +407,13 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
 
             bool callback_invoked = false;
             bool threw_with_right_message = false;
-            try {
+            try
+            {
                 secure().keys().with_seckey("vault:script-secret",
-                    [&](std::string_view) { callback_invoked = true; });
-            } catch (const std::out_of_range &e) {
+                                            [&](std::string_view) { callback_invoked = true; });
+            }
+            catch (const std::out_of_range &e)
+            {
                 const std::string what = e.what();
                 EXPECT_NE(what.find("with_seckey"), std::string::npos);
                 EXPECT_NE(what.find("vault:script-secret"), std::string::npos);
@@ -421,8 +421,7 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
                 threw_with_right_message = true;
             }
             EXPECT_TRUE(threw_with_right_message);
-            EXPECT_FALSE(callback_invoked)
-                << "callback must NEVER fire on wrong-type path";
+            EXPECT_FALSE(callback_invoked) << "callback must NEVER fire on wrong-type path";
 
             // Entry survives byte-for-byte.
             EXPECT_TRUE(secure().keys().has("vault:script-secret"));
@@ -430,28 +429,25 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
             ASSERT_EQ(bytes.size(), 16u);
             for (std::size_t i = 0; i < bytes.size(); ++i)
             {
-                EXPECT_EQ(static_cast<unsigned>(bytes[i]),
-                          static_cast<unsigned>(0x80 + i));
+                EXPECT_EQ(static_cast<unsigned>(bytes[i]), static_cast<unsigned>(0x80 + i));
             }
         },
-        "key_store::with_seckey_on_raw_entry_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::with_seckey_on_raw_entry_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_identity_duplicate_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             auto kp1 = TestKeypair::make('A', 'B');
             // HEP-CORE-0040 §8.5.2 — compute kp1's expected Z85 pubkey
             // BEFORE add_identity zeros the source.
             char expected_kp1_pub_z85[41] = {};
-            ASSERT_NE(zmq_z85_encode(
-                expected_kp1_pub_z85,
-                reinterpret_cast<const uint8_t *>(kp1.bytes.data()),
-                32), nullptr);
+            ASSERT_NE(zmq_z85_encode(expected_kp1_pub_z85,
+                                     reinterpret_cast<const uint8_t *>(kp1.bytes.data()), 32),
+                      nullptr);
             secure().keys().add_identity("role_identity", std::span<std::byte>(kp1.bytes));
 
             auto kp2 = TestKeypair::make('C', 'D');
@@ -465,42 +461,38 @@ int add_identity_duplicate_throws(const char * /*tmpdir*/)
                 << "kp1's pubkey clobbered by failed duplicate add — "
                    "the failed add_identity must NOT mutate the map";
         },
-        "key_store::add_identity_duplicate_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::add_identity_duplicate_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_identity_wrong_size_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             // Too small.
             {
                 std::array<std::byte, 40> half{};
-                EXPECT_THROW(
-                    secure().keys().add_identity("a", std::span<std::byte>(half)),
-                    std::runtime_error);
+                EXPECT_THROW(secure().keys().add_identity("a", std::span<std::byte>(half)),
+                             std::runtime_error);
             }
             // Too big.
             {
                 std::array<std::byte, 96> big{};
-                EXPECT_THROW(
-                    secure().keys().add_identity("b", std::span<std::byte>(big)),
-                    std::runtime_error);
+                EXPECT_THROW(secure().keys().add_identity("b", std::span<std::byte>(big)),
+                             std::runtime_error);
             }
             EXPECT_EQ(secure().keys().size(), 0u);
         },
-        "key_store::add_identity_wrong_size_throws",
-        Logger::GetLifecycleModule(),
+        "key_store::add_identity_wrong_size_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int add_raw_then_lookup_raw_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             std::array<std::byte, 32> raw;
             for (std::size_t i = 0; i < raw.size(); ++i)
                 raw[i] = static_cast<std::byte>(i + 1);
@@ -509,50 +501,45 @@ int add_raw_then_lookup_raw_roundtrip(const char * /*tmpdir*/)
 
             // Source zeroed.
             for (std::size_t i = 0; i < raw.size(); ++i)
-                EXPECT_EQ(static_cast<unsigned>(raw[i]), 0u)
-                    << "raw byte " << i << " not zeroed";
+                EXPECT_EQ(static_cast<unsigned>(raw[i]), 0u) << "raw byte " << i << " not zeroed";
 
             auto out = secure().keys().lookup_raw("vault:s");
             ASSERT_EQ(out.size(), 32u);
             for (std::size_t i = 0; i < out.size(); ++i)
                 EXPECT_EQ(static_cast<unsigned>(out[i]), i + 1);
         },
-        "key_store::add_raw_then_lookup_raw_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::add_raw_then_lookup_raw_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int remove_makes_subsequent_lookup_throw(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             auto kp = TestKeypair::make('A', 'B');
             secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
             EXPECT_TRUE(secure().keys().has("role_identity"));
 
             secure().keys().remove("role_identity");
             EXPECT_FALSE(secure().keys().has("role_identity"));
-            EXPECT_THROW(secure().keys().pubkey("role_identity"),
-                         std::out_of_range);
+            EXPECT_THROW(secure().keys().pubkey("role_identity"), std::out_of_range);
             EXPECT_THROW(
-                secure().keys().with_seckey("role_identity",
-                    [](std::string_view) { FAIL(); }),
+                secure().keys().with_seckey("role_identity", [](std::string_view) { FAIL(); }),
                 std::out_of_range);
 
             // remove on absent name is a no-op.
             EXPECT_NO_THROW(secure().keys().remove("role_identity"));
         },
-        "key_store::remove_makes_subsequent_lookup_throw",
-        Logger::GetLifecycleModule(),
+        "key_store::remove_makes_subsequent_lookup_throw", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int has_and_size_track_entries(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             EXPECT_EQ(secure().keys().size(), 0u);
             EXPECT_FALSE(secure().keys().has("anything"));
 
@@ -570,16 +557,15 @@ int has_and_size_track_entries(const char * /*tmpdir*/)
             EXPECT_EQ(secure().keys().size(), 1u);
             EXPECT_FALSE(secure().keys().has("role_identity"));
         },
-        "key_store::has_and_size_track_entries",
-        Logger::GetLifecycleModule(),
+        "key_store::has_and_size_track_entries", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int parallel_reads_do_not_block(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             auto kp = TestKeypair::make('P', 'S');
             secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
 
@@ -589,26 +575,28 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
             // simultaneously.  If `with_seckey` serialised readers, this
             // would deadlock (one reader holding the shared lock while
             // others wait → can't all reach the barrier).
-            std::mutex                    bar_mu;
-            std::condition_variable       bar_cv;
-            int                           inside = 0;
-            std::atomic<bool>             release{false};
+            std::mutex bar_mu;
+            std::condition_variable bar_cv;
+            int inside = 0;
+            std::atomic<bool> release{false};
 
-            auto reader = [&]() {
+            auto reader = [&]()
+            {
                 secure().keys().with_seckey("role_identity",
-                    [&](std::string_view sec) {
-                        EXPECT_EQ(sec.size(), 32u);
-                        // Signal arrival.
-                        {
-                            std::lock_guard<std::mutex> lk(bar_mu);
-                            ++inside;
-                            bar_cv.notify_all();
-                        }
-                        // Wait for release.
-                        while (!release.load(std::memory_order_acquire))
-                            std::this_thread::sleep_for(
-                                std::chrono::microseconds(100));
-                    });
+                                            [&](std::string_view sec)
+                                            {
+                                                EXPECT_EQ(sec.size(), 32u);
+                                                // Signal arrival.
+                                                {
+                                                    std::lock_guard<std::mutex> lk(bar_mu);
+                                                    ++inside;
+                                                    bar_cv.notify_all();
+                                                }
+                                                // Wait for release.
+                                                while (!release.load(std::memory_order_acquire))
+                                                    std::this_thread::sleep_for(
+                                                        std::chrono::microseconds(100));
+                                            });
             };
 
             std::vector<std::thread> threads;
@@ -630,11 +618,10 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
             // not the lock contract.
             {
                 std::unique_lock<std::mutex> lk(bar_mu);
-                ASSERT_TRUE(bar_cv.wait_for(lk,
-                    std::chrono::seconds(30),
-                    [&]() { return inside == kNumThreads; }))
-                    << "Readers serialised — only " << inside
-                    << "/" << kNumThreads << " reached the barrier "
+                ASSERT_TRUE(bar_cv.wait_for(lk, std::chrono::seconds(30),
+                                            [&]() { return inside == kNumThreads; }))
+                    << "Readers serialised — only " << inside << "/" << kNumThreads
+                    << " reached the barrier "
                     << "within 30s.  At this duration this almost "
                     << "certainly means `with_seckey` no longer holds "
                     << "the lock in SHARED mode (regression to "
@@ -643,18 +630,18 @@ int parallel_reads_do_not_block(const char * /*tmpdir*/)
                     << "CI load.";
             }
             release.store(true, std::memory_order_release);
-            for (auto &t : threads) t.join();
+            for (auto &t : threads)
+                t.join();
         },
-        "key_store::parallel_reads_do_not_block",
-        Logger::GetLifecycleModule(),
+        "key_store::parallel_reads_do_not_block", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
-
+        [&]()
+        {
             auto kp = TestKeypair::make('P', 'S');
             secure().keys().add_identity("role_identity", std::span<std::byte>(kp.bytes));
 
@@ -682,25 +669,30 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
             std::atomic<bool> remove_entered{false};
             std::atomic<bool> remove_returned{false};
 
-            std::thread reader([&]() {
-                secure().keys().with_seckey("role_identity",
-                    [&](std::string_view) {
-                        reader_inside.store(true, std::memory_order_release);
-                        while (!reader_release.load(std::memory_order_acquire))
-                            std::this_thread::sleep_for(
-                                std::chrono::microseconds(100));
-                    });
-            });
+            std::thread reader(
+                [&]()
+                {
+                    secure().keys().with_seckey(
+                        "role_identity",
+                        [&](std::string_view)
+                        {
+                            reader_inside.store(true, std::memory_order_release);
+                            while (!reader_release.load(std::memory_order_acquire))
+                                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                        });
+                });
 
             // Wait until reader is inside its callback (holds shared lock).
             while (!reader_inside.load(std::memory_order_acquire))
                 std::this_thread::sleep_for(std::chrono::microseconds(100));
 
-            std::thread remover([&]() {
-                remove_entered.store(true, std::memory_order_release);
-                secure().keys().remove("role_identity");
-                remove_returned.store(true, std::memory_order_release);
-            });
+            std::thread remover(
+                [&]()
+                {
+                    remove_entered.store(true, std::memory_order_release);
+                    secure().keys().remove("role_identity");
+                    remove_returned.store(true, std::memory_order_release);
+                });
 
             // Wait until the remover thread is past the entry barrier,
             // so the subsequent blocking check is observing an actually-
@@ -708,17 +700,16 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
             // 5s is a generous schedule timeout: if it fires the test
             // environment is broken, not the contract.
             {
-                const auto deadline = std::chrono::steady_clock::now()
-                                    + std::chrono::seconds(5);
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
                 while (!remove_entered.load(std::memory_order_acquire))
                 {
                     if (std::chrono::steady_clock::now() >= deadline)
                     {
                         ADD_FAILURE() << "remover thread never reached "
-                            "entry barrier within 5s — CI scheduler "
-                            "starvation, not a contract regression.  "
-                            "If recurrent, investigate test environment "
-                            "before changing this assertion.";
+                                         "entry barrier within 5s — CI scheduler "
+                                         "starvation, not a contract regression.  "
+                                         "If recurrent, investigate test environment "
+                                         "before changing this assertion.";
                         // Best-effort cleanup before failing out.
                         reader_release.store(true, std::memory_order_release);
                         reader.join();
@@ -747,15 +738,15 @@ int remove_blocks_behind_in_flight_with_seckey(const char * /*tmpdir*/)
             EXPECT_TRUE(remove_returned.load(std::memory_order_acquire));
             EXPECT_FALSE(secure().keys().has("role_identity"));
         },
-        "key_store::remove_blocks_behind_in_flight_with_seckey",
-        Logger::GetLifecycleModule(),
+        "key_store::remove_blocks_behind_in_flight_with_seckey", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int secure_buffer_dtor_zeroes(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             // Place a SecureBuffer in heap-controlled raw storage that
             // we own.  Capture a pointer into its byte array, fill with
             // a pattern, then EXPLICITLY destruct the SecureBuffer.
@@ -768,14 +759,14 @@ int secure_buffer_dtor_zeroes(const char * /*tmpdir*/)
             using Buf = SecureBuffer<32>;
             alignas(Buf) std::array<std::byte, sizeof(Buf)> storage{};
 
-            Buf       *buf       = new (storage.data()) Buf();
+            Buf *buf = new (storage.data()) Buf();
             std::byte *bytes_ptr = nullptr;
-            std::size_t len      = 0;
+            std::size_t len = 0;
 
             {
                 auto sp = buf->span();
                 bytes_ptr = sp.data();
-                len       = sp.size();
+                len = sp.size();
                 ASSERT_EQ(len, 32u);
 
                 // Distinct per-byte pattern — verifies the fill
@@ -806,13 +797,11 @@ int secure_buffer_dtor_zeroes(const char * /*tmpdir*/)
             for (std::size_t i = 0; i < len; ++i)
             {
                 EXPECT_EQ(static_cast<unsigned>(bytes_ptr[i]), 0u)
-                    << "SecureBuffer dtor failed to zero byte " << i
-                    << " (was 0x" << std::hex
+                    << "SecureBuffer dtor failed to zero byte " << i << " (was 0x" << std::hex
                     << static_cast<unsigned>(bytes_ptr[i]) << ")";
             }
         },
-        "key_store::secure_buffer_dtor_zeroes",
-        Logger::GetLifecycleModule(),
+        "key_store::secure_buffer_dtor_zeroes", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -830,7 +819,8 @@ int secure_buffer_dtor_zeroes(const char * /*tmpdir*/)
 int sms_instance_returns_same_reference(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             auto &a = sec::SecureSubsystem::instance();
             auto &b = sec::SecureSubsystem::instance();
@@ -840,8 +830,7 @@ int sms_instance_returns_same_reference(const char * /*tmpdir*/)
             // Also matches the `secure()` accessor.
             EXPECT_EQ(&sec::secure(), &a);
         },
-        "key_store::sms_instance_returns_same_reference",
-        Logger::GetLifecycleModule(),
+        "key_store::sms_instance_returns_same_reference", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -855,32 +844,39 @@ int sms_instance_returns_same_reference(const char * /*tmpdir*/)
 int sms_wrappers_work_via_secure_accessor(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             // random_bytes: 64 bytes, must be non-uniform.
             std::array<std::uint8_t, 64> buf{};
             sec::secure().random_bytes(std::span<std::uint8_t>(buf));
             bool all_zero = true;
-            for (std::uint8_t b : buf) if (b != 0) { all_zero = false; break; }
+            for (std::uint8_t b : buf)
+                if (b != 0)
+                {
+                    all_zero = false;
+                    break;
+                }
             EXPECT_FALSE(all_zero) << "random_bytes returned all-zero output";
 
             // memcmp_ct: equal spans → true; single-byte flip → false.
             std::array<std::uint8_t, 32> a{};
             std::array<std::uint8_t, 32> b{};
-            EXPECT_TRUE(sec::secure().memcmp_ct(
-                std::span<const std::uint8_t>(a), std::span<const std::uint8_t>(b)));
+            EXPECT_TRUE(sec::secure().memcmp_ct(std::span<const std::uint8_t>(a),
+                                                std::span<const std::uint8_t>(b)));
             b[7] = std::uint8_t{0x42};
-            EXPECT_FALSE(sec::secure().memcmp_ct(
-                std::span<const std::uint8_t>(a), std::span<const std::uint8_t>(b)));
+            EXPECT_FALSE(sec::secure().memcmp_ct(std::span<const std::uint8_t>(a),
+                                                 std::span<const std::uint8_t>(b)));
 
             // memzero: fill then wipe.
             std::array<std::uint8_t, 16> victim{};
-            for (auto &x : victim) x = std::uint8_t{0xAB};
+            for (auto &x : victim)
+                x = std::uint8_t{0xAB};
             sec::secure().memzero(std::span<std::uint8_t>(victim));
-            for (std::uint8_t x : victim) EXPECT_EQ(x, 0u);
+            for (std::uint8_t x : victim)
+                EXPECT_EQ(x, 0u);
         },
-        "key_store::sms_wrappers_work_via_secure_accessor",
-        Logger::GetLifecycleModule(),
+        "key_store::sms_wrappers_work_via_secure_accessor", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -891,11 +887,11 @@ int sms_wrappers_work_via_secure_accessor(const char * /*tmpdir*/)
 int keystore_state_persists_across_sms_window(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             auto pack = TestKeypair::make('P', 'S');
-            sec::secure().keys().add_identity("persist_test",
-                std::span<std::byte>(pack.bytes));
+            sec::secure().keys().add_identity("persist_test", std::span<std::byte>(pack.bytes));
 
             EXPECT_TRUE(sec::secure().keys().has("persist_test"));
             EXPECT_EQ(sec::secure().keys().size(), 1u);
@@ -904,24 +900,21 @@ int keystore_state_persists_across_sms_window(const char * /*tmpdir*/)
             // KeyStore state must survive throughout.
             std::array<std::uint8_t, 4> rnd_buf{};
             sec::secure().random_bytes(std::span<std::uint8_t>(rnd_buf));
-            (void)sec::secure().memcmp_ct(
-                std::span<const std::uint8_t>{},
-                std::span<const std::uint8_t>{});
+            (void)sec::secure().memcmp_ct(std::span<const std::uint8_t>{},
+                                          std::span<const std::uint8_t>{});
             EXPECT_TRUE(sec::secure().keys().has("persist_test"));
             EXPECT_EQ(sec::secure().keys().size(), 1u);
 
             // Retrieve the seckey we stored — proves the LockedKey
             // still contains the exact bytes we added.
             std::string seckey_bytes;
-            sec::secure().keys().with_seckey("persist_test",
-                [&](std::string_view sv) {
-                    seckey_bytes.assign(sv.data(), sv.size());
-                });
+            sec::secure().keys().with_seckey("persist_test", [&](std::string_view sv)
+                                             { seckey_bytes.assign(sv.data(), sv.size()); });
             ASSERT_EQ(seckey_bytes.size(), 32u);
-            for (char c : seckey_bytes) EXPECT_EQ(c, 'S');
+            for (char c : seckey_bytes)
+                EXPECT_EQ(c, 'S');
         },
-        "key_store::keystore_state_persists_across_sms_window",
-        Logger::GetLifecycleModule(),
+        "key_store::keystore_state_persists_across_sms_window", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -931,16 +924,16 @@ int keystore_state_persists_across_sms_window(const char * /*tmpdir*/)
 int secure_keys_returns_same_reference(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             auto &ks_a = sec::secure().keys();
             auto &ks_b = sec::secure().keys();
-            auto &ks_c = sec::secure().keys();  // via shim
+            auto &ks_c = sec::secure().keys(); // via shim
             EXPECT_EQ(&ks_a, &ks_b);
             EXPECT_EQ(&ks_a, &ks_c);
         },
-        "key_store::secure_keys_returns_same_reference",
-        Logger::GetLifecycleModule(),
+        "key_store::secure_keys_returns_same_reference", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -951,9 +944,10 @@ int secure_keys_returns_same_reference(const char * /*tmpdir*/)
 int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
-            std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxKeyBytes>   key{};
+            std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxKeyBytes> key{};
             std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxNonceBytes> nonce{};
             sec::secure().random_bytes(std::span<std::uint8_t>(key));
             sec::secure().random_bytes(std::span<std::uint8_t>(nonce));
@@ -961,34 +955,26 @@ int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
             const std::string plain = "attack at dawn";
             std::array<std::uint8_t, 128> ct{};
             const std::size_t written = sec::secure().secretbox_encrypt(
-                ct.data(), ct.size(),
-                reinterpret_cast<const std::uint8_t *>(plain.data()),
-                plain.size(),
-                std::span<const std::uint8_t, 24>(nonce),
+                ct.data(), ct.size(), reinterpret_cast<const std::uint8_t *>(plain.data()),
+                plain.size(), std::span<const std::uint8_t, 24>(nonce),
                 std::span<const std::uint8_t, 32>(key));
             ASSERT_EQ(written, plain.size() + sec::SecureSubsystem::kSecretboxMacBytes);
 
             std::array<std::uint8_t, 128> pt{};
             const std::size_t decoded = sec::secure().secretbox_decrypt(
-                pt.data(), pt.size(),
-                ct.data(), written,
-                std::span<const std::uint8_t, 24>(nonce),
+                pt.data(), pt.size(), ct.data(), written, std::span<const std::uint8_t, 24>(nonce),
                 std::span<const std::uint8_t, 32>(key));
             ASSERT_EQ(decoded, plain.size());
-            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded),
-                      plain);
+            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded), plain);
 
             // Tamper the MAC (first byte) — decrypt must refuse.
             ct[0] ^= 0x01;
             const std::size_t bad = sec::secure().secretbox_decrypt(
-                pt.data(), pt.size(),
-                ct.data(), written,
-                std::span<const std::uint8_t, 24>(nonce),
+                pt.data(), pt.size(), ct.data(), written, std::span<const std::uint8_t, 24>(nonce),
                 std::span<const std::uint8_t, 32>(key));
             EXPECT_EQ(bad, 0u) << "MAC tamper should have failed decryption";
         },
-        "key_store::secretbox_encrypt_decrypt_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::secretbox_encrypt_decrypt_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1001,30 +987,26 @@ int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
 int generate_and_add_identity_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             const std::string name = "test.generated.identity";
-            std::string pub_z85 = sec::secure().keys()
-                .generate_and_add_identity(name);
+            std::string pub_z85 = sec::secure().keys().generate_and_add_identity(name);
             ASSERT_EQ(pub_z85.size(), 40u);
             EXPECT_TRUE(sec::secure().keys().has(name));
             EXPECT_EQ(sec::secure().keys().pubkey(name), pub_z85);
 
             std::size_t seckey_size = 0;
             sec::secure().keys().with_seckey(name,
-                [&](std::string_view sk) { seckey_size = sk.size(); });
-            EXPECT_EQ(seckey_size, 32u)
-                << "seckey callback view was " << seckey_size
-                << " bytes; HEP-CORE-0040 §8.5.2 specifies raw 32.";
+                                             [&](std::string_view sk) { seckey_size = sk.size(); });
+            EXPECT_EQ(seckey_size, 32u) << "seckey callback view was " << seckey_size
+                                        << " bytes; HEP-CORE-0040 §8.5.2 specifies raw 32.";
 
             // Generating a second entry under the same name throws
             // (duplicate-name discipline).
-            EXPECT_THROW(sec::secure().keys()
-                            .generate_and_add_identity(name),
-                         std::runtime_error);
+            EXPECT_THROW(sec::secure().keys().generate_and_add_identity(name), std::runtime_error);
         },
-        "key_store::generate_and_add_identity_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::generate_and_add_identity_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1039,29 +1021,30 @@ int generate_and_add_identity_roundtrip(const char * /*tmpdir*/)
 int with_seckey_z85_view_shape(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             const std::string name = "test.z85_shape";
-            std::string pub = sec::secure().keys()
-                .generate_and_add_identity(name);
+            std::string pub = sec::secure().keys().generate_and_add_identity(name);
 
             std::size_t seen_size = 0;
             std::string captured;
             sec::secure().keys().with_seckey_z85(name,
-                [&](std::string_view v) {
-                    seen_size = v.size();
-                    captured.assign(v.data(), v.size());
-                });
+                                                 [&](std::string_view v)
+                                                 {
+                                                     seen_size = v.size();
+                                                     captured.assign(v.data(), v.size());
+                                                 });
             EXPECT_EQ(seen_size, 40u);
             EXPECT_EQ(captured.size(), 40u);
             // Every Z85 char is printable ASCII (33..126).
-            for (char c : captured) {
+            for (char c : captured)
+            {
                 EXPECT_GE(c, 33) << "non-printable Z85 char observed";
                 EXPECT_LE(c, 126);
             }
         },
-        "key_store::with_seckey_z85_view_shape",
-        Logger::GetLifecycleModule(),
+        "key_store::with_seckey_z85_view_shape", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1072,25 +1055,25 @@ int with_seckey_z85_view_shape(const char * /*tmpdir*/)
 int with_keypair_z85_yields_both_halves(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             const std::string name = "test.pair";
-            std::string pub_expected = sec::secure().keys()
-                .generate_and_add_identity(name);
+            std::string pub_expected = sec::secure().keys().generate_and_add_identity(name);
 
             std::string pub_seen, sec_seen;
             sec::secure().keys().with_keypair_z85(name,
-                [&](std::string_view p, std::string_view s) {
-                    pub_seen.assign(p.data(), p.size());
-                    sec_seen.assign(s.data(), s.size());
-                });
+                                                  [&](std::string_view p, std::string_view s)
+                                                  {
+                                                      pub_seen.assign(p.data(), p.size());
+                                                      sec_seen.assign(s.data(), s.size());
+                                                  });
             EXPECT_EQ(pub_seen, pub_expected);
             EXPECT_EQ(pub_seen.size(), 40u);
             EXPECT_EQ(sec_seen.size(), 40u);
             EXPECT_NE(pub_seen, sec_seen);
         },
-        "key_store::with_keypair_z85_yields_both_halves",
-        Logger::GetLifecycleModule(),
+        "key_store::with_keypair_z85_yields_both_halves", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1105,52 +1088,56 @@ int with_keypair_z85_yields_both_halves(const char * /*tmpdir*/)
 int sms_wrappers_depth(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
 
             // random_bytes depth.
             std::array<std::uint8_t, 1024> big{};
             sec::secure().random_bytes(std::span<std::uint8_t>(big));
             std::array<int, 256> hist{};
-            for (auto b : big) ++hist[b];
+            for (auto b : big)
+                ++hist[b];
             int distinct = 0;
-            for (auto c : hist) if (c > 0) ++distinct;
-            EXPECT_GT(distinct, 200)
-                << "random_bytes returned only " << distinct
-                << " distinct byte values in 1024 bytes — suspicious";
+            for (auto c : hist)
+                if (c > 0)
+                    ++distinct;
+            EXPECT_GT(distinct, 200) << "random_bytes returned only " << distinct
+                                     << " distinct byte values in 1024 bytes — suspicious";
             // No 16-run of the same byte anywhere.
             int run = 1;
             for (std::size_t i = 1; i < big.size(); ++i)
             {
-                if (big[i] == big[i-1]) { ++run; if (run >= 16) FAIL()
-                    << "random_bytes had a run of >=16 identical bytes"; }
-                else run = 1;
+                if (big[i] == big[i - 1])
+                {
+                    ++run;
+                    if (run >= 16)
+                        FAIL() << "random_bytes had a run of >=16 identical bytes";
+                }
+                else
+                    run = 1;
             }
 
             // memcmp_ct depth.
             {
                 std::array<std::uint8_t, 4> empty_a{}, empty_b{};
-                EXPECT_TRUE(sec::secure().memcmp_ct(
-                    std::span<const std::uint8_t>(empty_a.data(), 0),
-                    std::span<const std::uint8_t>(empty_b.data(), 0)));
+                EXPECT_TRUE(
+                    sec::secure().memcmp_ct(std::span<const std::uint8_t>(empty_a.data(), 0),
+                                            std::span<const std::uint8_t>(empty_b.data(), 0)));
                 std::array<std::uint8_t, 8> a{}, b{};
-                EXPECT_TRUE(sec::secure().memcmp_ct(
-                    std::span<const std::uint8_t>(a),
-                    std::span<const std::uint8_t>(b)));
+                EXPECT_TRUE(sec::secure().memcmp_ct(std::span<const std::uint8_t>(a),
+                                                    std::span<const std::uint8_t>(b)));
                 // Length mismatch → false, no exception.
-                EXPECT_FALSE(sec::secure().memcmp_ct(
-                    std::span<const std::uint8_t>(a),
-                    std::span<const std::uint8_t>(b.data(), 4)));
+                EXPECT_FALSE(sec::secure().memcmp_ct(std::span<const std::uint8_t>(a),
+                                                     std::span<const std::uint8_t>(b.data(), 4)));
                 // Single-bit flip at multiple positions.
                 for (int pos = 0; pos < 8; ++pos)
                 {
-                    a = b;  // reset
+                    a = b; // reset
                     a[pos] ^= 0x01;
-                    EXPECT_FALSE(sec::secure().memcmp_ct(
-                        std::span<const std::uint8_t>(a),
-                        std::span<const std::uint8_t>(b)))
-                        << "single-bit flip at pos " << pos
-                        << " not detected";
+                    EXPECT_FALSE(sec::secure().memcmp_ct(std::span<const std::uint8_t>(a),
+                                                         std::span<const std::uint8_t>(b)))
+                        << "single-bit flip at pos " << pos << " not detected";
                 }
             }
 
@@ -1161,11 +1148,11 @@ int sms_wrappers_depth(const char * /*tmpdir*/)
                 auto *addr_before = buf.data();
                 sec::secure().memzero(std::span<std::uint8_t>(buf));
                 EXPECT_EQ(buf.data(), addr_before);
-                for (std::uint8_t v : buf) EXPECT_EQ(v, 0u);
+                for (std::uint8_t v : buf)
+                    EXPECT_EQ(v, 0u);
             }
         },
-        "key_store::sms_wrappers_depth",
-        Logger::GetLifecycleModule(),
+        "key_store::sms_wrappers_depth", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1179,19 +1166,18 @@ int sms_wrappers_depth(const char * /*tmpdir*/)
 int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
 
             // Seed two identities via the standard test helper.
             const std::string sender_uid = "sender";
-            const std::string recip_uid  = "recipient";
+            const std::string recip_uid = "recipient";
             auto curve = pylabhub::tests::make_curve_setup({sender_uid, recip_uid});
             pylabhub::tests::seed_curve_identities(curve);
 
-            const std::string sender_name =
-                pylabhub::tests::role_keystore_name(sender_uid);
-            const std::string recip_name =
-                pylabhub::tests::role_keystore_name(recip_uid);
+            const std::string sender_name = pylabhub::tests::role_keystore_name(sender_uid);
+            const std::string recip_name = pylabhub::tests::role_keystore_name(recip_uid);
 
             // Retrieve pubkeys (non-secret) via KeyStore.
             std::array<std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes> sender_pub{};
@@ -1203,7 +1189,7 @@ int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
                 ASSERT_EQ(sp.size(), 40u);
                 ASSERT_EQ(rp.size(), 40u);
                 ASSERT_NE(::zmq_z85_decode(sender_pub.data(), sp.data()), nullptr);
-                ASSERT_NE(::zmq_z85_decode(recip_pub.data(),  rp.data()), nullptr);
+                ASSERT_NE(::zmq_z85_decode(recip_pub.data(), rp.data()), nullptr);
             }
 
             // Random nonce.
@@ -1219,9 +1205,8 @@ int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
                 sender_name,
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(recip_pub),
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
-                std::span<const std::uint8_t>(
-                    reinterpret_cast<const std::uint8_t *>(plain.data()),
-                    plain.size()),
+                std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(plain.data()),
+                                              plain.size()),
                 std::span<std::uint8_t>(ct));
             ASSERT_EQ(written, need);
 
@@ -1231,11 +1216,9 @@ int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
                 recip_name,
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(sender_pub),
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
-                std::span<const std::uint8_t>(ct),
-                std::span<std::uint8_t>(pt));
+                std::span<const std::uint8_t>(ct), std::span<std::uint8_t>(pt));
             ASSERT_EQ(decoded, plain.size());
-            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded),
-                      plain);
+            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded), plain);
 
             // Tamper MAC (first byte) — decrypt must refuse.
             ct[0] ^= 0x01;
@@ -1243,24 +1226,21 @@ int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
                 recip_name,
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(sender_pub),
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
-                std::span<const std::uint8_t>(ct),
-                std::span<std::uint8_t>(pt));
+                std::span<const std::uint8_t>(ct), std::span<std::uint8_t>(pt));
             EXPECT_EQ(bad, 0u) << "MAC tamper should have failed decryption";
 
             // Wrong sender pubkey — decrypt must also refuse.
-            ct[0] ^= 0x01;  // restore MAC
+            ct[0] ^= 0x01; // restore MAC
             std::array<std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes> wrong_pub = sender_pub;
             wrong_pub[0] ^= 0x01;
             const std::size_t wrong = sec::secure().box_decrypt_using(
                 recip_name,
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxPubkeyBytes>(wrong_pub),
                 std::span<const std::uint8_t, sec::SecureSubsystem::kBoxNonceBytes>(nonce),
-                std::span<const std::uint8_t>(ct),
-                std::span<std::uint8_t>(pt));
+                std::span<const std::uint8_t>(ct), std::span<std::uint8_t>(pt));
             EXPECT_EQ(wrong, 0u) << "Wrong sender pubkey should have failed";
         },
-        "key_store::box_encrypt_decrypt_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::box_encrypt_decrypt_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1271,13 +1251,13 @@ int box_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
 int panic_when_keys_called_without_sms(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             (void)sec::secure().keys();
             ADD_FAILURE() << "secure().keys() returned instead of panicking";
         },
-        "key_store::panic_when_keys_called_without_sms",
-        Logger::GetLifecycleModule());
+        "key_store::panic_when_keys_called_without_sms", Logger::GetLifecycleModule());
 }
 
 /// R3.3 — the state atomic transitions Uninitialized → Initialized
@@ -1299,7 +1279,8 @@ int panic_when_keys_called_without_sms(const char * /*tmpdir*/)
 int pwhash_argon2id_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             std::array<std::uint8_t, sec::SecureSubsystem::kPwhashSaltBytes> salt_a{};
             std::array<std::uint8_t, sec::SecureSubsystem::kPwhashSaltBytes> salt_b{};
@@ -1315,43 +1296,31 @@ int pwhash_argon2id_roundtrip(const char * /*tmpdir*/)
             std::array<std::uint8_t, 32> key_b{};
             std::array<std::uint8_t, 32> key_a_alt{};
 
-            ASSERT_TRUE(sec::secure().pwhash_argon2id(
-                key_a1.data(), key_a1.size(),
-                password_a, std::strlen(password_a),
-                salt_a.data()));
-            ASSERT_TRUE(sec::secure().pwhash_argon2id(
-                key_a2.data(), key_a2.size(),
-                password_a, std::strlen(password_a),
-                salt_a.data()));
-            EXPECT_EQ(key_a1, key_a2)
-                << "same (password, salt) must produce identical derived key";
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(key_a1.data(), key_a1.size(), password_a,
+                                                      std::strlen(password_a), salt_a.data()));
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(key_a2.data(), key_a2.size(), password_a,
+                                                      std::strlen(password_a), salt_a.data()));
+            EXPECT_EQ(key_a1, key_a2) << "same (password, salt) must produce identical derived key";
 
-            ASSERT_TRUE(sec::secure().pwhash_argon2id(
-                key_b.data(), key_b.size(),
-                password_b, std::strlen(password_b),
-                salt_a.data()));
-            EXPECT_NE(key_a1, key_b)
-                << "different password (same salt) must give different key";
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(key_b.data(), key_b.size(), password_b,
+                                                      std::strlen(password_b), salt_a.data()));
+            EXPECT_NE(key_a1, key_b) << "different password (same salt) must give different key";
 
-            ASSERT_TRUE(sec::secure().pwhash_argon2id(
-                key_a_alt.data(), key_a_alt.size(),
-                password_a, std::strlen(password_a),
-                salt_b.data()));
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(key_a_alt.data(), key_a_alt.size(),
+                                                      password_a, std::strlen(password_a),
+                                                      salt_b.data()));
             EXPECT_NE(key_a1, key_a_alt)
                 << "different salt (same password) must give different key";
 
             // Null pointer → false.
-            EXPECT_FALSE(sec::secure().pwhash_argon2id(
-                nullptr, 32, password_a, std::strlen(password_a), salt_a.data()));
-            EXPECT_FALSE(sec::secure().pwhash_argon2id(
-                key_a1.data(), key_a1.size(),
-                nullptr, 0, salt_a.data()));
-            EXPECT_FALSE(sec::secure().pwhash_argon2id(
-                key_a1.data(), key_a1.size(),
-                password_a, std::strlen(password_a), nullptr));
+            EXPECT_FALSE(sec::secure().pwhash_argon2id(nullptr, 32, password_a,
+                                                       std::strlen(password_a), salt_a.data()));
+            EXPECT_FALSE(sec::secure().pwhash_argon2id(key_a1.data(), key_a1.size(), nullptr, 0,
+                                                       salt_a.data()));
+            EXPECT_FALSE(sec::secure().pwhash_argon2id(key_a1.data(), key_a1.size(), password_a,
+                                                       std::strlen(password_a), nullptr));
         },
-        "key_store::pwhash_argon2id_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::pwhash_argon2id_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1361,7 +1330,8 @@ int pwhash_argon2id_roundtrip(const char * /*tmpdir*/)
 int derive_pwhash_salt_deterministic(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             constexpr std::size_t N = sec::SecureSubsystem::kPwhashSaltBytes;
             std::array<std::uint8_t, N> a{};
@@ -1371,28 +1341,24 @@ int derive_pwhash_salt_deterministic(const char * /*tmpdir*/)
             const std::string_view domain = "vault.role.uid.42";
             ASSERT_TRUE(sec::secure().derive_pwhash_salt(a.data(), domain));
             ASSERT_TRUE(sec::secure().derive_pwhash_salt(b.data(), domain));
-            EXPECT_EQ(a, b)
-                << "same domain input must give identical salt across calls";
+            EXPECT_EQ(a, b) << "same domain input must give identical salt across calls";
 
             // Different domain → different salt.
-            ASSERT_TRUE(sec::secure().derive_pwhash_salt(
-                c.data(), std::string_view{"vault.role.uid.43"}));
-            EXPECT_NE(a, c)
-                << "different domain must give different salt";
+            ASSERT_TRUE(
+                sec::secure().derive_pwhash_salt(c.data(), std::string_view{"vault.role.uid.43"}));
+            EXPECT_NE(a, c) << "different domain must give different salt";
 
             // Empty domain is valid (yields BLAKE2b-16 of empty input).
             std::array<std::uint8_t, N> empty_1{};
             std::array<std::uint8_t, N> empty_2{};
             ASSERT_TRUE(sec::secure().derive_pwhash_salt(empty_1.data(), std::string_view{""}));
             ASSERT_TRUE(sec::secure().derive_pwhash_salt(empty_2.data(), std::string_view{""}));
-            EXPECT_EQ(empty_1, empty_2)
-                << "empty domain must still be deterministic";
+            EXPECT_EQ(empty_1, empty_2) << "empty domain must still be deterministic";
 
             // Null output → false.
             EXPECT_FALSE(sec::secure().derive_pwhash_salt(nullptr, domain));
         },
-        "key_store::derive_pwhash_salt_deterministic",
-        Logger::GetLifecycleModule(),
+        "key_store::derive_pwhash_salt_deterministic", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1400,28 +1366,25 @@ int derive_pwhash_salt_deterministic(const char * /*tmpdir*/)
 int bin2hex_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             const std::array<std::uint8_t, 4> bin{0x00, 0x0f, 0xab, 0xff};
-            char hex[16] = {};  // > 4*2+1 = 9
-            sec::secure().bin2hex(hex, sizeof(hex),
-                                    bin.data(), bin.size());
+            char hex[16] = {}; // > 4*2+1 = 9
+            sec::secure().bin2hex(hex, sizeof(hex), bin.data(), bin.size());
             EXPECT_STREQ(hex, "000fabff")
                 << "bin2hex should produce lowercase hex with null terminator";
 
             // Empty input → empty string.
             char hex_empty[2] = {'X', 'X'};
-            sec::secure().bin2hex(hex_empty, sizeof(hex_empty),
-                                    bin.data(), 0);
-            EXPECT_STREQ(hex_empty, "")
-                << "bin2hex of empty input should produce empty string";
+            sec::secure().bin2hex(hex_empty, sizeof(hex_empty), bin.data(), 0);
+            EXPECT_STREQ(hex_empty, "") << "bin2hex of empty input should produce empty string";
 
             // Null pointer must not crash.
             sec::secure().bin2hex(nullptr, 0, bin.data(), bin.size());
             sec::secure().bin2hex(hex, sizeof(hex), nullptr, 0);
         },
-        "key_store::bin2hex_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::bin2hex_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1430,54 +1393,47 @@ int bin2hex_roundtrip(const char * /*tmpdir*/)
 int verify_blake2b_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
-            const std::string msg  = "the quick brown fox jumps over the lazy dog";
+            const std::string msg = "the quick brown fox jumps over the lazy dog";
             const std::string msg2 = "a completely different message";
 
-            const auto hash = sec::secure().compute_blake2b_array(
-                msg.data(), msg.size());
-            EXPECT_TRUE(sec::secure().verify_blake2b(
-                hash, msg.data(), msg.size()))
+            const auto hash = sec::secure().compute_blake2b_array(msg.data(), msg.size());
+            EXPECT_TRUE(sec::secure().verify_blake2b(hash, msg.data(), msg.size()))
                 << "verify against the same message must succeed";
 
             // Different message → must fail.
-            EXPECT_FALSE(sec::secure().verify_blake2b(
-                hash, msg2.data(), msg2.size()))
+            EXPECT_FALSE(sec::secure().verify_blake2b(hash, msg2.data(), msg2.size()))
                 << "verify against a different message must fail";
 
             // Single-bit tamper of the STORED hash → must fail.
             auto tampered = hash;
             tampered[0] ^= 0x01;
-            EXPECT_FALSE(sec::secure().verify_blake2b(
-                tampered, msg.data(), msg.size()))
+            EXPECT_FALSE(sec::secure().verify_blake2b(tampered, msg.data(), msg.size()))
                 << "verify with single-bit-flipped stored hash must fail";
 
             // Pointer overload + null args → must fail (not crash).
-            EXPECT_FALSE(sec::secure().verify_blake2b(
-                static_cast<const std::uint8_t *>(nullptr),
-                msg.data(), msg.size()));
-            EXPECT_FALSE(sec::secure().verify_blake2b(
-                hash.data(), nullptr, 0));
+            EXPECT_FALSE(sec::secure().verify_blake2b(static_cast<const std::uint8_t *>(nullptr),
+                                                      msg.data(), msg.size()));
+            EXPECT_FALSE(sec::secure().verify_blake2b(hash.data(), nullptr, 0));
         },
-        "key_store::verify_blake2b_roundtrip",
-        Logger::GetLifecycleModule(),
+        "key_store::verify_blake2b_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int sodium_ready_agrees_with_lifecycle_initialized(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
             EXPECT_TRUE(sec::sodium_ready());
             EXPECT_TRUE(sec::SecureSubsystem::lifecycle_initialized());
             // Consistency across probes.
-            EXPECT_EQ(sec::sodium_ready(),
-                      sec::SecureSubsystem::lifecycle_initialized());
+            EXPECT_EQ(sec::sodium_ready(), sec::SecureSubsystem::lifecycle_initialized());
         },
-        "key_store::sodium_ready_agrees_with_lifecycle_initialized",
-        Logger::GetLifecycleModule(),
+        "key_store::sodium_ready_agrees_with_lifecycle_initialized", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1493,47 +1449,52 @@ int sodium_ready_agrees_with_lifecycle_initialized(const char * /*tmpdir*/)
 int sms_parallel_instance_calls(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             namespace sec = pylabhub::utils::security;
 
             constexpr int kThreads = 32;
-            std::atomic<int>                       ready{0};
-            std::atomic<bool>                      go{false};
+            std::atomic<int> ready{0};
+            std::atomic<bool> go{false};
             std::array<sec::SecureSubsystem *, kThreads> observed{};
-            std::vector<std::thread>               threads;
+            std::vector<std::thread> threads;
             threads.reserve(kThreads);
 
             for (int i = 0; i < kThreads; ++i)
             {
-                threads.emplace_back([&, i]() {
-                    ready.fetch_add(1, std::memory_order_release);
-                    while (!go.load(std::memory_order_acquire)) {
-                        std::this_thread::yield();
-                    }
-                    observed[i] = &sec::SecureSubsystem::instance();
-                });
+                threads.emplace_back(
+                    [&, i]()
+                    {
+                        ready.fetch_add(1, std::memory_order_release);
+                        while (!go.load(std::memory_order_acquire))
+                        {
+                            std::this_thread::yield();
+                        }
+                        observed[i] = &sec::SecureSubsystem::instance();
+                    });
             }
-            while (ready.load(std::memory_order_acquire) < kThreads) {
+            while (ready.load(std::memory_order_acquire) < kThreads)
+            {
                 std::this_thread::yield();
             }
             go.store(true, std::memory_order_release);
-            for (auto &t : threads) t.join();
+            for (auto &t : threads)
+                t.join();
 
             sec::SecureSubsystem *canon = observed[0];
             ASSERT_NE(canon, nullptr);
             for (int i = 1; i < kThreads; ++i)
             {
-                EXPECT_EQ(observed[i], canon)
-                    << "Thread " << i << " observed a different "
-                    "SecureSubsystem instance — the function-local "
-                    "static invariant is broken.";
+                EXPECT_EQ(observed[i], canon) << "Thread " << i
+                                              << " observed a different "
+                                                 "SecureSubsystem instance — the function-local "
+                                                 "static invariant is broken.";
             }
             // Consistency across the accessor: `secure()` from the
             // parent (post-race) matches the canonical pointer.
             EXPECT_EQ(&sec::secure(), canon);
         },
-        "key_store::sms_parallel_instance_calls",
-        Logger::GetLifecycleModule(),
+        "key_store::sms_parallel_instance_calls", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1543,18 +1504,20 @@ int sms_parallel_instance_calls(const char * /*tmpdir*/)
 
 int dispatch_key_store(int argc, char **argv)
 {
-    if (argc < 2) return -1;
+    if (argc < 2)
+        return -1;
     std::string mode = argv[1];
     const auto dot = mode.find('.');
-    if (dot == std::string::npos) return -1;
-    const std::string module   = mode.substr(0, dot);
+    if (dot == std::string::npos)
+        return -1;
+    const std::string module = mode.substr(0, dot);
     const std::string scenario = mode.substr(dot + 1);
-    if (module != "key_store") return -1;
+    if (module != "key_store")
+        return -1;
 
     if (argc < 3)
     {
-        std::fprintf(stderr, "key_store.%s: missing <tmpdir> arg\n",
-                     scenario.c_str());
+        std::fprintf(stderr, "key_store.%s: missing <tmpdir> arg\n", scenario.c_str());
         return 1;
     }
     const char *tmpdir = argv[2];
@@ -1634,9 +1597,6 @@ int dispatch_key_store(int argc, char **argv)
 
 struct KeyStoreWorkerRegistrar
 {
-    KeyStoreWorkerRegistrar()
-    {
-        ::register_worker_dispatcher(dispatch_key_store);
-    }
+    KeyStoreWorkerRegistrar() { ::register_worker_dispatcher(dispatch_key_store); }
 };
 static KeyStoreWorkerRegistrar g_key_store_registrar;

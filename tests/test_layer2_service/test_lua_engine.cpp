@@ -29,7 +29,7 @@
  */
 #include <gtest/gtest.h>
 
-#include "test_patterns.h"    // IsolatedProcessTest (Pattern 3 base)
+#include "test_patterns.h" // IsolatedProcessTest (Pattern 3 base)
 
 #include <atomic>
 #include <filesystem>
@@ -62,8 +62,7 @@ class LuaEngineIsolatedTest : public pylabhub::tests::IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_lua_" + std::string(label) + "_" +
-                      std::to_string(::getpid()) + "_" +
+                     ("plh_l2_lua_" + std::string(label) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
@@ -81,8 +80,7 @@ TEST_F(LuaEngineIsolatedTest, FullLifecycle)
     // dispatched into the Lua runtime by checking report_metric side
     // effects on RoleHostCore.custom_metrics_snapshot(). See
     // workers/lua_engine_workers.cpp::full_lifecycle for the full body.
-    auto w = SpawnWorker("lua_engine.full_lifecycle",
-                         {unique_dir("full_lifecycle")});
+    auto w = SpawnWorker("lua_engine.full_lifecycle", {unique_dir("full_lifecycle")});
     ExpectWorkerOk(w);
 }
 
@@ -92,22 +90,20 @@ TEST_F(LuaEngineIsolatedTest, InitializeAndFinalize_Succeeds)
     // name. A real initialize-fails-gracefully test needs a failure-
     // injection hook (e.g. simulate luaL_newstate() returning nullptr);
     // adding that hook is queued as a follow-up.
-    auto w = SpawnWorker("lua_engine.initialize_and_finalize_succeeds",
-                         {unique_dir("init_finalize")});
+    auto w =
+        SpawnWorker("lua_engine.initialize_and_finalize_succeeds", {unique_dir("init_finalize")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, RegisterSlotType_SizeofCorrect)
 {
-    auto w = SpawnWorker("lua_engine.register_slot_type_sizeof_correct",
-                         {unique_dir("sizeof")});
+    auto w = SpawnWorker("lua_engine.register_slot_type_sizeof_correct", {unique_dir("sizeof")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, RegisterSlotType_MultiField)
 {
-    auto w = SpawnWorker("lua_engine.register_slot_type_multi_field",
-                         {unique_dir("multifield")});
+    auto w = SpawnWorker("lua_engine.register_slot_type_multi_field", {unique_dir("multifield")});
     ExpectWorkerOk(w);
 }
 
@@ -117,16 +113,15 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_PackedPacking)
     // The engine's internal size cross-validation
     // (lua_engine.cpp:680-687) already catches silent packing-ignore
     // regressions — see the worker's docblock for the reasoning.
-    auto w = SpawnWorker("lua_engine.register_slot_type_packed_packing",
-                         {unique_dir("packed_packing")});
+    auto w =
+        SpawnWorker("lua_engine.register_slot_type_packed_packing", {unique_dir("packed_packing")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.register_slot_type_has_schema_false_returns_false",
-        {unique_dir("has_schema_false")});
+    auto w = SpawnWorker("lua_engine.register_slot_type_has_schema_false_returns_false",
+                         {unique_dir("has_schema_false")});
     // Engine logs "has_schema=false" rejection at ERROR level; declare
     // it so the framework's broad "no ERROR" check doesn't fire.
     ExpectWorkerOk(w, /*required=*/{},
@@ -135,9 +130,8 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_HasSchemaFalse_ReturnsFalse)
 
 TEST_F(LuaEngineIsolatedTest, RegisterSlotType_UnknownName_RejectsWithNoSideEffect)
 {
-    auto w = SpawnWorker(
-        "lua_engine.register_slot_type_unknown_name_rejects_no_side_effect",
-        {unique_dir("unknown_name_reject")});
+    auto w = SpawnWorker("lua_engine.register_slot_type_unknown_name_rejects_no_side_effect",
+                         {unique_dir("unknown_name_reject")});
     // Engine emits LOGGER_ERROR "register_slot_type: unknown canonical
     // type_name 'FooBar' — must be one of …" at the rejection site
     // (lua_engine.cpp:666-670).  Use a combined substring so both the
@@ -155,36 +149,32 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_UnknownName_RejectsWithNoSideEffe
 // dispatcher-source citations that justify the coverage.
 TEST_F(LuaEngineIsolatedTest, RegisterSlotType_AllSupportedTypes_Succeeds)
 {
-    auto w = SpawnWorker("lua_engine.register_slot_type_all_supported_types",
-                         {unique_dir("all_types")});
+    auto w =
+        SpawnWorker("lua_engine.register_slot_type_all_supported_types", {unique_dir("all_types")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Alias_SlotFrame_Producer)
 {
-    auto w = SpawnWorker("lua_engine.alias_slot_frame_producer",
-                         {unique_dir("alias_prod")});
+    auto w = SpawnWorker("lua_engine.alias_slot_frame_producer", {unique_dir("alias_prod")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Alias_SlotFrame_Consumer)
 {
-    auto w = SpawnWorker("lua_engine.alias_slot_frame_consumer",
-                         {unique_dir("alias_cons")});
+    auto w = SpawnWorker("lua_engine.alias_slot_frame_consumer", {unique_dir("alias_cons")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Alias_NoAlias_Processor)
 {
-    auto w = SpawnWorker("lua_engine.alias_no_alias_processor",
-                         {unique_dir("alias_proc")});
+    auto w = SpawnWorker("lua_engine.alias_no_alias_processor", {unique_dir("alias_proc")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Alias_FlexFrame_Producer)
 {
-    auto w = SpawnWorker("lua_engine.alias_flex_frame_producer",
-                         {unique_dir("alias_flex")});
+    auto w = SpawnWorker("lua_engine.alias_flex_frame_producer", {unique_dir("alias_flex")});
     ExpectWorkerOk(w);
 }
 
@@ -212,8 +202,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_CommitOnTrue)
     // Strengthened: additionally asserts script_error_count == 0 (a Commit
     // path that silently logged a script error would slip through the
     // original body's check).
-    auto w = SpawnWorker("lua_engine.invoke_produce_commit_on_true",
-                         {unique_dir("produce_commit")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_produce_commit_on_true", {unique_dir("produce_commit")});
     ExpectWorkerOk(w);
 }
 
@@ -223,8 +213,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_DiscardOnFalse)
     // test asserts the engine did NOT overwrite it on the Discard path
     // (the original test initialized buf = 0.0f and couldn't tell the
     // difference between "engine left it alone" and "engine wrote 0.0").
-    auto w = SpawnWorker("lua_engine.invoke_produce_discard_on_false",
-                         {unique_dir("produce_discard")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_produce_discard_on_false", {unique_dir("produce_discard")});
     ExpectWorkerOk(w);
 }
 
@@ -248,15 +238,14 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_NilSlot)
     // confirm the Lua-side assert(tx.slot == nil, ...) actually passed.
     // A failing Lua assert would bump the count but still return Discard
     // from the engine — the original test couldn't distinguish the two.
-    auto w = SpawnWorker("lua_engine.invoke_produce_nil_slot",
-                         {unique_dir("produce_nil_slot")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_nil_slot", {unique_dir("produce_nil_slot")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_ScriptError)
 {
-    auto w = SpawnWorker("lua_engine.invoke_produce_script_error",
-                         {unique_dir("produce_script_error")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_produce_script_error", {unique_dir("produce_script_error")});
     // The engine logs the Lua error() message at ERROR level.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/{"intentional error"});
@@ -269,9 +258,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_ScriptError)
 // engine to clear the buffer on Discard (it doesn't).
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_discard_on_false_but_lua_wrote_slot",
-        {unique_dir("produce_discard_wrote")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_discard_on_false_but_lua_wrote_slot",
+                         {unique_dir("produce_discard_wrote")});
     ExpectWorkerOk(w);
 }
 
@@ -296,15 +284,14 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_DiscardOnFalse_ButLuaWroteSlot)
 
 TEST_F(LuaEngineIsolatedTest, InvokeConsume_ReceivesSlot)
 {
-    auto w = SpawnWorker("lua_engine.invoke_consume_receives_slot",
-                         {unique_dir("consume_receives")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_consume_receives_slot", {unique_dir("consume_receives")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeConsume_NilSlot)
 {
-    auto w = SpawnWorker("lua_engine.invoke_consume_nil_slot",
-                         {unique_dir("consume_nil_slot")});
+    auto w = SpawnWorker("lua_engine.invoke_consume_nil_slot", {unique_dir("consume_nil_slot")});
     ExpectWorkerOk(w);
 }
 
@@ -315,9 +302,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeConsume_NilSlot)
 // on_pcall_error_, treat-false-as-wrong-type).
 TEST_F(LuaEngineIsolatedTest, InvokeConsume_DiscardOnFalse_NoErrorBump)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_consume_discard_on_false_no_error_bump",
-        {unique_dir("consume_discard_no_bump")});
+    auto w = SpawnWorker("lua_engine.invoke_consume_discard_on_false_no_error_bump",
+                         {unique_dir("consume_discard_no_bump")});
     ExpectWorkerOk(w);
 }
 
@@ -373,8 +359,7 @@ TEST_F(LuaEngineIsolatedTest, InvokeProcess_DualSlots)
 {
     // Strengthened: also asserts rx input buffer unchanged (read-only in
     // the dual-slot path) and script_error_count == 0.
-    auto w = SpawnWorker("lua_engine.invoke_process_dual_slots",
-                         {unique_dir("process_dual")});
+    auto w = SpawnWorker("lua_engine.invoke_process_dual_slots", {unique_dir("process_dual")});
     ExpectWorkerOk(w);
 }
 
@@ -383,8 +368,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeProcess_BothSlotsNil)
     // Renamed from InvokeProcess_NilInput to describe the slot-state
     // rather than a misreadable role-semantic. Both rx and tx arrive
     // nil; Lua asserts nil for both and returns Discard.
-    auto w = SpawnWorker("lua_engine.invoke_process_both_slots_nil",
-                         {unique_dir("process_both_nil")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_process_both_slots_nil", {unique_dir("process_both_nil")});
     ExpectWorkerOk(w);
 }
 
@@ -441,18 +426,16 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_EventWithDetails)
     // Now verifies the details-map-flattening contract — previously the
     // test set m1.details["identity"] = "abc123" but never checked Lua
     // saw it.
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_receives_messages_event_with_details",
-        {unique_dir("msgs_event")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_receives_messages_event_with_details",
+                         {unique_dir("msgs_event")});
     ExpectWorkerOk(w);
 }
 
 // NEW: empty msgs vector — simplest edge case, not covered pre-sweep.
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_EmptyVector)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_receives_messages_empty_vector",
-        {unique_dir("msgs_empty")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_receives_messages_empty_vector",
+                         {unique_dir("msgs_empty")});
     ExpectWorkerOk(w);
 }
 
@@ -461,9 +444,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_EmptyVector)
 // (previously untested).
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_DataMessage)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_receives_messages_data_message",
-        {unique_dir("msgs_data_producer")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_receives_messages_data_message",
+                         {unique_dir("msgs_data_producer")});
     ExpectWorkerOk(w);
 }
 
@@ -473,9 +455,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeProduce_ReceivesMessages_DataMessage)
 // untested at L2 before this test.
 TEST_F(LuaEngineIsolatedTest, InvokeConsume_ReceivesMessages_DataBareFormat)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_consume_receives_messages_data_bare_format",
-        {unique_dir("msgs_data_consumer")});
+    auto w = SpawnWorker("lua_engine.invoke_consume_receives_messages_data_bare_format",
+                         {unique_dir("msgs_data_consumer")});
     ExpectWorkerOk(w);
 }
 
@@ -511,8 +492,7 @@ TEST_F(LuaEngineIsolatedTest, ApiVersionInfo_ReturnsJsonString)
 // NEW: identity getters round-trip from RoleAPIBase through Lua.
 TEST_F(LuaEngineIsolatedTest, ApiIdentity_UidNameChannel)
 {
-    auto w = SpawnWorker("lua_engine.api_identity_uid_name_channel",
-                         {unique_dir("api_identity")});
+    auto w = SpawnWorker("lua_engine.api_identity_uid_name_channel", {unique_dir("api_identity")});
     ExpectWorkerOk(w);
 }
 
@@ -522,8 +502,7 @@ TEST_F(LuaEngineIsolatedTest, ApiIdentity_UidNameChannel)
 // framework's "no ERROR" check doesn't reject the test.
 TEST_F(LuaEngineIsolatedTest, ApiLog_DispatchesLevels)
 {
-    auto w = SpawnWorker("lua_engine.api_log_dispatches_levels",
-                         {unique_dir("api_log")});
+    auto w = SpawnWorker("lua_engine.api_log_dispatches_levels", {unique_dir("api_log")});
     // Pins the exact tag format "[<log_tag>-lua] <msg>" from
     // lua_engine.cpp:1317-1325.  If the engine reworded the tag
     // template this substring would stop matching — intentional.
@@ -535,8 +514,7 @@ TEST_F(LuaEngineIsolatedTest, ApiLog_DispatchesLevels)
 // NEW: api.stop() → core->request_stop() propagation.
 TEST_F(LuaEngineIsolatedTest, ApiStop_SetsShutdownRequested)
 {
-    auto w = SpawnWorker("lua_engine.api_stop_sets_shutdown_requested",
-                         {unique_dir("api_stop")});
+    auto w = SpawnWorker("lua_engine.api_stop_sets_shutdown_requested", {unique_dir("api_stop")});
     ExpectWorkerOk(w);
 }
 
@@ -544,9 +522,8 @@ TEST_F(LuaEngineIsolatedTest, ApiStop_SetsShutdownRequested)
 // three side-effects) + api.stop_reason (read) round-trip.
 TEST_F(LuaEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_critical_error_set_and_read_and_stop_reason",
-        {unique_dir("api_crit")});
+    auto w = SpawnWorker("lua_engine.api_critical_error_set_and_read_and_stop_reason",
+                         {unique_dir("api_crit")});
     // Audit S2 (2026-05-18) — log line now emitted by RoleAPIBase
     // (uniform across Python / Lua / Native engines): format is
     // "[short_tag/uid] CRITICAL: <msg>" replacing the old Lua-only
@@ -567,9 +544,8 @@ TEST_F(LuaEngineIsolatedTest, ApiCriticalError_SetAndReadAndStopReason)
 // which was never tested before this.
 TEST_F(LuaEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_stop_reason_reflects_all_enum_values",
-        {unique_dir("api_stop_reason_all")});
+    auto w = SpawnWorker("lua_engine.api_stop_reason_reflects_all_enum_values",
+                         {unique_dir("api_stop_reason_all")});
     ExpectWorkerOk(w);
 }
 
@@ -584,33 +560,29 @@ TEST_F(LuaEngineIsolatedTest, ApiStopReason_ReflectsAllEnumValues)
 
 TEST_F(LuaEngineIsolatedTest, ApiReportMetric_AppearsUnderCustom)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_report_metric_appears_under_custom",
-        {unique_dir("api_report_metric")});
+    auto w = SpawnWorker("lua_engine.api_report_metric_appears_under_custom",
+                         {unique_dir("api_report_metric")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiReportMetric_OverwriteSameKey)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_report_metric_overwrite_same_key",
-        {unique_dir("api_report_overwrite")});
+    auto w = SpawnWorker("lua_engine.api_report_metric_overwrite_same_key",
+                         {unique_dir("api_report_overwrite")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiReportMetric_ZeroValuePreserved)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_report_metric_zero_value_preserved",
-        {unique_dir("api_report_zero")});
+    auto w = SpawnWorker("lua_engine.api_report_metric_zero_value_preserved",
+                         {unique_dir("api_report_zero")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiReportMetrics_BatchAcceptsTable)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_report_metrics_batch_accepts_table",
-        {unique_dir("api_report_batch")});
+    auto w = SpawnWorker("lua_engine.api_report_metrics_batch_accepts_table",
+                         {unique_dir("api_report_batch")});
     ExpectWorkerOk(w);
 }
 
@@ -620,9 +592,8 @@ TEST_F(LuaEngineIsolatedTest, ApiReportMetrics_BatchAcceptsTable)
 // needs to know about it.
 TEST_F(LuaEngineIsolatedTest, ApiReportMetrics_NonTableArg_IsError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_report_metrics_non_table_arg_is_error",
-        {unique_dir("api_report_wrongarg")});
+    auto w = SpawnWorker("lua_engine.api_report_metrics_non_table_arg_is_error",
+                         {unique_dir("api_report_wrongarg")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"table expected"});
@@ -630,9 +601,8 @@ TEST_F(LuaEngineIsolatedTest, ApiReportMetrics_NonTableArg_IsError)
 
 TEST_F(LuaEngineIsolatedTest, ApiClearCustomMetrics_EmptiesAndAllowsRewrite)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_clear_custom_metrics_empties_and_allows_rewrite",
-        {unique_dir("api_clear_custom")});
+    auto w = SpawnWorker("lua_engine.api_clear_custom_metrics_empties_and_allows_rewrite",
+                         {unique_dir("api_clear_custom")});
     ExpectWorkerOk(w);
 }
 
@@ -648,41 +618,36 @@ TEST_F(LuaEngineIsolatedTest, ApiClearCustomMetrics_EmptiesAndAllowsRewrite)
 
 TEST_F(LuaEngineIsolatedTest, ApiSharedData_RoundTripAllVariantTypes)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_shared_data_round_trip_all_variant_types",
-        {unique_dir("api_sd_roundtrip")});
+    auto w = SpawnWorker("lua_engine.api_shared_data_round_trip_all_variant_types",
+                         {unique_dir("api_sd_roundtrip")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiSharedData_GetMissingKeyReturnsNil)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_shared_data_get_missing_key_returns_nil",
-        {unique_dir("api_sd_missing")});
+    auto w = SpawnWorker("lua_engine.api_shared_data_get_missing_key_returns_nil",
+                         {unique_dir("api_sd_missing")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiSharedData_NilRemovesKey)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_shared_data_nil_removes_key",
-        {unique_dir("api_sd_nil_remove")});
+    auto w = SpawnWorker("lua_engine.api_shared_data_nil_removes_key",
+                         {unique_dir("api_sd_nil_remove")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiSharedData_OverwriteChangesType)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_shared_data_overwrite_changes_type",
-        {unique_dir("api_sd_xtype")});
+    auto w = SpawnWorker("lua_engine.api_shared_data_overwrite_changes_type",
+                         {unique_dir("api_sd_xtype")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, ApiSharedData_OverwriteChangesValueSameType)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_shared_data_overwrite_changes_value_same_type",
-        {unique_dir("api_sd_samevtype")});
+    auto w = SpawnWorker("lua_engine.api_shared_data_overwrite_changes_value_same_type",
+                         {unique_dir("api_sd_samevtype")});
     ExpectWorkerOk(w);
 }
 
@@ -697,9 +662,8 @@ TEST_F(LuaEngineIsolatedTest, ApiSharedData_OverwriteChangesValueSameType)
 
 TEST_F(LuaEngineIsolatedTest, Invoke_MultipleErrors_CountAccumulates)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_multiple_errors_count_accumulates",
-        {unique_dir("err_accumulate")});
+    auto w = SpawnWorker("lua_engine.invoke_multiple_errors_count_accumulates",
+                         {unique_dir("err_accumulate")});
     // 5 raised Lua errors → 5 ERROR log lines from the engine's
     // pcall path.  Framework needs to know all of them are expected.
     ExpectWorkerOk(w, /*required=*/{},
@@ -709,51 +673,46 @@ TEST_F(LuaEngineIsolatedTest, Invoke_MultipleErrors_CountAccumulates)
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnType_IsError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_wrong_return_type_is_error",
-        {unique_dir("err_wrong_ret_type")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_wrong_return_type_is_error",
+                         {unique_dir("err_wrong_ret_type")});
     // Exact engine log at lua_engine.cpp:814:
     // "[{log_tag}] on_produce returned non-boolean type '...'"
     // Worker invokes TWICE → 2 ERROR lines, so list substring twice
     // under multiset semantics.
-    ExpectWorkerOk(w, /*required=*/{},
-                   /*expected_error_substrings=*/
-                   {"on_produce returned non-boolean type",
-                    "on_produce returned non-boolean type"});
+    ExpectWorkerOk(
+        w, /*required=*/{},
+        /*expected_error_substrings=*/
+        {"on_produce returned non-boolean type", "on_produce returned non-boolean type"});
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_WrongReturnString_IsError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_wrong_return_string_is_error",
-        {unique_dir("err_wrong_ret_string")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_wrong_return_string_is_error",
+                         {unique_dir("err_wrong_ret_string")});
     // Worker invokes TWICE → 2 ERROR lines, list substring twice.
-    ExpectWorkerOk(w, /*required=*/{},
-                   /*expected_error_substrings=*/
-                   {"on_produce returned non-boolean type",
-                    "on_produce returned non-boolean type"});
+    ExpectWorkerOk(
+        w, /*required=*/{},
+        /*expected_error_substrings=*/
+        {"on_produce returned non-boolean type", "on_produce returned non-boolean type"});
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_StopOnScriptError_SetsShutdown)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_stop_on_script_error_sets_shutdown",
-        {unique_dir("err_stop_on_error")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_stop_on_script_error_sets_shutdown",
+                         {unique_dir("err_stop_on_error")});
     // stop_on_script_error path emits TWO ERROR log lines:
     //   1. "[test] Lua error: ... intentional error"  (pcall path)
     //   2. "[test] stop_on_script_error: requesting shutdown ..."
     //      (on_pcall_error_ path, lua_engine.cpp:1040)
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
-                   {"intentional error",
-                    "stop_on_script_error: requesting shutdown"});
+                   {"intentional error", "stop_on_script_error: requesting shutdown"});
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeOnInitOrStop_ScriptError_Accumulates)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_init_or_stop_script_error_accumulates",
-        {unique_dir("err_init_stop")});
+    auto w = SpawnWorker("lua_engine.invoke_on_init_or_stop_script_error_accumulates",
+                         {unique_dir("err_init_stop")});
     // Two raised errors (on_init, on_stop) → two ERROR log lines.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -762,9 +721,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInitOrStop_ScriptError_Accumulates)
 
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_ScriptError_IncrementsCount)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_inbox_script_error_increments_count",
-        {unique_dir("err_inbox")});
+    auto w = SpawnWorker("lua_engine.invoke_on_inbox_script_error_increments_count",
+                         {unique_dir("err_inbox")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"inbox failed"});
@@ -775,9 +733,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_ScriptError_IncrementsCount)
 // return-value dispatch (lua_engine.cpp:1041-1062).
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DiscardOnFalse_NoErrorBump)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_inbox_discard_on_false_no_error_bump",
-        {unique_dir("inbox_discard_no_bump")});
+    auto w = SpawnWorker("lua_engine.invoke_on_inbox_discard_on_false_no_error_bump",
+                         {unique_dir("inbox_discard_no_bump")});
     ExpectWorkerOk(w);
 }
 
@@ -791,9 +748,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DiscardOnFalse_NoErrorBump)
 // metrics surface the problem.
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingCallback_CountsAsScriptError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_inbox_missing_callback_counts_as_script_error",
-        {unique_dir("inbox_missing_cb")});
+    auto w = SpawnWorker("lua_engine.invoke_on_inbox_missing_callback_counts_as_script_error",
+                         {unique_dir("inbox_missing_cb")});
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
                    {"on_inbox is not"});
@@ -801,9 +757,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingCallback_CountsAsScriptError)
 
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DataReadonly_WriteFailsAndBufferUnchanged)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged",
-        {unique_dir("inbox_readonly")});
+    auto w = SpawnWorker("lua_engine.invoke_on_inbox_data_is_readonly_write_fails_buffer_unchanged",
+                         {unique_dir("inbox_readonly")});
     // Engine logs the FFI write-to-const error through the pcall error
     // path as an ERROR; declare the substring the engine emits so the
     // harness's "no unexpected ERROR" guard doesn't fire.
@@ -814,9 +769,8 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_DataReadonly_WriteFailsAndBufferUnch
 
 TEST_F(LuaEngineIsolatedTest, Eval_SyntaxError_ReturnsScriptError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.eval_syntax_error_returns_script_error",
-        {unique_dir("err_eval_syntax")});
+    auto w = SpawnWorker("lua_engine.eval_syntax_error_returns_script_error",
+                         {unique_dir("err_eval_syntax")});
     // eval() now logs the Lua error text on failure (symmetric with
     // invoke()/invoke_returning), so each of the worker's five consecutive
     // failing evals (kFails) emits one `[...] eval: ...` ERROR line.  The
@@ -845,9 +799,8 @@ TEST_F(LuaEngineIsolatedTest, Eval_SyntaxError_ReturnsScriptError)
 
 TEST_F(LuaEngineIsolatedTest, LoadScript_MissingFile_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.load_script_missing_file_returns_false",
-        {unique_dir("loadscript_missing_file")});
+    auto w = SpawnWorker("lua_engine.load_script_missing_file_returns_false",
+                         {unique_dir("loadscript_missing_file")});
     // Engine logs "Script not found: <path>" at ERROR level
     // (lua_engine.cpp:217).
     ExpectWorkerOk(w, /*required=*/{},
@@ -857,9 +810,8 @@ TEST_F(LuaEngineIsolatedTest, LoadScript_MissingFile_ReturnsFalse)
 
 TEST_F(LuaEngineIsolatedTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.load_script_missing_required_callback_returns_false",
-        {unique_dir("loadscript_missing_cb")});
+    auto w = SpawnWorker("lua_engine.load_script_missing_required_callback_returns_false",
+                         {unique_dir("loadscript_missing_cb")});
     // Engine logs "Script has no 'on_produce' function"
     // (lua_engine.cpp:237).
     ExpectWorkerOk(w, /*required=*/{},
@@ -869,9 +821,8 @@ TEST_F(LuaEngineIsolatedTest, LoadScript_MissingRequiredCallback_ReturnsFalse)
 
 TEST_F(LuaEngineIsolatedTest, LoadScript_SyntaxError_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.load_script_syntax_error_returns_false",
-        {unique_dir("loadscript_syntax")});
+    auto w = SpawnWorker("lua_engine.load_script_syntax_error_returns_false",
+                         {unique_dir("loadscript_syntax")});
     // LuaJIT syntax error gets logged via state_.load_script
     // (see lua_state.cpp).  Substring varies by LuaJIT version;
     // "syntax" or "<eof>" are robust.
@@ -882,9 +833,8 @@ TEST_F(LuaEngineIsolatedTest, LoadScript_SyntaxError_ReturnsFalse)
 
 TEST_F(LuaEngineIsolatedTest, RegisterSlotType_BadFieldType_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.register_slot_type_bad_field_type_returns_false",
-        {unique_dir("reg_bad_type")});
+    auto w = SpawnWorker("lua_engine.register_slot_type_bad_field_type_returns_false",
+                         {unique_dir("reg_bad_type")});
     // Engine emits ERROR lines for:
     //   - Two bad field types (build_ffi_cdef_ "Unsupported field type 'X'")
     //   - One non-canonical name rejection (new 2026-04-20 contract)
@@ -897,9 +847,8 @@ TEST_F(LuaEngineIsolatedTest, RegisterSlotType_BadFieldType_ReturnsFalse)
 
 TEST_F(LuaEngineIsolatedTest, Finalize_DoubleCallIsSafe)
 {
-    auto w = SpawnWorker(
-        "lua_engine.finalize_double_call_is_safe",
-        {unique_dir("finalize_double")});
+    auto w =
+        SpawnWorker("lua_engine.finalize_double_call_is_safe", {unique_dir("finalize_double")});
     // Post-finalize invoke_produce may log an error — acceptable if
     // it does, not pinning a specific substring (engine is in a dead
     // state, exact logging behavior is implementation-defined).
@@ -918,33 +867,29 @@ TEST_F(LuaEngineIsolatedTest, Finalize_DoubleCallIsSafe)
 
 TEST_F(LuaEngineIsolatedTest, Invoke_ExistingFunction_ReturnsTrue)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_existing_function_returns_true",
-        {unique_dir("invoke_exist")});
+    auto w = SpawnWorker("lua_engine.invoke_existing_function_returns_true",
+                         {unique_dir("invoke_exist")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_NonExistentFunction_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_non_existent_function_returns_false",
-        {unique_dir("invoke_nx")});
+    auto w = SpawnWorker("lua_engine.invoke_non_existent_function_returns_false",
+                         {unique_dir("invoke_nx")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_EmptyName_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_empty_name_returns_false",
-        {unique_dir("invoke_empty")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_empty_name_returns_false", {unique_dir("invoke_empty")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_script_error_returns_false_and_increments_errors",
-        {unique_dir("invoke_script_err")});
+    auto w = SpawnWorker("lua_engine.invoke_script_error_returns_false_and_increments_errors",
+                         {unique_dir("invoke_script_err")});
     // lua_state.cpp:379 logs "[<tag>] Lua error: <file>:<line>: <msg>"
     // when pcall fails. generic invoke uses the pcall path too.
     ExpectWorkerOk(w, /*required=*/{},
@@ -954,25 +899,20 @@ TEST_F(LuaEngineIsolatedTest, Invoke_ScriptError_ReturnsFalseAndIncrementsErrors
 
 TEST_F(LuaEngineIsolatedTest, Invoke_WithArgs_ReturnsTrue)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_with_args_returns_true",
-        {unique_dir("invoke_args")});
+    auto w = SpawnWorker("lua_engine.invoke_with_args_returns_true", {unique_dir("invoke_args")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_AfterFinalize_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_after_finalize_returns_false",
-        {unique_dir("invoke_finalized")});
+    auto w = SpawnWorker("lua_engine.invoke_after_finalize_returns_false",
+                         {unique_dir("invoke_finalized")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Eval_ReturnsScalarResult)
 {
-    auto w = SpawnWorker(
-        "lua_engine.eval_returns_scalar_result",
-        {unique_dir("eval_scalar")});
+    auto w = SpawnWorker("lua_engine.eval_returns_scalar_result", {unique_dir("eval_scalar")});
     ExpectWorkerOk(w);
 }
 
@@ -988,49 +928,41 @@ TEST_F(LuaEngineIsolatedTest, Eval_ReturnsScalarResult)
 
 TEST_F(LuaEngineIsolatedTest, SupportsMultiState_ReturnsTrue)
 {
-    auto w = SpawnWorker(
-        "lua_engine.supports_multi_state_returns_true",
-        {unique_dir("multi_state")});
+    auto w =
+        SpawnWorker("lua_engine.supports_multi_state_returns_true", {unique_dir("multi_state")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, State_PersistsAcrossCalls)
 {
-    auto w = SpawnWorker(
-        "lua_engine.state_persists_across_calls",
-        {unique_dir("state_persist")});
+    auto w = SpawnWorker("lua_engine.state_persists_across_calls", {unique_dir("state_persist")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_FromNonOwnerThread_Works)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_from_non_owner_thread_works",
-        {unique_dir("invoke_nonowner")});
+    auto w = SpawnWorker("lua_engine.invoke_from_non_owner_thread_works",
+                         {unique_dir("invoke_nonowner")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_NonOwnerThread_UsesIndependentState)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_non_owner_thread_uses_independent_state",
-        {unique_dir("indep_state")});
+    auto w = SpawnWorker("lua_engine.invoke_non_owner_thread_uses_independent_state",
+                         {unique_dir("indep_state")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Invoke_ConcurrentOwnerAndNonOwner)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_concurrent_owner_and_non_owner",
-        {unique_dir("concurrent")});
+    auto w =
+        SpawnWorker("lua_engine.invoke_concurrent_owner_and_non_owner", {unique_dir("concurrent")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, SharedData_CrossThread_Visible)
 {
-    auto w = SpawnWorker(
-        "lua_engine.shared_data_cross_thread_visible",
-        {unique_dir("sd_xthread")});
+    auto w = SpawnWorker("lua_engine.shared_data_cross_thread_visible", {unique_dir("sd_xthread")});
     ExpectWorkerOk(w);
 }
 
@@ -1043,17 +975,15 @@ TEST_F(LuaEngineIsolatedTest, SharedData_CrossThread_Visible)
 
 TEST_F(LuaEngineIsolatedTest, HasCallback_DetectsPresenceAbsence)
 {
-    auto w = SpawnWorker(
-        "lua_engine.has_callback_detects_presence_absence",
-        {unique_dir("has_callback")});
+    auto w = SpawnWorker("lua_engine.has_callback_detects_presence_absence",
+                         {unique_dir("has_callback")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeConsume_Messages_DataAndEventMixed)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_consume_messages_data_and_event_mixed",
-        {unique_dir("consume_mixed")});
+    auto w = SpawnWorker("lua_engine.invoke_consume_messages_data_and_event_mixed",
+                         {unique_dir("consume_mixed")});
     ExpectWorkerOk(w);
 }
 
@@ -1068,33 +998,28 @@ TEST_F(LuaEngineIsolatedTest, InvokeConsume_Messages_DataAndEventMixed)
 
 TEST_F(LuaEngineIsolatedTest, InvokeProduce_SlotOnly_NoFlexzoneOnInvoke)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_produce_slot_only_no_flexzone_on_invoke",
-        {unique_dir("slot_only_no_fz")});
+    auto w = SpawnWorker("lua_engine.invoke_produce_slot_only_no_flexzone_on_invoke",
+                         {unique_dir("slot_only_no_fz")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_TypedData)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_inbox_typed_data",
-        {unique_dir("inbox_typed")});
+    auto w = SpawnWorker("lua_engine.invoke_on_inbox_typed_data", {unique_dir("inbox_typed")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, TypeSizeof_InboxFrame_ReturnsCorrectSize)
 {
-    auto w = SpawnWorker(
-        "lua_engine.type_sizeof_inbox_frame_returns_correct_size",
-        {unique_dir("sizeof_inbox")});
+    auto w = SpawnWorker("lua_engine.type_sizeof_inbox_frame_returns_correct_size",
+                         {unique_dir("sizeof_inbox")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.invoke_on_inbox_missing_type_reports_error",
-        {unique_dir("inbox_missing_type")});
+    auto w = SpawnWorker("lua_engine.invoke_on_inbox_missing_type_reports_error",
+                         {unique_dir("inbox_missing_type")});
     // Engine logs at lua_engine.cpp:965-967:
     //   "[<tag>] invoke_on_inbox: InboxFrame type not registered ..."
     ExpectWorkerOk(w, /*required=*/{},
@@ -1114,33 +1039,28 @@ TEST_F(LuaEngineIsolatedTest, InvokeOnInbox_MissingType_ReportsError)
 
 TEST_F(LuaEngineIsolatedTest, SlotLogicalSize_Aligned_PaddingSensitive)
 {
-    auto w = SpawnWorker(
-        "lua_engine.slot_logical_size_aligned_padding_sensitive",
-        {unique_dir("slot_aligned")});
+    auto w = SpawnWorker("lua_engine.slot_logical_size_aligned_padding_sensitive",
+                         {unique_dir("slot_aligned")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, SlotLogicalSize_Packed_NoPadding)
 {
-    auto w = SpawnWorker(
-        "lua_engine.slot_logical_size_packed_no_padding",
-        {unique_dir("slot_packed")});
+    auto w =
+        SpawnWorker("lua_engine.slot_logical_size_packed_no_padding", {unique_dir("slot_packed")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, SlotLogicalSize_ComplexMixed_Aligned)
 {
-    auto w = SpawnWorker(
-        "lua_engine.slot_logical_size_complex_mixed_aligned",
-        {unique_dir("slot_complex")});
+    auto w = SpawnWorker("lua_engine.slot_logical_size_complex_mixed_aligned",
+                         {unique_dir("slot_complex")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FlexzoneLogicalSize_ArrayFields)
 {
-    auto w = SpawnWorker(
-        "lua_engine.flexzone_logical_size_array_fields",
-        {unique_dir("fz_array")});
+    auto w = SpawnWorker("lua_engine.flexzone_logical_size_array_fields", {unique_dir("fz_array")});
     ExpectWorkerOk(w);
 }
 
@@ -1156,66 +1076,58 @@ TEST_F(LuaEngineIsolatedTest, FlexzoneLogicalSize_ArrayFields)
 
 TEST_F(LuaEngineIsolatedTest, Api_OpenInbox_WithoutBroker_ReturnsNil)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_open_inbox_without_broker_returns_nil",
-        {unique_dir("open_inbox_no_broker")});
+    auto w = SpawnWorker("lua_engine.api_open_inbox_without_broker_returns_nil",
+                         {unique_dir("open_inbox_no_broker")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_BandJoin_WithoutBroker_ReturnsNil)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_band_join_without_broker_returns_nil",
-        {unique_dir("band_join_no_broker")});
+    auto w = SpawnWorker("lua_engine.api_band_join_without_broker_returns_nil",
+                         {unique_dir("band_join_no_broker")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_BandLeave_WithoutBroker_ReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_band_leave_without_broker_returns_false",
-        {unique_dir("band_leave_no_broker")});
+    auto w = SpawnWorker("lua_engine.api_band_leave_without_broker_returns_false",
+                         {unique_dir("band_leave_no_broker")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_BandBroadcast_WithoutBroker_NoError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_band_broadcast_without_broker_no_error",
-        {unique_dir("band_bcast_no_broker")});
+    auto w = SpawnWorker("lua_engine.api_band_broadcast_without_broker_no_error",
+                         {unique_dir("band_bcast_no_broker")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_BandMembers_WithoutBroker_ReturnsNil)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_band_members_without_broker_returns_nil",
-        {unique_dir("band_members_no_broker")});
+    auto w = SpawnWorker("lua_engine.api_band_members_without_broker_returns_nil",
+                         {unique_dir("band_members_no_broker")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_SpinlockCount_WithoutSHM_ReturnsZero)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_spinlock_count_without_shm_returns_zero",
-        {unique_dir("spinlock_count_no_shm")});
+    auto w = SpawnWorker("lua_engine.api_spinlock_count_without_shm_returns_zero",
+                         {unique_dir("spinlock_count_no_shm")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_SpinlockAcquire_WithoutSHM_IsPcallError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_spinlock_acquire_without_shm_is_pcall_error",
-        {unique_dir("spinlock_acq_no_shm")});
+    auto w = SpawnWorker("lua_engine.api_spinlock_acquire_without_shm_is_pcall_error",
+                         {unique_dir("spinlock_acq_no_shm")});
     // pcall-caught error must NOT propagate as a [LOGGER ERROR ] line.
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_FlexzoneAccessor_WithoutSHM_ReturnsNil)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_flexzone_accessor_without_shm_returns_nil",
-        {unique_dir("flexzone_acc_no_shm")});
+    auto w = SpawnWorker("lua_engine.api_flexzone_accessor_without_shm_returns_nil",
+                         {unique_dir("flexzone_acc_no_shm")});
     ExpectWorkerOk(w);
 }
 
@@ -1233,9 +1145,8 @@ TEST_F(LuaEngineIsolatedTest, Metrics_IndividualAccessors_ReadCoreCounters_Live)
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "lua_engine.metrics_individual_accessors_read_core_counters_live",
-        {unique_dir("metrics_indiv_live")});
+    auto w = SpawnWorker("lua_engine.metrics_individual_accessors_read_core_counters_live",
+                         {unique_dir("metrics_indiv_live")});
     ExpectWorkerOk(w);
 #endif
 }
@@ -1246,9 +1157,8 @@ TEST_F(LuaEngineIsolatedTest, Metrics_InSlotsReceived_Works_Consumer)
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "lua_engine.metrics_in_slots_received_works_consumer",
-        {unique_dir("metrics_inrx_consumer")});
+    auto w = SpawnWorker("lua_engine.metrics_in_slots_received_works_consumer",
+                         {unique_dir("metrics_inrx_consumer")});
     ExpectWorkerOk(w);
 #endif
 }
@@ -1259,9 +1169,8 @@ TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Producer_FullShape)
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "lua_engine.metrics_hierarchical_table_producer_full_shape",
-        {unique_dir("metrics_ht_prod_full")});
+    auto w = SpawnWorker("lua_engine.metrics_hierarchical_table_producer_full_shape",
+                         {unique_dir("metrics_ht_prod_full")});
     // Phase 0 deliberately raises a Lua error to seed
     // script_error_count == 1 — that error message must be expected.
     ExpectWorkerOk(w, /*required=*/{},
@@ -1276,42 +1185,37 @@ TEST_F(LuaEngineIsolatedTest, Metrics_HierarchicalTable_Consumer_FullShape)
     GTEST_SKIP() << "Requires RoleHostCore::test_set_* backdoor; absent "
                     "in Release builds (HEP-CORE-0032 §3.2).";
 #else
-    auto w = SpawnWorker(
-        "lua_engine.metrics_hierarchical_table_consumer_full_shape",
-        {unique_dir("metrics_ht_cons_full")});
+    auto w = SpawnWorker("lua_engine.metrics_hierarchical_table_consumer_full_shape",
+                         {unique_dir("metrics_ht_cons_full")});
     ExpectWorkerOk(w);
 #endif
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_LoopOverrunCount_LiveIncrements)
 {
-    auto w = SpawnWorker(
-        "lua_engine.metrics_loop_overrun_count_live_increments",
-        {unique_dir("metrics_overrun_live")});
+    auto w = SpawnWorker("lua_engine.metrics_loop_overrun_count_live_increments",
+                         {unique_dir("metrics_overrun_live")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_LastCycleWorkUs_OverwriteSemantics)
 {
-    auto w = SpawnWorker(
-        "lua_engine.metrics_last_cycle_work_us_overwrite_semantics",
-        {unique_dir("metrics_lcwu_overwrite")});
+    auto w = SpawnWorker("lua_engine.metrics_last_cycle_work_us_overwrite_semantics",
+                         {unique_dir("metrics_lcwu_overwrite")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_AllLoopFields_AnchoredValues)
 {
-    auto w = SpawnWorker(
-        "lua_engine.metrics_all_loop_fields_anchored_values",
-        {unique_dir("metrics_all_loop_anchored")});
+    auto w = SpawnWorker("lua_engine.metrics_all_loop_fields_anchored_values",
+                         {unique_dir("metrics_all_loop_anchored")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
 {
-    auto w = SpawnWorker(
-        "lua_engine.metrics_role_script_error_count_reflects_raised_error",
-        {unique_dir("metrics_serc_reflects")});
+    auto w = SpawnWorker("lua_engine.metrics_role_script_error_count_reflects_raised_error",
+                         {unique_dir("metrics_serc_reflects")});
     // 2 raised "seed phase N" errors expected.
     ExpectWorkerOk(w, /*required=*/{},
                    /*expected_error_substrings=*/
@@ -1329,41 +1233,36 @@ TEST_F(LuaEngineIsolatedTest, Metrics_RoleScriptErrorCount_ReflectsRaisedError)
 
 TEST_F(LuaEngineIsolatedTest, QueueState_Consumer_WithoutQueue_ReturnsDefaults)
 {
-    auto w = SpawnWorker(
-        "lua_engine.queue_state_consumer_without_queue_returns_defaults",
-        {unique_dir("qs_consumer_defaults")});
+    auto w = SpawnWorker("lua_engine.queue_state_consumer_without_queue_returns_defaults",
+                         {unique_dir("qs_consumer_defaults")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, QueueState_Producer_WithoutQueue_ReturnsDefaults)
 {
-    auto w = SpawnWorker(
-        "lua_engine.queue_state_producer_without_queue_returns_defaults",
-        {unique_dir("qs_producer_defaults")});
+    auto w = SpawnWorker("lua_engine.queue_state_producer_without_queue_returns_defaults",
+                         {unique_dir("qs_producer_defaults")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, QueueState_Processor_DualWithoutQueues_ReturnsDefaults)
 {
-    auto w = SpawnWorker(
-        "lua_engine.queue_state_processor_dual_without_queues_returns_defaults",
-        {unique_dir("qs_processor_dual")});
+    auto w = SpawnWorker("lua_engine.queue_state_processor_dual_without_queues_returns_defaults",
+                         {unique_dir("qs_processor_dual")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_EnvironmentStrings_ReflectSetters)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_environment_strings_reflect_setters",
-        {unique_dir("env_strings")});
+    auto w = SpawnWorker("lua_engine.api_environment_strings_reflect_setters",
+                         {unique_dir("env_strings")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, Api_ProcessorChannels_ReflectSetters)
 {
-    auto w = SpawnWorker(
-        "lua_engine.api_processor_channels_reflect_setters",
-        {unique_dir("proc_channels")});
+    auto w = SpawnWorker("lua_engine.api_processor_channels_reflect_setters",
+                         {unique_dir("proc_channels")});
     ExpectWorkerOk(w);
 }
 
@@ -1381,57 +1280,48 @@ TEST_F(LuaEngineIsolatedTest, Api_ProcessorChannels_ReflectSetters)
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Producer_SlotOnly)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_producer_slot_only",
-        {unique_dir("fs_prod_slotonly")});
+    auto w =
+        SpawnWorker("lua_engine.full_startup_producer_slot_only", {unique_dir("fs_prod_slotonly")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Producer_SlotAndFlexzone)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_producer_slot_and_flexzone",
-        {unique_dir("fs_prod_slotfz")});
+    auto w = SpawnWorker("lua_engine.full_startup_producer_slot_and_flexzone",
+                         {unique_dir("fs_prod_slotfz")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Consumer)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_consumer",
-        {unique_dir("fs_consumer")});
+    auto w = SpawnWorker("lua_engine.full_startup_consumer", {unique_dir("fs_consumer")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Processor)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_processor",
-        {unique_dir("fs_processor")});
+    auto w = SpawnWorker("lua_engine.full_startup_processor", {unique_dir("fs_processor")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Producer_Multifield)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_producer_multifield",
-        {unique_dir("fs_prod_multi")});
+    auto w =
+        SpawnWorker("lua_engine.full_startup_producer_multifield", {unique_dir("fs_prod_multi")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Consumer_Multifield)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_consumer_multifield",
-        {unique_dir("fs_cons_multi")});
+    auto w =
+        SpawnWorker("lua_engine.full_startup_consumer_multifield", {unique_dir("fs_cons_multi")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(LuaEngineIsolatedTest, FullStartup_Processor_Multifield)
 {
-    auto w = SpawnWorker(
-        "lua_engine.full_startup_processor_multifield",
-        {unique_dir("fs_proc_multi")});
+    auto w =
+        SpawnWorker("lua_engine.full_startup_processor_multifield", {unique_dir("fs_proc_multi")});
     ExpectWorkerOk(w);
 }
 
@@ -1446,9 +1336,8 @@ TEST_F(LuaEngineIsolatedTest, FullStartup_Processor_Multifield)
 //     with a real engine (not just the mock).
 TEST_F(LuaEngineIsolatedTest, Dispatcher_RealLuaEngine_RecordsArgs)
 {
-    auto w = SpawnWorker(
-        "lua_engine.dispatch_notifications_real_lua_engine_records_args",
-        {unique_dir("dispatcher_real")});
+    auto w = SpawnWorker("lua_engine.dispatch_notifications_real_lua_engine_records_args",
+                         {unique_dir("dispatcher_real")});
     ExpectWorkerOk(w);
 }
 
@@ -1459,7 +1348,6 @@ TEST_F(LuaEngineIsolatedTest, Dispatcher_RealLuaEngine_RecordsArgs)
 // ============================================================================
 // 11. Flexzone
 // ============================================================================
-
 
 // ============================================================================
 // 18. Metrics closures read from RoleHostCore counters

@@ -1,7 +1,7 @@
 /**
  * @file test_result.cpp
  * @brief Unit tests for Result<T, E> type
- * 
+ *
  * Tests the Result type used for error handling in the RAII layer.
  */
 

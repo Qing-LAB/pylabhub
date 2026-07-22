@@ -42,27 +42,26 @@ namespace pylabhub::hub
 
 std::optional<Transport> transport_from_string(std::string_view s) noexcept
 {
-    if (s == "zmq") return Transport::Zmq;
-    if (s == "shm") return Transport::Shm;
+    if (s == "zmq")
+        return Transport::Zmq;
+    if (s == "shm")
+        return Transport::Shm;
     return std::nullopt;
 }
 
 // ─── Reader ────────────────────────────────────────────────────────
 
-std::unique_ptr<QueueReader>
-Queue::create_reader(ChannelTopology topology,
-                     Transport       transport,
-                     RxOptions       opts)
+std::unique_ptr<QueueReader> Queue::create_reader(ChannelTopology topology, Transport transport,
+                                                  RxOptions opts)
 {
     // Gate 1: fan-in requires ZMQ (SHM is host-local single-producer).
     // §3.3.0 decision matrix: SHM never binds a fan-in socket.
     if (topology == ChannelTopology::FanIn && transport == Transport::Shm)
     {
-        LOGGER_ERROR(
-            "hub::Queue::create_reader — fan-in topology is not compatible "
-            "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).  SHM is "
-            "physically single-producer; fan-in requires N producers to "
-            "the same consumer, which only ZMQ PULL-bind supports.");
+        LOGGER_ERROR("hub::Queue::create_reader — fan-in topology is not compatible "
+                     "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).  SHM is "
+                     "physically single-producer; fan-in requires N producers to "
+                     "the same consumer, which only ZMQ PULL-bind supports.");
         return nullptr;
     }
 
@@ -71,26 +70,26 @@ Queue::create_reader(ChannelTopology topology,
     case Transport::Zmq:
     {
         ZmqQueue::RxCreateOptions zmq_opts;
-        zmq_opts.endpoint          = std::move(opts.endpoint_hint);
-        zmq_opts.server_pubkey     = std::move(opts.server_pubkey);
-        zmq_opts.schema            = std::move(opts.slot_schema);
-        zmq_opts.packing           = std::move(opts.slot_packing);
+        zmq_opts.endpoint = std::move(opts.endpoint_hint);
+        zmq_opts.server_pubkey = std::move(opts.server_pubkey);
+        zmq_opts.schema = std::move(opts.slot_schema);
+        zmq_opts.packing = std::move(opts.slot_packing);
         zmq_opts.identity_key_name = opts.identity_key_name;
-        zmq_opts.max_buffer_depth  = opts.max_buffer_depth;
-        zmq_opts.schema_tag        = opts.schema_tag;
-        zmq_opts.instance_id       = std::move(opts.instance_id);
+        zmq_opts.max_buffer_depth = opts.max_buffer_depth;
+        zmq_opts.schema_tag = opts.schema_tag;
+        zmq_opts.instance_id = std::move(opts.instance_id);
         return ZmqQueue::create_reader(topology, std::move(zmq_opts));
     }
     case Transport::Shm:
     {
         ShmQueue::RxCreateOptions shm_opts;
-        shm_opts.channel_name   = std::move(opts.channel_name);
-        shm_opts.slot_schema    = std::move(opts.slot_schema);
-        shm_opts.slot_packing   = std::move(opts.slot_packing);
-        shm_opts.consumer_uid   = std::move(opts.consumer_uid);
-        shm_opts.consumer_name  = std::move(opts.consumer_name);
-        shm_opts.verify_slot    = opts.verify_slot;
-        shm_opts.verify_fz      = opts.verify_fz;
+        shm_opts.channel_name = std::move(opts.channel_name);
+        shm_opts.slot_schema = std::move(opts.slot_schema);
+        shm_opts.slot_packing = std::move(opts.slot_packing);
+        shm_opts.consumer_uid = std::move(opts.consumer_uid);
+        shm_opts.consumer_name = std::move(opts.consumer_name);
+        shm_opts.verify_slot = opts.verify_slot;
+        shm_opts.verify_fz = opts.verify_fz;
         return ShmQueue::create_reader(topology, std::move(shm_opts));
     }
     }
@@ -100,17 +99,14 @@ Queue::create_reader(ChannelTopology topology,
 
 // ─── Writer ────────────────────────────────────────────────────────
 
-std::unique_ptr<QueueWriter>
-Queue::create_writer(ChannelTopology topology,
-                     Transport       transport,
-                     TxOptions       opts)
+std::unique_ptr<QueueWriter> Queue::create_writer(ChannelTopology topology, Transport transport,
+                                                  TxOptions opts)
 {
     // Gate 1: same as reader — fan-in producer via SHM is disallowed.
     if (topology == ChannelTopology::FanIn && transport == Transport::Shm)
     {
-        LOGGER_ERROR(
-            "hub::Queue::create_writer — fan-in topology is not compatible "
-            "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).");
+        LOGGER_ERROR("hub::Queue::create_writer — fan-in topology is not compatible "
+                     "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).");
         return nullptr;
     }
 
@@ -119,42 +115,42 @@ Queue::create_writer(ChannelTopology topology,
     case Transport::Zmq:
     {
         ZmqQueue::TxCreateOptions zmq_opts;
-        zmq_opts.endpoint              = std::move(opts.endpoint_hint);
-        zmq_opts.server_pubkey         = std::move(opts.server_pubkey);
-        zmq_opts.schema                = std::move(opts.slot_schema);
-        zmq_opts.packing               = std::move(opts.slot_packing);
-        zmq_opts.identity_key_name     = opts.identity_key_name;
-        zmq_opts.zap_domain            = std::move(opts.zap_domain);
-        zmq_opts.schema_tag            = opts.schema_tag;
-        zmq_opts.sndhwm                = opts.sndhwm;
-        zmq_opts.send_buffer_depth     = opts.send_buffer_depth;
-        zmq_opts.overflow_policy       = opts.overflow_policy;
+        zmq_opts.endpoint = std::move(opts.endpoint_hint);
+        zmq_opts.server_pubkey = std::move(opts.server_pubkey);
+        zmq_opts.schema = std::move(opts.slot_schema);
+        zmq_opts.packing = std::move(opts.slot_packing);
+        zmq_opts.identity_key_name = opts.identity_key_name;
+        zmq_opts.zap_domain = std::move(opts.zap_domain);
+        zmq_opts.schema_tag = opts.schema_tag;
+        zmq_opts.sndhwm = opts.sndhwm;
+        zmq_opts.send_buffer_depth = opts.send_buffer_depth;
+        zmq_opts.overflow_policy = opts.overflow_policy;
         zmq_opts.send_retry_interval_ms = opts.send_retry_interval_ms;
-        zmq_opts.instance_id           = std::move(opts.instance_id);
+        zmq_opts.instance_id = std::move(opts.instance_id);
         return ZmqQueue::create_writer(topology, std::move(zmq_opts));
     }
     case Transport::Shm:
     {
         ShmQueue::TxCreateOptions shm_opts;
-        shm_opts.channel_name          = std::move(opts.channel_name);
-        shm_opts.slot_schema           = std::move(opts.slot_schema);
-        shm_opts.slot_packing          = std::move(opts.slot_packing);
-        shm_opts.fz_schema             = std::move(opts.fz_schema);
-        shm_opts.fz_packing            = std::move(opts.fz_packing);
-        shm_opts.ring_buffer_capacity  = opts.ring_buffer_capacity;
-        shm_opts.page_size             = opts.page_size;
-        shm_opts.policy                = opts.policy;
-        shm_opts.sync_policy           = opts.sync_policy;
-        shm_opts.checksum_policy       = opts.checksum_policy;
-        shm_opts.checksum_slot         = opts.checksum_slot;
-        shm_opts.checksum_fz           = opts.checksum_fz;
-        shm_opts.always_clear_slot     = opts.always_clear_slot;
-        shm_opts.hub_uid               = std::move(opts.hub_uid);
-        shm_opts.hub_name              = std::move(opts.hub_name);
-        shm_opts.slot_schema_info      = opts.slot_schema_info;
-        shm_opts.fz_schema_info        = opts.fz_schema_info;
-        shm_opts.producer_uid          = std::move(opts.producer_uid);
-        shm_opts.producer_name         = std::move(opts.producer_name);
+        shm_opts.channel_name = std::move(opts.channel_name);
+        shm_opts.slot_schema = std::move(opts.slot_schema);
+        shm_opts.slot_packing = std::move(opts.slot_packing);
+        shm_opts.fz_schema = std::move(opts.fz_schema);
+        shm_opts.fz_packing = std::move(opts.fz_packing);
+        shm_opts.ring_buffer_capacity = opts.ring_buffer_capacity;
+        shm_opts.page_size = opts.page_size;
+        shm_opts.policy = opts.policy;
+        shm_opts.sync_policy = opts.sync_policy;
+        shm_opts.checksum_policy = opts.checksum_policy;
+        shm_opts.checksum_slot = opts.checksum_slot;
+        shm_opts.checksum_fz = opts.checksum_fz;
+        shm_opts.always_clear_slot = opts.always_clear_slot;
+        shm_opts.hub_uid = std::move(opts.hub_uid);
+        shm_opts.hub_name = std::move(opts.hub_name);
+        shm_opts.slot_schema_info = opts.slot_schema_info;
+        shm_opts.fz_schema_info = opts.fz_schema_info;
+        shm_opts.producer_uid = std::move(opts.producer_uid);
+        shm_opts.producer_name = std::move(opts.producer_name);
         return ShmQueue::create_writer(topology, std::move(shm_opts));
     }
     }

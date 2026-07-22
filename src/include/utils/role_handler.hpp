@@ -7,7 +7,8 @@
  * connection vector + the two O(1) dispatch indexes.  It is the
  * single object that future Wave-B M4 will inject into RoleAPIBase
  * to replace today's hardcoded `broker_channel` pointer + short_tag
- * branching.  Design contract: `docs/archive/transient-2026-06-02/role_host_template_design.md §5.6`.
+ * branching.  Design contract: `docs/archive/transient-2026-06-02/role_host_template_design.md
+ * §5.6`.
  *
  * Wave-B M3 ships a structural skeleton — enough surface to write
  * unit tests for dedup logic and index lookup, but NO methods that
@@ -93,8 +94,8 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/hub_connection.hpp"   // exposes hub::BrokerRequestComm
-#include "utils/json_fwd.hpp"         // nlohmann::json fwd decl
+#include "utils/hub_connection.hpp" // exposes hub::BrokerRequestComm
+#include "utils/json_fwd.hpp"       // nlohmann::json fwd decl
 #include "utils/role_presence.hpp"
 
 #include <memory>
@@ -106,10 +107,10 @@
 namespace pylabhub::scripting
 {
 
-class RoleAPIBase;  // fwd — full def in utils/role_api_base.hpp.  Used
-                    // only by `start_connections(owner)` to read identity
-                    // (uid / name / auth keys) during BRC Config build;
-                    // not stored on the handler.
+class RoleAPIBase; // fwd — full def in utils/role_api_base.hpp.  Used
+                   // only by `start_connections(owner)` to read identity
+                   // (uid / name / auth keys) during BRC Config build;
+                   // not stored on the handler.
 
 class PYLABHUB_UTILS_EXPORT RoleHandler
 {
@@ -122,10 +123,10 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
 
     ~RoleHandler() = default;
 
-    RoleHandler(const RoleHandler &)            = delete;
+    RoleHandler(const RoleHandler &) = delete;
     RoleHandler &operator=(const RoleHandler &) = delete;
-    RoleHandler(RoleHandler &&)                 = delete;
-    RoleHandler &operator=(RoleHandler &&)      = delete;
+    RoleHandler(RoleHandler &&) = delete;
+    RoleHandler &operator=(RoleHandler &&) = delete;
 
     // ── Network state lifecycle (Wave-B M4a) ─────────────────────────────────
     //
@@ -174,18 +175,12 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
 
     /// Number of presences this role declared.  Producer / Consumer
     /// = 1; Processor = 2; future routers ≥ 3.
-    [[nodiscard]] std::size_t presence_count() const noexcept
-    {
-        return presences_.size();
-    }
+    [[nodiscard]] std::size_t presence_count() const noexcept { return presences_.size(); }
 
     /// Number of distinct broker connections after dedup.  Single-hub
     /// processor with 2 presences pointing at the same hub → 1.
     /// Dual-hub processor → 2.  Always ≤ `presence_count()`.
-    [[nodiscard]] std::size_t connection_count() const noexcept
-    {
-        return connections_.size();
-    }
+    [[nodiscard]] std::size_t connection_count() const noexcept { return connections_.size(); }
 
     /// Resolve a channel name to its presence row.  O(1).  Returns
     /// nullptr if the channel is not in this role's presence list.
@@ -198,14 +193,12 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// S1+O4, 2026-05-17).  The handler-level vector layout remains
     /// frozen post-construction; only the atomic field on the
     /// Presence can change through this pointer.
-    [[nodiscard]] Presence *
-    find_presence_for_channel(const std::string &channel) noexcept;
+    [[nodiscard]] Presence *find_presence_for_channel(const std::string &channel) noexcept;
 
     /// Number of presences this role holds on a given channel.  Used
     /// to verify the "no duplicate channel within a role" invariant
     /// during testing (M3) and asserted on construction (above).
-    [[nodiscard]] std::size_t
-    presence_count_for_channel(const std::string &channel) const noexcept;
+    [[nodiscard]] std::size_t presence_count_for_channel(const std::string &channel) const noexcept;
 
     /// Read-only access to the materialised presence vector.  Order
     /// matches construction-time order.  Used by per-presence
@@ -213,10 +206,7 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// `on_heartbeat_tick_` enumerates presences from short_tag-driven
     /// branching; that branching collapses to `for (auto &p :
     /// handler_->presences())` in M5+).
-    [[nodiscard]] const std::vector<Presence> &presences() const noexcept
-    {
-        return presences_;
-    }
+    [[nodiscard]] const std::vector<Presence> &presences() const noexcept { return presences_; }
 
     /// Read-only access to the deduplicated connection vector.  Order
     /// is "first presence to reference this hub wins" — i.e. the
@@ -273,8 +263,7 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// that joined `band_name`.  Returns nullptr if no presence has
     /// joined that band (caller must have called `on_band_joined`
     /// for that band first), or if `start_connections()` not called.
-    [[nodiscard]] hub::BrokerRequestComm *
-    brc_for_band(const std::string &band_name) const noexcept;
+    [[nodiscard]] hub::BrokerRequestComm *brc_for_band(const std::string &band_name) const noexcept;
 
     /// Record that `presence` successfully joined `band_name`.
     /// Populates `band_index_` so subsequent `brc_for_band()` calls
@@ -284,8 +273,7 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// the prior entry (a role can only be in one role-side
     /// association with a band at a time; the role host decides
     /// which presence "owns" the band).
-    void on_band_joined(const std::string &band_name,
-                        const Presence    *presence) noexcept;
+    void on_band_joined(const std::string &band_name, const Presence *presence) noexcept;
 
     /// Inverse of `on_band_joined` — remove the band's routing
     /// entry after `band_leave` succeeds.  Safe to call when the
@@ -322,11 +310,10 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// are skipped; already-erased band entries are no-ops.
     struct DisconnectReap
     {
-        std::size_t              presences_transitioned{0};
+        std::size_t presences_transitioned{0};
         std::vector<std::string> bands_lost;
     };
-    DisconnectReap mark_connection_disconnected(
-        const HubConnection *dead_conn) noexcept;
+    DisconnectReap mark_connection_disconnected(const HubConnection *dead_conn) noexcept;
 
     /// Extract the originating Presence from an inbound notification
     /// body.  Inspects `body["channel_name"]` first (Class A —
@@ -338,7 +325,7 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// via different logic).  `msg_type` is currently unused but
     /// reserved for future per-msg-type routing rules.
     [[nodiscard]] const Presence *
-    find_presence_from_notification(const std::string    &msg_type,
+    find_presence_from_notification(const std::string &msg_type,
                                     const nlohmann::json &body) const noexcept;
 
   private:
@@ -351,7 +338,7 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     /// the constructor, after `build_connections_`.
     void build_channel_index_();
 
-    std::vector<Presence>      presences_;
+    std::vector<Presence> presences_;
     std::vector<HubConnection> connections_;
 
     /// Class A routing (channel-bound messages) — O(1).
@@ -362,4 +349,4 @@ class PYLABHUB_UTILS_EXPORT RoleHandler
     std::unordered_map<std::string, Presence *> band_index_;
 };
 
-}  // namespace pylabhub::scripting
+} // namespace pylabhub::scripting

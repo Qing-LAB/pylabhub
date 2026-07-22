@@ -27,7 +27,8 @@ namespace
 std::string unique_shm_name_spinlock()
 {
     static std::atomic<uint64_t> counter{0};
-    uint64_t id = pylabhub::platform::get_pid() * 1000000u + counter.fetch_add(1, std::memory_order_relaxed);
+    uint64_t id =
+        pylabhub::platform::get_pid() * 1000000u + counter.fetch_add(1, std::memory_order_relaxed);
 #if defined(PYLABHUB_IS_POSIX)
     return "/pylabhub_test_spinlock_" + std::to_string(id);
 #else
@@ -82,10 +83,12 @@ TEST_F(SharedSpinLockTest, Unlock_WhenNotOwner_Throws)
 {
     SharedSpinLock lock(&state_, name_);
     lock.lock();
-    std::thread other([this]() {
-        SharedSpinLock l(&state_, name_ + "_other");
-        EXPECT_THROW(l.unlock(), std::runtime_error);
-    });
+    std::thread other(
+        [this]()
+        {
+            SharedSpinLock l(&state_, name_ + "_other");
+            EXPECT_THROW(l.unlock(), std::runtime_error);
+        });
     other.join();
     lock.unlock();
 }
@@ -100,13 +103,16 @@ TEST_F(SharedSpinLockTest, TryLockFor_WhenHeldByOtherThread_Timeouts)
     lock.lock();
 
     std::atomic<bool> try_result{false};
-    std::thread contender([this, &try_result]() {
-        SharedSpinLock l(&state_, name_ + "_contender");
-        try_result = l.try_lock_for(50); // 50 ms timeout
-    });
+    std::thread contender(
+        [this, &try_result]()
+        {
+            SharedSpinLock l(&state_, name_ + "_contender");
+            try_result = l.try_lock_for(50); // 50 ms timeout
+        });
 
     contender.join();
-    EXPECT_FALSE(try_result.load()) << "try_lock_for should timeout when lock is held by another thread";
+    EXPECT_FALSE(try_result.load())
+        << "try_lock_for should timeout when lock is held by another thread";
     lock.unlock();
 }
 
@@ -115,10 +121,12 @@ TEST_F(SharedSpinLockTest, TryLockFor_AfterRelease_Succeeds)
     SharedSpinLock lock(&state_, name_);
     lock.lock();
     std::atomic<bool> acquired{false};
-    std::thread contender([this, &acquired]() {
-        SharedSpinLock l(&state_, name_ + "_contender");
-        acquired = l.try_lock_for(2000);
-    });
+    std::thread contender(
+        [this, &acquired]()
+        {
+            SharedSpinLock l(&state_, name_ + "_contender");
+            acquired = l.try_lock_for(2000);
+        });
 
     std::this_thread::sleep_for(10ms);
     lock.unlock();
@@ -182,12 +190,14 @@ TEST_F(SharedSpinLockTest, BlockingLock_WaitsForRelease)
     lock1.lock();
 
     std::atomic<bool> acquired{false};
-    std::thread t([this, &acquired]() {
-        SharedSpinLock lock2(&state_, name_ + "_blocker");
-        lock2.lock(); // blocks until lock1 releases
-        acquired.store(true);
-        lock2.unlock();
-    });
+    std::thread t(
+        [this, &acquired]()
+        {
+            SharedSpinLock lock2(&state_, name_ + "_blocker");
+            lock2.lock(); // blocks until lock1 releases
+            acquired.store(true);
+            lock2.unlock();
+        });
 
     // Give thread time to attempt acquire
     std::this_thread::sleep_for(50ms);
@@ -220,8 +230,8 @@ TEST(SharedSpinLockShmTest, TwoThreads_StateInShm_MutualExclusion)
     shm_name = "pylabhub_test_spinlock_shm_" + std::to_string(pylabhub::platform::get_pid());
 #endif
     const size_t seg_size = sizeof(SharedSpinLockState) + 64;
-    pylabhub::platform::ShmHandle h =
-        pylabhub::platform::shm_create(shm_name.c_str(), seg_size, pylabhub::platform::SHM_CREATE_UNLINK_FIRST);
+    pylabhub::platform::ShmHandle h = pylabhub::platform::shm_create(
+        shm_name.c_str(), seg_size, pylabhub::platform::SHM_CREATE_UNLINK_FIRST);
     if (!h.base)
     {
         GTEST_SKIP() << "shm_create failed (e.g. CI); skip SharedSpinLock shm test";
@@ -231,28 +241,32 @@ TEST(SharedSpinLockShmTest, TwoThreads_StateInShm_MutualExclusion)
 
     std::atomic<int> counter{0};
     const int iterations = 50;
-    std::thread a([state, &counter]() {
-        SharedSpinLock lock(state, "shm_a");
-        for (int i = 0; i < iterations; ++i)
+    std::thread a(
+        [state, &counter]()
         {
-            lock.lock();
-            int v = counter.load(std::memory_order_relaxed);
-            std::this_thread::sleep_for(std::chrono::microseconds(10));
-            counter.store(v + 1, std::memory_order_relaxed);
-            lock.unlock();
-        }
-    });
-    std::thread b([state, &counter]() {
-        SharedSpinLock lock(state, "shm_b");
-        for (int i = 0; i < iterations; ++i)
+            SharedSpinLock lock(state, "shm_a");
+            for (int i = 0; i < iterations; ++i)
+            {
+                lock.lock();
+                int v = counter.load(std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+                counter.store(v + 1, std::memory_order_relaxed);
+                lock.unlock();
+            }
+        });
+    std::thread b(
+        [state, &counter]()
         {
-            lock.lock();
-            int v = counter.load(std::memory_order_relaxed);
-            std::this_thread::sleep_for(std::chrono::microseconds(10));
-            counter.store(v + 1, std::memory_order_relaxed);
-            lock.unlock();
-        }
-    });
+            SharedSpinLock lock(state, "shm_b");
+            for (int i = 0; i < iterations; ++i)
+            {
+                lock.lock();
+                int v = counter.load(std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+                counter.store(v + 1, std::memory_order_relaxed);
+                lock.unlock();
+            }
+        });
     a.join();
     b.join();
     EXPECT_EQ(counter.load(), 2 * iterations);
@@ -310,7 +324,8 @@ TEST(SharedSpinLockMultiProcessTest, MultiProcess_ZombieReclaim)
     expect_worker_ok(proc);
 
     SharedSpinLock lock(state, "main_reclaim");
-    EXPECT_TRUE(lock.try_lock_for(5000)) << "Main should reclaim lock after worker exited without unlocking (zombie)";
+    EXPECT_TRUE(lock.try_lock_for(5000))
+        << "Main should reclaim lock after worker exited without unlocking (zombie)";
     lock.unlock();
 
     pylabhub::platform::shm_close(&h);

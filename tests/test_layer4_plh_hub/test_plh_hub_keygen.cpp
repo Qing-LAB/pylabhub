@@ -21,10 +21,10 @@
 #endif
 
 using namespace pylabhub::tests::plh_hub_l4;
-using pylabhub::tests::helper::WorkerProcess;
-using pylabhub::tests::helper::ExpectVaultFileSecured;
-using pylabhub::tests::helper::ExpectVaultDirSecured;
 using pylabhub::tests::helper::ExpectNoVaultArtifactsUnder;
+using pylabhub::tests::helper::ExpectVaultDirSecured;
+using pylabhub::tests::helper::ExpectVaultFileSecured;
+using pylabhub::tests::helper::WorkerProcess;
 
 namespace
 {
@@ -55,12 +55,10 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
     nlohmann::json overrides;
     overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000001.vault";
     write_minimal_config(cfg_path, dir, overrides);
-    const fs::path vault_actual =
-        dir / "vault" / "hub.l4test.uid00000001.vault";
+    const fs::path vault_actual = dir / "vault" / "hub.l4test.uid00000001.vault";
 
     ScopedHubPassword pw("test-password");
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--keygen"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
@@ -84,10 +82,11 @@ TEST_F(PlhHubCliTest, GeneratesVaultFileAndEmitsPubkey)
     //     This pins that the binary's stdout matches the documented
     //     operator-facing surface; rc=0 alone would not catch a
     //     regression that silenced the summary.
-    EXPECT_NE(p.get_stdout().find("hub_uid"), std::string::npos)
-        << "stdout missing hub_uid:\n" << p.get_stdout();
+    EXPECT_NE(p.get_stdout().find("hub_uid"), std::string::npos) << "stdout missing hub_uid:\n"
+                                                                 << p.get_stdout();
     EXPECT_NE(p.get_stdout().find("public_key"), std::string::npos)
-        << "stdout missing public_key:\n" << p.get_stdout();
+        << "stdout missing public_key:\n"
+        << p.get_stdout();
 }
 
 // ── HEP-CORE-0035 §4.6.4 publish-time observability ─────────────────────────
@@ -122,31 +121,28 @@ TEST_F(PlhHubCliTest, KeygenEmitsNote_WhenPreExistingPubkeyRemoved)
     ASSERT_TRUE(fs::exists(pubkey_path));
 
     ScopedHubPassword pw("note-test-pw");
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--keygen"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
 
     // The note text from hub_vault.cpp publish_public_key.  Pin
     // both the literal "pre-existing hub.pubkey" + the
     // "was removed before publish" phrase so a partial-rewording
     // refactor is caught.
-    EXPECT_NE(p.get_stderr().find("pre-existing hub.pubkey"),
-              std::string::npos)
+    EXPECT_NE(p.get_stderr().find("pre-existing hub.pubkey"), std::string::npos)
         << "stderr should contain the B2 observability note; got:\n"
         << p.get_stderr();
-    EXPECT_NE(p.get_stderr().find("publish attempt follows"),
-              std::string::npos)
-        << "stderr should explain what happened next; got:\n" << p.get_stderr();
-    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035 §4.6.4"),
-              std::string::npos)
-        << "note should cite the spec section; got:\n" << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("publish attempt follows"), std::string::npos)
+        << "stderr should explain what happened next; got:\n"
+        << p.get_stderr();
+    EXPECT_NE(p.get_stderr().find("HEP-CORE-0035 §4.6.4"), std::string::npos)
+        << "note should cite the spec section; got:\n"
+        << p.get_stderr();
 
     // Sentinel content was overwritten — verify by reading and
     // confirming the marker is gone (the new pubkey is a Z85 hex
     // string, not our sentinel).
     std::ifstream check(pubkey_path);
-    std::string content((std::istreambuf_iterator<char>(check)),
-                        std::istreambuf_iterator<char>{});
+    std::string content((std::istreambuf_iterator<char>(check)), std::istreambuf_iterator<char>{});
     EXPECT_EQ(content.find("PRE-EXISTING SENTINEL"), std::string::npos)
         << "sentinel content survived publish — overwrite path broken";
 }
@@ -173,17 +169,15 @@ TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
     nlohmann::json overrides;
     overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4test.uid00000001.vault";
     write_minimal_config(cfg_path, dir, overrides);
-    const fs::path vault_actual =
-        dir / "vault" / "hub.l4test.uid00000001.vault";
+    const fs::path vault_actual = dir / "vault" / "hub.l4test.uid00000001.vault";
 
     // Pre-create the vault parent dir + a sentinel "vault" file with
     // known content + known mode.  The binary's --keygen must NOT
     // touch this file.
     fs::create_directories(vault_actual.parent_path());
-    const std::string sentinel =
-        "PRE-EXISTING VAULT — must not be overwritten by --keygen.\n"
-        "If you see this content surviving a --keygen run that exited "
-        "non-zero, the no-overwrite contract is intact.\n";
+    const std::string sentinel = "PRE-EXISTING VAULT — must not be overwritten by --keygen.\n"
+                                 "If you see this content surviving a --keygen run that exited "
+                                 "non-zero, the no-overwrite contract is intact.\n";
     {
         std::ofstream out(vault_actual, std::ios::binary);
         out << sentinel;
@@ -191,22 +185,24 @@ TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
     ASSERT_EQ(fs::file_size(vault_actual), sentinel.size());
 
     ScopedHubPassword pw("test-password");
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--keygen"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
     const int rc = p.wait_for_exit();
 
     // (a) Binary refused.
     EXPECT_NE(rc, 0) << "expected non-zero exit; stdout:\n"
-                     << p.get_stdout() << "\nstderr:\n" << p.get_stderr();
+                     << p.get_stdout() << "\nstderr:\n"
+                     << p.get_stderr();
 
     // (b) Diagnostic identifies the violated rule + path + HEP cite.
     EXPECT_NE(p.get_stderr().find("already exists"), std::string::npos)
         << "stderr should say the vault already exists; got:\n"
         << p.get_stderr();
     EXPECT_NE(p.get_stderr().find(vault_actual.string()), std::string::npos)
-        << "stderr should name the offending path; got:\n" << p.get_stderr();
+        << "stderr should name the offending path; got:\n"
+        << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("HEP-CORE-0033"), std::string::npos)
-        << "stderr should cite HEP-CORE-0033; got:\n" << p.get_stderr();
+        << "stderr should cite HEP-CORE-0033; got:\n"
+        << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("rm"), std::string::npos)
         << "stderr should tell operator how to remove the file; got:\n"
         << p.get_stderr();
@@ -216,7 +212,8 @@ TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
     // the operator *why* re-keygen is destructive on the hub side.
     EXPECT_NE(p.get_stderr().find("admin token"), std::string::npos)
         << "hub stderr should mention 'admin token' (hub-specific impact); "
-           "got:\n" << p.get_stderr();
+           "got:\n"
+        << p.get_stderr();
 
     // (c) THE LOAD-BEARING CHECK: file content IS UNCHANGED.  Reading
     //     the file back and comparing byte-for-byte against the
@@ -232,7 +229,8 @@ TEST_F(PlhHubCliTest, KeygenRefusesToOverwriteExistingVault)
     EXPECT_EQ(actual_content, sentinel)
         << "no-overwrite contract VIOLATED — vault file content was "
            "modified by --keygen despite the refusal.  Expected:\n"
-        << sentinel << "\nGot:\n" << actual_content;
+        << sentinel << "\nGot:\n"
+        << actual_content;
     EXPECT_EQ(fs::file_size(vault_actual), sentinel.size())
         << "no-overwrite contract VIOLATED — vault file size changed";
 }
@@ -251,15 +249,12 @@ TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultFileModeIsLoose)
     nlohmann::json overrides;
     overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4loose.uid00000001.vault";
     write_minimal_config(cfg_path, dir, overrides);
-    const fs::path vault_path =
-        dir / "vault" / "hub.l4loose.uid00000001.vault";
+    const fs::path vault_path = dir / "vault" / "hub.l4loose.uid00000001.vault";
 
     {
         ScopedHubPassword pw("loose-pw");
-        WorkerProcess kg(plh_hub_binary(), "--config",
-            {cfg_path.string(), "--keygen"});
-        ASSERT_EQ(kg.wait_for_exit(), 0)
-            << "setup keygen failed: " << kg.get_stderr();
+        WorkerProcess kg(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << "setup keygen failed: " << kg.get_stderr();
     }
 
     // Loosen mode to world-readable.  Spawn the binary in runmode
@@ -270,9 +265,8 @@ TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultFileModeIsLoose)
         ScopedHubPassword pw("loose-pw");
         WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string()});
         const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
-        EXPECT_NE(rc, 0)
-            << "runmode against vault at 0644 must refuse; stderr:\n"
-            << p.get_stderr();
+        EXPECT_NE(rc, 0) << "runmode against vault at 0644 must refuse; stderr:\n"
+                         << p.get_stderr();
         EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
             << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n"
             << p.get_stderr();
@@ -299,15 +293,12 @@ TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultParentDirModeIsLoose)
     nlohmann::json overrides;
     overrides["hub"]["auth"]["keyfile"] = "vault/hub.l4loose.uid00000002.vault";
     write_minimal_config(cfg_path, dir, overrides);
-    const fs::path vault_path =
-        dir / "vault" / "hub.l4loose.uid00000002.vault";
+    const fs::path vault_path = dir / "vault" / "hub.l4loose.uid00000002.vault";
 
     {
         ScopedHubPassword pw("loose-pw");
-        WorkerProcess kg(plh_hub_binary(), "--config",
-            {cfg_path.string(), "--keygen"});
-        ASSERT_EQ(kg.wait_for_exit(), 0)
-            << "setup keygen failed: " << kg.get_stderr();
+        WorkerProcess kg(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << "setup keygen failed: " << kg.get_stderr();
     }
 
     ::chmod(vault_path.parent_path().c_str(), 0755);
@@ -316,9 +307,8 @@ TEST_F(PlhHubCliTest, RunmodeFailsWhenVaultParentDirModeIsLoose)
         ScopedHubPassword pw("loose-pw");
         WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string()});
         const int rc = p.wait_for_exit(PYLABHUB_TEST_CRYPTO_TIMEOUT_S);
-        EXPECT_NE(rc, 0)
-            << "runmode against vault dir at 0755 must refuse; stderr:\n"
-            << p.get_stderr();
+        EXPECT_NE(rc, 0) << "runmode against vault dir at 0755 must refuse; stderr:\n"
+                         << p.get_stderr();
         EXPECT_NE(p.get_stderr().find("HEP-CORE-0035"), std::string::npos)
             << "stderr should cite HEP-CORE-0035 §4.6.2; got:\n"
             << p.get_stderr();
@@ -348,19 +338,20 @@ TEST_F(PlhHubCliTest, FailsWhenKeyfileEmpty)
     const auto cfg_path = dir / "hub.json";
 
     nlohmann::json overrides;
-    overrides["hub"]["auth"]["keyfile"] = "";   // explicitly empty
+    overrides["hub"]["auth"]["keyfile"] = ""; // explicitly empty
     write_minimal_config(cfg_path, dir, overrides);
 
     ScopedHubPassword pw("test-password");
-    WorkerProcess p(plh_hub_binary(), "--config",
-        {cfg_path.string(), "--keygen"});
+    WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
     const int rc = p.wait_for_exit();
     EXPECT_NE(rc, 0) << "expected non-zero exit; stdout:\n"
-                     << p.get_stdout() << "\nstderr:\n" << p.get_stderr();
+                     << p.get_stdout() << "\nstderr:\n"
+                     << p.get_stderr();
 
     // (a) Diagnostic identifies the failing field AND the contract violated.
     EXPECT_NE(p.get_stderr().find("auth.keyfile"), std::string::npos)
-        << "stderr should mention auth.keyfile; got:\n" << p.get_stderr();
+        << "stderr should mention auth.keyfile; got:\n"
+        << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("non-empty"), std::string::npos)
         << "stderr should describe the empty-string violation; got:\n"
         << p.get_stderr();

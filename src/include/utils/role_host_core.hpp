@@ -20,8 +20,8 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/schema_types.hpp"        // hub::SchemaSpec, hub::FieldDef
-#include "utils/json_fwd.hpp"           // nlohmann::json (project buffer header)
+#include "utils/schema_types.hpp" // hub::SchemaSpec, hub::FieldDef
+#include "utils/json_fwd.hpp"     // nlohmann::json (project buffer header)
 
 #include <atomic>
 #include <chrono>
@@ -38,7 +38,10 @@
 #include <variant>
 #include <vector>
 
-namespace pylabhub::hub { class InboxClient; }
+namespace pylabhub::hub
+{
+class InboxClient;
+}
 
 namespace pylabhub::scripting
 {
@@ -75,10 +78,10 @@ namespace pylabhub::scripting
 //   4. Add the matching pure virtual on `ScriptEngine`.
 enum class NotificationId : std::uint8_t
 {
-    Unknown          = 0,
-    ChannelClosing   = 1,   ///< CHANNEL_CLOSING_NOTIFY  (HEP-CORE-0011 §callback table)
-    ConsumerDied     = 2,   ///< CONSUMER_DIED_NOTIFY    (HEP-CORE-0023 §2.1.1)
-    HubDead          = 3,   ///< Synthetic, enqueued by ctrl-thread `on_hub_dead`
+    Unknown = 0,
+    ChannelClosing = 1,     ///< CHANNEL_CLOSING_NOTIFY  (HEP-CORE-0011 §callback table)
+    ConsumerDied = 2,       ///< CONSUMER_DIED_NOTIFY    (HEP-CORE-0023 §2.1.1)
+    HubDead = 3,            ///< Synthetic, enqueued by ctrl-thread `on_hub_dead`
                             ///< lambda when ZMTP declares the broker dead.
                             ///< NOT a wire frame (no broker emits this) — the
                             ///< role-side itself synthesizes it as the
@@ -89,12 +92,12 @@ enum class NotificationId : std::uint8_t
     BandMemberJoined = 4,   ///< BAND_JOIN_NOTIFY        (HEP-CORE-0030 §5.3)
                             ///< Another role joined a band this role is in.
                             ///< (S4 expansion 2026-05-19.)
-    BandMemberLeft   = 5,   ///< BAND_LEAVE_NOTIFY       (HEP-CORE-0030 §5.3)
+    BandMemberLeft = 5,     ///< BAND_LEAVE_NOTIFY       (HEP-CORE-0030 §5.3)
                             ///< Another role left.  Carries `reason ∈ {voluntary,
                             ///< heartbeat_timeout}`.
-    BandMessage      = 6,   ///< BAND_BROADCAST_DELIVER_NOTIFY (HEP-CORE-0030 §5.3)
+    BandMessage = 6,        ///< BAND_BROADCAST_DELIVER_NOTIFY (HEP-CORE-0030 §5.3)
                             ///< Broadcast from another band member.
-    BandLost         = 7,   ///< Synthetic, enqueued from `on_hub_dead` lambda
+    BandLost = 7,           ///< Synthetic, enqueued from `on_hub_dead` lambda
                             ///< per band whose routing was on the dead
                             ///< connection.  NOT a wire frame.  Lets scripts
                             ///< react to losing band membership without
@@ -118,25 +121,33 @@ enum class NotificationId : std::uint8_t
 /// role-side enqueues itself.  Parsing the string from `HUB_DEAD` is
 /// supported anyway so the dispatcher's table-driven path works
 /// uniformly with the wire-sourced notifications above.
-[[nodiscard]] constexpr NotificationId
-parse_notification_id(std::string_view type) noexcept
+[[nodiscard]] constexpr NotificationId parse_notification_id(std::string_view type) noexcept
 {
-    if (type == "CHANNEL_CLOSING_NOTIFY")   return NotificationId::ChannelClosing;
-    if (type == "CONSUMER_DIED_NOTIFY")     return NotificationId::ConsumerDied;
-    if (type == "HUB_DEAD")                 return NotificationId::HubDead;
-    if (type == "BAND_JOIN_NOTIFY")         return NotificationId::BandMemberJoined;
-    if (type == "BAND_LEAVE_NOTIFY")        return NotificationId::BandMemberLeft;
-    if (type == "BAND_BROADCAST_DELIVER_NOTIFY") return NotificationId::BandMessage;
-    if (type == "BAND_LOST")                return NotificationId::BandLost;
-    if (type == "CHANNEL_AUTH_CHANGED_NOTIFY") return NotificationId::ChannelAuthChanged;
+    if (type == "CHANNEL_CLOSING_NOTIFY")
+        return NotificationId::ChannelClosing;
+    if (type == "CONSUMER_DIED_NOTIFY")
+        return NotificationId::ConsumerDied;
+    if (type == "HUB_DEAD")
+        return NotificationId::HubDead;
+    if (type == "BAND_JOIN_NOTIFY")
+        return NotificationId::BandMemberJoined;
+    if (type == "BAND_LEAVE_NOTIFY")
+        return NotificationId::BandMemberLeft;
+    if (type == "BAND_BROADCAST_DELIVER_NOTIFY")
+        return NotificationId::BandMessage;
+    if (type == "BAND_LOST")
+        return NotificationId::BandLost;
+    if (type == "CHANNEL_AUTH_CHANGED_NOTIFY")
+        return NotificationId::ChannelAuthChanged;
     return NotificationId::Unknown;
 }
 
 struct IncomingMessage
 {
-    std::string              event;                          ///< wire string (debug + generic scan path)
-    NotificationId                 notification_id{NotificationId::Unknown};   ///< parsed once at BRC enqueue; drives dispatch
-    std::string              sender;
+    std::string event; ///< wire string (debug + generic scan path)
+    NotificationId notification_id{
+        NotificationId::Unknown}; ///< parsed once at BRC enqueue; drives dispatch
+    std::string sender;
     /// HEP-CORE-0023 §7 + HEP-CORE-0033 §18.3+§19.4 — origin tag for
     /// dual-hub message disambiguation.  Populated at the BRC
     /// `on_notification` callback from the connection's
@@ -148,9 +159,9 @@ struct IncomingMessage
     /// different code path).  Scripts inspect this when a single
     /// processor's `msgs` list aggregates events from multiple hubs;
     /// single-hub roles see one constant value.
-    std::string              source_hub_uid;
-    std::vector<std::byte>   data;
-    nlohmann::json           details;
+    std::string source_hub_uid;
+    std::vector<std::byte> data;
+    nlohmann::json details;
 };
 
 class PYLABHUB_UTILS_EXPORT RoleHostCore
@@ -187,28 +198,28 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     void set_in_slot_spec(hub::SchemaSpec spec, size_t logical_size) noexcept
     {
-        in_slot_spec_         = std::move(spec);
+        in_slot_spec_ = std::move(spec);
         in_slot_logical_size_ = logical_size;
     }
     void set_out_slot_spec(hub::SchemaSpec spec, size_t logical_size) noexcept
     {
-        out_slot_spec_         = std::move(spec);
+        out_slot_spec_ = std::move(spec);
         out_slot_logical_size_ = logical_size;
     }
-    [[nodiscard]] const hub::SchemaSpec &in_slot_spec()         const noexcept { return in_slot_spec_; }
-    [[nodiscard]] const hub::SchemaSpec &out_slot_spec()        const noexcept { return out_slot_spec_; }
-    [[nodiscard]] size_t  in_slot_logical_size()  const noexcept { return in_slot_logical_size_; }
-    [[nodiscard]] size_t  out_slot_logical_size() const noexcept { return out_slot_logical_size_; }
-    [[nodiscard]] bool    has_in_slot()           const noexcept { return in_slot_spec_.has_schema; }
-    [[nodiscard]] bool    has_out_slot()          const noexcept { return out_slot_spec_.has_schema; }
+    [[nodiscard]] const hub::SchemaSpec &in_slot_spec() const noexcept { return in_slot_spec_; }
+    [[nodiscard]] const hub::SchemaSpec &out_slot_spec() const noexcept { return out_slot_spec_; }
+    [[nodiscard]] size_t in_slot_logical_size() const noexcept { return in_slot_logical_size_; }
+    [[nodiscard]] size_t out_slot_logical_size() const noexcept { return out_slot_logical_size_; }
+    [[nodiscard]] bool has_in_slot() const noexcept { return in_slot_spec_.has_schema; }
+    [[nodiscard]] bool has_out_slot() const noexcept { return out_slot_spec_.has_schema; }
 
     // ── Inbox cache (role-level, shared across engine states) ────────────
 
     struct InboxCacheEntry
     {
         std::shared_ptr<hub::InboxClient> client;
-        std::string type_name;     ///< FFI/ctypes type name for the inbox slot.
-        size_t      item_size{0};  ///< Size of one inbox slot in bytes.
+        std::string type_name; ///< FFI/ctypes type name for the inbox slot.
+        size_t item_size{0};   ///< Size of one inbox slot in bytes.
     };
 
     /// Get a cached inbox entry, or nullopt if not cached.
@@ -218,8 +229,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     /// The mutex is held for the entire operation — no TOCTOU race.
     /// Creator returns nullopt on failure (entry not stored).
     using InboxCreator = std::function<std::optional<InboxCacheEntry>()>;
-    std::optional<InboxCacheEntry> open_inbox(
-        const std::string &target_uid, InboxCreator creator);
+    std::optional<InboxCacheEntry> open_inbox(const std::string &target_uid, InboxCreator creator);
 
     /// Stop and remove all cached inbox clients.
     void clear_inbox_cache();
@@ -275,41 +285,41 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     enum class StopReason : int
     {
-        Normal        = 0,
-        PeerDead      = 1,
-        HubDead       = 2,
+        Normal = 0,
+        PeerDead = 1,
+        HubDead = 2,
         CriticalError = 3,
-        ChannelClosed = 4,   ///< Audit D1 (2026-05-18) — framework's
-                             ///< default stop when CHANNEL_CLOSING_NOTIFY
-                             ///< arrives with no `on_channel_closing`
-                             ///< script callback to override.  Set
-                             ///< before `request_stop()` in
-                             ///< `cycle_ops.hpp::default_channel_closing`.
-        ScriptError   = 5,   ///< Audit S2 (2026-05-18) — framework's
-                             ///< stop when a script callback raised /
-                             ///< errored AND `stop_on_script_error=true`.
-                             ///< Distinct from `CriticalError` (which is
-                             ///< reserved for `set_critical_error()` —
-                             ///< framework-internal unrecoverable or
-                             ///< explicit script `api.set_critical_error()`).
-                             ///< Mirrors the existing `script_error_count_`
-                             ///< counter: codebase has historically treated
-                             ///< "script bug" and "framework critical" as
-                             ///< distinct categories.  Set before
-                             ///< `request_stop()` in `cycle_ops.hpp`
-                             ///< Producer/Consumer/Processor invoke_and_commit
-                             ///< stop_on_error_ paths, and in each engine's
-                             ///< `on_X_error_` helper.
-        InitTimeout   = 6,   ///< HEP-CORE-0011 §"Loop-ready gate" —
-                             ///< framework's stop when `on_init` (script
-                             ///< hook AND-composed with the per-role
-                             ///< framework default) never returns Ready
-                             ///< within the configured `init_timeout_ms`
-                             ///< budget.  Set before `set_critical_error`
-                             ///< in `run_data_loop`.  Distinguishes
-                             ///< "reader never had a peer admitted" from
-                             ///< generic `CriticalError` so operators can
-                             ///< diagnose stuck startups.
+        ChannelClosed = 4, ///< Audit D1 (2026-05-18) — framework's
+                           ///< default stop when CHANNEL_CLOSING_NOTIFY
+                           ///< arrives with no `on_channel_closing`
+                           ///< script callback to override.  Set
+                           ///< before `request_stop()` in
+                           ///< `cycle_ops.hpp::default_channel_closing`.
+        ScriptError = 5,   ///< Audit S2 (2026-05-18) — framework's
+                           ///< stop when a script callback raised /
+                           ///< errored AND `stop_on_script_error=true`.
+                           ///< Distinct from `CriticalError` (which is
+                           ///< reserved for `set_critical_error()` —
+                           ///< framework-internal unrecoverable or
+                           ///< explicit script `api.set_critical_error()`).
+                           ///< Mirrors the existing `script_error_count_`
+                           ///< counter: codebase has historically treated
+                           ///< "script bug" and "framework critical" as
+                           ///< distinct categories.  Set before
+                           ///< `request_stop()` in `cycle_ops.hpp`
+                           ///< Producer/Consumer/Processor invoke_and_commit
+                           ///< stop_on_error_ paths, and in each engine's
+                           ///< `on_X_error_` helper.
+        InitTimeout = 6,   ///< HEP-CORE-0011 §"Loop-ready gate" —
+                           ///< framework's stop when `on_init` (script
+                           ///< hook AND-composed with the per-role
+                           ///< framework default) never returns Ready
+                           ///< within the configured `init_timeout_ms`
+                           ///< budget.  Set before `set_critical_error`
+                           ///< in `run_data_loop`.  Distinguishes
+                           ///< "reader never had a peer admitted" from
+                           ///< generic `CriticalError` so operators can
+                           ///< diagnose stuck startups.
     };
 
     // ────────────────────────────────────────────────────────────────────
@@ -322,12 +332,17 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // state" — the table below makes that explicit so future readers
     // don't have to reverse-engineer it from teardown ordering.
     //
-    // | Flag                | Initial | Transitions                                          | One-way? | Who reads it                       | What "true" means                           |
+    // | Flag                | Initial | Transitions                                          |
+    // One-way? | Who reads it                       | What "true" means                           |
     // |---------------------|---------|------------------------------------------------------|----------|-------------------------------------|---------------------------------------------|
-    // | running_threads_    | false   | startup → true; teardown Step 12 → false             | NO       | data loop's `should_continue_loop`  | "worker thread is actively processing"      |
-    // | shutdown_requested_ | false   | request_stop() → true; set_critical_error() → true   | YES (1)  | data loop + script callbacks        | "someone has asked the role to stop"        |
-    // | critical_error_     | false   | set_critical_error() → true                          | YES (1)  | data loop + diagnostic              | "an unrecoverable error fired StopReason"   |
-    // | context_valid_      | true    | stop_handler_threads Phase 3a → false                | YES (1)  | ctrl-thread callbacks (V1 audit)    | "role-side data structures are still alive" |
+    // | running_threads_    | false   | startup → true; teardown Step 12 → false             | NO
+    // | data loop's `should_continue_loop`  | "worker thread is actively processing"      | |
+    // shutdown_requested_ | false   | request_stop() → true; set_critical_error() → true   | YES
+    // (1)  | data loop + script callbacks        | "someone has asked the role to stop"        | |
+    // critical_error_     | false   | set_critical_error() → true                          | YES
+    // (1)  | data loop + diagnostic              | "an unrecoverable error fired StopReason"   | |
+    // context_valid_      | true    | stop_handler_threads Phase 3a → false                | YES
+    // (1)  | ctrl-thread callbacks (V1 audit)    | "role-side data structures are still alive" |
     //
     // (1) One-way latches by class design: there is no public setter
     //     to flip these back to their initial value.  Reset on a fresh
@@ -403,10 +418,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // should_exit_loop() which acquires once, then inner checks
     // use relaxed (the acquire at loop top establishes happens-before).
 
-    void request_stop() noexcept
-    {
-        shutdown_requested_.store(true, std::memory_order_release);
-    }
+    void request_stop() noexcept { shutdown_requested_.store(true, std::memory_order_release); }
 
     void set_stop_reason(StopReason r) noexcept
     {
@@ -416,15 +428,11 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     void set_critical_error() noexcept
     {
         critical_error_.store(true, std::memory_order_release);
-        stop_reason_.store(static_cast<int>(StopReason::CriticalError),
-                           std::memory_order_relaxed);
+        stop_reason_.store(static_cast<int>(StopReason::CriticalError), std::memory_order_relaxed);
         shutdown_requested_.store(true, std::memory_order_release);
     }
 
-    void set_running(bool v) noexcept
-    {
-        running_threads_.store(v, std::memory_order_release);
-    }
+    void set_running(bool v) noexcept { running_threads_.store(v, std::memory_order_release); }
 
     /// V1 audit (2026-05-18) — invalidate the role's callback-safety
     /// beacon.  One-way latch: there is no inverse setter.  Called
@@ -439,10 +447,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     /// `acquire`-ordered load in `context_valid()` so a callback that
     /// reads `false` observes everything the teardown thread did
     /// before flipping the flag.
-    void set_context_invalid() noexcept
-    {
-        context_valid_.store(false, std::memory_order_release);
-    }
+    void set_context_invalid() noexcept { context_valid_.store(false, std::memory_order_release); }
 
     // ── Shutdown / error queries ─────────────────────────────────────────
 
@@ -506,13 +511,20 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     {
         switch (stop_reason_.load(std::memory_order_relaxed))
         {
-        case 1: return "peer_dead";
-        case 2: return "hub_dead";
-        case 3: return "critical_error";
-        case 4: return "channel_closed";
-        case 5: return "script_error";
-        case 6: return "init_timeout";
-        default: return "normal";
+        case 1:
+            return "peer_dead";
+        case 2:
+            return "hub_dead";
+        case 3:
+            return "critical_error";
+        case 4:
+            return "channel_closed";
+        case 5:
+            return "script_error";
+        case 6:
+            return "init_timeout";
+        default:
+            return "normal";
         }
     }
 
@@ -532,18 +544,43 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     // ── Metric accessors (read) ──────────────────────────────────────────
 
     /// Slots successfully committed to output queue (producer/processor only).
-    [[nodiscard]] uint64_t out_slots_written() const noexcept { return out_slots_written_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t out_slots_written() const noexcept
+    {
+        return out_slots_written_.load(std::memory_order_relaxed);
+    }
     /// Slots successfully read from input queue (consumer/processor only).
-    [[nodiscard]] uint64_t in_slots_received() const noexcept { return in_slots_received_.load(std::memory_order_relaxed); }
-    /// Output slots discarded: on_produce returned False, or output acquire failed (producer/processor only).
-    [[nodiscard]] uint64_t out_drop_count()    const noexcept { return out_drop_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t in_slots_received() const noexcept
+    {
+        return in_slots_received_.load(std::memory_order_relaxed);
+    }
+    /// Output slots discarded: on_produce returned False, or output acquire failed
+    /// (producer/processor only).
+    [[nodiscard]] uint64_t out_drop_count() const noexcept
+    {
+        return out_drop_count_.load(std::memory_order_relaxed);
+    }
     /// Script callback errors (all roles): exceptions, None returns, type mismatches.
-    [[nodiscard]] uint64_t script_error_count() const noexcept { return script_error_count_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t iteration_count()   const noexcept { return iteration_count_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t last_cycle_work_us()  const noexcept { return last_cycle_work_us_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t loop_overrun_count() const noexcept { return loop_overrun_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t script_error_count() const noexcept
+    {
+        return script_error_count_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t iteration_count() const noexcept
+    {
+        return iteration_count_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t last_cycle_work_us() const noexcept
+    {
+        return last_cycle_work_us_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t loop_overrun_count() const noexcept
+    {
+        return loop_overrun_count_.load(std::memory_order_relaxed);
+    }
     /// Total queue acquire attempts across all retry_acquire calls (all roles).
-    [[nodiscard]] uint64_t acquire_retry_count() const noexcept { return acquire_retry_count_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t acquire_retry_count() const noexcept
+    {
+        return acquire_retry_count_.load(std::memory_order_relaxed);
+    }
 
     /// Snapshot loop metrics into a caller-provided struct.
     struct LoopMetricsSnapshot
@@ -557,8 +594,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     [[nodiscard]] LoopMetricsSnapshot loop_metrics() const noexcept
     {
         return {iteration_count(), loop_overrun_count(), last_cycle_work_us(),
-                configured_period_us_.load(std::memory_order_relaxed),
-                acquire_retry_count()};
+                configured_period_us_.load(std::memory_order_relaxed), acquire_retry_count()};
     }
 
     /// Set loop target period (informational — reported in loop metrics).
@@ -569,15 +605,36 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 
     // ── Metric mutators (write) ──────────────────────────────────────────
 
-    void inc_out_slots_written() noexcept { out_slots_written_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_in_slots_received() noexcept { in_slots_received_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_out_drop_count()    noexcept { out_drop_count_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_script_error_count() noexcept { script_error_count_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_iteration_count()   noexcept { iteration_count_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_out_slots_written() noexcept
+    {
+        out_slots_written_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void inc_in_slots_received() noexcept
+    {
+        in_slots_received_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void inc_out_drop_count() noexcept { out_drop_count_.fetch_add(1, std::memory_order_relaxed); }
+    void inc_script_error_count() noexcept
+    {
+        script_error_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void inc_iteration_count() noexcept
+    {
+        iteration_count_.fetch_add(1, std::memory_order_relaxed);
+    }
 
-    void set_last_cycle_work_us(uint64_t v) noexcept { last_cycle_work_us_.store(v, std::memory_order_relaxed); }
-    void inc_loop_overrun()    noexcept { loop_overrun_count_.fetch_add(1, std::memory_order_relaxed); }
-    void inc_acquire_retry() noexcept { acquire_retry_count_.fetch_add(1, std::memory_order_relaxed); }
+    void set_last_cycle_work_us(uint64_t v) noexcept
+    {
+        last_cycle_work_us_.store(v, std::memory_order_relaxed);
+    }
+    void inc_loop_overrun() noexcept
+    {
+        loop_overrun_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void inc_acquire_retry() noexcept
+    {
+        acquire_retry_count_.fetch_add(1, std::memory_order_relaxed);
+    }
 
 // Test-only counter mutators — directly overwrite per-role telemetry
 // values from a test harness.  Production code path is inc_*() only.
@@ -590,9 +647,18 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
 // (HEP-CORE-0019 metrics plane) does NOT widen.  See HEP-CORE-0032 §3.2
 // "Deployment posture" for the rationale.
 #if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
-    void test_set_out_slots_written(uint64_t v) noexcept { out_slots_written_.store(v, std::memory_order_relaxed); }
-    void test_set_in_slots_received(uint64_t v) noexcept { in_slots_received_.store(v, std::memory_order_relaxed); }
-    void test_set_out_drop_count(uint64_t v)    noexcept { out_drop_count_.store(v, std::memory_order_relaxed); }
+    void test_set_out_slots_written(uint64_t v) noexcept
+    {
+        out_slots_written_.store(v, std::memory_order_relaxed);
+    }
+    void test_set_in_slots_received(uint64_t v) noexcept
+    {
+        in_slots_received_.store(v, std::memory_order_relaxed);
+    }
+    void test_set_out_drop_count(uint64_t v) noexcept
+    {
+        out_drop_count_.store(v, std::memory_order_relaxed);
+    }
 #endif
 
   private:
@@ -600,44 +666,47 @@ class PYLABHUB_UTILS_EXPORT RoleHostCore
     //
     // See the class-header "Flag contract" block for what each field
     // means, when it transitions, and which callers gate on it.
-    std::atomic<bool>     running_threads_{false};   ///< Worker-loop liveness (re-flippable).
-    std::atomic<bool>     shutdown_requested_{false}; ///< Stop request received (one-way).
-    std::atomic<bool>     critical_error_{false};    ///< Unrecoverable error fired (one-way).
-    std::atomic<int>      stop_reason_{0};
+    std::atomic<bool> running_threads_{false};    ///< Worker-loop liveness (re-flippable).
+    std::atomic<bool> shutdown_requested_{false}; ///< Stop request received (one-way).
+    std::atomic<bool> critical_error_{false};     ///< Unrecoverable error fired (one-way).
+    std::atomic<int> stop_reason_{0};
     /// V1 audit (2026-05-18) — callback-safety beacon for ctrl-thread
     /// callbacks.  Default `true` (handler/BRCs/presences alive); set
     /// to `false` exactly once in `stop_handler_threads` Phase 3a,
     /// before destructive Phase 4 begins.  See class-header "Flag
     /// contract" + `context_valid()` / `set_context_invalid()` for
     /// the full discipline.
-    std::atomic<bool>     context_valid_{true};
+    std::atomic<bool> context_valid_{true};
 
     // ── Metrics ───────────────────────────────────────────────────────────
-    std::atomic<uint64_t> script_error_count_{0};  ///< Script callback errors (all roles).
+    std::atomic<uint64_t> script_error_count_{0}; ///< Script callback errors (all roles).
     std::atomic<uint64_t> out_slots_written_{0};  ///< Output slots committed (producer/processor).
     std::atomic<uint64_t> in_slots_received_{0};  ///< Input slots consumed (consumer/processor).
     std::atomic<uint64_t> out_drop_count_{0};     ///< Output slots discarded (producer/processor).
     std::atomic<uint64_t> iteration_count_{0};
     std::atomic<uint64_t> last_cycle_work_us_{0};
-    std::atomic<uint64_t> loop_overrun_count_{0}; ///< Cycles where now > deadline (set by main loop).
-    std::atomic<uint64_t> acquire_retry_count_{0}; ///< Total queue acquire attempts (all retry_acquire calls).
-    std::atomic<uint64_t> configured_period_us_{0}; ///< Target loop period (µs). Set at startup from config.
+    std::atomic<uint64_t> loop_overrun_count_{
+        0}; ///< Cycles where now > deadline (set by main loop).
+    std::atomic<uint64_t> acquire_retry_count_{
+        0}; ///< Total queue acquire attempts (all retry_acquire calls).
+    std::atomic<uint64_t> configured_period_us_{
+        0}; ///< Target loop period (µs). Set at startup from config.
 
     // ── Message queue ─────────────────────────────────────────────────────
     std::vector<IncomingMessage> incoming_queue_;
-    std::mutex                   incoming_mu_;
-    std::condition_variable      incoming_cv_;
+    std::mutex incoming_mu_;
+    std::condition_variable incoming_cv_;
 
     // ── External shutdown flag ───────────────────────────────────────────
     std::atomic<bool> *g_shutdown_{nullptr};
 
     // ── Init-time state (set once, read during loop) ─────────────────────
-    bool              validate_only_{false};
+    bool validate_only_{false};
     std::atomic<bool> script_load_ok_{false};
     hub::SchemaSpec in_slot_spec_;
     hub::SchemaSpec out_slot_spec_;
-    size_t     in_slot_logical_size_{0};
-    size_t     out_slot_logical_size_{0};
+    size_t in_slot_logical_size_{0};
+    size_t out_slot_logical_size_{0};
     // Flexzone state lives on RoleAPIBase::FlexzoneInfoCache, populated
     // by RoleHostFrame::setup_infrastructure_ from the presence's fz_spec.
 
@@ -698,10 +767,10 @@ class StopRequestor
  * Same X-macro pattern as PYLABHUB_QUEUE_METRICS_FIELDS (see hub_queue.hpp).
  */
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)
-#define PYLABHUB_LOOP_METRICS_FIELDS(X) \
-    X(iteration_count)                  \
-    X(loop_overrun_count)               \
-    X(last_cycle_work_us)               \
-    X(configured_period_us)             \
+#define PYLABHUB_LOOP_METRICS_FIELDS(X)                                                            \
+    X(iteration_count)                                                                             \
+    X(loop_overrun_count)                                                                          \
+    X(last_cycle_work_us)                                                                          \
+    X(configured_period_us)                                                                        \
     X(acquire_retry_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)

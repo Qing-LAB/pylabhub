@@ -37,8 +37,7 @@ inline void loop_metrics_to_json(nlohmann::json &j,
 }
 
 /// Populate a JSON object with all inbox metrics fields.
-inline void inbox_metrics_to_json(nlohmann::json &j,
-                                  const InboxQueue::InboxMetricsSnapshot &m)
+inline void inbox_metrics_to_json(nlohmann::json &j, const InboxQueue::InboxMetricsSnapshot &m)
 {
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define X(field) j[#field] = m.field;

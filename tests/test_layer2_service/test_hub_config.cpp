@@ -39,9 +39,8 @@ class HubConfigTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_hcfg_" + std::string(test_name) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                     ("plh_l2_hcfg_" + std::string(test_name) + "_" + std::to_string(::getpid()) +
+                      "_" + std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
         return p.string();
@@ -54,15 +53,13 @@ class HubConfigTest : public IsolatedProcessTest
 
 TEST_F(HubConfigTest, LoadFull_AllSectionsParsed)
 {
-    auto w = SpawnWorker("hub_config.load_full",
-                         {unique_dir("load_full")});
+    auto w = SpawnWorker("hub_config.load_full", {unique_dir("load_full")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubConfigTest, LoadMinimal_DefaultsApplied)
 {
-    auto w = SpawnWorker("hub_config.load_minimal",
-                         {unique_dir("load_minimal")});
+    auto w = SpawnWorker("hub_config.load_minimal", {unique_dir("load_minimal")});
     ExpectWorkerOk(w);
 }
 
@@ -114,8 +111,8 @@ TEST_F(HubConfigTest, Auth_KeyfileWrongType_Throws)
 
 TEST_F(HubConfigTest, Auth_NotObject_Throws)
 {
-    auto w = SpawnWorker("hub_config.auth_not_object_throws",
-                         {unique_dir("auth_not_object_throws")});
+    auto w =
+        SpawnWorker("hub_config.auth_not_object_throws", {unique_dir("auth_not_object_throws")});
     ExpectWorkerOk(w);
 }
 
@@ -137,36 +134,31 @@ TEST_F(HubConfigTest, LoadKeypair_RefusesLooseVaultParentDirMode)
 
 TEST_F(HubConfigTest, SectionNotObject_Throws)
 {
-    auto w = SpawnWorker("hub_config.section_not_object",
-                         {unique_dir("section_not_object")});
+    auto w = SpawnWorker("hub_config.section_not_object", {unique_dir("section_not_object")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubConfigTest, Uid_EmptyOrAbsent_Rejected)
 {
-    auto w = SpawnWorker("hub_config.uid_empty_rejected",
-                         {unique_dir("uid_empty_rejected")});
+    auto w = SpawnWorker("hub_config.uid_empty_rejected", {unique_dir("uid_empty_rejected")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubConfigTest, State_GraceSentinel_NegativeOne_BecomesInfinite)
 {
-    auto w = SpawnWorker("hub_config.state_grace_sentinel",
-                         {unique_dir("state_grace_sentinel")});
+    auto w = SpawnWorker("hub_config.state_grace_sentinel", {unique_dir("state_grace_sentinel")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubConfigTest, LoadFromDirectory_EquivalentToExplicitPath)
 {
-    auto w = SpawnWorker("hub_config.load_from_directory",
-                         {unique_dir("load_from_directory")});
+    auto w = SpawnWorker("hub_config.load_from_directory", {unique_dir("load_from_directory")});
     ExpectWorkerOk(w);
 }
 
 TEST_F(HubConfigTest, ReloadIfChanged_NoChangeFalse_AfterModifyTrue)
 {
-    auto w = SpawnWorker("hub_config.reload_if_changed",
-                         {unique_dir("reload_if_changed")});
+    auto w = SpawnWorker("hub_config.reload_if_changed", {unique_dir("reload_if_changed")});
     ExpectWorkerOk(w);
 }
 

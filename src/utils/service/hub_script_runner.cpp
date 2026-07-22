@@ -8,19 +8,19 @@
 
 #include "hub_script_runner.hpp"
 
-#include "utils/script_engine_factory.hpp"  // create_engine + PythonGilLease (Step 0)
+#include "utils/script_engine_factory.hpp" // create_engine + PythonGilLease (Step 0)
 #include "utils/config/hub_config.hpp"     // host_.config() reads (worker only)
 #include "utils/hub_host.hpp"
 #include "utils/hub_state.hpp"
-#include "utils/hub_state_json.hpp"   // channel_to_json / role_to_json / ... (Phase 6.2b)
+#include "utils/hub_state_json.hpp" // channel_to_json / role_to_json / ... (Phase 6.2b)
 #include "utils/logger.hpp"
-#include "utils/loop_timing_policy.hpp"  // compute_next_deadline — DO NOT REINVENT
+#include "utils/loop_timing_policy.hpp" // compute_next_deadline — DO NOT REINVENT
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
 
 #include <chrono>
-#include <optional>                      // EngineGlobalLockRelease guard
-#include <variant>                       // std::monostate sentinel for ConfigT
+#include <optional> // EngineGlobalLockRelease guard
+#include <variant>  // std::monostate sentinel for ConfigT
 #include <vector>
 
 namespace pylabhub::scripting
@@ -30,8 +30,8 @@ namespace pylabhub::scripting
 // Construction / destruction
 // ============================================================================
 
-HubScriptRunner::HubScriptRunner(pylabhub::hub_host::HubHost  &host,
-                                  std::atomic<bool>            *shutdown_flag)
+HubScriptRunner::HubScriptRunner(pylabhub::hub_host::HubHost &host,
+                                 std::atomic<bool> *shutdown_flag)
     // Phase 7 Option E: HubScriptRunner does NOT own a HubConfig (HubHost
     // is the sole owner — single config per hub instance).  Pass
     // `std::monostate{}` for ConfigT — EngineHost is opaque to it and
@@ -41,10 +41,7 @@ HubScriptRunner::HubScriptRunner(pylabhub::hub_host::HubHost  &host,
     // Per HEP-CORE-0011 §"Engine Construction Lifecycle" (2026-05-07):
     // engine is NOT passed in — `worker_main_` Step 0 constructs it on
     // the worker thread via scripting::create_engine.
-    : HubScriptRunnerBase("hub",
-                           std::monostate{},
-                           shutdown_flag)
-    , host_(host)
+    : HubScriptRunnerBase("hub", std::monostate{}, shutdown_flag), host_(host)
 {
     // Set the real uid from HubHost's config — must run before
     // `startup_()` (EngineHost reads uid_ when constructing ApiT).
@@ -71,14 +68,14 @@ HubScriptRunner::~HubScriptRunner()
 void HubScriptRunner::worker_main_()
 {
     using Clock = std::chrono::steady_clock;
-    namespace js = pylabhub::hub;   // channel_to_json / role_to_json / etc.
+    namespace js = pylabhub::hub; // channel_to_json / role_to_json / etc.
 
     // Capture uid + log_tag once.  uid is stable for HubHost's lifetime;
     // log_tag matches the role-side short-form convention ("prod" /
     // "cons" / "proc" / now "hub") used by the engine init step + log
     // prefixes.
-    const std::string  uid     = host_.config().identity().uid;
-    const std::string  log_tag = "hub";
+    const std::string uid = host_.config().identity().uid;
+    const std::string log_tag = "hub";
 
     LOGGER_INFO("[HubScriptRunner:{}] worker_main_ entered", uid);
 
@@ -163,31 +160,29 @@ void HubScriptRunner::worker_main_()
     // or failure) or the parent blocks forever in startup_().
     {
         const auto &sc = host_.config().script();
-        const std::filesystem::path base_path =
-            sc.path.empty() ? std::filesystem::current_path()
-                            : std::filesystem::weakly_canonical(sc.path);
+        const std::filesystem::path base_path = sc.path.empty()
+                                                    ? std::filesystem::current_path()
+                                                    : std::filesystem::weakly_canonical(sc.path);
         const std::filesystem::path script_dir = base_path / "script" / sc.type;
         // Audit B12 follow-up (2026-05-21, native-engine code review):
         // The original B12 fix landed in the 3 role hosts but missed
         // hub_script_runner.cpp — hub-side native scripts would still
         // try to load `__init__.py` (Python entry) and fail.  Same
         // 3-way ternary as the role hosts.
-        const std::string entry_point =
-            (sc.type == "lua")    ? "init.lua"
-          : (sc.type == "native") ? "plugin.so"
-                                  : "__init__.py";
+        const std::string entry_point = (sc.type == "lua")      ? "init.lua"
+                                        : (sc.type == "native") ? "plugin.so"
+                                                                : "__init__.py";
 
         if (!engine().initialize(log_tag, &core()))
         {
-            LOGGER_ERROR("[HubScriptRunner:{}] engine.initialize() failed",
-                         uid);
+            LOGGER_ERROR("[HubScriptRunner:{}] engine.initialize() failed", uid);
             ready_promise().set_value(false);
             return;
         }
         if (!engine().load_script(script_dir, entry_point, /*required_callback=*/""))
         {
-            LOGGER_ERROR("[HubScriptRunner:{}] engine.load_script({}) failed",
-                         uid, script_dir.string());
+            LOGGER_ERROR("[HubScriptRunner:{}] engine.load_script({}) failed", uid,
+                         script_dir.string());
             engine().finalize();
             ready_promise().set_value(false);
             return;
@@ -196,7 +191,8 @@ void HubScriptRunner::worker_main_()
         {
             LOGGER_ERROR("[HubScriptRunner:{}] engine.build_api(HubAPI) "
                          "failed — engine likely lacks hub-side build_api_ "
-                         "override", uid);
+                         "override",
+                         uid);
             engine().finalize();
             ready_promise().set_value(false);
             return;
@@ -241,19 +237,18 @@ void HubScriptRunner::worker_main_()
     auto &state = host_.state();
     auto &core_ = core();
 
-    auto enqueue = [&core_](std::string event,
-                            std::string sender,
-                            nlohmann::json details)
+    auto enqueue = [&core_](std::string event, std::string sender, nlohmann::json details)
     {
         IncomingMessage m;
-        m.event   = std::move(event);
-        m.sender  = std::move(sender);
+        m.event = std::move(event);
+        m.sender = std::move(sender);
         m.details = std::move(details);
         core_.enqueue_message(std::move(m));
     };
 
     state.subscribe_channel_opened(
-        [enqueue](const pylabhub::hub::ChannelEntry &ch) {
+        [enqueue](const pylabhub::hub::ChannelEntry &ch)
+        {
             // Eager presence creation (Phase 1) means the producer-presence
             // exists at REG_REQ time but has not seen its first heartbeat
             // yet — observable is `kRegistering` per HEP-CORE-0023 §2.2.
@@ -261,63 +256,56 @@ void HubScriptRunner::worker_main_()
                     js::channel_to_json(ch, pylabhub::hub::ChannelObservable::kRegistering));
         });
     state.subscribe_channel_status_changed(
-        [enqueue](const pylabhub::hub::ChannelEntry &ch,
-                  pylabhub::hub::ChannelObservable obs) {
-            enqueue("channel_status_changed", ch.name, js::channel_to_json(ch, obs));
-        });
+        [enqueue](const pylabhub::hub::ChannelEntry &ch, pylabhub::hub::ChannelObservable obs)
+        { enqueue("channel_status_changed", ch.name, js::channel_to_json(ch, obs)); });
     state.subscribe_channel_closed(
-        [enqueue](const std::string &name) {
-            enqueue("channel_closed", name, nlohmann::json{{"name", name}});
-        });
+        [enqueue](const std::string &name)
+        { enqueue("channel_closed", name, nlohmann::json{{"name", name}}); });
     state.subscribe_consumer_added(
-        [enqueue](const std::string &channel,
-                  const pylabhub::hub::ConsumerEntry &cons) {
+        [enqueue](const std::string &channel, const pylabhub::hub::ConsumerEntry &cons)
+        {
             nlohmann::json j;
-            j["channel"]  = channel;
+            j["channel"] = channel;
             j["role_uid"] = cons.role_uid;
             j["role_name"] = cons.role_name;
             j["consumer_pid"] = cons.consumer_pid;
             enqueue("consumer_added", channel, std::move(j));
         });
     state.subscribe_consumer_removed(
-        [enqueue](const std::string &channel, const std::string &role_uid) {
+        [enqueue](const std::string &channel, const std::string &role_uid)
+        {
             enqueue("consumer_removed", channel,
                     nlohmann::json{{"channel", channel}, {"role_uid", role_uid}});
         });
-    state.subscribe_role_registered(
-        [enqueue](const pylabhub::hub::RoleEntry &r) {
-            enqueue("role_registered", r.uid, js::role_to_json(r));
-        });
+    state.subscribe_role_registered([enqueue](const pylabhub::hub::RoleEntry &r)
+                                    { enqueue("role_registered", r.uid, js::role_to_json(r)); });
     state.subscribe_role_disconnected(
-        [enqueue](const std::string &uid) {
-            enqueue("role_disconnected", uid, nlohmann::json{{"uid", uid}});
-        });
+        [enqueue](const std::string &uid)
+        { enqueue("role_disconnected", uid, nlohmann::json{{"uid", uid}}); });
     state.subscribe_band_joined(
-        [enqueue](const std::string &band, const pylabhub::hub::BandMember &m) {
+        [enqueue](const std::string &band, const pylabhub::hub::BandMember &m)
+        {
             nlohmann::json j;
-            j["band"]      = band;
-            j["role_uid"]  = m.role_uid;
+            j["band"] = band;
+            j["role_uid"] = m.role_uid;
             j["role_name"] = m.role_name;
             enqueue("band_joined", band, std::move(j));
         });
     state.subscribe_band_left(
         [enqueue](const std::string &band, const std::string &role_uid,
-                  const std::string &role_name,
-                  const std::string &reason) {
+                  const std::string &role_name, const std::string &reason)
+        {
             enqueue("band_left", band,
-                    nlohmann::json{{"band", band}, {"role_uid", role_uid},
-                                    {"role_name", role_name},
-                                    {"reason", reason}});
+                    nlohmann::json{{"band", band},
+                                   {"role_uid", role_uid},
+                                   {"role_name", role_name},
+                                   {"reason", reason}});
         });
-    state.subscribe_peer_connected(
-        [enqueue](const pylabhub::hub::PeerEntry &p) {
-            enqueue("peer_connected", p.uid, js::peer_to_json(p));
-        });
+    state.subscribe_peer_connected([enqueue](const pylabhub::hub::PeerEntry &p)
+                                   { enqueue("peer_connected", p.uid, js::peer_to_json(p)); });
     state.subscribe_peer_disconnected(
-        [enqueue](const std::string &hub_uid) {
-            enqueue("peer_disconnected", hub_uid,
-                    nlohmann::json{{"hub_uid", hub_uid}});
-        });
+        [enqueue](const std::string &hub_uid)
+        { enqueue("peer_disconnected", hub_uid, nlohmann::json{{"hub_uid", hub_uid}}); });
 
     // ── F. Signal ready ───────────────────────────────────────────────────
     //
@@ -358,8 +346,8 @@ void HubScriptRunner::worker_main_()
     // Hand-rolled `next = now + period` only implements FixedRate and
     // silently downgrades the catch-up variant — fixed in Phase 7
     // D1.6 (S2) after the static review.
-    const auto timing      = host_.config().timing().timing_params();
-    const auto policy      = timing.policy;
+    const auto timing = host_.config().timing().timing_params();
+    const auto policy = timing.policy;
     const double period_us = static_cast<double>(timing.period_us);
     const bool is_max_rate = (policy == LoopTimingPolicy::MaxRate);
 
@@ -376,9 +364,8 @@ void HubScriptRunner::worker_main_()
     // exactly one job (advance from a known prior deadline), and the
     // `max` sentinel still flags MaxRate paths uniformly.
     auto deadline = is_max_rate
-        ? Clock::time_point::max()
-        : Clock::now() + std::chrono::microseconds{
-              static_cast<int64_t>(period_us)};
+                        ? Clock::time_point::max()
+                        : Clock::now() + std::chrono::microseconds{static_cast<int64_t>(period_us)};
 
     while (is_running() && !core().is_shutdown_requested())
     {
@@ -427,8 +414,7 @@ void HubScriptRunner::worker_main_()
         // full period has elapsed — script gets one period of warm-up
         // before the first tick.
         const auto now = Clock::now();
-        if (is_max_rate ||
-            (deadline != Clock::time_point::max() && now >= deadline))
+        if (is_max_rate || (deadline != Clock::time_point::max() && now >= deadline))
         {
             api().dispatch_tick();
             // Advance the deadline ONLY when the tick fires.  Events
@@ -439,8 +425,7 @@ void HubScriptRunner::worker_main_()
             // documented catch-up semantic: missed slots fire in tight
             // succession on resume because `compute_next_deadline`
             // walks the absolute grid forward by `period`.
-            deadline = compute_next_deadline(policy, deadline,
-                                              cycle_start, period_us);
+            deadline = compute_next_deadline(policy, deadline, cycle_start, period_us);
         }
 
         // Wait for next event or until the deadline elapses.  MaxRate
@@ -482,11 +467,10 @@ void HubScriptRunner::worker_main_()
             }
             else
             {
-                const auto remain_us = std::chrono::duration_cast<
-                    std::chrono::microseconds>(deadline - Clock::now()).count();
-                const int wait_ms = (remain_us > 0)
-                    ? static_cast<int>(remain_us / 1000)
-                    : 0;
+                const auto remain_us =
+                    std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now())
+                        .count();
+                const int wait_ms = (remain_us > 0) ? static_cast<int>(remain_us / 1000) : 0;
                 core().wait_for_incoming(wait_ms);
             }
 
@@ -529,8 +513,7 @@ void HubScriptRunner::worker_main_()
     LOGGER_INFO("[HubScriptRunner:{}] shutting down — draining pending "
                 "events and running on_stop; cleanup may take up to one "
                 "tick period ({} ms)",
-                uid,
-                is_max_rate ? 0 : static_cast<int>(period_us / 1000));
+                uid, is_max_rate ? 0 : static_cast<int>(period_us / 1000));
 
     // H0. Drain whatever events arrived between the loop's last
     // wait_for_incoming and the shutdown signal — no harm; each event

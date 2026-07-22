@@ -13,14 +13,14 @@
  */
 #include "python_engine.hpp"
 
-#include "python_interpreter_module.hpp"  // ensure_python_interpreter_loaded / release_python_interpreter
-#include "utils/debug_info.hpp"            // PLH_PANIC
+#include "python_interpreter_module.hpp" // ensure_python_interpreter_loaded / release_python_interpreter
+#include "utils/debug_info.hpp"          // PLH_PANIC
 #include "utils/format_tools.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/naming.hpp"
-#include "json_py_helpers.hpp"   // detail::json_to_py / detail::py_to_json
+#include "json_py_helpers.hpp" // detail::json_to_py / detail::py_to_json
 #include "python_helpers.hpp"
 
 #include "plh_platform.hpp"
@@ -32,7 +32,7 @@
 #include "../producer/producer_api.hpp"
 #include "../consumer/consumer_api.hpp"
 #include "../processor/processor_api.hpp"
-#include "utils/hub_api.hpp"   // build_api_(HubAPI&) needs full type
+#include "utils/hub_api.hpp" // build_api_(HubAPI&) needs full type
 
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
@@ -112,8 +112,7 @@ PythonEngine::~PythonEngine()
     // so finalize() short-circuits before clear_pyobjects_ runs anyway,
     // and we still hold the gil_scoped_acquire harmlessly).
     std::optional<py::gil_scoped_acquire> gil;
-    if (::pylabhub::scripting::python_interpreter_is_alive() &&
-        PyGILState_Check() == 0)
+    if (::pylabhub::scripting::python_interpreter_is_alive() && PyGILState_Check() == 0)
     {
         gil.emplace();
     }
@@ -162,14 +161,13 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
         // py::module_::import("site") call below is safe.
         if (!python_venv_.empty())
         {
-            const fs::path exe_path(
-                platform::get_executable_name(/*include_path=*/true));
+            const fs::path exe_path(platform::get_executable_name(/*include_path=*/true));
             const fs::path venvs_dir = resolve_venvs_dir_for_engine(exe_path);
-            const fs::path venv_dir  = venvs_dir / python_venv_;
+            const fs::path venv_dir = venvs_dir / python_venv_;
             if (!fs::is_directory(venv_dir))
             {
-                LOGGER_ERROR("[{}] PythonEngine: venv '{}' not found at '{}'",
-                             log_tag_, python_venv_, venv_dir.string());
+                LOGGER_ERROR("[{}] PythonEngine: venv '{}' not found at '{}'", log_tag_,
+                             python_venv_, venv_dir.string());
                 return false;
             }
 
@@ -183,8 +181,8 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
             {
                 for (const auto &entry : fs::directory_iterator(lib_dir))
                 {
-                    if (entry.is_directory()
-                        && entry.path().filename().string().starts_with("python"))
+                    if (entry.is_directory() &&
+                        entry.path().filename().string().starts_with("python"))
                     {
                         site_packages = entry.path() / "site-packages";
                         break;
@@ -194,14 +192,14 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 #endif
             if (site_packages.empty() || !fs::is_directory(site_packages))
             {
-                LOGGER_ERROR("[{}] PythonEngine: venv '{}' site-packages not found",
-                             log_tag_, python_venv_);
+                LOGGER_ERROR("[{}] PythonEngine: venv '{}' site-packages not found", log_tag_,
+                             python_venv_);
                 return false;
             }
 
             py::module_::import("site").attr("addsitedir")(site_packages.string());
-            LOGGER_INFO("[{}] PythonEngine: activated venv '{}' (site-packages: '{}')",
-                        log_tag_, python_venv_, site_packages.string());
+            LOGGER_INFO("[{}] PythonEngine: activated venv '{}' (site-packages: '{}')", log_tag_,
+                        python_venv_, site_packages.string());
         }
     }
     catch (const std::exception &e)
@@ -221,11 +219,10 @@ bool PythonEngine::init_engine_(const std::string &log_tag, RoleHostCore *core)
 // ============================================================================
 
 bool PythonEngine::load_script(const std::filesystem::path &script_dir,
-                                const std::string &entry_point,
-                                const std::string &required_callback)
+                               const std::string &entry_point, const std::string &required_callback)
 {
-    entry_point_        = entry_point.empty() ? "__init__.py" : entry_point;
-    required_callback_  = required_callback;
+    entry_point_ = entry_point.empty() ? "__init__.py" : entry_point;
+    required_callback_ = required_callback;
 
     // PythonEngine uses package-based import (always __init__.py).
     // Warn if caller specified a different entry_point.
@@ -246,8 +243,7 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         // "Numeric-token prefix convention").  If log_tag_ isn't a
         // full uid (e.g. pre-init log tag `"python"`), fall back.
         std::string uid_hex = "uid00000000";
-        if (auto parts = pylabhub::hub::parse_role_uid(log_tag_);
-            parts.has_value())
+        if (auto parts = pylabhub::hub::parse_role_uid(log_tag_); parts.has_value())
         {
             uid_hex.assign(parts->unique.data(), parts->unique.size());
         }
@@ -264,39 +260,31 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         // So if script_dir is already ".../script/python", base_dir should be script_dir's
         // grandparent and module_name = script_dir parent's name.
         const fs::path script_path = fs::weakly_canonical(script_dir);
-        const fs::path base_dir    = script_path.parent_path().parent_path();
-        module_name                = script_path.parent_path().filename().string();
-        script_type                = script_path.filename().string();
+        const fs::path base_dir = script_path.parent_path().parent_path();
+        module_name = script_path.parent_path().filename().string();
+        script_type = script_path.filename().string();
 
-        module_ = import_role_script_module(
-            log_tag_, module_name, base_dir.string(), uid_hex, script_type);
+        module_ = import_role_script_module(log_tag_, module_name, base_dir.string(), uid_hex,
+                                            script_type);
 
         LOGGER_INFO("[{}] Loaded Python script from: {}", log_tag_, script_dir.string());
 
         // Extract callback references.
-        py_on_init_    = py::getattr(module_, "on_init",    py::none());
-        py_on_stop_    = py::getattr(module_, "on_stop",    py::none());
-        py_on_channel_closing_ =
-            py::getattr(module_, "on_channel_closing", py::none());
-        py_on_consumer_died_ =
-            py::getattr(module_, "on_consumer_died", py::none());
-        py_on_hub_dead_ =
-            py::getattr(module_, "on_hub_dead",       py::none());
+        py_on_init_ = py::getattr(module_, "on_init", py::none());
+        py_on_stop_ = py::getattr(module_, "on_stop", py::none());
+        py_on_channel_closing_ = py::getattr(module_, "on_channel_closing", py::none());
+        py_on_consumer_died_ = py::getattr(module_, "on_consumer_died", py::none());
+        py_on_hub_dead_ = py::getattr(module_, "on_hub_dead", py::none());
         // S4 expansion 2026-05-19 — typed band callbacks.
-        py_on_band_member_joined_ =
-            py::getattr(module_, "on_band_member_joined", py::none());
-        py_on_band_member_left_ =
-            py::getattr(module_, "on_band_member_left",   py::none());
-        py_on_band_message_ =
-            py::getattr(module_, "on_band_message",       py::none());
-        py_on_band_lost_ =
-            py::getattr(module_, "on_band_lost",          py::none());
-        py_on_allowlist_changed_ =
-            py::getattr(module_, "on_allowlist_changed",  py::none());
+        py_on_band_member_joined_ = py::getattr(module_, "on_band_member_joined", py::none());
+        py_on_band_member_left_ = py::getattr(module_, "on_band_member_left", py::none());
+        py_on_band_message_ = py::getattr(module_, "on_band_message", py::none());
+        py_on_band_lost_ = py::getattr(module_, "on_band_lost", py::none());
+        py_on_allowlist_changed_ = py::getattr(module_, "on_allowlist_changed", py::none());
         py_on_produce_ = py::getattr(module_, "on_produce", py::none());
         py_on_consume_ = py::getattr(module_, "on_consume", py::none());
         py_on_process_ = py::getattr(module_, "on_process", py::none());
-        py_on_inbox_   = py::getattr(module_, "on_inbox",   py::none());
+        py_on_inbox_ = py::getattr(module_, "on_inbox", py::none());
 
         // Populate the standard-callback-presence cache on the
         // `ScriptEngine` base (HEP-CORE-0011 §"Engine Thread Affinity";
@@ -306,28 +294,22 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         // map lookup, which is what `RoleAPIBase::on_heartbeat_tick_`
         // (ctrl thread) and `HubAPI::augment_*` (admin thread) rely on.
         reset_standard_callback_cache();
-        set_standard_callback_present("on_init",    is_callable(py_on_init_));
-        set_standard_callback_present("on_stop",    is_callable(py_on_stop_));
-        set_standard_callback_present("on_channel_closing",
-                                       is_callable(py_on_channel_closing_));
-        set_standard_callback_present("on_consumer_died",
-                                       is_callable(py_on_consumer_died_));
-        set_standard_callback_present("on_hub_dead",
-                                       is_callable(py_on_hub_dead_));
+        set_standard_callback_present("on_init", is_callable(py_on_init_));
+        set_standard_callback_present("on_stop", is_callable(py_on_stop_));
+        set_standard_callback_present("on_channel_closing", is_callable(py_on_channel_closing_));
+        set_standard_callback_present("on_consumer_died", is_callable(py_on_consumer_died_));
+        set_standard_callback_present("on_hub_dead", is_callable(py_on_hub_dead_));
         set_standard_callback_present("on_band_member_joined",
-                                       is_callable(py_on_band_member_joined_));
-        set_standard_callback_present("on_band_member_left",
-                                       is_callable(py_on_band_member_left_));
-        set_standard_callback_present("on_band_message",
-                                       is_callable(py_on_band_message_));
-        set_standard_callback_present("on_band_lost",
-                                       is_callable(py_on_band_lost_));
+                                      is_callable(py_on_band_member_joined_));
+        set_standard_callback_present("on_band_member_left", is_callable(py_on_band_member_left_));
+        set_standard_callback_present("on_band_message", is_callable(py_on_band_message_));
+        set_standard_callback_present("on_band_lost", is_callable(py_on_band_lost_));
         set_standard_callback_present("on_allowlist_changed",
-                                       is_callable(py_on_allowlist_changed_));
+                                      is_callable(py_on_allowlist_changed_));
         set_standard_callback_present("on_produce", is_callable(py_on_produce_));
         set_standard_callback_present("on_consume", is_callable(py_on_consume_));
         set_standard_callback_present("on_process", is_callable(py_on_process_));
-        set_standard_callback_present("on_inbox",   is_callable(py_on_inbox_));
+        set_standard_callback_present("on_inbox", is_callable(py_on_inbox_));
         // Probe additional standard names whose presence is queried by
         // ctrl-thread / admin-thread callers — adding entries here when
         // new standard callbacks are introduced is a coordinated change
@@ -337,11 +319,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         // synchronised with the LuaEngine probe list below — both
         // power the same `has_callback()` cache in the base class.
         const char *const probe_names[] = {
-            "on_heartbeat",
-            "on_query_metrics",
-            "on_list_roles",
-            "on_get_channel",
-            "on_peer_message",
+            "on_heartbeat",   "on_query_metrics", "on_list_roles",
+            "on_get_channel", "on_peer_message",
         };
         for (const char *probe : probe_names)
         {
@@ -359,8 +338,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("[{}] Failed to load script from '{}': {}",
-                     log_tag_, script_dir.string(), e.what());
+        LOGGER_ERROR("[{}] Failed to load script from '{}': {}", log_tag_, script_dir.string(),
+                     e.what());
         return false;
     }
 
@@ -381,12 +360,12 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         if (!out_slot_type_.is_none())
         {
-            slot_alias_      = build_ctypes_type_(out_slot_spec_, "SlotFrame", out_slot_spec_.packing);
+            slot_alias_ = build_ctypes_type_(out_slot_spec_, "SlotFrame", out_slot_spec_.packing);
             slot_alias_spec_ = out_slot_spec_;
         }
         if (!out_fz_type_.is_none())
         {
-            fz_alias_      = build_ctypes_type_(out_fz_spec_, "FlexFrame", out_fz_spec_.packing);
+            fz_alias_ = build_ctypes_type_(out_fz_spec_, "FlexFrame", out_fz_spec_.packing);
             fz_alias_spec_ = out_fz_spec_;
         }
     }
@@ -394,13 +373,13 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         if (!in_slot_type_ro_.is_none())
         {
-            slot_alias_ro_   = build_ctypes_type_(in_slot_spec_, "SlotFrame", in_slot_spec_.packing);
-            slot_alias_ro_   = wrap_readonly_(slot_alias_ro_);
+            slot_alias_ro_ = build_ctypes_type_(in_slot_spec_, "SlotFrame", in_slot_spec_.packing);
+            slot_alias_ro_ = wrap_readonly_(slot_alias_ro_);
             slot_alias_spec_ = in_slot_spec_;
         }
         if (!in_fz_type_.is_none())
         {
-            fz_alias_      = build_ctypes_type_(in_fz_spec_, "FlexFrame", in_fz_spec_.packing);
+            fz_alias_ = build_ctypes_type_(in_fz_spec_, "FlexFrame", in_fz_spec_.packing);
             fz_alias_spec_ = in_fz_spec_;
         }
     }
@@ -412,7 +391,8 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         void *ptr = api.flexzone(side);
         size_t sz = api.flexzone_size(side);
-        if (!ptr || sz == 0 || type.is_none()) return std::nullopt;
+        if (!ptr || sz == 0 || type.is_none())
+            return std::nullopt;
         return make_slot_view_(spec, type, ptr, sz, /*readonly=*/false);
     };
 
@@ -421,8 +401,8 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         producer_api_ = std::make_unique<producer::ProducerAPI>(api);
         producer_api_->shared_data_ = py::dict();
-        producer_api_->set_tx_flexzone(cache_fz(
-            scripting::ChannelSide::Tx, out_fz_type_, out_fz_spec_));
+        producer_api_->set_tx_flexzone(
+            cache_fz(scripting::ChannelSide::Tx, out_fz_type_, out_fz_spec_));
 
         py::module_ mod = py::module_::import("pylabhub_producer");
         api_obj_ = py::cast(producer_api_.get(), py::return_value_policy::reference);
@@ -431,8 +411,8 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         consumer_api_ = std::make_unique<consumer::ConsumerAPI>(api);
         consumer_api_->shared_data_ = py::dict();
-        consumer_api_->set_rx_flexzone(cache_fz(
-            scripting::ChannelSide::Rx, in_fz_type_, in_fz_spec_));
+        consumer_api_->set_rx_flexzone(
+            cache_fz(scripting::ChannelSide::Rx, in_fz_type_, in_fz_spec_));
 
         py::module_ mod = py::module_::import("pylabhub_consumer");
         api_obj_ = py::cast(consumer_api_.get(), py::return_value_policy::reference);
@@ -441,10 +421,10 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     {
         processor_api_ = std::make_unique<processor::ProcessorAPI>(api);
         processor_api_->shared_data_ = py::dict();
-        processor_api_->set_tx_flexzone(cache_fz(
-            scripting::ChannelSide::Tx, out_fz_type_, out_fz_spec_));
-        processor_api_->set_rx_flexzone(cache_fz(
-            scripting::ChannelSide::Rx, in_fz_type_, in_fz_spec_));
+        processor_api_->set_tx_flexzone(
+            cache_fz(scripting::ChannelSide::Tx, out_fz_type_, out_fz_spec_));
+        processor_api_->set_rx_flexzone(
+            cache_fz(scripting::ChannelSide::Rx, in_fz_type_, in_fz_spec_));
 
         py::module_ mod = py::module_::import("pylabhub_processor");
         api_obj_ = py::cast(processor_api_.get(), py::return_value_policy::reference);
@@ -460,11 +440,11 @@ bool PythonEngine::build_api_(RoleAPIBase &api)
     // standard Python convention for marking a module as unavailable. This
     // makes `import pylabhub_<wrong_role>` raise ImportError at runtime.
     {
-        static const char *all_modules[] = {
-            "pylabhub_producer", "pylabhub_consumer", "pylabhub_processor"};
-        const char *active = (api_->short_tag() == "prod") ? "pylabhub_producer"
-                           : (api_->short_tag() == "cons") ? "pylabhub_consumer"
-                                                       : "pylabhub_processor";
+        static const char *all_modules[] = {"pylabhub_producer", "pylabhub_consumer",
+                                            "pylabhub_processor"};
+        const char *active = (api_->short_tag() == "prod")   ? "pylabhub_producer"
+                             : (api_->short_tag() == "cons") ? "pylabhub_consumer"
+                                                             : "pylabhub_processor";
         py::object sys_modules = py::module_::import("sys").attr("modules");
         for (const char *mod : all_modules)
         {
@@ -578,9 +558,12 @@ void PythonEngine::finalize_engine_()
 
     clear_pyobjects_();
 
-    if (producer_api_)  producer_api_->clear_inbox_cache();
-    if (consumer_api_)  consumer_api_->clear_inbox_cache();
-    if (processor_api_) processor_api_->clear_inbox_cache();
+    if (producer_api_)
+        producer_api_->clear_inbox_cache();
+    if (consumer_api_)
+        consumer_api_->clear_inbox_cache();
+    if (processor_api_)
+        processor_api_->clear_inbox_cache();
 
     producer_api_.reset();
     consumer_api_.reset();
@@ -642,9 +625,8 @@ bool PythonEngine::invoke(const std::string &name, const nlohmann::json &args)
     return future.get().status == InvokeStatus::Ok;
 }
 
-InvokeResponse PythonEngine::invoke_returning(const std::string &name,
-                                               const nlohmann::json &args,
-                                               int64_t timeout_ms)
+InvokeResponse PythonEngine::invoke_returning(const std::string &name, const nlohmann::json &args,
+                                              int64_t timeout_ms)
 {
     if (!is_accepting())
         return {InvokeStatus::EngineShutdown, {}};
@@ -658,8 +640,7 @@ InvokeResponse PythonEngine::invoke_returning(const std::string &name,
         std::lock_guard lk(queue_mu_);
         if (!is_accepting())
             return {InvokeStatus::EngineShutdown, {}};
-        request_queue_.push_back({name, args, RequestKind::InvokeReturning,
-                                  std::move(promise)});
+        request_queue_.push_back({name, args, RequestKind::InvokeReturning, std::move(promise)});
     }
     // Wake the worker thread so it drains process_pending() promptly,
     // matching the §12.4 augmentation request transport contract.
@@ -672,8 +653,7 @@ InvokeResponse PythonEngine::invoke_returning(const std::string &name,
     if (timeout_ms < 0)
         return future.get();
 
-    if (future.wait_for(std::chrono::milliseconds(timeout_ms))
-        == std::future_status::ready)
+    if (future.wait_for(std::chrono::milliseconds(timeout_ms)) == std::future_status::ready)
     {
         return future.get();
     }
@@ -764,8 +744,7 @@ InvokeResponse PythonEngine::execute_direct_(const std::string &name)
     return resp;
 }
 
-InvokeResponse PythonEngine::execute_direct_(const std::string &name,
-                                              const nlohmann::json &args)
+InvokeResponse PythonEngine::execute_direct_(const std::string &name, const nlohmann::json &args)
 {
     if (name.empty())
         return {InvokeStatus::NotFound, {}};
@@ -888,8 +867,7 @@ void PythonEngine::process_pending_()
             req.promise.set_value(eval_direct_(req.name));
             break;
         case RequestKind::InvokeReturning:
-            req.promise.set_value(
-                execute_direct_returning_(req.name.c_str(), req.args));
+            req.promise.set_value(execute_direct_returning_(req.name.c_str(), req.args));
             break;
         case RequestKind::Invoke:
         default:
@@ -907,7 +885,6 @@ void PythonEngine::process_pending_()
 // ============================================================================
 // has_callback
 // ============================================================================
-
 
 bool PythonEngine::probe_uncached_callback_(const std::string &name) const noexcept
 {
@@ -938,9 +915,8 @@ bool PythonEngine::probe_uncached_callback_(const std::string &name) const noexc
 // register_slot_type — build ctypes/numpy type and cache it
 // ============================================================================
 
-bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
-                                       const std::string &type_name,
-                                       const std::string &packing)
+bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec, const std::string &type_name,
+                                      const std::string &packing)
 {
     // Validate canonical name UP FRONT — before any side effects.
     // Rejecting unknown names here (rather than silently falling
@@ -949,11 +925,8 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
     // script_engine.hpp::register_slot_type: only the five canonical
     // frame names are valid.  A typo in a role host / schema config
     // must fail loudly at this point.
-    if (type_name != "InSlotFrame"
-        && type_name != "OutSlotFrame"
-        && type_name != "InFlexFrame"
-        && type_name != "OutFlexFrame"
-        && type_name != "InboxFrame")
+    if (type_name != "InSlotFrame" && type_name != "OutSlotFrame" && type_name != "InFlexFrame" &&
+        type_name != "OutFlexFrame" && type_name != "InboxFrame")
     {
         LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
                      "'{}' — must be one of InSlotFrame, OutSlotFrame, "
@@ -964,8 +937,8 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
 
     if (!spec.has_schema)
     {
-        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false",
-                     log_tag_, type_name);
+        LOGGER_ERROR("[{}] register_slot_type('{}') called with has_schema=false", log_tag_,
+                     type_name);
         return false;
     }
 
@@ -999,7 +972,7 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
         if (type_name == "InSlotFrame")
         {
             in_slot_type_ro_ = wrap_readonly_(type);
-            in_slot_spec_    = stored_spec;
+            in_slot_spec_ = stored_spec;
         }
         else if (type_name == "OutSlotFrame")
         {
@@ -1016,16 +989,16 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
             out_fz_type_ = type;
             out_fz_spec_ = stored_spec;
         }
-        else  // type_name == "InboxFrame" — guaranteed by upfront name check
+        else // type_name == "InboxFrame" — guaranteed by upfront name check
         {
             inbox_type_ro_ = wrap_readonly_(type);
-            inbox_spec_    = stored_spec;
+            inbox_spec_ = stored_spec;
         }
     }
     catch (const std::exception &e)
     {
-        LOGGER_ERROR("[{}] PythonEngine: register_slot_type('{}') failed: {}",
-                     log_tag_, type_name, e.what());
+        LOGGER_ERROR("[{}] PythonEngine: register_slot_type('{}') failed: {}", log_tag_, type_name,
+                     e.what());
         return false;
     }
 
@@ -1038,7 +1011,6 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec,
 
 size_t PythonEngine::type_sizeof(const std::string &type_name) const
 {
-    
 
     // Return size for the cached type (represents the actual struct size).
     py::object type = py::none();
@@ -1076,8 +1048,8 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
         // log at DEBUG so the cause shows up in diagnostic traces; without
         // this the caller would see an unexplained "size = 0" and have
         // no signal that ctypes itself raised.
-        LOGGER_DEBUG("[{}] PythonEngine: ctypes_sizeof('{}') threw: {}",
-                     log_tag_, type_name, e.what());
+        LOGGER_DEBUG("[{}] PythonEngine: ctypes_sizeof('{}') threw: {}", log_tag_, type_name,
+                     e.what());
         return 0;
     }
 }
@@ -1086,8 +1058,7 @@ size_t PythonEngine::type_sizeof(const std::string &type_name) const
 // invoke_on_init — on_init(api)
 // ============================================================================
 
-pylabhub::scripting::ScriptEngine::InitStatus
-PythonEngine::invoke_on_init()
+pylabhub::scripting::ScriptEngine::InitStatus PythonEngine::invoke_on_init()
 {
     // HEP-CORE-0011 §"Loop-ready gate":
     //   - No `on_init` defined                    → Ready (default alone)
@@ -1108,9 +1079,7 @@ PythonEngine::invoke_on_init()
         // whose on_init has no explicit return).
         if (result.is_none())
             return InitStatus::Ready;
-        return result.cast<bool>()
-                   ? InitStatus::Ready
-                   : InitStatus::NotReady;
+        return result.cast<bool>() ? InitStatus::Ready : InitStatus::NotReady;
     }
     catch (py::error_already_set &e)
     {
@@ -1122,10 +1091,9 @@ PythonEngine::invoke_on_init()
         // Coercion failure (e.g. script returned an object that isn't
         // bool-convertible) — treat as NotReady + surface the error
         // through the standard script-error channel.
-        LOGGER_ERROR(
-            "[{}] on_init returned a value that is not convertible to "
-            "bool: {} — treating cycle as NotReady",
-            log_tag_, e.what());
+        LOGGER_ERROR("[{}] on_init returned a value that is not convertible to "
+                     "bool: {} — treating cycle as NotReady",
+                     log_tag_, e.what());
         return InitStatus::NotReady;
     }
 }
@@ -1157,8 +1125,7 @@ void PythonEngine::invoke_on_stop()
 // invoke_on_channel_closing — on_channel_closing(channel, reason, api)
 // ============================================================================
 
-void PythonEngine::invoke_on_channel_closing(const std::string &channel,
-                                              const std::string &reason)
+void PythonEngine::invoke_on_channel_closing(const std::string &channel, const std::string &reason)
 {
     if (!is_callable(py_on_channel_closing_))
         return;
@@ -1179,8 +1146,8 @@ void PythonEngine::invoke_on_channel_closing(const std::string &channel,
 // ============================================================================
 
 void PythonEngine::invoke_on_consumer_died(const std::string &channel,
-                                            const std::string &consumer_uid,
-                                            const std::string &reason)
+                                           const std::string &consumer_uid,
+                                           const std::string &reason)
 {
     if (!is_callable(py_on_consumer_died_))
         return;
@@ -1235,7 +1202,8 @@ void PythonEngine::invoke_on_band_member_joined(const std::string &band,
                                                 const std::string &role_uid,
                                                 const std::string &role_name)
 {
-    if (!is_callable(py_on_band_member_joined_)) return;
+    if (!is_callable(py_on_band_member_joined_))
+        return;
     py::gil_scoped_acquire g;
     try
     {
@@ -1247,11 +1215,11 @@ void PythonEngine::invoke_on_band_member_joined(const std::string &band,
     }
 }
 
-void PythonEngine::invoke_on_band_member_left(const std::string &band,
-                                              const std::string &role_uid,
+void PythonEngine::invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
                                               const std::string &reason)
 {
-    if (!is_callable(py_on_band_member_left_)) return;
+    if (!is_callable(py_on_band_member_left_))
+        return;
     py::gil_scoped_acquire g;
     try
     {
@@ -1263,11 +1231,12 @@ void PythonEngine::invoke_on_band_member_left(const std::string &band,
     }
 }
 
-void PythonEngine::invoke_on_band_message(const std::string  &band,
-                                          const std::string  &sender_role_uid,
+void PythonEngine::invoke_on_band_message(const std::string &band,
+                                          const std::string &sender_role_uid,
                                           const nlohmann::json &body)
 {
-    if (!is_callable(py_on_band_message_)) return;
+    if (!is_callable(py_on_band_message_))
+        return;
     py::gil_scoped_acquire g;
     try
     {
@@ -1282,10 +1251,10 @@ void PythonEngine::invoke_on_band_message(const std::string  &band,
     }
 }
 
-void PythonEngine::invoke_on_band_lost(const std::string &band,
-                                       const std::string &reason)
+void PythonEngine::invoke_on_band_lost(const std::string &band, const std::string &reason)
 {
-    if (!is_callable(py_on_band_lost_)) return;
+    if (!is_callable(py_on_band_lost_))
+        return;
     py::gil_scoped_acquire g;
     try
     {
@@ -1297,12 +1266,12 @@ void PythonEngine::invoke_on_band_lost(const std::string &band,
     }
 }
 
-void PythonEngine::invoke_on_allowlist_changed(
-    const std::string &channel,
-    const std::vector<AllowedPeer> &allowlist,
-    const std::string &reason)
+void PythonEngine::invoke_on_allowlist_changed(const std::string &channel,
+                                               const std::vector<AllowedPeer> &allowlist,
+                                               const std::string &reason)
 {
-    if (!is_callable(py_on_allowlist_changed_)) return;
+    if (!is_callable(py_on_allowlist_changed_))
+        return;
     py::gil_scoped_acquire g;
     try
     {
@@ -1312,7 +1281,7 @@ void PythonEngine::invoke_on_allowlist_changed(
         {
             py::dict entry;
             entry["role_uid"] = p.role_uid;
-            entry["pubkey"]   = p.pubkey;
+            entry["pubkey"] = p.pubkey;
             py_allowlist.append(entry);
         }
         py_on_allowlist_changed_(channel, py_allowlist, reason, api_obj_);
@@ -1327,9 +1296,7 @@ void PythonEngine::invoke_on_allowlist_changed(
 // invoke_produce — on_produce(tx, msgs, api) -> bool
 // ============================================================================
 
-InvokeResult PythonEngine::invoke_produce(
-    InvokeTx tx,
-    std::vector<IncomingMessage> &msgs)
+InvokeResult PythonEngine::invoke_produce(InvokeTx tx, std::vector<IncomingMessage> &msgs)
 {
     if (!is_callable(py_on_produce_))
     {
@@ -1351,7 +1318,8 @@ InvokeResult PythonEngine::invoke_produce(
         {
             PyTxChannel tx_ch;
             if (tx.slot != nullptr && !out_slot_type_.is_none())
-                tx_ch.slot = make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
+                tx_ch.slot =
+                    make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
             py::list msgs_list = build_messages_list_(msgs);
             py::object ret = py_on_produce_(py::cast(tx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_produce");
@@ -1369,9 +1337,7 @@ InvokeResult PythonEngine::invoke_produce(
 // invoke_consume — on_consume(rx, msgs, api) -> bool
 // ============================================================================
 
-InvokeResult PythonEngine::invoke_consume(
-    InvokeRx rx,
-    std::vector<IncomingMessage> &msgs)
+InvokeResult PythonEngine::invoke_consume(InvokeRx rx, std::vector<IncomingMessage> &msgs)
 {
     if (!is_callable(py_on_consume_))
     {
@@ -1394,9 +1360,8 @@ InvokeResult PythonEngine::invoke_consume(
             PyRxChannel rx_ch;
             if (rx.slot != nullptr && !in_slot_type_ro_.is_none())
             {
-                rx_ch.slot = make_slot_view_(
-                    in_slot_spec_, in_slot_type_ro_,
-                    const_cast<void *>(rx.slot), rx.slot_size, true);
+                rx_ch.slot = make_slot_view_(in_slot_spec_, in_slot_type_ro_,
+                                             const_cast<void *>(rx.slot), rx.slot_size, true);
             }
             py::list msgs_list = build_messages_list_bare_(msgs);
             py::object ret = py_on_consume_(py::cast(rx_ch), msgs_list, api_obj_);
@@ -1415,9 +1380,8 @@ InvokeResult PythonEngine::invoke_consume(
 // invoke_process — on_process(rx, tx, msgs, api) -> bool
 // ============================================================================
 
-InvokeResult PythonEngine::invoke_process(
-    InvokeRx rx, InvokeTx tx,
-    std::vector<IncomingMessage> &msgs)
+InvokeResult PythonEngine::invoke_process(InvokeRx rx, InvokeTx tx,
+                                          std::vector<IncomingMessage> &msgs)
 {
     if (!is_callable(py_on_process_))
     {
@@ -1440,13 +1404,13 @@ InvokeResult PythonEngine::invoke_process(
             PyRxChannel rx_ch;
             if (rx.slot != nullptr && !in_slot_type_ro_.is_none())
             {
-                rx_ch.slot = make_slot_view_(
-                    in_slot_spec_, in_slot_type_ro_,
-                    const_cast<void *>(rx.slot), rx.slot_size, true);
+                rx_ch.slot = make_slot_view_(in_slot_spec_, in_slot_type_ro_,
+                                             const_cast<void *>(rx.slot), rx.slot_size, true);
             }
             PyTxChannel tx_ch;
             if (tx.slot != nullptr && !out_slot_type_.is_none())
-                tx_ch.slot = make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
+                tx_ch.slot =
+                    make_slot_view_(out_slot_spec_, out_slot_type_, tx.slot, tx.slot_size, false);
             py::list msgs_list = build_messages_list_(msgs);
             py::object ret = py_on_process_(py::cast(rx_ch), py::cast(tx_ch), msgs_list, api_obj_);
             result = parse_return_value_(ret, "on_process");
@@ -1504,7 +1468,7 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
             msg_obj.data = inbox_type_ro_.attr("from_buffer_copy")(buf);
         }
         msg_obj.sender_uid = msg.sender_uid;
-        msg_obj.seq        = msg.seq;
+        msg_obj.seq = msg.seq;
 
         py::object ret = py_on_inbox_(py::cast(msg_obj), api_obj_);
         result = parse_return_value_(ret, "on_inbox");
@@ -1522,7 +1486,7 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
 // ============================================================================
 
 py::object PythonEngine::build_ctypes_type_(const hub::SchemaSpec &spec, const std::string &name,
-                                             const std::string &packing)
+                                            const std::string &packing)
 {
     // Override spec packing with the explicitly requested one if provided.
     hub::SchemaSpec effective_spec = spec;
@@ -1538,7 +1502,7 @@ py::object PythonEngine::wrap_readonly_(const py::object &type)
 }
 
 py::object PythonEngine::make_slot_view_(const hub::SchemaSpec &spec, const py::object &type,
-                                          void *data, size_t size, bool readonly)
+                                         void *data, size_t size, bool readonly)
 {
     return make_slot_view(spec, type, data, size, readonly);
 }
@@ -1585,8 +1549,7 @@ py::list PythonEngine::build_messages_list_bare_(std::vector<IncomingMessage> &m
         else
         {
             // Consumer format: bare bytes, no sender identity.
-            lst.append(
-                py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size()));
+            lst.append(py::bytes(reinterpret_cast<const char *>(m.data.data()), m.data.size()));
         }
     }
     return lst;
@@ -1620,7 +1583,7 @@ InvokeResult PythonEngine::parse_return_value_(const py::object &ret, const char
 }
 
 InvokeResult PythonEngine::on_python_error_(const char *callback_name,
-                                             const py::error_already_set &e)
+                                            const py::error_already_set &e)
 {
     LOGGER_ERROR("[{}] {} error: {}", log_tag_, callback_name, e.what());
     return handle_script_error_(callback_name);
@@ -1634,16 +1597,14 @@ InvokeResult PythonEngine::handle_script_error_(const char *callback_tag)
     // build_api's contract.  Mirrors LuaEngine::on_pcall_error_'s
     // resolution shape.  Pre-D4 the direct `api_->core()` access
     // would null-deref on the hub path.
-    RoleHostCore *core = api_     ? api_->core()
-                       : hub_api_ ? hub_api_->core()
-                                  : nullptr;
+    RoleHostCore *core = api_ ? api_->core() : hub_api_ ? hub_api_->core() : nullptr;
     if (core)
         core->inc_script_error_count();
 
     if (stop_on_script_error_)
     {
-        LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error",
-                     log_tag_, callback_tag);
+        LOGGER_ERROR("[{}] stop_on_script_error: requesting shutdown after {} error", log_tag_,
+                     callback_tag);
         if (core)
         {
             // Audit S2 (2026-05-18) — typed StopReason::ScriptError so
@@ -1688,9 +1649,10 @@ void PythonEngine::clear_pyobjects_()
     // assertion fires on a non-worker thread and the process aborts.
     // After release(), m_ptr is null and ~py::object becomes a pure
     // no-op safe for any thread.
-    auto release_to_none = [](py::object &o) noexcept {
-        o = py::none();   // dec_ref old holder, take None (under GIL)
-        o.release();      // detach — m_ptr → nullptr, ~o becomes no-op
+    auto release_to_none = [](py::object &o) noexcept
+    {
+        o = py::none(); // dec_ref old holder, take None (under GIL)
+        o.release();    // detach — m_ptr → nullptr, ~o becomes no-op
     };
 
     release_to_none(module_);
@@ -1734,9 +1696,9 @@ void PythonEngine::clear_pyobjects_()
 
 uint64_t PythonEngine::script_error_count() const noexcept
 {
-    return api_     ? api_->core()->script_error_count()
-         : hub_api_ ? hub_api_->core()->script_error_count()
-                    : 0;
+    return api_       ? api_->core()->script_error_count()
+           : hub_api_ ? hub_api_->core()->script_error_count()
+                      : 0;
 }
 
 } // namespace pylabhub::scripting

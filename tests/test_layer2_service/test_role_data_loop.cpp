@@ -38,12 +38,12 @@ class RunDataLoopTest : public IsolatedProcessTest
 // alongside the test-mutators).  Only visible after the 2026-07-04
 // sodium_init fix let Release CI reach these tests.
 #if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
-#  define SKIP_IF_NO_TEST_ACCESS() ((void)0)
+#define SKIP_IF_NO_TEST_ACCESS() ((void)0)
 #else
-#  define SKIP_IF_NO_TEST_ACCESS()                                                       \
-      GTEST_SKIP() << "Built without PYLABHUB_BUILD_TESTS+Debug — "                      \
-                   << "RoleAPIBase protocol-gate test access is compiled out (mirrors "  \
-                   << "role_host_core.hpp:581 test-mutator gating)."
+#define SKIP_IF_NO_TEST_ACCESS()                                                                   \
+    GTEST_SKIP() << "Built without PYLABHUB_BUILD_TESTS+Debug — "                                  \
+                 << "RoleAPIBase protocol-gate test access is compiled out (mirrors "              \
+                 << "role_host_core.hpp:581 test-mutator gating)."
 #endif
 
 TEST_F(RunDataLoopTest, ShutdownStopsLoop)
@@ -79,7 +79,7 @@ TEST_F(RunDataLoopTest, FrameworkFloorHoldsGate)
     // `ExpectWorkerOk` doesn't treat the intended failure signal as
     // an unexpected error.
     ExpectWorkerOk(w, /*required_substrings=*/{},
-                     /*expected_error_substrings=*/{"event=LoopInitTimeout"});
+                   /*expected_error_substrings=*/{"event=LoopInitTimeout"});
 }
 
 TEST_F(RunDataLoopTest, MetricsIncrement)
@@ -130,7 +130,6 @@ TEST_F(ThreadManagerTest, MultipleThreads)
 // tested; reverse-order verification is a separate follow-up.
 TEST_F(ThreadManagerTest, DrainJoinsAllThreads)
 {
-    auto w = SpawnWorker("role_data_loop.thread_manager_join_in_reverse_order",
-                         {});
+    auto w = SpawnWorker("role_data_loop.thread_manager_join_in_reverse_order", {});
     ExpectWorkerOk(w);
 }

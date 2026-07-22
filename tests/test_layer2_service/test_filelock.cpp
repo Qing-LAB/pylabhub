@@ -52,8 +52,7 @@ class FileLockTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_fl_" + std::string(label) + "_" +
-                      std::to_string(::getpid()) + "_" +
+                     ("plh_l2_fl_" + std::string(label) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)));
         fs::create_directories(p);
         paths_to_clean_.push_back(p);
@@ -96,8 +95,7 @@ TEST_F(FileLockTest, MoveSemantics)
     auto dir = unique_dir("move");
     auto p1 = dir / "move1.txt";
     auto p2 = dir / "move2.txt";
-    auto w  = SpawnWorker("filelock.test_move_semantics",
-                          {p1.string(), p2.string()});
+    auto w = SpawnWorker("filelock.test_move_semantics", {p1.string(), p2.string()});
     ExpectWorkerOk(w);
 }
 
@@ -105,8 +103,7 @@ TEST_F(FileLockTest, DirectoryCreation)
 {
     auto dir = unique_dir("dircreate");
     auto new_dir = dir / "new_dir_for_lock";
-    auto w = SpawnWorker("filelock.test_directory_creation",
-                         {new_dir.string()});
+    auto w = SpawnWorker("filelock.test_directory_creation", {new_dir.string()});
     ExpectWorkerOk(w);
 }
 
@@ -114,8 +111,7 @@ TEST_F(FileLockTest, DirectoryPathLocking)
 {
     auto dir = unique_dir("dirpath");
     auto to_lock = dir / "dir_to_lock_parent";
-    auto w = SpawnWorker("filelock.test_directory_path_locking",
-                         {to_lock.string()});
+    auto w = SpawnWorker("filelock.test_directory_path_locking", {to_lock.string()});
     ExpectWorkerOk(w);
 }
 
@@ -123,8 +119,7 @@ TEST_F(FileLockTest, MultiThreadedNonBlocking)
 {
     auto dir = unique_dir("mt");
     auto path = dir / "multithread.txt";
-    auto w = SpawnWorker("filelock.test_multithreaded_non_blocking",
-                         {path.string()});
+    auto w = SpawnWorker("filelock.test_multithreaded_non_blocking", {path.string()});
     ExpectWorkerOk(w);
 }
 
@@ -145,12 +140,10 @@ TEST_F(FileLockTest, MultiProcessNonBlocking)
 
     // Holder acquires + holds for 300ms so the contender's non-blocking
     // try_lock fails while the lock is still held.
-    auto holder = SpawnWorkerWithReadySignal(
-        "filelock.lock_holder", {path.string(), "300"});
+    auto holder = SpawnWorkerWithReadySignal("filelock.lock_holder", {path.string(), "300"});
     holder.wait_for_ready();
 
-    auto contender = SpawnWorker("filelock.nonblocking_acquire",
-                                 {path.string()});
+    auto contender = SpawnWorker("filelock.nonblocking_acquire", {path.string()});
     ExpectWorkerOk(contender);
 
     holder.wait_for_exit();
@@ -161,7 +154,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
 {
     auto dir = unique_dir("mpbc");
     auto resource_path = dir / "contention_resource.txt";
-    auto log_path      = dir / "contention_log.txt";
+    auto log_path = dir / "contention_log.txt";
 
     constexpr int kProcs = 8;
     constexpr int kIters = 100;
@@ -171,8 +164,7 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     {
         procs.push_back(std::make_unique<WorkerProcess>(
             g_self_exe_path, "filelock.contention_log_access",
-            std::vector<std::string>{resource_path.string(),
-                                     log_path.string(),
+            std::vector<std::string>{resource_path.string(), log_path.string(),
                                      std::to_string(kIters)}));
         ASSERT_TRUE(procs.back()->valid());
     }
@@ -184,7 +176,12 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
 
     // Parse the log and verify mutual exclusion (no overlap between
     // ACQUIRE and RELEASE events across processes).
-    struct LogEntry { long long ts; long pid; std::string action; };
+    struct LogEntry
+    {
+        long long ts;
+        long pid;
+        std::string action;
+    };
     std::ifstream log_stream(log_path);
     ASSERT_TRUE(log_stream.is_open());
 
@@ -205,20 +202,17 @@ TEST_F(FileLockTest, MultiProcessBlockingContention)
     {
         if (e.action == "ACQUIRE")
         {
-            ASSERT_EQ(lock_held, 0)
-                << "Lock acquired while already held; PID " << e.pid
-                << " while " << last_holder << " held at ts=" << e.ts;
+            ASSERT_EQ(lock_held, 0) << "Lock acquired while already held; PID " << e.pid
+                                    << " while " << last_holder << " held at ts=" << e.ts;
             ++lock_held;
             last_holder = e.pid;
         }
         else if (e.action == "RELEASE")
         {
             ASSERT_EQ(lock_held, 1)
-                << "Lock released while not held; PID " << e.pid
-                << " at ts=" << e.ts;
+                << "Lock released while not held; PID " << e.pid << " at ts=" << e.ts;
             ASSERT_EQ(e.pid, last_holder)
-                << "Release PID mismatch (holder " << last_holder
-                << ", releaser " << e.pid << ")";
+                << "Release PID mismatch (holder " << last_holder << ", releaser " << e.pid << ")";
             --lock_held;
         }
     }
@@ -232,12 +226,10 @@ TEST_F(FileLockTest, MultiProcessParentChildBlocking)
 
     // Holder holds for 300ms; contender (parent_child_block) attempts a
     // blocking lock and measures that it blocked for >= 100ms.
-    auto holder = SpawnWorkerWithReadySignal(
-        "filelock.lock_holder", {path.string(), "300"});
+    auto holder = SpawnWorkerWithReadySignal("filelock.lock_holder", {path.string(), "300"});
     holder.wait_for_ready();
 
-    auto contender = SpawnWorkerWithReadySignal(
-        "filelock.parent_child_block", {path.string()});
+    auto contender = SpawnWorkerWithReadySignal("filelock.parent_child_block", {path.string()});
     contender.wait_for_ready();
 
     // Both workers will complete on their own timing; just wait.
@@ -253,12 +245,10 @@ TEST_F(FileLockTest, MultiProcessTryLock)
     auto dir = unique_dir("mp_try");
     auto path = dir / "multiprocess_try_lock.txt";
 
-    auto holder = SpawnWorkerWithReadySignal(
-        "filelock.lock_holder", {path.string(), "300"});
+    auto holder = SpawnWorkerWithReadySignal("filelock.lock_holder", {path.string(), "300"});
     holder.wait_for_ready();
 
-    auto contender = SpawnWorker("filelock.try_lock_nonblocking",
-                                 {path.string()});
+    auto contender = SpawnWorker("filelock.try_lock_nonblocking", {path.string()});
     ExpectWorkerOk(contender);
 
     holder.wait_for_exit();
@@ -284,8 +274,7 @@ TEST_F(FileLockTest, UseWithoutLifecycleAborts)
     w.wait_for_exit();
     ASSERT_NE(w.exit_code(), 0);
     EXPECT_THAT(w.get_stderr(),
-                ::testing::HasSubstr(
-                    "FileLock created before its module was initialized"));
+                ::testing::HasSubstr("FileLock created before its module was initialized"));
 }
 
 TEST_F(FileLockTest, InvalidResourcePath)

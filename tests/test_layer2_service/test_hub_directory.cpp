@@ -6,7 +6,7 @@
  */
 
 #include "utils/hub_directory.hpp"
-#include "utils/naming.hpp"  // is_valid_identifier (PeerUid validation)
+#include "utils/naming.hpp" // is_valid_identifier (PeerUid validation)
 #include "utils/security/key_file_acl.hpp"
 
 #include <gtest/gtest.h>
@@ -29,9 +29,8 @@ static fs::path unique_temp_dir(const char *tag)
 {
     static std::atomic<int> counter{0};
     const int id = counter.fetch_add(1);
-    fs::path d   = fs::temp_directory_path() /
-                   ("plh_hubdir_" + std::string(tag) + "_" +
-                    std::to_string(id));
+    fs::path d =
+        fs::temp_directory_path() / ("plh_hubdir_" + std::string(tag) + "_" + std::to_string(id));
     fs::remove_all(d);
     return d;
 }
@@ -51,11 +50,11 @@ TEST(HubDirectoryTest, Open_StoresBaseAndAccessors)
 
     const auto hd = HubDirectory::open(tmp);
     EXPECT_TRUE(hd.base().is_absolute());
-    EXPECT_EQ(hd.config_file(),    hd.base() / "hub.json");
-    EXPECT_EQ(hd.logs(),           hd.base() / "logs");
-    EXPECT_EQ(hd.run(),            hd.base() / "run");
-    EXPECT_EQ(hd.vault(),          hd.base() / "vault");
-    EXPECT_EQ(hd.schemas(),        hd.base() / "schemas");
+    EXPECT_EQ(hd.config_file(), hd.base() / "hub.json");
+    EXPECT_EQ(hd.logs(), hd.base() / "logs");
+    EXPECT_EQ(hd.run(), hd.base() / "run");
+    EXPECT_EQ(hd.vault(), hd.base() / "vault");
+    EXPECT_EQ(hd.schemas(), hd.base() / "schemas");
     // HEP-CORE-0033 §6.5 (revised 2026-05-31): hub vault filename
     // embeds the hub UID (symmetric with role-side convention) to
     // prevent collisions when multiple hubs share a per-user vault
@@ -203,8 +202,7 @@ TEST(HubDirectoryTest, InitDirectory_WritesParseableTemplate)
     // UID is auto-generated and validates as PeerUid.
     const std::string uid = j["hub"]["uid"].get<std::string>();
     EXPECT_FALSE(uid.empty());
-    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(
-        uid, pylabhub::hub::IdentifierKind::PeerUid));
+    EXPECT_TRUE(pylabhub::hub::is_valid_identifier(uid, pylabhub::hub::IdentifierKind::PeerUid));
 
     // Auth fields deferred to HEP-0035 must NOT be in the template.
     EXPECT_FALSE(j["broker"].contains("default_channel_policy"));
@@ -219,7 +217,7 @@ TEST(HubDirectoryTest, InitDirectory_LogOverridesLand)
     const auto tmp = unique_temp_dir("init_log");
     HubDirectory::LogInitOverrides log;
     log.max_size_mb = 50.0;
-    log.backups     = -1;
+    log.backups = -1;
 
     const int rc = HubDirectory::init_directory(tmp, "OverrideHub", log);
     ASSERT_EQ(rc, 0);

@@ -75,7 +75,5 @@ TEST_F(DatahubRecoveryScenariosTest, ForceResetUnsafeWhenWriterAlive)
     // "write lock held by ALIVE" ERROR (force_reset_slot +
     // release_zombie_writer).  Framework pairs substrings to ERROR
     // lines 1:1, so two entries are required.
-    ExpectWorkerOk(proc, {},
-                   {"write lock held by ALIVE",
-                    "write lock held by ALIVE"});
+    ExpectWorkerOk(proc, {}, {"write lock held by ALIVE", "write lock held by ALIVE"});
 }

@@ -20,8 +20,8 @@
  */
 
 #include "utils/json_fwd.hpp"
-#include "plh_platform.hpp"  // pylabhub::platform::get_pid()
-#include "plh_version_registry.hpp"  // ABI fingerprint (HEP-CORE-0032 §8)
+#include "plh_platform.hpp"         // pylabhub::platform::get_pid()
+#include "plh_version_registry.hpp" // ABI fingerprint (HEP-CORE-0032 §8)
 
 #include <stdexcept>
 #include <string>
@@ -34,15 +34,15 @@ namespace pylabhub::hub
 /// registry).  All fields are string-keyed in the resulting JSON.
 struct ProducerRegInputs
 {
-    std::string channel;     ///< Channel name (= shm_name in current shape).
-    std::string role_uid;    ///< HEP-CORE-0023 §2 role uid.
-    std::string role_name;   ///< Human-readable role name.
-    std::string role_type;    ///< "producer" or "processor" (HEP-0024 role tag).
-    bool        has_shm{false};
+    std::string channel;   ///< Channel name (= shm_name in current shape).
+    std::string role_uid;  ///< HEP-CORE-0023 §2 role uid.
+    std::string role_name; ///< Human-readable role name.
+    std::string role_type; ///< "producer" or "processor" (HEP-0024 role tag).
+    bool has_shm{false};
 
     /// True when the producer publishes via ZMQ (HEP-CORE-0021).  When
     /// set, `zmq_node_endpoint` must also be populated.
-    bool        is_zmq_transport{false};
+    bool is_zmq_transport{false};
     std::string zmq_node_endpoint;
 
     /// Producer's CURVE identity pubkey (Z85, 40 chars).  REQUIRED per
@@ -142,8 +142,7 @@ struct ConsumerRegInputs
 /// HEP-CORE-0007 §12.3).  Extracted to keep the producer + consumer
 /// builders consistent — a drift on either was a real risk before
 /// consolidation (2026-07-09).
-inline void apply_common_reg_envelope(nlohmann::json &   reg,
-                                       const std::string &channel_topology)
+inline void apply_common_reg_envelope(nlohmann::json &reg, const std::string &channel_topology)
 {
     // HEP-CORE-0032 §8.2 — ABI fingerprint envelope (15-field
     // ComponentVersions).  Broker verifies via `verify_peer_versions()`
@@ -151,8 +150,7 @@ inline void apply_common_reg_envelope(nlohmann::json &   reg,
     // absence as verdict='ABSENT' + accept during the roll-out window
     // (§8.5 lenient default).  Future MAJOR bump on broker_proto
     // promotes to REQUIRED.
-    reg["abi_fingerprint"] = pylabhub::version::to_json_object(
-        pylabhub::version::current());
+    reg["abi_fingerprint"] = pylabhub::version::to_json_object(pylabhub::version::current());
     if (const char *bid = pylabhub::version::build_id())
     {
         reg["build_id"] = bid;
@@ -189,11 +187,11 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     // `data_transport`), and `shm_name` (duplicate of `channel_name`)
     // have been retired.
     nlohmann::json reg;
-    reg["channel_name"]      = in.channel;
-    reg["producer_pid"]      = pylabhub::platform::get_pid();
-    reg["role_uid"]          = in.role_uid;
-    reg["role_name"]         = in.role_name;
-    reg["role_type"]         = in.role_type;
+    reg["channel_name"] = in.channel;
+    reg["producer_pid"] = pylabhub::platform::get_pid();
+    reg["role_uid"] = in.role_uid;
+    reg["role_name"] = in.role_name;
+    reg["role_type"] = in.role_type;
     // zmq_pubkey: REQUIRED per HEP-CORE-0036 §4.1 + §5.1 + §6.4.
     // Producer's CURVE identity pubkey, Z85-encoded (40 chars).
     // Broker stores it on ChannelEntry::producers[i].zmq_pubkey, then
@@ -202,13 +200,13 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
     // handshake.  Broker rejects empty / non-40-char with
     // INVALID_REQUEST.  HEP-CORE-0035 §2 makes CURVE unconditional —
     // there is no fallback.
-    reg["zmq_pubkey"]        = in.zmq_pubkey;
+    reg["zmq_pubkey"] = in.zmq_pubkey;
 
     apply_common_reg_envelope(reg, in.channel_topology);
 
     if (in.is_zmq_transport)
     {
-        reg["data_transport"]    = "zmq";
+        reg["data_transport"] = "zmq";
         reg["zmq_node_endpoint"] = in.zmq_node_endpoint;
     }
     else if (in.has_shm)
@@ -219,7 +217,7 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
         // broker side (matches the existing `"zmq"` shape); the
         // endpoint is the URI the consumer dials via
         // `attach_shm_capability_consumer`.
-        reg["data_transport"]          = "shm";
+        reg["data_transport"] = "shm";
         reg["shm_capability_endpoint"] = in.shm_capability_endpoint;
     }
     else
@@ -234,12 +232,11 @@ inline nlohmann::json build_producer_reg_payload(const ProducerRegInputs &in)
         // INVALID_REQUEST and the role tears down with a misleading
         // wire-shape diagnostic that points away from the actual
         // config mismatch.  Fail HERE with a config-pointing message.
-        throw std::logic_error(
-            "build_producer_reg_payload: neither is_zmq_transport nor "
-            "has_shm is set on ProducerRegInputs.  Caller config "
-            "mismatch — likely shm.enabled=false with transport "
-            "defaulted to \"shm\".  Verify transport==\"zmq\" OR "
-            "shm.enabled==true in the role config.");
+        throw std::logic_error("build_producer_reg_payload: neither is_zmq_transport nor "
+                               "has_shm is set on ProducerRegInputs.  Caller config "
+                               "mismatch — likely shm.enabled=false with transport "
+                               "defaulted to \"shm\".  Verify transport==\"zmq\" OR "
+                               "shm.enabled==true in the role config.");
     }
     return reg;
 }
@@ -258,13 +255,13 @@ inline nlohmann::json build_consumer_reg_payload(const ConsumerRegInputs &in)
     // rejects with BODY_SCHEMA_VIOLATION, so the caller sees the
     // contract violation at its source.
     nlohmann::json reg;
-    reg["channel_name"]   = in.channel;
-    reg["role_uid"]       = in.role_uid;
-    reg["role_name"]      = in.role_name;
-    reg["role_type"]      = in.role_type;
+    reg["channel_name"] = in.channel;
+    reg["role_uid"] = in.role_uid;
+    reg["role_name"] = in.role_name;
+    reg["role_type"] = in.role_type;
     reg["data_transport"] = in.data_transport;
-    reg["consumer_pid"]   = pylabhub::platform::get_pid();
-    reg["zmq_pubkey"]     = in.zmq_pubkey;
+    reg["consumer_pid"] = pylabhub::platform::get_pid();
+    reg["zmq_pubkey"] = in.zmq_pubkey;
 
     apply_common_reg_envelope(reg, in.channel_topology);
     return reg;

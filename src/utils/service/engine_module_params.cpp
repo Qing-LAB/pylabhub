@@ -75,11 +75,12 @@ void engine_lifecycle_startup(const char * /*arg*/, void *userdata)
     auto *core = p->api->core();
     if (core)
     {
-        auto check = [&](const char *type_name, size_t expected) {
+        auto check = [&](const char *type_name, size_t expected)
+        {
             size_t actual = p->engine->type_sizeof(type_name);
             if (actual > 0 && actual != expected)
-                throw std::runtime_error(
-                    fmt::format("{} size mismatch: engine={} schema={}", type_name, actual, expected));
+                throw std::runtime_error(fmt::format("{} size mismatch: engine={} schema={}",
+                                                     type_name, actual, expected));
         };
         if (core->has_in_slot())
             check("InSlotFrame", core->in_slot_logical_size());
@@ -111,33 +112,28 @@ void engine_lifecycle_shutdown(const char * /*arg*/, void *userdata)
 }
 
 void validate_fz_info_cache(const RoleAPIBase::FlexzoneInfoCache &cache,
-                            const hub::SchemaSpec &in_fz_spec,
-                            const hub::SchemaSpec &out_fz_spec)
+                            const hub::SchemaSpec &in_fz_spec, const hub::SchemaSpec &out_fz_spec)
 {
     // (a) Cache vs params consistency — catches a role host that
     // populates params but skips the frame's cache populate (or vice
     // versa).
     if (cache.has_tx_fz != out_fz_spec.has_schema)
-        throw std::runtime_error(
-            "FlexzoneInfoCache.has_tx_fz != out_fz_spec.has_schema "
-            "(cache↔params consistency)");
+        throw std::runtime_error("FlexzoneInfoCache.has_tx_fz != out_fz_spec.has_schema "
+                                 "(cache↔params consistency)");
     if (cache.has_rx_fz != in_fz_spec.has_schema)
-        throw std::runtime_error(
-            "FlexzoneInfoCache.has_rx_fz != in_fz_spec.has_schema "
-            "(cache↔params consistency)");
+        throw std::runtime_error("FlexzoneInfoCache.has_rx_fz != in_fz_spec.has_schema "
+                                 "(cache↔params consistency)");
 
     // (b) Cache-internal invariant: physical == align(logical) on each
     // side where has_*_fz is true.  Subsumes the page-alignment property.
     if (cache.has_tx_fz &&
         cache.tx_physical_size != hub::align_to_physical_page(cache.tx_logical_size))
-        throw std::runtime_error(
-            "FlexzoneInfoCache: tx_physical_size != "
-            "align_to_physical_page(tx_logical_size)");
+        throw std::runtime_error("FlexzoneInfoCache: tx_physical_size != "
+                                 "align_to_physical_page(tx_logical_size)");
     if (cache.has_rx_fz &&
         cache.rx_physical_size != hub::align_to_physical_page(cache.rx_logical_size))
-        throw std::runtime_error(
-            "FlexzoneInfoCache: rx_physical_size != "
-            "align_to_physical_page(rx_logical_size)");
+        throw std::runtime_error("FlexzoneInfoCache: rx_physical_size != "
+                                 "align_to_physical_page(rx_logical_size)");
 }
 
 } // namespace pylabhub::scripting

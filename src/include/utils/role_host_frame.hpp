@@ -18,8 +18,8 @@
 #include "pylabhub_utils_export.h"
 #include "utils/config/inbox_config.hpp"
 #include "utils/engine_host.hpp"
-#include "utils/role_presence.hpp"   // scripting::Presence + RoleKind
-#include "utils/schema_types.hpp"    // hub::SchemaSpec (inbox spec parameter)
+#include "utils/role_presence.hpp" // scripting::Presence + RoleKind
+#include "utils/schema_types.hpp"  // hub::SchemaSpec (inbox spec parameter)
 
 #include <memory>
 #include <string>
@@ -80,9 +80,8 @@ struct RoleHostFrameConfig
 class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
 {
   public:
-    RoleHostFrame(config::RoleConfig    config,
-                  std::atomic<bool>    *shutdown_flag,
-                  RoleHostFrameConfig   frame_cfg);
+    RoleHostFrame(config::RoleConfig config, std::atomic<bool> *shutdown_flag,
+                  RoleHostFrameConfig frame_cfg);
 
     ~RoleHostFrame() override;
 
@@ -92,10 +91,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// Read-only accessor for the frame configuration.  Derived classes
     /// (and, after sub-step 2c+, the frame's own setup/teardown bodies)
     /// use this to read short_tag/label/required_callback.
-    [[nodiscard]] const RoleHostFrameConfig &frame_cfg() const noexcept
-    {
-        return frame_cfg_;
-    }
+    [[nodiscard]] const RoleHostFrameConfig &frame_cfg() const noexcept { return frame_cfg_; }
 
     /// Shared teardown body, moved from the three per-role
     /// implementations during M9 sub-step 2b.  Pre-M9 each role host
@@ -123,7 +119,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
 
     /// Resolved (post-load) inbox config.  Copied from
     /// `config().inbox()` during `setup_infrastructure_`.
-    config::InboxConfig              inbox_cfg_;
+    config::InboxConfig inbox_cfg_;
 
     /// Canonical per-channel record list.  Populated by `worker_main_`
     /// calling `build_presences_()` once at startup.  Each Presence
@@ -161,8 +157,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// invokes after `build_presences_()`).
     /// Post-condition: `api_->channel()` / `api_->out_channel()` set
     /// per the shape above; ready for `setup_infrastructure_`.
-    virtual void wire_api_for_presences_(
-        const std::vector<scripting::Presence> &presences);
+    virtual void wire_api_for_presences_(const std::vector<scripting::Presence> &presences);
 
     /// Shared setup body.  Reads from `presences_` (which must be
     /// populated before this call — `worker_main_` calls
@@ -191,7 +186,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// `shm_transport_` (declared below) for the channel lifetime.
     /// `cleanup_tx_capability_` releases it on teardown.
     virtual bool prepare_tx_capability_(hub::TxQueueOptions &tx_opts,
-                                          const std::string   &tx_channel);
+                                        const std::string &tx_channel);
 
     /// HEP-CORE-0041 1i-mig-2 cleanup hook: releases shm_orchestrator_
     /// → shm_acceptor_ → shm_transport_ in LIFO destruction order
@@ -252,7 +247,7 @@ class PYLABHUB_UTILS_EXPORT RoleHostFrame : public RoleHostBase
     /// without a TX presence (Consumer).
     std::unique_ptr<utils::security::IShmCapabilityProducer> shm_transport_;
     std::unique_ptr<utils::security::AttachProtocolAcceptor> shm_acceptor_;
-    std::unique_ptr<utils::security::ShmAttachOrchestrator>  shm_orchestrator_;
+    std::unique_ptr<utils::security::ShmAttachOrchestrator> shm_orchestrator_;
 
   private:
     RoleHostFrameConfig frame_cfg_;

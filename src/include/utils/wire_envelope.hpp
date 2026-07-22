@@ -51,14 +51,14 @@ inline constexpr std::uint8_t kFrameTypeControl = 'C';
 /// no reply sent because the sender is not identified reliably.
 enum class ParseError
 {
-    frame_count,       ///< != 5 frames
-    frame_type_marker, ///< Frame 1 != 'C'
-    msg_type_empty,    ///< Frame 2 empty
-    msg_type_too_long, ///< Frame 2 > 64 bytes
+    frame_count,            ///< != 5 frames
+    frame_type_marker,      ///< Frame 1 != 'C'
+    msg_type_empty,         ///< Frame 2 empty
+    msg_type_too_long,      ///< Frame 2 > 64 bytes
     correlation_too_long,   ///< Frame 3 > 64 bytes
     correlation_missing,    ///< Frame 3 empty on a non-NOTIFY msg_type (I-CORRELATION-STABLE)
-    body_not_json,     ///< Frame 4 parse failure
-    body_not_object,   ///< Frame 4 parsed but not a JSON object
+    body_not_json,          ///< Frame 4 parse failure
+    body_not_object,        ///< Frame 4 parsed but not a JSON object
     envelope_hash_missing,  ///< Body lacks envelope_hash field (I-ENVELOPE-BODY-BINDING)
     envelope_hash_mismatch, ///< envelope_hash disagrees with recomputed value
 };
@@ -108,21 +108,19 @@ class PYLABHUB_UTILS_EXPORT WireEnvelope
     //     onto it before serializing
     //
     // Returns a `zmq::multipart_t` ready for `zmq::send_multipart`.
-    [[nodiscard]] static zmq::multipart_t
-    build_dealer_send(std::string_view identity,
-                      std::string_view msg_type,
-                      std::string_view correlation_id,
-                      nlohmann::json    body);
+    [[nodiscard]] static zmq::multipart_t build_dealer_send(std::string_view identity,
+                                                            std::string_view msg_type,
+                                                            std::string_view correlation_id,
+                                                            nlohmann::json body);
 
     /// 5-frame variant for ROUTER-side sends targeting a specific DEALER.
     /// Frame 0 = the target DEALER's routing_id (target's `role_uid`)
     /// per I-DEALER-IDENTITY; libzmq routes on it, receiver recomputes
     /// `envelope_hash` over it.
-    [[nodiscard]] static zmq::multipart_t
-    build_router_send(std::string_view target_identity,
-                      std::string_view msg_type,
-                      std::string_view correlation_id,
-                      nlohmann::json    body);
+    [[nodiscard]] static zmq::multipart_t build_router_send(std::string_view target_identity,
+                                                            std::string_view msg_type,
+                                                            std::string_view correlation_id,
+                                                            nlohmann::json body);
 
     // ── Parse (inbound) ───────────────────────────────────────────────
     //
@@ -146,9 +144,8 @@ class PYLABHUB_UTILS_EXPORT WireEnvelope
     /// `identity` when it uses `build_dealer_send` on outbound — one
     /// stable per-connection value in both directions.
     [[nodiscard]] static std::optional<WireEnvelope>
-    parse_dealer_recv(zmq::multipart_t &&msg,
-                      std::string_view   dealer_own_routing_id,
-                      ParseError        *err_out = nullptr);
+    parse_dealer_recv(zmq::multipart_t &&msg, std::string_view dealer_own_routing_id,
+                      ParseError *err_out = nullptr);
 
     // ── Accessors ─────────────────────────────────────────────────────
 
@@ -177,10 +174,9 @@ class PYLABHUB_UTILS_EXPORT WireEnvelope
     // Returns lowercase hex (64 chars) of BLAKE2b-256 over
     // (identity || msg_type || correlation_id).
 
-    [[nodiscard]] static std::string compute_envelope_hash(
-        std::string_view identity,
-        std::string_view msg_type,
-        std::string_view correlation_id);
+    [[nodiscard]] static std::string compute_envelope_hash(std::string_view identity,
+                                                           std::string_view msg_type,
+                                                           std::string_view correlation_id);
 
     /// Impl is public for internal parse-helper access.  Not part of the
     /// stable API — treat as opaque outside wire_envelope.cpp.
@@ -202,4 +198,4 @@ class PYLABHUB_UTILS_EXPORT WireEnvelope
            msg_type.substr(msg_type.size() - kSuffix.size()) == kSuffix;
 }
 
-}  // namespace pylabhub::wire
+} // namespace pylabhub::wire

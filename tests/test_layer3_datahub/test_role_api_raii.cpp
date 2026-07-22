@@ -51,8 +51,7 @@ TEST_F(RoleApiRaiiTest, CtxMetricsPassThrough)
 
 TEST_F(RoleApiRaiiTest, RaiiProducerLastSlotWorkUsMultiIter)
 {
-    auto w = SpawnWorker(
-        "role_api_raii.raii_producer_last_slot_work_us_multi_iter", {});
+    auto w = SpawnWorker("role_api_raii.raii_producer_last_slot_work_us_multi_iter", {});
     ExpectWorkerOk(w);
 }
 

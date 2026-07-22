@@ -29,13 +29,13 @@
 #include <string_view>
 
 #if defined(PYLABHUB_IS_POSIX) || defined(__unix__) || defined(__APPLE__)
-#  ifndef PYLABHUB_IS_POSIX
-#    define PYLABHUB_IS_POSIX 1
-#  endif
-#  include <unistd.h> // isatty, STDIN_FILENO, getpass
+#ifndef PYLABHUB_IS_POSIX
+#define PYLABHUB_IS_POSIX 1
+#endif
+#include <unistd.h> // isatty, STDIN_FILENO, getpass
 #elif defined(_WIN32)
-#  include <io.h>      // _isatty, _fileno
-#  include <windows.h> // SetConsoleMode, GetConsoleMode, ENABLE_ECHO_INPUT
+#include <io.h>      // _isatty, _fileno
+#include <windows.h> // SetConsoleMode, GetConsoleMode, ENABLE_ECHO_INPUT
 #endif
 
 namespace pylabhub::cli
@@ -94,11 +94,10 @@ inline std::string read_password_interactive(const char *name, const char *promp
     return pw;
 #elif defined(_WIN32)
     (void)name;
-    HANDLE hStdin   = ::GetStdHandle(STD_INPUT_HANDLE);
-    DWORD  old_mode = 0;
+    HANDLE hStdin = ::GetStdHandle(STD_INPUT_HANDLE);
+    DWORD old_mode = 0;
     const bool is_con =
-        (hStdin != INVALID_HANDLE_VALUE) &&
-        (::GetConsoleMode(hStdin, &old_mode) != 0);
+        (hStdin != INVALID_HANDLE_VALUE) && (::GetConsoleMode(hStdin, &old_mode) != 0);
     if (is_con)
         ::SetConsoleMode(hStdin, old_mode & ~ENABLE_ECHO_INPUT);
     std::fprintf(stderr, "%s", prompt);
@@ -134,9 +133,8 @@ inline std::string read_password_interactive(const char *name, const char *promp
  *                (e.g. "PYLABHUB_ROLE_PASSWORD", "PYLABHUB_HUB_PASSWORD").
  * @param prompt  Prompt displayed when falling back to interactive input.
  */
-inline std::optional<std::string> get_password(const char *name,
-                                                const char *env_var,
-                                                const char *prompt)
+inline std::optional<std::string> get_password(const char *name, const char *env_var,
+                                               const char *prompt)
 {
     if (const char *env = std::getenv(env_var))
         return std::string(env);
@@ -165,10 +163,8 @@ inline std::optional<std::string> get_password(const char *name,
  * @param prompt         First prompt string.
  * @param confirm_prompt Confirmation prompt string.
  */
-inline std::optional<std::string> get_new_password(const char *name,
-                                                    const char *env_var,
-                                                    const char *prompt,
-                                                    const char *confirm_prompt)
+inline std::optional<std::string> get_new_password(const char *name, const char *env_var,
+                                                   const char *prompt, const char *confirm_prompt)
 {
     if (const char *env = std::getenv(env_var))
         return std::string(env);
@@ -182,7 +178,7 @@ inline std::optional<std::string> get_new_password(const char *name,
         return std::nullopt;
     }
 
-    const std::string pw      = read_password_interactive(name, prompt);
+    const std::string pw = read_password_interactive(name, prompt);
     const std::string confirm = read_password_interactive(name, confirm_prompt);
     if (pw != confirm)
     {
@@ -206,8 +202,7 @@ inline std::optional<std::string> get_new_password(const char *name,
  * @param cli_name  Value of the `--name` flag (may be empty).
  * @param prompt    Prompt displayed when falling back to interactive input.
  */
-inline std::optional<std::string> resolve_init_name(const std::string &cli_name,
-                                                     const char        *prompt)
+inline std::optional<std::string> resolve_init_name(const std::string &cli_name, const char *prompt)
 {
     if (!cli_name.empty())
         return cli_name;
@@ -262,18 +257,16 @@ inline std::optional<std::string> resolve_init_name(const std::string &cli_name,
  * parallel format-checking code is permitted in the CLI layer.  Returns
  * nullopt on unresolvable error; diagnostic already on stderr.
  */
-inline std::optional<std::string>
-get_required_uid(std::string_view              side,
-                 std::string_view              env_var,
-                 std::string_view              prompt,
-                 ::pylabhub::hub::IdentifierKind kind,
-                 std::string_view              cli_value,
-                 std::string_view              name_hint,
-                 bool                          no_prompt)
+inline std::optional<std::string> get_required_uid(std::string_view side, std::string_view env_var,
+                                                   std::string_view prompt,
+                                                   ::pylabhub::hub::IdentifierKind kind,
+                                                   std::string_view cli_value,
+                                                   std::string_view name_hint, bool no_prompt)
 {
     // The diagnostic format is shared across every source so operator
     // errors look uniform regardless of how the value arrived.
-    auto invalid_msg = [&](std::string_view value) -> std::string {
+    auto invalid_msg = [&](std::string_view value) -> std::string
+    {
         const char *grammar = (kind == ::pylabhub::hub::IdentifierKind::PeerUid)
                                   ? "PeerUid 'hub.<name>.uid<8hex>'"
                                   : "RoleUid '<tag>.<name>.uid<8hex>'";
@@ -305,10 +298,8 @@ get_required_uid(std::string_view              side,
             {
                 if (::pylabhub::hub::is_valid_identifier(v, kind))
                     return v;
-                std::fprintf(stderr, "Error: %s (from %.*s)\n",
-                             invalid_msg(v).c_str(),
-                             static_cast<int>(env_var.size()),
-                             env_var.data());
+                std::fprintf(stderr, "Error: %s (from %.*s)\n", invalid_msg(v).c_str(),
+                             static_cast<int>(env_var.size()), env_var.data());
                 return std::nullopt;
             }
         }
@@ -360,8 +351,7 @@ get_required_uid(std::string_view              side,
                 return line;
             std::fprintf(stderr, "  %s; try again.\n", invalid_msg(line).c_str());
         }
-        std::fprintf(stderr,
-                     "Error: %s uid not provided after 3 attempts\n",
+        std::fprintf(stderr, "Error: %s uid not provided after 3 attempts\n",
                      std::string(side).c_str());
         return std::nullopt;
     }
@@ -370,8 +360,7 @@ get_required_uid(std::string_view              side,
     std::fprintf(stderr,
                  "Error: %s uid required; supply via --uid <uid>, %.*s "
                  "environment variable, or attach a TTY for interactive prompt\n",
-                 std::string(side).c_str(),
-                 static_cast<int>(env_var.size()), env_var.data());
+                 std::string(side).c_str(), static_cast<int>(env_var.size()), env_var.data());
     return std::nullopt;
 }
 

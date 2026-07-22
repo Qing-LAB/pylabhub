@@ -55,8 +55,7 @@ class RoleLoggingRoundtripTest : public IsolatedProcessTest
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_lrt_" + std::string(prefix) + "_" +
-                      std::to_string(::getpid()) + "_" +
+                     ("plh_l2_lrt_" + std::string(prefix) + "_" + std::to_string(::getpid()) + "_" +
                       std::to_string(ctr.fetch_add(1)));
         paths_to_clean_.push_back(p);
         return p.string();
@@ -72,8 +71,7 @@ class RoleLoggingRoundtripTest : public IsolatedProcessTest
 TEST_F(RoleLoggingRoundtripTest, Producer_DefaultsPreserved)
 {
     auto dir = unique_dir("prod_def");
-    auto w = SpawnWorker("role_logging.roundtrip_defaults_preserved",
-                         {dir, "producer"});
+    auto w = SpawnWorker("role_logging.roundtrip_defaults_preserved", {dir, "producer"});
     ExpectWorkerOk(w);
 }
 
@@ -82,27 +80,24 @@ TEST_F(RoleLoggingRoundtripTest, Producer_DefaultsPreserved)
 TEST_F(RoleLoggingRoundtripTest, Producer_MaxSize_Roundtrip)
 {
     auto dir = unique_dir("prod_ms");
-    auto w   = SpawnWorker("role_logging.roundtrip_max_size",
-                           {dir, "producer", "25.0",
-                            std::to_string(25ULL * 1024 * 1024)});
+    auto w = SpawnWorker("role_logging.roundtrip_max_size",
+                         {dir, "producer", "25.0", std::to_string(25ULL * 1024 * 1024)});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleLoggingRoundtripTest, Consumer_MaxSize_FractionalRoundtrip)
 {
     auto dir = unique_dir("cons_ms");
-    auto w   = SpawnWorker("role_logging.roundtrip_max_size",
-                           {dir, "consumer", "0.5",
-                            std::to_string(512ULL * 1024)});
+    auto w = SpawnWorker("role_logging.roundtrip_max_size",
+                         {dir, "consumer", "0.5", std::to_string(512ULL * 1024)});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleLoggingRoundtripTest, Processor_MaxSize_Roundtrip)
 {
     auto dir = unique_dir("proc_ms");
-    auto w   = SpawnWorker("role_logging.roundtrip_max_size",
-                           {dir, "processor", "100.0",
-                            std::to_string(100ULL * 1024 * 1024)});
+    auto w = SpawnWorker("role_logging.roundtrip_max_size",
+                         {dir, "processor", "100.0", std::to_string(100ULL * 1024 * 1024)});
     ExpectWorkerOk(w);
 }
 
@@ -111,16 +106,14 @@ TEST_F(RoleLoggingRoundtripTest, Processor_MaxSize_Roundtrip)
 TEST_F(RoleLoggingRoundtripTest, Producer_Backups_Roundtrip)
 {
     auto dir = unique_dir("prod_bk");
-    auto w   = SpawnWorker("role_logging.roundtrip_backups",
-                           {dir, "producer", "7", "7"});
+    auto w = SpawnWorker("role_logging.roundtrip_backups", {dir, "producer", "7", "7"});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleLoggingRoundtripTest, Consumer_Backups_One)
 {
     auto dir = unique_dir("cons_bk1");
-    auto w   = SpawnWorker("role_logging.roundtrip_backups",
-                           {dir, "consumer", "1", "1"});
+    auto w = SpawnWorker("role_logging.roundtrip_backups", {dir, "consumer", "1", "1"});
     ExpectWorkerOk(w);
 }
 
@@ -129,18 +122,16 @@ TEST_F(RoleLoggingRoundtripTest, Consumer_Backups_One)
 TEST_F(RoleLoggingRoundtripTest, Producer_Backups_MinusOne_Sentinel)
 {
     auto dir = unique_dir("prod_bkm1");
-    auto w   = SpawnWorker("role_logging.roundtrip_backups",
-                           {dir, "producer", "-1",
-                            std::to_string(LoggingConfig::kKeepAllBackups)});
+    auto w = SpawnWorker("role_logging.roundtrip_backups",
+                         {dir, "producer", "-1", std::to_string(LoggingConfig::kKeepAllBackups)});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleLoggingRoundtripTest, Processor_Backups_MinusOne_Sentinel)
 {
     auto dir = unique_dir("proc_bkm1");
-    auto w   = SpawnWorker("role_logging.roundtrip_backups",
-                           {dir, "processor", "-1",
-                            std::to_string(LoggingConfig::kKeepAllBackups)});
+    auto w = SpawnWorker("role_logging.roundtrip_backups",
+                         {dir, "processor", "-1", std::to_string(LoggingConfig::kKeepAllBackups)});
     ExpectWorkerOk(w);
 }
 
@@ -149,20 +140,18 @@ TEST_F(RoleLoggingRoundtripTest, Processor_Backups_MinusOne_Sentinel)
 TEST_F(RoleLoggingRoundtripTest, Producer_BothOverrides_Roundtrip)
 {
     auto dir = unique_dir("prod_both");
-    auto w   = SpawnWorker("role_logging.roundtrip_both",
-                           {dir, "producer", "50.0", "10",
-                            std::to_string(50ULL * 1024 * 1024), "10"});
+    auto w =
+        SpawnWorker("role_logging.roundtrip_both",
+                    {dir, "producer", "50.0", "10", std::to_string(50ULL * 1024 * 1024), "10"});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleLoggingRoundtripTest, Consumer_BothOverrides_Roundtrip)
 {
     auto dir = unique_dir("cons_both");
-    const std::size_t expected_bytes =
-        static_cast<std::size_t>(12.5 * 1024 * 1024);
+    const std::size_t expected_bytes = static_cast<std::size_t>(12.5 * 1024 * 1024);
     auto w = SpawnWorker("role_logging.roundtrip_both",
-                         {dir, "consumer", "12.5", "-1",
-                          std::to_string(expected_bytes),
+                         {dir, "consumer", "12.5", "-1", std::to_string(expected_bytes),
                           std::to_string(LoggingConfig::kKeepAllBackups)});
     ExpectWorkerOk(w);
 }
@@ -172,15 +161,13 @@ TEST_F(RoleLoggingRoundtripTest, Consumer_BothOverrides_Roundtrip)
 TEST_F(RoleLoggingRoundtripTest, Error_BackupsZero_RejectedAtLoad)
 {
     auto dir = unique_dir("prod_bk0");
-    auto w   = SpawnWorker("role_logging.roundtrip_error_backups_zero",
-                           {dir, "producer"});
+    auto w = SpawnWorker("role_logging.roundtrip_error_backups_zero", {dir, "producer"});
     ExpectWorkerOk(w);
 }
 
 TEST_F(RoleLoggingRoundtripTest, Error_MaxSizeZero_RejectedAtLoad)
 {
     auto dir = unique_dir("prod_ms0");
-    auto w   = SpawnWorker("role_logging.roundtrip_error_maxsize_zero",
-                           {dir, "producer"});
+    auto w = SpawnWorker("role_logging.roundtrip_error_maxsize_zero", {dir, "producer"});
     ExpectWorkerOk(w);
 }

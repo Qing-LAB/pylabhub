@@ -46,22 +46,19 @@ TEST_F(ZmqContextTest, CreateSocket_Works)
 // ─────────────────────────────────────────────────────────────────────
 TEST_F(ZmqContextTest, ApplySocketPolicy_TcpConnect_SetsAll)
 {
-    auto w = SpawnWorker(
-        "zmq_context.apply_socket_policy_tcp_connect_sets_all", {});
+    auto w = SpawnWorker("zmq_context.apply_socket_policy_tcp_connect_sets_all", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZmqContextTest, ApplySocketPolicy_TcpBind_Subset)
 {
-    auto w = SpawnWorker(
-        "zmq_context.apply_socket_policy_tcp_bind_subset", {});
+    auto w = SpawnWorker("zmq_context.apply_socket_policy_tcp_bind_subset", {});
     ExpectWorkerOk(w);
 }
 
 TEST_F(ZmqContextTest, ApplySocketPolicy_InprocSignal_Minimal)
 {
-    auto w = SpawnWorker(
-        "zmq_context.apply_socket_policy_inproc_signal_minimal", {});
+    auto w = SpawnWorker("zmq_context.apply_socket_policy_inproc_signal_minimal", {});
     ExpectWorkerOk(w);
 }
 

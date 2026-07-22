@@ -23,7 +23,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <system_error>
-#include <unistd.h>  // getpid
+#include <unistd.h> // getpid
 
 namespace fs = std::filesystem;
 using pylabhub::utils::RoleDirectory;
@@ -34,7 +34,7 @@ namespace
 std::string read_file(const fs::path &p)
 {
     std::ifstream f(p);
-    return { std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>() };
+    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
 nlohmann::json load_json(const fs::path &p)
@@ -68,9 +68,8 @@ class RoleInitDirectoryTest : public ::testing::Test
     {
         static std::atomic<int> ctr{0};
         fs::path p = fs::temp_directory_path() /
-                     ("plh_l2_init_" + std::string(prefix) + "_" +
-                      std::to_string(::getpid()) + "_" +
-                      std::to_string(ctr.fetch_add(1)));
+                     ("plh_l2_init_" + std::string(prefix) + "_" + std::to_string(::getpid()) +
+                      "_" + std::to_string(ctr.fetch_add(1)));
         paths_to_clean_.push_back(p);
         return p;
     }
@@ -96,14 +95,14 @@ class RoleInitDirectoryTest : public ::testing::Test
 struct RoleSpec
 {
     const char *role_type;       // "producer" / "consumer" / "processor"
-    const char *config_filename;// "producer.json" / ...
-    const char *uid_prefix;     // "prod." / "cons." / "proc."
-    const char *role_label;     // "Producer" / ...
+    const char *config_filename; // "producer.json" / ...
+    const char *uid_prefix;      // "prod." / "cons." / "proc."
+    const char *role_label;      // "Producer" / ...
 };
 
 constexpr RoleSpec kAll[] = {
-    {"producer",  "producer.json",  "prod.", "Producer"},
-    {"consumer",  "consumer.json",  "cons.", "Consumer"},
+    {"producer", "producer.json", "prod.", "Producer"},
+    {"consumer", "consumer.json", "cons.", "Consumer"},
     {"processor", "processor.json", "proc.", "Processor"},
 };
 
@@ -151,8 +150,7 @@ TEST_F(RoleInitDirectoryTest, Producer_UidHasProdPrefix)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "SampleProd"), 0);
     auto j = load_json(dir / "producer.json");
     const auto uid = j["producer"]["uid"].get<std::string>();
-    EXPECT_EQ(uid.rfind("prod.", 0), 0u)
-        << "uid should start with PROD-; got: " << uid;
+    EXPECT_EQ(uid.rfind("prod.", 0), 0u) << "uid should start with PROD-; got: " << uid;
 }
 
 TEST_F(RoleInitDirectoryTest, Consumer_UidHasConsPrefix)
@@ -161,8 +159,7 @@ TEST_F(RoleInitDirectoryTest, Consumer_UidHasConsPrefix)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "consumer", "SampleCons"), 0);
     auto j = load_json(dir / "consumer.json");
     const auto uid = j["consumer"]["uid"].get<std::string>();
-    EXPECT_EQ(uid.rfind("cons.", 0), 0u)
-        << "uid should start with CONS-; got: " << uid;
+    EXPECT_EQ(uid.rfind("cons.", 0), 0u) << "uid should start with CONS-; got: " << uid;
 }
 
 TEST_F(RoleInitDirectoryTest, Processor_UidHasProcPrefix)
@@ -171,8 +168,7 @@ TEST_F(RoleInitDirectoryTest, Processor_UidHasProcPrefix)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "processor", "SampleProc"), 0);
     auto j = load_json(dir / "processor.json");
     const auto uid = j["processor"]["uid"].get<std::string>();
-    EXPECT_EQ(uid.rfind("proc.", 0), 0u)
-        << "uid should start with PROC-; got: " << uid;
+    EXPECT_EQ(uid.rfind("proc.", 0), 0u) << "uid should start with PROC-; got: " << uid;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -218,7 +214,7 @@ TEST_F(RoleInitDirectoryTest, LogOverrides_Both_Producer)
     const auto dir = unique_dir("prod_both");
     RoleDirectory::LogInitOverrides ov;
     ov.max_size_mb = 50.0;
-    ov.backups     = 3;
+    ov.backups = 3;
     ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "X", ov), 0);
     auto j = load_json(dir / "producer.json");
     ASSERT_TRUE(j.contains("logging"));
@@ -239,7 +235,8 @@ TEST_F(RoleInitDirectoryTest, NoOverrides_NoLoggingKeysAdded)
     // future, this test catches the silent default injection.
     EXPECT_FALSE(j.contains("logging"))
         << "Template should not emit logging without CLI overrides; "
-           "found: " << j["logging"].dump();
+           "found: "
+        << j["logging"].dump();
 }
 
 TEST_F(RoleInitDirectoryTest, LogOverrides_Consumer_Same)
@@ -247,7 +244,7 @@ TEST_F(RoleInitDirectoryTest, LogOverrides_Consumer_Same)
     const auto dir = unique_dir("cons_both");
     RoleDirectory::LogInitOverrides ov;
     ov.max_size_mb = 15.0;
-    ov.backups     = -1;
+    ov.backups = -1;
     ASSERT_EQ(RoleDirectory::init_directory(dir, "consumer", "X", ov), 0);
     auto j = load_json(dir / "consumer.json");
     EXPECT_DOUBLE_EQ(j["logging"]["max_size_mb"].get<double>(), 15.0);
@@ -263,8 +260,7 @@ TEST_F(RoleInitDirectoryTest, LogOverrides_Processor_OnlyMaxSize)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "processor", "X", ov), 0);
     auto j = load_json(dir / "processor.json");
     EXPECT_TRUE(j["logging"].contains("max_size_mb"));
-    EXPECT_FALSE(j["logging"].contains("backups"))
-        << "unset override should not appear in JSON";
+    EXPECT_FALSE(j["logging"].contains("backups")) << "unset override should not appear in JSON";
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -306,8 +302,8 @@ TEST_F(RoleInitDirectoryTest, Producer_ScriptFile_HasOnProduceCallback)
     ASSERT_EQ(RoleDirectory::init_directory(dir, "producer", "X"), 0);
     const auto content = read_file(dir / "script" / "python" / "__init__.py");
     EXPECT_NE(content.find("on_produce"), std::string::npos);
-    EXPECT_NE(content.find("on_init"),    std::string::npos);
-    EXPECT_NE(content.find("on_stop"),    std::string::npos);
+    EXPECT_NE(content.find("on_init"), std::string::npos);
+    EXPECT_NE(content.find("on_stop"), std::string::npos);
 }
 
 TEST_F(RoleInitDirectoryTest, Consumer_ScriptFile_HasOnConsumeCallback)

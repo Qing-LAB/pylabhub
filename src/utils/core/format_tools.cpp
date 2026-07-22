@@ -23,8 +23,7 @@ namespace pylabhub::format_tools
 //    use single-step fmt formatting on a microsecond-truncated time_point.
 //  - Otherwise, fall back to computing the fractional microsecond part and append it
 //    manually using a two-step format.
-std::string formatted_time(std::chrono::system_clock::time_point timestamp,
-                             bool use_dash_spacer)
+std::string formatted_time(std::chrono::system_clock::time_point timestamp, bool use_dash_spacer)
 {
     // Human form: "YYYY-MM-DD HH:MM:SS.uuuuuu"
     // Dash  form: "YYYY-MM-DD-HH-MM-SS.uuuuuu"  (filesystem-safe, '.' kept
@@ -228,8 +227,7 @@ constexpr std::string_view trim_whitespace(std::string_view str) noexcept
 }
 
 std::optional<std::string> extract_value_from_string(std::string_view keyword, char separator,
-                                                     std::string_view input,
-                                                     char assignment_symbol)
+                                                     std::string_view input, char assignment_symbol)
 {
     std::string_view::size_type start = 0;
     while (start < input.size())

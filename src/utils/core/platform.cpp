@@ -43,9 +43,9 @@
 #include <dlfcn.h>    // For dladdr
 #include <execinfo.h> // For backtrace, backtrace_symbols
 #include <unistd.h>
-#include <cerrno>   // For ESRCH
-#include <csignal>  // For kill
-#include <fcntl.h>  // For O_CREAT, O_RDWR
+#include <cerrno>     // For ESRCH
+#include <csignal>    // For kill
+#include <fcntl.h>    // For O_CREAT, O_RDWR
 #include <sys/mman.h> // For mmap, munmap
 #include <sys/stat.h> // For fstat
 #endif
@@ -399,10 +399,9 @@ ShmHandle shm_create(const char *name, size_t size, unsigned flags)
     ShmHandle h{};
     if (!name || size == 0)
         return h;
-    HANDLE mapping =
-        CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
-                          static_cast<DWORD>(size >> 32),
-                          static_cast<DWORD>(size & 0xFFFFFFFF), name);
+    HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                        static_cast<DWORD>(size >> 32),
+                                        static_cast<DWORD>(size & 0xFFFFFFFF), name);
     if (mapping == NULL)
         return h;
     if ((flags & SHM_CREATE_EXCLUSIVE) != 0 && GetLastError() == ERROR_ALREADY_EXISTS)
@@ -478,7 +477,8 @@ namespace
 constexpr int kShmModeRw = 0666;
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- API order matches header; size/flags types differ at call sites
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- API order matches header; size/flags
+// types differ at call sites
 ShmHandle shm_create(const char *name, size_t size, unsigned flags)
 {
     ShmHandle handle{};
@@ -498,8 +498,7 @@ ShmHandle shm_create(const char *name, size_t size, unsigned flags)
     // Track whether this call is guaranteed to have created a new segment.
     // Only unlink on failure if we know we created it — otherwise we could
     // destroy a pre-existing segment owned by another process.
-    const bool created_by_us =
-        (flags & (SHM_CREATE_EXCLUSIVE | SHM_CREATE_UNLINK_FIRST)) != 0;
+    const bool created_by_us = (flags & (SHM_CREATE_EXCLUSIVE | SHM_CREATE_UNLINK_FIRST)) != 0;
 
     int shm_fd = shm_open(name, open_flags, kShmModeRw);
     if (shm_fd == -1)

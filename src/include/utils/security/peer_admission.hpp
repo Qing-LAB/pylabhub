@@ -4,10 +4,10 @@
  * @brief Cross-transport admission contract — the gate.
  *
  * The pylabhub framework gates DATA-channel access by the validation of
- * CTRL-channel identity (see docs/archive/transient-2026-06-02/peer_admission_architecture_design.md
- * §2 threat model).  This header defines the policy surface — what an
- * allowlist looks like and how a transport answers "is this peer
- * admitted?" — without committing to any particular wire mechanism.
+ * CTRL-channel identity (see
+ * docs/archive/transient-2026-06-02/peer_admission_architecture_design.md §2 threat model).  This
+ * header defines the policy surface — what an allowlist looks like and how a transport answers "is
+ * this peer admitted?" — without committing to any particular wire mechanism.
  *
  * The interface lives outside the Queue family on purpose.  Several
  * admission-bearing surfaces are NOT queues (broker ROUTER, admin REP,
@@ -77,22 +77,16 @@ struct PYLABHUB_UTILS_EXPORT PeerIdentity
     std::string data;
 
     /// Byte-exact equality on the (kind, data) pair.
-    [[nodiscard]] bool
-    operator==(const PeerIdentity &o) const noexcept
+    [[nodiscard]] bool operator==(const PeerIdentity &o) const noexcept
     {
         return kind == o.kind && data == o.data;
     }
 
-    [[nodiscard]] bool
-    operator!=(const PeerIdentity &o) const noexcept
-    {
-        return !(*this == o);
-    }
+    [[nodiscard]] bool operator!=(const PeerIdentity &o) const noexcept { return !(*this == o); }
 
     /// Lexicographic order on (kind, data) — required for std::set
     /// membership and for deterministic snapshot serialization.
-    [[nodiscard]] bool
-    operator<(const PeerIdentity &o) const noexcept
+    [[nodiscard]] bool operator<(const PeerIdentity &o) const noexcept
     {
         return std::tie(kind, data) < std::tie(o.kind, o.data);
     }
@@ -117,13 +111,12 @@ struct PYLABHUB_UTILS_EXPORT PeerIdentity
 struct PYLABHUB_UTILS_EXPORT PeerAllowlist
 {
     std::set<PeerIdentity> peers;
-    bool                   unrestricted{false};
+    bool unrestricted{false};
 
     /// True iff `p` is admitted by this allowlist.  Encapsulates the
     /// `unrestricted`-escape logic so concrete `PeerAdmission`
     /// implementers don't have to reimplement it.
-    [[nodiscard]] bool
-    contains(const PeerIdentity &p) const noexcept
+    [[nodiscard]] bool contains(const PeerIdentity &p) const noexcept
     {
         if (unrestricted)
             return true;
@@ -134,11 +127,7 @@ struct PYLABHUB_UTILS_EXPORT PeerAllowlist
     /// identity (i.e., empty + not unrestricted).  Useful for "gate
     /// is fully closed" diagnostics; production code typically uses
     /// `contains()` directly.
-    [[nodiscard]] bool
-    is_deny_all() const noexcept
-    {
-        return !unrestricted && peers.empty();
-    }
+    [[nodiscard]] bool is_deny_all() const noexcept { return !unrestricted && peers.empty(); }
 };
 
 /// Pure abstract interface — the gate.
@@ -167,7 +156,7 @@ struct PYLABHUB_UTILS_EXPORT PeerAllowlist
 /// it's the kernel-equivalent gate of the transport.
 class PYLABHUB_UTILS_EXPORT PeerAdmission
 {
-public:
+  public:
     virtual ~PeerAdmission() = default;
 
     /// Replace the allowlist (snapshot semantics).  Returns true on
@@ -183,8 +172,7 @@ public:
     /// doesn't expose its state (e.g., a write-only implementation or
     /// a fixture).  The returned snapshot is a value copy and stable
     /// for the caller's use.
-    [[nodiscard]] virtual std::optional<PeerAllowlist>
-    peer_allowlist_snapshot() const = 0;
+    [[nodiscard]] virtual std::optional<PeerAllowlist> peer_allowlist_snapshot() const = 0;
 
     /// Test admission for a candidate identity.  Called by the
     /// transport's enforcement layer (ZAP handler, SHM attach path,
@@ -228,8 +216,7 @@ public:
     /// rationale.
     ///
     /// @return true iff @p peer is currently admitted.
-    [[nodiscard]] virtual bool
-    is_peer_allowed(const PeerIdentity &peer) const = 0;
+    [[nodiscard]] virtual bool is_peer_allowed(const PeerIdentity &peer) const = 0;
 
     // `admission_is_enforced()` was DELETED per AUTH_TODO §C4
     // (`docs/todo/AUTH_TODO.md` lines 445, 460).  Reason: post-C4

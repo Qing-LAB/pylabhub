@@ -62,10 +62,10 @@
 #include <thread>
 #include <vector>
 
+using pylabhub::hub::ChecksumPolicy;
 using pylabhub::hub::InboxClient;
 using pylabhub::hub::InboxItem;
 using pylabhub::hub::InboxQueue;
-using pylabhub::hub::ChecksumPolicy;
 using pylabhub::hub::ZmqSchemaField;
 using pylabhub::tests::LogCaptureFixture;
 using pylabhub::tests::helper::run_gtest_worker;
@@ -90,10 +90,10 @@ std::vector<ZmqSchemaField> uint32_schema()
 /// SecureSubsystem for hash routines underneath checksum/schema
 /// fingerprinting, ZMQContext for the production ZMQ context the
 /// InboxQueue/InboxClient pull via `pylabhub::hub::get_zmq_context()`.
-#define PLH_INBOX_MODS                                                         \
-    Logger::GetLifecycleModule(),                                              \
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
-    pylabhub::hub::GetZMQContextModule()
+#define PLH_INBOX_MODS                                                                             \
+    Logger::GetLifecycleModule(),                                                                  \
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                          \
+        pylabhub::hub::GetZMQContextModule()
 
 /// Generate a fresh CURVE keypair (Z85 pub, Z85 sec) for the inbox
 /// CURVE-auth workers.  Mirrors the L2 zmq_queue_auth helper.
@@ -113,7 +113,8 @@ inline std::pair<std::string, std::string> make_keypair()
 int bind_and_connect_basic()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -125,8 +126,7 @@ int bind_and_connect_basic()
             EXPECT_FALSE(ep.empty());
             EXPECT_NE(ep.find("tcp://"), std::string::npos);
 
-            auto c = InboxClient::connect_to(ep, "prod.test.uid00000001",
-                                              uint32_schema());
+            auto c = InboxClient::connect_to(ep, "prod.test.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 
@@ -136,11 +136,14 @@ int bind_and_connect_basic()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{2000});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
 
             std::this_thread::sleep_for(ms{30});
             uint8_t ack = c->send(ms{1500});
@@ -160,8 +163,7 @@ int bind_and_connect_basic()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::bind_and_connect_basic",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::bind_and_connect_basic", PLH_INBOX_MODS);
 }
 
 // ─── Test #2: RecvOne_Timeout_ReturnsNull ───────────────────────────────────
@@ -169,7 +171,8 @@ int bind_and_connect_basic()
 int recv_one_timeout_returns_null()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -185,8 +188,7 @@ int recv_one_timeout_returns_null()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::recv_one_timeout_returns_null",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::recv_one_timeout_returns_null", PLH_INBOX_MODS);
 }
 
 // ─── Test #3: MultipleMessages ──────────────────────────────────────────────
@@ -194,7 +196,8 @@ int recv_one_timeout_returns_null()
 int multiple_messages()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -202,8 +205,8 @@ int multiple_messages()
             ASSERT_NE(q, nullptr);
             ASSERT_TRUE(q->start());
 
-            auto c = InboxClient::connect_to(
-                q->actual_endpoint(), "prod.multi.uid00000001", uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.multi.uid00000001",
+                                             uint32_schema());
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 
@@ -216,24 +219,25 @@ int multiple_messages()
                 std::memcpy(buf, &kValues[i], sizeof(kValues[i]));
 
                 const InboxItem *item = nullptr;
-                auto fut = std::async(std::launch::async, [&] {
-                    item = q->recv_one(ms{2000});
-                    if (item) q->send_ack(0);
-                    return item != nullptr;
-                });
+                auto fut = std::async(std::launch::async,
+                                      [&]
+                                      {
+                                          item = q->recv_one(ms{2000});
+                                          if (item)
+                                              q->send_ack(0);
+                                          return item != nullptr;
+                                      });
 
                 std::this_thread::sleep_for(ms{20});
                 uint8_t ack = c->send(ms{1500});
 
-                ASSERT_TRUE(fut.get()) << "recv_one timed out at iteration "
-                                         << i;
+                ASSERT_TRUE(fut.get()) << "recv_one timed out at iteration " << i;
                 ASSERT_NE(item, nullptr);
                 ASSERT_NE(item->data, nullptr);
 
                 uint32_t received = 0;
                 std::memcpy(&received, item->data, sizeof(received));
-                EXPECT_EQ(received, kValues[i])
-                    << "value mismatch at iteration " << i;
+                EXPECT_EQ(received, kValues[i]) << "value mismatch at iteration " << i;
                 EXPECT_EQ(item->seq, static_cast<uint64_t>(i));
                 EXPECT_EQ(ack, 0u);
             }
@@ -244,8 +248,7 @@ int multiple_messages()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::multiple_messages",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::multiple_messages", PLH_INBOX_MODS);
 }
 
 // ─── Test #4: DoubleStop_NoThrow ────────────────────────────────────────────
@@ -253,7 +256,8 @@ int multiple_messages()
 int double_stop_no_throw()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -264,9 +268,8 @@ int double_stop_no_throw()
             EXPECT_NO_THROW(q->stop());
             EXPECT_NO_THROW(q->stop()); // second stop is a no-op
 
-            auto c = InboxClient::connect_to(
-                "tcp://127.0.0.1:5599", "prod.dblstop.uid00000001",
-                uint32_schema());
+            auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "prod.dblstop.uid00000001",
+                                             uint32_schema());
             ASSERT_NE(c, nullptr);
             EXPECT_NO_THROW(c->stop());
             EXPECT_NO_THROW(c->stop());
@@ -274,8 +277,7 @@ int double_stop_no_throw()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::double_stop_no_throw",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::double_stop_no_throw", PLH_INBOX_MODS);
 }
 
 // ─── Test #5: SenderUid_IsPreserved ─────────────────────────────────────────
@@ -283,7 +285,8 @@ int double_stop_no_throw()
 int sender_uid_is_preserved()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -293,8 +296,7 @@ int sender_uid_is_preserved()
             ASSERT_NE(q, nullptr);
             ASSERT_TRUE(q->start());
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), kSenderId,
-                                              uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), kSenderId, uint32_schema());
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 
@@ -304,19 +306,21 @@ int sender_uid_is_preserved()
             std::memcpy(buf, &v, sizeof(v));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{2000});
-                if (item != nullptr) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item != nullptr)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
 
             std::this_thread::sleep_for(ms{30});
             // ACK code 0 = success.  Discarding this return is a Class C
             // silent-failure per REVIEW_TestAudit_2026-05-01.md §1.3 —
             // capture and assert.
             const uint8_t ack = c->send(ms{1500});
-            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack="
-                                << static_cast<int>(ack);
+            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
 
             ASSERT_TRUE(fut.get());
             ASSERT_NE(item, nullptr);
@@ -328,8 +332,7 @@ int sender_uid_is_preserved()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::sender_uid_is_preserved",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::sender_uid_is_preserved", PLH_INBOX_MODS);
 }
 
 // ─── Test #6: BadMagic_Drops ────────────────────────────────────────────────
@@ -337,7 +340,8 @@ int sender_uid_is_preserved()
 int bad_magic_drops()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -377,8 +381,7 @@ int bad_magic_drops()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::bad_magic_drops",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::bad_magic_drops", PLH_INBOX_MODS);
 }
 
 // ─── Replay defense: replayed + skewed frames are dropped (§3.6) ────────────
@@ -386,7 +389,8 @@ int bad_magic_drops()
 int replay_and_skew_dropped()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             // The reject paths log WARNs; frame 1 uses a dummy payload that
@@ -414,20 +418,22 @@ int replay_and_skew_dropped()
             ASSERT_EQ(zmq_connect(sock, q->actual_endpoint().c_str()), 0);
             std::this_thread::sleep_for(ms{50});
 
-            const uint64_t now = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                    .count());
-            auto put_be64 = [](unsigned char *p, uint64_t v) {
+            const uint64_t now =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
+            auto put_be64 = [](unsigned char *p, uint64_t v)
+            {
                 for (int i = 0; i < 8; ++i)
                     p[7 - i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFFu);
             };
             // 24-byte meta = nonce(16) + wall_ts(8, big-endian).
-            auto send_frame = [&](unsigned char nonce_byte, uint64_t wall_ts) {
+            auto send_frame = [&](unsigned char nonce_byte, uint64_t wall_ts)
+            {
                 unsigned char meta[24];
                 std::memset(meta, nonce_byte, 16);
                 put_be64(meta + 16, wall_ts);
-                zmq_send(sock, "", 0, ZMQ_SNDMORE);   // empty delimiter
+                zmq_send(sock, "", 0, ZMQ_SNDMORE);    // empty delimiter
                 zmq_send(sock, meta, 24, ZMQ_SNDMORE); // replay metadata
                 zmq_send(sock, "BAAD", 4, 0);          // dummy payload
             };
@@ -436,7 +442,7 @@ int replay_and_skew_dropped()
             // nonce before the payload unpack, so even though the dummy
             // payload then fails unpack, the nonce is remembered.
             send_frame(0xAB, now);
-            (void) q->recv_one(ms{200});
+            (void)q->recv_one(ms{200});
 
             // Frame 2: SAME nonce -> rejected as a replay.
             send_frame(0xAB, now);
@@ -456,8 +462,7 @@ int replay_and_skew_dropped()
 
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::replay_and_skew_dropped",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::replay_and_skew_dropped", PLH_INBOX_MODS);
 }
 
 // ─── Test #7: AckCode3_HandlerError ─────────────────────────────────────────
@@ -465,7 +470,8 @@ int replay_and_skew_dropped()
 int ack_code_3_handler_error()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -473,9 +479,8 @@ int ack_code_3_handler_error()
             ASSERT_NE(q, nullptr);
             ASSERT_TRUE(q->start());
 
-            auto c = InboxClient::connect_to(
-                q->actual_endpoint(), "prod.ackerr.uid00000001",
-                uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.ackerr.uid00000001",
+                                             uint32_schema());
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 
@@ -487,11 +492,14 @@ int ack_code_3_handler_error()
             // recv_one + send_ack(3) on the SAME thread (ZMQ socket
             // thread-safety).
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{2000});
-                if (item) q->send_ack(3);  // handler_error ACK
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item)
+                                          q->send_ack(3); // handler_error ACK
+                                      return item != nullptr;
+                                  });
 
             std::this_thread::sleep_for(ms{30});
             uint8_t ack_code = c->send(ms{2000});
@@ -506,8 +514,7 @@ int ack_code_3_handler_error()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::ack_code_3_handler_error",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::ack_code_3_handler_error", PLH_INBOX_MODS);
 }
 
 // ─── Test #8: NotStarted_RecvReturnsNull ────────────────────────────────────
@@ -515,7 +522,8 @@ int ack_code_3_handler_error()
 int not_started_recv_returns_null()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -528,8 +536,7 @@ int not_started_recv_returns_null()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::not_started_recv_returns_null",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::not_started_recv_returns_null", PLH_INBOX_MODS);
 }
 
 // ─── Test #9: EmptySchema_FactoryFails ──────────────────────────────────────
@@ -537,7 +544,8 @@ int not_started_recv_returns_null()
 int empty_schema_factory_fails()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogError("schema must not be empty");
@@ -548,8 +556,7 @@ int empty_schema_factory_fails()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::empty_schema_factory_fails",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::empty_schema_factory_fails", PLH_INBOX_MODS);
 }
 
 // ─── Test #10: EmptySchema_ClientFactoryFails ───────────────────────────────
@@ -557,20 +564,19 @@ int empty_schema_factory_fails()
 int empty_schema_client_factory_fails()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogError("schema must not be empty");
 
-            auto c = InboxClient::connect_to("tcp://127.0.0.1:5599",
-                                              "TEST-UID", {});
+            auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "TEST-UID", {});
             EXPECT_EQ(c, nullptr);
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::empty_schema_client_factory_fails",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::empty_schema_client_factory_fails", PLH_INBOX_MODS);
 }
 
 // ─── Test #11: ItemSize_MatchesSchema ───────────────────────────────────────
@@ -578,7 +584,8 @@ int empty_schema_client_factory_fails()
 int item_size_matches_schema()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -586,16 +593,14 @@ int item_size_matches_schema()
             ASSERT_NE(q, nullptr);
             EXPECT_EQ(q->item_size(), sizeof(uint32_t));
 
-            auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "UID",
-                                              uint32_schema());
+            auto c = InboxClient::connect_to("tcp://127.0.0.1:5599", "UID", uint32_schema());
             ASSERT_NE(c, nullptr);
             EXPECT_EQ(c->item_size(), sizeof(uint32_t));
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::item_size_matches_schema",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::item_size_matches_schema", PLH_INBOX_MODS);
 }
 
 // ─── Test #12: SchemaMismatch_DifferentType_DropsFrame ──────────────────────
@@ -603,7 +608,8 @@ int item_size_matches_schema()
 int schema_mismatch_different_type_drops_frame()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogWarn("ACK timeout");
@@ -613,8 +619,7 @@ int schema_mismatch_different_type_drops_frame()
             ASSERT_TRUE(q->start());
 
             std::vector<ZmqSchemaField> float64_schema = {{"float64", 1, 0}};
-            auto c = InboxClient::connect_to(q->actual_endpoint(),
-                                              "MISMATCH-01", float64_schema);
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-01", float64_schema);
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 
@@ -624,21 +629,22 @@ int schema_mismatch_different_type_drops_frame()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{500});
-                // Ack only when accepted — makes the ack=255 assert
-                // below sensitive to a "failed to drop" regression.
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{500});
+                                      // Ack only when accepted — makes the ack=255 assert
+                                      // below sensitive to a "failed to drop" regression.
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{1500});
-            EXPECT_EQ(ack, 255u)
-                << "expected ACK timeout (255) on rejected frame; got "
-                << static_cast<int>(ack);
+            EXPECT_EQ(ack, 255u) << "expected ACK timeout (255) on rejected frame; got "
+                                 << static_cast<int>(ack);
 
-            EXPECT_FALSE(fut.get())
-                << "Schema mismatch: recv_one should reject";
+            EXPECT_FALSE(fut.get()) << "Schema mismatch: recv_one should reject";
             EXPECT_GT(q->recv_frame_error_count(), 0u)
                 << "Schema mismatch should increment frame error count";
 
@@ -648,8 +654,7 @@ int schema_mismatch_different_type_drops_frame()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::schema_mismatch_different_type_drops_frame",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::schema_mismatch_different_type_drops_frame", PLH_INBOX_MODS);
 }
 
 // ─── Test #13: SchemaMismatch_DifferentSize_DropsFrame ──────────────────────
@@ -657,7 +662,8 @@ int schema_mismatch_different_type_drops_frame()
 int schema_mismatch_different_size_drops_frame()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogWarn("ACK timeout");
@@ -667,8 +673,7 @@ int schema_mismatch_different_size_drops_frame()
             ASSERT_TRUE(q->start());
 
             std::vector<ZmqSchemaField> uint64_schema = {{"uint64", 1, 0}};
-            auto c = InboxClient::connect_to(q->actual_endpoint(),
-                                              "MISMATCH-02", uint64_schema);
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-02", uint64_schema);
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 
@@ -678,19 +683,20 @@ int schema_mismatch_different_size_drops_frame()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{500});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{500});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{1500});
-            EXPECT_EQ(ack, 255u)
-                << "expected ACK timeout (255) on rejected frame; got "
-                << static_cast<int>(ack);
+            EXPECT_EQ(ack, 255u) << "expected ACK timeout (255) on rejected frame; got "
+                                 << static_cast<int>(ack);
 
-            EXPECT_FALSE(fut.get())
-                << "Size mismatch: recv_one should reject";
+            EXPECT_FALSE(fut.get()) << "Size mismatch: recv_one should reject";
             EXPECT_GT(q->recv_frame_error_count(), 0u);
 
             c->stop();
@@ -699,8 +705,7 @@ int schema_mismatch_different_size_drops_frame()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::schema_mismatch_different_size_drops_frame",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::schema_mismatch_different_size_drops_frame", PLH_INBOX_MODS);
 }
 
 // ─── Test #14: ChecksumEnforced_Roundtrip ───────────────────────────────────
@@ -708,7 +713,8 @@ int schema_mismatch_different_size_drops_frame()
 int checksum_enforced_roundtrip()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -717,8 +723,7 @@ int checksum_enforced_roundtrip()
             q->set_checksum_policy(ChecksumPolicy::Enforced);
             ASSERT_TRUE(q->start());
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-ENF",
-                                              uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-ENF", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Enforced);
             ASSERT_TRUE(c->start());
@@ -729,18 +734,19 @@ int checksum_enforced_roundtrip()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{2000});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{1500});
-            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack="
-                                << static_cast<int>(ack);
+            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
 
-            ASSERT_TRUE(fut.get())
-                << "Enforced: recv_one should succeed";
+            ASSERT_TRUE(fut.get()) << "Enforced: recv_one should succeed";
             ASSERT_NE(item, nullptr);
             uint32_t received = 0;
             std::memcpy(&received, item->data, sizeof(received));
@@ -753,8 +759,7 @@ int checksum_enforced_roundtrip()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::checksum_enforced_roundtrip",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::checksum_enforced_roundtrip", PLH_INBOX_MODS);
 }
 
 // ─── Test #15: ChecksumManual_NoStamp_ReceiverRejects ───────────────────────
@@ -762,7 +767,8 @@ int checksum_enforced_roundtrip()
 int checksum_manual_no_stamp_receiver_rejects()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             log_cap.ExpectLogError("checksum error after decode");
@@ -773,8 +779,7 @@ int checksum_manual_no_stamp_receiver_rejects()
             q->set_checksum_policy(ChecksumPolicy::Enforced); // verifies
             ASSERT_TRUE(q->start());
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-MAN",
-                                              uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-MAN", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Manual); // no auto-stamp
             ASSERT_TRUE(c->start());
@@ -785,19 +790,20 @@ int checksum_manual_no_stamp_receiver_rejects()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{500});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{500});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{1500});
-            EXPECT_EQ(ack, 255u)
-                << "expected ACK timeout (255) on rejected frame; got "
-                << static_cast<int>(ack);
+            EXPECT_EQ(ack, 255u) << "expected ACK timeout (255) on rejected frame; got "
+                                 << static_cast<int>(ack);
 
-            EXPECT_FALSE(fut.get())
-                << "Manual no-stamp: recv_one should reject";
+            EXPECT_FALSE(fut.get()) << "Manual no-stamp: recv_one should reject";
             EXPECT_GT(q->checksum_error_count(), 0u);
 
             c->stop();
@@ -806,8 +812,7 @@ int checksum_manual_no_stamp_receiver_rejects()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::checksum_manual_no_stamp_receiver_rejects",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::checksum_manual_no_stamp_receiver_rejects", PLH_INBOX_MODS);
 }
 
 // ─── Test #16: ChecksumNone_Roundtrip ───────────────────────────────────────
@@ -815,7 +820,8 @@ int checksum_manual_no_stamp_receiver_rejects()
 int checksum_none_roundtrip()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -824,8 +830,7 @@ int checksum_none_roundtrip()
             q->set_checksum_policy(ChecksumPolicy::None);
             ASSERT_TRUE(q->start());
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(),
-                                              "CKSUM-NONE", uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-NONE", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::None);
             ASSERT_TRUE(c->start());
@@ -836,18 +841,19 @@ int checksum_none_roundtrip()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{2000});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{1500});
-            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack="
-                                << static_cast<int>(ack);
+            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
 
-            ASSERT_TRUE(fut.get())
-                << "None: recv_one should succeed";
+            ASSERT_TRUE(fut.get()) << "None: recv_one should succeed";
             ASSERT_NE(item, nullptr);
             uint32_t received = 0;
             std::memcpy(&received, item->data, sizeof(received));
@@ -860,8 +866,7 @@ int checksum_none_roundtrip()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::checksum_none_roundtrip",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::checksum_none_roundtrip", PLH_INBOX_MODS);
 }
 
 // ─── Inbox CURVE auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ───────────────
@@ -873,9 +878,10 @@ int checksum_none_roundtrip()
 int inbox_curve_authorized_delivers()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             namespace sec = pylabhub::utils::security;
-            const auto [recv_pub, recv_sec]  = make_keypair();
+            const auto [recv_pub, recv_sec] = make_keypair();
             const auto [alice_pub, alice_sec] = make_keypair();
             sec::secure().keys().add_identity_from_z85("inbox_recv_id", recv_pub, recv_sec);
             sec::secure().keys().add_identity_from_z85("alice_id", alice_pub, alice_sec);
@@ -890,10 +896,10 @@ int inbox_curve_authorized_delivers()
             allow.peers.insert(sec::PeerIdentity{"curve", alice_pub});
             ASSERT_TRUE(q->set_peer_allowlist(allow));
 
-            sec::ZapPumpThread pump;  // authorizes CURVE handshakes via ZapRouter
+            sec::ZapPumpThread pump; // authorizes CURVE handshakes via ZapRouter
 
-            auto c = InboxClient::connect_to(
-                q->actual_endpoint(), "alice.uid00000001", uint32_schema());
+            auto c =
+                InboxClient::connect_to(q->actual_endpoint(), "alice.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_curve_client_identity("alice_id", recv_pub);
             ASSERT_TRUE(c->start());
@@ -904,11 +910,14 @@ int inbox_curve_authorized_delivers()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{2000});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{1500});
 
@@ -923,19 +932,19 @@ int inbox_curve_authorized_delivers()
             c->stop();
             q->stop();
         },
-        "hub_inbox_queue::inbox_curve_authorized_delivers",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::inbox_curve_authorized_delivers", PLH_INBOX_MODS);
 }
 
 int inbox_curve_unknown_denied()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             namespace sec = pylabhub::utils::security;
-            const auto [recv_pub, recv_sec]   = make_keypair();
-            const auto [alice_pub, alice_sec] = make_keypair();  // authorized (roster)
-            const auto [bob_pub, bob_sec]     = make_keypair();  // NOT in roster
-            (void)alice_sec;  // alice's pubkey seeds the roster; no alice socket here
+            const auto [recv_pub, recv_sec] = make_keypair();
+            const auto [alice_pub, alice_sec] = make_keypair(); // authorized (roster)
+            const auto [bob_pub, bob_sec] = make_keypair();     // NOT in roster
+            (void)alice_sec; // alice's pubkey seeds the roster; no alice socket here
             sec::secure().keys().add_identity_from_z85("inbox_recv_id", recv_pub, recv_sec);
             sec::secure().keys().add_identity_from_z85("bob_id", bob_pub, bob_sec);
 
@@ -951,11 +960,11 @@ int inbox_curve_unknown_denied()
 
             sec::ZapPumpThread pump;
 
-            auto c = InboxClient::connect_to(
-                q->actual_endpoint(), "bob.uid00000001", uint32_schema());
+            auto c =
+                InboxClient::connect_to(q->actual_endpoint(), "bob.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_curve_client_identity("bob_id", recv_pub);
-            ASSERT_TRUE(c->start());  // socket-level connect succeeds; ZAP denies handshake
+            ASSERT_TRUE(c->start()); // socket-level connect succeeds; ZAP denies handshake
 
             void *buf = c->acquire();
             ASSERT_NE(buf, nullptr);
@@ -963,26 +972,27 @@ int inbox_curve_unknown_denied()
             std::memcpy(buf, &val, sizeof(val));
 
             const InboxItem *item = nullptr;
-            auto fut = std::async(std::launch::async, [&] {
-                item = q->recv_one(ms{700});
-                if (item) q->send_ack(0);
-                return item != nullptr;
-            });
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{700});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
             std::this_thread::sleep_for(ms{30});
             const uint8_t ack = c->send(ms{500});
 
             // The ZAP gate denies bob's CURVE handshake, so NO message reaches
             // the ROUTER and the send gets no ACK.
-            EXPECT_FALSE(fut.get())
-                << "unknown peer (bob not in roster) must NOT reach the inbox";
+            EXPECT_FALSE(fut.get()) << "unknown peer (bob not in roster) must NOT reach the inbox";
             EXPECT_EQ(item, nullptr);
             EXPECT_NE(ack, 0u) << "denied send must not receive a success ACK";
 
             c->stop();
             q->stop();
         },
-        "hub_inbox_queue::inbox_curve_unknown_denied",
-        PLH_INBOX_MODS);
+        "hub_inbox_queue::inbox_curve_unknown_denied", PLH_INBOX_MODS);
 }
 
 } // namespace hub_inbox_queue
@@ -1000,11 +1010,11 @@ struct HubInboxQueueRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "hub_inbox_queue")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "hub_inbox_queue")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::hub_inbox_queue;

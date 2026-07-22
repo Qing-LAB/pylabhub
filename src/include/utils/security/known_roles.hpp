@@ -64,7 +64,7 @@
 #include "pylabhub_utils_export.h"
 
 #include "utils/json_fwd.hpp"                // nlohmann::json (fwd)
-#include "utils/role_identity_policy.hpp"   // ::pylabhub::broker::KnownRole
+#include "utils/role_identity_policy.hpp"    // ::pylabhub::broker::KnownRole
 #include "utils/security/peer_admission.hpp" // PeerAllowlist
 
 #include <filesystem>
@@ -97,15 +97,14 @@ inline constexpr int kKnownRolesSchemaVersion = 1;
 /// `tests/test_layer2_service/test_known_roles_store.cpp` for the
 /// pin) so a misconfigured CI cannot silently drift between the two
 /// modes.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT bool
-known_roles_enforces_unique_pubkey() noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool known_roles_enforces_unique_pubkey() noexcept;
 
 /// Operator-managed allowlist of authorized roles, keyed on CURVE
 /// pubkey.  See file-header docs for the on-disk schema + the bridge
 /// to `PeerAllowlist` consumed by the broker's PeerAdmission gate.
 class PYLABHUB_UTILS_EXPORT KnownRolesStore
 {
-public:
+  public:
     /// Construct an empty store (no entries).
     KnownRolesStore() = default;
 
@@ -152,8 +151,8 @@ public:
     ///                 messages (e.g. a vault path or `"hub vault"`).
     /// @throws std::runtime_error on malformed/invalid input.
     [[nodiscard]] ::nlohmann::json to_json() const;
-    [[nodiscard]] static KnownRolesStore
-    from_json(const ::nlohmann::json &j, std::string_view context);
+    [[nodiscard]] static KnownRolesStore from_json(const ::nlohmann::json &j,
+                                                   std::string_view context);
 
     /// Insert or replace an entry keyed on `uid`.  Returns true iff
     /// the entry was newly inserted (false → replaced an existing
@@ -171,8 +170,7 @@ public:
     bool remove(const std::string &uid);
 
     /// Look up by uid.
-    [[nodiscard]] std::optional<::pylabhub::broker::KnownRole>
-    find(const std::string &uid) const;
+    [[nodiscard]] std::optional<::pylabhub::broker::KnownRole> find(const std::string &uid) const;
 
     /// Lookup by pubkey.  O(N) — pubkey is the secondary index that
     /// the ZAP handler queries; for the broker the bridge through
@@ -207,7 +205,7 @@ public:
     /// flow through this method.
     [[nodiscard]] PeerAllowlist as_peer_allowlist() const;
 
-private:
+  private:
     /// In-memory state.  Vector preserves insertion order (matters
     /// for `--list-known-roles` deterministic output) at the cost of
     /// O(N) lookup.  Allowlists are operator-managed and expected to

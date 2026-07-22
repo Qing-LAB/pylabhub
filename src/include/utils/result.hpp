@@ -1,12 +1,12 @@
 /**
  * @file result.hpp
  * @brief Generic Result<T, E> type for error handling without exceptions
- * 
+ *
  * @copyright Copyright (c) 2024-2026 PyLabHub Project
- * 
+ *
  * Part of Phase 3: C++ RAII Layer
  * Provides type-safe error handling for operations that can fail in expected ways.
- * 
+ *
  * Design Philosophy:
  * - Distinguishes between success (T) and expected failures (E)
  * - Forces explicit error handling at call sites
@@ -27,7 +27,7 @@ namespace pylabhub::hub
 
 /**
  * @brief Error type for slot acquisition operations
- * 
+ *
  * Represents the three expected failure modes when acquiring a slot:
  * - Timeout: Operation timed out waiting for slot availability
  * - NoSlot: No slot available (non-blocking mode)
@@ -61,12 +61,12 @@ inline const char *to_string(SlotAcquireError err) noexcept
 /**
  * @class Result
  * @brief Generic Result<T, E> type for operations that can fail in expected ways
- * 
+ *
  * @tparam T Success value type
  * @tparam E Error enum type (should be an enum or enum class)
- * 
+ *
  * Inspired by Rust's Result<T, E> and C++23's std::expected<T, E>.
- * 
+ *
  * Usage:
  * @code
  * Result<int, ErrorCode> compute() {
@@ -75,7 +75,7 @@ inline const char *to_string(SlotAcquireError err) noexcept
  *     }
  *     return Result<int, ErrorCode>::error(ErrorCode::InvalidInput);
  * }
- * 
+ *
  * auto result = compute();
  * if (result.is_ok()) {
  *     int value = result.content();
@@ -85,12 +85,11 @@ inline const char *to_string(SlotAcquireError err) noexcept
  *     // handle error
  * }
  * @endcode
- * 
+ *
  * Thread Safety: Result objects are not thread-safe. Use separate Result
  * instances per thread or external synchronization.
  */
-template <typename T, typename E>
-class Result
+template <typename T, typename E> class Result
 {
   public:
     using value_type = T;
@@ -161,9 +160,9 @@ class Result
      * @brief Get the success content (mutable reference)
      * @return Reference to the contained value
      * @throws std::logic_error if Result is in error state
-     * 
+     *
      * Always check is_ok() before calling content().
-     * 
+     *
      * Note: Renamed from value() to content() to better convey that this
      * returns the contained object, not a primitive value.
      */
@@ -194,7 +193,7 @@ class Result
      * @brief Move the success content out of Result
      * @return Value moved from Result
      * @throws std::logic_error if Result is in error state
-     * 
+     *
      * After this call, Result is left in a valid but unspecified state.
      */
     [[nodiscard]] T &&content() &&
@@ -224,7 +223,7 @@ class Result
      * @brief Get the error enum value
      * @return Error enum
      * @throws std::logic_error if Result is in success state
-     * 
+     *
      * Always check is_error() before calling error().
      */
     [[nodiscard]] E error() const
@@ -268,19 +267,18 @@ class Result
 
 /**
  * @brief Result type for slot acquisition operations
- * 
+ *
  * Used by the RAII layer's slot iterator to distinguish between:
  * - Success: SlotRef<T> available
  * - Timeout: No slot available within timeout period
  * - NoSlot: No slot available (non-blocking)
  * - Error: Fatal error occurred
- * 
+ *
  * @tparam SlotRefT Type of slot reference (WriteSlotRef or ReadSlotRef)
- * 
+ *
  * @note Renamed to avoid conflict with C API enum SlotAcquireResult
  * @note Name indicates this is specifically for iterator results
  */
-template <typename SlotRefT>
-using IterSlotResult = Result<SlotRefT, SlotAcquireError>;
+template <typename SlotRefT> using IterSlotResult = Result<SlotRefT, SlotAcquireError>;
 
 } // namespace pylabhub::hub

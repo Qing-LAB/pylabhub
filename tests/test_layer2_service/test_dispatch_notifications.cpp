@@ -32,7 +32,7 @@
  */
 
 #include "binary_lifecycle.h"
-#include "service/cycle_ops.hpp"   // dispatch_notifications
+#include "service/cycle_ops.hpp" // dispatch_notifications
 #include "utils/logger.hpp"
 #include "utils/role_host_core.hpp"
 #include "utils/script_engine.hpp"
@@ -52,17 +52,15 @@ using pylabhub::scripting::InvokeRx;
 using pylabhub::scripting::InvokeStatus;
 using pylabhub::scripting::InvokeTx;
 using pylabhub::scripting::NotificationId;
+using pylabhub::scripting::parse_notification_id;
 using pylabhub::scripting::RoleAPIBase;
 using pylabhub::scripting::RoleHostCore;
 using pylabhub::scripting::ScriptEngine;
-using pylabhub::scripting::parse_notification_id;
 
 // dispatch_notifications calls into engine.has_callback() +
 // engine.invoke_on_*().  Engine surface uses LOGGER_* on error paths.
 // Single-suite binary, Logger-only guard (Pattern 1+).
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
-)
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule())
 
 // ─── AUTH_TODO §C5 (#161) — RoleAPIBase ctor signature invariants ──────────
 //
@@ -81,27 +79,23 @@ PLH_BINARY_LIFECYCLE_MODULES(
 // a `set_auth` method or changes the ctor signature fails the
 // build immediately — exactly the anti-recursion guarantee #161
 // is supposed to provide.
-static_assert(
-    std::is_constructible_v<RoleAPIBase, RoleHostCore &, std::string,
-                            std::string>,
-    "RoleAPIBase MUST be constructible with (RoleHostCore&, short_tag, "
-    "uid) — HEP-CORE-0023 §3 identity-at-construction invariant.  If "
-    "this fires, the ctor signature has drifted and every test that "
-    "instantiates RoleAPIBase will also break.");
+static_assert(std::is_constructible_v<RoleAPIBase, RoleHostCore &, std::string, std::string>,
+              "RoleAPIBase MUST be constructible with (RoleHostCore&, short_tag, "
+              "uid) — HEP-CORE-0023 §3 identity-at-construction invariant.  If "
+              "this fires, the ctor signature has drifted and every test that "
+              "instantiates RoleAPIBase will also break.");
 
-static_assert(
-    !std::is_default_constructible_v<RoleAPIBase>,
-    "RoleAPIBase MUST NOT be default-constructible.  Role identity "
-    "is required at construction time so the ThreadManager + "
-    "FlexzoneInfoCache can be built immediately — no two-stage init.");
+static_assert(!std::is_default_constructible_v<RoleAPIBase>,
+              "RoleAPIBase MUST NOT be default-constructible.  Role identity "
+              "is required at construction time so the ThreadManager + "
+              "FlexzoneInfoCache can be built immediately — no two-stage init.");
 
-static_assert(
-    !std::is_constructible_v<RoleAPIBase, RoleHostCore &>,
-    "RoleAPIBase MUST NOT be constructible with just (RoleHostCore&) — "
-    "short_tag + uid are required for keystore identity resolution + "
-    "FlexzoneInfoCache derivation.  A regression that adds default "
-    "arguments would break the HEP-CORE-0040 §172 invariant that "
-    "every queue resolves its identity via a CALLER-supplied name.");
+static_assert(!std::is_constructible_v<RoleAPIBase, RoleHostCore &>,
+              "RoleAPIBase MUST NOT be constructible with just (RoleHostCore&) — "
+              "short_tag + uid are required for keystore identity resolution + "
+              "FlexzoneInfoCache derivation.  A regression that adds default "
+              "arguments would break the HEP-CORE-0040 §172 invariant that "
+              "every queue resolves its identity via a CALLER-supplied name.");
 
 namespace
 {
@@ -180,42 +174,43 @@ class RecordingEngine : public ScriptEngine
     std::vector<std::pair<std::string, std::string>> calls;
 
     /// Recorded on_consumer_died (channel, consumer_uid, reason) tuples.
-    std::vector<std::tuple<std::string, std::string, std::string>>
-        consumer_died_calls;
+    std::vector<std::tuple<std::string, std::string, std::string>> consumer_died_calls;
 
     /// Recorded on_hub_dead (source_hub_uid) invocations.
     std::vector<std::string> hub_dead_calls;
 
     /// Recorded band-callback invocations.
-    std::vector<std::tuple<std::string, std::string, std::string>>
-        band_member_joined_calls;
-    std::vector<std::tuple<std::string, std::string, std::string>>
-        band_member_left_calls;
-    std::vector<std::tuple<std::string, std::string, nlohmann::json>>
-        band_message_calls;
+    std::vector<std::tuple<std::string, std::string, std::string>> band_member_joined_calls;
+    std::vector<std::tuple<std::string, std::string, std::string>> band_member_left_calls;
+    std::vector<std::tuple<std::string, std::string, nlohmann::json>> band_message_calls;
     std::vector<std::pair<std::string, std::string>> band_lost_calls;
 
     [[nodiscard]] bool has_callback(const std::string &name) const noexcept override
     {
-        if (name == "on_channel_closing")      return has_on_channel_closing;
-        if (name == "on_consumer_died")        return has_on_consumer_died;
-        if (name == "on_hub_dead")             return has_on_hub_dead;
-        if (name == "on_band_member_joined")   return has_on_band_member_joined;
-        if (name == "on_band_member_left")     return has_on_band_member_left;
-        if (name == "on_band_message")         return has_on_band_message;
-        if (name == "on_band_lost")            return has_on_band_lost;
+        if (name == "on_channel_closing")
+            return has_on_channel_closing;
+        if (name == "on_consumer_died")
+            return has_on_consumer_died;
+        if (name == "on_hub_dead")
+            return has_on_hub_dead;
+        if (name == "on_band_member_joined")
+            return has_on_band_member_joined;
+        if (name == "on_band_member_left")
+            return has_on_band_member_left;
+        if (name == "on_band_message")
+            return has_on_band_message;
+        if (name == "on_band_lost")
+            return has_on_band_lost;
         return false;
     }
 
-    void invoke_on_channel_closing(const std::string &channel,
-                                    const std::string &reason) override
+    void invoke_on_channel_closing(const std::string &channel, const std::string &reason) override
     {
         calls.emplace_back(channel, reason);
     }
 
-    void invoke_on_consumer_died(const std::string &channel,
-                                  const std::string &consumer_uid,
-                                  const std::string &reason) override
+    void invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
+                                 const std::string &reason) override
     {
         consumer_died_calls.emplace_back(channel, consumer_uid, reason);
     }
@@ -225,40 +220,34 @@ class RecordingEngine : public ScriptEngine
         hub_dead_calls.emplace_back(source_hub_uid);
     }
 
-    void invoke_on_band_member_joined(const std::string &band,
-                                      const std::string &role_uid,
+    void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name) override
     {
         band_member_joined_calls.emplace_back(band, role_uid, role_name);
     }
-    void invoke_on_band_member_left(const std::string &band,
-                                    const std::string &role_uid,
+    void invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
                                     const std::string &reason) override
     {
         band_member_left_calls.emplace_back(band, role_uid, reason);
     }
-    void invoke_on_band_message(const std::string &band,
-                                const std::string &sender_role_uid,
+    void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override
     {
         band_message_calls.emplace_back(band, sender_role_uid, body);
     }
-    void invoke_on_band_lost(const std::string &band,
-                             const std::string &reason) override
+    void invoke_on_band_lost(const std::string &band, const std::string &reason) override
     {
         band_lost_calls.emplace_back(band, reason);
     }
-    void invoke_on_allowlist_changed(
-        const std::string &,
-        const std::vector<pylabhub::scripting::AllowedPeer> &,
-        const std::string &) override {}
+    void invoke_on_allowlist_changed(const std::string &,
+                                     const std::vector<pylabhub::scripting::AllowedPeer> &,
+                                     const std::string &) override
+    {
+    }
 
     // ── No-op stubs for the rest of the ScriptEngine surface ────────
   protected:
-    bool init_engine_(const std::string &, RoleHostCore *) override
-    {
-        return true;
-    }
+    bool init_engine_(const std::string &, RoleHostCore *) override { return true; }
     bool build_api_(RoleAPIBase &) override { return true; }
     void finalize_engine_() override {}
 
@@ -268,63 +257,39 @@ class RecordingEngine : public ScriptEngine
     {
         return true;
     }
-    bool register_slot_type(const pylabhub::hub::SchemaSpec &,
-                            const std::string &,
+    bool register_slot_type(const pylabhub::hub::SchemaSpec &, const std::string &,
                             const std::string &) override
     {
         return true;
     }
-    [[nodiscard]] size_t type_sizeof(const std::string &) const override
-    {
-        return 0;
-    }
+    [[nodiscard]] size_t type_sizeof(const std::string &) const override { return 0; }
     bool invoke(const std::string &) override { return true; }
-    bool invoke(const std::string &, const nlohmann::json &) override
-    {
-        return true;
-    }
-    InvokeResponse eval(const std::string &) override
-    {
-        return {InvokeStatus::NotFound, {}};
-    }
-    InvokeResponse invoke_returning(const std::string &,
-                                     const nlohmann::json &,
-                                     int64_t) override
+    bool invoke(const std::string &, const nlohmann::json &) override { return true; }
+    InvokeResponse eval(const std::string &) override { return {InvokeStatus::NotFound, {}}; }
+    InvokeResponse invoke_returning(const std::string &, const nlohmann::json &, int64_t) override
     {
         return {InvokeStatus::NotFound, {}};
     }
     pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override
-    { return pylabhub::scripting::ScriptEngine::InitStatus::Ready; }
+    {
+        return pylabhub::scripting::ScriptEngine::InitStatus::Ready;
+    }
     void invoke_on_stop() override {}
-    InvokeResult invoke_produce(
-        InvokeTx,
-        std::vector<IncomingMessage> &) override
+    InvokeResult invoke_produce(InvokeTx, std::vector<IncomingMessage> &) override
     {
         return InvokeResult::Commit;
     }
-    InvokeResult invoke_consume(
-        InvokeRx,
-        std::vector<IncomingMessage> &) override
+    InvokeResult invoke_consume(InvokeRx, std::vector<IncomingMessage> &) override
     {
         return InvokeResult::Commit;
     }
-    InvokeResult invoke_process(InvokeRx, InvokeTx,
-                                std::vector<IncomingMessage> &) override
+    InvokeResult invoke_process(InvokeRx, InvokeTx, std::vector<IncomingMessage> &) override
     {
         return InvokeResult::Commit;
     }
-    InvokeResult invoke_on_inbox(InvokeInbox) override
-    {
-        return InvokeResult::Commit;
-    }
-    [[nodiscard]] uint64_t script_error_count() const noexcept override
-    {
-        return 0;
-    }
-    [[nodiscard]] bool supports_multi_state() const noexcept override
-    {
-        return false;
-    }
+    InvokeResult invoke_on_inbox(InvokeInbox) override { return InvokeResult::Commit; }
+    [[nodiscard]] uint64_t script_error_count() const noexcept override { return 0; }
+    [[nodiscard]] bool supports_multi_state() const noexcept override { return false; }
 };
 
 // Mirrors what `role_api_base.cpp`'s BRC `on_notification` lambda does:
@@ -332,23 +297,22 @@ class RecordingEngine : public ScriptEngine
 // `notification_id` (parsed enum that the dispatcher reads).  Tests
 // that fail to set `notification_id` would silently fall through the
 // dispatcher's `Unknown` slot — these helpers prevent that mistake.
-IncomingMessage make_notify(const std::string &channel,
-                            const std::string &reason)
+IncomingMessage make_notify(const std::string &channel, const std::string &reason)
 {
     IncomingMessage m;
-    m.event                   = "CHANNEL_CLOSING_NOTIFY";
-    m.notification_id         = parse_notification_id(m.event);
-    m.details                 = nlohmann::json::object();
+    m.event = "CHANNEL_CLOSING_NOTIFY";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
     m.details["channel_name"] = channel;
-    m.details["reason"]       = reason;
+    m.details["reason"] = reason;
     return m;
 }
 
 IncomingMessage make_other(const std::string &event)
 {
     IncomingMessage m;
-    m.event           = event;
-    m.notification_id = parse_notification_id(m.event);   // typically Unknown
+    m.event = event;
+    m.notification_id = parse_notification_id(m.event); // typically Unknown
     return m;
 }
 
@@ -358,72 +322,67 @@ IncomingMessage make_other(const std::string &event)
 // Tests MUST set both event AND notification_id (string vs enum drift
 // would silently route to the Unknown slot — these helpers prevent
 // that mistake; audit D1/D2, 2026-05-18).
-IncomingMessage make_hub_dead(const std::string &source_hub_uid,
-                              bool is_master)
+IncomingMessage make_hub_dead(const std::string &source_hub_uid, bool is_master)
 {
     IncomingMessage m;
-    m.event              = "HUB_DEAD";
-    m.notification_id    = parse_notification_id(m.event);
-    m.details            = nlohmann::json::object();
+    m.event = "HUB_DEAD";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
     m.details["is_master"] = is_master;
-    m.details["reason"]    = "ctrl_thread_on_hub_dead";
-    m.source_hub_uid     = source_hub_uid;
+    m.details["reason"] = "ctrl_thread_on_hub_dead";
+    m.source_hub_uid = source_hub_uid;
     return m;
 }
 
 // S4 expansion 2026-05-19 — band-notification factory helpers.
 
-IncomingMessage make_band_join_notify(const std::string &band,
-                                      const std::string &role_uid,
+IncomingMessage make_band_join_notify(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name)
 {
     IncomingMessage m;
-    m.event              = "BAND_JOIN_NOTIFY";
-    m.notification_id    = parse_notification_id(m.event);
-    m.details            = nlohmann::json::object();
-    m.details["band"]      = band;
-    m.details["role_uid"]  = role_uid;
+    m.event = "BAND_JOIN_NOTIFY";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
+    m.details["band"] = band;
+    m.details["role_uid"] = role_uid;
     m.details["role_name"] = role_name;
     return m;
 }
 
-IncomingMessage make_band_leave_notify(const std::string &band,
-                                       const std::string &role_uid,
+IncomingMessage make_band_leave_notify(const std::string &band, const std::string &role_uid,
                                        const std::string &reason)
 {
     IncomingMessage m;
-    m.event              = "BAND_LEAVE_NOTIFY";
-    m.notification_id    = parse_notification_id(m.event);
-    m.details            = nlohmann::json::object();
-    m.details["band"]      = band;
-    m.details["role_uid"]  = role_uid;
-    m.details["reason"]    = reason;
+    m.event = "BAND_LEAVE_NOTIFY";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
+    m.details["band"] = band;
+    m.details["role_uid"] = role_uid;
+    m.details["reason"] = reason;
     return m;
 }
 
-IncomingMessage make_band_broadcast_notify(const std::string &band,
-                                           const std::string &sender,
+IncomingMessage make_band_broadcast_notify(const std::string &band, const std::string &sender,
                                            const nlohmann::json &body)
 {
     IncomingMessage m;
-    m.event              = "BAND_BROADCAST_DELIVER_NOTIFY";
-    m.notification_id    = parse_notification_id(m.event);
-    m.details            = nlohmann::json::object();
-    m.details["band"]      = band;
-    m.details["role_uid"]  = sender;
-    m.details["body"]      = body;
+    m.event = "BAND_BROADCAST_DELIVER_NOTIFY";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
+    m.details["band"] = band;
+    m.details["role_uid"] = sender;
+    m.details["body"] = body;
     return m;
 }
 
-IncomingMessage make_band_lost(const std::string &band,
-                               const std::string &reason)
+IncomingMessage make_band_lost(const std::string &band, const std::string &reason)
 {
     IncomingMessage m;
-    m.event              = "BAND_LOST";
-    m.notification_id    = parse_notification_id(m.event);
-    m.details            = nlohmann::json::object();
-    m.details["band"]    = band;
-    m.details["reason"]  = reason;
+    m.event = "BAND_LOST";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
+    m.details["band"] = band;
+    m.details["reason"] = reason;
     return m;
 }
 
@@ -454,19 +413,16 @@ TEST_F(DispatchChannelClosingTest, NoCallback_DefaultStopsAndConsumes)
     msgs.push_back(make_other("NON_NOTIFY_MSG"));
     msgs.push_back(make_notify("ch.b", "pending_timeout"));
 
-    EXPECT_FALSE(core.is_shutdown_requested())
-        << "precondition: stop must not yet be requested";
+    EXPECT_FALSE(core.is_shutdown_requested()) << "precondition: stop must not yet be requested";
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
-    EXPECT_TRUE(eng.calls.empty())
-        << "engine must not be called when has_callback returns false";
+    EXPECT_TRUE(eng.calls.empty()) << "engine must not be called when has_callback returns false";
     // Channel-closing notifies CONSUMED (default action took them).
     // Only the non-notify entry remains.
-    ASSERT_EQ(msgs.size(), 1u)
-        << "all CHANNEL_CLOSING_NOTIFY entries must be consumed by the "
-           "default-stop path (audit D1)";
+    ASSERT_EQ(msgs.size(), 1u) << "all CHANNEL_CLOSING_NOTIFY entries must be consumed by the "
+                                  "default-stop path (audit D1)";
     EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
 
     EXPECT_TRUE(core.is_shutdown_requested())
@@ -490,7 +446,7 @@ TEST_F(DispatchChannelClosingTest, NoCallback_ReasonDistinguishableFromGenericSt
     msgs.push_back(make_notify("ch.x", "producer_deregistered"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_NE(core.stop_reason_string(), "normal")
         << "channel-closing default-stop must tag the reason; otherwise "
@@ -511,14 +467,13 @@ TEST_F(DispatchChannelClosingTest, Callback_DispatchesAndRemovesNotify)
     msgs.push_back(make_notify("ch.alpha", "producer_deregistered"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.calls.size(), 1u);
-    EXPECT_EQ(eng.calls[0].first,  "ch.alpha");
+    EXPECT_EQ(eng.calls[0].first, "ch.alpha");
     EXPECT_EQ(eng.calls[0].second, "producer_deregistered");
-    EXPECT_TRUE(msgs.empty())
-        << "CHANNEL_CLOSING_NOTIFY must be removed from msgs after "
-           "dispatch (single-delivery contract)";
+    EXPECT_TRUE(msgs.empty()) << "CHANNEL_CLOSING_NOTIFY must be removed from msgs after "
+                                 "dispatch (single-delivery contract)";
 
     // Audit D1 (2026-05-18) — callback REPLACES the default action.
     // The framework must NOT request_stop() when the script has
@@ -549,12 +504,12 @@ TEST_F(DispatchChannelClosingTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_other("OTHER"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.calls.size(), 2u);
-    EXPECT_EQ(eng.calls[0].first,  "ch.a");
+    EXPECT_EQ(eng.calls[0].first, "ch.a");
     EXPECT_EQ(eng.calls[0].second, "voluntary");
-    EXPECT_EQ(eng.calls[1].first,  "ch.b");
+    EXPECT_EQ(eng.calls[1].first, "ch.b");
     EXPECT_EQ(eng.calls[1].second, "pending_timeout");
 
     ASSERT_EQ(msgs.size(), 3u);
@@ -575,7 +530,7 @@ TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_NoCallback)
     std::vector<IncomingMessage> msgs;
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -589,10 +544,9 @@ TEST_F(DispatchChannelClosingTest, EmptyMsgs_NoOp_WithCallback)
     std::vector<IncomingMessage> msgs;
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
-    EXPECT_TRUE(eng.calls.empty())
-        << "no notify entries to dispatch — callback must NOT fire";
+    EXPECT_TRUE(eng.calls.empty()) << "no notify entries to dispatch — callback must NOT fire";
     EXPECT_TRUE(msgs.empty());
 }
 
@@ -614,20 +568,19 @@ TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptySt
         // fields (not the notification_id) to verify the dispatcher's
         // value(..., default) extraction handles missing details.
         IncomingMessage m;
-        m.event           = "CHANNEL_CLOSING_NOTIFY";
+        m.event = "CHANNEL_CLOSING_NOTIFY";
         m.notification_id = parse_notification_id(m.event);
-        m.details         = nlohmann::json::object();   // no channel_name / reason
+        m.details = nlohmann::json::object(); // no channel_name / reason
         msgs.push_back(m);
     }
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.calls.size(), 1u);
-    EXPECT_EQ(eng.calls[0].first,  "")
+    EXPECT_EQ(eng.calls[0].first, "")
         << "missing channel_name must surface as empty string, not crash";
-    EXPECT_EQ(eng.calls[0].second, "")
-        << "missing reason must surface as empty string, not crash";
+    EXPECT_EQ(eng.calls[0].second, "") << "missing reason must surface as empty string, not crash";
     EXPECT_TRUE(msgs.empty());
 }
 
@@ -638,17 +591,16 @@ TEST_F(DispatchChannelClosingTest, NotifyWithMissingFields_DispatchesWithEmptySt
 namespace
 {
 
-IncomingMessage make_consumer_died(const std::string &channel,
-                                   const std::string &consumer_uid,
+IncomingMessage make_consumer_died(const std::string &channel, const std::string &consumer_uid,
                                    const std::string &reason)
 {
     IncomingMessage m;
-    m.event                     = "CONSUMER_DIED_NOTIFY";
-    m.notification_id           = parse_notification_id(m.event);
-    m.details                   = nlohmann::json::object();
-    m.details["channel_name"]   = channel;
-    m.details["role_uid"]   = consumer_uid;
-    m.details["reason"]         = reason;
+    m.event = "CONSUMER_DIED_NOTIFY";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
+    m.details["channel_name"] = channel;
+    m.details["role_uid"] = consumer_uid;
+    m.details["reason"] = reason;
     return m;
 }
 
@@ -676,13 +628,12 @@ TEST_F(DispatchConsumerDiedTest, NoCallback_DefaultNoOpButConsumes)
     msgs.push_back(make_consumer_died("ch.b", "cons-2", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.consumer_died_calls.empty())
         << "engine must not be called when has_callback returns false";
-    ASSERT_EQ(msgs.size(), 1u)
-        << "CONSUMER_DIED_NOTIFY entries must be consumed by the "
-           "default-no-op path (unified dispatch — audit D1/D2)";
+    ASSERT_EQ(msgs.size(), 1u) << "CONSUMER_DIED_NOTIFY entries must be consumed by the "
+                                  "default-no-op path (unified dispatch — audit D1/D2)";
     EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
 
     EXPECT_FALSE(core.is_shutdown_requested())
@@ -701,11 +652,11 @@ TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesMultiple)
     eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_consumer_died("ch.alpha", "cons-hb",   "heartbeat_timeout"));
-    msgs.push_back(make_consumer_died("ch.beta",  "cons-dead", "heartbeat_timeout"));
+    msgs.push_back(make_consumer_died("ch.alpha", "cons-hb", "heartbeat_timeout"));
+    msgs.push_back(make_consumer_died("ch.beta", "cons-dead", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "ch.alpha");
@@ -714,8 +665,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_DispatchesAndRemovesMultiple)
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[1]), "ch.beta");
     EXPECT_EQ(std::get<1>(eng.consumer_died_calls[1]), "cons-dead");
     EXPECT_EQ(std::get<2>(eng.consumer_died_calls[1]), "heartbeat_timeout");
-    EXPECT_TRUE(msgs.empty())
-        << "CONSUMER_DIED_NOTIFY must be removed from msgs (single delivery)";
+    EXPECT_TRUE(msgs.empty()) << "CONSUMER_DIED_NOTIFY must be removed from msgs (single delivery)";
 }
 
 // Contract 3: mixed entries — only notifies removed, others preserved in order.
@@ -733,7 +683,7 @@ TEST_F(DispatchConsumerDiedTest, Callback_PreservesNonNotifyEntries)
     msgs.push_back(make_other("OTHER"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 2u);
     ASSERT_EQ(msgs.size(), 3u);
@@ -751,7 +701,7 @@ TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_NoCallback)
     std::vector<IncomingMessage> msgs;
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.consumer_died_calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -765,7 +715,7 @@ TEST_F(DispatchConsumerDiedTest, EmptyMsgs_NoOp_WithCallback)
     std::vector<IncomingMessage> msgs;
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.consumer_died_calls.empty())
         << "no notify entries to dispatch — callback must NOT fire";
@@ -787,14 +737,14 @@ TEST_F(DispatchConsumerDiedTest, NotifyWithMissingFields_DispatchesWithEmptyStri
         // intentionally omits details fields (not the event_id) to
         // verify the dispatcher's value(..., default) extraction.
         IncomingMessage m;
-        m.event           = "CONSUMER_DIED_NOTIFY";
+        m.event = "CONSUMER_DIED_NOTIFY";
         m.notification_id = parse_notification_id(m.event);
-        m.details         = nlohmann::json::object();
+        m.details = nlohmann::json::object();
         msgs.push_back(m);
     }
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
     EXPECT_EQ(std::get<0>(eng.consumer_died_calls[0]), "");
@@ -816,18 +766,18 @@ TEST_F(DispatchConsumerDiedTest, MixedNotifies_SinglePassDispatch)
     RecordingEngine eng;
     RoleHostCore core;
     eng.has_on_channel_closing = true;
-    eng.has_on_consumer_died   = true;
+    eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_notify("ch.x", "producer_deregistered"));   // first
-    msgs.push_back(make_consumer_died("ch.y", "cons-z", "heartbeat_timeout"));  // second
+    msgs.push_back(make_notify("ch.x", "producer_deregistered"));              // first
+    msgs.push_back(make_consumer_died("ch.y", "cons-z", "heartbeat_timeout")); // second
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     // Both handlers fired exactly once.
     ASSERT_EQ(eng.calls.size(), 1u);
-    EXPECT_EQ(eng.calls[0].first,  "ch.x");
+    EXPECT_EQ(eng.calls[0].first, "ch.x");
     EXPECT_EQ(eng.calls[0].second, "producer_deregistered");
 
     ASSERT_EQ(eng.consumer_died_calls.size(), 1u);
@@ -848,13 +798,13 @@ TEST_F(DispatchConsumerDiedTest, UnknownNotificationId_StaysInMsgs)
     RecordingEngine eng;
     RoleHostCore core;
     eng.has_on_channel_closing = true;
-    eng.has_on_consumer_died   = true;
+    eng.has_on_consumer_died = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_other("SOME_FUTURE_NOTIFY"));   // notification_id = Unknown
+    msgs.push_back(make_other("SOME_FUTURE_NOTIFY")); // notification_id = Unknown
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.calls.empty());
     EXPECT_TRUE(eng.consumer_died_calls.empty());
@@ -888,16 +838,14 @@ TEST_F(DispatchHubDeadTest, NoCallback_MasterDefaultStopsAndConsumes)
     msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/true));
     msgs.push_back(make_other("NON_NOTIFY_MSG"));
 
-    EXPECT_FALSE(core.is_shutdown_requested())
-        << "precondition: stop must not yet be requested";
+    EXPECT_FALSE(core.is_shutdown_requested()) << "precondition: stop must not yet be requested";
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.hub_dead_calls.empty())
         << "engine must not be called when has_callback returns false";
-    ASSERT_EQ(msgs.size(), 1u)
-        << "HUB_DEAD must be consumed by the default-action path";
+    ASSERT_EQ(msgs.size(), 1u) << "HUB_DEAD must be consumed by the default-action path";
     EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
 
     EXPECT_TRUE(core.is_shutdown_requested())
@@ -919,12 +867,11 @@ TEST_F(DispatchHubDeadTest, NoCallback_PeerNoOpButConsumes)
     msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/false));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.hub_dead_calls.empty());
-    EXPECT_TRUE(msgs.empty())
-        << "peer HUB_DEAD must still be consumed even though no default "
-           "stop fires (Pattern A — handler returns true uniformly)";
+    EXPECT_TRUE(msgs.empty()) << "peer HUB_DEAD must still be consumed even though no default "
+                                 "stop fires (Pattern A — handler returns true uniformly)";
 
     EXPECT_FALSE(core.is_shutdown_requested())
         << "peer hub-death without script callback MUST NOT stop the "
@@ -944,7 +891,7 @@ TEST_F(DispatchHubDeadTest, MasterCallback_ReplacesDefaultStop)
     msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/true));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.hub_dead_calls.size(), 1u);
     EXPECT_EQ(eng.hub_dead_calls[0], "tcp://broker-a:5555")
@@ -968,7 +915,7 @@ TEST_F(DispatchHubDeadTest, PeerCallback_FiresAndNoOp)
     msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/false));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.hub_dead_calls.size(), 1u);
     EXPECT_EQ(eng.hub_dead_calls[0], "tcp://broker-b:5555");
@@ -990,17 +937,15 @@ TEST_F(DispatchHubDeadTest, NoCallback_MasterAndPeerSameCycle)
     eng.has_on_hub_dead = false;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/false));  // peer first
-    msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/true));   // master second
+    msgs.push_back(make_hub_dead("tcp://broker-a:5555", /*is_master=*/false)); // peer first
+    msgs.push_back(make_hub_dead("tcp://broker-b:5555", /*is_master=*/true));  // master second
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.hub_dead_calls.empty());
-    EXPECT_TRUE(msgs.empty())
-        << "both HUB_DEAD entries consumed by Pattern-A dispatch";
-    EXPECT_TRUE(core.is_shutdown_requested())
-        << "master hub-death in the batch MUST request stop";
+    EXPECT_TRUE(msgs.empty()) << "both HUB_DEAD entries consumed by Pattern-A dispatch";
+    EXPECT_TRUE(core.is_shutdown_requested()) << "master hub-death in the batch MUST request stop";
     EXPECT_EQ(core.stop_reason_string(), "hub_dead");
 }
 
@@ -1036,7 +981,7 @@ TEST_F(DispatchBandTest, MemberJoined_NoCallback_DefaultNoOpButConsumes)
     msgs.push_back(make_band_join_notify("!ctrl", "prod.lab.uid01", "lab_a"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.band_member_joined_calls.empty());
     EXPECT_TRUE(msgs.empty()) << "BAND_JOIN_NOTIFY must be consumed";
@@ -1051,12 +996,10 @@ TEST_F(DispatchBandTest, MemberJoined_Callback_DispatchesAndRemovesNotify)
     eng.has_on_band_member_joined = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_band_join_notify("!ctrl",
-                                          "prod.lab.uid01",
-                                          "lab_a"));
+    msgs.push_back(make_band_join_notify("!ctrl", "prod.lab.uid01", "lab_a"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.band_member_joined_calls.size(), 1u);
     EXPECT_EQ(std::get<0>(eng.band_member_joined_calls[0]), "!ctrl");
@@ -1072,11 +1015,10 @@ TEST_F(DispatchBandTest, MemberLeft_NoCallback_DefaultNoOpButConsumes)
     eng.has_on_band_member_left = false;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid01",
-                                           "heartbeat_timeout"));
+    msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid01", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.band_member_left_calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -1090,13 +1032,11 @@ TEST_F(DispatchBandTest, MemberLeft_Callback_DispatchesWithReason)
     eng.has_on_band_member_left = true;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_band_leave_notify("!ctrl", "cons.lab.uid02",
-                                           "voluntary"));
-    msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid03",
-                                           "heartbeat_timeout"));
+    msgs.push_back(make_band_leave_notify("!ctrl", "cons.lab.uid02", "voluntary"));
+    msgs.push_back(make_band_leave_notify("!ctrl", "prod.lab.uid03", "heartbeat_timeout"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.band_member_left_calls.size(), 2u);
     EXPECT_EQ(std::get<2>(eng.band_member_left_calls[0]), "voluntary");
@@ -1111,12 +1051,11 @@ TEST_F(DispatchBandTest, Message_NoCallback_DefaultNoOpButConsumes)
     eng.has_on_band_message = false;
 
     std::vector<IncomingMessage> msgs;
-    msgs.push_back(make_band_broadcast_notify(
-        "!ctrl", "prod.lab.uid01",
-        nlohmann::json{{"event", "calibration_done"}}));
+    msgs.push_back(make_band_broadcast_notify("!ctrl", "prod.lab.uid01",
+                                              nlohmann::json{{"event", "calibration_done"}}));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.band_message_calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -1130,13 +1069,11 @@ TEST_F(DispatchBandTest, Message_Callback_DispatchesWithBody)
     eng.has_on_band_message = true;
 
     std::vector<IncomingMessage> msgs;
-    auto body = nlohmann::json{{"event", "start_run"},
-                               {"params", {{"duration_s", 60}}}};
-    msgs.push_back(make_band_broadcast_notify(
-        "!sensor_sync", "prod.lab.sensor_a", body));
+    auto body = nlohmann::json{{"event", "start_run"}, {"params", {{"duration_s", 60}}}};
+    msgs.push_back(make_band_broadcast_notify("!sensor_sync", "prod.lab.sensor_a", body));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.band_message_calls.size(), 1u);
     EXPECT_EQ(std::get<0>(eng.band_message_calls[0]), "!sensor_sync");
@@ -1155,7 +1092,7 @@ TEST_F(DispatchBandTest, Lost_NoCallback_DefaultNoOpButConsumes)
     msgs.push_back(make_band_lost("!ctrl", "hub_dead"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     EXPECT_TRUE(eng.band_lost_calls.empty());
     EXPECT_TRUE(msgs.empty());
@@ -1175,11 +1112,11 @@ TEST_F(DispatchBandTest, Lost_Callback_DispatchesWithBandAndReason)
     msgs.push_back(make_band_lost("!ctrl_b", "hub_dead"));
 
     pylabhub::scripting::dispatch_notifications(eng, msgs,
-        pylabhub::scripting::StopRequestor{core});
+                                                pylabhub::scripting::StopRequestor{core});
 
     ASSERT_EQ(eng.band_lost_calls.size(), 2u);
-    EXPECT_EQ(eng.band_lost_calls[0].first,  "!ctrl_a");
+    EXPECT_EQ(eng.band_lost_calls[0].first, "!ctrl_a");
     EXPECT_EQ(eng.band_lost_calls[0].second, "hub_dead");
-    EXPECT_EQ(eng.band_lost_calls[1].first,  "!ctrl_b");
+    EXPECT_EQ(eng.band_lost_calls[1].first, "!ctrl_b");
     EXPECT_TRUE(msgs.empty());
 }

@@ -49,10 +49,9 @@ namespace pylabhub::hub
 /// of 0 means "nothing has ever been admitted."  `confirm(V=0)` is a
 /// legal but zero-effect no-op (max(0, 0) == 0); useful only for
 /// completeness of the wire round-trip.
-template <typename PubkeyT, typename RoleUidT>
-class VersionedAdmissionLedger
+template <typename PubkeyT, typename RoleUidT> class VersionedAdmissionLedger
 {
-public:
+  public:
     /// Admit `pk`.  Returns the version assigned.
     ///
     /// Idempotent: re-admitting an already-admitted pubkey is a no-op
@@ -118,12 +117,10 @@ public:
     ///    bypass it.  This is the architectural defense against
     ///    the class of "over-confirmation" bugs the whole ledger
     ///    was built to eliminate.
-    std::uint64_t confirm(const RoleUidT &role_uid,
-                          std::uint64_t   applied_version)
+    std::uint64_t confirm(const RoleUidT &role_uid, std::uint64_t applied_version)
     {
         const std::uint64_t bounded =
-            (applied_version < current_version_) ? applied_version
-                                                  : current_version_;
+            (applied_version < current_version_) ? applied_version : current_version_;
         auto &slot = confirmed_version_[role_uid];
         if (bounded > slot)
         {
@@ -153,8 +150,7 @@ public:
     /// `current_version_` or from the presence of `pk` in the
     /// admission map — those would reintroduce the pre-2026-07-13
     /// set-snapshot bug.
-    std::optional<bool>
-    is_visible_to(const RoleUidT &role_uid, const PubkeyT &pk) const
+    std::optional<bool> is_visible_to(const RoleUidT &role_uid, const PubkeyT &pk) const
     {
         auto conf_it = confirmed_version_.find(role_uid);
         if (conf_it == confirmed_version_.end())
@@ -171,13 +167,9 @@ public:
 
     // ── Observability accessors ──────────────────────────────────────
 
-    std::uint64_t current_version() const noexcept
-    {
-        return current_version_;
-    }
+    std::uint64_t current_version() const noexcept { return current_version_; }
 
-    std::optional<std::uint64_t>
-    admission_version_of(const PubkeyT &pk) const
+    std::optional<std::uint64_t> admission_version_of(const PubkeyT &pk) const
     {
         auto it = admission_version_.find(pk);
         if (it == admission_version_.end())
@@ -187,8 +179,7 @@ public:
         return it->second;
     }
 
-    std::optional<std::uint64_t>
-    confirmed_version_of(const RoleUidT &role_uid) const
+    std::optional<std::uint64_t> confirmed_version_of(const RoleUidT &role_uid) const
     {
         auto it = confirmed_version_.find(role_uid);
         if (it == confirmed_version_.end())
@@ -218,10 +209,7 @@ public:
         return max_v;
     }
 
-    std::size_t admitted_count() const noexcept
-    {
-        return admission_version_.size();
-    }
+    std::size_t admitted_count() const noexcept { return admission_version_.size(); }
 
     /// Snapshot of currently-admitted pubkeys.  Order is unspecified
     /// (unordered_map iteration order); callers that need stable order
@@ -249,8 +237,7 @@ public:
     /// iteration.  Prefer this over `admitted_snapshot` on hot wire
     /// paths (REG_ACK initial_allowlist, GET_CHANNEL_AUTH_ACK
     /// allowlist).
-    template <typename Fn>
-    void for_each_admitted(Fn &&visitor) const
+    template <typename Fn> void for_each_admitted(Fn &&visitor) const
     {
         for (const auto &kv : admission_version_)
         {
@@ -268,10 +255,10 @@ public:
         return confirmed_version_.erase(role_uid) > 0;
     }
 
-private:
-    std::uint64_t                              current_version_ = 0;
+  private:
+    std::uint64_t current_version_ = 0;
     std::unordered_map<PubkeyT, std::uint64_t> admission_version_;
     std::unordered_map<RoleUidT, std::uint64_t> confirmed_version_;
 };
 
-}  // namespace pylabhub::hub
+} // namespace pylabhub::hub

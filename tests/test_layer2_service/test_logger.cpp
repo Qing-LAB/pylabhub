@@ -309,7 +309,7 @@ TEST_F(LoggerTest, TimestampedRotatingFileSink)
     // Parent directory for the test; base_path itself is used as a prefix
     // (no extension) — timestamped sink composes <prefix>-<timestamp>.log.
     const size_t max_file_size_bytes = 256;
-    const size_t max_backup_files    = 2;
+    const size_t max_backup_files = 2;
 
     WorkerProcess proc(g_self_exe_path, "logger.test_timestamped_rotating_file_sink",
                        {base_path.string(), std::to_string(max_file_size_bytes),
@@ -344,8 +344,7 @@ TEST_F(LoggerTest, UseWithoutLifecycleAborts)
     WorkerProcess proc(g_self_exe_path, "logger.use_without_lifecycle_aborts", {});
     ASSERT_TRUE(proc.valid());
     ASSERT_NE(proc.wait_for_exit(), 0);
-    EXPECT_THAT(proc.get_stderr(),
-                ::testing::HasSubstr("before the Logger module was"));
+    EXPECT_THAT(proc.get_stderr(), ::testing::HasSubstr("before the Logger module was"));
 }
 
 /// Tests StartupLogFileSink module with plain file mode.

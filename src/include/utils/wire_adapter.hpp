@@ -78,7 +78,7 @@ struct EncodeContext
     std::string_view dealer_role_uid;
     std::string_view correlation_id;
     std::string_view client_nonce{};
-    std::uint64_t    client_wall_ts{0};
+    std::uint64_t client_wall_ts{0};
 };
 
 /// Encode the JSON payload BRC currently builds into a wire multipart ready
@@ -100,19 +100,17 @@ struct EncodeContext
 /// typed-body-class constructor — this catches encoder bugs at development
 /// time, not at wire time.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT zmq::multipart_t
-encode_dealer_send(std::string_view msg_type,
-                   const EncodeContext &ctx,
-                   nlohmann::json      payload);
+encode_dealer_send(std::string_view msg_type, const EncodeContext &ctx, nlohmann::json payload);
 
 /// Result of decoding an inbound ROUTER-side multipart.
 struct DecodedRouterMsg
 {
     /// The parsed envelope.  Owning; must outlive any string_view into it.
-    WireEnvelope   env;
+    WireEnvelope env;
 
     /// Convenience mirror of `env.msg_type()` as an owning string, for
     /// callers that need to key a dispatcher.
-    std::string    msg_type;
+    std::string msg_type;
 
     /// The Frame 4 body content, shape-compatible with what the current
     /// `handle_XXX(nlohmann::json payload, ...)` handlers already accept.
@@ -130,7 +128,6 @@ struct DecodedRouterMsg
 /// no reply is sent, because a sender that violated the envelope contract
 /// cannot be reliably identified for a reply.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<DecodedRouterMsg>
-decode_router_recv(zmq::multipart_t &&msg,
-                   ParseError        *err_out = nullptr);
+decode_router_recv(zmq::multipart_t &&msg, ParseError *err_out = nullptr);
 
-}  // namespace pylabhub::wire::adapter
+} // namespace pylabhub::wire::adapter

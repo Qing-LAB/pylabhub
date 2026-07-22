@@ -34,19 +34,19 @@ namespace pylabhub
 /// Detected address type from endpoint parsing.
 enum class AddressType : uint8_t
 {
-    IPv4,      ///< Dotted decimal (e.g. "192.168.1.1").
-    IPv6,      ///< Hex colon notation (e.g. "::1", "fe80::1").
-    Hostname,  ///< DNS name (e.g. "myhost.local").
-    Invalid,   ///< Failed validation.
+    IPv4,     ///< Dotted decimal (e.g. "192.168.1.1").
+    IPv6,     ///< Hex colon notation (e.g. "::1", "fe80::1").
+    Hostname, ///< DNS name (e.g. "myhost.local").
+    Invalid,  ///< Failed validation.
 };
 
 /// Result of validate_tcp_endpoint().
 struct EndpointValidation
 {
     AddressType type{AddressType::Invalid};
-    std::string host;          ///< Parsed host (without brackets for IPv6).
-    uint16_t    port{0};       ///< Parsed port number.
-    std::string error;         ///< Empty on success; human-readable error on failure.
+    std::string host;  ///< Parsed host (without brackets for IPv6).
+    uint16_t port{0};  ///< Parsed port number.
+    std::string error; ///< Empty on success; human-readable error on failure.
 
     /// True if validation succeeded.
     [[nodiscard]] bool ok() const noexcept { return type != AddressType::Invalid; }
@@ -191,8 +191,8 @@ inline EndpointValidation validate_tcp_endpoint(const std::string &endpoint)
             for (size_t j = label_start; j < i; ++j)
             {
                 char c = host_str[j];
-                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
-                      (c >= 'A' && c <= 'Z') || c == '-'))
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                      c == '-'))
                 {
                     hostname_error = std::string("invalid character '") + c + "' in hostname";
                     valid_hostname = false;

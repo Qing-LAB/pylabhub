@@ -79,30 +79,25 @@ namespace pylabhub::scripting
 // Pull args out of the message JSON and call the engine's typed
 // callback.  No policy here — purely an argument-unpack adapter.
 
-inline void invoke_user_channel_closing(ScriptEngine &engine,
-                                        const IncomingMessage &msg)
+inline void invoke_user_channel_closing(ScriptEngine &engine, const IncomingMessage &msg)
 {
-    engine.invoke_on_channel_closing(
-        msg.details.value("channel_name", std::string{}),
-        msg.details.value("reason",       std::string{}));
+    engine.invoke_on_channel_closing(msg.details.value("channel_name", std::string{}),
+                                     msg.details.value("reason", std::string{}));
 }
 
-inline void invoke_user_consumer_died(ScriptEngine &engine,
-                                      const IncomingMessage &msg)
+inline void invoke_user_consumer_died(ScriptEngine &engine, const IncomingMessage &msg)
 {
     // broker_proto 4→5 (audit R3.5b, 2026-05-19): payload field is
     // `role_uid` (was `consumer_uid`).  The script-facing callback
     // parameter keeps its `consumer_uid` name because the callback
     // itself is named `on_consumer_died` — the parameter type is
     // already unambiguously a consumer's uid.
-    engine.invoke_on_consumer_died(
-        msg.details.value("channel_name", std::string{}),
-        msg.details.value("role_uid",     std::string{}),
-        msg.details.value("reason",       std::string{}));
+    engine.invoke_on_consumer_died(msg.details.value("channel_name", std::string{}),
+                                   msg.details.value("role_uid", std::string{}),
+                                   msg.details.value("reason", std::string{}));
 }
 
-inline void invoke_user_hub_dead(ScriptEngine &engine,
-                                 const IncomingMessage &msg)
+inline void invoke_user_hub_dead(ScriptEngine &engine, const IncomingMessage &msg)
 {
     engine.invoke_on_hub_dead(msg.source_hub_uid);
 }
@@ -111,39 +106,31 @@ inline void invoke_user_hub_dead(ScriptEngine &engine,
 // callbacks.  See the wire-format catalog in §5.3 for the source
 // fields the broker emits on each NOTIFY.
 
-inline void invoke_user_band_member_joined(ScriptEngine &engine,
-                                           const IncomingMessage &msg)
+inline void invoke_user_band_member_joined(ScriptEngine &engine, const IncomingMessage &msg)
 {
-    engine.invoke_on_band_member_joined(
-        msg.details.value("band",      std::string{}),
-        msg.details.value("role_uid",  std::string{}),
-        msg.details.value("role_name", std::string{}));
+    engine.invoke_on_band_member_joined(msg.details.value("band", std::string{}),
+                                        msg.details.value("role_uid", std::string{}),
+                                        msg.details.value("role_name", std::string{}));
 }
 
-inline void invoke_user_band_member_left(ScriptEngine &engine,
-                                         const IncomingMessage &msg)
+inline void invoke_user_band_member_left(ScriptEngine &engine, const IncomingMessage &msg)
 {
-    engine.invoke_on_band_member_left(
-        msg.details.value("band",     std::string{}),
-        msg.details.value("role_uid", std::string{}),
-        msg.details.value("reason",   std::string{}));
+    engine.invoke_on_band_member_left(msg.details.value("band", std::string{}),
+                                      msg.details.value("role_uid", std::string{}),
+                                      msg.details.value("reason", std::string{}));
 }
 
-inline void invoke_user_band_message(ScriptEngine &engine,
-                                     const IncomingMessage &msg)
+inline void invoke_user_band_message(ScriptEngine &engine, const IncomingMessage &msg)
 {
-    engine.invoke_on_band_message(
-        msg.details.value("band",     std::string{}),
-        msg.details.value("role_uid", std::string{}),
-        msg.details.value("body", nlohmann::json::object()));
+    engine.invoke_on_band_message(msg.details.value("band", std::string{}),
+                                  msg.details.value("role_uid", std::string{}),
+                                  msg.details.value("body", nlohmann::json::object()));
 }
 
-inline void invoke_user_band_lost(ScriptEngine &engine,
-                                  const IncomingMessage &msg)
+inline void invoke_user_band_lost(ScriptEngine &engine, const IncomingMessage &msg)
 {
-    engine.invoke_on_band_lost(
-        msg.details.value("band",   std::string{}),
-        msg.details.value("reason", std::string{}));
+    engine.invoke_on_band_lost(msg.details.value("band", std::string{}),
+                               msg.details.value("reason", std::string{}));
 }
 
 // ── Native defaults ───────────────────────────────────────────────────
@@ -154,8 +141,7 @@ inline void invoke_user_band_lost(ScriptEngine &engine,
 /// graceful stop with `StopReason::ChannelClosed` so downstream
 /// readers can distinguish channel-close from generic api.stop().
 /// Mirrors the master-hub-dead reason-first-then-stop sequencing.
-inline void default_channel_closing(const IncomingMessage & /*msg*/,
-                                    const StopRequestor &stop)
+inline void default_channel_closing(const IncomingMessage & /*msg*/, const StopRequestor &stop)
 {
     stop.request(RoleHostCore::StopReason::ChannelClosed);
 }
@@ -165,8 +151,7 @@ inline void default_channel_closing(const IncomingMessage & /*msg*/,
 /// producer; the channel stays alive, only per-consumer bookkeeping
 /// would need cleanup (which the broker has already done on its
 /// side).  Producers that care must define the callback.
-inline void default_consumer_died(const IncomingMessage & /*msg*/,
-                                  const StopRequestor & /*stop*/)
+inline void default_consumer_died(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/)
 {
     // Intentionally empty.
 }
@@ -181,8 +166,7 @@ inline void default_consumer_died(const IncomingMessage & /*msg*/,
 ///     master with degraded reach.  Scripts wishing to exit on
 ///     peer death must define `on_hub_dead` and call `api.stop()`
 ///     inside it.
-inline void default_hub_dead(const IncomingMessage &msg,
-                             const StopRequestor &stop)
+inline void default_hub_dead(const IncomingMessage &msg, const StopRequestor &stop)
 {
     if (msg.details.value("is_master", false))
         stop.request(RoleHostCore::StopReason::HubDead);
@@ -196,21 +180,23 @@ inline void default_hub_dead(const IncomingMessage &msg,
 // this no-op default.
 
 inline void default_band_member_joined(const IncomingMessage & /*msg*/,
-                                       const StopRequestor & /*stop*/) {}
+                                       const StopRequestor & /*stop*/)
+{
+}
 
 inline void default_band_member_left(const IncomingMessage & /*msg*/,
-                                     const StopRequestor & /*stop*/) {}
+                                     const StopRequestor & /*stop*/)
+{
+}
 
-inline void default_band_message(const IncomingMessage & /*msg*/,
-                                 const StopRequestor & /*stop*/) {}
+inline void default_band_message(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/) {}
 
-inline void default_band_lost(const IncomingMessage & /*msg*/,
-                              const StopRequestor & /*stop*/) {}
+inline void default_band_lost(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/) {}
 
 // ── Dispatch table ────────────────────────────────────────────────────
 
-using InvokeUserFn     = void (*)(ScriptEngine&,        const IncomingMessage&);
-using DefaultNativeFn  = void (*)(const IncomingMessage&, const StopRequestor&);
+using InvokeUserFn = void (*)(ScriptEngine &, const IncomingMessage &);
+using DefaultNativeFn = void (*)(const IncomingMessage &, const StopRequestor &);
 
 /// One row per `NotificationId`.  `callback_name` MUST match the
 /// `set_standard_callback_present(name, ...)` calls in each engine's
@@ -218,27 +204,31 @@ using DefaultNativeFn  = void (*)(const IncomingMessage&, const StopRequestor&);
 /// return false and the user override will never fire.
 struct NotificationEntry
 {
-    const char *      callback_name;  ///< nullptr ⇒ no row (Unknown)
-    InvokeUserFn      invoke_user;    ///< nullptr ⇒ leave in msgs
-    DefaultNativeFn   default_native; ///< called when override missing
+    const char *callback_name;      ///< nullptr ⇒ no row (Unknown)
+    InvokeUserFn invoke_user;       ///< nullptr ⇒ leave in msgs
+    DefaultNativeFn default_native; ///< called when override missing
 };
 
-inline constexpr NotificationEntry
-kNotificationTable[static_cast<std::size_t>(NotificationId::Count)] = {
-    /* Unknown            */ { nullptr,                  nullptr,                          nullptr                       },
-    /* ChannelClosing     */ { "on_channel_closing",     &invoke_user_channel_closing,     &default_channel_closing      },
-    /* ConsumerDied       */ { "on_consumer_died",       &invoke_user_consumer_died,       &default_consumer_died        },
-    /* HubDead            */ { "on_hub_dead",            &invoke_user_hub_dead,            &default_hub_dead             },
-    /* BandMemberJoined   */ { "on_band_member_joined",  &invoke_user_band_member_joined,  &default_band_member_joined   },
-    /* BandMemberLeft     */ { "on_band_member_left",    &invoke_user_band_member_left,    &default_band_member_left     },
-    /* BandMessage        */ { "on_band_message",        &invoke_user_band_message,        &default_band_message         },
-    /* BandLost           */ { "on_band_lost",           &invoke_user_band_lost,           &default_band_lost            },
+inline constexpr NotificationEntry kNotificationTable[static_cast<std::size_t>(
+    NotificationId::Count)] = {
+    /* Unknown            */ {nullptr, nullptr, nullptr},
+    /* ChannelClosing     */
+    {"on_channel_closing", &invoke_user_channel_closing, &default_channel_closing},
+    /* ConsumerDied       */
+    {"on_consumer_died", &invoke_user_consumer_died, &default_consumer_died},
+    /* HubDead            */ {"on_hub_dead", &invoke_user_hub_dead, &default_hub_dead},
+    /* BandMemberJoined   */
+    {"on_band_member_joined", &invoke_user_band_member_joined, &default_band_member_joined},
+    /* BandMemberLeft     */
+    {"on_band_member_left", &invoke_user_band_member_left, &default_band_member_left},
+    /* BandMessage        */ {"on_band_message", &invoke_user_band_message, &default_band_message},
+    /* BandLost           */ {"on_band_lost", &invoke_user_band_lost, &default_band_lost},
     // HEP-CORE-0036 §I11 — ChannelAuthChanged is INFRASTRUCTURE-ONLY.
     // `RoleAPIBase::handle_channel_auth_notifies` removes these from
     // the msgs list BEFORE dispatch_notifications runs, so this row's
     // handlers should never fire.  Entry kept here for table indexing
     // correctness — Count is the array size and must equal enum max.
-    /* ChannelAuthChanged */ { nullptr,                  nullptr,                          nullptr                       },
+    /* ChannelAuthChanged */ {nullptr, nullptr, nullptr},
 };
 
 /// Single-pass dispatcher.  For each known msg: fire the user
@@ -250,8 +240,7 @@ kNotificationTable[static_cast<std::size_t>(NotificationId::Count)] = {
 /// (e.g. CHANNEL_CLOSING_NOTIFY followed by CONSUMER_DIED_NOTIFY in
 /// the same cycle) are seen by the script in the order the broker
 /// emitted them.
-inline void dispatch_notifications(ScriptEngine &engine,
-                                   std::vector<IncomingMessage> &msgs,
+inline void dispatch_notifications(ScriptEngine &engine, std::vector<IncomingMessage> &msgs,
                                    const StopRequestor &stop)
 {
     auto it = msgs.begin();
@@ -260,18 +249,20 @@ inline void dispatch_notifications(ScriptEngine &engine,
         const auto idx = static_cast<std::size_t>(it->notification_id);
         if (idx >= static_cast<std::size_t>(NotificationId::Count))
         {
-            ++it; continue;             // out-of-range — leave in msgs
+            ++it;
+            continue; // out-of-range — leave in msgs
         }
         const NotificationEntry &entry = kNotificationTable[idx];
         if (entry.invoke_user == nullptr)
         {
-            ++it; continue;             // Unknown — leave in msgs
+            ++it;
+            continue; // Unknown — leave in msgs
         }
         if (engine.has_callback(entry.callback_name))
             entry.invoke_user(engine, *it);
         else
             entry.default_native(*it, stop);
-        it = msgs.erase(it);            // always consumed
+        it = msgs.erase(it); // always consumed
     }
 }
 
@@ -281,10 +272,10 @@ inline void dispatch_notifications(ScriptEngine &engine,
 
 class ProducerCycleOps final
 {
-    RoleAPIBase  &api_;
+    RoleAPIBase &api_;
     ScriptEngine &engine_;
     RoleHostCore &core_;
-    bool          stop_on_error_;
+    bool stop_on_error_;
 
     // Cached at construction (stable after queue start).
     size_t buf_sz_;
@@ -304,12 +295,11 @@ class ProducerCycleOps final
     bool prev_tx_active_{false};
 
   public:
-    ProducerCycleOps(RoleAPIBase &api, ScriptEngine &e,
-                     RoleHostCore &c, bool stop_on_error)
-        : api_(api), engine_(e), core_(c),
-          stop_on_error_(stop_on_error),
+    ProducerCycleOps(RoleAPIBase &api, ScriptEngine &e, RoleHostCore &c, bool stop_on_error)
+        : api_(api), engine_(e), core_(c), stop_on_error_(stop_on_error),
           buf_sz_(api.write_item_size())
-    {}
+    {
+    }
 
     /// HEP-CORE-0011 §"Loop-ready gate" per-role default.
     /// Producer: `true`.  Writers are fire-and-forget by default —
@@ -317,10 +307,7 @@ class ProducerCycleOps final
     /// (or buffered per queue policy).  Scripts that need to gate
     /// emission on a specific peer count / peer UID override `on_init`
     /// and AND-compose with this default.
-    bool default_init_ready(const RoleAPIBase & /*api*/) const
-    {
-        return true;
-    }
+    bool default_init_ready(const RoleAPIBase & /*api*/) const { return true; }
 
     bool acquire(const AcquireContext &ctx)
     {
@@ -335,14 +322,17 @@ class ProducerCycleOps final
             return false;
         }
         log_edge_if_changed_(true);
-        buf_ = retry_acquire(ctx, core_,
-            [this](auto t) { return api_.write_acquire(t); });
+        buf_ = retry_acquire(ctx, core_, [this](auto t) { return api_.write_acquire(t); });
         return buf_ != nullptr;
     }
 
     void cleanup_on_shutdown()
     {
-        if (buf_) { api_.write_discard(); buf_ = nullptr; }
+        if (buf_)
+        {
+            api_.write_discard();
+            buf_ = nullptr;
+        }
     }
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
@@ -385,10 +375,10 @@ class ProducerCycleOps final
         if (!api_.is_tx_active())
             return true;
 
-        if (buf_) std::memset(buf_, 0, buf_sz_);
+        if (buf_)
+            std::memset(buf_, 0, buf_sz_);
 
-        auto result = engine_.invoke_produce(
-            InvokeTx{buf_, buf_sz_}, msgs);
+        auto result = engine_.invoke_produce(InvokeTx{buf_, buf_sz_}, msgs);
 
         if (buf_)
         {
@@ -432,7 +422,8 @@ class ProducerCycleOps final
     /// a real transition in our state machine (stop() is terminal).
     void log_edge_if_changed_(bool now_active)
     {
-        if (now_active == prev_tx_active_) return;
+        if (now_active == prev_tx_active_)
+            return;
         if (now_active)
             LOGGER_DEBUG("[cycle_ops::producer] tx queue Standby→Active; "
                          "resuming write_acquire + invoke_produce dispatch "
@@ -447,12 +438,12 @@ class ProducerCycleOps final
 
 class ConsumerCycleOps final
 {
-    RoleAPIBase  &api_;
+    RoleAPIBase &api_;
     ScriptEngine &engine_;
     RoleHostCore &core_;
-    bool          stop_on_error_;
+    bool stop_on_error_;
 
-    size_t      item_sz_;
+    size_t item_sz_;
     const void *data_{nullptr};
 
     // HEP-CORE-0036 §6.7 Standby → Active edge latch (#189).
@@ -460,12 +451,11 @@ class ConsumerCycleOps final
     bool prev_rx_active_{false};
 
   public:
-    ConsumerCycleOps(RoleAPIBase &api, ScriptEngine &e,
-                     RoleHostCore &core, bool stop_on_error)
-        : api_(api), engine_(e), core_(core),
-          stop_on_error_(stop_on_error),
+    ConsumerCycleOps(RoleAPIBase &api, ScriptEngine &e, RoleHostCore &core, bool stop_on_error)
+        : api_(api), engine_(e), core_(core), stop_on_error_(stop_on_error),
           item_sz_(api.read_item_size())
-    {}
+    {
+    }
 
     /// HEP-CORE-0011 §"Loop-ready gate" per-role default.
     /// Consumer: at least one admitted peer for the rx-side channel.
@@ -502,13 +492,17 @@ class ConsumerCycleOps final
         // inside retry_acquire or this lambda — it would silently corrupt
         // shared memory owned by the producer.
         data_ = retry_acquire(ctx, core_,
-            [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
+                              [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
         return data_ != nullptr;
     }
 
     void cleanup_on_shutdown()
     {
-        if (data_) { api_.read_release(); data_ = nullptr; }
+        if (data_)
+        {
+            api_.read_release();
+            data_ = nullptr;
+        }
     }
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
@@ -551,10 +545,13 @@ class ConsumerCycleOps final
 
         const uint64_t errors_before = engine_.script_error_count();
 
-        engine_.invoke_consume(
-            InvokeRx{data_, item_sz_}, msgs);
+        engine_.invoke_consume(InvokeRx{data_, item_sz_}, msgs);
 
-        if (data_) { api_.read_release(); data_ = nullptr; }
+        if (data_)
+        {
+            api_.read_release();
+            data_ = nullptr;
+        }
 
         if (stop_on_error_ && engine_.script_error_count() > errors_before)
         {
@@ -573,7 +570,8 @@ class ConsumerCycleOps final
     /// ProducerCycleOps::log_edge_if_changed_ for rationale.
     void log_edge_if_changed_(bool now_active)
     {
-        if (now_active == prev_rx_active_) return;
+        if (now_active == prev_rx_active_)
+            return;
         if (now_active)
             LOGGER_DEBUG("[cycle_ops::consumer] rx queue Standby→Active; "
                          "resuming read_acquire + invoke_consume dispatch "
@@ -589,16 +587,16 @@ class ConsumerCycleOps final
 
 class ProcessorCycleOps final
 {
-    RoleAPIBase  &api_;
+    RoleAPIBase &api_;
     ScriptEngine &engine_;
     RoleHostCore &core_;
-    bool          stop_on_error_;
-    bool          drop_mode_;
+    bool stop_on_error_;
+    bool drop_mode_;
 
     size_t in_sz_, out_sz_;
 
     const void *held_input_{nullptr};
-    void       *out_buf_{nullptr};
+    void *out_buf_{nullptr};
 
     // HEP-CORE-0036 §6.7 Standby → Active edge latches (#189) — one
     // per side, rising-edge only.  Dual-side processor logs each side
@@ -608,12 +606,12 @@ class ProcessorCycleOps final
     bool prev_tx_active_{false};
 
   public:
-    ProcessorCycleOps(RoleAPIBase &api, ScriptEngine &e, RoleHostCore &c,
-                      bool stop_on_error, bool drop_mode)
-        : api_(api), engine_(e), core_(c),
-          stop_on_error_(stop_on_error), drop_mode_(drop_mode),
+    ProcessorCycleOps(RoleAPIBase &api, ScriptEngine &e, RoleHostCore &c, bool stop_on_error,
+                      bool drop_mode)
+        : api_(api), engine_(e), core_(c), stop_on_error_(stop_on_error), drop_mode_(drop_mode),
           in_sz_(api.read_item_size()), out_sz_(api.write_item_size())
-    {}
+    {
+    }
 
     /// HEP-CORE-0011 §"Loop-ready gate" per-role default.
     /// Processor: rx side requires the queue's admission fact
@@ -643,8 +641,8 @@ class ProcessorCycleOps final
         // through. See comment there for the full safety explanation.
         if (rx_active && !held_input_)
         {
-            held_input_ = retry_acquire(ctx, core_,
-                [this](auto t) { return const_cast<void *>(api_.read_acquire(t)); });
+            held_input_ = retry_acquire(ctx, core_, [this](auto t)
+                                        { return const_cast<void *>(api_.read_acquire(t)); });
         }
 
         // Secondary: output (only if input available + tx Active,
@@ -663,9 +661,8 @@ class ProcessorCycleOps final
                 auto output_timeout = ctx.short_timeout;
                 if (ctx.deadline != std::chrono::steady_clock::time_point::max())
                 {
-                    auto remaining = std::chrono::duration_cast<
-                        std::chrono::milliseconds>(
-                            ctx.deadline - std::chrono::steady_clock::now());
+                    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        ctx.deadline - std::chrono::steady_clock::now());
                     if (remaining > ctx.short_timeout)
                         output_timeout = remaining;
                 }
@@ -678,8 +675,16 @@ class ProcessorCycleOps final
 
     void cleanup_on_shutdown()
     {
-        if (held_input_) { api_.read_release();  held_input_ = nullptr; }
-        if (out_buf_)    { api_.write_discard(); out_buf_    = nullptr; }
+        if (held_input_)
+        {
+            api_.read_release();
+            held_input_ = nullptr;
+        }
+        if (out_buf_)
+        {
+            api_.write_discard();
+            out_buf_ = nullptr;
+        }
     }
 
     bool invoke_and_commit(std::vector<IncomingMessage> &msgs)
@@ -722,20 +727,25 @@ class ProcessorCycleOps final
         if (!api_.is_rx_active() || !api_.is_tx_active())
             return true;
 
-        if (out_buf_) std::memset(out_buf_, 0, out_sz_);
+        if (out_buf_)
+            std::memset(out_buf_, 0, out_sz_);
 
-        auto result = engine_.invoke_process(
-            InvokeRx{held_input_, in_sz_},
-            InvokeTx{out_buf_,    out_sz_},
-            msgs);
+        auto result = engine_.invoke_process(InvokeRx{held_input_, in_sz_},
+                                             InvokeTx{out_buf_, out_sz_}, msgs);
 
         // Output commit/discard.
         if (out_buf_)
         {
             if (result == InvokeResult::Commit)
-            { api_.write_commit();  core_.inc_out_slots_written(); }
+            {
+                api_.write_commit();
+                core_.inc_out_slots_written();
+            }
             else
-            { api_.write_discard(); core_.inc_out_drop_count(); }
+            {
+                api_.write_discard();
+                core_.inc_out_drop_count();
+            }
         }
         else if (held_input_)
         {
@@ -767,7 +777,11 @@ class ProcessorCycleOps final
 
     void cleanup_on_exit()
     {
-        if (held_input_) { api_.read_release(); held_input_ = nullptr; }
+        if (held_input_)
+        {
+            api_.read_release();
+            held_input_ = nullptr;
+        }
     }
 
   private:
@@ -776,7 +790,8 @@ class ProcessorCycleOps final
     /// processor's two sides transition independently.
     void log_rx_edge_if_changed_(bool now_active)
     {
-        if (now_active == prev_rx_active_) return;
+        if (now_active == prev_rx_active_)
+            return;
         if (now_active)
             LOGGER_DEBUG("[cycle_ops::processor] rx queue Standby→Active; "
                          "resuming read_acquire (HEP-CORE-0036 §6.7)");
@@ -784,7 +799,8 @@ class ProcessorCycleOps final
     }
     void log_tx_edge_if_changed_(bool now_active)
     {
-        if (now_active == prev_tx_active_) return;
+        if (now_active == prev_tx_active_)
+            return;
         if (now_active)
             LOGGER_DEBUG("[cycle_ops::processor] tx queue Standby→Active; "
                          "resuming write_acquire (HEP-CORE-0036 §6.7)");

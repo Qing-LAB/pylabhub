@@ -25,8 +25,8 @@ inline constexpr int64_t kInfiniteGrace = std::numeric_limits<int64_t>::max();
 
 struct HubStateConfig
 {
-    int64_t  disconnected_grace_ms{60000};       ///< -1 → kInfiniteGrace
-    int32_t  max_disconnected_entries{1000};
+    int64_t disconnected_grace_ms{60000}; ///< -1 → kInfiniteGrace
+    int32_t max_disconnected_entries{1000};
 };
 
 inline HubStateConfig parse_hub_state_config(const nlohmann::json &j)
@@ -49,18 +49,17 @@ inline HubStateConfig parse_hub_state_config(const nlohmann::json &j)
     if (grace == -1)
         sc.disconnected_grace_ms = kInfiniteGrace;
     else if (grace < 0)
-        throw std::runtime_error(
-            "hub: 'state.disconnected_grace_ms' must be >= 0 or -1 "
-            "(infinite); got " + std::to_string(grace));
+        throw std::runtime_error("hub: 'state.disconnected_grace_ms' must be >= 0 or -1 "
+                                 "(infinite); got " +
+                                 std::to_string(grace));
     else
         sc.disconnected_grace_ms = grace;
 
-    sc.max_disconnected_entries = sect.value("max_disconnected_entries",
-                                              sc.max_disconnected_entries);
+    sc.max_disconnected_entries =
+        sect.value("max_disconnected_entries", sc.max_disconnected_entries);
     if (sc.max_disconnected_entries < 0)
-        throw std::runtime_error(
-            "hub: 'state.max_disconnected_entries' must be >= 0 (got " +
-            std::to_string(sc.max_disconnected_entries) + ")");
+        throw std::runtime_error("hub: 'state.max_disconnected_entries' must be >= 0 (got " +
+                                 std::to_string(sc.max_disconnected_entries) + ")");
     return sc;
 }
 

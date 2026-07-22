@@ -124,16 +124,16 @@ class PYLABHUB_UTILS_EXPORT Logger
         /// Default 5 — matches @ref pylabhub::config::LoggingConfig
         /// (the user-facing JSON default), so direct C++ users and
         /// JSON-driven users see the same retention behaviour.
-        size_t max_backup_files   = 5;
+        size_t max_backup_files = 5;
 
         /// Rotation naming strategy.
         /// false (default): numeric — base → base.1 → base.2 on rotation.
         /// true: timestamped — each file is base-YYYY-MM-DD-HH-MM-SS.uuuuuu.log;
         ///                     oldest files past max_backup_files are deleted.
-        bool   timestamped_names  = false;
+        bool timestamped_names = false;
 
         /// Inter-process locking on POSIX (no effect on Windows).
-        bool   use_flock          = true;
+        bool use_flock = true;
     };
 
     /**
@@ -169,9 +169,9 @@ class PYLABHUB_UTILS_EXPORT Logger
      *   mods.push_back(Logger::GetStartupLogFileSinkModule("/var/log/hub.log", cfg));
      * @endcode
      */
-    static ModuleDef GetStartupLogFileSinkModule(
-        const std::string &log_file_path,
-        std::optional<RotatingLogConfig> rotating = std::nullopt);
+    static ModuleDef
+    GetStartupLogFileSinkModule(const std::string &log_file_path,
+                                std::optional<RotatingLogConfig> rotating = std::nullopt);
 
     // --- Lifecycle ---
     // The logger is non-copyable and non-movable to enforce the singleton pattern.
@@ -566,25 +566,28 @@ bool Logger::system_fmt_sync(fmt::format_string<Args...> fmt_str, Args &&...args
 // Note: These macros will block the calling thread.
 
 #define LOGGER_TRACE_SYNC(fmt, ...)                                                                \
-    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_TRACE>( \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
+    (::pylabhub::utils::Logger::instance()                                                         \
+         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_TRACE>(FMT_STRING(fmt) __VA_OPT__(, )   \
+                                                                      __VA_ARGS__))
 #define LOGGER_DEBUG_SYNC(fmt, ...)                                                                \
-    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_DEBUG>( \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
+    (::pylabhub::utils::Logger::instance()                                                         \
+         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_DEBUG>(FMT_STRING(fmt) __VA_OPT__(, )   \
+                                                                      __VA_ARGS__))
 #define LOGGER_INFO_SYNC(fmt, ...)                                                                 \
-    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_INFO>(  \
+    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_INFO>( \
         FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
 #define LOGGER_WARN_SYNC(fmt, ...)                                                                 \
-    (::pylabhub::utils::Logger::instance()                                                          \
-        .log_fmt_sync<::pylabhub::utils::Logger::Level::L_WARNING>(FMT_STRING(fmt) __VA_OPT__(, )  \
-                                                                       __VA_ARGS__))
+    (::pylabhub::utils::Logger::instance()                                                         \
+         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_WARNING>(FMT_STRING(fmt) __VA_OPT__(, ) \
+                                                                        __VA_ARGS__))
 #define LOGGER_ERROR_SYNC(fmt, ...)                                                                \
-    (::pylabhub::utils::Logger::instance().log_fmt_sync<::pylabhub::utils::Logger::Level::L_ERROR>( \
-        FMT_STRING(fmt) __VA_OPT__(, ) __VA_ARGS__))
-#define LOGGER_SYSTEM_SYNC(fmt, ...)                                                               \
-    (::pylabhub::utils::Logger::instance()                                                          \
-        .log_fmt_sync<::pylabhub::utils::Logger::Level::L_SYSTEM>(FMT_STRING(fmt) __VA_OPT__(, )   \
+    (::pylabhub::utils::Logger::instance()                                                         \
+         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_ERROR>(FMT_STRING(fmt) __VA_OPT__(, )   \
                                                                       __VA_ARGS__))
+#define LOGGER_SYSTEM_SYNC(fmt, ...)                                                               \
+    (::pylabhub::utils::Logger::instance()                                                         \
+         .log_fmt_sync<::pylabhub::utils::Logger::Level::L_SYSTEM>(FMT_STRING(fmt) __VA_OPT__(, )  \
+                                                                       __VA_ARGS__))
 
 // Macros for runtime format string checking.
 #define LOGGER_TRACE_RT(fmt, ...)                                                                  \

@@ -25,8 +25,8 @@
 
 #include "plh_hub_fixture.h"
 
-#include "utils/role_identity_policy.hpp"   // pylabhub::broker::KnownRole
-#include "utils/security/known_roles.hpp"   // KnownRolesStore (legacy-file author)
+#include "utils/role_identity_policy.hpp" // pylabhub::broker::KnownRole
+#include "utils/security/known_roles.hpp" // KnownRolesStore (legacy-file author)
 
 #include <sys/stat.h>
 #include <chrono>
@@ -41,10 +41,8 @@ using pylabhub::tests::helper::WorkerProcess;
 namespace
 {
 
-constexpr const char *kValidPubkey1 =
-    "0123456789012345678901234567890123456789";
-constexpr const char *kValidPubkey2 =
-    "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ";
+constexpr const char *kValidPubkey1 = "0123456789012345678901234567890123456789";
+constexpr const char *kValidPubkey2 = "ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ";
 constexpr const char *kHubPass = "l4-known-roles-pw";
 
 /// Path of the encrypted vault for a hub built by `write_minimal_config`
@@ -81,13 +79,14 @@ WorkerProcess run_op(const fs::path &cfg, const std::vector<std::string> &op)
 TEST_F(PlhHubCliTest, RevokeUnknownUid_OnEmptyVault_ExitsZeroNotPresent)
 {
     ScopedHubPassword pw(kHubPass);
-    const auto         hub_dir = tmp("revoke_empty");
-    const auto         cfg     = prepare_keygened_hub(hub_dir);
+    const auto hub_dir = tmp("revoke_empty");
+    const auto cfg = prepare_keygened_hub(hub_dir);
 
     auto p = run_op(cfg, {"--revoke-known-role", "uid.never.existed"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     EXPECT_NE(p.get_stdout().find("not present"), std::string::npos)
-        << "stdout must signal the no-op; got:\n" << p.get_stdout();
+        << "stdout must signal the no-op; got:\n"
+        << p.get_stdout();
     EXPECT_NE(p.get_stdout().find("vault untouched"), std::string::npos)
         << "stdout must signal the vault was not rewritten; got:\n"
         << p.get_stdout();
@@ -98,13 +97,12 @@ TEST_F(PlhHubCliTest, RevokeUnknownUid_OnEmptyVault_ExitsZeroNotPresent)
 TEST_F(PlhHubCliTest, RevokeUnknownUid_AfterAdd_LeavesVaultMtimeUnchanged)
 {
     ScopedHubPassword pw(kHubPass);
-    const auto         hub_dir = tmp("revoke_unknown_mtime");
-    const auto         cfg     = prepare_keygened_hub(hub_dir);
-    const auto         vault   = vault_path_of(hub_dir);
+    const auto hub_dir = tmp("revoke_unknown_mtime");
+    const auto cfg = prepare_keygened_hub(hub_dir);
+    const auto vault = vault_path_of(hub_dir);
 
     {
-        auto a = run_op(cfg, {"--add-known-role", "alice", "uid.alice",
-                              "producer", kValidPubkey1});
+        auto a = run_op(cfg, {"--add-known-role", "alice", "uid.alice", "producer", kValidPubkey1});
         ASSERT_EQ(a.wait_for_exit(), 0) << "seed failed:\n" << a.get_stderr();
     }
     ASSERT_TRUE(fs::exists(vault));
@@ -129,23 +127,20 @@ TEST_F(PlhHubCliTest, RevokeUnknownUid_AfterAdd_LeavesVaultMtimeUnchanged)
     // alice still admitted.
     auto l = run_op(cfg, {"--list-known-roles"});
     ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
-    EXPECT_NE(l.get_stdout().find("uid.alice"), std::string::npos)
-        << l.get_stdout();
+    EXPECT_NE(l.get_stdout().find("uid.alice"), std::string::npos) << l.get_stdout();
 }
 
 /// Control: revoking a KNOWN uid removes it; the other entry survives.
 TEST_F(PlhHubCliTest, RevokeKnownUid_RemovesEntry_KeepsOthers)
 {
     ScopedHubPassword pw(kHubPass);
-    const auto         hub_dir = tmp("revoke_known");
-    const auto         cfg     = prepare_keygened_hub(hub_dir);
+    const auto hub_dir = tmp("revoke_known");
+    const auto cfg = prepare_keygened_hub(hub_dir);
 
     {
-        auto a = run_op(cfg, {"--add-known-role", "alice", "uid.alice",
-                              "producer", kValidPubkey1});
+        auto a = run_op(cfg, {"--add-known-role", "alice", "uid.alice", "producer", kValidPubkey1});
         ASSERT_EQ(a.wait_for_exit(), 0) << a.get_stderr();
-        auto b = run_op(cfg, {"--add-known-role", "bob", "uid.bob",
-                              "consumer", kValidPubkey2});
+        auto b = run_op(cfg, {"--add-known-role", "bob", "uid.bob", "consumer", kValidPubkey2});
         ASSERT_EQ(b.wait_for_exit(), 0) << b.get_stderr();
     }
 
@@ -157,10 +152,8 @@ TEST_F(PlhHubCliTest, RevokeKnownUid_RemovesEntry_KeepsOthers)
     auto l = run_op(cfg, {"--list-known-roles"});
     ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
     const std::string out = l.get_stdout();
-    EXPECT_EQ(out.find("uid.alice"), std::string::npos)
-        << "alice must be gone:\n" << out;
-    EXPECT_NE(out.find("uid.bob"), std::string::npos)
-        << "bob must survive:\n" << out;
+    EXPECT_EQ(out.find("uid.alice"), std::string::npos) << "alice must be gone:\n" << out;
+    EXPECT_NE(out.find("uid.bob"), std::string::npos) << "bob must survive:\n" << out;
     EXPECT_NE(out.find(kValidPubkey2), std::string::npos) << out;
 }
 
@@ -177,11 +170,11 @@ TEST_F(PlhHubCliTest, AddKnownRole_TypoRole_ExitsOne)
                     {"--add-known-role", "alice", "uid.alice",
                      "prodcer", // typo
                      kValidPubkey1});
-    EXPECT_EQ(p.wait_for_exit(), 1)
-        << "Typo'd role must produce non-zero exit; stderr:\n"
-        << p.get_stderr();
+    EXPECT_EQ(p.wait_for_exit(), 1) << "Typo'd role must produce non-zero exit; stderr:\n"
+                                    << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("'prodcer'"), std::string::npos)
-        << "diagnostic must quote the bad value; got:\n" << p.get_stderr();
+        << "diagnostic must quote the bad value; got:\n"
+        << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("producer"), std::string::npos)
         << "diagnostic must enumerate the allowed roles; got:\n"
         << p.get_stderr();
@@ -206,20 +199,19 @@ TEST_F(PlhHubCliTest, AddKnownRole_EachValidRole_AcceptedAndListed)
     for (const auto &c : cases)
     {
         ScopedHubPassword pw(kHubPass);
-        const auto        hub_dir = tmp(std::string("add_valid_") + c.role);
-        const auto        cfg     = prepare_keygened_hub(hub_dir);
+        const auto hub_dir = tmp(std::string("add_valid_") + c.role);
+        const auto cfg = prepare_keygened_hub(hub_dir);
 
-        auto p = run_op(cfg, {"--add-known-role", "n",
-                              std::string("uid.") + c.role, c.role, c.pubkey});
-        EXPECT_EQ(p.wait_for_exit(), 0)
-            << "role='" << c.role << "'; stderr:\n" << p.get_stderr();
+        auto p =
+            run_op(cfg, {"--add-known-role", "n", std::string("uid.") + c.role, c.role, c.pubkey});
+        EXPECT_EQ(p.wait_for_exit(), 0) << "role='" << c.role << "'; stderr:\n" << p.get_stderr();
 
         auto l = run_op(cfg, {"--list-known-roles"});
         ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
         const std::string out = l.get_stdout();
-        EXPECT_NE(out.find(std::string("role='") + c.role + "'"),
-                  std::string::npos)
-            << "role='" << c.role << "' not listed:\n" << out;
+        EXPECT_NE(out.find(std::string("role='") + c.role + "'"), std::string::npos)
+            << "role='" << c.role << "' not listed:\n"
+            << out;
         EXPECT_NE(out.find(c.pubkey), std::string::npos) << out;
     }
 }
@@ -231,17 +223,17 @@ TEST_F(PlhHubCliTest, AddKnownRole_EachValidRole_AcceptedAndListed)
 TEST_F(PlhHubCliTest, MigrateKnownRoles_ImportsPlaintextIntoVaultAndDeletesFile)
 {
     ScopedHubPassword pw(kHubPass);
-    const auto         hub_dir = tmp("migrate");
-    const auto         cfg     = prepare_keygened_hub(hub_dir);
+    const auto hub_dir = tmp("migrate");
+    const auto cfg = prepare_keygened_hub(hub_dir);
 
     // Author a legacy plaintext known_roles.json via the store's file codec.
     const fs::path legacy = hub_dir / "vault" / "known_roles.json";
     {
         pylabhub::utils::security::KnownRolesStore store;
-        pylabhub::broker::KnownRole                e;
-        e.name       = "legacy";
-        e.uid        = "uid.legacy";
-        e.role       = "producer";
+        pylabhub::broker::KnownRole e;
+        e.name = "legacy";
+        e.uid = "uid.legacy";
+        e.role = "producer";
         e.pubkey_z85 = kValidPubkey1;
         store.add(std::move(e));
         store.save_to_file(legacy);
@@ -250,13 +242,13 @@ TEST_F(PlhHubCliTest, MigrateKnownRoles_ImportsPlaintextIntoVaultAndDeletesFile)
 
     auto m = run_op(cfg, {"--migrate-known-roles"});
     EXPECT_EQ(m.wait_for_exit(), 0) << "stderr:\n" << m.get_stderr();
-    EXPECT_FALSE(fs::exists(legacy))
-        << "migrate must delete the plaintext file after importing it";
+    EXPECT_FALSE(fs::exists(legacy)) << "migrate must delete the plaintext file after importing it";
 
     auto l = run_op(cfg, {"--list-known-roles"});
     ASSERT_EQ(l.wait_for_exit(), 0) << l.get_stderr();
     EXPECT_NE(l.get_stdout().find("uid.legacy"), std::string::npos)
-        << "migrated role must be in the vault:\n" << l.get_stdout();
+        << "migrated role must be in the vault:\n"
+        << l.get_stdout();
 }
 
 /// The run/validate path REFUSES to start while a plaintext known_roles.json
@@ -264,8 +256,8 @@ TEST_F(PlhHubCliTest, MigrateKnownRoles_ImportsPlaintextIntoVaultAndDeletesFile)
 TEST_F(PlhHubCliTest, Validate_RefusesWhenPlaintextKnownRolesPresent)
 {
     ScopedHubPassword pw(kHubPass);
-    const auto         hub_dir = tmp("cutover");
-    const auto         cfg     = prepare_keygened_hub(hub_dir);
+    const auto hub_dir = tmp("cutover");
+    const auto cfg = prepare_keygened_hub(hub_dir);
 
     // Drop a stray plaintext allowlist.
     const fs::path legacy = hub_dir / "vault" / "known_roles.json";
@@ -279,7 +271,8 @@ TEST_F(PlhHubCliTest, Validate_RefusesWhenPlaintextKnownRolesPresent)
     EXPECT_NE(v.wait_for_exit(), 0)
         << "hub must refuse to start with a plaintext allowlist present";
     EXPECT_NE(v.get_stderr().find("known_roles.json"), std::string::npos)
-        << "diagnostic must name the offending file; got:\n" << v.get_stderr();
+        << "diagnostic must name the offending file; got:\n"
+        << v.get_stderr();
     EXPECT_NE(v.get_stderr().find("migrate-known-roles"), std::string::npos)
         << "diagnostic must point at the migration command; got:\n"
         << v.get_stderr();

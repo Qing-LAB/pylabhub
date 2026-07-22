@@ -30,16 +30,16 @@
  */
 
 #include "pylabhub_utils_export.h"
-#include "utils/hub_queue.hpp"                // QueueReader / QueueWriter
-#include "utils/hub_state.hpp"                // ChannelTopology
-#include "utils/hub_shm_queue.hpp"            // ShmQueue::{Rx,Tx}CreateOptions
-#include "utils/hub_zmq_queue.hpp"            // ZmqQueue::{Rx,Tx}CreateOptions, kZmqDefaultBufferDepth
-#include "utils/data_block_config.hpp"        // DataBlockPageSize
-#include "utils/data_block_policy.hpp"        // ChecksumPolicy, ConsumerSyncPolicy, DataBlockPolicy
-#include "utils/schema_types.hpp"             // SchemaFieldDesc
-#include "utils/schema_blds.hpp"              // schema::SchemaInfo
-#include "utils/security/curve_keypair.hpp"   // Z85PublicKey
-#include "utils/security/key_store.hpp"       // kRoleIdentityName
+#include "utils/hub_queue.hpp"         // QueueReader / QueueWriter
+#include "utils/hub_state.hpp"         // ChannelTopology
+#include "utils/hub_shm_queue.hpp"     // ShmQueue::{Rx,Tx}CreateOptions
+#include "utils/hub_zmq_queue.hpp"     // ZmqQueue::{Rx,Tx}CreateOptions, kZmqDefaultBufferDepth
+#include "utils/data_block_config.hpp" // DataBlockPageSize
+#include "utils/data_block_policy.hpp" // ChecksumPolicy, ConsumerSyncPolicy, DataBlockPolicy
+#include "utils/schema_types.hpp"      // SchemaFieldDesc
+#include "utils/schema_blds.hpp"       // schema::SchemaInfo
+#include "utils/security/curve_keypair.hpp" // Z85PublicKey
+#include "utils/security/key_store.hpp"     // kRoleIdentityName
 
 #include <array>
 #include <cstdint>
@@ -65,8 +65,7 @@ enum class Transport
 /// Parse a wire `transport` string (from role config) into the enum.
 /// Returns `std::nullopt` if the input is not one of {"zmq", "shm"};
 /// callers surface this as a config-load error.
-PYLABHUB_UTILS_EXPORT std::optional<Transport>
-transport_from_string(std::string_view s) noexcept;
+PYLABHUB_UTILS_EXPORT std::optional<Transport> transport_from_string(std::string_view s) noexcept;
 
 /// Transport-agnostic options for `hub::Queue::create_reader`.  Common
 /// fields plus per-transport extras; the factory reads only the fields
@@ -79,32 +78,31 @@ transport_from_string(std::string_view s) noexcept;
 struct RxOptions
 {
     // ── Common (transport-agnostic) ────────────────────────────────
-    std::vector<SchemaFieldDesc> slot_schema;    // required
-    std::string                  slot_packing = "aligned";
+    std::vector<SchemaFieldDesc> slot_schema; // required
+    std::string slot_packing = "aligned";
     /// See HEP-CORE-0017 §3.3.0 legality gate #4: BINDING side may
     /// set (bind hint); DIALING side must leave empty (endpoint
     /// arrives on REG_ACK).
-    std::string                  endpoint_hint;
-    std::string                  instance_id;    // empty → auto-derived
-    ChecksumPolicy               checksum_policy = ChecksumPolicy::Enforced;
+    std::string endpoint_hint;
+    std::string instance_id; // empty → auto-derived
+    ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
 
     // ── ZMQ-specific ───────────────────────────────────────────────
-    std::string_view identity_key_name =
-        ::pylabhub::utils::security::kRoleIdentityName;
+    std::string_view identity_key_name = ::pylabhub::utils::security::kRoleIdentityName;
     /// Consumer's CURVE serverkey — needed only on DIALING side.
     /// Empty on BINDING (fan-in consumer PULL/bind).
     ::pylabhub::utils::security::Z85PublicKey server_pubkey{};
-    size_t          max_buffer_depth = kZmqDefaultBufferDepth;
+    size_t max_buffer_depth = kZmqDefaultBufferDepth;
     std::optional<std::array<uint8_t, 8>> schema_tag;
 
     // ── SHM-specific ───────────────────────────────────────────────
-    std::vector<SchemaFieldDesc> fz_schema;         // reader may verify
-    std::string                  fz_packing = "aligned";
-    std::string                  channel_name;      // diagnostic + shm_name
-    std::string                  consumer_uid;
-    std::string                  consumer_name;
-    bool                         verify_slot = false;
-    bool                         verify_fz   = false;
+    std::vector<SchemaFieldDesc> fz_schema; // reader may verify
+    std::string fz_packing = "aligned";
+    std::string channel_name; // diagnostic + shm_name
+    std::string consumer_uid;
+    std::string consumer_name;
+    bool verify_slot = false;
+    bool verify_fz = false;
 };
 
 /// Transport-agnostic options for `hub::Queue::create_writer`.
@@ -112,41 +110,40 @@ struct TxOptions
 {
     // ── Common ─────────────────────────────────────────────────────
     std::vector<SchemaFieldDesc> slot_schema;
-    std::string                  slot_packing = "aligned";
-    std::string                  endpoint_hint;
-    std::string                  instance_id;
-    ChecksumPolicy               checksum_policy = ChecksumPolicy::Enforced;
+    std::string slot_packing = "aligned";
+    std::string endpoint_hint;
+    std::string instance_id;
+    ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
 
     // ── ZMQ-specific ───────────────────────────────────────────────
-    std::string_view identity_key_name =
-        ::pylabhub::utils::security::kRoleIdentityName;
+    std::string_view identity_key_name = ::pylabhub::utils::security::kRoleIdentityName;
     /// Producer's CURVE serverkey — needed only on DIALING (fan-in
     /// producer PUSH-connect).  Empty on BINDING sides.
     ::pylabhub::utils::security::Z85PublicKey server_pubkey{};
-    std::string                  zap_domain;   // empty → derived from instance_id
-    int                          sndhwm = 0;
-    size_t                       send_buffer_depth = kZmqDefaultBufferDepth;
-    OverflowPolicy               overflow_policy = OverflowPolicy::Drop;
-    int                          send_retry_interval_ms = 10;
+    std::string zap_domain; // empty → derived from instance_id
+    int sndhwm = 0;
+    size_t send_buffer_depth = kZmqDefaultBufferDepth;
+    OverflowPolicy overflow_policy = OverflowPolicy::Drop;
+    int send_retry_interval_ms = 10;
     std::optional<std::array<uint8_t, 8>> schema_tag;
 
     // ── SHM-specific ───────────────────────────────────────────────
-    std::string                  channel_name;
+    std::string channel_name;
     std::vector<SchemaFieldDesc> fz_schema;
-    std::string                  fz_packing = "aligned";
-    uint32_t                     ring_buffer_capacity{0};
-    DataBlockPageSize            page_size{DataBlockPageSize::Unset};
-    DataBlockPolicy              policy{DataBlockPolicy::RingBuffer};
-    ConsumerSyncPolicy           sync_policy{ConsumerSyncPolicy::Sequential};
-    bool                         checksum_slot = false;
-    bool                         checksum_fz   = false;
-    bool                         always_clear_slot = true;
-    std::string                  hub_uid;
-    std::string                  hub_name;
-    const schema::SchemaInfo    *slot_schema_info = nullptr;
-    const schema::SchemaInfo    *fz_schema_info   = nullptr;
-    std::string                  producer_uid;
-    std::string                  producer_name;
+    std::string fz_packing = "aligned";
+    uint32_t ring_buffer_capacity{0};
+    DataBlockPageSize page_size{DataBlockPageSize::Unset};
+    DataBlockPolicy policy{DataBlockPolicy::RingBuffer};
+    ConsumerSyncPolicy sync_policy{ConsumerSyncPolicy::Sequential};
+    bool checksum_slot = false;
+    bool checksum_fz = false;
+    bool always_clear_slot = true;
+    std::string hub_uid;
+    std::string hub_name;
+    const schema::SchemaInfo *slot_schema_info = nullptr;
+    const schema::SchemaInfo *fz_schema_info = nullptr;
+    std::string producer_uid;
+    std::string producer_name;
 };
 
 /**
@@ -163,7 +160,7 @@ struct TxOptions
  */
 class PYLABHUB_UTILS_EXPORT Queue
 {
-public:
+  public:
     Queue() = delete;
 
     /// Construct the consumer-side queue for `(topology, transport)`.
@@ -172,16 +169,12 @@ public:
     /// nullptr + LOGGER_ERROR on any gate failure; caller checks for
     /// null and propagates as config-load failure.
     [[nodiscard]] static std::unique_ptr<QueueReader>
-    create_reader(ChannelTopology topology,
-                  Transport       transport,
-                  RxOptions       opts);
+    create_reader(ChannelTopology topology, Transport transport, RxOptions opts);
 
     /// Construct the producer-side queue for `(topology, transport)`.
     /// Same gate semantics as `create_reader`.
     [[nodiscard]] static std::unique_ptr<QueueWriter>
-    create_writer(ChannelTopology topology,
-                  Transport       transport,
-                  TxOptions       opts);
+    create_writer(ChannelTopology topology, Transport transport, TxOptions opts);
 
     /// Reader-side legality per HEP-CORE-0017 §3.3.0 matrix:
     /// - Fan-in    → binding
@@ -189,8 +182,7 @@ public:
     /// - One-to-one → dialing
     /// Used by gate #4 (endpoint_hint validity) and available to
     /// callers for symmetric decisions.
-    [[nodiscard]] static constexpr bool
-    reader_is_binding_side(ChannelTopology t) noexcept
+    [[nodiscard]] static constexpr bool reader_is_binding_side(ChannelTopology t) noexcept
     {
         return t == ChannelTopology::FanIn;
     }
@@ -199,8 +191,7 @@ public:
     /// - Fan-in    → dialing
     /// - Fan-out   → binding
     /// - One-to-one → binding
-    [[nodiscard]] static constexpr bool
-    writer_is_binding_side(ChannelTopology t) noexcept
+    [[nodiscard]] static constexpr bool writer_is_binding_side(ChannelTopology t) noexcept
     {
         return t != ChannelTopology::FanIn;
     }

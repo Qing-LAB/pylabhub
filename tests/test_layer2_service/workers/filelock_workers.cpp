@@ -62,8 +62,7 @@ int test_blocking_lock(const std::string &resource_path_str)
             std::atomic<bool> thread_saw_block{false};
 
             // Main thread acquires a blocking lock
-            auto main_lock =
-                std::make_unique<FileLock>(resource_path, /*is_directory=*/false);
+            auto main_lock = std::make_unique<FileLock>(resource_path, /*is_directory=*/false);
             ASSERT_TRUE(main_lock->valid());
 
             // Spawn a second thread that will block trying to acquire the same lock
@@ -231,14 +230,16 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
                             start_of_iteration_barrier.arrive_and_wait();
 
                             // Attempt the non-blocking lock exactly once this phase
-                            FileLock lock(resource_path, /*is_directory=*/false, /*blocking=*/false);
+                            FileLock lock(resource_path, /*is_directory=*/false,
+                                          /*blocking=*/false);
                             if (lock.valid())
                             {
                                 // Record success for this iteration
                                 iter_success_count.fetch_add(1, std::memory_order_relaxed);
 
                                 // Hold lock briefly so other threads must fail now
-                                std::this_thread::sleep_for(std::chrono::milliseconds(1)); // Reduce sleep to 1ms
+                                std::this_thread::sleep_for(
+                                    std::chrono::milliseconds(1)); // Reduce sleep to 1ms
                             }
                             // Release the lock at the end of scope
                             // Implicitly released when 'lock' goes out of scope here.
@@ -249,7 +250,8 @@ int test_multithreaded_non_blocking(const std::string &resource_path_str)
 
                             if (tid == 0) // choose thread 0 as recorder
                             {
-                                int observed = iter_success_count.exchange(0, std::memory_order_acq_rel);
+                                int observed =
+                                    iter_success_count.exchange(0, std::memory_order_acq_rel);
                                 per_iter_success[iter] = observed;
                             }
                         }
@@ -379,7 +381,7 @@ int use_without_lifecycle_aborts()
     // Creating FileLock should PLH_PANIC and abort.
     std::filesystem::path path("/tmp/pylabhub_filelock_no_lifecycle.lock");
     FileLock lock(path, /*is_directory=*/false, /*blocking=*/false);
-    return 1;  // Should not reach here
+    return 1; // Should not reach here
 }
 
 /// Holds a blocking FileLock for hold_ms milliseconds. Signals "ready" to
@@ -400,8 +402,7 @@ int lock_holder(const std::string &resource_path_str, int hold_ms)
             std::filesystem::path resource_path(resource_path_str);
             FileLock lock(resource_path);
             ASSERT_TRUE(lock.valid())
-                << "lock_holder: failed to acquire lock: "
-                << lock.error_code().message();
+                << "lock_holder: failed to acquire lock: " << lock.error_code().message();
 
             // Parent spawns the contender only after we signal; the
             // contender then races the still-held lock.
@@ -410,8 +411,7 @@ int lock_holder(const std::string &resource_path_str, int hold_ms)
             std::this_thread::sleep_for(std::chrono::milliseconds(hold_ms));
             // Lock released by RAII at scope exit.
         },
-        "filelock::lock_holder",
-        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
+        "filelock::lock_holder", FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
 /// All-in-one worker for the TryLockPattern body (originally in-process).
@@ -429,9 +429,8 @@ int try_lock_pattern(const std::string &resource_path_str)
 
             // 1. Success: non-blocking lock on an available resource.
             {
-                auto lock_opt =
-                    FileLock::try_lock(resource_path, /*is_directory=*/false,
-                                       /*blocking=*/false);
+                auto lock_opt = FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                                   /*blocking=*/false);
                 ASSERT_TRUE(lock_opt.has_value());
                 EXPECT_TRUE(lock_opt->valid());
             } // released here
@@ -440,9 +439,8 @@ int try_lock_pattern(const std::string &resource_path_str)
             {
                 FileLock main_lock(resource_path);
                 ASSERT_TRUE(main_lock.valid());
-                auto lock_opt =
-                    FileLock::try_lock(resource_path, /*is_directory=*/false,
-                                       /*blocking=*/false);
+                auto lock_opt = FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                                   /*blocking=*/false);
                 EXPECT_FALSE(lock_opt.has_value());
             }
 
@@ -450,14 +448,12 @@ int try_lock_pattern(const std::string &resource_path_str)
             {
                 FileLock main_lock(resource_path);
                 ASSERT_TRUE(main_lock.valid());
-                auto lock_opt =
-                    FileLock::try_lock(resource_path, /*is_directory=*/false,
-                                       std::chrono::milliseconds(50));
+                auto lock_opt = FileLock::try_lock(resource_path, /*is_directory=*/false,
+                                                   std::chrono::milliseconds(50));
                 EXPECT_FALSE(lock_opt.has_value());
             }
         },
-        "filelock::try_lock_pattern",
-        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
+        "filelock::try_lock_pattern", FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
 }
 
 /// Verifies that constructing a FileLock with a path containing a null
@@ -469,21 +465,19 @@ int invalid_resource_path()
         [&]()
         {
             const char invalid_p[] = "invalid\0path.txt";
-            std::filesystem::path invalid_path(
-                std::string_view(invalid_p, sizeof(invalid_p) - 1));
+            std::filesystem::path invalid_path(std::string_view(invalid_p, sizeof(invalid_p) - 1));
 
             FileLock lock(invalid_path, /*is_directory=*/false,
                           /*blocking=*/false);
             ASSERT_FALSE(lock.valid());
             ASSERT_EQ(lock.error_code(), std::errc::invalid_argument);
 
-            auto lock_opt =
-                FileLock::try_lock(invalid_path, /*is_directory=*/false,
-                                   /*blocking=*/false);
+            auto lock_opt = FileLock::try_lock(invalid_path, /*is_directory=*/false,
+                                               /*blocking=*/false);
             ASSERT_FALSE(lock_opt.has_value());
         },
-        "filelock::invalid_resource_path",
-        FileLock::GetLifecycleModule(), Logger::GetLifecycleModule());
+        "filelock::invalid_resource_path", FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule());
 }
 
 } // namespace filelock

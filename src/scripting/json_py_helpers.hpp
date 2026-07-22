@@ -56,9 +56,9 @@
  * surface.
  */
 
-#include "utils/script_engine.hpp"   // kScriptMaxRecursionDepth
+#include "utils/script_engine.hpp" // kScriptMaxRecursionDepth
 
-#include "utils/role_api_base.hpp"          // AllowedPeer
+#include "utils/role_api_base.hpp" // AllowedPeer
 
 #include <pybind11/pybind11.h>
 #include <nlohmann/json.hpp>
@@ -165,7 +165,7 @@ inline py::list peer_list_to_py(const std::vector<AllowedPeer> &peers)
     {
         py::dict entry;
         entry["role_uid"] = p.role_uid;
-        entry["pubkey"]   = p.pubkey;
+        entry["pubkey"] = p.pubkey;
         out.append(entry);
     }
     return out;
@@ -180,7 +180,8 @@ inline py::list peer_list_to_py(const std::vector<AllowedPeer> &peers)
 inline py::list uid_list_to_py(const std::vector<std::string> &uids)
 {
     py::list out;
-    for (const auto &u : uids) out.append(u);
+    for (const auto &u : uids)
+        out.append(u);
     return out;
 }
 
@@ -200,8 +201,7 @@ inline py::list uid_list_to_py(const std::vector<std::string> &uids)
 /// semantics.  Returns an empty array on success-but-no-members.
 ///
 /// Native engine equivalent: `native_engine.cpp:572-583`.
-inline nlohmann::json
-fetch_band_members_or_throw(RoleAPIBase *base, const std::string &channel)
+inline nlohmann::json fetch_band_members_or_throw(RoleAPIBase *base, const std::string &channel)
 {
     std::optional<nlohmann::json> reply;
     {
@@ -209,8 +209,7 @@ fetch_band_members_or_throw(RoleAPIBase *base, const std::string &channel)
         reply = base->band_members(channel);
     }
     if (!reply.has_value())
-        throw py::value_error(
-            "band_members transport failure for channel '" + channel + "'");
+        throw py::value_error("band_members transport failure for channel '" + channel + "'");
     // Broker reply shape (HEP-CORE-0030): { "members": [ {role_uid,
     // role_name}, ... ] }.  Unwrap the members array; default to empty
     // array if the field is absent (defensive — should always be

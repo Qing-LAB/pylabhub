@@ -165,7 +165,7 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     friend void do_secure_subsystem_startup(const char *, void *);
     friend void do_secure_subsystem_shutdown(const char *, void *);
 
-public:
+  public:
     // ═════════════════════════════════════════════════════════════
     // Lifecycle
     // ═════════════════════════════════════════════════════════════
@@ -189,10 +189,10 @@ public:
 
     ~SecureSubsystem();
 
-    SecureSubsystem(const SecureSubsystem &)            = delete;
+    SecureSubsystem(const SecureSubsystem &) = delete;
     SecureSubsystem &operator=(const SecureSubsystem &) = delete;
-    SecureSubsystem(SecureSubsystem &&)                 = delete;
-    SecureSubsystem &operator=(SecureSubsystem &&)      = delete;
+    SecureSubsystem(SecureSubsystem &&) = delete;
+    SecureSubsystem &operator=(SecureSubsystem &&) = delete;
 
     // ═════════════════════════════════════════════════════════════
     // Category 2 — Key management (sub-container)
@@ -235,8 +235,7 @@ public:
 
     /// Constant-time memory compare (replaces `sodium_memcmp`).
     /// Returns true iff spans are equal length AND byte-equal.
-    [[nodiscard]] bool memcmp_ct(std::span<const std::uint8_t> a,
-                                  std::span<const std::uint8_t> b);
+    [[nodiscard]] bool memcmp_ct(std::span<const std::uint8_t> a, std::span<const std::uint8_t> b);
 
     /// Zero a memory region — compiler-optimizer-proof (replaces
     /// `sodium_memzero`).
@@ -252,8 +251,7 @@ public:
     /// the log line is the diagnostic.  If the caller cannot
     /// guarantee non-null upstream, they must check the arguments
     /// themselves before calling.
-    void bin2hex(char *hex, std::size_t hex_max_len,
-                 const std::uint8_t *bin, std::size_t bin_len);
+    void bin2hex(char *hex, std::size_t hex_max_len, const std::uint8_t *bin, std::size_t bin_len);
 
     // ═════════════════════════════════════════════════════════════
     // Category 1b — Hash + KDF (stateless)
@@ -269,8 +267,7 @@ public:
     ///              is legal — pass any non-null pointer + `len=0`).
     /// @param len   Input length in bytes.
     /// @return true on success, false on null pointer or sodium failure.
-    bool compute_blake2b(std::uint8_t *out, const void *data,
-                         std::size_t len);
+    bool compute_blake2b(std::uint8_t *out, const void *data, std::size_t len);
 
     /// BLAKE2b-256 as std::array.  Failure signal: returns all-zeros.
     ///
@@ -288,19 +285,17 @@ public:
     /// `std::optional<std::array<...>>` — would churn ~15 caller
     /// sites without buying meaningful safety over "does your input
     /// non-null and non-empty" upstream checks.
-    [[nodiscard]] std::array<std::uint8_t, 32>
-    compute_blake2b_array(const void *data, std::size_t len);
+    [[nodiscard]] std::array<std::uint8_t, 32> compute_blake2b_array(const void *data,
+                                                                     std::size_t len);
 
     /// Verify a stored BLAKE2b-256 hash against `data[0..len)` using
     /// constant-time comparison.
-    [[nodiscard]] bool verify_blake2b(const std::uint8_t *stored,
-                                       const void *data,
-                                       std::size_t len);
+    [[nodiscard]] bool verify_blake2b(const std::uint8_t *stored, const void *data,
+                                      std::size_t len);
 
     /// std::array overload of `verify_blake2b`.
-    [[nodiscard]] bool verify_blake2b(
-        const std::array<std::uint8_t, 32> &stored,
-        const void *data, std::size_t len);
+    [[nodiscard]] bool verify_blake2b(const std::array<std::uint8_t, 32> &stored, const void *data,
+                                      std::size_t len);
 
     /// Derive an Argon2id salt from a domain-separator string.
     ///
@@ -320,8 +315,7 @@ public:
     /// @param domain    Non-secret domain separator (typically a uid).
     /// @return true on success, false on null pointer or sodium
     ///         failure.
-    bool derive_pwhash_salt(std::uint8_t *salt_out,
-                            std::string_view domain);
+    bool derive_pwhash_salt(std::uint8_t *salt_out, std::string_view domain);
 
     /// Argon2id password-based KDF (wrapper for `crypto_pwhash`
     /// with `crypto_pwhash_ALG_ARGON2ID13`).  Uses INTERACTIVE
@@ -340,10 +334,8 @@ public:
     /// @param salt           16-byte salt (`kPwhashSaltBytes`).
     /// @return true on success, false on null pointer or Argon2
     ///         failure (typically insufficient memory).
-    [[nodiscard]] bool pwhash_argon2id(
-        std::uint8_t *out, std::size_t out_len,
-        const char *password, std::size_t password_len,
-        const std::uint8_t *salt);
+    [[nodiscard]] bool pwhash_argon2id(std::uint8_t *out, std::size_t out_len, const char *password,
+                                       std::size_t password_len, const std::uint8_t *salt);
 
     /// `crypto_pwhash_SALTBYTES` (16) — the exact salt size Argon2id
     /// requires as input.  Exposed as a constant so callers can size
@@ -380,11 +372,11 @@ public:
     /// Use case: symmetric file-at-rest encryption where the key is
     /// derived from a password (vault_crypto.cpp).  Both parties are
     /// the same person / process — no pubkey infrastructure needed.
-    [[nodiscard]] std::size_t secretbox_encrypt(
-        std::uint8_t *out, std::size_t out_max_len,
-        const std::uint8_t *plaintext, std::size_t plaintext_len,
-        std::span<const std::uint8_t, 24> nonce,
-        std::span<const std::uint8_t, 32> key);
+    [[nodiscard]] std::size_t secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
+                                                const std::uint8_t *plaintext,
+                                                std::size_t plaintext_len,
+                                                std::span<const std::uint8_t, 24> nonce,
+                                                std::span<const std::uint8_t, 32> key);
 
     /// XSalsa20-Poly1305 authenticated symmetric decryption
     /// (wrapper for `crypto_secretbox_open_easy`).  Verifies the MAC
@@ -395,21 +387,21 @@ public:
     ///
     /// Nonce and key are statically-sized spans — same rationale as
     /// `secretbox_encrypt` above.
-    [[nodiscard]] std::size_t secretbox_decrypt(
-        std::uint8_t *out, std::size_t out_max_len,
-        const std::uint8_t *ciphertext, std::size_t ciphertext_len,
-        std::span<const std::uint8_t, 24> nonce,
-        std::span<const std::uint8_t, 32> key);
+    [[nodiscard]] std::size_t secretbox_decrypt(std::uint8_t *out, std::size_t out_max_len,
+                                                const std::uint8_t *ciphertext,
+                                                std::size_t ciphertext_len,
+                                                std::span<const std::uint8_t, 24> nonce,
+                                                std::span<const std::uint8_t, 32> key);
 
     /// `crypto_secretbox_KEYBYTES` (32) — the exact secretbox key
     /// size.  Exposed so callers can size their key buffers without
     /// pulling `<sodium.h>` in.
-    static constexpr std::size_t kSecretboxKeyBytes   = 32;
+    static constexpr std::size_t kSecretboxKeyBytes = 32;
     /// `crypto_secretbox_NONCEBYTES` (24).
     static constexpr std::size_t kSecretboxNonceBytes = 24;
     /// `crypto_secretbox_MACBYTES` (16) — the MAC prefix length
     /// that `secretbox_encrypt`'s output contains.
-    static constexpr std::size_t kSecretboxMacBytes   = 16;
+    static constexpr std::size_t kSecretboxMacBytes = 16;
 
     // ── Category 1c — Asymmetric box (crypto_box) ────────────────
     // Two-party authenticated encryption using Curve25519 +
@@ -457,12 +449,11 @@ public:
     /// @return Bytes written on success (== `plaintext.size() +
     ///         kBoxMacBytes`), 0 on failure (key lookup failure,
     ///         buffer too small, sodium error).
-    [[nodiscard]] std::size_t box_encrypt_using(
-        std::string_view                  own_seckey_name,
-        std::span<const std::uint8_t, 32> peer_pubkey_raw,
-        std::span<const std::uint8_t, 24> nonce,
-        std::span<const std::uint8_t>     plaintext,
-        std::span<std::uint8_t>           out);
+    [[nodiscard]] std::size_t box_encrypt_using(std::string_view own_seckey_name,
+                                                std::span<const std::uint8_t, 32> peer_pubkey_raw,
+                                                std::span<const std::uint8_t, 24> nonce,
+                                                std::span<const std::uint8_t> plaintext,
+                                                std::span<std::uint8_t> out);
 
     /// Decrypt `ciphertext` under (`own_seckey_name`, `peer_pubkey`).
     /// Wrapper for `crypto_box_open_easy`.  Verifies the MAC and
@@ -485,22 +476,21 @@ public:
     /// @return Bytes written on success (== `ciphertext.size() -
     ///         kBoxMacBytes`), 0 on MAC failure, key lookup failure,
     ///         buffer too small, or bad input.
-    [[nodiscard]] std::size_t box_decrypt_using(
-        std::string_view                  own_seckey_name,
-        std::span<const std::uint8_t, 32> peer_pubkey_raw,
-        std::span<const std::uint8_t, 24> nonce,
-        std::span<const std::uint8_t>     ciphertext,
-        std::span<std::uint8_t>           out);
+    [[nodiscard]] std::size_t box_decrypt_using(std::string_view own_seckey_name,
+                                                std::span<const std::uint8_t, 32> peer_pubkey_raw,
+                                                std::span<const std::uint8_t, 24> nonce,
+                                                std::span<const std::uint8_t> ciphertext,
+                                                std::span<std::uint8_t> out);
 
     /// `crypto_box_PUBLICKEYBYTES` (32).
     static constexpr std::size_t kBoxPubkeyBytes = 32;
     /// `crypto_box_SECRETKEYBYTES` (32).
     static constexpr std::size_t kBoxSeckeyBytes = 32;
     /// `crypto_box_NONCEBYTES` (24).
-    static constexpr std::size_t kBoxNonceBytes  = 24;
+    static constexpr std::size_t kBoxNonceBytes = 24;
     /// `crypto_box_MACBYTES` (16) — MAC prefix length in
     /// `box_encrypt_using`'s output.
-    static constexpr std::size_t kBoxMacBytes    = 16;
+    static constexpr std::size_t kBoxMacBytes = 16;
 
     // Future encryption verbs land here as more protocols absorb
     // (aead_encrypt / _decrypt, sealed_box_seal / _open).  All flat
@@ -511,7 +501,7 @@ public:
     /// init access to KeyStore's private ctor (HEP-CORE-0043 §2.2).
     struct Impl;
 
-private:
+  private:
     /// Private ctor — singleton discipline.  Only construction path
     /// is the function-local static in `instance()`, driven by the
     /// startup thunk.
@@ -523,13 +513,11 @@ private:
 /// HEP-CORE-0043 §2.1 canonical accessor.  Returns a reference to
 /// the process's SecureSubsystem instance.  PANICs if the state gate
 /// is not `Initialized`.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT SecureSubsystem &
-secure();
+[[nodiscard]] PYLABHUB_UTILS_EXPORT SecureSubsystem &secure();
 
 /// Non-throwing probe — true iff SecureSubsystem is constructed AND
 /// `sodium_init()` has completed successfully.  This is the gate
 /// every consumer of libsodium uses before touching libsodium.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT bool
-sodium_ready() noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool sodium_ready() noexcept;
 
 } // namespace pylabhub::utils::security

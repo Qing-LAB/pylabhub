@@ -33,7 +33,9 @@ uint64_t get_seed()
         {
             return std::stoull(seed_str);
         }
-        catch (const std::exception &) {}
+        catch (const std::exception &)
+        {
+        }
     }
     return std::random_device{}();
 }
@@ -202,7 +204,8 @@ TEST(InProcessSpinStateTest, SelfMoveAssignmentAndDetachedMove)
 {
     auto state = make_in_process_spin_state();
 
-    // Self-move-assignment (active guard): implementation-defined; we require no crash and lock still held
+    // Self-move-assignment (active guard): implementation-defined; we require no crash and lock
+    // still held
     {
         InProcessSpinStateGuard e(state);
         ASSERT_TRUE(e.holds_lock());
@@ -348,8 +351,13 @@ TEST(InProcessSpinStateTest, TransferBetweenThreads_SingleHandoff)
             catch (...)
             {
                 thread_failure.store(true, std::memory_order_relaxed);
-                try { p.set_exception(std::current_exception()); }
-                catch (const std::future_error &) {}
+                try
+                {
+                    p.set_exception(std::current_exception());
+                }
+                catch (const std::future_error &)
+                {
+                }
             }
         });
 
@@ -420,8 +428,13 @@ TEST(InProcessSpinStateTest, TransferBetweenThreads_HeavyHandoff)
                     std::thread local_consumer(
                         [p2 = std::move(p2), g = std::move(g)]() mutable
                         {
-                            try { p2.set_value(std::move(g)); }
-                            catch (...) {}
+                            try
+                            {
+                                p2.set_value(std::move(g));
+                            }
+                            catch (...)
+                            {
+                            }
                         });
 
                     InProcessSpinStateGuard moved = f2.get();

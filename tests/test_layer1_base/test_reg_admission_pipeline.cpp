@@ -35,32 +35,30 @@
 #include <unordered_set>
 
 namespace ag = pylabhub::admission;
-using pylabhub::wire::WireEnvelope;
 using pylabhub::wire::ProducerRegReqBody;
+using pylabhub::wire::WireEnvelope;
 
 namespace
 {
 
-nlohmann::json make_reg_req_body_json(std::string_view role_uid,
-                                        std::string_view pubkey,
-                                        std::string_view  nonce,
-                                        std::uint64_t     wall_ts)
+nlohmann::json make_reg_req_body_json(std::string_view role_uid, std::string_view pubkey,
+                                      std::string_view nonce, std::uint64_t wall_ts)
 {
     nlohmann::json body;
-    body["channel_name"]    = "lab.test.channel";
-    body["role_uid"]        = std::string{role_uid};
-    body["role_type"]       = "producer";
-    body["role_name"]       = "prod-1";
+    body["channel_name"] = "lab.test.channel";
+    body["role_uid"] = std::string{role_uid};
+    body["role_type"] = "producer";
+    body["role_name"] = "prod-1";
     body["channel_topology"] = "one-to-one";
-    body["data_transport"]  = "zmq";
-    body["zmq_pubkey"]      = std::string{pubkey};
-    body["schema_hash"]     = "deadbeef";
-    body["schema_id"]       = "";
-    body["schema_blds"]     = "";
-    body["schema_owner"]    = "";
+    body["data_transport"] = "zmq";
+    body["zmq_pubkey"] = std::string{pubkey};
+    body["schema_hash"] = "deadbeef";
+    body["schema_id"] = "";
+    body["schema_blds"] = "";
+    body["schema_owner"] = "";
     body["abi_fingerprint"] = nlohmann::json::object();
-    body["client_nonce"]    = std::string{nonce};
-    body["client_wall_ts"]  = wall_ts;
+    body["client_nonce"] = std::string{nonce};
+    body["client_wall_ts"] = wall_ts;
     return body;
 }
 
@@ -69,25 +67,23 @@ nlohmann::json make_reg_req_body_json(std::string_view role_uid,
 struct EnvelopePair
 {
     WireEnvelope env;
-    ProducerRegReqBody   body;
+    ProducerRegReqBody body;
 };
 
-EnvelopePair make_valid_pair(
-    std::string_view role_uid      = "prod.test.uid1",
-    std::string_view pubkey        = "abcdefghij0123456789abcdefghij0123456789",
-    std::string_view  nonce        = "nonce.test.001",
-    std::uint64_t     wall_ts      = 1'000'000ULL)
+EnvelopePair make_valid_pair(std::string_view role_uid = "prod.test.uid1",
+                             std::string_view pubkey = "abcdefghij0123456789abcdefghij0123456789",
+                             std::string_view nonce = "nonce.test.001",
+                             std::uint64_t wall_ts = 1'000'000ULL)
 {
-    auto body_json = make_reg_req_body_json(role_uid, pubkey,
-                                              nonce, wall_ts);
+    auto body_json = make_reg_req_body_json(role_uid, pubkey, nonce, wall_ts);
 
     // Build+parse a router envelope so envelope_hash is stamped and
     // validated on the resulting typed body.
-    auto frames = WireEnvelope::build_router_send(role_uid, "REG_REQ",
-                                                    "cid-1", body_json);
+    auto frames = WireEnvelope::build_router_send(role_uid, "REG_REQ", "cid-1", body_json);
     pylabhub::wire::ParseError err{};
     auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
-    if (!env) throw std::runtime_error("make_valid_pair: parse failed");
+    if (!env)
+        throw std::runtime_error("make_valid_pair: parse failed");
     ProducerRegReqBody body{env->body()};
     return {std::move(*env), std::move(body)};
 }
@@ -95,19 +91,18 @@ EnvelopePair make_valid_pair(
 // Stub known-role + no-rotation + fresh-nonce callback bundle.  Matches
 // the pattern from test_admission_gates.cpp but reused here so both
 // suites verify against the same gate contract.
-ag::AdmissionCallbacks make_permissive_gate_callbacks(
-    std::unordered_set<std::string> &nonce_dedup_out)
+ag::AdmissionCallbacks
+make_permissive_gate_callbacks(std::unordered_set<std::string> &nonce_dedup_out)
 {
     ag::AdmissionCallbacks cb;
-    cb.lookup_known_role = [](std::string_view uid, std::string_view pk)
-                                -> ag::KnownRoleLookup {
-        if (uid == "prod.test.uid1" &&
-            pk  == "abcdefghij0123456789abcdefghij0123456789")
+    cb.lookup_known_role = [](std::string_view uid, std::string_view pk) -> ag::KnownRoleLookup
+    {
+        if (uid == "prod.test.uid1" && pk == "abcdefghij0123456789abcdefghij0123456789")
             return ag::KnownRoleLookup::binding_matches;
         return ag::KnownRoleLookup::uid_unknown;
     };
-    cb.record_and_check_nonce = [&nonce_dedup_out](std::string_view uid,
-                                                    std::string_view nonce) {
+    cb.record_and_check_nonce = [&nonce_dedup_out](std::string_view uid, std::string_view nonce)
+    {
         std::string key{uid};
         key.push_back('|');
         key.append(nonce);
@@ -120,13 +115,13 @@ ag::AdmissionCallbacks make_permissive_gate_callbacks(
 ag::AdmissionContext make_ctx(const ag::AdmissionCallbacks &cb)
 {
     ag::AdmissionContext c;
-    c.cb                = &cb;
+    c.cb = &cb;
     c.skew_tolerance_ms = 30'000ULL;
-    c.nonce_window_ms   = 10'000ULL;
+    c.nonce_window_ms = 10'000ULL;
     return c;
 }
 
-}  // namespace
+} // namespace
 
 // ── Accepted flow ─────────────────────────────────────────────────────
 
@@ -135,36 +130,36 @@ TEST(RegAdmissionPipeline, AcceptedPathReachesCommitWithTypedRequest)
     auto pair = make_valid_pair();
     std::unordered_set<std::string> nonces;
     auto gate_cb = make_permissive_gate_callbacks(nonces);
-    auto ctx     = make_ctx(gate_cb);
+    auto ctx = make_ctx(gate_cb);
 
     // Commit callback captures its input so we can assert the pipeline
     // populated RegRequest correctly from the ProducerRegReqBody accessors.
     ag::RegRequest captured;
-    bool           commit_invoked = false;
+    bool commit_invoked = false;
 
-    ag::RegCommitFn commit = [&](const ag::RegRequest &r) -> ag::RegOutcome {
+    ag::RegCommitFn commit = [&](const ag::RegRequest &r) -> ag::RegOutcome
+    {
         commit_invoked = true;
-        captured       = r;
+        captured = r;
         ag::RegAccepted accepted;
-        accepted.request              = r;
-        accepted.side                 = ag::AdmissionSide::binding;
-        accepted.channel_opened       = true;
+        accepted.request = r;
+        accepted.side = ag::AdmissionSide::binding;
+        accepted.channel_opened = true;
         accepted.assigned_instance_id = 1U;
-        accepted.channel_version      = 1U;
-        accepted.pending_notifies     = {};
+        accepted.channel_version = 1U;
+        accepted.pending_notifies = {};
         return accepted;
     };
 
-    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx,
-                                                    commit);
+    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx, commit);
 
     ASSERT_TRUE(commit_invoked);
-    EXPECT_EQ(captured.channel_name,    "lab.test.channel");
-    EXPECT_EQ(captured.role_uid,        "prod.test.uid1");
-    EXPECT_EQ(captured.role_type,       "producer");
-    EXPECT_EQ(captured.channel_topology,"one-to-one");
-    EXPECT_EQ(captured.data_transport,  "zmq");
-    EXPECT_EQ(captured.schema_hash,     "deadbeef");
+    EXPECT_EQ(captured.channel_name, "lab.test.channel");
+    EXPECT_EQ(captured.role_uid, "prod.test.uid1");
+    EXPECT_EQ(captured.role_type, "producer");
+    EXPECT_EQ(captured.channel_topology, "one-to-one");
+    EXPECT_EQ(captured.data_transport, "zmq");
+    EXPECT_EQ(captured.schema_hash, "deadbeef");
     // schema_version retired per C2 — version rides inside schema_id.
 
     ASSERT_TRUE(std::holds_alternative<ag::RegAccepted>(outcome));
@@ -188,20 +183,19 @@ TEST(RegAdmissionPipeline, RejectedByGateStopsBeforeCommit)
     // Pre-seed the dedup set so the pipeline's first look-up sees a replay.
     nonces.insert(std::string{"prod.test.uid1|nonce.test.001"});
     auto gate_cb = make_permissive_gate_callbacks(nonces);
-    auto ctx     = make_ctx(gate_cb);
+    auto ctx = make_ctx(gate_cb);
 
     bool commit_invoked = false;
-    ag::RegCommitFn commit = [&](const ag::RegRequest &) -> ag::RegOutcome {
+    ag::RegCommitFn commit = [&](const ag::RegRequest &) -> ag::RegOutcome
+    {
         commit_invoked = true;
         return ag::RegAccepted{};
     };
 
-    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx,
-                                                    commit);
+    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx, commit);
 
-    EXPECT_FALSE(commit_invoked)
-        << "pre-mutation gate rejection must not invoke commit "
-           "(no state mutation on bad REQ)";
+    EXPECT_FALSE(commit_invoked) << "pre-mutation gate rejection must not invoke commit "
+                                    "(no state mutation on bad REQ)";
 
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
     auto &rejected = std::get<ag::RegRejected>(outcome);
@@ -216,17 +210,17 @@ TEST(RegAdmissionPipeline, PendedOutcomeForwards)
     auto pair = make_valid_pair();
     std::unordered_set<std::string> nonces;
     auto gate_cb = make_permissive_gate_callbacks(nonces);
-    auto ctx     = make_ctx(gate_cb);
+    auto ctx = make_ctx(gate_cb);
 
-    ag::RegCommitFn commit = [](const ag::RegRequest &) -> ag::RegOutcome {
+    ag::RegCommitFn commit = [](const ag::RegRequest &) -> ag::RegOutcome
+    {
         ag::RegPended p;
-        p.reason     = "awaiting_channel_created";
+        p.reason = "awaiting_channel_created";
         p.my_version = 0U;
         return p;
     };
 
-    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx,
-                                                    commit);
+    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx, commit);
     ASSERT_TRUE(std::holds_alternative<ag::RegPended>(outcome));
     auto &pended = std::get<ag::RegPended>(outcome);
     EXPECT_EQ(pended.reason, "awaiting_channel_created");
@@ -240,23 +234,22 @@ TEST(RegAdmissionPipeline, CommitLevelRejectionForwards)
     auto pair = make_valid_pair();
     std::unordered_set<std::string> nonces;
     auto gate_cb = make_permissive_gate_callbacks(nonces);
-    auto ctx     = make_ctx(gate_cb);
+    auto ctx = make_ctx(gate_cb);
 
-    ag::RegCommitFn commit = [](const ag::RegRequest &) -> ag::RegOutcome {
+    ag::RegCommitFn commit = [](const ag::RegRequest &) -> ag::RegOutcome
+    {
         // Simulate topology cardinality gate firing:
         // FAN_OUT_IS_SINGLE_PRODUCER on second admission.
         ag::RegRejected r;
-        r.detail.code    = ag::RejectCode::invalid_request;
-        r.detail.field   = "channel_topology";
+        r.detail.code = ag::RejectCode::invalid_request;
+        r.detail.field = "channel_topology";
         r.detail.message = "FAN_OUT_IS_SINGLE_PRODUCER";
         return r;
     };
 
-    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx,
-                                                    commit);
+    auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx, commit);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
-    EXPECT_EQ(std::get<ag::RegRejected>(outcome).detail.message,
-              "FAN_OUT_IS_SINGLE_PRODUCER");
+    EXPECT_EQ(std::get<ag::RegRejected>(outcome).detail.message, "FAN_OUT_IS_SINGLE_PRODUCER");
 }
 
 // ── Missing commit callback surfaces as broker-internal reject ────────
@@ -266,7 +259,7 @@ TEST(RegAdmissionPipeline, MissingCommitCallbackSurfacesBrokerInternalError)
     auto pair = make_valid_pair();
     std::unordered_set<std::string> nonces;
     auto gate_cb = make_permissive_gate_callbacks(nonces);
-    auto ctx     = make_ctx(gate_cb);
+    auto ctx = make_ctx(gate_cb);
 
     // Empty std::function is a BROKER misconfiguration (an unbound
     // callback), not a client wire violation.  Under the CURVE
@@ -276,7 +269,7 @@ TEST(RegAdmissionPipeline, MissingCommitCallbackSurfacesBrokerInternalError)
     // mandate: BROKER_INTERNAL_ERROR.  A prior iteration returned
     // INVALID_REQUEST here and the test happily asserted the buggy
     // behavior; corrected by the test audit.
-    ag::RegCommitFn commit;  // empty
+    ag::RegCommitFn commit; // empty
     auto outcome = ag::run_reg_admission(pair.env, pair.body, ctx, commit);
     ASSERT_TRUE(std::holds_alternative<ag::RegRejected>(outcome));
     EXPECT_EQ(std::get<ag::RegRejected>(outcome).detail.code,

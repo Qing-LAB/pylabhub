@@ -45,9 +45,8 @@ namespace pylabhub::tests
 /// `KeyStore` or the in-memory config.  The caller reads it back with
 /// the production `cfg.load_keypair(password)` — mirroring a real hub
 /// boot exactly: `--keygen` writes the vault, `load_keypair` reads it.
-inline void provision_hub_vault(pylabhub::config::HubConfig &cfg,
-                                const CurveSetup            &setup,
-                                const std::string           &password = "")
+inline void provision_hub_vault(pylabhub::config::HubConfig &cfg, const CurveSetup &setup,
+                                const std::string &password = "")
 {
     namespace security = pylabhub::utils::security;
 
@@ -58,8 +57,7 @@ inline void provision_hub_vault(pylabhub::config::HubConfig &cfg,
     const std::filesystem::path vault_path =
         security::resolve_keyfile_path(cfg.auth().keyfile, cfg.base_dir());
 
-    auto vault = pylabhub::utils::HubVault::create(
-        vault_path, cfg.identity().uid, password);
+    auto vault = pylabhub::utils::HubVault::create(vault_path, cfg.identity().uid, password);
     vault.set_known_roles(store.to_json());
     vault.save(vault_path, cfg.identity().uid, password);
 }
@@ -79,7 +77,7 @@ inline void provision_hub_vault(pylabhub::config::HubConfig &cfg,
 /// (new process → fresh KeyStore).  Per-role identities are the caller's
 /// concern (`seed_role_identities`) and are untouched here.
 inline void load_hub_keypair_fresh(pylabhub::config::HubConfig &cfg,
-                                   const std::string           &password = "")
+                                   const std::string &password = "")
 {
     namespace sec = pylabhub::utils::security;
     if (sec::secure().keys().has(sec::kHubIdentityName))

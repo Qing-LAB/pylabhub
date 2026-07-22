@@ -4,13 +4,13 @@
  */
 #include "utils/security/known_roles.hpp"
 
-#include "utils/security/key_file_acl.hpp"   // atomic_write_owner_only_file
-                                              // verify_keyfile_acl
+#include "utils/security/key_file_acl.hpp" // atomic_write_owner_only_file
+                                           // verify_keyfile_acl
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cassert>
-#include <cstdio>     // std::fprintf for advisory diagnostic
+#include <cstdio> // std::fprintf for advisory diagnostic
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -45,11 +45,9 @@ constexpr std::size_t kZ85PubkeyChars = 40;
 /// false`) the body is a no-op — production-time enforcement is
 /// physically absent from the compiled binary so it cannot be
 /// re-enabled at runtime.
-void enforce_unique_pubkey_invariant(
-    const std::vector<broker::KnownRole> &existing_roles,
-    const std::string                    &incoming_uid,
-    const std::string                    &incoming_pubkey,
-    const char                           *context_label)
+void enforce_unique_pubkey_invariant(const std::vector<broker::KnownRole> &existing_roles,
+                                     const std::string &incoming_uid,
+                                     const std::string &incoming_pubkey, const char *context_label)
 {
     if constexpr (!kEnforceUniquePubkey)
     {
@@ -58,7 +56,7 @@ void enforce_unique_pubkey_invariant(
     for (const auto &existing : existing_roles)
     {
         if (existing.uid == incoming_uid)
-            continue;  // same-uid replace = pubkey rotation; not a dup
+            continue; // same-uid replace = pubkey rotation; not a dup
         if (existing.pubkey_z85 == incoming_pubkey)
         {
             std::string msg = "KnownRolesStore: ";
@@ -77,26 +75,24 @@ void enforce_unique_pubkey_invariant(
 void validate_entry(const broker::KnownRole &entry)
 {
     if (entry.uid.empty())
-        throw std::invalid_argument(
-            "KnownRolesStore: refusing to add entry with empty uid");
+        throw std::invalid_argument("KnownRolesStore: refusing to add entry with empty uid");
     if (entry.pubkey_z85.empty())
-        throw std::invalid_argument(
-            "KnownRolesStore: refusing to add entry with empty "
-            "pubkey_z85 (uid='" + entry.uid + "')");
+        throw std::invalid_argument("KnownRolesStore: refusing to add entry with empty "
+                                    "pubkey_z85 (uid='" +
+                                    entry.uid + "')");
     if (entry.pubkey_z85.size() != kZ85PubkeyChars)
-        throw std::invalid_argument(
-            "KnownRolesStore: pubkey_z85 must be exactly 40 chars "
-            "(Z85-encoded CURVE pubkey); got " +
-            std::to_string(entry.pubkey_z85.size()) +
-            " (uid='" + entry.uid + "')");
+        throw std::invalid_argument("KnownRolesStore: pubkey_z85 must be exactly 40 chars "
+                                    "(Z85-encoded CURVE pubkey); got " +
+                                    std::to_string(entry.pubkey_z85.size()) + " (uid='" +
+                                    entry.uid + "')");
 }
 
 nlohmann::json entry_to_json(const broker::KnownRole &e)
 {
     nlohmann::json j;
-    j["name"]       = e.name;
-    j["uid"]        = e.uid;
-    j["role"]       = e.role;
+    j["name"] = e.name;
+    j["uid"] = e.uid;
+    j["role"] = e.role;
     j["pubkey_z85"] = e.pubkey_z85;
     return j;
 }
@@ -115,26 +111,24 @@ nlohmann::json entry_to_json(const broker::KnownRole &e)
 ///     final validate_entry catches the empty-uid/empty-pubkey case)
 ///   - present but wrong type → throws std::runtime_error naming the
 ///     field and the observed JSON type
-std::string require_string_or_empty(const nlohmann::json &j,
-                                     const char *field)
+std::string require_string_or_empty(const nlohmann::json &j, const char *field)
 {
     auto it = j.find(field);
     if (it == j.end() || it->is_null())
         return {};
     if (!it->is_string())
-        throw std::runtime_error(
-            "KnownRolesStore: field '" + std::string(field) +
-            "' must be a string; got JSON type '" +
-            std::string(it->type_name()) + "'");
+        throw std::runtime_error("KnownRolesStore: field '" + std::string(field) +
+                                 "' must be a string; got JSON type '" +
+                                 std::string(it->type_name()) + "'");
     return it->get<std::string>();
 }
 
 broker::KnownRole entry_from_json(const nlohmann::json &j)
 {
     broker::KnownRole e;
-    e.name       = require_string_or_empty(j, "name");
-    e.uid        = require_string_or_empty(j, "uid");
-    e.role       = require_string_or_empty(j, "role");
+    e.name = require_string_or_empty(j, "name");
+    e.uid = require_string_or_empty(j, "uid");
+    e.role = require_string_or_empty(j, "role");
     e.pubkey_z85 = require_string_or_empty(j, "pubkey_z85");
     return e;
 }
@@ -143,8 +137,7 @@ broker::KnownRole entry_from_json(const nlohmann::json &j)
 
 // ── KnownRolesStore ─────────────────────────────────────────────────────────
 
-std::optional<KnownRolesStore>
-KnownRolesStore::load_from_file(const std::filesystem::path &path)
+std::optional<KnownRolesStore> KnownRolesStore::load_from_file(const std::filesystem::path &path)
 {
     namespace fs = std::filesystem;
 
@@ -171,23 +164,19 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
     {
         auto v = verify_keyfile_acl(path, KeyFileRole::VaultFile);
         if (!v.ok)
-            throw std::runtime_error(
-                "KnownRolesStore: refusing to load '" +
-                path.string() +
-                "' — ACL check failed (HEP-CORE-0035 §4.6.2):\n" +
-                v.diagnostic);
+            throw std::runtime_error("KnownRolesStore: refusing to load '" + path.string() +
+                                     "' — ACL check failed (HEP-CORE-0035 §4.6.2):\n" +
+                                     v.diagnostic);
         if (!v.diagnostic.empty())
             std::fprintf(stderr,
                          "[KnownRolesStore] WARN: ACL advisory for "
                          "'%s' (HEP-CORE-0035 §4.6.2):\n%s\n",
-                         path.string().c_str(),
-                         v.diagnostic.c_str());
+                         path.string().c_str(), v.diagnostic.c_str());
     }
 
     std::ifstream f(path);
     if (!f)
-        throw std::runtime_error(
-            "KnownRolesStore: cannot open '" + path.string() + "'");
+        throw std::runtime_error("KnownRolesStore: cannot open '" + path.string() + "'");
 
     nlohmann::json j;
     try
@@ -196,9 +185,8 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
     }
     catch (const nlohmann::json::exception &ex)
     {
-        throw std::runtime_error(
-            "KnownRolesStore: JSON parse failed for '" + path.string() +
-            "': " + ex.what());
+        throw std::runtime_error("KnownRolesStore: JSON parse failed for '" + path.string() +
+                                 "': " + ex.what());
     }
 
     // File I/O done; strict parse + validation is medium-agnostic.
@@ -207,28 +195,24 @@ KnownRolesStore::load_from_file(const std::filesystem::path &path)
 
 // ── JSON codec (HEP-CORE-0035 §4.8) — one model, two storage media ──────────
 
-KnownRolesStore
-KnownRolesStore::from_json(const nlohmann::json &j, std::string_view context)
+KnownRolesStore KnownRolesStore::from_json(const nlohmann::json &j, std::string_view context)
 {
     const std::string ctx(context);
 
     if (!j.contains("version") || !j["version"].is_number_integer())
-        throw std::runtime_error(
-            "KnownRolesStore: '" + ctx + "' missing integer 'version' field");
+        throw std::runtime_error("KnownRolesStore: '" + ctx + "' missing integer 'version' field");
     const int version = j["version"].get<int>();
     if (version != kKnownRolesSchemaVersion)
-        throw std::runtime_error(
-            "KnownRolesStore: '" + ctx + "' has unknown schema version " +
-            std::to_string(version) + " (this build understands version " +
-            std::to_string(kKnownRolesSchemaVersion) + ")");
+        throw std::runtime_error("KnownRolesStore: '" + ctx + "' has unknown schema version " +
+                                 std::to_string(version) + " (this build understands version " +
+                                 std::to_string(kKnownRolesSchemaVersion) + ")");
 
     KnownRolesStore store;
     if (j.contains("roles"))
     {
         if (!j["roles"].is_array())
-            throw std::runtime_error(
-                "KnownRolesStore: '" + ctx +
-                "' has 'roles' that is not an array");
+            throw std::runtime_error("KnownRolesStore: '" + ctx +
+                                     "' has 'roles' that is not an array");
         for (const auto &je : j["roles"])
         {
             auto e = entry_from_json(je);
@@ -238,17 +222,15 @@ KnownRolesStore::from_json(const nlohmann::json &j, std::string_view context)
             for (const auto &existing : store.roles_)
             {
                 if (existing.uid == e.uid)
-                    throw std::runtime_error(
-                        "KnownRolesStore: '" + ctx + "' has duplicate uid '" +
-                        e.uid + "'");
+                    throw std::runtime_error("KnownRolesStore: '" + ctx + "' has duplicate uid '" +
+                                             e.uid + "'");
             }
             // HEP-CORE-0036 §I10: reject shared pubkey across distinct
             // uids.  Strict rejection so operator intent is never
             // silently downgraded.  In DEBUG + PYLABHUB_WITH_TEST builds
             // the check is a no-op (fixture bypass).
-            enforce_unique_pubkey_invariant(
-                store.roles_, e.uid, e.pubkey_z85,
-                ("from_json('" + ctx + "')").c_str());
+            enforce_unique_pubkey_invariant(store.roles_, e.uid, e.pubkey_z85,
+                                            ("from_json('" + ctx + "')").c_str());
             store.roles_.push_back(std::move(e));
         }
     }
@@ -259,7 +241,7 @@ nlohmann::json KnownRolesStore::to_json() const
 {
     nlohmann::json j;
     j["version"] = kKnownRolesSchemaVersion;
-    j["roles"]   = nlohmann::json::array();
+    j["roles"] = nlohmann::json::array();
     for (const auto &e : roles_)
         j["roles"].push_back(entry_to_json(e));
     return j;
@@ -280,40 +262,32 @@ bool KnownRolesStore::add(broker::KnownRole entry)
     // HEP-CORE-0036 §I10: reject duplicate pubkey under a DIFFERENT
     // uid before any state mutation.  Replacement of the same uid
     // (pubkey rotation) is allowed by `enforce_unique_pubkey_invariant`.
-    enforce_unique_pubkey_invariant(
-        roles_, entry.uid, entry.pubkey_z85, "add()");
+    enforce_unique_pubkey_invariant(roles_, entry.uid, entry.pubkey_z85, "add()");
     auto it = std::find_if(roles_.begin(), roles_.end(),
-                           [&](const broker::KnownRole &e) {
-                               return e.uid == entry.uid;
-                           });
+                           [&](const broker::KnownRole &e) { return e.uid == entry.uid; });
     if (it != roles_.end())
     {
         *it = std::move(entry);
-        return false;  // replaced
+        return false; // replaced
     }
     roles_.push_back(std::move(entry));
-    return true;  // inserted
+    return true; // inserted
 }
 
 bool KnownRolesStore::remove(const std::string &uid)
 {
     auto it = std::find_if(roles_.begin(), roles_.end(),
-                           [&](const broker::KnownRole &e) {
-                               return e.uid == uid;
-                           });
+                           [&](const broker::KnownRole &e) { return e.uid == uid; });
     if (it == roles_.end())
         return false;
     roles_.erase(it);
     return true;
 }
 
-std::optional<broker::KnownRole>
-KnownRolesStore::find(const std::string &uid) const
+std::optional<broker::KnownRole> KnownRolesStore::find(const std::string &uid) const
 {
     auto it = std::find_if(roles_.begin(), roles_.end(),
-                           [&](const broker::KnownRole &e) {
-                               return e.uid == uid;
-                           });
+                           [&](const broker::KnownRole &e) { return e.uid == uid; });
     if (it == roles_.end())
         return std::nullopt;
     return *it;
@@ -323,16 +297,13 @@ std::optional<broker::KnownRole>
 KnownRolesStore::find_by_pubkey(const std::string &pubkey_z85) const
 {
     auto it = std::find_if(roles_.begin(), roles_.end(),
-                           [&](const broker::KnownRole &e) {
-                               return e.pubkey_z85 == pubkey_z85;
-                           });
+                           [&](const broker::KnownRole &e) { return e.pubkey_z85 == pubkey_z85; });
     if (it == roles_.end())
         return std::nullopt;
     return *it;
 }
 
-const std::vector<broker::KnownRole> &
-KnownRolesStore::list() const noexcept
+const std::vector<broker::KnownRole> &KnownRolesStore::list() const noexcept
 {
     return roles_;
 }

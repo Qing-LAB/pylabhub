@@ -36,10 +36,11 @@ TEST_F(PlhRoleCliTest, RunModeWithoutRoleFails)
     WorkerProcess p(plh_role_binary(), dir.string(), {});
     EXPECT_NE(p.wait_for_exit(10), 0);
     const std::string &err = p.get_stderr();
-    EXPECT_NE(err.find("--role"), std::string::npos)
-        << "stderr should mention '--role'; got:\n" << err;
+    EXPECT_NE(err.find("--role"), std::string::npos) << "stderr should mention '--role'; got:\n"
+                                                     << err;
     EXPECT_NE(err.find("Available roles"), std::string::npos)
-        << "stderr should list available roles; got:\n" << err;
+        << "stderr should list available roles; got:\n"
+        << err;
 }
 
 /// Unknown role → error listing available roles.  Pins the RoleRegistry
@@ -48,16 +49,17 @@ TEST_F(PlhRoleCliTest, UnknownRoleFails)
 {
     const auto dir = tmp("badrole");
 
-    WorkerProcess p(plh_role_binary(), "--role",
-        {"some_future_role", dir.string()});
+    WorkerProcess p(plh_role_binary(), "--role", {"some_future_role", dir.string()});
     EXPECT_NE(p.wait_for_exit(10), 0);
     const std::string &err = p.get_stderr();
     EXPECT_NE(err.find("unknown role"), std::string::npos)
-        << "stderr should identify the error class; got:\n" << err;
+        << "stderr should identify the error class; got:\n"
+        << err;
     // Diagnostic should help the user recover — list available roles.
-    EXPECT_NE(err.find("producer"),  std::string::npos)
-        << "stderr should list 'producer' as an available role; got:\n" << err;
-    EXPECT_NE(err.find("consumer"),  std::string::npos);
+    EXPECT_NE(err.find("producer"), std::string::npos)
+        << "stderr should list 'producer' as an available role; got:\n"
+        << err;
+    EXPECT_NE(err.find("consumer"), std::string::npos);
     EXPECT_NE(err.find("processor"), std::string::npos);
 }
 
@@ -74,10 +76,11 @@ TEST_F(PlhRoleCliTest, HelpLongFormExitsZero)
     const std::string &out = p.get_stdout();
     // "Usage:" is the literal header from print_role_usage.
     EXPECT_NE(out.find("Usage:"), std::string::npos)
-        << "help output should contain 'Usage:'; got stdout:\n" << out;
+        << "help output should contain 'Usage:'; got stdout:\n"
+        << out;
     // Stderr should be empty for --help (no errors reported).
-    EXPECT_TRUE(p.get_stderr().empty())
-        << "help should write nothing to stderr; got:\n" << p.get_stderr();
+    EXPECT_TRUE(p.get_stderr().empty()) << "help should write nothing to stderr; got:\n"
+                                        << p.get_stderr();
 }
 
 /// -h is equivalent to --help — same exit code, same stream, same content.
@@ -87,7 +90,8 @@ TEST_F(PlhRoleCliTest, HelpShortFormExitsZero)
     EXPECT_EQ(p.wait_for_exit(10), 0);
     expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Usage:"), std::string::npos)
-        << "'-h' should print usage to stdout; got:\n" << p.get_stdout();
+        << "'-h' should print usage to stdout; got:\n"
+        << p.get_stdout();
     EXPECT_TRUE(p.get_stderr().empty());
 }
 
@@ -97,11 +101,11 @@ TEST_F(PlhRoleCliTest, HelpShortFormExitsZero)
 TEST_F(PlhRoleCliTest, HelpWinsOverOtherFlags)
 {
     // --help after other args — parser still returns 0 on first encounter.
-    WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", "producer", "--validate", "--help"});
+    WorkerProcess p(plh_role_binary(), "--init", {"--role", "producer", "--validate", "--help"});
     EXPECT_EQ(p.wait_for_exit(10), 0)
-        << "--help must win over --init+--validate; got exit="
-        << p.wait_for_exit(10) << "\nstderr:\n" << p.get_stderr();
+        << "--help must win over --init+--validate; got exit=" << p.wait_for_exit(10)
+        << "\nstderr:\n"
+        << p.get_stderr();
     expect_no_unexpected_errors(p);
     EXPECT_NE(p.get_stdout().find("Usage:"), std::string::npos);
 }
@@ -112,13 +116,14 @@ TEST_F(PlhRoleCliTest, HelpWinsOverOtherFlags)
 /// fallback branch in parse_role_args for args starting with '-'.
 TEST_F(PlhRoleCliTest, UnknownFlagFails)
 {
-    WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", "--no-such-flag"});
+    WorkerProcess p(plh_role_binary(), "--role", {"producer", "--no-such-flag"});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("Unknown argument"), std::string::npos)
-        << "stderr should contain 'Unknown argument'; got:\n" << p.get_stderr();
+        << "stderr should contain 'Unknown argument'; got:\n"
+        << p.get_stderr();
     EXPECT_NE(p.get_stderr().find("--no-such-flag"), std::string::npos)
-        << "stderr should echo the offending flag; got:\n" << p.get_stderr();
+        << "stderr should echo the offending flag; got:\n"
+        << p.get_stderr();
 }
 
 // ── Config path errors ──────────────────────────────────────────────────────
@@ -127,11 +132,11 @@ TEST_F(PlhRoleCliTest, UnknownFlagFails)
 TEST_F(PlhRoleCliTest, ConfigFileNotFoundFails)
 {
     WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", "--config", "/nonexistent/path/to/config.json",
-         "--validate"});
+                    {"producer", "--config", "/nonexistent/path/to/config.json", "--validate"});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("Config error"), std::string::npos)
-        << "stderr should contain 'Config error'; got:\n" << p.get_stderr();
+        << "stderr should contain 'Config error'; got:\n"
+        << p.get_stderr();
 }
 
 /// <dir> positional pointing at a plain file (not a directory) → error.
@@ -143,14 +148,14 @@ TEST_F(PlhRoleCliTest, DirPositionalPointsAtFileFails)
     const auto file = dir / "some_file.txt";
     write_file(file, "not a role dir");
 
-    WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", file.string(), "--validate"});
+    WorkerProcess p(plh_role_binary(), "--role", {"producer", file.string(), "--validate"});
     ASSERT_NE(p.wait_for_exit(10), 0);
     // Stderr should mention "Config error" (the binary's standard
     // failure prefix for path/parse issues).  Prevents "any error
     // counts" — pins the specific failure class.
     EXPECT_NE(p.get_stderr().find("Config error"), std::string::npos)
-        << "stderr should contain 'Config error'; got:\n" << p.get_stderr();
+        << "stderr should contain 'Config error'; got:\n"
+        << p.get_stderr();
 }
 
 /// Multiple positional arguments → parser refuses.  Pins that only one
@@ -160,8 +165,7 @@ TEST_F(PlhRoleCliTest, MultiplePositionalsFails)
     const auto d1 = tmp("multi_a");
     const auto d2 = tmp("multi_b");
 
-    WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", d1.string(), d2.string()});
+    WorkerProcess p(plh_role_binary(), "--role", {"producer", d1.string(), d2.string()});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("multiple positional"), std::string::npos)
         << "stderr should identify the duplicate-positional error; got:\n"
@@ -178,7 +182,7 @@ TEST_F(PlhRoleCliTest, InitPlusValidateFails)
     const auto dir = tmp("init_val");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", "producer", dir.string(), "--name", "X", "--validate"});
+                    {"--role", "producer", dir.string(), "--name", "X", "--validate"});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("mutually exclusive"), std::string::npos)
         << "stderr should identify the exclusive-mode violation; got:\n"
@@ -191,7 +195,7 @@ TEST_F(PlhRoleCliTest, InitPlusKeygenFails)
     const auto dir = tmp("init_kg");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", "producer", dir.string(), "--name", "X", "--keygen"});
+                    {"--role", "producer", dir.string(), "--name", "X", "--keygen"});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("mutually exclusive"), std::string::npos)
         << "stderr should identify the exclusive-mode violation; got:\n"
@@ -206,7 +210,7 @@ TEST_F(PlhRoleCliTest, ValidatePlusKeygenFails)
     write_minimal_config(cfg, "producer", dir);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", "--config", cfg.string(), "--validate", "--keygen"});
+                    {"producer", "--config", cfg.string(), "--validate", "--keygen"});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("mutually exclusive"), std::string::npos)
         << "stderr should identify the exclusive-mode violation; got:\n"
@@ -225,8 +229,7 @@ TEST_F(PlhRoleCliTest, LogMaxsizeOutsideInitFails)
     write_minimal_config(cfg, "producer", dir);
 
     WorkerProcess p(plh_role_binary(), "--role",
-        {"producer", "--config", cfg.string(), "--validate",
-         "--log-maxsize", "5"});
+                    {"producer", "--config", cfg.string(), "--validate", "--log-maxsize", "5"});
     EXPECT_NE(p.wait_for_exit(10), 0);
     EXPECT_NE(p.get_stderr().find("only valid with --init"), std::string::npos)
         << "stderr should identify the init-only flag misuse; got:\n"
@@ -238,8 +241,7 @@ TEST_F(PlhRoleCliTest, NoModeNoDirFails)
 {
     WorkerProcess p(plh_role_binary(), "--role", {"producer"});
     EXPECT_NE(p.wait_for_exit(10), 0);
-    EXPECT_NE(p.get_stderr().find("specify a role directory"),
-              std::string::npos)
+    EXPECT_NE(p.get_stderr().find("specify a role directory"), std::string::npos)
         << "stderr should prompt user to specify input; got:\n"
         << p.get_stderr();
 }
@@ -252,12 +254,11 @@ TEST_F(PlhRoleCliTest, LogMaxsizeNonNumericFails)
 {
     const auto dir = tmp("logmax_bad");
 
-    WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", "producer", dir.string(), "--name", "X",
-         "--log-maxsize", "not_a_number"});
+    WorkerProcess p(
+        plh_role_binary(), "--init",
+        {"--role", "producer", dir.string(), "--name", "X", "--log-maxsize", "not_a_number"});
     EXPECT_NE(p.wait_for_exit(10), 0);
-    EXPECT_NE(p.get_stderr().find("--log-maxsize expects a number"),
-              std::string::npos)
+    EXPECT_NE(p.get_stderr().find("--log-maxsize expects a number"), std::string::npos)
         << "stderr should identify the parse error; got:\n"
         << p.get_stderr();
 }
@@ -269,11 +270,9 @@ TEST_F(PlhRoleCliTest, LogBackupsNonNumericFails)
     const auto dir = tmp("logbk_bad_str");
 
     WorkerProcess p(plh_role_binary(), "--init",
-        {"--role", "producer", dir.string(), "--name", "X",
-         "--log-backups", "lots"});
+                    {"--role", "producer", dir.string(), "--name", "X", "--log-backups", "lots"});
     EXPECT_NE(p.wait_for_exit(10), 0);
-    EXPECT_NE(p.get_stderr().find("--log-backups expects an integer"),
-              std::string::npos)
+    EXPECT_NE(p.get_stderr().find("--log-backups expects an integer"), std::string::npos)
         << "stderr should identify the parse error; got:\n"
         << p.get_stderr();
 }
@@ -293,16 +292,16 @@ TEST_F(PlhRoleCliTest, LogBackupsBelowSentinelRejectedByValidate)
     const auto cfg = dir / "producer.json";
 
     // Step 1: init accepts -2 and writes it into logging.backups.
-    WorkerProcess init_p(plh_role_binary(), "--init",
-        {"--role", "producer", dir.string(), "--name", "X",
-         "--log-backups", "-2"});
+    WorkerProcess init_p(
+        plh_role_binary(), "--init",
+        {"--role", "producer", dir.string(), "--name", "X", "--log-backups", "-2"});
     ASSERT_EQ(init_p.wait_for_exit(10), 0)
         << "init must accept -2 at CLI level (threads value through)";
     expect_no_unexpected_errors(init_p);
 
     // Step 2: validate rejects the resulting config.
     WorkerProcess val_p(plh_role_binary(), "--role",
-        {"producer", "--config", cfg.string(), "--validate"});
+                        {"producer", "--config", cfg.string(), "--validate"});
     ASSERT_NE(val_p.wait_for_exit(10), 0)
         << "validate must reject a config with logging.backups=-2";
     EXPECT_NE(val_p.get_stderr().find("Config error"), std::string::npos)

@@ -53,8 +53,7 @@ class RoleAPIBaseTestAccess
     /// Class exists only when `PYLABHUB_BUILD_TESTS && !defined(NDEBUG)`.
     /// In Release / non-test builds the entire helper is physically
     /// absent; the L2 test workers GTEST_SKIP at the parent TEST_F.
-    static void install_handler(RoleAPIBase &api,
-                                std::unique_ptr<RoleHandler> handler);
+    static void install_handler(RoleAPIBase &api, std::unique_ptr<RoleHandler> handler);
 };
 #endif
 

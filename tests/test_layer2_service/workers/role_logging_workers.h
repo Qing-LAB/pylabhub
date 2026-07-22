@@ -27,16 +27,16 @@ namespace role_logging
 int roundtrip_defaults_preserved(const std::string &dir, const std::string &role);
 
 /** Init with max_size_mb override; assert cfg.logging().max_size_bytes. */
-int roundtrip_max_size(const std::string &dir, const std::string &role,
-                       double max_size_mb, std::size_t expected_bytes);
+int roundtrip_max_size(const std::string &dir, const std::string &role, double max_size_mb,
+                       std::size_t expected_bytes);
 
 /** Init with backups override; assert cfg.logging().max_backup_files. */
 int roundtrip_backups(const std::string &dir, const std::string &role, int backups,
                       std::size_t expected_count);
 
 /** Init with both overrides; assert all three logging fields. */
-int roundtrip_both(const std::string &dir, const std::string &role, double max_size_mb,
-                   int backups, std::size_t expected_bytes, std::size_t expected_count);
+int roundtrip_both(const std::string &dir, const std::string &role, double max_size_mb, int backups,
+                   std::size_t expected_bytes, std::size_t expected_count);
 
 /** Init with backups=0; assert load_from_directory throws runtime_error. */
 int roundtrip_error_backups_zero(const std::string &dir, const std::string &role);

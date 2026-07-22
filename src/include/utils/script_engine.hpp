@@ -43,8 +43,11 @@
 #include <unordered_map>
 #include <vector>
 
-namespace pylabhub::hub_host { class HubAPI; }  // fwd decl — defined in
-                                                  // HEP-0033 Phase 7 / 8
+namespace pylabhub::hub_host
+{
+class HubAPI;
+} // namespace pylabhub::hub_host
+  // HEP-0033 Phase 7 / 8
 
 namespace pylabhub::scripting
 {
@@ -64,9 +67,9 @@ inline constexpr int kScriptMaxRecursionDepth = PYLABHUB_SCRIPT_MAX_RECURSION_DE
 
 enum class InvokeResult
 {
-    Commit,   ///< Script returned true/nil — publish the slot.
-    Discard,  ///< Script returned false — discard the slot, loop continues.
-    Error,    ///< Script raised an error — discard, increment error count.
+    Commit,  ///< Script returned true/nil — publish the slot.
+    Discard, ///< Script returned false — discard the slot, loop continues.
+    Error,   ///< Script raised an error — discard, increment error count.
 };
 
 // ============================================================================
@@ -76,21 +79,21 @@ enum class InvokeResult
 /// Distinct from InvokeResult which is the semantic data-callback result.
 enum class InvokeStatus : uint8_t
 {
-    Ok              = 0,   ///< Function executed successfully.
-    NotFound        = 1,   ///< Function name not found in script.
-    ScriptError     = 2,   ///< Script raised an exception.
-    EngineShutdown  = 3,   ///< Engine is finalizing; request rejected.
-    TimedOut        = 4,   ///< Cross-thread future expired before the
-                           ///< owner thread drained (HEP-CORE-0033 §12.2.2
-                           ///< augment_timeout); response unchanged.
+    Ok = 0,             ///< Function executed successfully.
+    NotFound = 1,       ///< Function name not found in script.
+    ScriptError = 2,    ///< Script raised an exception.
+    EngineShutdown = 3, ///< Engine is finalizing; request rejected.
+    TimedOut = 4,       ///< Cross-thread future expired before the
+                        ///< owner thread drained (HEP-CORE-0033 §12.2.2
+                        ///< augment_timeout); response unchanged.
 };
 
 /// Response from a generic invoke() / eval() / invoke_returning() call.
 struct InvokeResponse
 {
-    InvokeStatus   status{InvokeStatus::Ok};
-    nlohmann::json value;   ///< Populated for eval() and invoke_returning();
-                            ///< empty for invoke().
+    InvokeStatus status{InvokeStatus::Ok};
+    nlohmann::json value; ///< Populated for eval() and invoke_returning();
+                          ///< empty for invoke().
 };
 
 // RoleContext is eliminated — RoleAPIBase is the single context structure.
@@ -108,25 +111,25 @@ struct InvokeResponse
 /// Passed by value (16 bytes, fits in registers on x86-64).
 struct InvokeRx
 {
-    const void *slot{nullptr};    ///< Read-only input slot.
-    size_t      slot_size{0};
+    const void *slot{nullptr}; ///< Read-only input slot.
+    size_t slot_size{0};
 };
 
 /// Writable output direction — data going downstream.
 /// Flexzone: see InvokeRx note — accessed via api.flexzone(ChannelSide::Tx).
 struct InvokeTx
 {
-    void  *slot{nullptr};         ///< Writable output slot.
+    void *slot{nullptr}; ///< Writable output slot.
     size_t slot_size{0};
 };
 
 /// Inbox message — one-shot peer-to-peer delivery (no flexzone, no ring buffer).
 struct InvokeInbox
 {
-    const void *data{nullptr};    ///< Typed payload (valid until next recv_one()).
-    size_t      data_size{0};
-    std::string sender_uid;       ///< Sender's role UID.
-    uint64_t    seq{0};           ///< Sender's monotonic sequence number.
+    const void *data{nullptr}; ///< Typed payload (valid until next recv_one()).
+    size_t data_size{0};
+    std::string sender_uid; ///< Sender's role UID.
+    uint64_t seq{0};        ///< Sender's monotonic sequence number.
 };
 
 // ============================================================================
@@ -364,8 +367,7 @@ class ScriptEngine
      * @return true on success; false on validation / build failure
      *         or unknown type_name.
      */
-    virtual bool register_slot_type(const hub::SchemaSpec &spec,
-                                    const std::string &type_name,
+    virtual bool register_slot_type(const hub::SchemaSpec &spec, const std::string &type_name,
                                     const std::string &packing) = 0;
 
     /**
@@ -436,9 +438,8 @@ class ScriptEngine
      * @return Status + the function's return value as JSON.  Empty value
      *         (not error) when the function returns None / nil.
      */
-    virtual InvokeResponse invoke_returning(const std::string &name,
-                                             const nlohmann::json &args,
-                                             int64_t timeout_ms = -1) = 0;
+    virtual InvokeResponse invoke_returning(const std::string &name, const nlohmann::json &args,
+                                            int64_t timeout_ms = -1) = 0;
 
     /**
      * @brief Drain pending cross-thread invoke / eval / invoke_returning
@@ -498,10 +499,7 @@ class ScriptEngine
      *
      * Thread-safe.
      */
-    virtual size_t pending_script_engine_request_count() const noexcept
-    {
-        return 0;
-    }
+    virtual size_t pending_script_engine_request_count() const noexcept { return 0; }
 
     // ── Hot-path invocation (owner thread — data loop) ──────────────────
 
@@ -518,7 +516,7 @@ class ScriptEngine
     enum class InitStatus : uint8_t
     {
         NotReady = 0,
-        Ready    = 1,
+        Ready = 1,
     };
 
     virtual InitStatus invoke_on_init() = 0;
@@ -552,9 +550,8 @@ class ScriptEngine
      *                 (e.g. "producer_deregistered",
      *                 "pending_timeout", "script_requested").
      */
-    virtual void invoke_on_channel_closing(
-        const std::string &channel,
-        const std::string &reason) = 0;
+    virtual void invoke_on_channel_closing(const std::string &channel,
+                                           const std::string &reason) = 0;
 
     /**
      * @brief Invoke on_consumer_died(channel, consumer_uid, reason, api)
@@ -592,10 +589,9 @@ class ScriptEngine
      * @param reason        Reason string from the wire payload
      *                      ("heartbeat_timeout").
      */
-    virtual void invoke_on_consumer_died(
-        const std::string &channel,
-        const std::string &consumer_uid,
-        const std::string &reason) = 0;
+    virtual void invoke_on_consumer_died(const std::string &channel,
+                                         const std::string &consumer_uid,
+                                         const std::string &reason) = 0;
 
     /**
      * @brief Invoke `on_hub_dead(source_hub_uid, api)` if the script
@@ -631,8 +627,7 @@ class ScriptEngine
      *                        alone is unique among a role's
      *                        connections).
      */
-    virtual void invoke_on_hub_dead(
-        const std::string &source_hub_uid) = 0;
+    virtual void invoke_on_hub_dead(const std::string &source_hub_uid) = 0;
 
     /**
      * @brief Invoke on_band_member_joined(band, role_uid, role_name, api)
@@ -649,10 +644,8 @@ class ScriptEngine
      * @param role_uid   Joining role's `(prod|cons|proc).<name>.<unique>`.
      * @param role_name  Joining role's display name (may be empty).
      */
-    virtual void invoke_on_band_member_joined(
-        const std::string &band,
-        const std::string &role_uid,
-        const std::string &role_name) = 0;
+    virtual void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
+                                              const std::string &role_name) = 0;
 
     /**
      * @brief Invoke on_band_member_left(band, role_uid, reason, api)
@@ -664,10 +657,8 @@ class ScriptEngine
      *                   (HEP-CORE-0023 §2.1 reasons; the wire
      *                   carries the broker's verdict).
      */
-    virtual void invoke_on_band_member_left(
-        const std::string &band,
-        const std::string &role_uid,
-        const std::string &reason) = 0;
+    virtual void invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
+                                            const std::string &reason) = 0;
 
     /**
      * @brief Invoke on_band_message(band, sender_role_uid, body, api)
@@ -680,10 +671,8 @@ class ScriptEngine
      *                         from the broker's view at emission).
      * @param body             Application JSON (passthrough).
      */
-    virtual void invoke_on_band_message(
-        const std::string  &band,
-        const std::string  &sender_role_uid,
-        const nlohmann::json &body) = 0;
+    virtual void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
+                                        const nlohmann::json &body) = 0;
 
     /**
      * @brief Invoke on_band_lost(band, reason, api).
@@ -698,9 +687,7 @@ class ScriptEngine
      *                additions (e.g. `"evicted"` if the broker emits
      *                an unsolicited eviction NOTIFY).
      */
-    virtual void invoke_on_band_lost(
-        const std::string &band,
-        const std::string &reason) = 0;
+    virtual void invoke_on_band_lost(const std::string &band, const std::string &reason) = 0;
 
     /**
      * @brief Invoke on_allowlist_changed(channel, allowlist, reason, api)
@@ -728,10 +715,9 @@ class ScriptEngine
      *                   `CHANNEL_AUTH_CHANGED_NOTIFY`
      *                   (e.g. "consumer_joined", "consumer_left").
      */
-    virtual void invoke_on_allowlist_changed(
-        const std::string &channel,
-        const std::vector<AllowedPeer> &allowlist,
-        const std::string &reason) = 0;
+    virtual void invoke_on_allowlist_changed(const std::string &channel,
+                                             const std::vector<AllowedPeer> &allowlist,
+                                             const std::string &reason) = 0;
 
     /**
      * @brief Invoke on_produce(tx, msgs, api).
@@ -739,9 +725,7 @@ class ScriptEngine
      * @param msgs Incoming messages (drained from RoleHostCore).
      * @return Commit, Discard, or Error.
      */
-    virtual InvokeResult invoke_produce(
-        InvokeTx tx,
-        std::vector<IncomingMessage> &msgs) = 0;
+    virtual InvokeResult invoke_produce(InvokeTx tx, std::vector<IncomingMessage> &msgs) = 0;
 
     /**
      * @brief Invoke on_consume(rx, msgs, api).
@@ -750,9 +734,7 @@ class ScriptEngine
      * @return Commit, Discard, or Error. Currently ignored by the consumer
      *         data loop — reserved for future flow control.
      */
-    virtual InvokeResult invoke_consume(
-        InvokeRx rx,
-        std::vector<IncomingMessage> &msgs) = 0;
+    virtual InvokeResult invoke_consume(InvokeRx rx, std::vector<IncomingMessage> &msgs) = 0;
 
     /**
      * @brief Invoke on_process(rx, tx, msgs, api).
@@ -765,9 +747,8 @@ class ScriptEngine
      * @param msgs Incoming messages (drained from RoleHostCore).
      * @return Commit, Discard, or Error.
      */
-    virtual InvokeResult invoke_process(
-        InvokeRx rx, InvokeTx tx,
-        std::vector<IncomingMessage> &msgs) = 0;
+    virtual InvokeResult invoke_process(InvokeRx rx, InvokeTx tx,
+                                        std::vector<IncomingMessage> &msgs) = 0;
 
     /**
      * @brief Invoke on_inbox(msg, api).
@@ -827,10 +808,7 @@ class ScriptEngine
      * cached as a local bool in the loop frame; this method is not
      * called per iteration.
      */
-    [[nodiscard]] virtual bool release_global_lock_during_wait() const noexcept
-    {
-        return false;
-    }
+    [[nodiscard]] virtual bool release_global_lock_during_wait() const noexcept { return false; }
 
     /**
      * @brief Capability flag — does this engine support DYNAMIC callback
@@ -864,10 +842,7 @@ class ScriptEngine
      * happens, the engine that opts in (likely `PythonEngine` first)
      * flips this to `true` and adds the registry + binding surface.
      */
-    [[nodiscard]] virtual bool supports_dynamic_callbacks() const noexcept
-    {
-        return false;
-    }
+    [[nodiscard]] virtual bool supports_dynamic_callbacks() const noexcept { return false; }
 
     // ── Script reload (future) ────────────────────────────────────────────
 
@@ -1039,12 +1014,11 @@ class ScriptEngine
         return false;
     }
 
-private:
+  private:
     std::unordered_map<std::string, bool> standard_callback_presence_;
-    std::atomic<bool>                     standard_callback_cache_ready_{false};
+    std::atomic<bool> standard_callback_cache_ready_{false};
 
-protected:
-
+  protected:
     /// Role API — single source of truth for identity, infrastructure, and operations.
     /// Non-owning pointer, set by `build_api(RoleAPIBase&)`.  Owned by role host.
     /// Mutually exclusive with @ref hub_api_ (each engine instance is

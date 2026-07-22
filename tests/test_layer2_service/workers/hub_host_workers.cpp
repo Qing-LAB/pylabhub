@@ -19,7 +19,7 @@
 
 #include "hub_host_workers.h"
 
-#include "curve_test_setup.h"              // gen_curve_keypair, add_curve_identity
+#include "curve_test_setup.h" // gen_curve_keypair, add_curve_identity
 #include "log_capture_fixture.h"
 #include "plh_service.hpp"
 #include "shared_test_helpers.h"
@@ -32,7 +32,7 @@
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
-#include "utils/security/key_store.hpp"   // kHubIdentityName
+#include "utils/security/key_store.hpp" // kHubIdentityName
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -74,8 +74,7 @@ fs::path unique_temp_dir(const char *tag)
 {
     static std::atomic<int> ctr{0};
     fs::path d = fs::temp_directory_path() /
-                 ("plh_l2_hubhost_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
+                 ("plh_l2_hubhost_" + std::string(tag) + "_" + std::to_string(::getpid()) + "_" +
                   std::to_string(ctr.fetch_add(1)));
     fs::remove_all(d);
     return d;
@@ -97,7 +96,7 @@ void write_test_hub_json(const fs::path &dir, const std::string &name)
         j = nlohmann::json::parse(f);
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0"; // ephemeral
-    j["admin"]["enabled"]           = false;
+    j["admin"]["enabled"] = false;
     // Script-disabled by default: empty path → HubHost::startup() does
     // not construct HubScriptRunner (HEP-CORE-0011 §"Engine Construction
     // Lifecycle"; L2 scope only).
@@ -111,7 +110,7 @@ void write_test_hub_json(const fs::path &dir, const std::string &name)
 struct ConfiguredDir
 {
     HubConfig cfg;
-    fs::path  dir;
+    fs::path dir;
 };
 
 /// Seed the hub broker's CURVE identity (`kHubIdentityName`) into the process
@@ -124,10 +123,10 @@ struct ConfiguredDir
 /// up (i.e. inside the worker lambda, which `make_config` is called from).
 void seed_hub_identity_once()
 {
-    static const bool seeded = [] {
-        pylabhub::tests::add_curve_identity(
-            pylabhub::utils::security::kHubIdentityName,
-            pylabhub::tests::gen_curve_keypair());
+    static const bool seeded = []
+    {
+        pylabhub::tests::add_curve_identity(pylabhub::utils::security::kHubIdentityName,
+                                            pylabhub::tests::gen_curve_keypair());
         return true;
     }();
     (void)seeded;
@@ -152,19 +151,19 @@ void remove_tree(const fs::path &p)
 /// JsonConfig's dep, JsonConfig for HubConfig::load, SecureSubsystem for
 /// the broker CURVE init path (harmless when use_curve=false at
 /// runtime), and ZMQContext for the broker's ROUTER socket.
-#define PLH_HUB_HOST_MODS                                                      \
-    Logger::GetLifecycleModule(),                                              \
-    FileLock::GetLifecycleModule(),                                            \
-    JsonConfig::GetLifecycleModule(),                                          \
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
-    pylabhub::hub::GetZMQContextModule()
+#define PLH_HUB_HOST_MODS                                                                          \
+    Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),                                  \
+        JsonConfig::GetLifecycleModule(),                                                          \
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                          \
+        pylabhub::hub::GetZMQContextModule()
 
 } // namespace
 
 int construct_without_startup_no_thread_spawn()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -176,14 +175,14 @@ int construct_without_startup_no_thread_spawn()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::construct_without_startup_no_thread_spawn",
-        PLH_HUB_HOST_MODS);
+        "hub_host::construct_without_startup_no_thread_spawn", PLH_HUB_HOST_MODS);
 }
 
 int broker_hub_state_is_hub_host_hub_state()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -210,14 +209,14 @@ int broker_hub_state_is_hub_host_hub_state()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::broker_hub_state_is_hub_host_hub_state",
-        PLH_HUB_HOST_MODS);
+        "hub_host::broker_hub_state_is_hub_host_hub_state", PLH_HUB_HOST_MODS);
 }
 
 int startup_idempotent()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -235,14 +234,14 @@ int startup_idempotent()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::startup_idempotent",
-        PLH_HUB_HOST_MODS);
+        "hub_host::startup_idempotent", PLH_HUB_HOST_MODS);
 }
 
 int shutdown_idempotent()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -259,14 +258,14 @@ int shutdown_idempotent()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::shutdown_idempotent",
-        PLH_HUB_HOST_MODS);
+        "hub_host::shutdown_idempotent", PLH_HUB_HOST_MODS);
 }
 
 int run_main_loop_blocks_until_request_shutdown()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -276,10 +275,12 @@ int run_main_loop_blocks_until_request_shutdown()
             host.startup();
 
             std::atomic<bool> loop_returned{false};
-            std::thread main_thread([&] {
-                host.run_main_loop();
-                loop_returned.store(true);
-            });
+            std::thread main_thread(
+                [&]
+                {
+                    host.run_main_loop();
+                    loop_returned.store(true);
+                });
 
             // Loop should still be blocked.
             std::this_thread::sleep_for(50ms);
@@ -307,14 +308,14 @@ int run_main_loop_blocks_until_request_shutdown()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::run_main_loop_blocks_until_request_shutdown",
-        PLH_HUB_HOST_MODS);
+        "hub_host::run_main_loop_blocks_until_request_shutdown", PLH_HUB_HOST_MODS);
 }
 
 int startup_fails_cleanly_on_busy_port()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -366,25 +367,23 @@ int startup_fails_cleanly_on_busy_port()
                 threw = true;
                 err_what = e.what();
             }
-            const auto elapsed_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t0).count();
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - t0)
+                                        .count();
 
-            EXPECT_TRUE(threw)
-                << "second startup() on busy endpoint must throw";
+            EXPECT_TRUE(threw) << "second startup() on busy endpoint must throw";
             EXPECT_LT(elapsed_ms, 1000)
-                << "startup() must fail FAST on bind error (<1 s); took "
-                << elapsed_ms << " ms.  Slow failure indicates broker "
+                << "startup() must fail FAST on bind error (<1 s); took " << elapsed_ms
+                << " ms.  Slow failure indicates broker "
                    "exception is no longer being forwarded via "
                    "ready_promise — see the lambda in HubHost::startup() "
                    "that wraps broker.run() in a try/catch and calls "
                    "ready_promise->set_exception().";
-            EXPECT_EQ(err_what.find("did not signal ready within 5s"),
-                      std::string::npos)
+            EXPECT_EQ(err_what.find("did not signal ready within 5s"), std::string::npos)
                 << "startup() failed via the timeout path, not the "
-                   "bind-error path; what(): " << err_what;
-            EXPECT_FALSE(host2.is_running())
-                << "after failed startup, is_running must be false";
+                   "bind-error path; what(): "
+                << err_what;
+            EXPECT_FALSE(host2.is_running()) << "after failed startup, is_running must be false";
 
             host1.shutdown();
 
@@ -393,14 +392,14 @@ int startup_fails_cleanly_on_busy_port()
             remove_tree(cd1.dir);
             remove_tree(cd2.dir);
         },
-        "hub_host::startup_fails_cleanly_on_busy_port",
-        PLH_HUB_HOST_MODS);
+        "hub_host::startup_fails_cleanly_on_busy_port", PLH_HUB_HOST_MODS);
 }
 
 int destructor_cleans_up_even_without_explicit_shutdown()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -419,14 +418,14 @@ int destructor_cleans_up_even_without_explicit_shutdown()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::destructor_cleans_up_even_without_explicit_shutdown",
-        PLH_HUB_HOST_MODS);
+        "hub_host::destructor_cleans_up_even_without_explicit_shutdown", PLH_HUB_HOST_MODS);
 }
 
 int config_accessor_returns_loaded_value()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -441,14 +440,14 @@ int config_accessor_returns_loaded_value()
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::config_accessor_returns_loaded_value",
-        PLH_HUB_HOST_MODS);
+        "hub_host::config_accessor_returns_loaded_value", PLH_HUB_HOST_MODS);
 }
 
 int startup_after_shutdown_throws()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -468,27 +467,32 @@ int startup_after_shutdown_throws()
             // the FSM single-use throw.
             bool threw = false;
             std::string msg;
-            try { host.startup(); }
-            catch (const std::logic_error &e) { threw = true; msg = e.what(); }
-            EXPECT_TRUE(threw)
-                << "second startup() must throw std::logic_error";
+            try
+            {
+                host.startup();
+            }
+            catch (const std::logic_error &e)
+            {
+                threw = true;
+                msg = e.what();
+            }
+            EXPECT_TRUE(threw) << "second startup() must throw std::logic_error";
             EXPECT_NE(msg.find("after shutdown"), std::string::npos)
                 << "wrong logic_error path; what(): " << msg;
-            EXPECT_FALSE(host.is_running())
-                << "rejected startup() must not change FSM state";
+            EXPECT_FALSE(host.is_running()) << "rejected startup() must not change FSM state";
 
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
             remove_tree(cd.dir);
         },
-        "hub_host::startup_after_shutdown_throws",
-        PLH_HUB_HOST_MODS);
+        "hub_host::startup_after_shutdown_throws", PLH_HUB_HOST_MODS);
 }
 
 int failed_startup_allows_retry()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
@@ -524,20 +528,27 @@ int failed_startup_allows_retry()
             bool threw = false;
             std::string err_what;
             const auto t0 = std::chrono::steady_clock::now();
-            try { host.startup(); }
-            catch (const std::exception &e) { threw = true; err_what = e.what(); }
-            const auto elapsed_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t0).count();
+            try
+            {
+                host.startup();
+            }
+            catch (const std::exception &e)
+            {
+                threw = true;
+                err_what = e.what();
+            }
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - t0)
+                                        .count();
             EXPECT_TRUE(threw);
             EXPECT_LT(elapsed_ms, 1000)
-                << "startup() must fail FAST on bind error (<1 s); took "
-                << elapsed_ms << " ms — broker exception not forwarded "
+                << "startup() must fail FAST on bind error (<1 s); took " << elapsed_ms
+                << " ms — broker exception not forwarded "
                    "via ready_promise.  See HubHost::startup() lambda.";
-            EXPECT_EQ(err_what.find("did not signal ready within 5s"),
-                      std::string::npos)
+            EXPECT_EQ(err_what.find("did not signal ready within 5s"), std::string::npos)
                 << "startup() failed via the timeout path, not the "
-                   "bind-error path; what(): " << err_what;
+                   "bind-error path; what(): "
+                << err_what;
             EXPECT_FALSE(host.is_running());
 
             // Free the busy endpoint and patch host's config to a
@@ -572,8 +583,7 @@ int failed_startup_allows_retry()
             remove_tree(cd1.dir);
             remove_tree(cd2.dir);
         },
-        "hub_host::failed_startup_allows_retry",
-        PLH_HUB_HOST_MODS);
+        "hub_host::failed_startup_allows_retry", PLH_HUB_HOST_MODS);
 }
 
 } // namespace hub_host
@@ -591,11 +601,11 @@ struct HubHostRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "hub_host")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "hub_host")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::hub_host;

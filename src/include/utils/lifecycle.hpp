@@ -115,7 +115,7 @@ template <typename... Mods> inline std::vector<ModuleDef> MakeModDefList(Mods &&
 enum class LifecycleLogLevel : int
 {
     Debug = 1, ///< Verbose/diagnostic messages.
-    Warn  = 3, ///< Warnings: recoverable policy violations or unexpected states.
+    Warn = 3,  ///< Warnings: recoverable policy violations or unexpected states.
     Error = 4  ///< Errors: unload failures, contamination, destabilization.
 };
 
@@ -136,13 +136,13 @@ using LifecycleLogSink = std::function<void(LifecycleLogLevel, const std::string
  */
 enum class DynModuleState : int
 {
-    NotRegistered,  ///< Module not found in the manager (never registered, or already removed).
-    Unloaded,       ///< Registered but never loaded (or successfully removed from graph).
-    Loading,        ///< Startup callback is currently running.
-    Loaded,         ///< Fully loaded and running.
-    Unloading,      ///< Async shutdown is in progress.
+    NotRegistered,   ///< Module not found in the manager (never registered, or already removed).
+    Unloaded,        ///< Registered but never loaded (or successfully removed from graph).
+    Loading,         ///< Startup callback is currently running.
+    Loaded,          ///< Fully loaded and running.
+    Unloading,       ///< Async shutdown is in progress.
     ShutdownTimeout, ///< Shutdown timed out; thread was detached. Module may be destabilized.
-    ShutdownFailed  ///< Shutdown threw an exception. Module may be destabilized.
+    ShutdownFailed   ///< Shutdown threw an exception. Module may be destabilized.
 };
 
 /**

@@ -23,8 +23,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::integrity_repair
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 static DataBlockConfig make_integrity_config(ChecksumPolicy cp)
 {
@@ -64,8 +70,7 @@ int validate_integrity_fresh_checksum_block_passes()
             std::string channel = make_test_channel_name("IntegrityFresh");
             DataBlockConfig cfg = make_integrity_config(ChecksumPolicy::Enforced);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -82,8 +87,8 @@ int validate_integrity_fresh_checksum_block_passes()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "validate_integrity_fresh_checksum_block_passes",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "validate_integrity_fresh_checksum_block_passes", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -103,8 +108,7 @@ int validate_integrity_detects_layout_checksum_mismatch()
             std::string channel = make_test_channel_name("IntegrityLayout");
             DataBlockConfig cfg = make_integrity_config(ChecksumPolicy::None);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -141,8 +145,8 @@ int validate_integrity_detects_layout_checksum_mismatch()
 
             // validate_integrity(repair=true) → still FAILED (layout is not repairable).
             RecoveryResult r_repair = datablock_validate_integrity(channel.c_str(), true);
-            EXPECT_EQ(r_repair, RECOVERY_FAILED)
-                << "validate_integrity must return FAILED even with repair=true for layout corruption";
+            EXPECT_EQ(r_repair, RECOVERY_FAILED) << "validate_integrity must return FAILED even "
+                                                    "with repair=true for layout corruption";
 
             // Restore the layout checksum so the segment can be opened cleanly for cleanup.
             {
@@ -154,8 +158,8 @@ int validate_integrity_detects_layout_checksum_mismatch()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "validate_integrity_detects_layout_checksum_mismatch",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "validate_integrity_detects_layout_checksum_mismatch", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -172,8 +176,7 @@ int validate_integrity_detects_magic_number_corruption()
             std::string channel = make_test_channel_name("IntegrityMagic");
             DataBlockConfig cfg = make_integrity_config(ChecksumPolicy::None);
 
-            auto producer = create_datablock_producer_impl(channel,
-                                                           DataBlockPolicy::RingBuffer,
+            auto producer = create_datablock_producer_impl(channel, DataBlockPolicy::RingBuffer,
                                                            cfg, nullptr, nullptr);
             ASSERT_NE(producer, nullptr);
 
@@ -201,8 +204,8 @@ int validate_integrity_detects_magic_number_corruption()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "validate_integrity_detects_magic_number_corruption",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "validate_integrity_detects_magic_number_corruption", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::integrity_repair

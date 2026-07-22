@@ -29,7 +29,7 @@
 #include "test_entrypoint.h"
 
 #include <fmt/core.h>
-#include <gmock/gmock.h>  // testing::HasSubstr for catch-and-assert pattern
+#include <gmock/gmock.h> // testing::HasSubstr for catch-and-assert pattern
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -53,8 +53,7 @@ namespace
 {
 
 /// Writes JSON to <dir>/<filename>; returns the full path.
-fs::path write_json(const fs::path &dir, const std::string &filename,
-                    const nlohmann::json &j)
+fs::path write_json(const fs::path &dir, const std::string &filename, const nlohmann::json &j)
 {
     const auto path = dir / filename;
     std::ofstream ofs(path);
@@ -72,16 +71,18 @@ fs::path write_json(const fs::path &dir, const std::string &filename,
 nlohmann::json minimal_producer_json()
 {
     return {
-        {"producer", {{"uid", "prod.test.uid00000001"},
-                       {"name", "TestProd"},
-                       {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
+        {"producer",
+         {{"uid", "prod.test.uid00000001"},
+          {"name", "TestProd"},
+          {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"out_hub_dir", ""},
         {"out_channel", "test.channel"},
         {"out_transport", "shm"},
         {"out_shm_enabled", true},
         {"out_shm_slot_count", 8},
         {"checksum", "enforced"},
-        {"out_slot_schema", {{"packing", "aligned"}, {"fields", {{{"name", "value"}, {"type", "float32"}}}}}},
+        {"out_slot_schema",
+         {{"packing", "aligned"}, {"fields", {{{"name", "value"}, {"type", "float32"}}}}}},
         {"loop_timing", "fixed_rate"},
         {"target_period_ms", 50.0},
         {"script", {{"type", "python"}, {"path", "."}}},
@@ -91,9 +92,10 @@ nlohmann::json minimal_producer_json()
 nlohmann::json minimal_consumer_json()
 {
     return {
-        {"consumer", {{"uid", "cons.test.uid00000002"},
-                       {"name", "TestCons"},
-                       {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
+        {"consumer",
+         {{"uid", "cons.test.uid00000002"},
+          {"name", "TestCons"},
+          {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"in_hub_dir", ""},
         {"in_channel", "test.channel"},
         {"in_transport", "shm"},
@@ -106,9 +108,10 @@ nlohmann::json minimal_consumer_json()
 nlohmann::json minimal_processor_json()
 {
     return {
-        {"processor", {{"uid", "proc.test.uid00000003"},
-                        {"name", "TestProc"},
-                        {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
+        {"processor",
+         {{"uid", "proc.test.uid00000003"},
+          {"name", "TestProc"},
+          {"auth", {{"keyfile", "vault/placeholder.vault"}}}}},
         {"in_hub_dir", ""},
         {"out_hub_dir", ""},
         {"in_channel", "raw.data"},
@@ -117,7 +120,8 @@ nlohmann::json minimal_processor_json()
         {"out_transport", "zmq"},
         {"out_zmq_endpoint", "tcp://0.0.0.0:5599"},
         {"out_zmq_bind", true},
-        {"out_slot_schema", {{"packing", "aligned"}, {"fields", {{{"name", "result"}, {"type", "float64"}}}}}},
+        {"out_slot_schema",
+         {{"packing", "aligned"}, {"fields", {{{"name", "result"}, {"type", "float64"}}}}}},
         {"checksum", "enforced"},
         {"loop_timing", "max_rate"},
         {"script", {{"type", "python"}, {"path", "."}}},
@@ -143,100 +147,100 @@ std::any parse_test_producer(const nlohmann::json &j, const RoleConfig & /*cfg*/
 int load_producer_identity(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.identity().uid, "prod.test.uid00000001");
             EXPECT_EQ(cfg.identity().name, "TestProd");
             EXPECT_EQ(cfg.identity().log_level, "info");
         },
-        "role_config::load_producer_identity",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_identity", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_producer_timing(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_DOUBLE_EQ(cfg.timing().period_us, 50000.0);
         },
-        "role_config::load_producer_timing",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_timing", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_producer_script(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.script().type, "python");
             EXPECT_TRUE(cfg.script().type_explicit);
         },
-        "role_config::load_producer_script",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_script", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_producer_out_channel(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.out_channel(), "test.channel");
             EXPECT_TRUE(cfg.in_channel().empty());
         },
-        "role_config::load_producer_out_channel",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_out_channel", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_producer_out_transport(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Shm);
             EXPECT_EQ(cfg.out_shm().slot_count, 8u);
             EXPECT_TRUE(cfg.out_shm().enabled);
         },
-        "role_config::load_producer_out_transport",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_out_transport", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_producer_out_validation(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
         },
-        "role_config::load_producer_out_validation",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_out_validation", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_producer_validation_stop_on_script_error(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["stop_on_script_error"] = true;
             auto path = write_json(dir, "producer.json", j);
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_TRUE(cfg.script().stop_on_script_error);
         },
-        "role_config::load_producer_validation_stop_on_script_error",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_producer_validation_stop_on_script_error", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Consumer ────────────────────────────────────────────────────────────────
@@ -244,56 +248,56 @@ int load_producer_validation_stop_on_script_error(const std::string &dir)
 int load_consumer_identity(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "consumer.json", minimal_consumer_json());
             auto cfg = RoleConfig::load(path.string(), "consumer");
             EXPECT_EQ(cfg.identity().uid, "cons.test.uid00000002");
             EXPECT_EQ(cfg.script().type, "lua");
         },
-        "role_config::load_consumer_identity",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_consumer_identity", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_consumer_in_channel(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "consumer.json", minimal_consumer_json());
             auto cfg = RoleConfig::load(path.string(), "consumer");
             EXPECT_EQ(cfg.in_channel(), "test.channel");
             EXPECT_TRUE(cfg.out_channel().empty());
         },
-        "role_config::load_consumer_in_channel",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_consumer_in_channel", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_consumer_in_validation(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "consumer.json", minimal_consumer_json());
             auto cfg = RoleConfig::load(path.string(), "consumer");
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
         },
-        "role_config::load_consumer_in_validation",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_consumer_in_validation", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_consumer_default_timing(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "consumer.json", minimal_consumer_json());
             auto cfg = RoleConfig::load(path.string(), "consumer");
             EXPECT_DOUBLE_EQ(cfg.timing().period_us, 0.0);
             EXPECT_EQ(cfg.timing().loop_timing, pylabhub::LoopTimingPolicy::MaxRate);
         },
-        "role_config::load_consumer_default_timing",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_consumer_default_timing", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Processor ───────────────────────────────────────────────────────────────
@@ -301,21 +305,22 @@ int load_consumer_default_timing(const std::string &dir)
 int load_processor_dual_channels(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "processor.json", minimal_processor_json());
             auto cfg = RoleConfig::load(path.string(), "processor");
             EXPECT_EQ(cfg.in_channel(), "raw.data");
             EXPECT_EQ(cfg.out_channel(), "processed.data");
         },
-        "role_config::load_processor_dual_channels",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_processor_dual_channels", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_processor_dual_transport(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "processor.json", minimal_processor_json());
             auto cfg = RoleConfig::load(path.string(), "processor");
             EXPECT_EQ(cfg.in_transport().transport, pylabhub::config::Transport::Shm);
@@ -323,22 +328,21 @@ int load_processor_dual_transport(const std::string &dir)
             EXPECT_EQ(cfg.out_transport().zmq_endpoint, "tcp://0.0.0.0:5599");
             EXPECT_TRUE(cfg.out_transport().zmq_bind);
         },
-        "role_config::load_processor_dual_transport",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_processor_dual_transport", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_processor_dual_validation(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "processor.json", minimal_processor_json());
             auto cfg = RoleConfig::load(path.string(), "processor");
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
         },
-        "role_config::load_processor_dual_validation",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_processor_dual_validation", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Role-specific data ──────────────────────────────────────────────────────
@@ -346,7 +350,8 @@ int load_processor_dual_validation(const std::string &dir)
 int role_data_producer_fields(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer", parse_test_producer);
             EXPECT_TRUE(cfg.has_role_data());
@@ -354,36 +359,37 @@ int role_data_producer_fields(const std::string &dir)
             EXPECT_FALSE(pf.out_slot_schema.empty());
             EXPECT_TRUE(pf.out_slot_schema.contains("fields"));
         },
-        "role_config::role_data_producer_fields",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::role_data_producer_fields", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int role_data_no_parser(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_FALSE(cfg.has_role_data());
         },
-        "role_config::role_data_no_parser",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::role_data_no_parser", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int role_data_wrong_type_cast_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer", parse_test_producer);
-            struct WrongType {};
+            struct WrongType
+            {
+            };
             EXPECT_THROW(cfg.role_data<WrongType>(), std::bad_any_cast);
         },
-        "role_config::role_data_wrong_type_cast_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::role_data_wrong_type_cast_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -394,22 +400,24 @@ int role_data_wrong_type_cast_throws(const std::string &dir)
 int auth_empty_keyfile_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["producer"]["auth"]["keyfile"] = "";
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "Expected std::runtime_error for empty keyfile";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("must be a non-empty path string"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("must be a non-empty path string"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
             }
         },
-        "role_config::auth_empty_keyfile_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::auth_empty_keyfile_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // HEP-CORE-0024 §3.4: missing `<role>.auth` object is a config-load
@@ -417,22 +425,25 @@ int auth_empty_keyfile_throws(const std::string &dir)
 int auth_missing_auth_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["producer"].erase("auth");
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "Expected std::runtime_error for missing producer.auth";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(),
                             testing::HasSubstr("missing required 'producer.auth' object"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
             }
         },
-        "role_config::auth_missing_auth_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::auth_missing_auth_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // HEP-CORE-0024 §3.4: missing `<role>.auth.keyfile` field is a
@@ -440,64 +451,72 @@ int auth_missing_auth_throws(const std::string &dir)
 int auth_missing_keyfile_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
-            j["producer"]["auth"] = nlohmann::json::object();  // empty object
+            j["producer"]["auth"] = nlohmann::json::object(); // empty object
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "Expected std::runtime_error for missing producer.auth.keyfile";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(),
                             testing::HasSubstr("missing required 'producer.auth.keyfile'"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0024"));
             }
         },
-        "role_config::auth_missing_keyfile_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::auth_missing_keyfile_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // HEP-CORE-0024 §3.4: `<role>.auth.keyfile` must be a string.
 int auth_keyfile_wrong_type_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
-            j["producer"]["auth"]["keyfile"] = 42;  // not a string
+            j["producer"]["auth"]["keyfile"] = 42; // not a string
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "Expected std::runtime_error for non-string keyfile";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(),
                             testing::HasSubstr("'producer.auth.keyfile' must be a string"));
             }
         },
-        "role_config::auth_keyfile_wrong_type_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::auth_keyfile_wrong_type_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // HEP-CORE-0024 §3.4: `<role>.auth` must be a JSON object, not array/scalar.
 int auth_not_object_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["producer"]["auth"] = "should-be-an-object";
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "Expected std::runtime_error for non-object auth";
-            } catch (const std::runtime_error &ex) {
-                EXPECT_THAT(ex.what(),
-                            testing::HasSubstr("'producer.auth' must be a JSON object"));
+            }
+            catch (const std::runtime_error &ex)
+            {
+                EXPECT_THAT(ex.what(), testing::HasSubstr("'producer.auth' must be a JSON object"));
             }
         },
-        "role_config::auth_not_object_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::auth_not_object_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -507,10 +526,10 @@ int auth_not_object_throws(const std::string &dir)
 int load_keypair_refuses_loose_file_mode(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path vault_path = fs::path(dir) / "vault" / "prod.test.uid00000001.vault";
-            (void) pylabhub::utils::RoleVault::create(
-                vault_path, "prod.test.uid00000001", "l2-pw");
+            (void)pylabhub::utils::RoleVault::create(vault_path, "prod.test.uid00000001", "l2-pw");
 
             auto j = minimal_producer_json();
             j["producer"]["auth"]["keyfile"] = vault_path.string();
@@ -519,27 +538,29 @@ int load_keypair_refuses_loose_file_mode(const std::string &dir)
             ::chmod(vault_path.c_str(), 0644);
 
             auto cfg = RoleConfig::load(path.string(), "producer");
-            try {
-                (void) cfg.load_keypair("l2-pw");
+            try
+            {
+                (void)cfg.load_keypair("l2-pw");
                 FAIL() << "Expected load_keypair to refuse 0644 vault file";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("vault file"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("chmod 0600"));
             }
         },
-        "role_config::load_keypair_refuses_loose_file_mode",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_keypair_refuses_loose_file_mode", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             const fs::path vault_path = fs::path(dir) / "vault" / "prod.test.uid00000002.vault";
-            (void) pylabhub::utils::RoleVault::create(
-                vault_path, "prod.test.uid00000002", "l2-pw");
+            (void)pylabhub::utils::RoleVault::create(vault_path, "prod.test.uid00000002", "l2-pw");
 
             auto j = minimal_producer_json();
             j["producer"]["uid"] = "prod.test.uid00000002";
@@ -549,18 +570,20 @@ int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
             ::chmod(vault_path.parent_path().c_str(), 0755);
 
             auto cfg = RoleConfig::load(path.string(), "producer");
-            try {
-                (void) cfg.load_keypair("l2-pw");
+            try
+            {
+                (void)cfg.load_keypair("l2-pw");
                 FAIL() << "Expected load_keypair to refuse 0755 parent dir";
-            } catch (const std::runtime_error &ex) {
+            }
+            catch (const std::runtime_error &ex)
+            {
                 EXPECT_THAT(ex.what(), testing::HasSubstr("HEP-CORE-0035"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("vault directory"));
                 EXPECT_THAT(ex.what(), testing::HasSubstr("chmod 0700"));
             }
         },
-        "role_config::load_keypair_refuses_loose_parent_dir_mode",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_keypair_refuses_loose_parent_dir_mode", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // AUTH_TODO §C5 (#161) loader contract: vault file present with the
@@ -579,19 +602,17 @@ int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
 int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
-            const fs::path vault_path =
-                fs::path(dir) / "vault" / "prod.test.uid00000003.vault";
-            (void) pylabhub::utils::RoleVault::create(
-                vault_path, "prod.test.uid00000003", "l2-pw");
+        [&]()
+        {
+            const fs::path vault_path = fs::path(dir) / "vault" / "prod.test.uid00000003.vault";
+            (void)pylabhub::utils::RoleVault::create(vault_path, "prod.test.uid00000003", "l2-pw");
 
             // ACLs stay correct so we exercise the inner decode path —
             // the loose-mode tests above already pin the ACL-rejection
             // branch.  Overwrite the vault contents with wrong-length
             // garbage to force the libsodium / vault decode to fail.
             {
-                std::ofstream truncate(vault_path,
-                                       std::ios::binary | std::ios::trunc);
+                std::ofstream truncate(vault_path, std::ios::binary | std::ios::trunc);
                 truncate.write("not-a-valid-vault-payload", 25);
             }
             // Re-apply 0600 — `ofstream` truncate may have relaxed the
@@ -607,18 +628,22 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
 
             namespace sec = pylabhub::utils::security;
             const bool pre_seeded =
-                sec::sodium_ready() &&
-                sec::secure().keys().has(sec::kRoleIdentityName);
+                sec::sodium_ready() && sec::secure().keys().has(sec::kRoleIdentityName);
 
-            try {
-                (void) cfg.load_keypair("l2-pw");
+            try
+            {
+                (void)cfg.load_keypair("l2-pw");
                 FAIL() << "Expected load_keypair to reject a vault with "
                           "corrupt contents — the gate must not return "
                           "a valid key on any failure path.";
-            } catch (const std::runtime_error &) {
+            }
+            catch (const std::runtime_error &)
+            {
                 // Expected — any decode failure under the vault layer
                 // surfaces as runtime_error to the loader caller.
-            } catch (const std::exception &) {
+            }
+            catch (const std::exception &)
+            {
                 // Other exception types are also acceptable: the
                 // contract is "loader does not return a valid key" —
                 // any throw satisfies it.
@@ -632,16 +657,14 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
             // it and a regression would ship.
             if (sec::sodium_ready())
             {
-                EXPECT_EQ(sec::secure().keys().has(sec::kRoleIdentityName),
-                          pre_seeded)
+                EXPECT_EQ(sec::secure().keys().has(sec::kRoleIdentityName), pre_seeded)
                     << "load_keypair MUST NOT seed the KeyStore on a "
                        "failed decode — the gate fires AFTER the "
                        "KeyStore mutation point, not before.";
             }
         },
-        "role_config::load_keypair_rejects_corrupt_vault_contents",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_keypair_rejects_corrupt_vault_contents", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 #endif
 
@@ -650,7 +673,8 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
 int raw_json(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             auto path = write_json(dir, "producer.json", j);
             auto cfg = RoleConfig::load(path.string(), "producer");
@@ -658,49 +682,48 @@ int raw_json(const std::string &dir)
             EXPECT_TRUE(cfg.raw().contains("out_channel"));
             EXPECT_EQ(cfg.raw()["out_channel"], "test.channel");
         },
-        "role_config::raw_json",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "role_config::raw_json", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
 int role_type(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.role_type(), "producer");
         },
-        "role_config::role_type",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "role_config::role_type", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
 int base_dir(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.base_dir(), fs::path(dir));
         },
-        "role_config::base_dir",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "role_config::base_dir", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
 int load_from_directory(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load_from_directory(dir, "producer");
             EXPECT_EQ(cfg.identity().uid, "prod.test.uid00000001");
             EXPECT_EQ(cfg.out_channel(), "test.channel");
         },
-        "role_config::load_from_directory",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::load_from_directory", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Validation errors ───────────────────────────────────────────────────────
@@ -708,70 +731,80 @@ int load_from_directory(const std::string &dir)
 int file_not_found_throws()
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             // Catch the throw explicitly so we can assert on the exception
             // message text — much more reliable than substring-matching log
             // output, and verifies the contract of what message the user
             // gets when the file is missing.
-            try {
+            try
+            {
                 RoleConfig::load("/nonexistent/path.json", "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("cannot open config file"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("/nonexistent/path.json"));
             }
         },
-        "role_config::file_not_found_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::file_not_found_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int invalid_script_type_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["script"]["type"] = "ruby";
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::invalid_argument &e) {
+            }
+            catch (const std::invalid_argument &e)
+            {
                 // parse_script_config throws std::invalid_argument with a
                 // message naming the offending value.
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("script.type"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("ruby"));
             }
         },
-        "role_config::invalid_script_type_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::invalid_script_type_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int zmq_transport_missing_endpoint_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["out_transport"] = "zmq";
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::invalid_argument &e) {
+            }
+            catch (const std::invalid_argument &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("out_zmq_endpoint"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("required"));
             }
         },
-        "role_config::zmq_transport_missing_endpoint_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::zmq_transport_missing_endpoint_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int zmq_transport_valid(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["out_transport"] = "zmq";
             j["out_zmq_endpoint"] = "tcp://0.0.0.0:5580";
@@ -787,9 +820,8 @@ int zmq_transport_valid(const std::string &dir)
             EXPECT_TRUE(cfg.out_transport().zmq_bind);
             EXPECT_EQ(cfg.out_transport().zmq_buffer_depth, 128u);
         },
-        "role_config::zmq_transport_valid",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::zmq_transport_valid", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int zmq_packing_key_rejected(const std::string &dir)
@@ -800,11 +832,12 @@ int zmq_packing_key_rejected(const std::string &dir)
     // Catches anyone trying to re-introduce the key without updating
     // the schema-driven packing propagation.
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["out_transport"] = "zmq";
             j["out_zmq_endpoint"] = "tcp://0.0.0.0:5580";
-            j["out_zmq_packing"] = "packed";  // removed key
+            j["out_zmq_packing"] = "packed"; // removed key
             auto path = write_json(dir, "producer.json", j);
             try
             {
@@ -813,15 +846,12 @@ int zmq_packing_key_rejected(const std::string &dir)
             }
             catch (const std::exception &e)
             {
-                EXPECT_NE(std::string(e.what()).find("out_zmq_packing"),
-                          std::string::npos)
-                    << "error message must name the offending key; got: "
-                    << e.what();
+                EXPECT_NE(std::string(e.what()).find("out_zmq_packing"), std::string::npos)
+                    << "error message must name the offending key; got: " << e.what();
             }
         },
-        "role_config::zmq_packing_key_rejected",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::zmq_packing_key_rejected", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Move semantics ──────────────────────────────────────────────────────────
@@ -829,21 +859,22 @@ int zmq_packing_key_rejected(const std::string &dir)
 int move_construct(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             RoleConfig moved(std::move(cfg));
             EXPECT_EQ(moved.identity().uid, "prod.test.uid00000001");
         },
-        "role_config::move_construct",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "role_config::move_construct", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
 int move_assign(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg1 = RoleConfig::load(path.string(), "producer");
             auto path2 = write_json(dir, "consumer.json", minimal_consumer_json());
@@ -852,8 +883,7 @@ int move_assign(const std::string &dir)
             EXPECT_EQ(cfg2.identity().uid, "prod.test.uid00000001");
             EXPECT_EQ(cfg2.role_type(), "producer");
         },
-        "role_config::move_assign",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
+        "role_config::move_assign", Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule());
 }
 
@@ -862,21 +892,22 @@ int move_assign(const std::string &dir)
 int checksum_default_enforced(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
             EXPECT_TRUE(cfg.checksum().flexzone);
         },
-        "role_config::checksum_default_enforced",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::checksum_default_enforced", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int checksum_explicit_manual(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["checksum"] = "manual";
             j["flexzone_checksum"] = false;
@@ -885,79 +916,84 @@ int checksum_explicit_manual(const std::string &dir)
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Manual);
             EXPECT_FALSE(cfg.checksum().flexzone);
         },
-        "role_config::checksum_explicit_manual",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::checksum_explicit_manual", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int checksum_explicit_none(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_consumer_json();
             j["checksum"] = "none";
             auto path = write_json(dir, "consumer.json", j);
             auto cfg = RoleConfig::load(path.string(), "consumer");
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::None);
         },
-        "role_config::checksum_explicit_none",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::checksum_explicit_none", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int checksum_invalid_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["checksum"] = "turbo";
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("invalid 'checksum'"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("turbo"));
             }
         },
-        "role_config::checksum_invalid_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::checksum_invalid_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int checksum_null_default_enforced(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["checksum"] = nullptr;
             auto path = write_json(dir, "producer.json", j);
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.checksum().policy, pylabhub::hub::ChecksumPolicy::Enforced);
         },
-        "role_config::checksum_null_default_enforced",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::checksum_null_default_enforced", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int unknown_key_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["unknown_bogus_key"] = 42;
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("unknown config key"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("unknown_bogus_key"));
             }
         },
-        "role_config::unknown_key_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::unknown_key_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int nested_unknown_key_throws(const std::string &dir)
@@ -968,19 +1004,22 @@ int nested_unknown_key_throws(const std::string &dir)
     // probe as an independent load() (distinct JSON file) so a failure
     // in one probe doesn't mask the others.
     return run_gtest_worker(
-        [&]() {
-            auto probe = [&](const char *tag,
-                              const std::function<void(nlohmann::json &)> &mutator,
-                              const std::string &expected_path)
+        [&]()
+        {
+            auto probe = [&](const char *tag, const std::function<void(nlohmann::json &)> &mutator,
+                             const std::string &expected_path)
             {
                 SCOPED_TRACE(std::string("probe=") + tag);
                 auto j = minimal_producer_json();
                 mutator(j);
                 auto path = write_json(dir, std::string(tag) + ".json", j);
-                try {
+                try
+                {
                     RoleConfig::load(path.string(), "producer");
                     FAIL() << "expected RoleConfig::load to throw for " << tag;
-                } catch (const std::runtime_error &e) {
+                }
+                catch (const std::runtime_error &e)
+                {
                     EXPECT_THAT(e.what(), ::testing::HasSubstr("unknown config key"));
                     EXPECT_THAT(e.what(), ::testing::HasSubstr(expected_path))
                         << "expected message to contain '" << expected_path
@@ -990,46 +1029,46 @@ int nested_unknown_key_throws(const std::string &dir)
 
             // script: `pahh` instead of `path` — the originating typo
             // scenario that surfaced the library bug.
-            probe("script_typo",
-                  [](nlohmann::json &j) { j["script"]["pahh"] = "/opt/x"; },
-                  "script.pahh");
+            probe(
+                "script_typo", [](nlohmann::json &j) { j["script"]["pahh"] = "/opt/x"; },
+                "script.pahh");
 
             // producer (role-tag block): unknown sibling of uid/name/log_level/auth.
-            probe("producer_typo",
-                  [](nlohmann::json &j) { j["producer"]["nme"] = "MyRole"; },
-                  "producer.nme");
+            probe(
+                "producer_typo", [](nlohmann::json &j) { j["producer"]["nme"] = "MyRole"; },
+                "producer.nme");
 
             // producer.auth: unknown sibling of keyfile.
-            probe("auth_typo",
-                  [](nlohmann::json &j) {
-                      j["producer"]["auth"] = nlohmann::json::object();
-                      j["producer"]["auth"]["keyfiile"] = "/etc/vault";
-                  },
-                  "producer.auth.keyfiile");
+            probe(
+                "auth_typo",
+                [](nlohmann::json &j)
+                {
+                    j["producer"]["auth"] = nlohmann::json::object();
+                    j["producer"]["auth"]["keyfiile"] = "/etc/vault";
+                },
+                "producer.auth.keyfiile");
 
             // startup: unknown sibling of wait_for_roles.
-            probe("startup_typo",
-                  [](nlohmann::json &j) {
-                      j["startup"]["wait_for_rolez"] =
-                          nlohmann::json::array();
-                  },
-                  "startup.wait_for_rolez");
+            probe(
+                "startup_typo",
+                [](nlohmann::json &j) { j["startup"]["wait_for_rolez"] = nlohmann::json::array(); },
+                "startup.wait_for_rolez");
 
             // startup.wait_for_roles[i]: unknown sibling of uid/timeout_ms.
-            probe("startup_entry_typo",
-                  [](nlohmann::json &j) {
-                      nlohmann::json entry = {
-                          {"uid", "prod.other.uid00000001"},
-                          {"timout_ms", 1000}  // typo: timout vs timeout
-                      };
-                      j["startup"]["wait_for_roles"] =
-                          nlohmann::json::array({entry});
-                  },
-                  "timout_ms");
+            probe(
+                "startup_entry_typo",
+                [](nlohmann::json &j)
+                {
+                    nlohmann::json entry = {
+                        {"uid", "prod.other.uid00000001"}, {"timout_ms", 1000}
+                        // typo: timout vs timeout
+                    };
+                    j["startup"]["wait_for_roles"] = nlohmann::json::array({entry});
+                },
+                "timout_ms");
         },
-        "role_config::nested_unknown_key_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::nested_unknown_key_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 // ── Logging ─────────────────────────────────────────────────────────────────
@@ -1037,7 +1076,8 @@ int nested_unknown_key_throws(const std::string &dir)
 int logging_default_all_defaults(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto path = write_json(dir, "producer.json", minimal_producer_json());
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.logging().file_path, "");
@@ -1045,20 +1085,20 @@ int logging_default_all_defaults(const std::string &dir)
             EXPECT_EQ(cfg.logging().max_backup_files, 5u);
             EXPECT_TRUE(cfg.logging().timestamped);
         },
-        "role_config::logging_default_all_defaults",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_default_all_defaults", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_explicit_all_fields(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {
-                {"file_path",   "logs/custom.log"},
+                {"file_path", "logs/custom.log"},
                 {"max_size_mb", 50},
-                {"backups",     10},
+                {"backups", 10},
                 {"timestamped", false},
             };
             auto path = write_json(dir, "producer.json", j);
@@ -1068,15 +1108,15 @@ int logging_explicit_all_fields(const std::string &dir)
             EXPECT_EQ(cfg.logging().max_backup_files, 10u);
             EXPECT_FALSE(cfg.logging().timestamped);
         },
-        "role_config::logging_explicit_all_fields",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_explicit_all_fields", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_partial_mixes_defaults_and_explicit(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"max_size_mb", 25}};
             auto path = write_json(dir, "producer.json", j);
@@ -1086,35 +1126,38 @@ int logging_partial_mixes_defaults_and_explicit(const std::string &dir)
             EXPECT_EQ(cfg.logging().max_backup_files, 5u);
             EXPECT_TRUE(cfg.logging().timestamped);
         },
-        "role_config::logging_partial_mixes_defaults_and_explicit",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_partial_mixes_defaults_and_explicit", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_zero_backups_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"backups", 0}};
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("logging.backups"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr(">= 1"));
             }
         },
-        "role_config::logging_zero_backups_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_zero_backups_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_backups_negative_one_keeps_all_files(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"backups", -1}};
             auto path = write_json(dir, "producer.json", j);
@@ -1122,127 +1165,141 @@ int logging_backups_negative_one_keeps_all_files(const std::string &dir)
             EXPECT_EQ(cfg.logging().max_backup_files,
                       pylabhub::config::LoggingConfig::kKeepAllBackups);
         },
-        "role_config::logging_backups_negative_one_keeps_all_files",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_backups_negative_one_keeps_all_files", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_negative_backups_other_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"backups", -2}};
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("logging.backups"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr(">= 1"));
             }
         },
-        "role_config::logging_negative_backups_other_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_negative_backups_other_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_zero_max_size_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"max_size_mb", 0}};
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("logging.max_size_mb"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("> 0"));
             }
         },
-        "role_config::logging_zero_max_size_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_zero_max_size_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_negative_max_size_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"max_size_mb", -5}};
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("logging.max_size_mb"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("> 0"));
             }
         },
-        "role_config::logging_negative_max_size_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_negative_max_size_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_unknown_sub_key_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {
                 {"max_size_mb", 10},
                 {"bogus_field", "xyz"},
             };
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("unknown config key"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("logging.bogus_field"));
             }
         },
-        "role_config::logging_unknown_sub_key_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_unknown_sub_key_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_not_object_throws(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = "not an object";
             auto path = write_json(dir, "producer.json", j);
-            try {
+            try
+            {
                 RoleConfig::load(path.string(), "producer");
                 FAIL() << "expected RoleConfig::load to throw";
-            } catch (const std::runtime_error &e) {
+            }
+            catch (const std::runtime_error &e)
+            {
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("'logging'"));
                 EXPECT_THAT(e.what(), ::testing::HasSubstr("must be a JSON object"));
             }
         },
-        "role_config::logging_not_object_throws",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_not_object_throws", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 int logging_fractional_max_size_accepted(const std::string &dir)
 {
     return run_gtest_worker(
-        [&]() {
+        [&]()
+        {
             auto j = minimal_producer_json();
             j["logging"] = {{"max_size_mb", 0.5}};
             auto path = write_json(dir, "producer.json", j);
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.logging().max_size_bytes, 512ULL * 1024);
         },
-        "role_config::logging_fractional_max_size_accepted",
-        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule());
+        "role_config::logging_fractional_max_size_accepted", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
 }
 
 } // namespace role_config
@@ -1262,8 +1319,7 @@ struct RoleConfigWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_config")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_config")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_config;
@@ -1273,9 +1329,9 @@ struct RoleConfigWorkerRegistrar
                     return file_not_found_throws();
 
                 // All other scenarios require <dir> as argv[2].
-                if (argc <= 2) {
-                    fmt::print(stderr,
-                               "role_config.{}: missing required <dir> arg\n", sc);
+                if (argc <= 2)
+                {
+                    fmt::print(stderr, "role_config.{}: missing required <dir> arg\n", sc);
                     return 1;
                 }
                 const std::string dir = argv[2];
@@ -1387,8 +1443,7 @@ struct RoleConfigWorkerRegistrar
                 if (sc == "logging_fractional_max_size_accepted")
                     return logging_fractional_max_size_accepted(dir);
 
-                fmt::print(stderr,
-                           "[role_config] ERROR: unknown scenario '{}'\n", sc);
+                fmt::print(stderr, "[role_config] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

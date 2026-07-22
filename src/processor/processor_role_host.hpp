@@ -62,18 +62,16 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     /// Pure config→opts translation for the processor's INPUT side.
     /// See ProducerRoleHost::make_tx_opts for rationale (audit B5+B11).
     /// Processor has BOTH directions; this is the consumer-half.
-    [[nodiscard]] static hub::RxQueueOptions
-    make_rx_opts(const config::RoleConfig &config,
-                 const hub::SchemaSpec    &in_slot_spec,
-                 const hub::SchemaSpec    &in_fz_spec,
-                 bool                      has_rx_fz);
+    [[nodiscard]] static hub::RxQueueOptions make_rx_opts(const config::RoleConfig &config,
+                                                          const hub::SchemaSpec &in_slot_spec,
+                                                          const hub::SchemaSpec &in_fz_spec,
+                                                          bool has_rx_fz);
 
     /// Pure config→opts translation for the processor's OUTPUT side.
-    [[nodiscard]] static hub::TxQueueOptions
-    make_tx_opts(const config::RoleConfig &config,
-                 const hub::SchemaSpec    &out_slot_spec,
-                 const hub::SchemaSpec    &out_fz_spec,
-                 bool                      has_tx_fz);
+    [[nodiscard]] static hub::TxQueueOptions make_tx_opts(const config::RoleConfig &config,
+                                                          const hub::SchemaSpec &out_slot_spec,
+                                                          const hub::SchemaSpec &out_fz_spec,
+                                                          bool has_tx_fz);
 
   private:
     // ── Worker thread entry point (RoleHostBase hook) ────────────────────────
@@ -105,11 +103,11 @@ class PYLABHUB_UTILS_EXPORT ProcessorRoleHost final : public scripting::RoleHost
     // `params.{in,out}_slot_spec`.  Canonical home is `presences_[i].slot_spec`
     // (see RoleHostFrame); kept here as the members that `worker_main_`
     // initializes.
-    hub::SchemaSpec                         in_slot_spec_;
-    hub::SchemaSpec                         out_slot_spec_;
+    hub::SchemaSpec in_slot_spec_;
+    hub::SchemaSpec out_slot_spec_;
 
     // Lifecycle module name (for UnloadModule on shutdown).
-    std::string                             engine_module_name_;
+    std::string engine_module_name_;
 };
 
 } // namespace pylabhub::processor

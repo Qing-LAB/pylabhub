@@ -47,7 +47,7 @@ TEST(PeerIdentityTest, Equality_SameKindSameData_True)
 TEST(PeerIdentityTest, Equality_DifferentKind_False)
 {
     PeerIdentity curve_id{"curve", "deadbeef"};
-    PeerIdentity shm_id{"shm",     "deadbeef"};
+    PeerIdentity shm_id{"shm", "deadbeef"};
     EXPECT_NE(curve_id, shm_id);
 }
 
@@ -73,12 +73,12 @@ TEST(PeerIdentityTest, Equality_EmptyFields_TwoEmptiesEqual)
 /// `std::set` membership and for deterministic snapshot serialization.
 TEST(PeerIdentityTest, Ordering_KindBeforeData)
 {
-    PeerIdentity a{"curve",      "ZZZZ"}; // kind "curve" < kind "shm"
-    PeerIdentity b{"shm",        "AAAA"};
+    PeerIdentity a{"curve", "ZZZZ"}; // kind "curve" < kind "shm"
+    PeerIdentity b{"shm", "AAAA"};
     EXPECT_LT(a, b);
 
-    PeerIdentity c{"curve",      "AAAA"};
-    PeerIdentity d{"curve",      "BBBB"};
+    PeerIdentity c{"curve", "AAAA"};
+    PeerIdentity d{"curve", "BBBB"};
     EXPECT_LT(c, d); // same kind → data orders
 }
 
@@ -88,7 +88,7 @@ TEST(PeerIdentityTest, IsSetKey_DeduplicatesByValue)
 {
     std::set<PeerIdentity> s;
     s.insert({"curve", "key1"});
-    s.insert({"curve", "key1"});  // duplicate
+    s.insert({"curve", "key1"}); // duplicate
     s.insert({"curve", "key2"});
     EXPECT_EQ(s.size(), 2u);
 }
@@ -101,7 +101,7 @@ TEST(PeerAllowlistTest, Contains_EmptyList_DeniesAll)
 {
     PeerAllowlist al;
     EXPECT_FALSE(al.contains({"curve", "anything"}));
-    EXPECT_FALSE(al.contains({"shm",   "anything"}));
+    EXPECT_FALSE(al.contains({"shm", "anything"}));
     EXPECT_TRUE(al.is_deny_all());
 }
 
@@ -116,7 +116,7 @@ TEST(PeerAllowlistTest, Contains_MatchesInsertedIdentities)
     EXPECT_TRUE(al.contains({"curve", "bob"}));
     EXPECT_FALSE(al.contains({"curve", "carol"}));
     // Wrong kind, right data — must not match (regression guard).
-    EXPECT_FALSE(al.contains({"shm",   "alice"}));
+    EXPECT_FALSE(al.contains({"shm", "alice"}));
     EXPECT_FALSE(al.is_deny_all());
 }
 
@@ -128,8 +128,8 @@ TEST(PeerAllowlistTest, Unrestricted_AdmitsEverything)
     PeerAllowlist al;
     al.unrestricted = true;
     EXPECT_TRUE(al.contains({"curve", "anyone"}));
-    EXPECT_TRUE(al.contains({"shm",   "anyone"}));
-    EXPECT_TRUE(al.contains({}));  // even an empty identity
+    EXPECT_TRUE(al.contains({"shm", "anyone"}));
+    EXPECT_TRUE(al.contains({})); // even an empty identity
     EXPECT_FALSE(al.is_deny_all());
 }
 
@@ -176,7 +176,7 @@ namespace
 /// interface via the real `ZmqQueue` ZAP-mediated behavior.
 class InMemoryAdmission final : public PeerAdmission
 {
-public:
+  public:
     bool set_peer_allowlist(PeerAllowlist allowlist) override
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -198,8 +198,8 @@ public:
         return allowlist_->contains(p);
     }
 
-private:
-    mutable std::mutex          mu_;
+  private:
+    mutable std::mutex mu_;
     std::optional<PeerAllowlist> allowlist_;
 };
 
@@ -222,7 +222,7 @@ TEST(PeerAdmissionContractTest, SetAllowlist_SnapshotEquals)
 
     PeerAllowlist want;
     want.peers.insert({"curve", "alice"});
-    want.peers.insert({"shm",   "0xdead"});
+    want.peers.insert({"shm", "0xdead"});
 
     ASSERT_TRUE(a.set_peer_allowlist(want));
 
@@ -262,7 +262,7 @@ TEST(PeerAdmissionContractTest, SetAllowlist_ReplacesNotMerges)
     second.peers.insert({"curve", "bob"});
     ASSERT_TRUE(a.set_peer_allowlist(second));
 
-    EXPECT_FALSE(a.is_peer_allowed({"curve", "alice"}));  // dropped
+    EXPECT_FALSE(a.is_peer_allowed({"curve", "alice"})); // dropped
     EXPECT_TRUE(a.is_peer_allowed({"curve", "bob"}));
 }
 
@@ -315,9 +315,9 @@ TEST(PeerAdmissionContractTest, Concurrent_SetAndSnapshot_AlwaysCoherent)
     a.set_peer_allowlist(al_alice);
 
     std::atomic<bool> stop{false};
-    std::atomic<int>  saw_alice_snapshot{0};
-    std::atomic<int>  saw_bob_snapshot{0};
-    std::atomic<int>  saw_torn{0};
+    std::atomic<int> saw_alice_snapshot{0};
+    std::atomic<int> saw_bob_snapshot{0};
+    std::atomic<int> saw_torn{0};
 
     constexpr int N_WRITERS = 2;
     constexpr int N_READERS = 4;
@@ -327,39 +327,41 @@ TEST(PeerAdmissionContractTest, Concurrent_SetAndSnapshot_AlwaysCoherent)
 
     for (int i = 0; i < N_WRITERS; ++i)
     {
-        threads.emplace_back([&]() {
-            while (!stop.load(std::memory_order_acquire))
+        threads.emplace_back(
+            [&]()
             {
-                a.set_peer_allowlist(al_alice);
-                a.set_peer_allowlist(al_bob);
-            }
-        });
+                while (!stop.load(std::memory_order_acquire))
+                {
+                    a.set_peer_allowlist(al_alice);
+                    a.set_peer_allowlist(al_bob);
+                }
+            });
     }
     for (int i = 0; i < N_READERS; ++i)
     {
-        threads.emplace_back([&]() {
-            while (!stop.load(std::memory_order_acquire))
+        threads.emplace_back(
+            [&]()
             {
-                const auto snap = a.peer_allowlist_snapshot();
-                if (!snap.has_value())
+                while (!stop.load(std::memory_order_acquire))
                 {
-                    saw_torn.fetch_add(1, std::memory_order_relaxed);
-                    continue;
+                    const auto snap = a.peer_allowlist_snapshot();
+                    if (!snap.has_value())
+                    {
+                        saw_torn.fetch_add(1, std::memory_order_relaxed);
+                        continue;
+                    }
+                    const bool only_alice =
+                        snap->peers.size() == 1 && snap->peers.count({"curve", "alice"}) == 1;
+                    const bool only_bob =
+                        snap->peers.size() == 1 && snap->peers.count({"curve", "bob"}) == 1;
+                    if (only_alice)
+                        saw_alice_snapshot.fetch_add(1, std::memory_order_relaxed);
+                    else if (only_bob)
+                        saw_bob_snapshot.fetch_add(1, std::memory_order_relaxed);
+                    else
+                        saw_torn.fetch_add(1, std::memory_order_relaxed);
                 }
-                const bool only_alice =
-                    snap->peers.size() == 1 &&
-                    snap->peers.count({"curve", "alice"}) == 1;
-                const bool only_bob =
-                    snap->peers.size() == 1 &&
-                    snap->peers.count({"curve", "bob"}) == 1;
-                if (only_alice)
-                    saw_alice_snapshot.fetch_add(1, std::memory_order_relaxed);
-                else if (only_bob)
-                    saw_bob_snapshot.fetch_add(1, std::memory_order_relaxed);
-                else
-                    saw_torn.fetch_add(1, std::memory_order_relaxed);
-            }
-        });
+            });
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -373,7 +375,6 @@ TEST(PeerAdmissionContractTest, Concurrent_SetAndSnapshot_AlwaysCoherent)
     EXPECT_GT(saw_bob_snapshot.load(), 0)
         << "Readers never observed the bob snapshot — atomic update "
            "never won the race";
-    EXPECT_EQ(saw_torn.load(), 0)
-        << "Reader observed a torn snapshot (neither solely-alice nor "
-           "solely-bob) — atomicity violation in set_peer_allowlist";
+    EXPECT_EQ(saw_torn.load(), 0) << "Reader observed a torn snapshot (neither solely-alice nor "
+                                     "solely-bob) — atomicity violation in set_peer_allowlist";
 }

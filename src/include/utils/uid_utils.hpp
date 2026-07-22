@@ -69,14 +69,14 @@ constexpr std::size_t kMaxNamePart = 32;
 /// stripped. If the first char of the sanitized result is a digit, 'n'
 /// is prepended so the result is a valid `NameComponent`. Falls back
 /// to "node" if sanitization leaves nothing usable.
-inline std::string sanitize_name_part(const std::string &name,
-                                      std::size_t        max_len = kMaxNamePart)
+inline std::string sanitize_name_part(const std::string &name, std::size_t max_len = kMaxNamePart)
 {
     std::string out;
     out.reserve(max_len + 1);
     for (unsigned char c : name)
     {
-        if (out.size() >= max_len) break;
+        if (out.size() >= max_len)
+            break;
         if (std::isalpha(c) != 0)
         {
             out += static_cast<char>(std::tolower(c));
@@ -90,15 +90,18 @@ inline std::string sanitize_name_part(const std::string &name,
             out += '-';
         }
     }
-    while (!out.empty() && out.back() == '-') out.pop_back();
-    if (out.empty()) return "node";
+    while (!out.empty() && out.back() == '-')
+        out.pop_back();
+    if (out.empty())
+        return "node";
 
     // Grammar requires NameComponent to start with [A-Za-z]. If the
     // sanitized result begins with a digit (e.g. name="123Temp" →
     // "123temp"), prepend 'n' to make it legal.
     if (std::isdigit(static_cast<unsigned char>(out.front())) != 0)
     {
-        if (out.size() + 1 > max_len) out.pop_back();
+        if (out.size() + 1 > max_len)
+            out.pop_back();
         out.insert(out.begin(), 'n');
     }
     return out;
@@ -116,7 +119,9 @@ inline std::uint32_t random_u32()
             return rd();
         }
     }
-    catch (...) {}
+    catch (...)
+    {
+    }
     // Fallback: mix high-res timestamp (usually unique per invocation).
     const auto ns = static_cast<std::uint64_t>(
         std::chrono::high_resolution_clock::now().time_since_epoch().count());
@@ -154,14 +159,26 @@ inline std::string unique_suffix()
  */
 inline std::string generate_uid(std::string_view tag, const std::string &name = "")
 {
-    return std::string(tag) + "." + detail::sanitize_name_part(name) + "."
-         + detail::unique_suffix();
+    return std::string(tag) + "." + detail::sanitize_name_part(name) + "." +
+           detail::unique_suffix();
 }
 
-inline std::string generate_hub_uid(const std::string &name = "")       { return generate_uid("hub",  name); }
-inline std::string generate_producer_uid(const std::string &name = "")  { return generate_uid("prod", name); }
-inline std::string generate_consumer_uid(const std::string &name = "")  { return generate_uid("cons", name); }
-inline std::string generate_processor_uid(const std::string &name = "") { return generate_uid("proc", name); }
+inline std::string generate_hub_uid(const std::string &name = "")
+{
+    return generate_uid("hub", name);
+}
+inline std::string generate_producer_uid(const std::string &name = "")
+{
+    return generate_uid("prod", name);
+}
+inline std::string generate_consumer_uid(const std::string &name = "")
+{
+    return generate_uid("cons", name);
+}
+inline std::string generate_processor_uid(const std::string &name = "")
+{
+    return generate_uid("proc", name);
+}
 
 // ---------------------------------------------------------------------------
 // Prefix checks
@@ -176,15 +193,26 @@ inline std::string generate_processor_uid(const std::string &name = "") { return
 
 inline bool has_tag_prefix(std::string_view uid, std::string_view tag) noexcept
 {
-    return uid.size() > tag.size() + 1 &&
-           uid.substr(0, tag.size()) == tag &&
+    return uid.size() > tag.size() + 1 && uid.substr(0, tag.size()) == tag &&
            uid[tag.size()] == '.';
 }
 
-inline bool has_hub_prefix(std::string_view uid) noexcept       { return has_tag_prefix(uid, "hub"); }
-inline bool has_producer_prefix(std::string_view uid) noexcept  { return has_tag_prefix(uid, "prod"); }
-inline bool has_consumer_prefix(std::string_view uid) noexcept  { return has_tag_prefix(uid, "cons"); }
-inline bool has_processor_prefix(std::string_view uid) noexcept { return has_tag_prefix(uid, "proc"); }
+inline bool has_hub_prefix(std::string_view uid) noexcept
+{
+    return has_tag_prefix(uid, "hub");
+}
+inline bool has_producer_prefix(std::string_view uid) noexcept
+{
+    return has_tag_prefix(uid, "prod");
+}
+inline bool has_consumer_prefix(std::string_view uid) noexcept
+{
+    return has_tag_prefix(uid, "cons");
+}
+inline bool has_processor_prefix(std::string_view uid) noexcept
+{
+    return has_tag_prefix(uid, "proc");
+}
 
 /// Deprecated spelling retained so existing call sites compile. Prefer
 /// `has_tag_prefix`; both return identical results.

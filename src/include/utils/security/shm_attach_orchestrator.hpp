@@ -75,7 +75,7 @@ namespace pylabhub::utils::security
 /// once, call `accept_and_serve_one()` in a loop until shutdown.
 class PYLABHUB_UTILS_EXPORT ShmAttachOrchestrator
 {
-public:
+  public:
     /// Callback: is this consumer_pubkey in the producer's local
     /// cached allowlist for the channel?
     using CacheLookup = std::function<bool(const std::string &consumer_pubkey)>;
@@ -85,8 +85,7 @@ public:
     /// loss).  Reply shape is whatever `BRC::consumer_attach` returns:
     ///   {status: "success" | "denied", denial_reason?: ..., ...}
     using BrokerQuery = std::function<std::optional<nlohmann::json>(
-        const std::string &consumer_pubkey,
-        const std::string &consumer_role_uid)>;
+        const std::string &consumer_pubkey, const std::string &consumer_role_uid)>;
 
     struct Config
     {
@@ -101,31 +100,30 @@ public:
     /// logging beyond what the orchestrator emits internally.
     enum class Outcome
     {
-        Sent,                 ///< Capability fd handed to consumer.
-        DeniedByBroker,       ///< Broker replied status="denied"; peer dropped.
-        DeniedTransportFail,  ///< Broker comm failure OR send_capability
-                              ///< failure; fails CLOSED (peer dropped, no
-                              ///< fd handed over).
-        HandshakeFailed,      ///< AttachProtocolAcceptor threw (MAC
-                              ///< failure, bad hello shape, etc.); peer
-                              ///< already closed by the acceptor.
-        Timeout,              ///< No consumer connected within `timeout`.
+        Sent,                ///< Capability fd handed to consumer.
+        DeniedByBroker,      ///< Broker replied status="denied"; peer dropped.
+        DeniedTransportFail, ///< Broker comm failure OR send_capability
+                             ///< failure; fails CLOSED (peer dropped, no
+                             ///< fd handed over).
+        HandshakeFailed,     ///< AttachProtocolAcceptor threw (MAC
+                             ///< failure, bad hello shape, etc.); peer
+                             ///< already closed by the acceptor.
+        Timeout,             ///< No consumer connected within `timeout`.
     };
 
     /// @param acceptor   L2 hello + challenge-response handler (must
     ///                   outlive this orchestrator).
     /// @param transport  L1 transport (must outlive this orchestrator).
     /// @param config     Channel context + injected callbacks.
-    ShmAttachOrchestrator(AttachProtocolAcceptor &acceptor,
-                          IShmCapabilityProducer &transport,
-                          Config                  config);
+    ShmAttachOrchestrator(AttachProtocolAcceptor &acceptor, IShmCapabilityProducer &transport,
+                          Config config);
 
     ~ShmAttachOrchestrator() = default;
 
-    ShmAttachOrchestrator(const ShmAttachOrchestrator &)            = delete;
+    ShmAttachOrchestrator(const ShmAttachOrchestrator &) = delete;
     ShmAttachOrchestrator &operator=(const ShmAttachOrchestrator &) = delete;
-    ShmAttachOrchestrator(ShmAttachOrchestrator &&)                 = delete;
-    ShmAttachOrchestrator &operator=(ShmAttachOrchestrator &&)      = delete;
+    ShmAttachOrchestrator(ShmAttachOrchestrator &&) = delete;
+    ShmAttachOrchestrator &operator=(ShmAttachOrchestrator &&) = delete;
 
     /// One pass through the accept→handshake→pre-confirm→send-fd flow.
     /// Returns `Timeout` if no consumer connects within `timeout`.
@@ -137,13 +135,12 @@ public:
     ///
     /// All failure paths are fail-closed: the peer socket is closed
     /// before this function returns anything other than `Sent`.
-    Outcome
-    accept_and_serve_one(std::chrono::milliseconds timeout);
+    Outcome accept_and_serve_one(std::chrono::milliseconds timeout);
 
-private:
+  private:
     AttachProtocolAcceptor &acceptor_;
     IShmCapabilityProducer &transport_;
-    Config                  config_;
+    Config config_;
 };
 
 #endif // PYLABHUB_PLATFORM_LINUX

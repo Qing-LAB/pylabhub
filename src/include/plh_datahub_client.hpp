@@ -22,7 +22,6 @@
 
 #include "utils/data_block.hpp"
 
-
 #include "utils/hub_queue.hpp"
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"

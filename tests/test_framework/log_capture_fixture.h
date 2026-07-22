@@ -59,7 +59,7 @@ namespace pylabhub::tests
 
 class LogCaptureFixture
 {
-public:
+  public:
     LogCaptureFixture() = default;
 
     /// Destructor — best-effort cleanup if Install() was called but
@@ -93,10 +93,10 @@ public:
         }
     }
 
-    LogCaptureFixture(const LogCaptureFixture &)            = delete;
+    LogCaptureFixture(const LogCaptureFixture &) = delete;
     LogCaptureFixture &operator=(const LogCaptureFixture &) = delete;
-    LogCaptureFixture(LogCaptureFixture &&)                 = delete;
-    LogCaptureFixture &operator=(LogCaptureFixture &&)      = delete;
+    LogCaptureFixture(LogCaptureFixture &&) = delete;
+    LogCaptureFixture &operator=(LogCaptureFixture &&) = delete;
 
     /// Install per-test capture.  Switches Logger to a temp file under
     /// `/tmp/plh_logcap_<pid>_<seq>.log`.  Idempotent on re-Install
@@ -106,8 +106,7 @@ public:
         std::error_code ec;
         std::filesystem::remove(log_path_, ec);
         log_path_ = next_log_path_();
-        ASSERT_TRUE(::pylabhub::utils::Logger::instance()
-                        .set_logfile(log_path_.string()))
+        ASSERT_TRUE(::pylabhub::utils::Logger::instance().set_logfile(log_path_.string()))
             << "LogCaptureFixture: set_logfile failed for " << log_path_;
         expected_warns_.clear();
         expected_errors_.clear();
@@ -128,7 +127,7 @@ public:
         // Best effort: switch back to console so subsequent tests in
         // the same suite without LogCaptureFixture do not write into
         // a stale file.
-        (void) ::pylabhub::utils::Logger::instance().set_console();
+        (void)::pylabhub::utils::Logger::instance().set_console();
         std::error_code ec;
         std::filesystem::remove(log_path_, ec);
         installed_ = false;
@@ -142,17 +141,11 @@ public:
     /// depending on race outcome (timing-dependent paths, optional
     /// fallbacks).  For warns that MUST fire — use
     /// `ExpectLogWarnMustFire` instead.
-    void ExpectLogWarn(std::string substring)
-    {
-        expected_warns_.push_back(std::move(substring));
-    }
+    void ExpectLogWarn(std::string substring) { expected_warns_.push_back(std::move(substring)); }
 
     /// Declare an expected ERROR substring (PERMISSIVE allowlist).
     /// Same semantics as ExpectLogWarn but for ERROR-level entries.
-    void ExpectLogError(std::string substring)
-    {
-        expected_errors_.push_back(std::move(substring));
-    }
+    void ExpectLogError(std::string substring) { expected_errors_.push_back(std::move(substring)); }
 
     /// Declare an expected WARN substring (STRICT must-fire).  At
     /// least one captured WARN line must contain this substring;
@@ -186,10 +179,7 @@ public:
     /// enforce the warning actually fired.  For tests that need to
     /// gate on emission (per audit §1.1 Class A path-discrimination)
     /// open this file and grep for the expected substring directly.
-    [[nodiscard]] const std::filesystem::path &log_path() const noexcept
-    {
-        return log_path_;
-    }
+    [[nodiscard]] const std::filesystem::path &log_path() const noexcept { return log_path_; }
 
     /// Read the capture file.  Two failure modes:
     ///   1. **Unexpected** WARN/ERROR — any line not matching a
@@ -208,8 +198,10 @@ public:
         // Reset must-fire match flags — calls to AssertNoUnexpected
         // are not expected to be repeated within one test, but if
         // they are, each scan starts from a fresh accounting.
-        for (auto &m : must_fire_warns_)  m.matched = false;
-        for (auto &m : must_fire_errors_) m.matched = false;
+        for (auto &m : must_fire_warns_)
+            m.matched = false;
+        for (auto &m : must_fire_errors_)
+            m.matched = false;
 
         std::ifstream f(log_path_);
         if (f.is_open())
@@ -222,7 +214,7 @@ public:
             std::string line;
             while (std::getline(f, line))
             {
-                const bool is_warn  = line.find("] [WARN ")  != std::string::npos;
+                const bool is_warn = line.find("] [WARN ") != std::string::npos;
                 const bool is_error = line.find("] [ERROR ") != std::string::npos;
                 if (!is_warn && !is_error)
                     continue;
@@ -231,7 +223,11 @@ public:
                 bool matched = false;
                 for (const auto &needle : expects)
                 {
-                    if (line.find(needle) != std::string::npos) { matched = true; break; }
+                    if (line.find(needle) != std::string::npos)
+                    {
+                        matched = true;
+                        break;
+                    }
                 }
                 if (!matched)
                 {
@@ -262,46 +258,49 @@ public:
         for (const auto &m : must_fire_warns_)
         {
             if (!m.matched)
-                ADD_FAILURE() << "LogCaptureFixture: ExpectLogWarnMustFire(\""
-                              << m.substring << "\") was declared but no "
-                              "matching WARN line was emitted.  Either the "
-                              "production code path that should have emitted "
-                              "the warn was not exercised, or the warn was "
-                              "silently dropped (regression).";
+                ADD_FAILURE() << "LogCaptureFixture: ExpectLogWarnMustFire(\"" << m.substring
+                              << "\") was declared but no "
+                                 "matching WARN line was emitted.  Either the "
+                                 "production code path that should have emitted "
+                                 "the warn was not exercised, or the warn was "
+                                 "silently dropped (regression).";
         }
         for (const auto &m : must_fire_errors_)
         {
             if (!m.matched)
-                ADD_FAILURE() << "LogCaptureFixture: ExpectLogErrorMustFire(\""
-                              << m.substring << "\") was declared but no "
-                              "matching ERROR line was emitted.";
+                ADD_FAILURE() << "LogCaptureFixture: ExpectLogErrorMustFire(\"" << m.substring
+                              << "\") was declared but no "
+                                 "matching ERROR line was emitted.";
         }
     }
 
-private:
+  private:
     static std::filesystem::path next_log_path_()
     {
         static std::atomic<int> seq{0};
         const int n = seq.fetch_add(1, std::memory_order_relaxed);
         return std::filesystem::temp_directory_path() /
-               ("plh_logcap_" + std::to_string(::getpid()) + "_" +
-                std::to_string(n) + ".log");
+               ("plh_logcap_" + std::to_string(::getpid()) + "_" + std::to_string(n) + ".log");
     }
 
     /// True between Install() success and Uninstall() — guards the
     /// dtor's auto-cleanup so it doesn't run when Install was never
     /// called or when Uninstall ran explicitly.
-    bool                      installed_{false};
-    std::filesystem::path     log_path_;
-    std::vector<std::string>  expected_warns_;
-    std::vector<std::string>  expected_errors_;
+    bool installed_{false};
+    std::filesystem::path log_path_;
+    std::vector<std::string> expected_warns_;
+    std::vector<std::string> expected_errors_;
 
     /// Strict must-fire declarations.  Each entry tracks whether at
     /// least one captured WARN/ERROR line matched its substring.
     /// Reset to false at AssertNoUnexpectedLogWarnError() entry so
     /// a single test calling it multiple times gets fresh accounting
     /// each time (rare; typical usage is one call from TearDown).
-    struct MustFireEntry { std::string substring; bool matched; };
+    struct MustFireEntry
+    {
+        std::string substring;
+        bool matched;
+    };
     std::vector<MustFireEntry> must_fire_warns_;
     std::vector<MustFireEntry> must_fire_errors_;
 };

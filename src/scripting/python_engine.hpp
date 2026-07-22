@@ -44,12 +44,24 @@
 namespace py = pybind11;
 
 // Forward declarations for role API classes.
-namespace pylabhub::producer { class ProducerAPI; }
-namespace pylabhub::consumer { class ConsumerAPI; }
-namespace pylabhub::processor { class ProcessorAPI; }
+namespace pylabhub::producer
+{
+class ProducerAPI;
+}
+namespace pylabhub::consumer
+{
+class ConsumerAPI;
+}
+namespace pylabhub::processor
+{
+class ProcessorAPI;
+}
 // Forward declaration for HubAPI — full type only needed in
 // python_engine.cpp (build_api_(HubAPI&) impl + py::cast).
-namespace pylabhub::hub_host  { class HubAPI; }
+namespace pylabhub::hub_host
+{
+class HubAPI;
+}
 
 namespace pylabhub::scripting
 {
@@ -88,8 +100,7 @@ class PythonEngine : public ScriptEngine
     }
 
     bool init_engine_(const std::string &log_tag, RoleHostCore *core) override;
-    bool load_script(const std::filesystem::path &script_dir,
-                     const std::string &entry_point,
+    bool load_script(const std::filesystem::path &script_dir, const std::string &entry_point,
                      const std::string &required_callback) override;
     bool build_api_(RoleAPIBase &api) override;
     /// Hub-side build_api override (HEP-CORE-0033 Phase 7 D4.1).
@@ -117,15 +128,12 @@ class PythonEngine : public ScriptEngine
     // the override below for the contract.
 
   protected:
-    [[nodiscard]] bool probe_uncached_callback_(const std::string &name)
-        const noexcept override;
+    [[nodiscard]] bool probe_uncached_callback_(const std::string &name) const noexcept override;
 
   public:
-
     // ── Schema / type building ─────────────────────────────────────────────
 
-    bool register_slot_type(const hub::SchemaSpec &spec,
-                            const std::string &type_name,
+    bool register_slot_type(const hub::SchemaSpec &spec, const std::string &type_name,
                             const std::string &packing) override;
     [[nodiscard]] size_t type_sizeof(const std::string &type_name) const override;
 
@@ -133,39 +141,27 @@ class PythonEngine : public ScriptEngine
 
     pylabhub::scripting::ScriptEngine::InitStatus invoke_on_init() override;
     void invoke_on_stop() override;
-    void invoke_on_channel_closing(const std::string &channel,
-                                    const std::string &reason) override;
-    void invoke_on_consumer_died(const std::string &channel,
-                                  const std::string &consumer_uid,
-                                  const std::string &reason) override;
+    void invoke_on_channel_closing(const std::string &channel, const std::string &reason) override;
+    void invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
+                                 const std::string &reason) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
-    void invoke_on_band_member_joined(const std::string &band,
-                                      const std::string &role_uid,
+    void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name) override;
-    void invoke_on_band_member_left(const std::string &band,
-                                    const std::string &role_uid,
+    void invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
                                     const std::string &reason) override;
-    void invoke_on_band_message(const std::string &band,
-                                const std::string &sender_role_uid,
+    void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override;
-    void invoke_on_band_lost(const std::string &band,
-                             const std::string &reason) override;
-    void invoke_on_allowlist_changed(
-        const std::string &channel,
-        const std::vector<AllowedPeer> &allowlist,
-        const std::string &reason) override;
+    void invoke_on_band_lost(const std::string &band, const std::string &reason) override;
+    void invoke_on_allowlist_changed(const std::string &channel,
+                                     const std::vector<AllowedPeer> &allowlist,
+                                     const std::string &reason) override;
 
-    InvokeResult invoke_produce(
-        InvokeTx tx,
-        std::vector<IncomingMessage> &msgs) override;
+    InvokeResult invoke_produce(InvokeTx tx, std::vector<IncomingMessage> &msgs) override;
 
-    InvokeResult invoke_consume(
-        InvokeRx rx,
-        std::vector<IncomingMessage> &msgs) override;
+    InvokeResult invoke_consume(InvokeRx rx, std::vector<IncomingMessage> &msgs) override;
 
-    InvokeResult invoke_process(
-        InvokeRx rx, InvokeTx tx,
-        std::vector<IncomingMessage> &msgs) override;
+    InvokeResult invoke_process(InvokeRx rx, InvokeTx tx,
+                                std::vector<IncomingMessage> &msgs) override;
 
     InvokeResult invoke_on_inbox(InvokeInbox msg) override;
 
@@ -174,8 +170,7 @@ class PythonEngine : public ScriptEngine
     bool invoke(const std::string &name) override;
     bool invoke(const std::string &name, const nlohmann::json &args) override;
     InvokeResponse eval(const std::string &code) override;
-    InvokeResponse invoke_returning(const std::string &name,
-                                    const nlohmann::json &args,
+    InvokeResponse invoke_returning(const std::string &name, const nlohmann::json &args,
                                     int64_t timeout_ms = -1) override;
     void process_pending() override;
     size_t pending_script_engine_request_count() const noexcept override;
@@ -222,14 +217,14 @@ class PythonEngine : public ScriptEngine
     std::string log_tag_;
     std::string entry_point_;
     std::string required_callback_;
-    std::string python_venv_;     ///< Optional venv name.
+    std::string python_venv_; ///< Optional venv name.
 
     /// Mirror of `script.release_global_lock_during_wait` from config.
     /// Read by the worker loop frame ONCE at worker startup (cached as a
     /// local bool) — never per iteration.  See HEP-CORE-0011 §"Engine
     /// Thread Affinity" sub-section "Optional global-lock release
     /// during idle waits."
-    bool        release_global_lock_during_wait_{false};
+    bool release_global_lock_during_wait_{false};
 
     py::object module_{py::none()};
     py::object py_on_init_{py::none()};
@@ -255,36 +250,35 @@ class PythonEngine : public ScriptEngine
     // ── API object (one of these is active based on role) ──────────────────
     py::object api_obj_{py::none()};
 
-
     /// Role-specific API impl. Exactly one is non-null after build_api().
     /// All 3 API classes are compiled into pylabhub-scripting (shared lib),
     /// so there is no link dependency issue.
-    std::unique_ptr<producer::ProducerAPI>   producer_api_;
-    std::unique_ptr<consumer::ConsumerAPI>   consumer_api_;
+    std::unique_ptr<producer::ProducerAPI> producer_api_;
+    std::unique_ptr<consumer::ConsumerAPI> consumer_api_;
     std::unique_ptr<processor::ProcessorAPI> processor_api_;
 
     // ── Cached type objects (init-time, for hot-path slot views) ───────────
     // Directional — always set by directional type name registration.
-    py::object in_slot_type_ro_{py::none()};   ///< InSlotFrame readonly (consumer, processor)
-    py::object out_slot_type_{py::none()};     ///< OutSlotFrame writable (producer, processor)
-    py::object in_fz_type_{py::none()};        ///< InFlexFrame (mutable, consumer/processor)
-    py::object out_fz_type_{py::none()};       ///< OutFlexFrame (mutable, producer/processor)
-    py::object inbox_type_ro_{py::none()};     ///< InboxFrame (read-only, from_buffer_copy)
+    py::object in_slot_type_ro_{py::none()}; ///< InSlotFrame readonly (consumer, processor)
+    py::object out_slot_type_{py::none()};   ///< OutSlotFrame writable (producer, processor)
+    py::object in_fz_type_{py::none()};      ///< InFlexFrame (mutable, consumer/processor)
+    py::object out_fz_type_{py::none()};     ///< OutFlexFrame (mutable, producer/processor)
+    py::object inbox_type_ro_{py::none()};   ///< InboxFrame (read-only, from_buffer_copy)
 
     // Script-level aliases for producer/consumer convenience.
     // Set when only one direction is registered (not processor).
     // Producer: slot_alias_ = out_slot_type_, fz_alias_ = out_fz_type_
     // Consumer: slot_alias_ro_ = in_slot_type_ro_, fz_alias_ = in_fz_type_
-    py::object slot_alias_{py::none()};        ///< "SlotFrame" writable (producer alias)
-    py::object slot_alias_ro_{py::none()};     ///< "SlotFrame" readonly (consumer alias)
-    py::object fz_alias_{py::none()};          ///< "FlexFrame" alias (either direction)
+    py::object slot_alias_{py::none()};    ///< "SlotFrame" writable (producer alias)
+    py::object slot_alias_ro_{py::none()}; ///< "SlotFrame" readonly (consumer alias)
+    py::object fz_alias_{py::none()};      ///< "FlexFrame" alias (either direction)
 
     hub::SchemaSpec in_slot_spec_;
     hub::SchemaSpec out_slot_spec_;
     hub::SchemaSpec in_fz_spec_;
     hub::SchemaSpec out_fz_spec_;
-    hub::SchemaSpec slot_alias_spec_;               ///< Alias spec (points to whichever direction)
-    hub::SchemaSpec fz_alias_spec_;                 ///< Alias spec
+    hub::SchemaSpec slot_alias_spec_; ///< Alias spec (points to whichever direction)
+    hub::SchemaSpec fz_alias_spec_;   ///< Alias spec
     hub::SchemaSpec inbox_spec_;
 
     // script_error_count is in api_->core()->script_error_count_ (RoleHostCore).
@@ -303,19 +297,19 @@ class PythonEngine : public ScriptEngine
     /// path) — the other two ignore it.
     enum class RequestKind : uint8_t
     {
-        Invoke,            ///< plain `invoke()` — bool result, value ignored
-        InvokeReturning,   ///< `invoke_returning()` — return value captured
-        Eval,              ///< `eval(code)` — value is `eval_direct_` result
+        Invoke,          ///< plain `invoke()` — bool result, value ignored
+        InvokeReturning, ///< `invoke_returning()` — return value captured
+        Eval,            ///< `eval(code)` — value is `eval_direct_` result
     };
     struct PendingRequest
     {
-        std::string                      name;
-        nlohmann::json                   args;
-        RequestKind                      kind{RequestKind::Invoke};
-        std::promise<InvokeResponse>     promise;
+        std::string name;
+        nlohmann::json args;
+        RequestKind kind{RequestKind::Invoke};
+        std::promise<InvokeResponse> promise;
     };
-    std::deque<PendingRequest>  request_queue_;
-    mutable std::mutex          queue_mu_;
+    std::deque<PendingRequest> request_queue_;
+    mutable std::mutex queue_mu_;
     // accepting_ is inherited from ScriptEngine base class.
 
     InvokeResponse execute_direct_(const std::string &name);
@@ -323,8 +317,7 @@ class PythonEngine : public ScriptEngine
     /// `invoke_returning` direct path — same call shape as
     /// `execute_direct_(name, args)` but captures the function's return
     /// value into the response.
-    InvokeResponse execute_direct_returning_(const std::string &name,
-                                             const nlohmann::json &args);
+    InvokeResponse execute_direct_returning_(const std::string &name, const nlohmann::json &args);
     InvokeResponse eval_direct_(const std::string &code);
     void process_pending_();
 
@@ -332,14 +325,14 @@ class PythonEngine : public ScriptEngine
 
     /// Build a ctypes.Structure subclass from hub::SchemaSpec.
     py::object build_ctypes_type_(const hub::SchemaSpec &spec, const std::string &name,
-                                   const std::string &packing);
+                                  const std::string &packing);
 
     /// Wrap a type as read-only (adds __setattr__ override).
     py::object wrap_readonly_(const py::object &type);
 
     /// Create a slot view from raw pointer using pre-built type.
-    py::object make_slot_view_(const hub::SchemaSpec &spec, const py::object &type,
-                                void *data, size_t size, bool readonly);
+    py::object make_slot_view_(const hub::SchemaSpec &spec, const py::object &type, void *data,
+                               size_t size, bool readonly);
 
     /// Build the messages list (producer/processor format).
     py::list build_messages_list_(std::vector<IncomingMessage> &msgs);

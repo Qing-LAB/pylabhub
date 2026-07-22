@@ -3,8 +3,9 @@
  * @file zmq_wire_helpers.hpp
  * @brief Internal wire-format helpers shared by ZmqQueue and InboxQueue.
  *
- * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
- *   payload element i: scalar → native msgpack type; array/string/bytes → bin(byte_size)
+ * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N),
+ * checksum:bin32] payload element i: scalar → native msgpack type; array/string/bytes →
+ * bin(byte_size)
  *
  * **This is the single source of truth for the 5-tuple frame.** Both ZmqQueue
  * (HEP-CORE-0021 §13) and InboxQueue (HEP-CORE-0027 §3) serialize through this
@@ -52,11 +53,11 @@ static constexpr uint32_t kFrameMagic = 0x51484C50u;
 // ============================================================================
 
 /// Bring shared types and functions into wire_detail for backward compatibility.
-using ::pylabhub::hub::FieldLayout;
-using ::pylabhub::hub::SchemaFieldDesc;
-using ::pylabhub::hub::is_valid_type_str;
-using ::pylabhub::hub::field_elem_size;
 using ::pylabhub::hub::field_align;
+using ::pylabhub::hub::field_elem_size;
+using ::pylabhub::hub::FieldLayout;
+using ::pylabhub::hub::is_valid_type_str;
+using ::pylabhub::hub::SchemaFieldDesc;
 
 /// WireFieldDesc is now FieldLayout (defined in schema_field_layout.hpp).
 using WireFieldDesc = FieldLayout;
@@ -68,8 +69,7 @@ using WireFieldDesc = FieldLayout;
 /// compute_field_layout taking ZmqSchemaField vector.
 /// ZmqSchemaField is an alias for SchemaFieldDesc, so this delegates directly.
 inline std::pair<std::vector<FieldLayout>, size_t>
-compute_field_layout(const std::vector<ZmqSchemaField> &fields,
-                     const std::string &packing)
+compute_field_layout(const std::vector<ZmqSchemaField> &fields, const std::string &packing)
 {
     // ZmqSchemaField == SchemaFieldDesc, so just call the canonical version.
     const auto &base = reinterpret_cast<const std::vector<SchemaFieldDesc> &>(fields);
@@ -92,8 +92,8 @@ inline size_t max_frame_size(const std::vector<FieldLayout> &defs)
 // ============================================================================
 
 /// Encode one FieldLayout from src buffer into msgpack packer.
-inline void pack_field(msgpack::packer<msgpack::sbuffer> &pk,
-                       const FieldLayout &fd, const char *src)
+inline void pack_field(msgpack::packer<msgpack::sbuffer> &pk, const FieldLayout &fd,
+                       const char *src)
 {
     const char *p = src + fd.offset;
     if (fd.is_bin)
@@ -103,24 +103,34 @@ inline void pack_field(msgpack::packer<msgpack::sbuffer> &pk,
         return;
     }
     // Scalar — native msgpack type preserves wire type tag for validation.
-    if      (fd.type_str == "bool")    pk.pack(*reinterpret_cast<const bool *>(p));
-    else if (fd.type_str == "int8")    pk.pack(*reinterpret_cast<const int8_t *>(p));
-    else if (fd.type_str == "uint8")   pk.pack(*reinterpret_cast<const uint8_t *>(p));
-    else if (fd.type_str == "int16")   pk.pack(*reinterpret_cast<const int16_t *>(p));
-    else if (fd.type_str == "uint16")  pk.pack(*reinterpret_cast<const uint16_t *>(p));
-    else if (fd.type_str == "int32")   pk.pack(*reinterpret_cast<const int32_t *>(p));
-    else if (fd.type_str == "uint32")  pk.pack(*reinterpret_cast<const uint32_t *>(p));
-    else if (fd.type_str == "int64")   pk.pack(*reinterpret_cast<const int64_t *>(p));
-    else if (fd.type_str == "uint64")  pk.pack(*reinterpret_cast<const uint64_t *>(p));
-    else if (fd.type_str == "float32") pk.pack(*reinterpret_cast<const float *>(p));
-    else if (fd.type_str == "float64") pk.pack(*reinterpret_cast<const double *>(p));
+    if (fd.type_str == "bool")
+        pk.pack(*reinterpret_cast<const bool *>(p));
+    else if (fd.type_str == "int8")
+        pk.pack(*reinterpret_cast<const int8_t *>(p));
+    else if (fd.type_str == "uint8")
+        pk.pack(*reinterpret_cast<const uint8_t *>(p));
+    else if (fd.type_str == "int16")
+        pk.pack(*reinterpret_cast<const int16_t *>(p));
+    else if (fd.type_str == "uint16")
+        pk.pack(*reinterpret_cast<const uint16_t *>(p));
+    else if (fd.type_str == "int32")
+        pk.pack(*reinterpret_cast<const int32_t *>(p));
+    else if (fd.type_str == "uint32")
+        pk.pack(*reinterpret_cast<const uint32_t *>(p));
+    else if (fd.type_str == "int64")
+        pk.pack(*reinterpret_cast<const int64_t *>(p));
+    else if (fd.type_str == "uint64")
+        pk.pack(*reinterpret_cast<const uint64_t *>(p));
+    else if (fd.type_str == "float32")
+        pk.pack(*reinterpret_cast<const float *>(p));
+    else if (fd.type_str == "float64")
+        pk.pack(*reinterpret_cast<const double *>(p));
     // No else: factory validated all type strings at construction time.
 }
 
 /// Decode one msgpack object into dst buffer at fd.offset.
 /// Returns false on type mismatch or bin size mismatch.
-inline bool unpack_field(const msgpack::object &obj,
-                         const FieldLayout &fd, char *dst) noexcept
+inline bool unpack_field(const msgpack::object &obj, const FieldLayout &fd, char *dst) noexcept
 {
     char *p = dst + fd.offset;
     try
@@ -133,20 +143,79 @@ inline bool unpack_field(const msgpack::object &obj,
             return true;
         }
         // Scalar: msgpack::convert() checks type compatibility and throws on mismatch.
-        if      (fd.type_str == "bool")    { bool     v; obj.convert(v); *reinterpret_cast<bool *>(p)     = v; }
-        else if (fd.type_str == "int8")    { int8_t   v; obj.convert(v); *reinterpret_cast<int8_t *>(p)   = v; }
-        else if (fd.type_str == "uint8")   { uint8_t  v; obj.convert(v); *reinterpret_cast<uint8_t *>(p)  = v; }
-        else if (fd.type_str == "int16")   { int16_t  v; obj.convert(v); *reinterpret_cast<int16_t *>(p)  = v; }
-        else if (fd.type_str == "uint16")  { uint16_t v; obj.convert(v); *reinterpret_cast<uint16_t *>(p) = v; }
-        else if (fd.type_str == "int32")   { int32_t  v; obj.convert(v); *reinterpret_cast<int32_t *>(p)  = v; }
-        else if (fd.type_str == "uint32")  { uint32_t v; obj.convert(v); *reinterpret_cast<uint32_t *>(p) = v; }
-        else if (fd.type_str == "int64")   { int64_t  v; obj.convert(v); *reinterpret_cast<int64_t *>(p)  = v; }
-        else if (fd.type_str == "uint64")  { uint64_t v; obj.convert(v); *reinterpret_cast<uint64_t *>(p) = v; }
-        else if (fd.type_str == "float32") { float    v; obj.convert(v); *reinterpret_cast<float *>(p)    = v; }
-        else if (fd.type_str == "float64") { double   v; obj.convert(v); *reinterpret_cast<double *>(p)   = v; }
-        else return false;
+        if (fd.type_str == "bool")
+        {
+            bool v;
+            obj.convert(v);
+            *reinterpret_cast<bool *>(p) = v;
+        }
+        else if (fd.type_str == "int8")
+        {
+            int8_t v;
+            obj.convert(v);
+            *reinterpret_cast<int8_t *>(p) = v;
+        }
+        else if (fd.type_str == "uint8")
+        {
+            uint8_t v;
+            obj.convert(v);
+            *reinterpret_cast<uint8_t *>(p) = v;
+        }
+        else if (fd.type_str == "int16")
+        {
+            int16_t v;
+            obj.convert(v);
+            *reinterpret_cast<int16_t *>(p) = v;
+        }
+        else if (fd.type_str == "uint16")
+        {
+            uint16_t v;
+            obj.convert(v);
+            *reinterpret_cast<uint16_t *>(p) = v;
+        }
+        else if (fd.type_str == "int32")
+        {
+            int32_t v;
+            obj.convert(v);
+            *reinterpret_cast<int32_t *>(p) = v;
+        }
+        else if (fd.type_str == "uint32")
+        {
+            uint32_t v;
+            obj.convert(v);
+            *reinterpret_cast<uint32_t *>(p) = v;
+        }
+        else if (fd.type_str == "int64")
+        {
+            int64_t v;
+            obj.convert(v);
+            *reinterpret_cast<int64_t *>(p) = v;
+        }
+        else if (fd.type_str == "uint64")
+        {
+            uint64_t v;
+            obj.convert(v);
+            *reinterpret_cast<uint64_t *>(p) = v;
+        }
+        else if (fd.type_str == "float32")
+        {
+            float v;
+            obj.convert(v);
+            *reinterpret_cast<float *>(p) = v;
+        }
+        else if (fd.type_str == "float64")
+        {
+            double v;
+            obj.convert(v);
+            *reinterpret_cast<double *>(p) = v;
+        }
+        else
+            return false;
     }
-    catch (...) { return false; }
+    catch (...)
+    {
+        return false;
+    }
     return true;
 }
 
@@ -159,10 +228,8 @@ inline bool unpack_field(const msgpack::object &obj,
 /// Caller computes the checksum and passes it in — Enforced vs Manual vs None
 /// is the caller's concern; this helper just serializes the envelope.
 inline void pack_frame(msgpack::packer<msgpack::sbuffer> &pk,
-                       const std::array<uint8_t, 8> &schema_tag,
-                       uint64_t seq,
-                       const std::vector<WireFieldDesc> &defs,
-                       const void *slot_data,
+                       const std::array<uint8_t, 8> &schema_tag, uint64_t seq,
+                       const std::vector<WireFieldDesc> &defs, const void *slot_data,
                        const uint8_t (&checksum)[32])
 {
     pk.pack_array(5);
@@ -181,12 +248,12 @@ inline void pack_frame(msgpack::packer<msgpack::sbuffer> &pk,
 /// Parsed frame envelope returned by unpack_envelope().
 struct FrameEnvelope
 {
-    bool                    valid{false};
-    const uint8_t          *recv_tag{nullptr};       ///< 8 bytes; points into msgpack buffer
-    uint64_t                seq{0};
-    const msgpack::object  *payload{nullptr};        ///< [3] — inner payload array
-    uint32_t                payload_size{0};         ///< payload->via.array.size
-    const uint8_t          *checksum{nullptr};       ///< 32 bytes; points into msgpack buffer
+    bool valid{false};
+    const uint8_t *recv_tag{nullptr}; ///< 8 bytes; points into msgpack buffer
+    uint64_t seq{0};
+    const msgpack::object *payload{nullptr}; ///< [3] — inner payload array
+    uint32_t payload_size{0};                ///< payload->via.array.size
+    const uint8_t *checksum{nullptr};        ///< 32 bytes; points into msgpack buffer
 };
 
 /// Validate and destructure a 5-tuple frame. Returns {valid=false} on any
@@ -202,23 +269,41 @@ inline FrameEnvelope unpack_envelope(const msgpack::object &obj) noexcept
 
     // [0] magic
     uint32_t magic = 0;
-    try { e[0].convert(magic); } catch (...) { return r; }
-    if (magic != kFrameMagic) return r;
+    try
+    {
+        e[0].convert(magic);
+    }
+    catch (...)
+    {
+        return r;
+    }
+    if (magic != kFrameMagic)
+        return r;
 
     // [1] schema_tag (bin, 8 bytes)
-    if (e[1].type != msgpack::type::BIN || e[1].via.bin.size != 8) return r;
+    if (e[1].type != msgpack::type::BIN || e[1].via.bin.size != 8)
+        return r;
     r.recv_tag = reinterpret_cast<const uint8_t *>(e[1].via.bin.ptr);
 
     // [2] seq
-    try { e[2].convert(r.seq); } catch (...) { return r; }
+    try
+    {
+        e[2].convert(r.seq);
+    }
+    catch (...)
+    {
+        return r;
+    }
 
     // [3] payload array
-    if (e[3].type != msgpack::type::ARRAY) return r;
-    r.payload      = &e[3];
+    if (e[3].type != msgpack::type::ARRAY)
+        return r;
+    r.payload = &e[3];
     r.payload_size = e[3].via.array.size;
 
     // [4] checksum (bin, 32 bytes)
-    if (e[4].type != msgpack::type::BIN || e[4].via.bin.size != 32) return r;
+    if (e[4].type != msgpack::type::BIN || e[4].via.bin.size != 32)
+        return r;
     r.checksum = reinterpret_cast<const uint8_t *>(e[4].via.bin.ptr);
 
     r.valid = true;
@@ -229,10 +314,10 @@ inline FrameEnvelope unpack_envelope(const msgpack::object &obj) noexcept
 /// Returns false on the first field that fails to unpack (caller increments
 /// error counter). dst must be at least as large as the slot item_size.
 inline bool unpack_payload(const msgpack::object &payload_array,
-                           const std::vector<WireFieldDesc> &defs,
-                           void *dst) noexcept
+                           const std::vector<WireFieldDesc> &defs, void *dst) noexcept
 {
-    if (payload_array.via.array.size != defs.size()) return false;
+    if (payload_array.via.array.size != defs.size())
+        return false;
     char *d = static_cast<char *>(dst);
     for (size_t i = 0; i < defs.size(); ++i)
         if (!unpack_field(payload_array.via.array.ptr[i], defs[i], d))

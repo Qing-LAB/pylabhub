@@ -28,9 +28,9 @@
 #include <string>
 #include <thread>
 
+using pylabhub::tests::helper::run_gtest_worker;
 using pylabhub::utils::Logger;
 using pylabhub::utils::ThreadManager;
-using pylabhub::tests::helper::run_gtest_worker;
 using namespace std::chrono_literals;
 
 namespace pylabhub::tests::worker
@@ -44,15 +44,16 @@ namespace
 {
 
 /// Spawn a "good citizen" thread that exits when its `stop` flag flips.
-std::shared_ptr<std::atomic<bool>>
-spawn_cooperating(ThreadManager &tm, const std::string &name,
-                   std::chrono::milliseconds join_timeout = 500ms)
+std::shared_ptr<std::atomic<bool>> spawn_cooperating(ThreadManager &tm, const std::string &name,
+                                                     std::chrono::milliseconds join_timeout = 500ms)
 {
     auto stop = std::make_shared<std::atomic<bool>>(false);
     ThreadManager::SpawnOptions opts;
     opts.join_timeout = join_timeout;
-    const bool ok = tm.spawn(name,
-        [stop] {
+    const bool ok = tm.spawn(
+        name,
+        [stop]
+        {
             while (!stop->load(std::memory_order_acquire))
                 std::this_thread::sleep_for(5ms);
         },
@@ -64,14 +65,11 @@ spawn_cooperating(ThreadManager &tm, const std::string &name,
 /// Spawn an "uncooperative" thread that ignores stop signals for
 /// `run_for` ms.  Used to exercise the bounded-join expiry path.
 void spawn_uncooperative(ThreadManager &tm, const std::string &name,
-                          std::chrono::milliseconds run_for,
-                          std::chrono::milliseconds join_timeout)
+                         std::chrono::milliseconds run_for, std::chrono::milliseconds join_timeout)
 {
     ThreadManager::SpawnOptions opts;
     opts.join_timeout = join_timeout;
-    const bool ok = tm.spawn(name,
-        [run_for] { std::this_thread::sleep_for(run_for); },
-        opts);
+    const bool ok = tm.spawn(name, [run_for] { std::this_thread::sleep_for(run_for); }, opts);
     EXPECT_TRUE(ok);
 }
 
@@ -82,49 +80,49 @@ void spawn_uncooperative(ThreadManager &tm, const std::string &name,
 int happy_path_signal_then_join()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             ThreadManager tm("test", "happy");
             auto stop = spawn_cooperating(tm, "alpha");
             EXPECT_EQ(tm.active_count(), 1u);
 
             stop->store(true, std::memory_order_release);
 
-            const auto t0     = std::chrono::steady_clock::now();
+            const auto t0 = std::chrono::steady_clock::now();
             const bool joined = tm.join_named("alpha");
-            const auto elapsed =
-                std::chrono::steady_clock::now() - t0;
+            const auto elapsed = std::chrono::steady_clock::now() - t0;
 
             EXPECT_TRUE(joined);
             EXPECT_LT(elapsed, 100ms) << "join_named took too long — "
                                          "likely went down the timeout/detach path";
             EXPECT_EQ(tm.active_count(), 0u);
         },
-        "thread_manager_join_named::happy_path_signal_then_join",
-        Logger::GetLifecycleModule());
+        "thread_manager_join_named::happy_path_signal_then_join", Logger::GetLifecycleModule());
 }
 
 int unknown_name_returns_false()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             ThreadManager tm("test", "unknown");
             auto stop = spawn_cooperating(tm, "alpha");
             EXPECT_EQ(tm.active_count(), 1u);
 
             EXPECT_FALSE(tm.join_named("does_not_exist"));
-            EXPECT_EQ(tm.active_count(), 1u);  // alpha still tracked
+            EXPECT_EQ(tm.active_count(), 1u); // alpha still tracked
 
             stop->store(true, std::memory_order_release);
             EXPECT_TRUE(tm.join_named("alpha"));
         },
-        "thread_manager_join_named::unknown_name_returns_false",
-        Logger::GetLifecycleModule());
+        "thread_manager_join_named::unknown_name_returns_false", Logger::GetLifecycleModule());
 }
 
 int idempotent_second_call()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             ThreadManager tm("test", "idem");
             auto stop = spawn_cooperating(tm, "alpha");
             stop->store(true, std::memory_order_release);
@@ -135,23 +133,22 @@ int idempotent_second_call()
             // Slot already removed — second call must be a no-op false.
             EXPECT_FALSE(tm.join_named("alpha"));
         },
-        "thread_manager_join_named::idempotent_second_call",
-        Logger::GetLifecycleModule());
+        "thread_manager_join_named::idempotent_second_call", Logger::GetLifecycleModule());
 }
 
 int uncooperative_thread_detached()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             ThreadManager tm("test", "uncoop");
             spawn_uncooperative(tm, "stuck", 1000ms, 100ms);
 
-            const auto t0      = std::chrono::steady_clock::now();
-            const bool joined  = tm.join_named("stuck");
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool joined = tm.join_named("stuck");
             const auto elapsed = std::chrono::steady_clock::now() - t0;
 
-            EXPECT_FALSE(joined)
-                << "Path discriminator: detached, not joined cleanly";
+            EXPECT_FALSE(joined) << "Path discriminator: detached, not joined cleanly";
             EXPECT_EQ(ThreadManager::process_detached_count(), 1u)
                 << "Path discriminator: process counted exactly one detach";
             EXPECT_EQ(tm.active_count(), 0u) << "Slot removed after detach";
@@ -164,14 +161,14 @@ int uncooperative_thread_detached()
             std::this_thread::sleep_for(1100ms);
             ThreadManager::reset_process_detached_count_for_testing();
         },
-        "thread_manager_join_named::uncooperative_thread_detached",
-        Logger::GetLifecycleModule());
+        "thread_manager_join_named::uncooperative_thread_detached", Logger::GetLifecycleModule());
 }
 
 int bracketed_thread_observes_internal_signal()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             // join_named internally sets the slot's
             // shutdown_requested before the bounded join.  A
             // bracketed body that polls `ctx.shutdown_requested()`
@@ -179,22 +176,23 @@ int bracketed_thread_observes_internal_signal()
             // join completes cleanly without detach.
             ThreadManager tm("test", "bracket_join");
 
-            auto saw_shutdown    = std::make_shared<std::atomic<bool>>(false);
+            auto saw_shutdown = std::make_shared<std::atomic<bool>>(false);
             auto entered_bracket = std::make_shared<std::atomic<bool>>(false);
 
             ThreadManager::SpawnOptions opts;
             opts.join_timeout = 500ms;
-            ASSERT_TRUE(tm.spawn("worker",
-                [saw_shutdown, entered_bracket](
-                    ThreadManager::SlotContext &ctx) {
-                    ctx.with_active_loop([&] {
-                        entered_bracket->store(true,
-                                               std::memory_order_release);
-                        while (!ctx.shutdown_requested())
-                            std::this_thread::sleep_for(2ms);
-                        saw_shutdown->store(true,
-                                            std::memory_order_release);
-                    });
+            ASSERT_TRUE(tm.spawn(
+                "worker",
+                [saw_shutdown, entered_bracket](ThreadManager::SlotContext &ctx)
+                {
+                    ctx.with_active_loop(
+                        [&]
+                        {
+                            entered_bracket->store(true, std::memory_order_release);
+                            while (!ctx.shutdown_requested())
+                                std::this_thread::sleep_for(2ms);
+                            saw_shutdown->store(true, std::memory_order_release);
+                        });
                 },
                 opts));
 
@@ -219,7 +217,8 @@ int bracketed_thread_observes_internal_signal()
 int cooperates_with_drain()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             ThreadManager tm("test", "coop_drain");
             auto a = spawn_cooperating(tm, "alpha");
             auto b = spawn_cooperating(tm, "beta");
@@ -234,17 +233,17 @@ int cooperates_with_drain()
             // drain() should still find beta + gamma.
             b->store(true);
             c->store(true);
-            EXPECT_EQ(tm.drain(), 0u);  // 0 detached = clean drain
+            EXPECT_EQ(tm.drain(), 0u); // 0 detached = clean drain
             EXPECT_EQ(tm.active_count(), 0u);
         },
-        "thread_manager_join_named::cooperates_with_drain",
-        Logger::GetLifecycleModule());
+        "thread_manager_join_named::cooperates_with_drain", Logger::GetLifecycleModule());
 }
 
 int after_drain_refuses_new_join()
 {
     return run_gtest_worker(
-        [&] {
+        [&]
+        {
             ThreadManager tm("test", "post_drain");
             auto stop = spawn_cooperating(tm, "alpha");
             stop->store(true, std::memory_order_release);
@@ -255,8 +254,7 @@ int after_drain_refuses_new_join()
             EXPECT_FALSE(tm.join_named("alpha"));
             EXPECT_FALSE(tm.join_named("anything"));
         },
-        "thread_manager_join_named::after_drain_refuses_new_join",
-        Logger::GetLifecycleModule());
+        "thread_manager_join_named::after_drain_refuses_new_join", Logger::GetLifecycleModule());
 }
 
 } // namespace thread_manager_join_named
@@ -274,7 +272,8 @@ struct ThreadManagerJoinNamedRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
                 if (dot == std::string_view::npos ||
@@ -300,7 +299,8 @@ struct ThreadManagerJoinNamedRegistrar
 
                 fmt::print(stderr,
                            "[thread_manager_join_named] ERROR: "
-                           "unknown scenario '{}'\n", sc);
+                           "unknown scenario '{}'\n",
+                           sc);
                 return 1;
             });
     }

@@ -40,29 +40,25 @@ class ThreadManagerJoinNamedTest : public IsolatedProcessTest
 
 TEST_F(ThreadManagerJoinNamedTest, HappyPath_SignalThenJoin_ReturnsTrue)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.happy_path_signal_then_join");
+    auto w = SpawnWorker("thread_manager_join_named.happy_path_signal_then_join");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerJoinNamedTest, UnknownName_ReturnsFalse_NoSideEffects)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.unknown_name_returns_false");
+    auto w = SpawnWorker("thread_manager_join_named.unknown_name_returns_false");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerJoinNamedTest, Idempotent_SecondCallReturnsFalse)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.idempotent_second_call");
+    auto w = SpawnWorker("thread_manager_join_named.idempotent_second_call");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerJoinNamedTest, UncooperativeThread_DetachedAfterTimeout)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.uncooperative_thread_detached");
+    auto w = SpawnWorker("thread_manager_join_named.uncooperative_thread_detached");
     // This test deliberately exercises the detach-on-timeout path,
     // which emits a stage-differentiated ERROR log.  Declare the
     // expected substring up-front so the worker framework accepts it.
@@ -72,21 +68,18 @@ TEST_F(ThreadManagerJoinNamedTest, UncooperativeThread_DetachedAfterTimeout)
 
 TEST_F(ThreadManagerJoinNamedTest, BracketedThread_ObservesInternalSignalAndExits)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.bracketed_thread_observes_internal_signal");
+    auto w = SpawnWorker("thread_manager_join_named.bracketed_thread_observes_internal_signal");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerJoinNamedTest, CooperatesWithDrain_UnjoinedSiblingsDrain)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.cooperates_with_drain");
+    auto w = SpawnWorker("thread_manager_join_named.cooperates_with_drain");
     ExpectWorkerOk(w);
 }
 
 TEST_F(ThreadManagerJoinNamedTest, AfterDrain_RefusesNewJoin)
 {
-    auto w = SpawnWorker(
-        "thread_manager_join_named.after_drain_refuses_new_join");
+    auto w = SpawnWorker("thread_manager_join_named.after_drain_refuses_new_join");
     ExpectWorkerOk(w);
 }

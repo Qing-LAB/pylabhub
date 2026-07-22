@@ -34,28 +34,27 @@ pylabhub::schema::SchemaInfo get_shared_memory_header_schema_info()
     // Header defines the list: PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(OP) expands to
     //   OP(magic_number,"u32") OP(version_major,"u16") ... for every header field.
     // We define OP here: for each (member, type_id) call add_member(name, type_id, offset, size).
-#define PYLABHUB_ADD_SCHEMA_FIELD(member, type_id)                                            \
-    builder.add_member(#member, type_id, offsetof(SharedMemoryHeader, member),               \
-                      sizeof(SharedMemoryHeader::member));
+#define PYLABHUB_ADD_SCHEMA_FIELD(member, type_id)                                                 \
+    builder.add_member(#member, type_id, offsetof(SharedMemoryHeader, member),                     \
+                       sizeof(SharedMemoryHeader::member));
     PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(PYLABHUB_ADD_SCHEMA_FIELD);
 #undef PYLABHUB_ADD_SCHEMA_FIELD
     // Trailing fields: type_id depends on constants (must stay in same order as struct)
     builder.add_member("consumer_heartbeats",
-                 fmt::format("ConsumerHeartbeat[{}]", detail::MAX_CONSUMER_HEARTBEATS),
-                 offsetof(SharedMemoryHeader, consumer_heartbeats),
-                 sizeof(SharedMemoryHeader::consumer_heartbeats));
-    builder.add_member("spinlock_states",
-                 fmt::format("SharedSpinLockState[{}]", detail::MAX_SHARED_SPINLOCKS),
-                 offsetof(SharedMemoryHeader, spinlock_states),
-                 sizeof(SharedMemoryHeader::spinlock_states));
-    builder.add_member("flexible_zone_checksums",
-                 fmt::format("FlexibleZoneChecksumEntry[{}]", detail::MAX_FLEXIBLE_ZONE_CHECKSUMS),
-                 offsetof(SharedMemoryHeader, flexible_zone_checksums),
-                 sizeof(SharedMemoryHeader::flexible_zone_checksums));
-    builder.add_member("reserved_header",
-                 fmt::format("u8[{}]", sizeof(SharedMemoryHeader::reserved_header)),
-                 offsetof(SharedMemoryHeader, reserved_header),
-                 sizeof(SharedMemoryHeader::reserved_header));
+                       fmt::format("ConsumerHeartbeat[{}]", detail::MAX_CONSUMER_HEARTBEATS),
+                       offsetof(SharedMemoryHeader, consumer_heartbeats),
+                       sizeof(SharedMemoryHeader::consumer_heartbeats));
+    builder.add_member(
+        "spinlock_states", fmt::format("SharedSpinLockState[{}]", detail::MAX_SHARED_SPINLOCKS),
+        offsetof(SharedMemoryHeader, spinlock_states), sizeof(SharedMemoryHeader::spinlock_states));
+    builder.add_member(
+        "flexible_zone_checksums",
+        fmt::format("FlexibleZoneChecksumEntry[{}]", detail::MAX_FLEXIBLE_ZONE_CHECKSUMS),
+        offsetof(SharedMemoryHeader, flexible_zone_checksums),
+        sizeof(SharedMemoryHeader::flexible_zone_checksums));
+    builder.add_member(
+        "reserved_header", fmt::format("u8[{}]", sizeof(SharedMemoryHeader::reserved_header)),
+        offsetof(SharedMemoryHeader, reserved_header), sizeof(SharedMemoryHeader::reserved_header));
 
     SchemaInfo info{};
     info.name = "pylabhub.hub.SharedMemoryHeader";
@@ -131,9 +130,8 @@ void store_layout_checksum(SharedMemoryHeader *header)
         // A zero checksum would silently pass future validate_layout_checksum() calls if the
         // computed hash also happened to be zero — a security blind spot. Throw so the caller
         // knows the SHM segment was not safely initialized.
-        throw std::runtime_error(
-            "[DataBlock] store_layout_checksum: compute_blake2b failed; "
-            "cannot initialize SHM integrity checksum");
+        throw std::runtime_error("[DataBlock] store_layout_checksum: compute_blake2b failed; "
+                                 "cannot initialize SHM integrity checksum");
     }
 }
 
@@ -146,7 +144,8 @@ bool validate_layout_checksum(const SharedMemoryHeader *header)
     std::array<uint8_t, LAYOUT_CHECKSUM_INPUT_BYTES> buf{};
     layout_checksum_fill(buf.data(), header);
     std::array<uint8_t, detail::CHECKSUM_BYTES> computed;
-    if (!pylabhub::utils::security::secure().compute_blake2b(computed.data(), buf.data(), buf.size()))
+    if (!pylabhub::utils::security::secure().compute_blake2b(computed.data(), buf.data(),
+                                                             buf.size()))
     {
         return false;
     }

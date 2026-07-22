@@ -85,75 +85,76 @@ struct DataBlockLayout
     size_t physical_page_size_bytes = 0;
     /** Effective slot count (single source; 0 capacity treated as 1). */
     uint32_t slot_count = 0;
-    
+
     // === Layout Query APIs (Public Interface) ===
     // These are the ONLY way to query layout information
-    
+
     /** Get control zone total size (SlotRWState + SlotChecksum arrays) */
-    [[nodiscard]] size_t control_zone_size() const noexcept {
+    [[nodiscard]] size_t control_zone_size() const noexcept
+    {
         return slot_rw_state_size + slot_checksum_size;
     }
-    
+
     /** Get control zone end offset (before padding to 4K) */
-    [[nodiscard]] size_t control_zone_end() const noexcept {
+    [[nodiscard]] size_t control_zone_end() const noexcept
+    {
         return slot_rw_state_offset + control_zone_size();
     }
-    
+
     /** Check if flex zone is configured (size > 0) */
-    [[nodiscard]] bool has_flex_zone() const noexcept {
-        return flexible_zone_size > 0;
-    }
-    
+    [[nodiscard]] bool has_flex_zone() const noexcept { return flexible_zone_size > 0; }
+
     /** Get flex zone pointer from base address */
-    [[nodiscard]] char* flex_zone_ptr(void* base) const noexcept {
-        return (base != nullptr && has_flex_zone()) 
-            ? static_cast<char*>(base) + flexible_zone_offset 
-            : nullptr;
+    [[nodiscard]] char *flex_zone_ptr(void *base) const noexcept
+    {
+        return (base != nullptr && has_flex_zone())
+                   ? static_cast<char *>(base) + flexible_zone_offset
+                   : nullptr;
     }
-    
+
     /** Get ring-buffer pointer from base address */
-    [[nodiscard]] char* ring_buffer_ptr(void* base) const noexcept {
-        return (base != nullptr) 
-            ? static_cast<char*>(base) + structured_buffer_offset 
-            : nullptr;
+    [[nodiscard]] char *ring_buffer_ptr(void *base) const noexcept
+    {
+        return (base != nullptr) ? static_cast<char *>(base) + structured_buffer_offset : nullptr;
     }
-    
+
     /** Get slot pointer from base address and slot index */
-    [[nodiscard]] char* slot_ptr(void* base, size_t slot_index) const noexcept {
-        if (base == nullptr || slot_index >= slot_count) {
+    [[nodiscard]] char *slot_ptr(void *base, size_t slot_index) const noexcept
+    {
+        if (base == nullptr || slot_index >= slot_count)
+        {
             return nullptr;
         }
-        return static_cast<char*>(base) + structured_buffer_offset + (slot_index * slot_stride_bytes_);
+        return static_cast<char *>(base) + structured_buffer_offset +
+               (slot_index * slot_stride_bytes_);
     }
-    
+
     // === Layout Factory Methods (Creation) ===
     // These are the ONLY way to create valid layouts
 
     static DataBlockLayout from_config(const DataBlockConfig &config)
     {
         DataBlockLayout layout{};
-        layout.slot_count =
-            (config.ring_buffer_capacity > 0) ? config.ring_buffer_capacity : 1U;
+        layout.slot_count = (config.ring_buffer_capacity > 0) ? config.ring_buffer_capacity : 1U;
         layout.slot_rw_state_offset = sizeof(SharedMemoryHeader);
         layout.slot_rw_state_size = layout.slot_count * sizeof(SlotRWState);
-        layout.slot_checksum_size =
-            (config.checksum_type != ChecksumType::Unset)
-                ? (layout.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
-                : 0;
+        layout.slot_checksum_size = (config.checksum_type != ChecksumType::Unset)
+                                        ? (layout.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
+                                        : 0;
         layout.slot_checksum_offset = layout.slot_rw_state_offset + layout.slot_rw_state_size;
-        
+
         // Memory layout per HEP-CORE-0002 §3 (Memory Layout and Data Structures):
-        // 
+        //
         // Memory structure:
         //   1. Global Header (4K or 8K)
         //   2. Control Zone (SlotRWState + SlotChecksum arrays, padded to 4K)
         //   3. DATA REGION (4K-aligned):
         //      - Flex zone (N×4K)
         //      - Ring-buffer (M × logical_unit_size)
-        
+
         const size_t control_zone_size = layout.slot_rw_state_size + layout.slot_checksum_size;
         const size_t control_zone_end = layout.slot_rw_state_offset + control_zone_size;
-        
+
         // Align data region start to PAGE_ALIGNMENT boundary (design §2.3)
         const size_t data_region_offset =
             (control_zone_end + detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
@@ -165,38 +166,39 @@ struct DataBlockLayout
         // will always agree on the size.
         layout.flexible_zone_size =
             (config.flex_zone_size + detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
-        
+
         // Layout per design §2.3:
         //   flex_zone_offset = data_region_offset
         //   ring_buffer_offset = data_region_offset + flex_zone_size
         layout.flexible_zone_offset = data_region_offset;
-        
+
         // Ring-buffer parameters
         layout.slot_stride_bytes_ = config.effective_logical_unit_size();
         layout.physical_page_size_bytes = to_bytes(config.physical_page_size);
         layout.structured_buffer_size = config.structured_buffer_size();
-        
+
         // Ring-buffer starts immediately after flex zone
         // Since data_region_offset is PAGE_ALIGNMENT-aligned and flex_zone_size is
-        // PAGE_ALIGNMENT-aligned, ring_buffer is guaranteed to be PAGE_ALIGNMENT-aligned (design §2.2)
+        // PAGE_ALIGNMENT-aligned, ring_buffer is guaranteed to be PAGE_ALIGNMENT-aligned (design
+        // §2.2)
         layout.structured_buffer_offset = layout.flexible_zone_offset + layout.flexible_zone_size;
-        
+
         // Validate ring-buffer alignment (design requirement)
-        if (layout.structured_buffer_offset % detail::PAGE_ALIGNMENT != 0) {
-            throw std::logic_error(
-                "Internal error: ring-buffer offset is not PAGE_ALIGNMENT ("
-                    + std::to_string(detail::PAGE_ALIGNMENT) + " bytes)-aligned. "
-                      "This violates the memory layout design.");
+        if (layout.structured_buffer_offset % detail::PAGE_ALIGNMENT != 0)
+        {
+            throw std::logic_error("Internal error: ring-buffer offset is not PAGE_ALIGNMENT (" +
+                                   std::to_string(detail::PAGE_ALIGNMENT) +
+                                   " bytes)-aligned. "
+                                   "This violates the memory layout design.");
         }
-        
+
         // Round total_size up to PAGE_ALIGNMENT: with sub-4K slots the ring buffer
         // size may not be a page multiple (e.g. 100 × 64 B = 6400 B), but the OS
         // always allocates/maps in page-sized chunks.  Making total_size agree with
         // the OS rounding avoids mismatches between producer and consumer.
-        layout.total_size =
-            (layout.structured_buffer_offset + layout.structured_buffer_size +
-             detail::PAGE_ALIGNMENT - 1) &
-            ~(detail::PAGE_ALIGNMENT - 1);
+        layout.total_size = (layout.structured_buffer_offset + layout.structured_buffer_size +
+                             detail::PAGE_ALIGNMENT - 1) &
+                            ~(detail::PAGE_ALIGNMENT - 1);
         return layout;
     }
 
@@ -210,48 +212,48 @@ struct DataBlockLayout
         layout.slot_count = detail::get_slot_count(header);
         layout.slot_rw_state_offset = sizeof(SharedMemoryHeader);
         layout.slot_rw_state_size = layout.slot_count * sizeof(SlotRWState);
-        layout.slot_checksum_size =
-            (detail::get_checksum_type(header) != ChecksumType::Unset)
-                ? (layout.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
-                : 0;
+        layout.slot_checksum_size = (detail::get_checksum_type(header) != ChecksumType::Unset)
+                                        ? (layout.slot_count * detail::SLOT_CHECKSUM_ENTRY_SIZE)
+                                        : 0;
         layout.slot_checksum_offset = layout.slot_rw_state_offset + layout.slot_rw_state_size;
-        
+
         // Phase 2 refactoring: Calculate data region offset per design
         const size_t control_zone_size = layout.slot_rw_state_size + layout.slot_checksum_size;
         const size_t control_zone_end = layout.slot_rw_state_offset + control_zone_size;
-        
+
         const size_t data_region_offset =
             (control_zone_end + detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
-        
+
         // Flex zone offset and size from header
         layout.flexible_zone_size = header->flexible_zone_size;
         layout.flexible_zone_offset = data_region_offset;
-        
+
         // Ring-buffer parameters
         layout.slot_stride_bytes_ = static_cast<size_t>(detail::get_slot_stride_bytes(header));
         layout.physical_page_size_bytes = static_cast<size_t>(header->physical_page_size);
         layout.structured_buffer_size = layout.slot_count * layout.slot_stride_bytes_;
-        
+
         // Ring-buffer starts immediately after flex zone
         // Since data_region_offset is PAGE_ALIGNMENT-aligned and flex_zone_size is
-        // PAGE_ALIGNMENT-aligned, ring_buffer is guaranteed to be PAGE_ALIGNMENT-aligned (design §2.2)
+        // PAGE_ALIGNMENT-aligned, ring_buffer is guaranteed to be PAGE_ALIGNMENT-aligned (design
+        // §2.2)
         layout.structured_buffer_offset = layout.flexible_zone_offset + layout.flexible_zone_size;
-        
+
         // Validate ring-buffer alignment (design requirement)
-        if (layout.structured_buffer_offset % detail::PAGE_ALIGNMENT != 0) {
-            throw std::logic_error(
-                "Internal error: ring-buffer offset is not PAGE_ALIGNMENT ("
-                    + std::to_string(detail::PAGE_ALIGNMENT) + " bytes)-aligned. "
-                      "This violates the memory layout design.");
+        if (layout.structured_buffer_offset % detail::PAGE_ALIGNMENT != 0)
+        {
+            throw std::logic_error("Internal error: ring-buffer offset is not PAGE_ALIGNMENT (" +
+                                   std::to_string(detail::PAGE_ALIGNMENT) +
+                                   " bytes)-aligned. "
+                                   "This violates the memory layout design.");
         }
-        
+
         // Round up to PAGE_ALIGNMENT (same reason as from_config: sub-4K slots may
         // leave the raw sum non-page-aligned; explicit rounding keeps producer/consumer
         // in agreement without relying on implicit OS rounding of ftruncate/mmap).
-        layout.total_size =
-            (layout.structured_buffer_offset + layout.structured_buffer_size +
-             detail::PAGE_ALIGNMENT - 1) &
-            ~(detail::PAGE_ALIGNMENT - 1);
+        layout.total_size = (layout.structured_buffer_offset + layout.structured_buffer_size +
+                             detail::PAGE_ALIGNMENT - 1) &
+                            ~(detail::PAGE_ALIGNMENT - 1);
         return layout;
     }
 
@@ -279,13 +281,13 @@ struct DataBlockLayout
         {
             return false;
         }
-        
+
         // Validate control zone is contiguous
         if (slot_checksum_offset != slot_rw_state_offset + slot_rw_state_size)
         {
             return false;
         }
-        
+
         // Validate PAGE_ALIGNMENT-aligned data region start
         // flexible_zone_offset must be PAGE_ALIGNMENT-aligned and >= control zone end
         const size_t control_zone_end = slot_checksum_offset + slot_checksum_size;
@@ -297,30 +299,30 @@ struct DataBlockLayout
         {
             return false;
         }
-        
+
         // Validate flex zone size is PAGE_ALIGNMENT-aligned
         if (flexible_zone_size % detail::PAGE_ALIGNMENT != 0)
         {
             return false;
         }
-        
+
         // Validate ring-buffer follows flex zone immediately (no padding)
         if (structured_buffer_offset != flexible_zone_offset + flexible_zone_size)
         {
             return false;
         }
-        
+
         // Validate ring-buffer is PAGE_ALIGNMENT-aligned
         if (structured_buffer_offset % detail::PAGE_ALIGNMENT != 0)
         {
             return false;
         }
-        
+
         // Validate total size: total_size is rounded up to PAGE_ALIGNMENT so sub-4K
         // ring buffers agree with the OS mmap granularity.  Accept the rounded value.
         const size_t expected_total =
-            (structured_buffer_offset + structured_buffer_size +
-             detail::PAGE_ALIGNMENT - 1) & ~(detail::PAGE_ALIGNMENT - 1);
+            (structured_buffer_offset + structured_buffer_size + detail::PAGE_ALIGNMENT - 1) &
+            ~(detail::PAGE_ALIGNMENT - 1);
         return total_size == expected_total;
     }
 #endif
@@ -336,45 +338,54 @@ struct DataBlockLayout
 // CRITICAL: These are the ONLY implementations for flex zone access.
 // All public APIs must delegate to these helpers.
 //
-namespace detail {
+namespace detail
+{
 
 /** Validate and get flex zone span for producer/write handle.
  *  Uses DataBlockLayout as single source of truth for memory offsets.
  *  All offsets are absolute from segment() (the shared memory base pointer). */
-template<typename ImplT>
-inline std::span<std::byte> get_flex_zone_span_mutable(ImplT* impl) noexcept {
-    if (impl == nullptr || impl->dataBlock == nullptr) {
+template <typename ImplT>
+inline std::span<std::byte> get_flex_zone_span_mutable(ImplT *impl) noexcept
+{
+    if (impl == nullptr || impl->dataBlock == nullptr)
+    {
         return {};
     }
-    const auto& layout = impl->dataBlock->layout();
-    if (layout.flexible_zone_size == 0) {
+    const auto &layout = impl->dataBlock->layout();
+    if (layout.flexible_zone_size == 0)
+    {
         return {};
     }
-    char* base = static_cast<char*>(impl->dataBlock->segment());
-    if (base == nullptr) {
+    char *base = static_cast<char *>(impl->dataBlock->segment());
+    if (base == nullptr)
+    {
         return {};
     }
-    return {reinterpret_cast<std::byte*>(base + layout.flexible_zone_offset),
+    return {reinterpret_cast<std::byte *>(base + layout.flexible_zone_offset),
             layout.flexible_zone_size};
 }
 
 /** Validate and get flex zone span for consumer/read handle (const).
  *  Uses DataBlockLayout as single source of truth for memory offsets.
  *  All offsets are absolute from segment() (the shared memory base pointer). */
-template<typename ImplT>
-inline std::span<const std::byte> get_flex_zone_span_const(const ImplT* impl) noexcept {
-    if (impl == nullptr || impl->dataBlock == nullptr) {
+template <typename ImplT>
+inline std::span<const std::byte> get_flex_zone_span_const(const ImplT *impl) noexcept
+{
+    if (impl == nullptr || impl->dataBlock == nullptr)
+    {
         return {};
     }
-    const auto& layout = impl->dataBlock->layout();
-    if (layout.flexible_zone_size == 0) {
+    const auto &layout = impl->dataBlock->layout();
+    if (layout.flexible_zone_size == 0)
+    {
         return {};
     }
-    const char* base = static_cast<const char*>(impl->dataBlock->segment());
-    if (base == nullptr) {
+    const char *base = static_cast<const char *>(impl->dataBlock->segment());
+    if (base == nullptr)
+    {
         return {};
     }
-    return {reinterpret_cast<const std::byte*>(base + layout.flexible_zone_offset),
+    return {reinterpret_cast<const std::byte *>(base + layout.flexible_zone_offset),
             layout.flexible_zone_size};
 }
 
@@ -397,33 +408,46 @@ class DataBlock
     {
     };
 
-    // Single point of config validation and memory creation; do not add alternate creation paths without updating this.
+    // Single point of config validation and memory creation; do not add alternate creation paths
+    // without updating this.
     DataBlock(const std::string &name, const DataBlockConfig &config)
         : m_name(name), m_open_mode(DataBlockOpenMode::Create)
     {
         if (config.policy == DataBlockPolicy::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.policy must be set explicitly (Single, DoubleBuffer, or RingBuffer).", name);
+            LOGGER_ERROR("DataBlock '{}': config.policy must be set explicitly (Single, "
+                         "DoubleBuffer, or RingBuffer).",
+                         name);
             throw std::invalid_argument("DataBlockConfig::policy must be set explicitly");
         }
         if (config.consumer_sync_policy == ConsumerSyncPolicy::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly (Latest_only, Sequential, or Sequential_sync).", name);
-            throw std::invalid_argument("DataBlockConfig::consumer_sync_policy must be set explicitly");
+            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly "
+                         "(Latest_only, Sequential, or Sequential_sync).",
+                         name);
+            throw std::invalid_argument(
+                "DataBlockConfig::consumer_sync_policy must be set explicitly");
         }
         if (config.physical_page_size == DataBlockPageSize::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.physical_page_size must be set explicitly (Size4K, Size4M, or Size16M).", name);
-            throw std::invalid_argument("DataBlockConfig::physical_page_size must be set explicitly");
+            LOGGER_ERROR("DataBlock '{}': config.physical_page_size must be set explicitly "
+                         "(Size4K, Size4M, or Size16M).",
+                         name);
+            throw std::invalid_argument(
+                "DataBlockConfig::physical_page_size must be set explicitly");
         }
         if (config.ring_buffer_capacity == 0)
         {
-            LOGGER_ERROR("DataBlock '{}': config.ring_buffer_capacity must be set explicitly (>= 1).", name);
-            throw std::invalid_argument("DataBlockConfig::ring_buffer_capacity must be set (1 or more)");
+            LOGGER_ERROR(
+                "DataBlock '{}': config.ring_buffer_capacity must be set explicitly (>= 1).", name);
+            throw std::invalid_argument(
+                "DataBlockConfig::ring_buffer_capacity must be set (1 or more)");
         }
         if (config.checksum_type == ChecksumType::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.checksum_type must be set (e.g. BLAKE2b). Checksum is mandatory.", name);
+            LOGGER_ERROR("DataBlock '{}': config.checksum_type must be set (e.g. BLAKE2b). "
+                         "Checksum is mandatory.",
+                         name);
             throw std::invalid_argument("DataBlockConfig::checksum_type must be set");
         }
         // Note: logical_unit_size is intentionally not validated for alignment here.
@@ -440,8 +464,8 @@ class DataBlock
         if (m_shm.base == nullptr)
         {
 #if defined(PYLABHUB_PLATFORM_WIN64)
-            throw std::runtime_error(
-                fmt::format("Failed to create file mapping for '{}'. Error: {}", m_name, GetLastError()));
+            throw std::runtime_error(fmt::format(
+                "Failed to create file mapping for '{}'. Error: {}", m_name, GetLastError()));
 #else
             throw std::runtime_error(
                 fmt::format("shm_create failed for '{}'. Error: {}", m_name, errno));
@@ -466,10 +490,9 @@ class DataBlock
     // to unlink; the SHM is freed when the last fd is closed.  The
     // `logical_name` is purely a log/identity label; it is NOT a SHM
     // object name.
-    DataBlock(std::string logical_name, const DataBlockConfig &config,
-              int source_fd, FromFdSourceTag /*unused*/)
-        : m_name(std::move(logical_name)),
-          m_open_mode(DataBlockOpenMode::Create),
+    DataBlock(std::string logical_name, const DataBlockConfig &config, int source_fd,
+              FromFdSourceTag /*unused*/)
+        : m_name(std::move(logical_name)), m_open_mode(DataBlockOpenMode::Create),
           m_should_unlink_name(false)
     {
         if (config.policy == DataBlockPolicy::Unset)
@@ -479,18 +502,23 @@ class DataBlock
         }
         if (config.consumer_sync_policy == ConsumerSyncPolicy::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly.", m_name);
-            throw std::invalid_argument("DataBlockConfig::consumer_sync_policy must be set explicitly");
+            LOGGER_ERROR("DataBlock '{}': config.consumer_sync_policy must be set explicitly.",
+                         m_name);
+            throw std::invalid_argument(
+                "DataBlockConfig::consumer_sync_policy must be set explicitly");
         }
         if (config.physical_page_size == DataBlockPageSize::Unset)
         {
-            LOGGER_ERROR("DataBlock '{}': config.physical_page_size must be set explicitly.", m_name);
-            throw std::invalid_argument("DataBlockConfig::physical_page_size must be set explicitly");
+            LOGGER_ERROR("DataBlock '{}': config.physical_page_size must be set explicitly.",
+                         m_name);
+            throw std::invalid_argument(
+                "DataBlockConfig::physical_page_size must be set explicitly");
         }
         if (config.ring_buffer_capacity == 0)
         {
             LOGGER_ERROR("DataBlock '{}': config.ring_buffer_capacity must be set (>= 1).", m_name);
-            throw std::invalid_argument("DataBlockConfig::ring_buffer_capacity must be set (1 or more)");
+            throw std::invalid_argument(
+                "DataBlockConfig::ring_buffer_capacity must be set (1 or more)");
         }
         if (config.checksum_type == ChecksumType::Unset)
         {
@@ -499,7 +527,7 @@ class DataBlock
         }
 
         m_layout = DataBlockLayout::from_config(config);
-        m_size   = m_layout.total_size;
+        m_size = m_layout.total_size;
 #if !defined(NDEBUG)
         assert(m_layout.validate() && "DataBlockLayout invariant violated");
 #endif
@@ -530,7 +558,8 @@ class DataBlock
     // m_layout are valid before entry.
     void init_producer_state_(const DataBlockConfig &config)
     {
-        // Placement new for SharedMemoryHeader (value-initialize for deterministic layout; zero padding)
+        // Placement new for SharedMemoryHeader (value-initialize for deterministic layout; zero
+        // padding)
         m_header = new (m_shm.base) SharedMemoryHeader{};
 
         // 2. Initialize SharedMemoryHeader fields
@@ -575,20 +604,21 @@ class DataBlock
 
         // All metric fields are zeroed by SharedMemoryHeader{} value-initialization above.
         // Only creation_timestamp_ns requires an explicit non-zero value.
-        m_header->creation_timestamp_ns.store(
-            pylabhub::platform::monotonic_time_ns(),
-            std::memory_order_release);
+        m_header->creation_timestamp_ns.store(pylabhub::platform::monotonic_time_ns(),
+                                              std::memory_order_release);
 
         // Consumer Heartbeat char fields are zeroed explicitly for clarity
         // (all fields are zero-initialized by SharedMemoryHeader{} above).
         for (auto &consumer_heartbeat : m_header->consumer_heartbeats)
         {
-            std::memset(consumer_heartbeat.consumer_uid, 0, sizeof(consumer_heartbeat.consumer_uid));
+            std::memset(consumer_heartbeat.consumer_uid, 0,
+                        sizeof(consumer_heartbeat.consumer_uid));
             std::memset(consumer_heartbeat.consumer_name, 0,
                         sizeof(consumer_heartbeat.consumer_name));
         }
 
-        // Initialize Channel Identity fields (written by producer create; empty until security phase)
+        // Initialize Channel Identity fields (written by producer create; empty until security
+        // phase)
         std::memset(m_header->hub_uid, 0, sizeof(m_header->hub_uid));
         std::memset(m_header->hub_name, 0, sizeof(m_header->hub_name));
         std::memset(m_header->producer_uid, 0, sizeof(m_header->producer_uid));
@@ -615,8 +645,7 @@ class DataBlock
         }
 
         // 4. Set pointers from layout
-        m_flexible_data_zone =
-            reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
+        m_flexible_data_zone = reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
         m_structured_data_buffer =
             reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
@@ -649,32 +678,35 @@ class DataBlock
     // WriteAttach / ReadAttach constructor: attaches to an existing segment without creating or
     // initializing. Used for source processes (WriteAttach) and diagnostic tools (ReadAttach).
     // The caller is responsible for passing the correct mode.
-    DataBlock(std::string name, DataBlockOpenMode mode)
-        : m_name(std::move(name)), m_open_mode(mode)
+    DataBlock(std::string name, DataBlockOpenMode mode) : m_name(std::move(name)), m_open_mode(mode)
     {
         m_shm = pylabhub::platform::shm_attach(m_name.c_str());
         if (m_shm.base == nullptr)
         {
 #if defined(PYLABHUB_PLATFORM_WIN64)
             throw std::runtime_error(
-                fmt::format("Failed to open file mapping for attaching '{}'. Error: {}", m_name, GetLastError()));
+                fmt::format("Failed to open file mapping for attaching '{}'. Error: {}", m_name,
+                            GetLastError()));
 #else
             throw std::runtime_error(
                 fmt::format("shm_attach failed for attaching '{}'. Error: {}", m_name, errno));
 #endif
         }
-        const char *mode_str = (mode == DataBlockOpenMode::WriteAttach) ? "write-attach" : "read-attach";
+        const char *mode_str =
+            (mode == DataBlockOpenMode::WriteAttach) ? "write-attach" : "read-attach";
         attach_consumer_state_(mode_str);
     }
 
-    DataBlock(std::string name) : m_name(std::move(name)), m_open_mode(DataBlockOpenMode::ReadAttach)
+    DataBlock(std::string name)
+        : m_name(std::move(name)), m_open_mode(DataBlockOpenMode::ReadAttach)
     {
         m_shm = pylabhub::platform::shm_attach(m_name.c_str());
         if (m_shm.base == nullptr)
         {
 #if defined(PYLABHUB_PLATFORM_WIN64)
             throw std::runtime_error(
-                fmt::format("Failed to open file mapping for consumer '{}'. Error: {}", m_name, GetLastError()));
+                fmt::format("Failed to open file mapping for consumer '{}'. Error: {}", m_name,
+                            GetLastError()));
 #else
             throw std::runtime_error(
                 fmt::format("shm_attach failed for consumer '{}'. Error: {}", m_name, errno));
@@ -712,8 +744,9 @@ class DataBlock
         if (!wait_for_header_magic_valid(m_header, get_attach_timeout_ms()))
         {
             pylabhub::platform::shm_close(&m_shm);
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}' initialization timeout - creator may have crashed or not fully initialized.", m_name));
+            throw std::runtime_error(fmt::format("DataBlock '{}' initialization timeout - creator "
+                                                 "may have crashed or not fully initialized.",
+                                                 m_name));
         }
 
         // Validate version compatibility.  Use the consumer-relaxed
@@ -736,8 +769,8 @@ class DataBlock
         {
             pylabhub::platform::shm_close(&m_shm);
             throw std::runtime_error(
-                fmt::format("DataBlock '{}' size mismatch. Expected {}, got {}",
-                            m_name, m_header->total_block_size, m_size));
+                fmt::format("DataBlock '{}' size mismatch. Expected {}, got {}", m_name,
+                            m_header->total_block_size, m_size));
         }
 
         // Reconstruct layout from header (no config available)
@@ -747,12 +780,12 @@ class DataBlock
 #endif
         m_slot_rw_states_array = reinterpret_cast<SlotRWState *>(
             reinterpret_cast<char *>(m_shm.base) + m_layout.slot_rw_state_offset);
-        m_flexible_data_zone =
-            reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
+        m_flexible_data_zone = reinterpret_cast<char *>(m_shm.base) + m_layout.flexible_zone_offset;
         m_structured_data_buffer =
             reinterpret_cast<char *>(m_shm.base) + m_layout.structured_buffer_offset;
 
-        LOGGER_INFO("DataBlock '{}' attached ({}) with total size {} bytes.", m_name, mode_str, m_size);
+        LOGGER_INFO("DataBlock '{}' attached ({}) with total size {} bytes.", m_name, mode_str,
+                    m_size);
     }
 
     // HEP-CORE-0041 substep 1f (#253) — set up `m_shm` from a borrowed
@@ -788,18 +821,17 @@ class DataBlock
         int dup_fd = ::fcntl(source_fd, F_DUPFD_CLOEXEC, 1);
         if (dup_fd < 0)
         {
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}': fcntl(F_DUPFD_CLOEXEC) of source fd {} failed (errno={})",
-                            m_name, source_fd, errno));
+            throw std::runtime_error(fmt::format(
+                "DataBlock '{}': fcntl(F_DUPFD_CLOEXEC) of source fd {} failed (errno={})", m_name,
+                source_fd, errno));
         }
         struct stat st = {};
         if (::fstat(dup_fd, &st) != 0)
         {
             const int saved_errno = errno;
             ::close(dup_fd);
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}': fstat() of dup'd fd failed (errno={})",
-                            m_name, saved_errno));
+            throw std::runtime_error(fmt::format(
+                "DataBlock '{}': fstat() of dup'd fd failed (errno={})", m_name, saved_errno));
         }
         const size_t fd_size = static_cast<size_t>(st.st_size);
         if (expected_size != 0 && fd_size != expected_size)
@@ -810,18 +842,16 @@ class DataBlock
                             "ftruncate fd to DataBlockLayout::total_size before construction)",
                             m_name, fd_size, expected_size));
         }
-        void *mapped = ::mmap(nullptr, fd_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                              dup_fd, 0);
+        void *mapped = ::mmap(nullptr, fd_size, PROT_READ | PROT_WRITE, MAP_SHARED, dup_fd, 0);
         if (mapped == MAP_FAILED)
         {
             const int saved_errno = errno;
             ::close(dup_fd);
-            throw std::runtime_error(
-                fmt::format("DataBlock '{}': mmap() of fd-backed SHM failed (errno={})",
-                            m_name, saved_errno));
+            throw std::runtime_error(fmt::format(
+                "DataBlock '{}': mmap() of fd-backed SHM failed (errno={})", m_name, saved_errno));
         }
-        m_shm.base   = mapped;
-        m_shm.size   = fd_size;
+        m_shm.base = mapped;
+        m_shm.size = fd_size;
         m_shm.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(dup_fd));
         // `shm_close` (POSIX path) does: munmap(base, size) + close(opaque-as-fd).
         // This matches what we set up here, so the dtor cleans up without
@@ -872,8 +902,7 @@ class DataBlock
                 return i;
             }
         }
-        throw std::runtime_error(
-            fmt::format("DataBlock '{}': No free spinlock slots.", m_name));
+        throw std::runtime_error(fmt::format("DataBlock '{}': No free spinlock slots.", m_name));
     }
 
     void release_shared_spinlock(size_t index)
@@ -911,10 +940,10 @@ class DataBlock
         }
         return &m_slot_rw_states_array[index];
     }
-    
+
     // Phase 2 refactoring: flexible_zone_info() and set_flexible_zone_info_for_attach() removed
     // Single flex zone no longer needs named zone mapping
-    
+
     [[nodiscard]] const DataBlockLayout &layout() const { return m_layout; }
 
   private:
@@ -1053,7 +1082,8 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool 
     if (compute)
     {
         const void *slot_data = buf + slot_index * slot_size;
-        if (!pylabhub::utils::security::secure().compute_blake2b(slot_checksum, slot_data, slot_size))
+        if (!pylabhub::utils::security::secure().compute_blake2b(slot_checksum, slot_data,
+                                                                 slot_size))
         {
             return false;
         }
@@ -1067,8 +1097,7 @@ inline bool update_checksum_slot_impl(DataBlock *block, size_t slot_index, bool 
 }
 
 /// @param honor_valid  true = skip if already verified. false = always compute.
-inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
-                                                bool honor_valid = true)
+inline bool verify_checksum_flexible_zone_impl(const DataBlock *block, bool honor_valid = true)
 {
     // block is a heap pointer; all callers validate non-null before calling.
     // header() is a computed offset from mmap base; valid if DataBlock exists.
@@ -1094,7 +1123,11 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
     bool all_zero = true;
     for (size_t i = 0; i < sizeof(entry.checksum_bytes); ++i)
     {
-        if (entry.checksum_bytes[i] != 0) { all_zero = false; break; }
+        if (entry.checksum_bytes[i] != 0)
+        {
+            all_zero = false;
+            break;
+        }
     }
     if (all_zero)
     {
@@ -1126,7 +1159,7 @@ inline bool verify_checksum_flexible_zone_impl(const DataBlock *block,
 ///                          false = always compute (post-read integrity audit).
 /// Always leaves slot_cks_is_valid in the correct state on return.
 inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index,
-                                       bool honor_slot_valid)
+                                      bool honor_slot_valid)
 {
     // block is a heap pointer; all callers validate non-null before calling.
     // header() is a computed offset from mmap base; valid if DataBlock exists.
@@ -1145,16 +1178,18 @@ inline bool verify_checksum_slot_impl(const DataBlock *block, size_t slot_index,
     const auto *slot_checksum = reinterpret_cast<const uint8_t *>(
         slot_checksum_base_ptr + slot_index * detail::SLOT_CHECKSUM_ENTRY_SIZE);
     // Non-const cast for atomic store — slot_cks_is_valid is a reader-side cache.
-    auto *slot_cks_is_valid =
-        const_cast<std::atomic<uint8_t> *>(
-            reinterpret_cast<const std::atomic<uint8_t> *>(
-                slot_checksum + detail::CHECKSUM_BYTES));
+    auto *slot_cks_is_valid = const_cast<std::atomic<uint8_t> *>(
+        reinterpret_cast<const std::atomic<uint8_t> *>(slot_checksum + detail::CHECKSUM_BYTES));
 
     // Check if checksum bytes are all zero (invalidated by writer).
     bool all_zero = true;
     for (size_t i = 0; i < detail::CHECKSUM_BYTES; ++i)
     {
-        if (slot_checksum[i] != 0) { all_zero = false; break; }
+        if (slot_checksum[i] != 0)
+        {
+            all_zero = false;
+            break;
+        }
     }
     if (all_zero)
     {
@@ -1220,10 +1255,12 @@ struct SlotConsumeHandleImpl
     const char *buffer_ptr = nullptr;
     size_t buffer_size = 0;
     bool released = false;
-    bool mark_as_consumed = false;    // Set by release_consume_slot(); guards last_consumed_slot_id update
+    bool mark_as_consumed =
+        false; // Set by release_consume_slot(); guards last_consumed_slot_id update
     SlotRWState *rw_state = nullptr;  // Pointer to the SlotRWState for this slot
     uint64_t captured_generation = 0; // Captured generation for validation
-    int consumer_heartbeat_slot = -1; // For Sequential_sync: which consumer slot to update on release
+    int consumer_heartbeat_slot =
+        -1; // For Sequential_sync: which consumer slot to update on release
     /// Per-handle acquire timestamp for last_slot_exec_us (symmetric with SlotWriteHandleImpl).
     ContextMetrics::Clock::time_point t_slot_acquired_{};
 };
@@ -1233,17 +1270,14 @@ namespace
 bool release_write_handle(SlotWriteHandleImpl &impl);
 bool release_consume_handle(SlotConsumeHandleImpl &impl);
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- slot_id/slot_index and captured_generation/consumer_heartbeat_slot are semantically distinct; internal helper with 2 call sites
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- slot_id/slot_index and
+// captured_generation/consumer_heartbeat_slot are semantically distinct; internal helper with 2
+// call sites
 std::unique_ptr<SlotConsumeHandleImpl> make_slot_consume_handle_impl(
-    DataBlockConsumerImpl *owner,
-    DataBlock *dataBlock,
-    SharedMemoryHeader *header,
-    uint64_t slot_id,     // NOLINT(bugprone-easily-swappable-parameters)
-    size_t slot_index,
-    const char *buf,
-    size_t slot_stride_bytes,
-    SlotRWState *rw_state,
-    uint64_t captured_generation,  // NOLINT(bugprone-easily-swappable-parameters)
+    DataBlockConsumerImpl *owner, DataBlock *dataBlock, SharedMemoryHeader *header,
+    uint64_t slot_id, // NOLINT(bugprone-easily-swappable-parameters)
+    size_t slot_index, const char *buf, size_t slot_stride_bytes, SlotRWState *rw_state,
+    uint64_t captured_generation, // NOLINT(bugprone-easily-swappable-parameters)
     int consumer_heartbeat_slot)
 {
     auto impl = std::make_unique<SlotConsumeHandleImpl>();
@@ -1305,19 +1339,21 @@ DataBlockProducer &DataBlockProducer::operator=(DataBlockProducer &&other) noexc
 // ============================================================================
 struct DataBlockConsumerImpl
 {
-    std::recursive_mutex mutex; // Protects slot acquire/release, iterator, heartbeat; recursive (register_heartbeat called from acquire_consume_slot)
+    std::recursive_mutex mutex; // Protects slot acquire/release, iterator, heartbeat; recursive
+                                // (register_heartbeat called from acquire_consume_slot)
     std::string name;
     std::unique_ptr<DataBlock> dataBlock;
     ChecksumPolicy checksum_policy = ChecksumPolicy::Enforced;
-    uint64_t last_consumed_slot_id = INVALID_SLOT_ID;  // This field is still needed
+    uint64_t last_consumed_slot_id = INVALID_SLOT_ID; // This field is still needed
     // Single flexible zone (Phase 2 refactoring)
     size_t flex_zone_offset = 0;
     size_t flex_zone_size = 0;
     int heartbeat_slot = -1; // For Sequential_sync: index into consumer_heartbeats / read positions
     // Consumer identity written to the heartbeat slot during register_heartbeat().
-    // Must be populated BEFORE register_heartbeat() is called (set in find_datablock_consumer_impl).
-    char consumer_uid_buf[40]{};   // Null-terminated hex string; empty = not set
-    char consumer_name_buf[32]{};  // Null-terminated name; empty = not set
+    // Must be populated BEFORE register_heartbeat() is called (set in
+    // find_datablock_consumer_impl).
+    char consumer_uid_buf[40]{};  // Null-terminated hex string; empty = not set
+    char consumer_name_buf[32]{}; // Null-terminated name; empty = not set
     /// Display name (with optional suffix). Set once via call_once; not hot path.
     mutable std::once_flag name_fallback_once;
     mutable std::string name_fallback;
@@ -1372,12 +1408,14 @@ struct DataBlockConsumerImpl
 
 namespace
 {
-/// Returned by name() when pImpl is null (default-constructed or moved-from). Neutral state, not an error.
+/// Returned by name() when pImpl is null (default-constructed or moved-from). Neutral state, not an
+/// error.
 const std::string kNullProducerOrConsumerName("(null)");
 
 /// Prefix of the runtime suffix appended to names for context. See docs/NAME_CONVENTIONS.md.
 constexpr std::string_view kNameSuffixPrefix(" | pid:");
-/// Single counter for both named (suffix) and unnamed (full id) so each instance has a unique index.
+/// Single counter for both named (suffix) and unnamed (full id) so each instance has a unique
+/// index.
 std::atomic<uint64_t> g_name_instance_counter{0};
 
 /// Not hot path: called at most once per instance via call_once; result stored in name_fallback.
@@ -1417,7 +1455,7 @@ void ensure_consumer_display_name(DataBlockConsumerImpl *impl)
         impl->name_fallback = fmt::format("{}{}{}-{}", impl->name, kNameSuffixPrefix, pid, idx);
     }
 }
-}
+} // namespace
 
 const std::string &DataBlockProducer::name() const noexcept
 {
@@ -1425,7 +1463,8 @@ const std::string &DataBlockProducer::name() const noexcept
     {
         return kNullProducerOrConsumerName;
     }
-    std::call_once(pImpl->name_fallback_once, [this] { ensure_producer_display_name(pImpl.get()); });
+    std::call_once(pImpl->name_fallback_once,
+                   [this] { ensure_producer_display_name(pImpl.get()); });
     return pImpl->name_fallback;
 }
 
@@ -1435,7 +1474,8 @@ const std::string &DataBlockConsumer::name() const noexcept
     {
         return kNullProducerOrConsumerName;
     }
-    std::call_once(pImpl->name_fallback_once, [this] { ensure_consumer_display_name(pImpl.get()); });
+    std::call_once(pImpl->name_fallback_once,
+                   [this] { ensure_consumer_display_name(pImpl.get()); });
     return pImpl->name_fallback;
 }
 
@@ -1474,7 +1514,8 @@ SharedMemoryHeader *DataBlockDiagnosticHandle::header() const
 
 SlotRWState *DataBlockDiagnosticHandle::slot_rw_state(uint32_t index) const
 {
-    if (pImpl == nullptr || pImpl->slot_rw_states == nullptr || index >= pImpl->ring_buffer_capacity)
+    if (pImpl == nullptr || pImpl->slot_rw_states == nullptr ||
+        index >= pImpl->ring_buffer_capacity)
     {
         return nullptr;
     }
@@ -1493,7 +1534,7 @@ std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const s
         }
         impl->header_ptr = reinterpret_cast<SharedMemoryHeader *>(impl->m_shm.base);
         if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
-                                            detail::DATABLOCK_MAGIC_NUMBER))
+                                           detail::DATABLOCK_MAGIC_NUMBER))
         {
             return nullptr;
         }
@@ -1520,8 +1561,7 @@ std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic(const s
     }
 }
 
-std::unique_ptr<DataBlockDiagnosticHandle>
-open_datablock_for_diagnostic_from_fd(int source_fd)
+std::unique_ptr<DataBlockDiagnosticHandle> open_datablock_for_diagnostic_from_fd(int source_fd)
 {
 #if defined(PYLABHUB_IS_POSIX)
     if (source_fd < 0)
@@ -1537,7 +1577,8 @@ open_datablock_for_diagnostic_from_fd(int source_fd)
     if (dup_fd < 0)
     {
         LOGGER_DEBUG("DataBlockDiagnosticHandle: fcntl(F_DUPFD_CLOEXEC) of fd {} "
-                     "failed (errno={})", source_fd, errno);
+                     "failed (errno={})",
+                     source_fd, errno);
         return nullptr;
     }
     struct stat st = {};
@@ -1557,19 +1598,19 @@ open_datablock_for_diagnostic_from_fd(int source_fd)
                      "DataBlock region");
         return nullptr;
     }
-    void *mapped = ::mmap(nullptr, fd_size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                          dup_fd, 0);
+    void *mapped = ::mmap(nullptr, fd_size, PROT_READ | PROT_WRITE, MAP_SHARED, dup_fd, 0);
     if (mapped == MAP_FAILED)
     {
         const int saved_errno = errno;
         ::close(dup_fd);
         LOGGER_DEBUG("DataBlockDiagnosticHandle: mmap() of fd-backed SHM failed "
-                     "(errno={})", saved_errno);
+                     "(errno={})",
+                     saved_errno);
         return nullptr;
     }
     auto impl = std::make_unique<DataBlockDiagnosticHandleImpl>();
-    impl->m_shm.base   = mapped;
-    impl->m_shm.size   = fd_size;
+    impl->m_shm.base = mapped;
+    impl->m_shm.size = fd_size;
     impl->m_shm.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(dup_fd));
     // From this point on, ownership of mapped + dup_fd transfers to `impl`
     // (its m_shm dtor runs `shm_close` which munmap()s + closes the fd).
@@ -1577,7 +1618,7 @@ open_datablock_for_diagnostic_from_fd(int source_fd)
     {
         impl->header_ptr = reinterpret_cast<SharedMemoryHeader *>(impl->m_shm.base);
         if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
-                                            detail::DATABLOCK_MAGIC_NUMBER))
+                                           detail::DATABLOCK_MAGIC_NUMBER))
         {
             LOGGER_DEBUG("DataBlockDiagnosticHandle: fd does not point to a valid "
                          "DataBlock region (magic number mismatch)");
@@ -1618,44 +1659,38 @@ struct DataBlockObserverHandleImpl
 {
     pylabhub::platform::ShmHandle m_shm{};
     const SharedMemoryHeader *header_ptr{nullptr};
-    ~DataBlockObserverHandleImpl() noexcept
-    {
-        pylabhub::platform::shm_close(&m_shm);
-    }
+    ~DataBlockObserverHandleImpl() noexcept { pylabhub::platform::shm_close(&m_shm); }
 };
 
-DataBlockObserverHandle::DataBlockObserverHandle(
-    std::unique_ptr<DataBlockObserverHandleImpl> impl)
+DataBlockObserverHandle::DataBlockObserverHandle(std::unique_ptr<DataBlockObserverHandleImpl> impl)
     : pImpl(std::move(impl))
-{}
+{
+}
 
 DataBlockObserverHandle::~DataBlockObserverHandle() noexcept = default;
-DataBlockObserverHandle::DataBlockObserverHandle(
-    DataBlockObserverHandle &&) noexcept = default;
+DataBlockObserverHandle::DataBlockObserverHandle(DataBlockObserverHandle &&) noexcept = default;
 DataBlockObserverHandle &
-DataBlockObserverHandle::operator=(
-    DataBlockObserverHandle &&) noexcept = default;
+DataBlockObserverHandle::operator=(DataBlockObserverHandle &&) noexcept = default;
 
 const SharedMemoryHeader *DataBlockObserverHandle::header() const noexcept
 {
     return pImpl ? pImpl->header_ptr : nullptr;
 }
 
-std::unique_ptr<DataBlockObserverHandle>
-open_datablock_for_observer_from_fd(int source_fd)
+std::unique_ptr<DataBlockObserverHandle> open_datablock_for_observer_from_fd(int source_fd)
 {
 #if defined(PYLABHUB_IS_POSIX)
     if (source_fd < 0)
     {
-        LOGGER_DEBUG("DataBlockObserverHandle: invalid source fd ({})",
-                     source_fd);
+        LOGGER_DEBUG("DataBlockObserverHandle: invalid source fd ({})", source_fd);
         return nullptr;
     }
     const int dup_fd = ::fcntl(source_fd, F_DUPFD_CLOEXEC, 1);
     if (dup_fd < 0)
     {
         LOGGER_DEBUG("DataBlockObserverHandle: fcntl(F_DUPFD_CLOEXEC) of "
-                     "fd {} failed (errno={})", source_fd, errno);
+                     "fd {} failed (errno={})",
+                     source_fd, errno);
         return nullptr;
     }
     struct stat st = {};
@@ -1664,7 +1699,8 @@ open_datablock_for_observer_from_fd(int source_fd)
         const int saved_errno = errno;
         ::close(dup_fd);
         LOGGER_DEBUG("DataBlockObserverHandle: fstat of dup'd fd failed "
-                     "(errno={})", saved_errno);
+                     "(errno={})",
+                     saved_errno);
         return nullptr;
     }
     // Sanity: fd must be large enough to hold at least a header.  The
@@ -1674,34 +1710,33 @@ open_datablock_for_observer_from_fd(int source_fd)
     {
         ::close(dup_fd);
         LOGGER_DEBUG("DataBlockObserverHandle: fd size {} < sizeof(header) "
-                     "{}", st.st_size, sizeof(SharedMemoryHeader));
+                     "{}",
+                     st.st_size, sizeof(SharedMemoryHeader));
         return nullptr;
     }
     // HEADER-ONLY mmap.  Data slots + flexzone stay unmapped in this
     // process's address space.  `PROT_READ` enforces read-only at the
     // VM layer; any write from this side raises SIGSEGV.
     constexpr size_t header_map_size = sizeof(SharedMemoryHeader);
-    void *mapped = ::mmap(nullptr, header_map_size, PROT_READ, MAP_SHARED,
-                          dup_fd, 0);
+    void *mapped = ::mmap(nullptr, header_map_size, PROT_READ, MAP_SHARED, dup_fd, 0);
     if (mapped == MAP_FAILED)
     {
         const int saved_errno = errno;
         ::close(dup_fd);
         LOGGER_DEBUG("DataBlockObserverHandle: mmap of header prefix "
-                     "failed (errno={})", saved_errno);
+                     "failed (errno={})",
+                     saved_errno);
         return nullptr;
     }
     auto impl = std::make_unique<DataBlockObserverHandleImpl>();
-    impl->m_shm.base   = mapped;
-    impl->m_shm.size   = header_map_size;
-    impl->m_shm.opaque = reinterpret_cast<void *>(
-        static_cast<intptr_t>(dup_fd));
+    impl->m_shm.base = mapped;
+    impl->m_shm.size = header_map_size;
+    impl->m_shm.opaque = reinterpret_cast<void *>(static_cast<intptr_t>(dup_fd));
     // Ownership of mapped + dup_fd transfers to `impl` here (its m_shm
     // dtor runs shm_close which munmap()s + closes).
-    impl->header_ptr = reinterpret_cast<const SharedMemoryHeader *>(
-        impl->m_shm.base);
+    impl->header_ptr = reinterpret_cast<const SharedMemoryHeader *>(impl->m_shm.base);
     if (!detail::is_header_magic_valid(&impl->header_ptr->magic_number,
-                                        detail::DATABLOCK_MAGIC_NUMBER))
+                                       detail::DATABLOCK_MAGIC_NUMBER))
     {
         LOGGER_DEBUG("DataBlockObserverHandle: fd does not point to a "
                      "valid DataBlock region (magic number mismatch)");
@@ -1725,11 +1760,11 @@ open_datablock_for_observer_from_fd(int source_fd)
     catch (const std::exception &e)
     {
         LOGGER_DEBUG("DataBlockObserverHandle: header layout validation "
-                     "threw: {}", e.what());
+                     "threw: {}",
+                     e.what());
         return nullptr;
     }
-    return std::unique_ptr<DataBlockObserverHandle>(
-        new DataBlockObserverHandle(std::move(impl)));
+    return std::unique_ptr<DataBlockObserverHandle>(new DataBlockObserverHandle(std::move(impl)));
 #else
     (void)source_fd;
     LOGGER_DEBUG("DataBlockObserverHandle: fd-based open not supported on "
@@ -1801,7 +1836,7 @@ void DataBlockProducer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::mutex> lock(pImpl->mutex);
-    pImpl->metrics_.clear();  // preserves configured_period_us by default
+    pImpl->metrics_.clear(); // preserves configured_period_us by default
     pImpl->t_iter_start_ = {};
 }
 
@@ -1868,8 +1903,7 @@ uint64_t DataBlockProducer::consumer_heartbeat_ns(uint32_t slot_index) const noe
     auto *h = pImpl->dataBlock->header();
     if (h == nullptr)
         return 0;
-    return h->consumer_heartbeats[slot_index].last_heartbeat_ns.load(
-        std::memory_order_acquire);
+    return h->consumer_heartbeats[slot_index].last_heartbeat_ns.load(std::memory_order_acquire);
 }
 
 // ─── Channel Identity Accessors (DataBlockProducer) ───
@@ -1908,8 +1942,7 @@ std::string DataBlockProducer::producer_uid() const noexcept
         return {};
     }
     auto *h = pImpl->dataBlock->header();
-    return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid))
-                          : std::string{};
+    return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid)) : std::string{};
 }
 
 std::string DataBlockProducer::producer_name() const noexcept
@@ -1929,7 +1962,8 @@ std::string DataBlockProducer::producer_name() const noexcept
 
 // NOLINT annotations: these are placeholder stubs for future broker-coordinated remapping
 uint64_t DataBlockProducer::request_structure_remap(
-    const std::optional<schema::SchemaInfo> &new_flexzone_schema,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::optional<schema::SchemaInfo>
+        &new_flexzone_schema, // NOLINT(bugprone-easily-swappable-parameters)
     const std::optional<schema::SchemaInfo> &new_datablock_schema)
 {
     (void)new_flexzone_schema;
@@ -1944,7 +1978,8 @@ uint64_t DataBlockProducer::request_structure_remap(
 
 void DataBlockProducer::commit_structure_remap(
     uint64_t request_id,
-    const std::optional<schema::SchemaInfo> &new_flexzone_schema,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::optional<schema::SchemaInfo>
+        &new_flexzone_schema, // NOLINT(bugprone-easily-swappable-parameters)
     const std::optional<schema::SchemaInfo> &new_datablock_schema)
 {
     (void)request_id;
@@ -2005,8 +2040,7 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     auto [header, slot_count] = get_header_and_slot_count(pImpl->dataBlock.get());
     if (header == nullptr || slot_count == 0)
     {
-        LOGGER_WARN("acquire_write_slot: header={} slot_count={}",
-                    (void*)header, slot_count);
+        LOGGER_WARN("acquire_write_slot: header={} slot_count={}", (void *)header, slot_count);
         return nullptr;
     }
 
@@ -2070,7 +2104,8 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     //      be redesigned for the multi-writer commit ordering that results.
     // Do not extend to multi-writer without fully resolving both protocols first.
 
-    uint64_t slot_id = header->write_index.fetch_add(1, std::memory_order_acq_rel); // claim unique slot_id
+    uint64_t slot_id =
+        header->write_index.fetch_add(1, std::memory_order_acq_rel); // claim unique slot_id
     auto slot_index = static_cast<size_t>(slot_id % slot_count);
 
     SlotRWState *rw_state = pImpl->dataBlock->slot_rw_state(slot_index);
@@ -2081,7 +2116,8 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
 
     // drain_hold=true: Phase 2 timeout resets timer and keeps waiting (no burn).
     // Phase 1 timeout (zombie writer) still releases and returns SLOT_ACQUIRE_TIMEOUT.
-    SlotAcquireResult acquire_res = acquire_write(rw_state, header, timeout_ms, /*drain_hold=*/true);
+    SlotAcquireResult acquire_res =
+        acquire_write(rw_state, header, timeout_ms, /*drain_hold=*/true);
     if (acquire_res != SLOT_ACQUIRE_OK)
     {
         // Phase 1 timeout (zombie write_lock) — slot_id is burned but this path is
@@ -2109,14 +2145,16 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
         if (pImpl->t_iter_start_ != t_zero)
         {
             // Subsequent iteration: compute start-to-start interval.
-            const auto elapsed_us = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    t_acquired - pImpl->t_iter_start_).count());
+            const auto elapsed_us =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          t_acquired - pImpl->t_iter_start_)
+                                          .count());
             m.set_last_iteration(elapsed_us);
             m.update_max_iteration(elapsed_us);
-            m.set_context_elapsed(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    t_acquired - m.context_start_time_val()).count()));
+            m.set_context_elapsed(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          t_acquired - m.context_start_time_val())
+                                          .count()));
             // Overrun detection removed from DataBlock — timing measurement only.
             // Overrun judgement belongs to the main loop which owns the deadline.
         }
@@ -2126,9 +2164,8 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
             m.set_context_start(t_acquired);
         }
         m.set_last_slot_wait(static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - t_entry).count()));
-        pImpl->t_iter_start_  = t_acquired;
+            std::chrono::duration_cast<std::chrono::microseconds>(t_acquired - t_entry).count()));
+        pImpl->t_iter_start_ = t_acquired;
     }
 
     auto impl = std::make_unique<SlotWriteHandleImpl>();
@@ -2142,11 +2179,13 @@ std::unique_ptr<SlotWriteHandle> DataBlockProducer::acquire_write_slot(int timeo
     impl->rw_state = rw_state;
     impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_exec_us
     // flexible_ptr and flexible_size are no longer directly used in SlotWriteHandleImpl
-    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design choice
+    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design
+    // choice
     return std::unique_ptr<SlotWriteHandle>(new SlotWriteHandle(std::move(impl)));
 }
 
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- member for API consistency with class
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- member for API consistency with
+// class
 bool DataBlockProducer::release_write_slot(SlotWriteHandle &handle) noexcept
 {
     if (handle.pImpl == nullptr)
@@ -2231,23 +2270,26 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
         const ContextMetrics::Clock::time_point t_zero{};
         if (impl.t_slot_acquired_ != t_zero)
         {
-            impl.owner->metrics_.set_last_slot_exec(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    ContextMetrics::Clock::now() - impl.t_slot_acquired_).count()));
+            impl.owner->metrics_.set_last_slot_exec(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          ContextMetrics::Clock::now() - impl.t_slot_acquired_)
+                                          .count()));
         }
     }
 
     bool success = true;
 
     // Auto-checksum on commit only when Enforced. Manual policy: caller (ShmQueue) handles it.
-    if (impl.committed && impl.owner != nullptr && impl.owner->checksum_policy == ChecksumPolicy::Enforced &&
-        impl.header != nullptr &&
+    if (impl.committed && impl.owner != nullptr &&
+        impl.owner->checksum_policy == ChecksumPolicy::Enforced && impl.header != nullptr &&
         static_cast<ChecksumType>(impl.header->checksum_type) != ChecksumType::Unset)
     {
         if (!update_checksum_slot_impl(impl.dataBlock, impl.slot_index, /*compute=*/true))
         {
-            LOGGER_WARN("DataBlock '{}': release_write_slot failed — checksum update failed for slot_index={} slot_id={}.",
-                        impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index, impl.slot_id);
+            LOGGER_WARN("DataBlock '{}': release_write_slot failed — checksum update failed for "
+                        "slot_index={} slot_id={}.",
+                        impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index,
+                        impl.slot_id);
             success = false;
         }
 
@@ -2256,8 +2298,10 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
         {
             if (!update_checksum_flexible_zone_impl(impl.dataBlock))
             {
-                LOGGER_WARN("DataBlock '{}': release_write_slot failed — flexible zone checksum update failed for slot_index={}.",
-                            impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index);
+                LOGGER_WARN("DataBlock '{}': release_write_slot failed — flexible zone checksum "
+                            "update failed for slot_index={}.",
+                            impl.owner != nullptr ? impl.owner->name : "(unknown)",
+                            impl.slot_index);
                 success = false;
             }
         }
@@ -2276,8 +2320,7 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
         // Abort path: slot was not committed, so return it to FREE.
         // State must transition to FREE before the write_lock is released.
         // See release_write() in data_block_slot_ops.cpp for the ordering rationale.
-        impl.rw_state->slot_state.store(SlotRWState::SlotState::FREE,
-                                        std::memory_order_release);
+        impl.rw_state->slot_state.store(SlotRWState::SlotState::FREE, std::memory_order_release);
         impl.rw_state->write_lock.store(0, std::memory_order_release);
 
         // Restore write_index: the slot_id claimed by acquire_write_slot() was
@@ -2300,7 +2343,8 @@ bool release_write_handle(SlotWriteHandleImpl &impl)
     return success;
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- structured release flow; refactor would fragment logic
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- structured release flow; refactor
+// would fragment logic
 bool release_consume_handle(SlotConsumeHandleImpl &impl)
 {
     if (impl.released)
@@ -2316,9 +2360,10 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         const ContextMetrics::Clock::time_point t_zero{};
         if (impl.t_slot_acquired_ != t_zero)
         {
-            impl.owner->metrics_.set_last_slot_exec(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    ContextMetrics::Clock::now() - impl.t_slot_acquired_).count()));
+            impl.owner->metrics_.set_last_slot_exec(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          ContextMetrics::Clock::now() - impl.t_slot_acquired_)
+                                          .count()));
         }
     }
 
@@ -2329,8 +2374,10 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     {
         if (!validate_read_impl(impl.rw_state, impl.header, impl.captured_generation))
         {
-            LOGGER_WARN("DataBlock '{}': release_consume_slot failed — slot validation failed (wrap-around or slot overwritten) for slot_index={} slot_id={}.",
-                        impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index, impl.slot_id);
+            LOGGER_WARN("DataBlock '{}': release_consume_slot failed — slot validation failed "
+                        "(wrap-around or slot overwritten) for slot_index={} slot_id={}.",
+                        impl.owner != nullptr ? impl.owner->name : "(unknown)", impl.slot_index,
+                        impl.slot_id);
             success = false;
         }
     }
@@ -2340,14 +2387,15 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     }
 
     // 2. Auto-verify only when Enforced. Manual policy: caller (ShmQueue) handles it.
-    if (success && impl.owner != nullptr && impl.owner->checksum_policy == ChecksumPolicy::Enforced &&
-        impl.header != nullptr &&
+    if (success && impl.owner != nullptr &&
+        impl.owner->checksum_policy == ChecksumPolicy::Enforced && impl.header != nullptr &&
         static_cast<ChecksumType>(impl.header->checksum_type) != ChecksumType::Unset)
     {
         if (!verify_checksum_slot_impl(impl.dataBlock, impl.slot_index, /*honor_slot_valid=*/false))
         {
             impl.owner->metrics_.inc_checksum_error();
-            LOGGER_WARN("DataBlock '{}': release_consume_slot — slot checksum verification failed for slot_index={} slot_id={}.",
+            LOGGER_WARN("DataBlock '{}': release_consume_slot — slot checksum verification failed "
+                        "for slot_index={} slot_id={}.",
                         impl.owner->name, impl.slot_index, impl.slot_id);
             success = false;
         }
@@ -2357,7 +2405,8 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
             if (!verify_checksum_flexible_zone_impl(impl.dataBlock, /*honor_valid=*/false))
             {
                 impl.owner->metrics_.inc_checksum_error();
-                LOGGER_WARN("DataBlock '{}': release_consume_slot — flexzone checksum verification failed for slot_index={}.",
+                LOGGER_WARN("DataBlock '{}': release_consume_slot — flexzone checksum verification "
+                            "failed for slot_index={}.",
                             impl.owner->name, impl.slot_index);
                 success = false;
             }
@@ -2384,7 +2433,8 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
         {
             header->read_index.store(next, std::memory_order_release);
         }
-        else if (policy == ConsumerSyncPolicy::Sequential_sync && impl.consumer_heartbeat_slot >= 0 &&
+        else if (policy == ConsumerSyncPolicy::Sequential_sync &&
+                 impl.consumer_heartbeat_slot >= 0 &&
                  impl.consumer_heartbeat_slot < static_cast<int>(MAX_CONSUMER_HEARTBEATS))
         {
             consumer_next_read_slot_ptr(header, static_cast<size_t>(impl.consumer_heartbeat_slot))
@@ -2393,7 +2443,8 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
             uint64_t min_pos = next;
             for (size_t i = 0; i < MAX_CONSUMER_HEARTBEATS; ++i)
             {
-                if (header->consumer_heartbeats[i].consumer_pid.load(std::memory_order_acquire) != 0)
+                if (header->consumer_heartbeats[i].consumer_pid.load(std::memory_order_acquire) !=
+                    0)
                 {
                     uint64_t pos =
                         consumer_next_read_slot_ptr(header, i)->load(std::memory_order_acquire);
@@ -2408,7 +2459,8 @@ bool release_consume_handle(SlotConsumeHandleImpl &impl)
     }
 
     // Update last_consumed_slot_id only when explicitly consumed (not on exception-path destructor
-    // release). This allows Latest_only consumers to re-read the same slot after exception recovery.
+    // release). This allows Latest_only consumers to re-read the same slot after exception
+    // recovery.
     if (impl.mark_as_consumed && impl.owner != nullptr)
     {
         impl.owner->last_consumed_slot_id = impl.slot_id;
@@ -2458,9 +2510,9 @@ std::span<std::byte> SlotWriteHandle::buffer_span() noexcept
 
 std::span<std::byte> SlotWriteHandle::flexible_zone_span() noexcept
 {
-    return (pImpl != nullptr && pImpl->owner != nullptr) 
-        ? detail::get_flex_zone_span_mutable(pImpl->owner)
-        : std::span<std::byte>{};
+    return (pImpl != nullptr && pImpl->owner != nullptr)
+               ? detail::get_flex_zone_span_mutable(pImpl->owner)
+               : std::span<std::byte>{};
 }
 
 bool SlotWriteHandle::write(const void *src, size_t len, size_t offset) noexcept
@@ -2561,8 +2613,8 @@ std::span<const std::byte> SlotConsumeHandle::buffer_span() const noexcept
 std::span<const std::byte> SlotConsumeHandle::flexible_zone_span() const noexcept
 {
     return (pImpl != nullptr && pImpl->owner != nullptr)
-        ? detail::get_flex_zone_span_const(pImpl->owner)
-        : std::span<const std::byte>{};
+               ? detail::get_flex_zone_span_const(pImpl->owner)
+               : std::span<const std::byte>{};
 }
 
 bool SlotConsumeHandle::read(void *dst, size_t len, size_t offset) const noexcept
@@ -2585,7 +2637,8 @@ bool SlotConsumeHandle::verify_checksum_slot() const noexcept
     {
         return false;
     }
-    return verify_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index, /*honor_slot_valid=*/true);
+    return verify_checksum_slot_impl(pImpl->dataBlock, pImpl->slot_index,
+                                     /*honor_slot_valid=*/true);
 }
 
 bool SlotConsumeHandle::verify_checksum_flexible_zone() const noexcept
@@ -2653,11 +2706,13 @@ std::span<const std::byte> DataBlockConsumer::flexible_zone_span() const noexcep
 bool DataBlockConsumer::verify_checksum_slot(size_t slot_index) const noexcept
 {
     return (pImpl != nullptr && pImpl->dataBlock != nullptr)
-               ? verify_checksum_slot_impl(pImpl->dataBlock.get(), slot_index, /*honor_slot_valid=*/true)
+               ? verify_checksum_slot_impl(pImpl->dataBlock.get(), slot_index,
+                                           /*honor_slot_valid=*/true)
                : false;
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- structured multi-step slot acquire flow
+// NOLINTNEXTLINE(readability-function-cognitive-complexity) -- structured multi-step slot acquire
+// flow
 std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int timeout_ms) noexcept
 {
     if (pImpl == nullptr)
@@ -2726,7 +2781,8 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
         backoff(iteration++);
     }
 
-    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
+    const size_t slot_stride_bytes =
+        pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
     const char *buf = pImpl->dataBlock->structured_data_buffer();
     if (buf == nullptr || slot_stride_bytes == 0)
     {
@@ -2743,14 +2799,16 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
         const ContextMetrics::Clock::time_point t_zero{};
         if (pImpl->t_iter_start_ != t_zero)
         {
-            const auto elapsed_us = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    t_acquired - pImpl->t_iter_start_).count());
+            const auto elapsed_us =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          t_acquired - pImpl->t_iter_start_)
+                                          .count());
             m.set_last_iteration(elapsed_us);
             m.update_max_iteration(elapsed_us);
-            m.set_context_elapsed(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    t_acquired - m.context_start_time_val()).count()));
+            m.set_context_elapsed(
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          t_acquired - m.context_start_time_val())
+                                          .count()));
             // No timing overrun detection here — the main loop owns the deadline.
             // Consumer never drops data (data_drop_count stays 0).
         }
@@ -2759,14 +2817,13 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
             m.set_context_start(t_acquired);
         }
         m.set_last_slot_wait(static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                t_acquired - t_entry).count()));
-        pImpl->t_iter_start_   = t_acquired;
+            std::chrono::duration_cast<std::chrono::microseconds>(t_acquired - t_entry).count()));
+        pImpl->t_iter_start_ = t_acquired;
     }
 
     auto handle_impl = make_slot_consume_handle_impl(
-        pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index,
-        buf, slot_stride_bytes, rw_state, captured_generation,
+        pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index, buf, slot_stride_bytes,
+        rw_state, captured_generation,
         (policy == ConsumerSyncPolicy::Sequential_sync) ? pImpl->heartbeat_slot : -1);
     handle_impl->t_slot_acquired_ = t_acquired; // per-handle anchor for last_slot_exec_us
 
@@ -2774,11 +2831,13 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(int t
     // explicitly consumed via release_consume_slot() (mark_as_consumed=true). Exception-path
     // release (via ~SlotConsumeHandle) does NOT update it, allowing the same slot to be
     // re-read after exception recovery. See release_consume_handle() for details.
-    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design choice
+    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design
+    // choice
     return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(handle_impl)));
 }
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- slot_id then timeout_ms; intentional ordering
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- slot_id then timeout_ms; intentional
+// ordering
 std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint64_t slot_id,
                                                                            int timeout_ms) noexcept
 {
@@ -2816,7 +2875,8 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
         return nullptr;
     }
 
-    const size_t slot_stride_bytes = pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
+    const size_t slot_stride_bytes =
+        pImpl->dataBlock->layout().slot_stride_bytes(); // ring iteration step = logical
     const char *buf = pImpl->dataBlock->structured_data_buffer();
     if (buf == nullptr || slot_stride_bytes == 0)
     {
@@ -2825,17 +2885,22 @@ std::unique_ptr<SlotConsumeHandle> DataBlockConsumer::acquire_consume_slot(uint6
     }
 
     auto handle_impl = make_slot_consume_handle_impl(
-        pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index,
-        buf, slot_stride_bytes, rw_state, captured_generation,
-        (header->consumer_sync_policy == ConsumerSyncPolicy::Sequential_sync) ? pImpl->heartbeat_slot : -1);
-    handle_impl->t_slot_acquired_ = ContextMetrics::Clock::now(); // per-handle anchor for last_slot_exec_us
+        pImpl.get(), pImpl->dataBlock.get(), header, slot_id, slot_index, buf, slot_stride_bytes,
+        rw_state, captured_generation,
+        (header->consumer_sync_policy == ConsumerSyncPolicy::Sequential_sync)
+            ? pImpl->heartbeat_slot
+            : -1);
+    handle_impl->t_slot_acquired_ =
+        ContextMetrics::Clock::now(); // per-handle anchor for last_slot_exec_us
 
     // Note: last_consumed_slot_id updated only on explicit release_consume_slot() call.
-    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design choice
+    // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new) -- OOM would terminate; noexcept design
+    // choice
     return std::unique_ptr<SlotConsumeHandle>(new SlotConsumeHandle(std::move(handle_impl)));
 }
 
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- member for API consistency with class
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static) -- member for API consistency with
+// class
 bool DataBlockConsumer::release_consume_slot(SlotConsumeHandle &handle) noexcept
 {
     if (handle.pImpl == nullptr)
@@ -2888,9 +2953,8 @@ int DataBlockConsumer::register_heartbeat()
 
 void DataBlockConsumer::update_heartbeat(int slot)
 {
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr ||
-        pImpl->dataBlock->header() == nullptr || slot < 0 ||
-        slot >= static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr || pImpl->dataBlock->header() == nullptr ||
+        slot < 0 || slot >= static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
     {
         return;
     }
@@ -2925,9 +2989,8 @@ void DataBlockConsumer::update_heartbeat() noexcept
 
 void DataBlockConsumer::unregister_heartbeat(int slot)
 {
-    if (pImpl == nullptr || pImpl->dataBlock == nullptr ||
-        pImpl->dataBlock->header() == nullptr || slot < 0 ||
-        slot >= static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
+    if (pImpl == nullptr || pImpl->dataBlock == nullptr || pImpl->dataBlock->header() == nullptr ||
+        slot < 0 || slot >= static_cast<int>(detail::MAX_CONSUMER_HEARTBEATS))
     {
         return;
     }
@@ -2996,7 +3059,7 @@ void DataBlockConsumer::clear_metrics() noexcept
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(pImpl->mutex);
-    pImpl->metrics_.clear();  // preserves configured_period_us by default
+    pImpl->metrics_.clear(); // preserves configured_period_us by default
     pImpl->t_iter_start_ = {};
 }
 
@@ -3023,8 +3086,7 @@ std::string DataBlockConsumer::producer_uid() const noexcept
     if (pImpl == nullptr || pImpl->dataBlock == nullptr)
         return {};
     auto *h = pImpl->dataBlock->header();
-    return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid))
-                          : std::string{};
+    return (h != nullptr) ? read_id_field(h->producer_uid, sizeof(h->producer_uid)) : std::string{};
 }
 
 std::string DataBlockConsumer::producer_name() const noexcept
@@ -3066,7 +3128,8 @@ void DataBlockConsumer::release_for_remap()
 }
 
 void DataBlockConsumer::reattach_after_remap(
-    const std::optional<schema::SchemaInfo> &new_flexzone_schema,  // NOLINT(bugprone-easily-swappable-parameters)
+    const std::optional<schema::SchemaInfo>
+        &new_flexzone_schema, // NOLINT(bugprone-easily-swappable-parameters)
     const std::optional<schema::SchemaInfo> &new_datablock_schema)
 {
     (void)new_flexzone_schema;
@@ -3078,7 +3141,6 @@ void DataBlockConsumer::reattach_after_remap(
         "This is a placeholder API for future functionality. "
         "See CHECKSUM_ARCHITECTURE.md §7.1 for protocol details.");
 }
-
 
 /** Single control surface for attach validation: layout checksum + optional config match.
  *  Call after validate_header_layout_hash(header). Returns false if layout checksum fails
@@ -3102,8 +3164,8 @@ static bool validate_attach_layout_and_config(const SharedMemoryHeader *header,
         ~(detail::PAGE_ALIGNMENT - 1);
     const bool flex_ok = header->flexible_zone_size == rounded_expected_flex;
     const bool cap_ok = header->ring_buffer_capacity == expected_config->ring_buffer_capacity;
-    const bool page_ok =
-        header->physical_page_size == static_cast<uint32_t>(to_bytes(expected_config->physical_page_size));
+    const bool page_ok = header->physical_page_size ==
+                         static_cast<uint32_t>(to_bytes(expected_config->physical_page_size));
     const bool stride_ok = detail::get_slot_stride_bytes(header) ==
                            static_cast<uint32_t>(expected_config->effective_logical_unit_size());
     const bool checksum_ok =
@@ -3132,16 +3194,17 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
 {
     if (!datablock_lifecycle_ready())
     {
-        throw std::runtime_error(
-            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before creating producers.");
+        throw std::runtime_error("DataBlock: Data Exchange Hub module not initialized. Create a "
+                                 "LifecycleGuard in main() "
+                                 "with pylabhub::hub::GetDataBlockModule() (and typically Logger, "
+                                 "SecureSubsystem) before creating producers.");
     }
     (void)policy; // Reserved for future policy-specific behavior
     auto impl = std::make_unique<DataBlockProducerImpl>();
     impl->name = name;
     impl->dataBlock = std::make_unique<DataBlock>(name, config);
     impl->checksum_policy = config.checksum_policy;
-    
+
     // Single flex zone (Phase 2 refactoring)
     auto layout = DataBlockLayout::from_config(config);
     impl->flex_zone_offset = layout.flexible_zone_offset;
@@ -3153,25 +3216,29 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
         // Phase 4: Store BOTH schemas if provided
         if (flexzone_schema != nullptr)
         {
-            std::memcpy(header->flexzone_schema_hash, flexzone_schema->hash.data(), detail::CHECKSUM_BYTES);
+            std::memcpy(header->flexzone_schema_hash, flexzone_schema->hash.data(),
+                        detail::CHECKSUM_BYTES);
             LOGGER_DEBUG("[DataBlock:{}] FlexZone schema stored: {} v{}, hash={}...", name,
                          flexzone_schema->name, flexzone_schema->version.to_string(),
                          fmt::format("{:02x}{:02x}{:02x}{:02x}", flexzone_schema->hash[0],
-                                     flexzone_schema->hash[1], flexzone_schema->hash[2], flexzone_schema->hash[3]));
+                                     flexzone_schema->hash[1], flexzone_schema->hash[2],
+                                     flexzone_schema->hash[3]));
         }
         else
         {
             std::memset(header->flexzone_schema_hash, 0, detail::CHECKSUM_BYTES);
         }
-        
+
         if (datablock_schema != nullptr)
         {
-            std::memcpy(header->datablock_schema_hash, datablock_schema->hash.data(), detail::CHECKSUM_BYTES);
+            std::memcpy(header->datablock_schema_hash, datablock_schema->hash.data(),
+                        detail::CHECKSUM_BYTES);
             header->schema_version = datablock_schema->version.pack();
             LOGGER_DEBUG("[DataBlock:{}] DataBlock schema stored: {} v{}, hash={}...", name,
                          datablock_schema->name, datablock_schema->version.to_string(),
                          fmt::format("{:02x}{:02x}{:02x}{:02x}", datablock_schema->hash[0],
-                                     datablock_schema->hash[1], datablock_schema->hash[2], datablock_schema->hash[3]));
+                                     datablock_schema->hash[1], datablock_schema->hash[2],
+                                     datablock_schema->hash[3]));
         }
         else
         {
@@ -3180,7 +3247,8 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
         }
 
         // Write channel identity fields from config
-        auto write_id_str = [](char *dst, size_t dst_size, const std::string &src) {
+        auto write_id_str = [](char *dst, size_t dst_size, const std::string &src)
+        {
             size_t len = src.size() < dst_size ? src.size() : dst_size - 1;
             std::memcpy(dst, src.c_str(), len);
             dst[len] = '\0';
@@ -3205,18 +3273,17 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
 // the capability-transport replacement carries no per-attach secret
 // (HEP-CORE-0041 §1 + §3 + §5.5).
 std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_impl(const std::string &name,
-                             const DataBlockConfig *expected_config,
+find_datablock_consumer_impl(const std::string &name, const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema,
-                             const char *consumer_uid,
-                             const char *consumer_name)
+                             const char *consumer_uid, const char *consumer_name)
 {
     if (!datablock_lifecycle_ready())
     {
-        throw std::runtime_error(
-            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before finding consumers.");
+        throw std::runtime_error("DataBlock: Data Exchange Hub module not initialized. Create a "
+                                 "LifecycleGuard in main() "
+                                 "with pylabhub::hub::GetDataBlockModule() (and typically Logger, "
+                                 "SecureSubsystem) before finding consumers.");
     }
     auto impl = std::make_unique<DataBlockConsumerImpl>();
     impl->name = name;
@@ -3226,7 +3293,8 @@ find_datablock_consumer_impl(const std::string &name,
     if (header == nullptr)
     {
         LOGGER_WARN("[DataBlock:{}] find_consumer: attached SHM has no "
-                    "readable header (mapping likely failed).", name);
+                    "readable header (mapping likely failed).",
+                    name);
         return nullptr;
     }
 
@@ -3243,7 +3311,8 @@ find_datablock_consumer_impl(const std::string &name,
                     name);
         return nullptr;
     }
-    // Validate layout checksum + config (single control surface: see validate_attach_layout_and_config)
+    // Validate layout checksum + config (single control surface: see
+    // validate_attach_layout_and_config)
     if (!validate_attach_layout_and_config(header, expected_config))
     {
         LOGGER_WARN("[DataBlock:{}] Layout checksum or config mismatch during consumer attachment.",
@@ -3251,7 +3320,7 @@ find_datablock_consumer_impl(const std::string &name,
         return nullptr;
     }
     impl->checksum_policy = header->checksum_policy;
-    
+
     // Single flex zone (Phase 2 refactoring)
     auto layout = DataBlockLayout::from_header(header);
     impl->flex_zone_offset = layout.flexible_zone_offset;
@@ -3262,68 +3331,71 @@ find_datablock_consumer_impl(const std::string &name,
     {
         // Check if producer stored flexzone schema
         bool has_flexzone_schema = std::any_of(
-            header->flexzone_schema_hash,
-            header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
+            header->flexzone_schema_hash, header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
             [](uint8_t byte) { return byte != 0; });
 
         if (!has_flexzone_schema)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_WARN("[DataBlock:{}] Producer did not store FlexZone schema, but consumer expects '{}'",
-                        name, flexzone_schema->name);
+            LOGGER_WARN(
+                "[DataBlock:{}] Producer did not store FlexZone schema, but consumer expects '{}'",
+                name, flexzone_schema->name);
             return nullptr;
         }
 
         // Compare flexzone schema hashes
-        if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(), detail::CHECKSUM_BYTES) != 0)
+        if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(),
+                        detail::CHECKSUM_BYTES) != 0)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] FlexZone schema hash mismatch! Expected '{}' v{}", 
-                         name, flexzone_schema->name, flexzone_schema->version.to_string());
+            LOGGER_ERROR("[DataBlock:{}] FlexZone schema hash mismatch! Expected '{}' v{}", name,
+                         flexzone_schema->name, flexzone_schema->version.to_string());
             return nullptr;
         }
-        
-        LOGGER_DEBUG("[DataBlock:{}] FlexZone schema validated: {} v{}", 
-                     name, flexzone_schema->name, flexzone_schema->version.to_string());
+
+        LOGGER_DEBUG("[DataBlock:{}] FlexZone schema validated: {} v{}", name,
+                     flexzone_schema->name, flexzone_schema->version.to_string());
     }
 
     if (datablock_schema != nullptr)
     {
         // Check if producer stored datablock schema
         bool has_datablock_schema = std::any_of(
-            header->datablock_schema_hash,
-            header->datablock_schema_hash + detail::CHECKSUM_BYTES,
+            header->datablock_schema_hash, header->datablock_schema_hash + detail::CHECKSUM_BYTES,
             [](uint8_t byte) { return byte != 0; });
 
         if (!has_datablock_schema)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_WARN("[DataBlock:{}] Producer did not store DataBlock schema, but consumer expects '{}'",
-                        name, datablock_schema->name);
+            LOGGER_WARN(
+                "[DataBlock:{}] Producer did not store DataBlock schema, but consumer expects '{}'",
+                name, datablock_schema->name);
             return nullptr;
         }
 
         // Compare datablock schema hashes
-        if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(), detail::CHECKSUM_BYTES) != 0)
+        if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(),
+                        detail::CHECKSUM_BYTES) != 0)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] DataBlock schema hash mismatch! Expected '{}' v{}",
-                         name, datablock_schema->name, datablock_schema->version.to_string());
+            LOGGER_ERROR("[DataBlock:{}] DataBlock schema hash mismatch! Expected '{}' v{}", name,
+                         datablock_schema->name, datablock_schema->version.to_string());
             return nullptr;
         }
-        
+
         // Validate schema version compatibility
         auto stored_version = pylabhub::schema::SchemaVersion::unpack(header->schema_version);
         if (stored_version.major != datablock_schema->version.major)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] Incompatible DataBlock schema version! Producer: {}, Consumer: {}",
-                         name, stored_version.to_string(), datablock_schema->version.to_string());
+            LOGGER_ERROR(
+                "[DataBlock:{}] Incompatible DataBlock schema version! Producer: {}, Consumer: {}",
+                name, stored_version.to_string(), datablock_schema->version.to_string());
             return nullptr;
         }
-        
-        LOGGER_DEBUG("[DataBlock:{}] DataBlock schema validated: {} v{}", 
-                     name, datablock_schema->name, datablock_schema->version.to_string());
+
+        LOGGER_DEBUG("[DataBlock:{}] DataBlock schema validated: {} v{}", name,
+                     datablock_schema->name, datablock_schema->version.to_string());
     }
 
     // Store consumer identity before moving impl — register_heartbeat reads these
@@ -3340,7 +3412,7 @@ find_datablock_consumer_impl(const std::string &name,
 
     // Create consumer first, then register heartbeat
     auto consumer = std::make_unique<DataBlockConsumer>(std::move(impl));
-    
+
     // Register consumer heartbeat — enforced for all consumer sync policies.
     // Heartbeat slot provides liveness signal for all consumers (broker visibility).
     // For Sequential_sync: also serves as read-position cursor index in reserved_header.
@@ -3382,16 +3454,16 @@ find_datablock_consumer_impl(const std::string &name,
 // Validation mirrors find_datablock_consumer_impl (schema-only after
 // HEP-CORE-0041 1i-cleanup S4 #275).
 std::unique_ptr<DataBlockProducer>
-attach_datablock_as_writer_impl(const std::string &name,
-                                const DataBlockConfig *expected_config,
+attach_datablock_as_writer_impl(const std::string &name, const DataBlockConfig *expected_config,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
                                 const pylabhub::schema::SchemaInfo *datablock_schema)
 {
     if (!datablock_lifecycle_ready())
     {
-        throw std::runtime_error(
-            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before attaching as writer.");
+        throw std::runtime_error("DataBlock: Data Exchange Hub module not initialized. Create a "
+                                 "LifecycleGuard in main() "
+                                 "with pylabhub::hub::GetDataBlockModule() (and typically Logger, "
+                                 "SecureSubsystem) before attaching as writer.");
     }
 
     auto impl = std::make_unique<DataBlockProducerImpl>();
@@ -3403,7 +3475,8 @@ attach_datablock_as_writer_impl(const std::string &name,
     if (header == nullptr)
     {
         LOGGER_WARN("[DataBlock:{}] WriteAttach: attached SHM has no "
-                    "readable header (mapping likely failed).", name);
+                    "readable header (mapping likely failed).",
+                    name);
         return nullptr;
     }
 
@@ -3421,7 +3494,8 @@ attach_datablock_as_writer_impl(const std::string &name,
     catch (const pylabhub::schema::SchemaValidationException &)
     {
         header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-        LOGGER_WARN("[DataBlock:{}] WriteAttach: Header layout mismatch (ABI incompatibility).", name);
+        LOGGER_WARN("[DataBlock:{}] WriteAttach: Header layout mismatch (ABI incompatibility).",
+                    name);
         return nullptr;
     }
 
@@ -3441,59 +3515,64 @@ attach_datablock_as_writer_impl(const std::string &name,
     // Validate FlexZone schema if provided
     if (flexzone_schema != nullptr)
     {
-        bool has_flexzone = std::any_of(
-            header->flexzone_schema_hash,
-            header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
-            [](uint8_t byte) { return byte != 0; });
+        bool has_flexzone = std::any_of(header->flexzone_schema_hash,
+                                        header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
+                                        [](uint8_t byte) { return byte != 0; });
         if (!has_flexzone)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_WARN("[DataBlock:{}] WriteAttach: Creator did not store FlexZone schema, but writer expects '{}'",
+            LOGGER_WARN("[DataBlock:{}] WriteAttach: Creator did not store FlexZone schema, but "
+                        "writer expects '{}'",
                         name, flexzone_schema->name);
             return nullptr;
         }
-        if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(), detail::CHECKSUM_BYTES) != 0)
+        if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(),
+                        detail::CHECKSUM_BYTES) != 0)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] WriteAttach: FlexZone schema hash mismatch! Expected '{}' v{}",
-                         name, flexzone_schema->name, flexzone_schema->version.to_string());
+            LOGGER_ERROR(
+                "[DataBlock:{}] WriteAttach: FlexZone schema hash mismatch! Expected '{}' v{}",
+                name, flexzone_schema->name, flexzone_schema->version.to_string());
             return nullptr;
         }
-        LOGGER_DEBUG("[DataBlock:{}] WriteAttach: FlexZone schema validated: {} v{}",
-                     name, flexzone_schema->name, flexzone_schema->version.to_string());
+        LOGGER_DEBUG("[DataBlock:{}] WriteAttach: FlexZone schema validated: {} v{}", name,
+                     flexzone_schema->name, flexzone_schema->version.to_string());
     }
 
     // Validate DataBlock schema if provided
     if (datablock_schema != nullptr)
     {
-        bool has_datablock = std::any_of(
-            header->datablock_schema_hash,
-            header->datablock_schema_hash + detail::CHECKSUM_BYTES,
-            [](uint8_t byte) { return byte != 0; });
+        bool has_datablock = std::any_of(header->datablock_schema_hash,
+                                         header->datablock_schema_hash + detail::CHECKSUM_BYTES,
+                                         [](uint8_t byte) { return byte != 0; });
         if (!has_datablock)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_WARN("[DataBlock:{}] WriteAttach: Creator did not store DataBlock schema, but writer expects '{}'",
+            LOGGER_WARN("[DataBlock:{}] WriteAttach: Creator did not store DataBlock schema, but "
+                        "writer expects '{}'",
                         name, datablock_schema->name);
             return nullptr;
         }
-        if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(), detail::CHECKSUM_BYTES) != 0)
+        if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(),
+                        detail::CHECKSUM_BYTES) != 0)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] WriteAttach: DataBlock schema hash mismatch! Expected '{}' v{}",
-                         name, datablock_schema->name, datablock_schema->version.to_string());
+            LOGGER_ERROR(
+                "[DataBlock:{}] WriteAttach: DataBlock schema hash mismatch! Expected '{}' v{}",
+                name, datablock_schema->name, datablock_schema->version.to_string());
             return nullptr;
         }
         auto stored_version = pylabhub::schema::SchemaVersion::unpack(header->schema_version);
         if (stored_version.major != datablock_schema->version.major)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] WriteAttach: Incompatible DataBlock schema version! Creator: {}, Writer: {}",
+            LOGGER_ERROR("[DataBlock:{}] WriteAttach: Incompatible DataBlock schema version! "
+                         "Creator: {}, Writer: {}",
                          name, stored_version.to_string(), datablock_schema->version.to_string());
             return nullptr;
         }
-        LOGGER_DEBUG("[DataBlock:{}] WriteAttach: DataBlock schema validated: {} v{}",
-                     name, datablock_schema->name, datablock_schema->version.to_string());
+        LOGGER_DEBUG("[DataBlock:{}] WriteAttach: DataBlock schema validated: {} v{}", name,
+                     datablock_schema->name, datablock_schema->version.to_string());
     }
 
     LOGGER_INFO("[DataBlock:{}] Attached as writer (WriteAttach mode).", name);
@@ -3530,24 +3609,23 @@ size_t datablock_layout_total_size(const DataBlockConfig &config)
 // are preserved because they are ABI-integrity checks, not authentication.
 
 std::unique_ptr<DataBlockProducer>
-create_datablock_producer_from_fd_impl(const std::string &logical_name,
-                                       int source_fd,
-                                       DataBlockPolicy policy,
-                                       const DataBlockConfig &config,
+create_datablock_producer_from_fd_impl(const std::string &logical_name, int source_fd,
+                                       DataBlockPolicy policy, const DataBlockConfig &config,
                                        const pylabhub::schema::SchemaInfo *flexzone_schema,
                                        const pylabhub::schema::SchemaInfo *datablock_schema)
 {
     if (!datablock_lifecycle_ready())
     {
-        throw std::runtime_error(
-            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before creating producers.");
+        throw std::runtime_error("DataBlock: Data Exchange Hub module not initialized. Create a "
+                                 "LifecycleGuard in main() "
+                                 "with pylabhub::hub::GetDataBlockModule() (and typically Logger, "
+                                 "SecureSubsystem) before creating producers.");
     }
     (void)policy; // Reserved for future policy-specific behavior
     auto impl = std::make_unique<DataBlockProducerImpl>();
     impl->name = logical_name;
-    impl->dataBlock = std::make_unique<DataBlock>(
-        logical_name, config, source_fd, DataBlock::FromFdSourceTag{});
+    impl->dataBlock =
+        std::make_unique<DataBlock>(logical_name, config, source_fd, DataBlock::FromFdSourceTag{});
     impl->checksum_policy = config.checksum_policy;
 
     // Single flex zone (Phase 2 refactoring)
@@ -3562,9 +3640,8 @@ create_datablock_producer_from_fd_impl(const std::string &logical_name,
         {
             std::memcpy(header->flexzone_schema_hash, flexzone_schema->hash.data(),
                         detail::CHECKSUM_BYTES);
-            LOGGER_DEBUG("[DataBlock:{}] FlexZone schema stored (fd-source): {} v{}",
-                         logical_name, flexzone_schema->name,
-                         flexzone_schema->version.to_string());
+            LOGGER_DEBUG("[DataBlock:{}] FlexZone schema stored (fd-source): {} v{}", logical_name,
+                         flexzone_schema->name, flexzone_schema->version.to_string());
         }
         else
         {
@@ -3576,9 +3653,8 @@ create_datablock_producer_from_fd_impl(const std::string &logical_name,
             std::memcpy(header->datablock_schema_hash, datablock_schema->hash.data(),
                         detail::CHECKSUM_BYTES);
             header->schema_version = datablock_schema->version.pack();
-            LOGGER_DEBUG("[DataBlock:{}] DataBlock schema stored (fd-source): {} v{}",
-                         logical_name, datablock_schema->name,
-                         datablock_schema->version.to_string());
+            LOGGER_DEBUG("[DataBlock:{}] DataBlock schema stored (fd-source): {} v{}", logical_name,
+                         datablock_schema->name, datablock_schema->version.to_string());
         }
         else
         {
@@ -3586,7 +3662,8 @@ create_datablock_producer_from_fd_impl(const std::string &logical_name,
             header->schema_version = 0;
         }
 
-        auto write_id_str = [](char *dst, size_t dst_size, const std::string &src) {
+        auto write_id_str = [](char *dst, size_t dst_size, const std::string &src)
+        {
             size_t len = src.size() < dst_size ? src.size() : dst_size - 1;
             std::memcpy(dst, src.c_str(), len);
             dst[len] = '\0';
@@ -3601,30 +3678,30 @@ create_datablock_producer_from_fd_impl(const std::string &logical_name,
 }
 
 std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_from_fd_impl(const std::string &logical_name,
-                                     int source_fd,
+find_datablock_consumer_from_fd_impl(const std::string &logical_name, int source_fd,
                                      const DataBlockConfig *expected_config,
                                      const pylabhub::schema::SchemaInfo *flexzone_schema,
                                      const pylabhub::schema::SchemaInfo *datablock_schema,
-                                     const char *consumer_uid,
-                                     const char *consumer_name)
+                                     const char *consumer_uid, const char *consumer_name)
 {
     if (!datablock_lifecycle_ready())
     {
-        throw std::runtime_error(
-            "DataBlock: Data Exchange Hub module not initialized. Create a LifecycleGuard in main() "
-            "with pylabhub::hub::GetDataBlockModule() (and typically Logger, SecureSubsystem) before finding consumers.");
+        throw std::runtime_error("DataBlock: Data Exchange Hub module not initialized. Create a "
+                                 "LifecycleGuard in main() "
+                                 "with pylabhub::hub::GetDataBlockModule() (and typically Logger, "
+                                 "SecureSubsystem) before finding consumers.");
     }
     auto impl = std::make_unique<DataBlockConsumerImpl>();
     impl->name = logical_name;
-    impl->dataBlock = std::make_unique<DataBlock>(
-        logical_name, source_fd, DataBlock::FromFdSourceTag{});
+    impl->dataBlock =
+        std::make_unique<DataBlock>(logical_name, source_fd, DataBlock::FromFdSourceTag{});
 
     auto *header = impl->dataBlock->header();
     if (header == nullptr)
     {
         LOGGER_WARN("[DataBlock:{}] find_consumer (fd-source): attached SHM has no "
-                    "readable header (mapping likely failed).", logical_name);
+                    "readable header (mapping likely failed).",
+                    logical_name);
         return nullptr;
     }
 
@@ -3639,12 +3716,14 @@ find_datablock_consumer_from_fd_impl(const std::string &logical_name,
     {
         header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
         LOGGER_WARN("[DataBlock:{}] (fd-source) Header layout mismatch during consumer "
-                    "attachment (ABI incompatibility)", logical_name);
+                    "attachment (ABI incompatibility)",
+                    logical_name);
         return nullptr;
     }
     if (!validate_attach_layout_and_config(header, expected_config))
     {
-        LOGGER_WARN("[DataBlock:{}] (fd-source) Layout checksum or config mismatch during consumer attachment.",
+        LOGGER_WARN("[DataBlock:{}] (fd-source) Layout checksum or config mismatch during consumer "
+                    "attachment.",
                     logical_name);
         return nullptr;
     }
@@ -3657,50 +3736,49 @@ find_datablock_consumer_from_fd_impl(const std::string &logical_name,
     if (flexzone_schema != nullptr)
     {
         bool has_flexzone_schema = std::any_of(
-            header->flexzone_schema_hash,
-            header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
+            header->flexzone_schema_hash, header->flexzone_schema_hash + detail::CHECKSUM_BYTES,
             [](uint8_t byte) { return byte != 0; });
         if (!has_flexzone_schema)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
             LOGGER_WARN("[DataBlock:{}] (fd-source) Producer did not store FlexZone schema, "
-                        "but consumer expects '{}'", logical_name, flexzone_schema->name);
+                        "but consumer expects '{}'",
+                        logical_name, flexzone_schema->name);
             return nullptr;
         }
         if (std::memcmp(header->flexzone_schema_hash, flexzone_schema->hash.data(),
                         detail::CHECKSUM_BYTES) != 0)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] (fd-source) FlexZone schema hash mismatch! Expected '{}' v{}",
-                         logical_name, flexzone_schema->name,
-                         flexzone_schema->version.to_string());
+            LOGGER_ERROR(
+                "[DataBlock:{}] (fd-source) FlexZone schema hash mismatch! Expected '{}' v{}",
+                logical_name, flexzone_schema->name, flexzone_schema->version.to_string());
             return nullptr;
         }
-        LOGGER_DEBUG("[DataBlock:{}] (fd-source) FlexZone schema validated: {} v{}",
-                     logical_name, flexzone_schema->name,
-                     flexzone_schema->version.to_string());
+        LOGGER_DEBUG("[DataBlock:{}] (fd-source) FlexZone schema validated: {} v{}", logical_name,
+                     flexzone_schema->name, flexzone_schema->version.to_string());
     }
 
     if (datablock_schema != nullptr)
     {
         bool has_datablock_schema = std::any_of(
-            header->datablock_schema_hash,
-            header->datablock_schema_hash + detail::CHECKSUM_BYTES,
+            header->datablock_schema_hash, header->datablock_schema_hash + detail::CHECKSUM_BYTES,
             [](uint8_t byte) { return byte != 0; });
         if (!has_datablock_schema)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
             LOGGER_WARN("[DataBlock:{}] (fd-source) Producer did not store DataBlock schema, "
-                        "but consumer expects '{}'", logical_name, datablock_schema->name);
+                        "but consumer expects '{}'",
+                        logical_name, datablock_schema->name);
             return nullptr;
         }
         if (std::memcmp(header->datablock_schema_hash, datablock_schema->hash.data(),
                         detail::CHECKSUM_BYTES) != 0)
         {
             header->schema_mismatch_count.fetch_add(1, std::memory_order_relaxed);
-            LOGGER_ERROR("[DataBlock:{}] (fd-source) DataBlock schema hash mismatch! Expected '{}' v{}",
-                         logical_name, datablock_schema->name,
-                         datablock_schema->version.to_string());
+            LOGGER_ERROR(
+                "[DataBlock:{}] (fd-source) DataBlock schema hash mismatch! Expected '{}' v{}",
+                logical_name, datablock_schema->name, datablock_schema->version.to_string());
             return nullptr;
         }
         auto stored_version = pylabhub::schema::SchemaVersion::unpack(header->schema_version);
@@ -3713,21 +3791,18 @@ find_datablock_consumer_from_fd_impl(const std::string &logical_name,
                          datablock_schema->version.to_string());
             return nullptr;
         }
-        LOGGER_DEBUG("[DataBlock:{}] (fd-source) DataBlock schema validated: {} v{}",
-                     logical_name, datablock_schema->name,
-                     datablock_schema->version.to_string());
+        LOGGER_DEBUG("[DataBlock:{}] (fd-source) DataBlock schema validated: {} v{}", logical_name,
+                     datablock_schema->name, datablock_schema->version.to_string());
     }
 
     if (consumer_uid != nullptr)
     {
-        std::strncpy(impl->consumer_uid_buf, consumer_uid,
-                     sizeof(impl->consumer_uid_buf) - 1);
+        std::strncpy(impl->consumer_uid_buf, consumer_uid, sizeof(impl->consumer_uid_buf) - 1);
         impl->consumer_uid_buf[sizeof(impl->consumer_uid_buf) - 1] = '\0';
     }
     if (consumer_name != nullptr)
     {
-        std::strncpy(impl->consumer_name_buf, consumer_name,
-                     sizeof(impl->consumer_name_buf) - 1);
+        std::strncpy(impl->consumer_name_buf, consumer_name, sizeof(impl->consumer_name_buf) - 1);
         impl->consumer_name_buf[sizeof(impl->consumer_name_buf) - 1] = '\0';
     }
 
@@ -3747,8 +3822,7 @@ find_datablock_consumer_from_fd_impl(const std::string &logical_name,
         {
             uint64_t join_at = header->commit_index.load(std::memory_order_acquire);
             consumer_next_read_slot_ptr(header, static_cast<size_t>(heartbeat_slot))
-                ->store((join_at != INVALID_SLOT_ID) ? join_at : 0,
-                        std::memory_order_release);
+                ->store((join_at != INVALID_SLOT_ID) ? join_at : 0, std::memory_order_release);
         }
     }
 

@@ -565,7 +565,8 @@ JsonConfig::Transaction *JsonConfig::find_transaction_locked(TxId tx_id) noexcep
 
 // ----------------- ReadLock / WriteLock factory and implementations ----------------
 
-std::optional<JsonConfig::ReadLock> JsonConfig::lock_for_read(std::error_code *err_code) const noexcept
+std::optional<JsonConfig::ReadLock>
+JsonConfig::lock_for_read(std::error_code *err_code) const noexcept
 {
     if (!pImpl)
     {
@@ -660,7 +661,8 @@ JsonConfig::WriteLock &JsonConfig::WriteLock::operator=(WriteLock &&other) noexc
 }
 JsonConfig::WriteLock::~WriteLock() = default;
 
-// NOLINTNEXTLINE(bugprone-exception-escape) -- returning reference to internal JSON; nlohmann::json can throw on invalid access
+// NOLINTNEXTLINE(bugprone-exception-escape) -- returning reference to internal JSON; nlohmann::json
+// can throw on invalid access
 nlohmann::json &JsonConfig::WriteLock::json() noexcept
 {
     if (d_ == nullptr || d_->owner == nullptr)
@@ -757,7 +759,8 @@ bool ensure_parent_dir_win(const fs::path &target, std::error_code *err_code)
  * flushes with FlushFileBuffers, and closes the handle.
  * Assumptions: parent exists and is writable; temp name uses PID + GetTickCount64 for uniqueness.
  * Returns (tmp_full path, tmp_full_w string) on success for use by atomic_replace_win.
- * On failure: temp file is deleted if it was created, *err_code set (if non-null), logs, returns nullopt.
+ * On failure: temp file is deleted if it was created, *err_code set (if non-null), logs, returns
+ * nullopt.
  */
 std::optional<std::pair<fs::path, std::wstring>>
 create_and_write_temp_win(const fs::path &parent, const fs::path &target,
@@ -778,8 +781,8 @@ create_and_write_temp_win(const fs::path &parent, const fs::path &target,
         {
             *err_code = std::make_error_code(static_cast<std::errc>(err));
         }
-        LOGGER_ERROR("atomic_write_json: CreateFileW(temp) failed for '{}'. Error:{}", tmp_full.string(),
-                     err);
+        LOGGER_ERROR("atomic_write_json: CreateFileW(temp) failed for '{}'. Error:{}",
+                     tmp_full.string(), err);
         return std::nullopt;
     }
 
@@ -796,7 +799,8 @@ create_and_write_temp_win(const fs::path &parent, const fs::path &target,
         {
             *err_code = std::make_error_code(static_cast<std::errc>(err));
         }
-        LOGGER_ERROR("atomic_write_json: WriteFile failed for '{}'. Error:{}", tmp_full.string(), err);
+        LOGGER_ERROR("atomic_write_json: WriteFile failed for '{}'. Error:{}", tmp_full.string(),
+                     err);
         return std::nullopt;
     }
 
@@ -809,8 +813,8 @@ create_and_write_temp_win(const fs::path &parent, const fs::path &target,
         {
             *err_code = std::make_error_code(static_cast<std::errc>(err));
         }
-        LOGGER_ERROR("atomic_write_json: FlushFileBuffers failed for '{}'. Error:{}", tmp_full.string(),
-                     err);
+        LOGGER_ERROR("atomic_write_json: FlushFileBuffers failed for '{}'. Error:{}",
+                     tmp_full.string(), err);
         return std::nullopt;
     }
 
@@ -847,8 +851,9 @@ bool atomic_replace_win(const std::wstring &target_w, const std::wstring &tmp_fu
         {
             break;
         }
-        LOGGER_WARN("atomic_write_json: ReplaceFileW encountered sharing violation for '{}', retrying...",
-                   target_display.string());
+        LOGGER_WARN(
+            "atomic_write_json: ReplaceFileW encountered sharing violation for '{}', retrying...",
+            target_display.string());
         Sleep(kReplaceDelayMs);
     }
 
@@ -883,8 +888,8 @@ bool atomic_replace_win(const std::wstring &target_w, const std::wstring &tmp_fu
 
 /**
  * Windows implementation of atomic JSON write.
- * Order: ensure parent dir -> create temp and write+flush+close -> atomic replace (or move fallback).
- * All exceptions are caught and reported as io_error; *err_code is set and no rethrow.
+ * Order: ensure parent dir -> create temp and write+flush+close -> atomic replace (or move
+ * fallback). All exceptions are caught and reported as io_error; *err_code is set and no rethrow.
  */
 void atomic_write_json_win(const fs::path &target, const nlohmann::json &json_snapshot,
                            std::error_code *err_code) noexcept
@@ -933,7 +938,8 @@ constexpr int kRenameDelayMs = 100;
 
 /**
  * Ensures the parent directory of target exists (create_directories).
- * Same contract as ensure_parent_dir_win: parent_path() or "."; on failure sets *err_code, logs, returns false.
+ * Same contract as ensure_parent_dir_win: parent_path() or "."; on failure sets *err_code, logs,
+ * returns false.
  */
 bool ensure_parent_dir_posix(const fs::path &target, std::error_code *err_code)
 {
@@ -977,20 +983,22 @@ bool reject_if_symlink_posix(const fs::path &target, std::error_code *err_code)
     {
         *err_code = std::make_error_code(std::errc::operation_not_permitted);
     }
-    LOGGER_ERROR("atomic_write_json: target '{}' is a symbolic link, refusing to write", target.string());
+    LOGGER_ERROR("atomic_write_json: target '{}' is a symbolic link, refusing to write",
+                 target.string());
     return false;
 }
 
 /**
- * Creates a unique temp file via mkstemp in parent with name pattern "<target_filename>.tmp.XXXXXX".
- * Assumptions: parent exists; mkstemp creates file with secure permissions (0600).
- * Returns (tmp_path string, open fd) on success. Caller must pass fd to write_fsync_close_posix
- * (which closes it). On failure: no temp file left, *err_code set (if non-null), logs, returns nullopt.
+ * Creates a unique temp file via mkstemp in parent with name pattern
+ * "<target_filename>.tmp.XXXXXX". Assumptions: parent exists; mkstemp creates file with secure
+ * permissions (0600). Returns (tmp_path string, open fd) on success. Caller must pass fd to
+ * write_fsync_close_posix (which closes it). On failure: no temp file left, *err_code set (if
+ * non-null), logs, returns nullopt.
  */
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- parameter order: parent directory then target path (for temp name)
-std::optional<std::pair<std::string, int>> create_temp_posix(const fs::path &parent,
-                                                              const fs::path &target,
-                                                              std::error_code *err_code)
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) -- parameter order: parent directory then
+// target path (for temp name)
+std::optional<std::pair<std::string, int>>
+create_temp_posix(const fs::path &parent, const fs::path &target, std::error_code *err_code)
 {
     std::string dir = parent.string();
     if (dir.empty())
@@ -1021,8 +1029,8 @@ std::optional<std::pair<std::string, int>> create_temp_posix(const fs::path &par
  * Writes json_snapshot (pretty-printed, indent 4) to file_fd, fsyncs, optionally fchmods to
  * match target's mode if target exists, then closes file_fd.
  * Assumption: file_fd is the fd from create_temp_posix; tmp_path is that temp file path.
- * On any failure: closes fd (if not already closed), unlinks tmp_path, sets *err_code, logs, returns false.
- * On success: fd is closed; temp file remains for caller to rename.
+ * On any failure: closes fd (if not already closed), unlinks tmp_path, sets *err_code, logs,
+ * returns false. On success: fd is closed; temp file remains for caller to rename.
  */
 bool write_fsync_close_posix(int file_fd, const std::string &tmp_path,
                              const nlohmann::json &json_snapshot, const fs::path &target,
@@ -1117,8 +1125,9 @@ bool atomic_rename_posix(const std::string &tmp_path, const fs::path &target,
         {
             break;
         }
-        LOGGER_WARN("atomic_write_json: rename encountered transient error {} for '{}', retrying...",
-                   std::strerror(last_errnum), target.string());
+        LOGGER_WARN(
+            "atomic_write_json: rename encountered transient error {} for '{}', retrying...",
+            std::strerror(last_errnum), target.string());
         std::this_thread::sleep_for(std::chrono::milliseconds(kRenameDelayMs));
     }
     ::unlink(tmp_path.c_str());
@@ -1126,15 +1135,15 @@ bool atomic_rename_posix(const std::string &tmp_path, const fs::path &target,
     {
         *err_code = std::make_error_code(static_cast<std::errc>(last_errnum));
     }
-    LOGGER_ERROR("atomic_write_json: rename failed for '{}' after retries. Error: {}", target.string(),
-                 std::strerror(last_errnum));
+    LOGGER_ERROR("atomic_write_json: rename failed for '{}' after retries. Error: {}",
+                 target.string(), std::strerror(last_errnum));
     return false;
 }
 
 /**
  * Opens the parent directory of target (O_DIRECTORY | O_RDONLY), fsyncs it so the directory
- * entry update is durable, then closes. Used after atomic_rename so the new name is committed to disk.
- * On failure: sets *err_code, logs, returns false. dfd is always closed before return.
+ * entry update is durable, then closes. Used after atomic_rename so the new name is committed to
+ * disk. On failure: sets *err_code, logs, returns false. dfd is always closed before return.
  */
 bool fsync_parent_posix(const fs::path &target, std::error_code *err_code)
 {

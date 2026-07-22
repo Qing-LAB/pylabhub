@@ -39,12 +39,12 @@ namespace pylabhub::schema
 struct SchemaRecord
 {
     /// Owner: literal "hub" for globals, or a role uid for private records.
-    std::string             owner_uid;
+    std::string owner_uid;
 
     /// Schema identifier under the owner's namespace.  May be a namespaced
     /// id (`lab.sensors.temperature.raw@1`) for hub-globals, or a flat id
     /// (`frame`, `inbox`) for private records.
-    std::string             schema_id;
+    std::string schema_id;
 
     /// BLAKE2b-256 over canonical(BLDS, packing) — the wire fingerprint
     /// (HEP-CORE-0034 §6.3).  Equality of fingerprint ⇔ bytewise-equal layout.
@@ -52,16 +52,15 @@ struct SchemaRecord
 
     /// "aligned" or "packed".  Part of the fingerprint; not redundant with
     /// the BLDS string, which encodes only the field list.
-    std::string             packing;
+    std::string packing;
 
     /// Canonical BLDS text (`name:type[N];...`) — sufficient for ctypes
     /// reconstruction by remote citers (e.g. via SCHEMA_REQ in Phase 3).
-    std::string             blds;
+    std::string blds;
 
     /// When the record was inserted into `HubState.schemas` (set by the
     /// capability op, not by the caller).
-    std::chrono::system_clock::time_point registered_at{
-        std::chrono::system_clock::now()};
+    std::chrono::system_clock::time_point registered_at{std::chrono::system_clock::now()};
 };
 
 /// Outcome of `HubState::_on_schema_registered`.
@@ -133,8 +132,8 @@ struct CitationOutcome
         kSchemaOwnerMismatch,
     };
 
-    Reason      reason{Reason::kOk};
-    std::string detail;  ///< Human-readable detail for logs / NACK reason.
+    Reason reason{Reason::kOk};
+    std::string detail; ///< Human-readable detail for logs / NACK reason.
 
     [[nodiscard]] bool ok() const noexcept { return reason == Reason::kOk; }
 };

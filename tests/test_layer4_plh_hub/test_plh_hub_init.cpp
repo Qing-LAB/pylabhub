@@ -34,10 +34,8 @@ TEST_F(PlhHubCliTest, CreatesDirectoryStructure)
     const auto dir = tmp("init_layout");
 
     const auto t0 = std::chrono::steady_clock::now();
-    WorkerProcess p(plh_hub_binary(), "--init",
-        {dir.string(), "--name", "L4TestHub"});
-    EXPECT_EQ(p.wait_for_exit(), 0)
-        << "stderr:\n" << p.get_stderr();
+    WorkerProcess p(plh_hub_binary(), "--init", {dir.string(), "--name", "L4TestHub"});
+    EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
     const auto elapsed = std::chrono::steady_clock::now() - t0;
     EXPECT_LT(elapsed, std::chrono::seconds(10))
@@ -45,13 +43,12 @@ TEST_F(PlhHubCliTest, CreatesDirectoryStructure)
            "(should be non-interactive when --name is provided)";
 
     // (a) Layout: required subdirs all present.
-    EXPECT_TRUE(fs::exists(dir / "hub.json"))   << "hub.json missing";
-    EXPECT_TRUE(fs::is_directory(dir / "logs"))   << "logs/ missing";
-    EXPECT_TRUE(fs::is_directory(dir / "run"))    << "run/ missing";
-    EXPECT_TRUE(fs::is_directory(dir / "vault"))  << "vault/ missing";
-    EXPECT_TRUE(fs::is_directory(dir / "schemas"))<< "schemas/ missing";
-    EXPECT_TRUE(fs::is_directory(dir / "script" / "python"))
-        << "script/python/ missing";
+    EXPECT_TRUE(fs::exists(dir / "hub.json")) << "hub.json missing";
+    EXPECT_TRUE(fs::is_directory(dir / "logs")) << "logs/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "run")) << "run/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "vault")) << "vault/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "schemas")) << "schemas/ missing";
+    EXPECT_TRUE(fs::is_directory(dir / "script" / "python")) << "script/python/ missing";
 
     // (b) hub.json identity wiring — name we passed flows through, uid
     //     uses the hub. prefix per the naming grammar (HEP-0033 G2.2.0b).
@@ -72,9 +69,9 @@ TEST_F(PlhHubCliTest, LogOverridesPropagateToConfig)
 {
     const auto dir = tmp("init_log_overrides");
 
-    WorkerProcess p(plh_hub_binary(), "--init",
-        {dir.string(), "--name", "LogTestHub",
-         "--log-maxsize", "42", "--log-backups", "7"});
+    WorkerProcess p(
+        plh_hub_binary(), "--init",
+        {dir.string(), "--name", "LogTestHub", "--log-maxsize", "42", "--log-backups", "7"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
     expect_no_unexpected_errors(p);
 
@@ -82,7 +79,7 @@ TEST_F(PlhHubCliTest, LogOverridesPropagateToConfig)
     ASSERT_FALSE(j.is_null());
     ASSERT_TRUE(j.contains("logging"));
     EXPECT_EQ(j["logging"].value("max_size_mb", 0.0), 42.0);
-    EXPECT_EQ(j["logging"].value("backups", 0),       7);
+    EXPECT_EQ(j["logging"].value("backups", 0), 7);
 }
 
 /// --log-backups -1 → "keep all" (LoggingConfig::kKeepAllBackups
@@ -92,7 +89,7 @@ TEST_F(PlhHubCliTest, LogBackupsMinusOneMeansKeepAll)
     const auto dir = tmp("init_keep_all");
 
     WorkerProcess p(plh_hub_binary(), "--init",
-        {dir.string(), "--name", "KeepAllHub", "--log-backups", "-1"});
+                    {dir.string(), "--name", "KeepAllHub", "--log-backups", "-1"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
 
     auto j = read_json(dir / "hub.json");
@@ -106,12 +103,12 @@ TEST_F(PlhHubCliTest, RefusesToOverwriteExistingConfig)
     const auto dir = tmp("init_no_clobber");
     write_file(dir / "hub.json", R"({"hub": {"name": "preserved"}})");
 
-    WorkerProcess p(plh_hub_binary(), "--init",
-        {dir.string(), "--name", "Wouldoverwrite"});
+    WorkerProcess p(plh_hub_binary(), "--init", {dir.string(), "--name", "Wouldoverwrite"});
     const int rc = p.wait_for_exit();
     EXPECT_NE(rc, 0) << "expected non-zero exit when hub.json exists; "
-                        "got 0.  stdout:\n" << p.get_stdout()
-                     << "\nstderr:\n" << p.get_stderr();
+                        "got 0.  stdout:\n"
+                     << p.get_stdout() << "\nstderr:\n"
+                     << p.get_stderr();
 
     // Original content preserved (no clobber).
     auto j = read_json(dir / "hub.json");

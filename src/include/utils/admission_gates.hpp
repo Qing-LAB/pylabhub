@@ -72,34 +72,33 @@ enum class RejectCode
 {
     // Skeleton / typed body integrity (parse-time pre-gate — validated
     // inside WireEnvelope::parse, before the numbered gates)
-    envelope_tampered,   ///< I-ENVELOPE-BODY-BINDING: hash mismatch
-    body_schema_violation,  ///< Typed body construction threw WireBodyError
+    envelope_tampered,     ///< I-ENVELOPE-BODY-BINDING: hash mismatch
+    body_schema_violation, ///< Typed body construction threw WireBodyError
 
     // Identity + binding (gates 1, 2, 4 — identity / grammar / known-role
     // binding; role_tag is gate 3, grouped separately below.  uid_conflict is
     // raised later at state-mutation, not by a gate.)
-    identity_mismatch,   ///< I-DEALER-IDENTITY: env.identity != body.role_uid
-    invalid_request,     ///< Wire-shape violation: grammar / unknown enum / etc.
-    unknown_role,        ///< I-PUBKEY-BINDING: (uid, pubkey) not in known_roles
-    pubkey_mismatch,     ///< I-PUBKEY-BINDING: uid known, pubkey does not match
-    uid_conflict,        ///< uid already registered (duplicate REG)
+    identity_mismatch, ///< I-DEALER-IDENTITY: env.identity != body.role_uid
+    invalid_request,   ///< Wire-shape violation: grammar / unknown enum / etc.
+    unknown_role,      ///< I-PUBKEY-BINDING: (uid, pubkey) not in known_roles
+    pubkey_mismatch,   ///< I-PUBKEY-BINDING: uid known, pubkey does not match
+    uid_conflict,      ///< uid already registered (duplicate REG)
 
     // Anti-replay (gate 5)
-    replay_or_skew,      ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
+    replay_or_skew, ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
 
     // Per-msg-type role-tag policy (HEP-CORE-0033 §G2.2.0b.8 table)
-    invalid_role_tag,    ///< role_uid tag not in the allowed set for this
-                          ///< msg_type (e.g. a `cons.*` uid on REG_REQ).
+    invalid_role_tag, ///< role_uid tag not in the allowed set for this
+                      ///< msg_type (e.g. a `cons.*` uid on REG_REQ).
 
     // Server-side conditions (NOT client wire violations)
-    broker_internal_error,  ///< Broker misconfiguration or unimplemented path;
-                            ///< reflects a bug in the broker, not the client
+    broker_internal_error, ///< Broker misconfiguration or unimplemented path;
+                           ///< reflects a bug in the broker, not the client
 };
 
 /// Human-readable name of the reject code, suitable for `error_code`
 /// wire field.  Stable across the protocol lifetime.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string_view
-to_wire_string(RejectCode code) noexcept;
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::string_view to_wire_string(RejectCode code) noexcept;
 
 /// Terminal-rejection outcome from a gate.  `code` is machine-readable
 /// (goes into `error_code` on the ERROR envelope).  `message` is
@@ -108,14 +107,11 @@ to_wire_string(RejectCode code) noexcept;
 /// triggered — used by structured operator logs.
 struct PYLABHUB_UTILS_EXPORT RejectDetail
 {
-    RejectCode  code;
-    std::string field;    ///< optional; empty if not field-specific
-    std::string message;  ///< always populated
+    RejectCode code;
+    std::string field;   ///< optional; empty if not field-specific
+    std::string message; ///< always populated
 
-    [[nodiscard]] std::string_view code_wire() const noexcept
-    {
-        return to_wire_string(code);
-    }
+    [[nodiscard]] std::string_view code_wire() const noexcept { return to_wire_string(code); }
 };
 
 /// Outcome of a known-roles lookup.  Distinguishes "role_uid absent" from
@@ -125,9 +121,9 @@ struct PYLABHUB_UTILS_EXPORT RejectDetail
 /// with a rotated pubkey) — there is no separate key-rotation gate.
 enum class KnownRoleLookup
 {
-    binding_matches,       ///< (uid, pubkey) matches known_roles exactly
-    uid_unknown,           ///< role_uid not present in known_roles
-    pubkey_mismatch,       ///< role_uid present, pubkey differs from known
+    binding_matches, ///< (uid, pubkey) matches known_roles exactly
+    uid_unknown,     ///< role_uid not present in known_roles
+    pubkey_mismatch, ///< role_uid present, pubkey differs from known
 };
 
 /// Callbacks the gates invoke against broker state.  Handler binds these
@@ -137,8 +133,7 @@ enum class KnownRoleLookup
 struct AdmissionCallbacks
 {
     /// Look up (role_uid, zmq_pubkey) in known_roles.
-    std::function<KnownRoleLookup(std::string_view role_uid,
-                                    std::string_view zmq_pubkey)>
+    std::function<KnownRoleLookup(std::string_view role_uid, std::string_view zmq_pubkey)>
         lookup_known_role;
 
     /// Record the nonce for anti-replay dedup.  Returns true if the
@@ -147,8 +142,7 @@ struct AdmissionCallbacks
     /// than `ctx.nonce_window_ms` against its OWN trusted monotonic clock;
     /// there is deliberately NO timestamp argument, so the client stamp
     /// can never be wired into the dedup window (see ReplayGuard header).
-    std::function<bool(std::string_view role_uid,
-                        std::string_view client_nonce)>
+    std::function<bool(std::string_view role_uid, std::string_view client_nonce)>
         record_and_check_nonce;
 
     /// Return the broker's wall-clock time in milliseconds since epoch.
@@ -169,8 +163,8 @@ struct AdmissionCallbacks
 /// `broker_internal_error`.
 struct AdmissionContext
 {
-    const AdmissionCallbacks *cb{nullptr};              ///< non-owning
-    std::uint64_t             skew_tolerance_ms{30'000ULL};
+    const AdmissionCallbacks *cb{nullptr}; ///< non-owning
+    std::uint64_t skew_tolerance_ms{30'000ULL};
     /// I-REPLAY-BOUND soundness: MUST be >= 2 * skew_tolerance_ms.  Dedup is
     /// pruned against the TRUSTED broker clock (record_and_check_nonce gets
     /// wall_now_ms(), not the client stamp), so an attacker cannot force
@@ -179,7 +173,7 @@ struct AdmissionContext
     /// acceptance and the replay), so the nonce must be remembered that long
     /// or a late-but-skew-valid replay finds its nonce pruned and is wrongly
     /// admitted.  Default = 2 * skew.
-    std::uint64_t             nonce_window_ms{60'000ULL};
+    std::uint64_t nonce_window_ms{60'000ULL};
     // Note: no `broker_proto` field.  C3 resolution retired the
     // scalar-`broker_proto` gate for REG-family REQs; wire-version +
     // ABI compatibility is verified via `abi_fingerprint` per
@@ -220,7 +214,7 @@ struct RegFamilyBodyView
     std::string_view channel_name;
     std::string_view zmq_pubkey;
     std::string_view client_nonce;
-    std::uint64_t    client_wall_ts;
+    std::uint64_t client_wall_ts;
 };
 
 // ── Individual gates ──────────────────────────────────────────────────
@@ -240,18 +234,16 @@ struct RegFamilyBodyView
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
-                     const RegFamilyBodyView              &body) noexcept;
+                    const RegFamilyBodyView &body) noexcept;
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_grammar(const RegFamilyBodyView &body) noexcept;
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_known_role_binding(const RegFamilyBodyView &body,
-                         const AdmissionContext  &ctx) noexcept;
+gate_known_role_binding(const RegFamilyBodyView &body, const AdmissionContext &ctx) noexcept;
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_replay_bound(const RegFamilyBodyView &body,
-                   const AdmissionContext  &ctx) noexcept;
+gate_replay_bound(const RegFamilyBodyView &body, const AdmissionContext &ctx) noexcept;
 
 /// HEP-CORE-0033 §G2.2.0b.8 per-msg-type role-tag policy.  Rejects with
 /// `invalid_role_tag` when the leading tag embedded in @p role_uid
@@ -262,9 +254,8 @@ gate_replay_bound(const RegFamilyBodyView &body,
 /// Precondition: role_uid grammar already validated by `gate_grammar`
 /// or the equivalent universal-grammar check.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_role_tag_policy(std::string_view msg_type,
-                       std::string_view role_uid,
-                       std::string_view role_type_field) noexcept;
+gate_role_tag_policy(std::string_view msg_type, std::string_view role_uid,
+                     std::string_view role_type_field) noexcept;
 
 // ── Authenticated-REG-family view + gate runner ───────────────────────
 //
@@ -289,15 +280,15 @@ struct AuthenticatedRegFamilyView
     std::string_view role_uid;
     std::string_view channel_name;
     std::string_view client_nonce;
-    std::uint64_t    client_wall_ts;
+    std::uint64_t client_wall_ts;
 };
 
 /// Runs identity + universal grammar + replay for non-REG_REQ REG-family
 /// msg_types.  Same short-circuit semantics as `run_reg_family_gates`.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
-                                     const AuthenticatedRegFamilyView    &body,
-                                     const AdmissionContext              &ctx) noexcept;
+                                   const AuthenticatedRegFamilyView &body,
+                                   const AdmissionContext &ctx) noexcept;
 
 // ── Control-tier view + gate runner ───────────────────────────────────
 //
@@ -311,22 +302,21 @@ run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
 // enforcement — identity check is skipped when role_uid is empty.
 struct ControlBodyView
 {
-    std::string_view role_uid;      ///< empty if the body doesn't carry it
-    std::string_view channel_name;  ///< empty if the body doesn't carry it
-    std::string_view role_type;     ///< "producer"|"consumer"|"processor";
-                                     ///< populated by HEARTBEAT_NOTIFY per
-                                     ///< HEP-0033 §G2.2.0b.8 (tag derived
-                                     ///< from this field for that msg_type).
-                                     ///< Empty for other control msg_types.
+    std::string_view role_uid;     ///< empty if the body doesn't carry it
+    std::string_view channel_name; ///< empty if the body doesn't carry it
+    std::string_view role_type;    ///< "producer"|"consumer"|"processor";
+                                   ///< populated by HEARTBEAT_NOTIFY per
+                                   ///< HEP-0033 §G2.2.0b.8 (tag derived
+                                   ///< from this field for that msg_type).
+                                   ///< Empty for other control msg_types.
 };
 
 /// Runs identity_match if `role_uid` non-empty; grammar on role_uid /
 /// channel_name if non-empty; no replay check.  Returns nullopt if all
 /// checks pass (or no checks applied).
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
-                   const ControlBodyView                &body,
-                   const AdmissionContext               &ctx) noexcept;
+run_control_gates(const ::pylabhub::wire::WireEnvelope &env, const ControlBodyView &body,
+                  const AdmissionContext &ctx) noexcept;
 
 // ── Pipeline runner (REG_REQ / CONSUMER_REG_REQ) ──────────────────────
 
@@ -341,8 +331,7 @@ run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
 /// carry zmq_pubkey) before any state mutation.  Other REG-family
 /// msg_types use `run_authenticated_reg_family_gates`.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
-                      const RegFamilyBodyView              &body,
-                      const AdmissionContext               &ctx) noexcept;
+run_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env, const RegFamilyBodyView &body,
+                     const AdmissionContext &ctx) noexcept;
 
-}  // namespace pylabhub::admission
+} // namespace pylabhub::admission

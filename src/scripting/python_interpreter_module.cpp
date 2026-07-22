@@ -48,7 +48,7 @@
 #include "utils/lifecycle.hpp"
 #include "utils/module_def.hpp"
 #include "utils/logger.hpp"
-#include "utils/debug_info.hpp"          // PLH_PANIC for cross-thread guard
+#include "utils/debug_info.hpp" // PLH_PANIC for cross-thread guard
 #include "plh_platform.hpp"
 
 #include <pybind11/embed.h>
@@ -71,8 +71,7 @@ namespace fs = std::filesystem;
 namespace pylabhub::scripting
 {
 
-const char *const kPythonInterpreterModuleName =
-    "pylabhub::scripting::PythonInterpreter";
+const char *const kPythonInterpreterModuleName = "pylabhub::scripting::PythonInterpreter";
 
 namespace
 {
@@ -121,11 +120,11 @@ fs::path resolve_python_home(const fs::path &exe_path)
 {
     const fs::path prefix = fs::weakly_canonical(exe_path.parent_path() / "..");
 
-    if (const char *env_home = std::getenv("PYLABHUB_PYTHON_HOME");
-        env_home && *env_home)
+    if (const char *env_home = std::getenv("PYLABHUB_PYTHON_HOME"); env_home && *env_home)
     {
         fs::path home(env_home);
-        if (home.is_relative()) home = fs::weakly_canonical(prefix / home);
+        if (home.is_relative())
+            home = fs::weakly_canonical(prefix / home);
         if (fs::is_directory(home))
         {
             LOGGER_INFO("PythonInterpreter: Python home from $PYLABHUB_PYTHON_HOME: '{}'",
@@ -143,21 +142,19 @@ fs::path resolve_python_home(const fs::path &exe_path)
         try
         {
             std::ifstream ifs(config_file);
-            const auto    j = nlohmann::json::parse(ifs);
+            const auto j = nlohmann::json::parse(ifs);
             if (j.contains("python_home") && j["python_home"].is_string())
             {
                 const auto val = j["python_home"].get<std::string>();
                 if (!val.empty())
                 {
                     fs::path home(val);
-                    home = home.is_relative()
-                               ? fs::weakly_canonical(prefix / home)
-                               : fs::weakly_canonical(home);
+                    home = home.is_relative() ? fs::weakly_canonical(prefix / home)
+                                              : fs::weakly_canonical(home);
                     if (fs::is_directory(home))
                     {
-                        LOGGER_INFO(
-                            "PythonInterpreter: Python home from '{}': '{}'",
-                            config_file.string(), home.string());
+                        LOGGER_INFO("PythonInterpreter: Python home from '{}': '{}'",
+                                    config_file.string(), home.string());
                         return home;
                     }
                     LOGGER_WARN("PythonInterpreter: python_home='{}' from config "
@@ -176,15 +173,13 @@ fs::path resolve_python_home(const fs::path &exe_path)
     const fs::path standalone = prefix / "opt" / "python";
     if (fs::is_directory(standalone))
     {
-        LOGGER_INFO("PythonInterpreter: Python home (standalone): '{}'",
-                    standalone.string());
+        LOGGER_INFO("PythonInterpreter: Python home (standalone): '{}'", standalone.string());
         return standalone;
     }
 
-    throw std::runtime_error(
-        "PythonInterpreter: cannot locate a Python installation.\n"
-        "  Checked: $PYLABHUB_PYTHON_HOME, " + config_file.string()
-        + ", " + standalone.string());
+    throw std::runtime_error("PythonInterpreter: cannot locate a Python installation.\n"
+                             "  Checked: $PYLABHUB_PYTHON_HOME, " +
+                             config_file.string() + ", " + standalone.string());
 }
 
 /// LifecycleCallback startup: construct py::scoped_interpreter on the
@@ -202,7 +197,7 @@ void pi_startup(const char * /*arg*/, void * /*userdata*/)
 
     auto &s = state();
     if (s.alive.load(std::memory_order_acquire))
-        return;  // already alive (defensive)
+        return; // already alive (defensive)
 
     const auto tid = pylabhub::platform::get_native_thread_id();
     LOGGER_INFO("PythonInterpreter: pi_startup ENTER on thread {} — "
@@ -210,7 +205,8 @@ void pi_startup(const char * /*arg*/, void * /*userdata*/)
                 "the thread that runs Py_FinalizeEx.  pi_shutdown is "
                 "guarded against cross-thread invocation (will abort "
                 "loudly with a CPython-UB diagnostic if reached on a "
-                "non-owner thread).", tid);
+                "non-owner thread).",
+                tid);
 
     try
     {
@@ -220,22 +216,21 @@ void pi_startup(const char * /*arg*/, void * /*userdata*/)
         setenv("PYTHONUNBUFFERED", "1", 1);
 #endif
 
-        const fs::path exe_path(
-            pylabhub::platform::get_executable_name(/*include_path=*/true));
+        const fs::path exe_path(pylabhub::platform::get_executable_name(/*include_path=*/true));
         const fs::path python_home = resolve_python_home(exe_path);
 
         PyConfig config;
         PyConfig_InitPythonConfig(&config);
-        config.parse_argv             = 0;
+        config.parse_argv = 0;
         config.install_signal_handlers = 0;
 
-        const std::string home_str  = python_home.string();
-        wchar_t          *home_wstr = Py_DecodeLocale(home_str.c_str(), nullptr);
+        const std::string home_str = python_home.string();
+        wchar_t *home_wstr = Py_DecodeLocale(home_str.c_str(), nullptr);
         if (!home_wstr)
         {
             PyConfig_Clear(&config);
-            throw std::runtime_error(
-                "PythonInterpreter: Py_DecodeLocale failed for '" + home_str + "'");
+            throw std::runtime_error("PythonInterpreter: Py_DecodeLocale failed for '" + home_str +
+                                     "'");
         }
         PyConfig_SetString(&config, &config.home, home_wstr);
         PyMem_RawFree(home_wstr);
@@ -255,8 +250,7 @@ void pi_startup(const char * /*arg*/, void * /*userdata*/)
 
         LOGGER_INFO("PythonInterpreter: Python {} initialised on thread {}; "
                     "home='{}'.  GIL released to the cross-thread pool.",
-                    Py_GetVersion(),
-                    pylabhub::platform::get_native_thread_id(),
+                    Py_GetVersion(), pylabhub::platform::get_native_thread_id(),
                     python_home.string());
     }
     catch (const std::exception &e)
@@ -278,7 +272,7 @@ void pi_shutdown(const char * /*arg*/, void * /*userdata*/)
 {
     auto &s = state();
     if (!s.alive.load(std::memory_order_acquire))
-        return;  // never started, or already finalised
+        return; // never started, or already finalised
 
     if (std::this_thread::get_id() != s.owner_thread)
     {
@@ -318,37 +312,40 @@ void pi_shutdown(const char * /*arg*/, void * /*userdata*/)
     g_terminated.store(true, std::memory_order_release);
 
     LOGGER_INFO("PythonInterpreter: pi_shutdown step 1 — re-acquiring GIL "
-                "on thread {} by dropping main_gil_release...", tid);
+                "on thread {} by dropping main_gil_release...",
+                tid);
     s.main_gil_release.reset();
     LOGGER_INFO("PythonInterpreter: pi_shutdown step 1 done — GIL held on "
-                "thread {}.", tid);
+                "thread {}.",
+                tid);
 
     LOGGER_INFO("PythonInterpreter: pi_shutdown step 2 — running "
                 "Py_FinalizeEx via ~scoped_interpreter on thread {}...  "
                 "If this is the LAST log line, the hang is in CPython "
                 "finalisation: check for Python atexit handlers, "
                 "extension finalizers (numpy/scipy), or threads still "
-                "holding the GIL.", tid);
+                "holding the GIL.",
+                tid);
     s.interp.reset();
     LOGGER_INFO("PythonInterpreter: pi_shutdown step 2 done — Py_FinalizeEx "
-                "returned on thread {}.  Interpreter is gone.", tid);
+                "returned on thread {}.  Interpreter is gone.",
+                tid);
 
     LOGGER_INFO("PythonInterpreter: pi_shutdown EXIT on thread {} — "
-                "embedded interpreter finalised.", tid);
+                "embedded interpreter finalised.",
+                tid);
 }
 
 bool register_module()
 {
     try
     {
-        pylabhub::utils::ModuleDef mod(
-            kPythonInterpreterModuleName,
-            /*userdata=*/nullptr,
-            /*validate=*/nullptr);
+        pylabhub::utils::ModuleDef mod(kPythonInterpreterModuleName,
+                                       /*userdata=*/nullptr,
+                                       /*validate=*/nullptr);
         mod.add_dependency("pylabhub::utils::Logger");
         mod.set_startup(pi_startup);
-        mod.set_shutdown(pi_shutdown,
-                         std::chrono::milliseconds{5000});
+        mod.set_shutdown(pi_shutdown, std::chrono::milliseconds{5000});
         // Persistent: refcount drops do NOT trigger unload.  Module
         // stays loaded until LifecycleManager::finalize() Phase 2.
         mod.set_as_persistent(true);
@@ -361,8 +358,7 @@ bool register_module()
         // belt-and-braces against any future framework regression.
         mod.set_synchronous_shutdown(true);
 
-        if (!pylabhub::utils::LifecycleManager::instance()
-                 .register_dynamic_module(std::move(mod)))
+        if (!pylabhub::utils::LifecycleManager::instance().register_dynamic_module(std::move(mod)))
         {
             LOGGER_ERROR("PythonInterpreter: register_dynamic_module returned false");
             return false;
@@ -390,10 +386,12 @@ bool ensure_python_interpreter_loaded() noexcept
 
     try
     {
-        std::call_once(g_register_once, [&] {
-            if (!register_module())
-                g_register_failed.store(true, std::memory_order_release);
-        });
+        std::call_once(g_register_once,
+                       [&]
+                       {
+                           if (!register_module())
+                               g_register_failed.store(true, std::memory_order_release);
+                       });
     }
     catch (...)
     {
@@ -437,7 +435,7 @@ bool validate_python_interpreter() noexcept
     if (Py_IsInitialized() == 0)
         return false;
     if (PyGILState_Check() == 0)
-        return false;   // calling thread does not hold the GIL
+        return false; // calling thread does not hold the GIL
     return true;
 }
 

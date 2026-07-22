@@ -22,7 +22,8 @@
 //   5. single_reader_reads_sequentially    — Sequential yields slots in commit order
 //   6. write_returns_null_when_ring_full   — acquire_write_slot(0) → null when ring saturated
 //   7. read_returns_null_on_empty_ring     — acquire_consume_slot(0) → null when no data
-//   8. metrics_accumulate_across_writes    — N commits → total_slots_written==N; consumer read counted
+//   8. metrics_accumulate_across_writes    — N commits → total_slots_written==N; consumer read
+//   counted
 
 #include "datahub_c_api_slot_protocol_workers.h"
 #include "datahub_fd_test_helper.h"
@@ -39,8 +40,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::c_api_slot_protocol
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 static DataBlockConfig make_config(ConsumerSyncPolicy sync_policy, int capacity)
 {
@@ -101,7 +108,8 @@ int write_slot_read_slot_roundtrip()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "write_slot_read_slot_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "write_slot_read_slot_roundtrip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -155,7 +163,8 @@ int commit_advances_metrics()
 
             // FdBackedProducer dtor releases producer → transport.
         },
-        "commit_advances_metrics", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "commit_advances_metrics", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -192,7 +201,8 @@ int abort_does_not_commit()
             // Metrics: aborted write must not advance total_slots_written
             DataBlockMetrics metrics{};
             ASSERT_EQ(producer->get_metrics(metrics), 0);
-            EXPECT_EQ(metrics.total_slots_written, 0u) << "Abort must not increment total_slots_written";
+            EXPECT_EQ(metrics.total_slots_written, 0u)
+                << "Abort must not increment total_slots_written";
 
             // Consumer: no slot visible (aborted write is not committed).
             // Use 50ms timeout (not 0): consumer must time out quickly with no committed data.
@@ -201,7 +211,8 @@ int abort_does_not_commit()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "abort_does_not_commit", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "abort_does_not_commit", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -244,13 +255,15 @@ int latest_only_reads_latest()
             (void)consumer->release_consume_slot(*rh);
 
             // After consuming latest, no new data without a new write.
-            // Use 50ms timeout (not 0): timeout_ms=0 means "no timeout" (wait forever) per C API contract.
+            // Use 50ms timeout (not 0): timeout_ms=0 means "no timeout" (wait forever) per C API
+            // contract.
             auto next = consumer->acquire_consume_slot(50);
             EXPECT_EQ(next, nullptr) << "No new data after consuming latest; must return null";
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "latest_only_reads_latest", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "latest_only_reads_latest", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -292,7 +305,8 @@ int single_reader_reads_sequentially()
                 ASSERT_NE(rh, nullptr) << "Slot " << expected << " must be available";
                 uint64_t value = 0;
                 std::memcpy(&value, rh->buffer_span().data(), sizeof(value));
-                EXPECT_EQ(value, expected) << "Sequential must yield slot " << expected << " in order";
+                EXPECT_EQ(value, expected)
+                    << "Sequential must yield slot " << expected << " in order";
                 (void)consumer->release_consume_slot(*rh);
             }
 
@@ -303,7 +317,8 @@ int single_reader_reads_sequentially()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "single_reader_reads_sequentially", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "single_reader_reads_sequentially", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -344,15 +359,18 @@ int write_returns_null_when_ring_full()
             // 3rd write with small timeout: ring is saturated → must return null quickly.
             // Use 50ms (not 0): timeout_ms=0 means "no timeout" per C API contract.
             auto overflow = producer->acquire_write_slot(50);
-            EXPECT_EQ(overflow, nullptr) << "Ring full (no consumer) — acquire must return null on timeout";
+            EXPECT_EQ(overflow, nullptr)
+                << "Ring full (no consumer) — acquire must return null on timeout";
 
             // Verify the failed attempt incremented writer_timeout_count
             ASSERT_EQ(producer->get_metrics(metrics), 0);
-            EXPECT_GE(metrics.writer_timeout_count, 1u) << "Failed acquire must increment writer_timeout_count";
+            EXPECT_GE(metrics.writer_timeout_count, 1u)
+                << "Failed acquire must increment writer_timeout_count";
 
             // FdBackedProducer dtor releases producer → transport.
         },
-        "write_returns_null_when_ring_full", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "write_returns_null_when_ring_full", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -382,7 +400,8 @@ int read_returns_null_on_empty_ring()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "read_returns_null_on_empty_ring", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "read_returns_null_on_empty_ring", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -430,7 +449,8 @@ int metrics_accumulate_across_writes()
 
             // FdBackedDataBlock dtor releases consumer → producer → transport.
         },
-        "metrics_accumulate_across_writes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "metrics_accumulate_across_writes", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_slot_protocol

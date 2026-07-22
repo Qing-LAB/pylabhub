@@ -38,20 +38,19 @@ inline std::string fmt_time(std::chrono::system_clock::time_point tp)
 
 } // namespace
 
-nlohmann::json
-channel_to_json(const ChannelEntry &c, ChannelObservable obs,
-                 const std::optional<ChannelAccessEntry> &access)
+nlohmann::json channel_to_json(const ChannelEntry &c, ChannelObservable obs,
+                               const std::optional<ChannelAccessEntry> &access)
 {
     // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
     // transport-classification field; pre-§5b duplicates `shm_name`
     // and `has_shared_memory` retired (`shm_name` was always `name`).
     nlohmann::json j;
-    j["name"]                = c.name;
-    j["schema_hash"]         = c.schema_hash;
+    j["name"] = c.name;
+    j["schema_hash"] = c.schema_hash;
     // schema_version retired per C2 — version rides inside schema_id.
-    j["schema_id"]           = c.schema_id;
-    j["schema_owner"]        = c.schema_owner;
-    j["data_transport"]      = c.data_transport;
+    j["schema_id"] = c.schema_id;
+    j["schema_owner"] = c.schema_owner;
+    j["data_transport"] = c.data_transport;
     // zmq_node_endpoint moved into per-producer sub-objects below
     // (Wave M2.5 step 3 — HEP-CORE-0021 §16.3 per-producer scope).
     // Channel-scope ChannelEntry.zmq_node_endpoint is deprecated; admin
@@ -62,10 +61,9 @@ channel_to_json(const ChannelEntry &c, ChannelObservable obs,
     // `null` when unresolved (binding side hasn't published yet)
     // and as a string once populated — `has_value()` conveys the
     // resolved bit implicitly.
-    j["channel_topology"]  = topology::to_string(c.topology);
-    j["data_endpoint"]     = c.data_endpoint.has_value()
-                                ? nlohmann::json(*c.data_endpoint)
-                                : nlohmann::json(nullptr);
+    j["channel_topology"] = topology::to_string(c.topology);
+    j["data_endpoint"] =
+        c.data_endpoint.has_value() ? nlohmann::json(*c.data_endpoint) : nlohmann::json(nullptr);
     // channel_version + confirmed_version sourced from the unified
     // ledger (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  Absence of an
     // access record means no admissions have happened yet on this
@@ -76,28 +74,28 @@ channel_to_json(const ChannelEntry &c, ChannelObservable obs,
     // detail is exposed via other admin paths.
     if (access.has_value())
     {
-        j["channel_version"]   = access->ledger.current_version();
+        j["channel_version"] = access->ledger.current_version();
         j["confirmed_version"] = access->ledger.max_confirmed_version();
     }
     else
     {
-        j["channel_version"]   = std::uint64_t{0};
+        j["channel_version"] = std::uint64_t{0};
         j["confirmed_version"] = std::uint64_t{0};
     }
 
-    j["_collected_at"]       = fmt_time(c.created_at);
-    j["observable"]          = to_string(obs);
+    j["_collected_at"] = fmt_time(c.created_at);
+    j["observable"] = to_string(obs);
 
     // Producers (HEP-CORE-0023 §2.1.1 — 1..N producers per channel).
     nlohmann::json producers = nlohmann::json::array();
     for (const auto &prod : c.producers)
     {
         nlohmann::json pj;
-        pj["producer_pid"]      = prod.producer_pid;
-        pj["role_uid"]          = prod.role_uid;
-        pj["role_name"]         = prod.role_name;
+        pj["producer_pid"] = prod.producer_pid;
+        pj["role_uid"] = prod.role_uid;
+        pj["role_name"] = prod.role_name;
         // Per-producer inbox metadata (HEP-CORE-0027 §3 — inbox is per-presence).
-        pj["inbox_endpoint"]    = prod.inbox_endpoint;
+        pj["inbox_endpoint"] = prod.inbox_endpoint;
         // Per-producer data-plane endpoint (HEP-CORE-0021 §16.3 — Wave M2.5).
         pj["zmq_node_endpoint"] = prod.zmq_node_endpoint;
         // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels carry a
@@ -105,7 +103,7 @@ channel_to_json(const ChannelEntry &c, ChannelObservable obs,
         // channels; admin dump consumers can distinguish via the
         // channel-scope `data_transport` field.
         pj["shm_capability_endpoint"] = prod.shm_capability_endpoint;
-        pj["_collected_at"]     = fmt_time(prod.connected_at);
+        pj["_collected_at"] = fmt_time(prod.connected_at);
         producers.push_back(std::move(pj));
     }
     j["producers"] = std::move(producers);
@@ -114,11 +112,11 @@ channel_to_json(const ChannelEntry &c, ChannelObservable obs,
     for (const auto &cons : c.consumers)
     {
         nlohmann::json cj;
-        cj["consumer_pid"]      = cons.consumer_pid;
-        cj["role_uid"]          = cons.role_uid;
-        cj["role_name"]         = cons.role_name;
-        cj["inbox_endpoint"]    = cons.inbox_endpoint;
-        cj["_collected_at"]     = fmt_time(cons.connected_at);
+        cj["consumer_pid"] = cons.consumer_pid;
+        cj["role_uid"] = cons.role_uid;
+        cj["role_name"] = cons.role_name;
+        cj["inbox_endpoint"] = cons.inbox_endpoint;
+        cj["_collected_at"] = fmt_time(cons.connected_at);
         consumers.push_back(std::move(cj));
     }
     j["consumers"] = std::move(consumers);
@@ -128,12 +126,12 @@ channel_to_json(const ChannelEntry &c, ChannelObservable obs,
 nlohmann::json role_to_json(const RoleEntry &r)
 {
     nlohmann::json j;
-    j["uid"]            = r.uid;
-    j["name"]           = r.name;
-    j["short_tag"]      = r.short_tag; // HEP-CORE-0036 §5b.10 short-form role tag
-    j["channels"]       = r.channels;
-    j["pubkey_z85"]     = r.pubkey_z85;
-    j["first_seen"]     = fmt_time(r.first_seen);
+    j["uid"] = r.uid;
+    j["name"] = r.name;
+    j["short_tag"] = r.short_tag; // HEP-CORE-0036 §5b.10 short-form role tag
+    j["channels"] = r.channels;
+    j["pubkey_z85"] = r.pubkey_z85;
+    j["first_seen"] = fmt_time(r.first_seen);
 
     // Per-presence rows (HEP-CORE-0023 §2.6).  Each row carries its own
     // FSM state, latest_metrics, and timestamps; the role-level fields
@@ -144,25 +142,24 @@ nlohmann::json role_to_json(const RoleEntry &r)
     for (const auto &p : r.presences)
     {
         nlohmann::json pj;
-        pj["channel"]              = p.channel;
-        pj["role_type"]            = p.role_type;
-        pj["state"]                = to_string(p.state);
+        pj["channel"] = p.channel;
+        pj["role_type"] = p.role_type;
+        pj["state"] = to_string(p.state);
         pj["first_heartbeat_seen"] = p.first_heartbeat_seen;
-        pj["latest_metrics"]       = p.latest_metrics;
-        pj["_collected_at"]        = fmt_time(p.metrics_collected_at);
+        pj["latest_metrics"] = p.latest_metrics;
+        pj["_collected_at"] = fmt_time(p.metrics_collected_at);
         presences.push_back(std::move(pj));
 
-        if (!p.latest_metrics.is_null() &&
-            p.metrics_collected_at > latest_collected)
+        if (!p.latest_metrics.is_null() && p.metrics_collected_at > latest_collected)
         {
-            latest_collected   = p.metrics_collected_at;
+            latest_collected = p.metrics_collected_at;
             latest_metrics_agg = p.latest_metrics;
         }
     }
-    j["presences"]      = std::move(presences);
+    j["presences"] = std::move(presences);
     // Aggregate convenience fields — pick the freshest presence's metrics.
     j["latest_metrics"] = std::move(latest_metrics_agg);
-    j["_collected_at"]  = fmt_time(latest_collected);
+    j["_collected_at"] = fmt_time(latest_collected);
     return j;
 }
 
@@ -174,7 +171,7 @@ nlohmann::json band_to_json(const BandEntry &b)
     for (const auto &m : b.members)
     {
         nlohmann::json mj;
-        mj["role_uid"]  = m.role_uid;
+        mj["role_uid"] = m.role_uid;
         mj["role_name"] = m.role_name;
         // joined_at is steady_clock — emit relative milliseconds since
         // join instead of guessing wall-clock.
@@ -190,26 +187,26 @@ nlohmann::json band_to_json(const BandEntry &b)
 nlohmann::json peer_to_json(const PeerEntry &p)
 {
     nlohmann::json j;
-    j["uid"]             = p.uid;
-    j["endpoint"]        = p.endpoint;
-    j["state"]           = to_string(p.state);
-    j["pubkey_z85"]      = p.pubkey_z85;
-    j["relay_channels"]  = p.relay_channels;
+    j["uid"] = p.uid;
+    j["endpoint"] = p.endpoint;
+    j["state"] = to_string(p.state);
+    j["pubkey_z85"] = p.pubkey_z85;
+    j["relay_channels"] = p.relay_channels;
     return j;
 }
 
 nlohmann::json broker_counters_to_json(const BrokerCounters &c)
 {
     nlohmann::json j;
-    j["ready_to_pending_total"]        = c.ready_to_pending_total;
+    j["ready_to_pending_total"] = c.ready_to_pending_total;
     j["pending_to_deregistered_total"] = c.pending_to_deregistered_total;
-    j["pending_to_ready_total"]        = c.pending_to_ready_total;
-    j["bytes_in_total"]                = c.bytes_in_total;
-    j["bytes_out_total"]               = c.bytes_out_total;
-    j["msg_type_counts"]               = c.msg_type_counts;
-    j["msg_type_errors"]               = c.msg_type_errors;
-    j["schema_registered_total"]       = c.schema_registered_total;
-    j["schema_evicted_total"]          = c.schema_evicted_total;
+    j["pending_to_ready_total"] = c.pending_to_ready_total;
+    j["bytes_in_total"] = c.bytes_in_total;
+    j["bytes_out_total"] = c.bytes_out_total;
+    j["msg_type_counts"] = c.msg_type_counts;
+    j["msg_type_errors"] = c.msg_type_errors;
+    j["schema_registered_total"] = c.schema_registered_total;
+    j["schema_evicted_total"] = c.schema_evicted_total;
     j["schema_citation_rejected_total"] = c.schema_citation_rejected_total;
     return j;
 }

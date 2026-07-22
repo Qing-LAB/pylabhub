@@ -58,7 +58,7 @@ namespace
 
 class Pattern4RegistrationTest : public IsolatedProcessTest
 {
-protected:
+  protected:
     void TearDown() override
     {
         for (const auto &p : paths_to_clean_)
@@ -95,8 +95,8 @@ TEST_F(Pattern4RegistrationTest, ProducerRegistersAndStateAdvances)
     const std::string role_uid = pylabhub::scripting::make_role_uid(
         pylabhub::scripting::RoleUidTag::Producer, "pattern4reg", 1u);
     const fs::path temp_dir = make_test_temp_dir("producer_registers");
-    auto           setup    = make_pattern4_setup({role_uid});
-    setup.shared_log_path   = (temp_dir / "shared.log").string();
+    auto setup = make_pattern4_setup({role_uid});
+    setup.shared_log_path = (temp_dir / "shared.log").string();
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     const fs::path shared_log = setup.shared_log_path;
@@ -116,15 +116,11 @@ TEST_F(Pattern4RegistrationTest, ProducerRegistersAndStateAdvances)
     // rather than waiting for a fixed self-timeout.  See
     // README_testing.md § "Pattern 4 — Termination via quit-signal
     // pipe" for the canonical pattern.
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_registration.broker",
-                                            {temp_dir.string()});
-    expect_log_sequence(
-        shared_log,
-        {"Pattern4Broker: bound endpoint='"},
-        milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_registration.broker", {temp_dir.string()});
+    expect_log_sequence(shared_log, {"Pattern4Broker: bound endpoint='"},
+                        milliseconds{kMidTimeoutMs});
     // Broker is now provably bound + ZAP-installed.  Safe to spawn role.
-    auto role = SpawnWorker("pattern4_registration.producer_role",
-                            {temp_dir.string()});
+    auto role = SpawnWorker("pattern4_registration.producer_role", {temp_dir.string()});
 
     // ── 3. Pin the 5-marker sequence (cross-process, in order) ──
     //
@@ -139,13 +135,15 @@ TEST_F(Pattern4RegistrationTest, ProducerRegistersAndStateAdvances)
     expect_log_sequence(
         shared_log,
         {
-            "event=PresenceStateTransition channel='reg.test' role_type=producer from=Unregistered to=RegRequestPending",
+            "event=PresenceStateTransition channel='reg.test' role_type=producer from=Unregistered "
+            "to=RegRequestPending",
             fmt::format("event=RegReqAccepted role='{}' "
                         "channel='reg.test' producer_pubkey='",
                         role_uid),
             "event=RegAckSending channel='reg.test'",
             "event=RegAckReceived channel='reg.test' status=success initial_allowlist=",
-            "event=PresenceStateTransition channel='reg.test' role_type=producer from=RegRequestPending to=Registered",
+            "event=PresenceStateTransition channel='reg.test' role_type=producer "
+            "from=RegRequestPending to=Registered",
         },
         milliseconds{kLongTimeoutMs});
 

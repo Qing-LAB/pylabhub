@@ -141,8 +141,7 @@ void signal_test_ready()
 #endif
 }
 
-QuitWaitResult
-wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout)
+QuitWaitResult wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout)
 {
 #if PYLABHUB_IS_POSIX
     const char *fd_str = std::getenv("PLH_TEST_QUIT_FD");
@@ -157,16 +156,16 @@ wait_for_quit_or_safety_timeout(std::chrono::seconds safety_timeout)
     // a zero-byte read (EOF) or POLLHUP, depending on libc / kernel.
     // Either way the FSM advances; treat both as "quit requested".
     pollfd pfd{};
-    pfd.fd     = fd;
+    pfd.fd = fd;
     pfd.events = POLLIN;
 
     const long long timeout_ms = static_cast<long long>(safety_timeout.count()) * 1000;
-    const int       capped_ms  = (timeout_ms > INT_MAX) ? -1 : static_cast<int>(timeout_ms);
+    const int capped_ms = (timeout_ms > INT_MAX) ? -1 : static_cast<int>(timeout_ms);
 
     const int rc = ::poll(&pfd, 1, capped_ms);
     close(fd);
     if (rc < 0)
-        return QuitWaitResult::SafetyTimeout;  // pessimistic on EINTR/etc.
+        return QuitWaitResult::SafetyTimeout; // pessimistic on EINTR/etc.
     if (rc == 0)
         return QuitWaitResult::SafetyTimeout;
     // Pipe became readable — either real EOF (parent closed) or a

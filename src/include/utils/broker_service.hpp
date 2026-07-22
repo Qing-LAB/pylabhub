@@ -61,10 +61,10 @@ struct ChannelSnapshotEntry
     /// HEP-CORE-0023 §2.2 — derived observable.
     /// One of: "absent" | "registering" | "stalled" | "live".
     std::string observable;
-    int         consumer_count{0};
+    int consumer_count{0};
     /// Full list of admitted producers (HEP-CORE-0023 §2.1.1).
     std::vector<std::string> producer_uids;
-    std::vector<uint64_t>    producer_pids;
+    std::vector<uint64_t> producer_pids;
     std::string schema_hash;
 };
 
@@ -74,11 +74,12 @@ struct ChannelSnapshot
     std::vector<ChannelSnapshotEntry> channels;
 
     /// Count of channels whose `observable` matches `o` (e.g. "live").
-    int count_by_observable(const std::string& o) const noexcept
+    int count_by_observable(const std::string &o) const noexcept
     {
         int n = 0;
-        for (const auto& ch : channels)
-            if (ch.observable == o) ++n;
+        for (const auto &ch : channels)
+            if (ch.observable == o)
+                ++n;
         return n;
     }
 };
@@ -90,9 +91,10 @@ struct ChannelSnapshot
 /// transitions occurred without racing on wall-clock timing.
 struct RoleStateMetrics
 {
-    uint64_t ready_to_pending_total{0};       ///< Ready -> Pending demotions.
-    uint64_t pending_to_deregistered_total{0};///< Pending -> deregistered (+ CLOSING_NOTIFY).
-    uint64_t pending_to_ready_total{0};       ///< Pending -> Ready transitions (first heartbeat or recovery).
+    uint64_t ready_to_pending_total{0};        ///< Ready -> Pending demotions.
+    uint64_t pending_to_deregistered_total{0}; ///< Pending -> deregistered (+ CLOSING_NOTIFY).
+    uint64_t pending_to_ready_total{
+        0}; ///< Pending -> Ready transitions (first heartbeat or recovery).
 };
 
 /// Configuration for one outbound federation peer (HEP-CORE-0022).
@@ -107,10 +109,10 @@ struct RoleStateMetrics
 /// HEP-0035 Phase 5, not Phase 1 of HEP-0033.
 struct FederationPeer
 {
-    std::string              hub_uid;          ///< Peer hub UID
-    std::string              broker_endpoint;  ///< Peer's broker ROUTER endpoint
-    std::string              pubkey_z85;       ///< Z85 CURVE25519 public key; empty = no CURVE
-    std::vector<std::string> channels;         ///< Channels this hub relays TO the peer
+    std::string hub_uid;               ///< Peer hub UID
+    std::string broker_endpoint;       ///< Peer's broker ROUTER endpoint
+    std::string pubkey_z85;            ///< Z85 CURVE25519 public key; empty = no CURVE
+    std::vector<std::string> channels; ///< Channels this hub relays TO the peer
 };
 
 /// Argument to `BrokerService::Config::on_processing_error`
@@ -121,13 +123,13 @@ struct ProcessingError
 {
     /// msg_type the dispatcher saw, or empty if the failure happened
     /// before the msg_type frame was parsed (S1/S2 errors).
-    std::string                msg_type;
+    std::string msg_type;
     /// One of: "malformed_frame" | "malformed_json" | "unknown_msg_type"
     /// | "exception".  See HEP-CORE-0033 §9.3 for the failure-mode
     /// mapping.
-    std::string                error_kind;
+    std::string error_kind;
     /// Free-form detail: exception what(), parse-error description, etc.
-    std::string                detail;
+    std::string detail;
     /// Raw ZMQ ROUTER routing identity bytes when available
     /// (request-reply paths); nullopt for inbound peer-DEALER traffic
     /// or pre-dispatch failures with no identity context.
@@ -136,7 +138,7 @@ struct ProcessingError
 
 class PYLABHUB_UTILS_EXPORT BrokerService
 {
-public:
+  public:
     struct Config
     {
         std::string endpoint{"tcp://0.0.0.0:5570"};
@@ -161,14 +163,15 @@ public:
         // heartbeat cadence times the miss-heartbeat counts, unless an explicit
         // override is set (useful for tests and relaxed-tolerance deployments).
 
-        /// Expected client heartbeat cadence. Defaults to ::pylabhub::kDefaultHeartbeatIntervalMs (2 Hz).
+        /// Expected client heartbeat cadence. Defaults to ::pylabhub::kDefaultHeartbeatIntervalMs
+        /// (2 Hz).
         std::chrono::milliseconds heartbeat_interval{::pylabhub::kDefaultHeartbeatIntervalMs};
 
         /// Ready -> Pending demotion after this many consecutive missed heartbeats.
         uint32_t ready_miss_heartbeats{::pylabhub::kDefaultReadyMissHeartbeats};
 
-        /// Pending -> deregistered + CHANNEL_CLOSING_NOTIFY after this many additional missed heartbeats
-        /// (counted from the moment the role entered Pending).
+        /// Pending -> deregistered + CHANNEL_CLOSING_NOTIFY after this many additional missed
+        /// heartbeats (counted from the moment the role entered Pending).
         uint32_t pending_miss_heartbeats{::pylabhub::kDefaultPendingMissHeartbeats};
 
         /// Optional explicit overrides. When set, the value is used verbatim.
@@ -179,7 +182,7 @@ public:
         /// of 0 ms means the timeout check in `check_heartbeat_timeouts()` is
         /// skipped (timeout effectively disabled). Tests that want very fast
         /// reclaim should use a small positive value (e.g. 1 ms), not 0.
-        std::optional<std::chrono::milliseconds> ready_timeout_override  {};
+        std::optional<std::chrono::milliseconds> ready_timeout_override{};
         std::optional<std::chrono::milliseconds> pending_timeout_override{};
 
         /// Derived effective timeouts used by the heartbeat check loop.
@@ -188,14 +191,14 @@ public:
         /// dangling state. Misconfiguration is clamped, not honored.
         [[nodiscard]] std::chrono::milliseconds effective_ready_timeout() const noexcept
         {
-            const auto v = ready_timeout_override.value_or(
-                heartbeat_interval * ready_miss_heartbeats);
+            const auto v =
+                ready_timeout_override.value_or(heartbeat_interval * ready_miss_heartbeats);
             return (v < heartbeat_interval) ? heartbeat_interval : v;
         }
         [[nodiscard]] std::chrono::milliseconds effective_pending_timeout() const noexcept
         {
-            const auto v = pending_timeout_override.value_or(
-                heartbeat_interval * pending_miss_heartbeats);
+            const auto v =
+                pending_timeout_override.value_or(heartbeat_interval * pending_miss_heartbeats);
             return (v < heartbeat_interval) ? heartbeat_interval : v;
         }
 
@@ -220,9 +223,8 @@ public:
         /// visibly rather than accept misleading precision.
         [[nodiscard]] std::chrono::milliseconds effective_producer_apply_wait() const noexcept
         {
-            return (producer_apply_wait_ms < heartbeat_interval)
-                       ? heartbeat_interval
-                       : producer_apply_wait_ms;
+            return (producer_apply_wait_ms < heartbeat_interval) ? heartbeat_interval
+                                                                 : producer_apply_wait_ms;
         }
 
         /// Cat 2 policy: what to do when producer/consumer reports a slot checksum error.
@@ -254,8 +256,7 @@ public:
         /// shutdown, so the callback naturally outlives it. Capturing by raw pointer is
         /// safe when the pointed-to object is in the same or outer scope. Capturing by
         /// raw pointer to a heap object that may be destroyed before run() returns is unsafe.
-        std::function<void(const std::string& bound_endpoint,
-                           const std::string& pubkey)> on_ready;
+        std::function<void(const std::string &bound_endpoint, const std::string &pubkey)> on_ready;
 
         // ── Known-roles allowlist (HEP-CORE-0035 §4.8) ─────────────────────
         /// Roles allowed to register.  Per HEP-CORE-0035 §4.8 the
@@ -265,7 +266,7 @@ public:
         /// Loaded from the encrypted hub vault; the legacy self-asserted
         /// string-identity gate (`RoleIdentityPolicy` / `check_role_identity`)
         /// was deleted per §4.5 / §8 Phase 6 — pubkey enforcement is ZAP.
-        std::vector<KnownRole>         known_roles;
+        std::vector<KnownRole> known_roles;
 
         // ── Schema registry (HEP-CORE-0034) ─────────────────────────────────
         /// Directories to search for hub-global schema JSON files (`*.json`).
@@ -277,12 +278,12 @@ public:
         /// `HubState.schemas` under `(owner_uid="hub", schema_id)` —
         /// HEP-CORE-0034 §2.4 I2 (single load pipeline).  Set in tests to
         /// an explicit temp directory containing schema fixtures.
-        std::vector<std::string>    schema_search_dirs;
+        std::vector<std::string> schema_search_dirs;
 
         // ── Hub federation (HEP-CORE-0022) ──────────────────────────────────
         /// This hub's UID — included in HUB_PEER_HELLO_ACK and HUB_RELAY_MSG.
         /// Required for federation; empty disables all peer connection/relay.
-        std::string                          self_hub_uid;
+        std::string self_hub_uid;
 
         /// Outbound peer connections.  The broker creates one DEALER socket per
         /// entry and sends HUB_PEER_HELLO after the CURVE handshake completes.
@@ -291,21 +292,21 @@ public:
         /// Called (from run() thread) when a peer completes the HELLO handshake.
         /// @param hub_uid  UID reported by the peer in HUB_PEER_HELLO.
         /// **Lifetime**: same as on_ready — callback must outlive run(). See on_ready doc.
-        std::function<void(const std::string& hub_uid)> on_hub_connected;
+        std::function<void(const std::string &hub_uid)> on_hub_connected;
 
         /// Called (from run() thread) when a peer sends BYE or times out.
         /// @param hub_uid  UID of the disconnecting peer.
         /// **Lifetime**: same as on_ready — callback must outlive run(). See on_ready doc.
-        std::function<void(const std::string& hub_uid)> on_hub_disconnected;
+        std::function<void(const std::string &hub_uid)> on_hub_disconnected;
 
         /// Called (from run() thread) when a HUB_TARGETED_MSG arrives for this hub.
         /// @param channel       Context channel name from the message.
         /// @param payload       Raw payload bytes.
         /// @param source_hub_uid UID of the sending hub.
         /// **Lifetime**: same as on_ready — callback must outlive run(). See on_ready doc.
-        std::function<void(const std::string& channel,
-                           const std::string& payload,
-                           const std::string& source_hub_uid)> on_hub_message;
+        std::function<void(const std::string &channel, const std::string &payload,
+                           const std::string &source_hub_uid)>
+            on_hub_message;
 
         /// HEP-CORE-0033 §12.2.2 response augmentation hook for the
         /// HUB_TARGETED_MSG peer wire frame.  Called (from run() thread)
@@ -324,9 +325,9 @@ public:
         /// loop iteration) while the runner processes the augmentation
         /// request — same blocking shape as a synchronous send on the
         /// broker thread.
-        std::function<void(const std::string& peer_uid,
-                           const nlohmann::json& msg,
-                           nlohmann::json& response)> on_peer_message_augment;
+        std::function<void(const std::string &peer_uid, const nlohmann::json &msg,
+                           nlohmann::json &response)>
+            on_peer_message_augment;
 
         /// Hook fired when broker message processing hits an error
         /// (HEP-CORE-0033 §9.6).  Opt-in.  Invoked AFTER counter bumps
@@ -340,7 +341,7 @@ public:
         ///   are held during invocation).
         ///
         /// **Lifetime**: same as on_ready.
-        std::function<void(const ProcessingError&)> on_processing_error;
+        std::function<void(const ProcessingError &)> on_processing_error;
     };
 
     /**
@@ -363,11 +364,11 @@ public:
      *               owner is `service` first (which calls `stop()`),
      *               `state` second.
      */
-    BrokerService(Config cfg, pylabhub::hub::HubState& state);
+    BrokerService(Config cfg, pylabhub::hub::HubState &state);
     ~BrokerService();
 
-    BrokerService(const BrokerService&) = delete;
-    BrokerService& operator=(const BrokerService&) = delete;
+    BrokerService(const BrokerService &) = delete;
+    BrokerService &operator=(const BrokerService &) = delete;
 
     /**
      * @brief Access the hub's `HubState` aggregate (HEP-CORE-0033 §8).
@@ -380,7 +381,7 @@ public:
      *
      * Include `utils/hub_state.hpp` to name the returned type.
      */
-    [[nodiscard]] const pylabhub::hub::HubState& hub_state() const;
+    [[nodiscard]] const pylabhub::hub::HubState &hub_state() const;
 
     /**
      * @brief Main event loop. Blocks until stop() is called.
@@ -434,7 +435,7 @@ public:
      *
      * @param name  Channel name to close.  Silently ignored if not registered.
      */
-    void request_close_channel(const std::string& name);
+    void request_close_channel(const std::string &name);
 
     /**
      * @brief Broadcast a message to all members of a channel.
@@ -449,9 +450,8 @@ public:
      * @param message  Broadcast message tag (e.g., "start", "stop").
      * @param data     Optional payload string (JSON or plain text).
      */
-    void request_broadcast_channel(const std::string& channel,
-                                   const std::string& message,
-                                   const std::string& data = {});
+    void request_broadcast_channel(const std::string &channel, const std::string &message,
+                                   const std::string &data = {});
 
     /**
      * @brief Query aggregated metrics from the MetricsStore (HEP-CORE-0019).
@@ -461,7 +461,7 @@ public:
      * @param channel  Channel name (empty = all channels).
      * @return JSON string with the METRICS_ACK-format response.
      */
-    [[nodiscard]] std::string query_metrics_json_str(const std::string& channel = {}) const;
+    [[nodiscard]] std::string query_metrics_json_str(const std::string &channel = {}) const;
 
     /**
      * @brief Unified hub-state query engine (HEP-CORE-0033 §10.3).
@@ -481,13 +481,13 @@ public:
      *   "status":     "success",
      *   "queried_at": "YYYY-MM-DD HH:MM:SS.uuuuuu",
      *   "filter":     { ... echoed back ... },
-     *   "channels":   { "<name>": { producer:..., consumers:..., status:..., _collected_at:... }, ... },
-     *   "roles":      { "<uid>": { state, name, short_tag, channels, latest_metrics, _collected_at }, ... },
-     *   "bands":      { "<name>": { members, created_at, last_activity }, ... },
-     *   "peers":      { "<uid>": { endpoint, state, last_seen, relay_channels }, ... },
-     *   "broker":     { ready_to_pending_total, ..., msg_type_counts, ... },
-     *   "shm":        { "<channel>": { shm_metrics or null, _collected_at, ... }, ... },
-     *   "schemas":    { "<owner>:<id>": { ... }, ... }
+     *   "channels":   { "<name>": { producer:..., consumers:..., status:..., _collected_at:... },
+     * ... }, "roles":      { "<uid>": { state, name, short_tag, channels, latest_metrics,
+     * _collected_at }, ... }, "bands":      { "<name>": { members, created_at, last_activity }, ...
+     * }, "peers":      { "<uid>": { endpoint, state, last_seen, relay_channels }, ... }, "broker":
+     * { ready_to_pending_total, ..., msg_type_counts, ... }, "shm":        { "<channel>": {
+     * shm_metrics or null, _collected_at, ... }, ... }, "schemas":    { "<owner>:<id>": { ... },
+     * ... }
      * }
      * @endcode
      *
@@ -495,8 +495,7 @@ public:
      * lands (Phase 6) this entrypoint moves; for now it sits on
      * `BrokerService` as the spec permits.
      */
-    [[nodiscard]] nlohmann::json
-    query_metrics(const pylabhub::hub::MetricsFilter &filter) const;
+    [[nodiscard]] nlohmann::json query_metrics(const pylabhub::hub::MetricsFilter &filter) const;
 
     /**
      * @brief Query SHM block topology and DataBlockMetrics for all channels (or one).
@@ -511,7 +510,7 @@ public:
      *         producer:{pid,uid,name}, consumers:[{pid,uid,name}],
      *         shm_metrics:{...} or null}, ...]}
      */
-    [[nodiscard]] std::string collect_shm_info_json(const std::string& channel = {}) const;
+    [[nodiscard]] std::string collect_shm_info_json(const std::string &channel = {}) const;
 
     /**
      * @brief Send a hub-targeted message to a direct federation peer (HEP-CORE-0022).
@@ -543,11 +542,10 @@ public:
      * @param channel         Context channel name (informational, not filtered).
      * @param payload         Raw payload bytes.
      */
-    void send_hub_targeted_msg(const std::string& target_hub_uid,
-                               const std::string& channel,
-                               const std::string& payload);
+    void send_hub_targeted_msg(const std::string &target_hub_uid, const std::string &channel,
+                               const std::string &payload);
 
-private:
+  private:
 #if defined(_MSC_VER)
 #pragma warning(suppress : 4251)
 #endif

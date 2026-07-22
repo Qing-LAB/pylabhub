@@ -57,9 +57,9 @@ namespace pylabhub::hub
 struct FieldDef
 {
     std::string name;
-    std::string type_str;  ///< One of the 13 valid type strings listed above.
-    uint32_t    count{1};  ///< Elements (>1 = array for numeric types; must be 1 for string/bytes).
-    uint32_t    length{0}; ///< Byte length (required for "string"/"bytes"; ignored for numeric types).
+    std::string type_str; ///< One of the 13 valid type strings listed above.
+    uint32_t count{1};    ///< Elements (>1 = array for numeric types; must be 1 for string/bytes).
+    uint32_t length{0}; ///< Byte length (required for "string"/"bytes"; ignored for numeric types).
 };
 
 // ============================================================================
@@ -76,9 +76,9 @@ struct FieldDef
  */
 struct SchemaSpec
 {
-    bool                  has_schema{false};
+    bool has_schema{false};
     std::vector<FieldDef> fields;
-    std::string           packing{"aligned"}; ///< "aligned" or "packed"
+    std::string packing{"aligned"}; ///< "aligned" or "packed"
 };
 
 // ============================================================================
@@ -90,8 +90,8 @@ struct SchemaSpec
 struct SchemaFieldDesc
 {
     std::string type_str;
-    uint32_t    count{1};
-    uint32_t    length{0};
+    uint32_t count{1};
+    uint32_t length{0};
 };
 
 // ============================================================================
@@ -101,10 +101,11 @@ struct SchemaFieldDesc
 /// Produced by compute_field_layout(); consumed by wire pack/unpack and size queries.
 struct FieldLayout
 {
-    size_t      offset{0};     ///< Byte offset within the struct.
-    size_t      byte_size{0};  ///< Total bytes for this field (elem_size * count, or length for string/bytes).
-    std::string type_str;      ///< Original type string (for pack/unpack dispatch).
-    bool        is_bin{false}; ///< True for arrays (count>1), string, bytes — packed as binary blob.
+    size_t offset{0}; ///< Byte offset within the struct.
+    size_t byte_size{
+        0}; ///< Total bytes for this field (elem_size * count, or length for string/bytes).
+    std::string type_str; ///< Original type string (for pack/unpack dispatch).
+    bool is_bin{false};   ///< True for arrays (count>1), string, bytes — packed as binary blob.
 };
 
 } // namespace pylabhub::hub

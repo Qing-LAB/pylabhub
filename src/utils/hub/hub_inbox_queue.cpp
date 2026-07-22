@@ -3,8 +3,8 @@
  * @file hub_inbox_queue.cpp
  * @brief InboxQueue (ROUTER receiver) and InboxClient (DEALER sender) implementations.
  *
- * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N), checksum:bin32]
- * Same wire format as ZmqQueue; shared helpers in zmq_wire_helpers.hpp.
+ * Wire format: msgpack fixarray[5] = [magic:uint32, schema_tag:bin8, seq:uint64, payload:array(N),
+ * checksum:bin32] Same wire format as ZmqQueue; shared helpers in zmq_wire_helpers.hpp.
  *
  * ZMQ framing (ROUTER-DEALER):
  *   DEALER → ROUTER (wire): ["", payload]   ZMQ prepends identity on ROUTER side
@@ -15,15 +15,15 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
-#include "utils/curve_socket.hpp"             // arm_curve_server (shared CURVE arm)
-#include "utils/security/key_store.hpp"       // kRoleIdentityName, secure().keys()
+#include "utils/curve_socket.hpp"              // arm_curve_server (shared CURVE arm)
+#include "utils/security/key_store.hpp"        // kRoleIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
-#include "utils/security/zap_router.hpp"      // ZapRouter, ZapDomainHandle
-#include "utils/replay_guard.hpp"             // shared sliding-window nonce dedup
+#include "utils/security/zap_router.hpp"       // ZapRouter, ZapDomainHandle
+#include "utils/replay_guard.hpp"              // shared sliding-window nonce dedup
 #include "zmq_wire_helpers.hpp"
 
 #include "cppzmq/zmq.hpp"
-#include "cppzmq/zmq_addon.hpp"  // zmq::multipart_t
+#include "cppzmq/zmq_addon.hpp" // zmq::multipart_t
 
 #include <atomic>
 #include <cassert>
@@ -46,12 +46,12 @@ struct InboxQueueImpl
 {
     std::string endpoint;
     std::string actual_ep;
-    size_t      item_sz{0};
-    size_t      max_frame_sz{0};
-    int         rcvhwm{1000};    ///< ZMQ_RCVHWM applied at start(). 0 = unlimited.
-    int         last_rcvtimeo{-2}; ///< Cached ZMQ_RCVTIMEO. -2 = not yet set.
+    size_t item_sz{0};
+    size_t max_frame_sz{0};
+    int rcvhwm{1000};      ///< ZMQ_RCVHWM applied at start(). 0 = unlimited.
+    int last_rcvtimeo{-2}; ///< Cached ZMQ_RCVTIMEO. -2 = not yet set.
 
-    std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
+    std::array<uint8_t, 8> schema_tag_{}; // first 8 bytes of BLAKE2b-256 of canonical schema string
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
     // Shared ZMQ context via get_zmq_context(). InboxQueue never creates
@@ -64,8 +64,8 @@ struct InboxQueueImpl
     // Decode buffer (single slot — inbox_thread processes one message at a time)
     std::vector<std::byte> decode_buf_;
     // Frame receive buffer — pre-allocated to max_frame_sz to avoid per-call heap allocation.
-    std::vector<char>      frame_recv_buf_;
-    std::string            current_sender_id_;  // set by recv_one, read by send_ack
+    std::vector<char> frame_recv_buf_;
+    std::string current_sender_id_; // set by recv_one, read by send_ack
 
     // Current item (returned by recv_one; valid until next recv_one)
     InboxItem current_item_;
@@ -94,15 +94,15 @@ struct InboxQueueImpl
     // Set by set_curve_server_identity() before start().  Empty
     // identity_key_name_ == legacy unencrypted inbox (no CURVE arm — the
     // ZMQ NULL mechanism; production hard-refuses this, see role_api_base).
-    std::string identity_key_name_;   ///< KeyStore key (kRoleIdentityName).
-    std::string zap_domain_;          ///< Distinct inbox ZAP domain ("<uid>:inbox").
+    std::string identity_key_name_; ///< KeyStore key (kRoleIdentityName).
+    std::string zap_domain_;        ///< Distinct inbox ZAP domain ("<uid>:inbox").
 
     // Hub-wide known_roles roster (COW snapshot) consulted by the ZapRouter
     // pump thread via is_peer_allowed.  nullptr == deny-all (secure default
     // between the S1 bind and the S3 set_peer_allowlist seed).  Written by
     // set_peer_allowlist (any thread), read on the pump thread — atomic.
-    std::atomic<std::shared_ptr<const pylabhub::utils::security::PeerAllowlist>>
-        allowlist_{nullptr};
+    std::atomic<std::shared_ptr<const pylabhub::utils::security::PeerAllowlist>> allowlist_{
+        nullptr};
 
     // RAII registration with the process ZapRouter; destructor unregisters
     // the domain.  Engaged in start() (register_domain before bind), reset
@@ -118,7 +118,7 @@ struct InboxClientImpl
 {
     std::string endpoint;
     std::string sender_uid;
-    size_t      item_sz{0};
+    size_t item_sz{0};
 
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
 
@@ -126,22 +126,22 @@ struct InboxClientImpl
     // or terminates it.
     zmq::socket_t socket;
 
-    std::atomic<bool>    running_{false};
-    std::vector<std::byte> write_buf_;  // zero-initialized
+    std::atomic<bool> running_{false};
+    std::vector<std::byte> write_buf_; // zero-initialized
 
     // reusable send buffer
     msgpack::sbuffer sbuf_;
     std::atomic<uint64_t> send_seq_{0};
 
-    std::array<uint8_t, 8> schema_tag_{};  // first 8 bytes of BLAKE2b-256 of canonical schema string
+    std::array<uint8_t, 8> schema_tag_{}; // first 8 bytes of BLAKE2b-256 of canonical schema string
     ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced};
     int last_acktimeo{-2}; ///< Cached ZMQ_RCVTIMEO for ACK receives. -2 = not yet set.
 
     // ── CURVE-client auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
     // Set by set_curve_client_identity() before start().  Empty
     // identity_key_name_ == legacy unencrypted (no CURVE arm).
-    std::string identity_key_name_;   ///< KeyStore key (kRoleIdentityName).
-    std::string server_pubkey_z85_;   ///< Receiver identity pubkey (curve_serverkey).
+    std::string identity_key_name_; ///< KeyStore key (kRoleIdentityName).
+    std::string server_pubkey_z85_; ///< Receiver identity pubkey (curve_serverkey).
 };
 
 // ============================================================================
@@ -155,9 +155,9 @@ struct InboxClientImpl
 // stays byte-identical to the data-plane ZmqQueue frame it shares.
 namespace
 {
-constexpr std::size_t   kInboxNonceLen       = 16;
-constexpr std::size_t   kInboxMetaLen        = kInboxNonceLen + 8;
-constexpr std::uint64_t kInboxReplaySkewMs   = 30'000;
+constexpr std::size_t kInboxNonceLen = 16;
+constexpr std::size_t kInboxMetaLen = kInboxNonceLen + 8;
+constexpr std::uint64_t kInboxReplaySkewMs = 30'000;
 // I-REPLAY-BOUND soundness: window MUST be >= 2 * skew.  A replay stays
 // skew-acceptable for up to 2*skew after the original (skew tolerance
 // applies to both the original acceptance and the replay), so the nonce
@@ -166,10 +166,9 @@ constexpr std::uint64_t kInboxReplayWindowMs = 2 * kInboxReplaySkewMs;
 
 std::uint64_t inbox_now_ms()
 {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
 }
 void inbox_put_be64(unsigned char *p, std::uint64_t v)
 {
@@ -185,15 +184,15 @@ std::uint64_t inbox_get_be64(const unsigned char *p)
 }
 } // namespace
 
-static bool validate_inbox_schema(const std::vector<ZmqSchemaField>& schema,
-                                   const std::string& endpoint)
+static bool validate_inbox_schema(const std::vector<ZmqSchemaField> &schema,
+                                  const std::string &endpoint)
 {
     if (schema.empty())
     {
         LOGGER_ERROR("[hub::InboxQueue] '{}': schema must not be empty", endpoint);
         return false;
     }
-    for (const auto& f : schema)
+    for (const auto &f : schema)
     {
         if (!wire_detail::is_valid_type_str(f.type_str))
         {
@@ -221,12 +220,12 @@ static bool validate_inbox_schema(const std::vector<ZmqSchemaField>& schema,
 /// sender publishing packed bytes and a receiver decoding as aligned (or vice
 /// versa) would silently misinterpret the wire — the exact bug Phase 1 fixes
 /// on the SchemaSpec/SchemaInfo paths.
-static std::array<uint8_t, 8> compute_inbox_schema_tag(
-    const std::vector<ZmqSchemaField>& schema, const std::string& packing)
+static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSchemaField> &schema,
+                                                       const std::string &packing)
 {
     // Build canonical string: "type:count:length;" per field, then "|pack:<packing>".
     std::string canonical;
-    for (const auto& f : schema)
+    for (const auto &f : schema)
     {
         canonical += f.type_str;
         canonical += ':';
@@ -237,18 +236,20 @@ static std::array<uint8_t, 8> compute_inbox_schema_tag(
     }
     canonical += "|pack:";
     canonical += packing;
-    auto full_hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(), canonical.size());
+    auto full_hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
+                                                                               canonical.size());
     std::array<uint8_t, 8> tag{};
     std::memcpy(tag.data(), full_hash.data(), 8);
     return tag;
 }
 
-static bool validate_inbox_packing(const std::string& packing, const std::string& endpoint)
+static bool validate_inbox_packing(const std::string &packing, const std::string &endpoint)
 {
     if (packing != "aligned" && packing != "packed")
     {
-        LOGGER_ERROR("[hub::InboxQueue] '{}': invalid packing '{}' (must be \"aligned\" or \"packed\")",
-                     endpoint, packing);
+        LOGGER_ERROR(
+            "[hub::InboxQueue] '{}': invalid packing '{}' (must be \"aligned\" or \"packed\")",
+            endpoint, packing);
         return false;
     }
     return true;
@@ -258,22 +259,24 @@ static bool validate_inbox_packing(const std::string& packing, const std::string
 // InboxQueue — factory
 // ============================================================================
 
-std::unique_ptr<InboxQueue>
-InboxQueue::bind_at(const std::string& endpoint, std::vector<ZmqSchemaField> schema,
-                    std::string packing, int rcvhwm)
+std::unique_ptr<InboxQueue> InboxQueue::bind_at(const std::string &endpoint,
+                                                std::vector<ZmqSchemaField> schema,
+                                                std::string packing, int rcvhwm)
 {
-    if (!validate_inbox_schema(schema, endpoint)) return nullptr;
-    if (!validate_inbox_packing(packing, endpoint)) return nullptr;
+    if (!validate_inbox_schema(schema, endpoint))
+        return nullptr;
+    if (!validate_inbox_packing(packing, endpoint))
+        return nullptr;
 
     auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
-    auto impl            = std::make_unique<InboxQueueImpl>();
-    impl->endpoint       = endpoint;
-    impl->item_sz        = item_sz;
-    impl->max_frame_sz   = wire_detail::max_frame_size(layouts);
-    impl->rcvhwm         = rcvhwm;
-    impl->schema_tag_    = compute_inbox_schema_tag(schema, packing);
-    impl->schema_defs_   = std::move(layouts);
+    auto impl = std::make_unique<InboxQueueImpl>();
+    impl->endpoint = endpoint;
+    impl->item_sz = item_sz;
+    impl->max_frame_sz = wire_detail::max_frame_size(layouts);
+    impl->rcvhwm = rcvhwm;
+    impl->schema_tag_ = compute_inbox_schema_tag(schema, packing);
+    impl->schema_defs_ = std::move(layouts);
     impl->decode_buf_.resize(item_sz, std::byte{0});
     impl->frame_recv_buf_.resize(impl->max_frame_sz, '\0');
 
@@ -291,9 +294,9 @@ InboxQueue::~InboxQueue()
     stop();
 }
 
-InboxQueue::InboxQueue(InboxQueue&&) noexcept = default;
+InboxQueue::InboxQueue(InboxQueue &&) noexcept = default;
 
-InboxQueue& InboxQueue::operator=(InboxQueue&& o) noexcept
+InboxQueue &InboxQueue::operator=(InboxQueue &&o) noexcept
 {
     if (this != &o)
     {
@@ -309,7 +312,8 @@ InboxQueue& InboxQueue::operator=(InboxQueue&& o) noexcept
 
 bool InboxQueue::start()
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->running_.load(std::memory_order_acquire))
         return true; // already running — idempotent
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
@@ -317,8 +321,7 @@ bool InboxQueue::start()
 
     try
     {
-        pImpl->socket =
-            zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::router);
+        pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::router);
         pImpl->socket.set(zmq::sockopt::linger, 0);
         pImpl->socket.set(zmq::sockopt::rcvhwm, pImpl->rcvhwm);
 
@@ -342,13 +345,11 @@ bool InboxQueue::start()
             // no handshake can slip through un-gated.  `*this` is the
             // PeerAdmission the pump thread consults.
             pImpl->zap_handle_.emplace(
-                sec::ZapRouter::instance().register_domain(
-                    pImpl->zap_domain_, *this));
-            LOGGER_INFO(
-                "[hub::InboxQueue] CURVE-server armed endpoint='{}' "
-                "zap_domain='{}' (deny-all until roster seeded; "
-                "HEP-CORE-0027 §3.5)",
-                pImpl->endpoint, pImpl->zap_domain_);
+                sec::ZapRouter::instance().register_domain(pImpl->zap_domain_, *this));
+            LOGGER_INFO("[hub::InboxQueue] CURVE-server armed endpoint='{}' "
+                        "zap_domain='{}' (deny-all until roster seeded; "
+                        "HEP-CORE-0027 §3.5)",
+                        pImpl->endpoint, pImpl->zap_domain_);
         }
 
         pImpl->socket.bind(pImpl->endpoint);
@@ -359,8 +360,8 @@ bool InboxQueue::start()
         pImpl->zap_handle_.reset();
         pImpl->socket.close();
         pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxQueue] socket setup failed for '{}': {}",
-                     pImpl->endpoint, e.what());
+        LOGGER_ERROR("[hub::InboxQueue] socket setup failed for '{}': {}", pImpl->endpoint,
+                     e.what());
         return false;
     }
     catch (const std::exception &e)
@@ -368,8 +369,7 @@ bool InboxQueue::start()
         pImpl->zap_handle_.reset();
         pImpl->socket.close();
         pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxQueue] CURVE arm failed for '{}': {}",
-                     pImpl->endpoint, e.what());
+        LOGGER_ERROR("[hub::InboxQueue] CURVE arm failed for '{}': {}", pImpl->endpoint, e.what());
         return false;
     }
 
@@ -378,7 +378,8 @@ bool InboxQueue::start()
 
 void InboxQueue::stop()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
@@ -398,7 +399,8 @@ bool InboxQueue::is_running() const noexcept
 
 std::string InboxQueue::actual_endpoint() const
 {
-    if (!pImpl) return {};
+    if (!pImpl)
+        return {};
     return pImpl->actual_ep.empty() ? pImpl->endpoint : pImpl->actual_ep;
 }
 
@@ -411,9 +413,10 @@ size_t InboxQueue::item_size() const noexcept
 // InboxQueue — recv_one
 // ============================================================================
 
-const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcept
+const InboxItem *InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcept
 {
-    if (!pImpl || !pImpl->socket) return nullptr;
+    if (!pImpl || !pImpl->socket)
+        return nullptr;
 
     // HR-03: only apply RCVTIMEO when it changes (saves a syscall per call).
     const int timeout_ms = static_cast<int>(timeout.count());
@@ -431,7 +434,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
     try
     {
         if (!parts.recv(pImpl->socket))
-            return nullptr;  // RCVTIMEO expired or EAGAIN
+            return nullptr; // RCVTIMEO expired or EAGAIN
     }
     catch (const zmq::error_t &e)
     {
@@ -463,29 +466,24 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         }
         const auto *m = static_cast<const unsigned char *>(meta.data());
         const std::uint64_t wall_ts = inbox_get_be64(m + kInboxNonceLen);
-        const std::uint64_t now     = inbox_now_ms();
-        const std::uint64_t skew =
-            now > wall_ts ? now - wall_ts : wall_ts - now;
+        const std::uint64_t now = inbox_now_ms();
+        const std::uint64_t skew = now > wall_ts ? now - wall_ts : wall_ts - now;
         if (skew > kInboxReplaySkewMs)
         {
-            pImpl->recv_replay_reject_count_.fetch_add(
-                1, std::memory_order_relaxed);
+            pImpl->recv_replay_reject_count_.fetch_add(1, std::memory_order_relaxed);
             LOGGER_WARN("[hub::InboxQueue] dropping frame from '{}': "
                         "wall-clock skew {}ms exceeds tolerance",
                         sender_id, skew);
             return nullptr;
         }
-        const std::string_view nonce(reinterpret_cast<const char *>(m),
-                                     kInboxNonceLen);
+        const std::string_view nonce(reinterpret_cast<const char *>(m), kInboxNonceLen);
         // Dedup: the ReplayGuard prunes against its OWN trusted monotonic
         // clock — no timestamp is passed, so the client `wall_ts` (confined
         // to the skew gate above) cannot reach the dedup window (see
         // ReplayGuard header).
-        if (!pImpl->replay_guard_.check_and_record(sender_id, nonce,
-                                                   kInboxReplayWindowMs))
+        if (!pImpl->replay_guard_.check_and_record(sender_id, nonce, kInboxReplayWindowMs))
         {
-            pImpl->recv_replay_reject_count_.fetch_add(
-                1, std::memory_order_relaxed);
+            pImpl->recv_replay_reject_count_.fetch_add(1, std::memory_order_relaxed);
             LOGGER_WARN("[hub::InboxQueue] dropping replayed frame from '{}' "
                         "(nonce reused within window)",
                         sender_id);
@@ -503,16 +501,22 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
 
     try
     {
-        msgpack::object_handle oh = msgpack::unpack(
-            static_cast<const char *>(payload.data()), payload.size());
+        msgpack::object_handle oh =
+            msgpack::unpack(static_cast<const char *>(payload.data()), payload.size());
 
         auto env = wire_detail::unpack_envelope(oh.get());
         if (!env.valid || env.payload_size != pImpl->schema_defs_.size())
-        { ++pImpl->recv_frame_error_count_; return nullptr; }
+        {
+            ++pImpl->recv_frame_error_count_;
+            return nullptr;
+        }
 
         // Schema-tag mismatch.
         if (std::memcmp(env.recv_tag, pImpl->schema_tag_.data(), 8) != 0)
-        { ++pImpl->recv_frame_error_count_; return nullptr; }
+        {
+            ++pImpl->recv_frame_error_count_;
+            return nullptr;
+        }
 
         // Per-sender sequence gap tracking.
         {
@@ -521,7 +525,7 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
             {
                 if (env.seq > it->second)
                     pImpl->recv_gap_count_.fetch_add(env.seq - it->second,
-                                                      std::memory_order_relaxed);
+                                                     std::memory_order_relaxed);
                 it->second = env.seq + 1;
             }
             else
@@ -534,8 +538,11 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         // Decode payload fields.
         std::fill(pImpl->decode_buf_.begin(), pImpl->decode_buf_.end(), std::byte{0});
         if (!wire_detail::unpack_payload(*env.payload, pImpl->schema_defs_,
-                                          pImpl->decode_buf_.data()))
-        { ++pImpl->recv_frame_error_count_; return nullptr; }
+                                         pImpl->decode_buf_.data()))
+        {
+            ++pImpl->recv_frame_error_count_;
+            return nullptr;
+        }
 
         // Checksum verification.
         if (pImpl->checksum_policy_ != ChecksumPolicy::None)
@@ -544,21 +551,20 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
                     env.checksum, pImpl->decode_buf_.data(), pImpl->item_sz))
             {
                 pImpl->checksum_error_count_.fetch_add(1, std::memory_order_relaxed);
-                LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'",
-                             sender_id);
+                LOGGER_ERROR("[hub::InboxQueue] checksum error after decode from '{}'", sender_id);
                 return nullptr;
             }
         }
     }
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
         ++pImpl->recv_frame_error_count_;
         LOGGER_WARN("[hub::InboxQueue] unpack error from '{}': {}", sender_id, e.what());
         return nullptr;
     }
 
-    pImpl->current_sender_id_    = std::move(sender_id);
-    pImpl->current_item_.data    = pImpl->decode_buf_.data();
+    pImpl->current_sender_id_ = std::move(sender_id);
+    pImpl->current_item_.data = pImpl->decode_buf_.data();
     pImpl->current_item_.sender_id = pImpl->current_sender_id_;
     return &pImpl->current_item_;
 }
@@ -569,16 +575,17 @@ const InboxItem* InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
 
 void InboxQueue::send_ack(uint8_t code) noexcept
 {
-    if (!pImpl || !pImpl->socket) return;
+    if (!pImpl || !pImpl->socket)
+        return;
 
     const std::string &id = pImpl->current_sender_id_;
 
     try
     {
         zmq::multipart_t ack;
-        ack.addstr(id);                      // routing identity
-        ack.addstr("");                      // empty delimiter
-        ack.addmem(&code, sizeof(code));     // 1-byte ack code
+        ack.addstr(id);                  // routing identity
+        ack.addstr("");                  // empty delimiter
+        ack.addmem(&code, sizeof(code)); // 1-byte ack code
         if (!ack.send(pImpl->socket))
             ++pImpl->ack_send_error_count_;
     }
@@ -614,53 +621,54 @@ uint64_t InboxQueue::checksum_error_count() const noexcept
 
 uint64_t InboxQueue::recv_replay_reject_count() const noexcept
 {
-    return pImpl ? pImpl->recv_replay_reject_count_.load(std::memory_order_relaxed)
-                 : 0;
+    return pImpl ? pImpl->recv_replay_reject_count_.load(std::memory_order_relaxed) : 0;
 }
 
 void InboxQueue::set_checksum_policy(ChecksumPolicy policy) noexcept
 {
-    if (pImpl) pImpl->checksum_policy_ = policy;
+    if (pImpl)
+        pImpl->checksum_policy_ = policy;
 }
 
 // ── CURVE-server auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────────
 
-void InboxQueue::set_curve_server_identity(std::string identity_key_name,
-                                           std::string zap_domain)
+void InboxQueue::set_curve_server_identity(std::string identity_key_name, std::string zap_domain)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->identity_key_name_ = std::move(identity_key_name);
-    pImpl->zap_domain_        = std::move(zap_domain);
+    pImpl->zap_domain_ = std::move(zap_domain);
 }
 
-bool InboxQueue::set_peer_allowlist(
-    pylabhub::utils::security::PeerAllowlist allowlist)
+bool InboxQueue::set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist)
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     pImpl->allowlist_.store(
-        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(
-            std::move(allowlist)),
+        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(std::move(allowlist)),
         std::memory_order_release);
     return true;
 }
 
-std::optional<pylabhub::utils::security::PeerAllowlist>
-InboxQueue::peer_allowlist_snapshot() const
+std::optional<pylabhub::utils::security::PeerAllowlist> InboxQueue::peer_allowlist_snapshot() const
 {
-    if (!pImpl) return std::nullopt;
+    if (!pImpl)
+        return std::nullopt;
     auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-    if (!snap) return std::nullopt;
+    if (!snap)
+        return std::nullopt;
     return *snap;
 }
 
-bool InboxQueue::is_peer_allowed(
-    const pylabhub::utils::security::PeerIdentity &peer) const
+bool InboxQueue::is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     // nullptr roster == deny-all (secure default between the S1 bind and
     // the S3 set_peer_allowlist seed).
     auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-    if (!snap) return false;
+    if (!snap)
+        return false;
     return snap->contains(peer);
 }
 
@@ -668,21 +676,24 @@ bool InboxQueue::is_peer_allowed(
 // InboxClient — factory
 // ============================================================================
 
-std::unique_ptr<InboxClient>
-InboxClient::connect_to(const std::string& endpoint, const std::string& sender_uid,
-                        std::vector<ZmqSchemaField> schema, std::string packing)
+std::unique_ptr<InboxClient> InboxClient::connect_to(const std::string &endpoint,
+                                                     const std::string &sender_uid,
+                                                     std::vector<ZmqSchemaField> schema,
+                                                     std::string packing)
 {
-    if (!validate_inbox_schema(schema, endpoint)) return nullptr;
-    if (!validate_inbox_packing(packing, endpoint)) return nullptr;
+    if (!validate_inbox_schema(schema, endpoint))
+        return nullptr;
+    if (!validate_inbox_packing(packing, endpoint))
+        return nullptr;
 
     auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
-    auto impl            = std::make_unique<InboxClientImpl>();
-    impl->endpoint       = endpoint;
-    impl->sender_uid     = sender_uid;
-    impl->item_sz        = item_sz;
-    impl->schema_tag_    = compute_inbox_schema_tag(schema, packing);
-    impl->schema_defs_   = std::move(layouts);
+    auto impl = std::make_unique<InboxClientImpl>();
+    impl->endpoint = endpoint;
+    impl->sender_uid = sender_uid;
+    impl->item_sz = item_sz;
+    impl->schema_tag_ = compute_inbox_schema_tag(schema, packing);
+    impl->schema_defs_ = std::move(layouts);
     impl->write_buf_.resize(item_sz, std::byte{0});
 
     return std::unique_ptr<InboxClient>(new InboxClient(std::move(impl)));
@@ -699,9 +710,9 @@ InboxClient::~InboxClient()
     stop();
 }
 
-InboxClient::InboxClient(InboxClient&&) noexcept = default;
+InboxClient::InboxClient(InboxClient &&) noexcept = default;
 
-InboxClient& InboxClient::operator=(InboxClient&& o) noexcept
+InboxClient &InboxClient::operator=(InboxClient &&o) noexcept
 {
     if (this != &o)
     {
@@ -717,7 +728,8 @@ InboxClient& InboxClient::operator=(InboxClient&& o) noexcept
 
 bool InboxClient::start()
 {
-    if (!pImpl) return false;
+    if (!pImpl)
+        return false;
     if (pImpl->running_.load(std::memory_order_acquire))
         return true; // already running — idempotent
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
@@ -725,8 +737,7 @@ bool InboxClient::start()
 
     try
     {
-        pImpl->socket =
-            zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::dealer);
+        pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::dealer);
         pImpl->socket.set(zmq::sockopt::linger, 0);
         // ZMQ_ROUTING_ID (modern name for ZMQ_IDENTITY): the peer's ROUTER will
         // prepend this to every message it receives from us.  Note: under
@@ -743,14 +754,10 @@ bool InboxClient::start()
         {
             namespace sec = pylabhub::utils::security;
             auto &ks = sec::secure().keys();
-            pImpl->socket.set(zmq::sockopt::curve_publickey,
-                              ks.pubkey(pImpl->identity_key_name_));
-            ks.with_seckey(pImpl->identity_key_name_,
-                [&](std::string_view seckey) {
-                    pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey);
-                });
-            pImpl->socket.set(zmq::sockopt::curve_serverkey,
-                              pImpl->server_pubkey_z85_);
+            pImpl->socket.set(zmq::sockopt::curve_publickey, ks.pubkey(pImpl->identity_key_name_));
+            ks.with_seckey(pImpl->identity_key_name_, [&](std::string_view seckey)
+                           { pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey); });
+            pImpl->socket.set(zmq::sockopt::curve_serverkey, pImpl->server_pubkey_z85_);
         }
 
         pImpl->socket.connect(pImpl->endpoint);
@@ -759,16 +766,15 @@ bool InboxClient::start()
     {
         pImpl->socket.close();
         pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxClient] socket setup failed for '{}': {}",
-                     pImpl->endpoint, e.what());
+        LOGGER_ERROR("[hub::InboxClient] socket setup failed for '{}': {}", pImpl->endpoint,
+                     e.what());
         return false;
     }
     catch (const std::exception &e)
     {
         pImpl->socket.close();
         pImpl->running_.store(false);
-        LOGGER_ERROR("[hub::InboxClient] CURVE arm failed for '{}': {}",
-                     pImpl->endpoint, e.what());
+        LOGGER_ERROR("[hub::InboxClient] CURVE arm failed for '{}': {}", pImpl->endpoint, e.what());
         return false;
     }
 
@@ -777,7 +783,8 @@ bool InboxClient::start()
 
 void InboxClient::stop()
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
@@ -799,9 +806,10 @@ size_t InboxClient::item_size() const noexcept
 // InboxClient — acquire / send / abort
 // ============================================================================
 
-void* InboxClient::acquire() noexcept
+void *InboxClient::acquire() noexcept
 {
-    if (!pImpl || !pImpl->socket) return nullptr;
+    if (!pImpl || !pImpl->socket)
+        return nullptr;
     // Zero-initialize before returning to caller
     std::fill(pImpl->write_buf_.begin(), pImpl->write_buf_.end(), std::byte{0});
     return pImpl->write_buf_.data();
@@ -809,7 +817,8 @@ void* InboxClient::acquire() noexcept
 
 uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
 {
-    if (!pImpl || !pImpl->socket) return 255;
+    if (!pImpl || !pImpl->socket)
+        return 255;
 
     // Pack msgpack frame
     pImpl->sbuf_.clear();
@@ -819,13 +828,13 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     uint8_t checksum[32]{};
     if (pImpl->checksum_policy_ == ChecksumPolicy::Enforced)
     {
-        pylabhub::utils::security::secure().compute_blake2b(
-            checksum, pImpl->write_buf_.data(), pImpl->item_sz);
+        pylabhub::utils::security::secure().compute_blake2b(checksum, pImpl->write_buf_.data(),
+                                                            pImpl->item_sz);
     }
 
     wire_detail::pack_frame(pk, pImpl->schema_tag_,
-        pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed),
-        pImpl->schema_defs_, pImpl->write_buf_.data(), checksum);
+                            pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed),
+                            pImpl->schema_defs_, pImpl->write_buf_.data(), checksum);
 
     // DEALER sends [empty, payload]; ROUTER sees [identity, empty, payload].
     // multipart_t::send is atomic — every frame goes out or none.
@@ -839,25 +848,24 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
         inbox_put_be64(meta + kInboxNonceLen, inbox_now_ms());
 
         zmq::multipart_t out;
-        out.addstr("");                                                 // empty delimiter
-        out.addmem(meta, kInboxMetaLen);                                // replay metadata
-        out.addmem(pImpl->sbuf_.data(), pImpl->sbuf_.size());           // payload
+        out.addstr("");                                       // empty delimiter
+        out.addmem(meta, kInboxMetaLen);                      // replay metadata
+        out.addmem(pImpl->sbuf_.data(), pImpl->sbuf_.size()); // payload
         if (!out.send(pImpl->socket))
         {
-            LOGGER_WARN("[hub::InboxClient] send to '{}' returned false (HWM?)",
-                        pImpl->endpoint);
+            LOGGER_WARN("[hub::InboxClient] send to '{}' returned false (HWM?)", pImpl->endpoint);
             return 255;
         }
     }
     catch (const zmq::error_t &e)
     {
-        LOGGER_WARN("[hub::InboxClient] send to '{}' failed: {}",
-                    pImpl->endpoint, e.what());
+        LOGGER_WARN("[hub::InboxClient] send to '{}' failed: {}", pImpl->endpoint, e.what());
         return 255;
     }
 
     // Fire-and-forget
-    if (ack_timeout.count() <= 0) return 0;
+    if (ack_timeout.count() <= 0)
+        return 0;
 
     // ROUTER reply: [identity, "", ack_byte]; DEALER strips the identity and
     // sees ["", ack_byte]. Receive as one multipart — atomicity guaranteed.
@@ -878,16 +886,15 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
         }
         if (reply.size() != 2 || reply[1].size() != 1)
         {
-            LOGGER_WARN("[hub::InboxClient] malformed ACK from '{}' (frames={})",
-                        pImpl->endpoint, reply.size());
+            LOGGER_WARN("[hub::InboxClient] malformed ACK from '{}' (frames={})", pImpl->endpoint,
+                        reply.size());
             return 255;
         }
         return *static_cast<const uint8_t *>(reply[1].data());
     }
     catch (const zmq::error_t &e)
     {
-        LOGGER_WARN("[hub::InboxClient] ACK recv error from '{}': {}",
-                    pImpl->endpoint, e.what());
+        LOGGER_WARN("[hub::InboxClient] ACK recv error from '{}': {}", pImpl->endpoint, e.what());
         return 255;
     }
 }
@@ -901,13 +908,15 @@ void InboxClient::abort() noexcept
 
 void InboxClient::set_checksum_policy(ChecksumPolicy policy) noexcept
 {
-    if (pImpl) pImpl->checksum_policy_ = policy;
+    if (pImpl)
+        pImpl->checksum_policy_ = policy;
 }
 
 void InboxClient::set_curve_client_identity(std::string identity_key_name,
                                             std::string server_pubkey_z85)
 {
-    if (!pImpl) return;
+    if (!pImpl)
+        return;
     pImpl->identity_key_name_ = std::move(identity_key_name);
     pImpl->server_pubkey_z85_ = std::move(server_pubkey_z85);
 }

@@ -17,7 +17,10 @@
 #include <thread>
 
 // Accept any exit code; we only care about stderr content (used by EXPECT_EXIT in sanitizer tests)
-[[maybe_unused]] static bool any_exit(int /*exit_code*/) { return true; }
+[[maybe_unused]] static bool any_exit(int /*exit_code*/)
+{
+    return true;
+}
 
 // ============================================================================
 // ThreadSanitizer (TSan) Tests
@@ -27,13 +30,24 @@
 
 TEST(SanitizerTest, TSan_DetectsDataRace)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         long v = 0;
-        std::thread t1([&] { for (int i = 0; i < 1000; ++i) v++; });
-        std::thread t2([&] { for (int i = 0; i < 1000; ++i) v++; });
+        std::thread t1(
+            [&]
+            {
+                for (int i = 0; i < 1000; ++i)
+                    v++;
+            });
+        std::thread t2(
+            [&]
+            {
+                for (int i = 0; i < 1000; ++i)
+                    v++;
+            });
         t1.join();
         t2.join();
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "ThreadSanitizer: data race");
 }
@@ -48,33 +62,36 @@ TEST(SanitizerTest, TSan_DetectsDataRace)
 
 TEST(SanitizerTest, ASan_DetectsHeapBufferOverflowWrite)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         int *a = new int[10];
         *(volatile int *)&a[100] = 0;
         delete[] a;
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-buffer-overflow");
 }
 
 TEST(SanitizerTest, ASan_DetectsHeapBufferOverflowRead)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         int *a = new int[10];
         (void)*(volatile int *)(a + 100);
         delete[] a;
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-buffer-overflow");
 }
 
 TEST(SanitizerTest, ASan_DetectsHeapUseAfterFree)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         int *a = new int[10];
         delete[] a;
         (void)*(volatile int *)(a + 5);
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "AddressSanitizer: heap-use-after-free");
 }
@@ -109,30 +126,33 @@ TEST(SanitizerTest, ASan_DetectsStackBufferOverflow)
 
 TEST(SanitizerTest, UBSan_DetectsSignedIntegerOverflow)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         volatile int v = std::numeric_limits<int>::max();
         v++;
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "runtime error: signed integer overflow");
 }
 
 TEST(SanitizerTest, UBSan_DetectsDivisionByZero)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         volatile int x = 42, y = 0;
         (void)(x / y);
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "runtime error: division by zero");
 }
 
 TEST(SanitizerTest, UBSan_DetectsNullPointerDereference)
 {
-    auto trigger = []() {
+    auto trigger = []()
+    {
         volatile int *p = nullptr;
         (void)*p;
-        assert(false);  // force abnormal exit so GTest evaluates the stderr matcher
+        assert(false); // force abnormal exit so GTest evaluates the stderr matcher
     };
     EXPECT_EXIT(trigger(), any_exit, "runtime error:.*null.pointer");
 }

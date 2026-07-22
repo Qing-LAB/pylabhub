@@ -18,7 +18,7 @@
 // Secret numbers: 72001+ to avoid conflicts with other test suites
 
 #include "datahub_c_api_checksum_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source pair helper
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source pair helper
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -32,8 +32,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::c_api_checksum
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // #275-S2: `secret` parameter dropped — the fd-source factory pair
 // (see `make_fd_backed_pair` in datahub_fd_test_helper.h) doesn't
@@ -67,8 +73,8 @@ int enforced_roundtrip_passes()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             const uint64_t kData = 0xCAFEBABEDEADF00DULL;
 
@@ -95,7 +101,8 @@ int enforced_roundtrip_passes()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "enforced_roundtrip_passes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "enforced_roundtrip_passes", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -119,8 +126,8 @@ int enforced_corruption_detected()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Acquire, get buffer_span BEFORE release (stays valid after release_write_slot)
             std::span<std::byte> slot_span;
@@ -144,7 +151,8 @@ int enforced_corruption_detected()
                 auto rh = consumer->acquire_consume_slot(1000);
                 ASSERT_NE(rh, nullptr);
                 bool ok = consumer->release_consume_slot(*rh);
-                EXPECT_FALSE(ok) << "Enforced policy: corrupted data must cause checksum verification to fail";
+                EXPECT_FALSE(ok)
+                    << "Enforced policy: corrupted data must cause checksum verification to fail";
             }
 
             // Note: checksum_failures metric is not incremented at this API level;
@@ -154,7 +162,8 @@ int enforced_corruption_detected()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "enforced_corruption_detected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "enforced_corruption_detected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -174,8 +183,8 @@ int none_skips_verification()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             std::span<std::byte> slot_span;
             {
@@ -198,7 +207,8 @@ int none_skips_verification()
                 auto rh = consumer->acquire_consume_slot(1000);
                 ASSERT_NE(rh, nullptr);
                 bool ok = consumer->release_consume_slot(*rh);
-                EXPECT_TRUE(ok) << "None policy: verification must be skipped; corrupt data must not cause failure";
+                EXPECT_TRUE(ok) << "None policy: verification must be skipped; corrupt data must "
+                                   "not cause failure";
             }
 
             // No checksum_failures incremented with None policy
@@ -211,7 +221,8 @@ int none_skips_verification()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "none_skips_verification", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "none_skips_verification", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -232,8 +243,8 @@ int manual_no_auto_checksum()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             std::span<std::byte> slot_span;
             {
@@ -263,7 +274,8 @@ int manual_no_auto_checksum()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "manual_no_auto_checksum", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "manual_no_auto_checksum", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -284,8 +296,8 @@ int manual_explicit_checksum_roundtrip()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             const uint64_t kData = 0xFEEDFACECAFEBEEFULL;
 
@@ -322,7 +334,8 @@ int manual_explicit_checksum_roundtrip()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "manual_explicit_checksum_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "manual_explicit_checksum_roundtrip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -342,8 +355,8 @@ int invalidate_checksum_zero_hash_rejected()
             auto p = make_fd_backed_pair(channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             {
                 auto h = producer->acquire_write_slot(1000);
@@ -371,7 +384,8 @@ int invalidate_checksum_zero_hash_rejected()
             consumer.reset();
             cleanup_test_datablock(channel);
         },
-        "invalidate_checksum_zero_hash_rejected", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "invalidate_checksum_zero_hash_rejected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::c_api_checksum

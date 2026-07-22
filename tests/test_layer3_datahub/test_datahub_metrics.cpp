@@ -29,8 +29,7 @@ class MetricsPlaneTest : public IsolatedProcessTest
 
 TEST_F(MetricsPlaneTest, QueryMetrics_UnknownChannel_ReturnsEmpty)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.query_metrics_unknown_channel_returns_empty");
+    auto w = SpawnWorker("datahub_metrics.query_metrics_unknown_channel_returns_empty");
     ExpectWorkerOk(w);
 }
 
@@ -42,37 +41,32 @@ TEST_F(MetricsPlaneTest, QueryMetrics_AllChannels)
 
 TEST_F(MetricsPlaneTest, QueryEngine_EmptyFilter_AllCategoriesPresent)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.query_engine_empty_filter_all_categories_present");
+    auto w = SpawnWorker("datahub_metrics.query_engine_empty_filter_all_categories_present");
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsPlaneTest, QueryEngine_CategoryFilter_OnlyBroker)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.query_engine_category_filter_only_broker");
+    auto w = SpawnWorker("datahub_metrics.query_engine_category_filter_only_broker");
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsPlaneTest, QueryEngine_ChannelIdentityFilter)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.query_engine_channel_identity_filter");
+    auto w = SpawnWorker("datahub_metrics.query_engine_channel_identity_filter");
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsPlaneTest, QueryEngine_RolesCarryCollectedAt)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.query_engine_roles_carry_collected_at");
+    auto w = SpawnWorker("datahub_metrics.query_engine_roles_carry_collected_at");
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsPlaneTest, QueryEngine_ChannelsHaveProducerAndConsumerMetrics)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.query_engine_channels_have_producer_and_consumer_"
-        "metrics");
+    auto w = SpawnWorker("datahub_metrics.query_engine_channels_have_producer_and_consumer_"
+                         "metrics");
     ExpectWorkerOk(w);
 }
 
@@ -84,14 +78,12 @@ TEST_F(MetricsPlaneTest, QueryEngine_FilterEcho)
 
 TEST_F(MetricsPlaneTest, MultiPresence_EndToEnd_NoCrossAttribution)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.multi_presence_end_to_end_no_cross_attribution");
+    auto w = SpawnWorker("datahub_metrics.multi_presence_end_to_end_no_cross_attribution");
     ExpectWorkerOk(w);
 }
 
 TEST_F(MetricsPlaneTest, AllChannels_IncludesChannelsWithoutMetrics)
 {
-    auto w = SpawnWorker(
-        "datahub_metrics.all_channels_includes_channels_without_metrics");
+    auto w = SpawnWorker("datahub_metrics.all_channels_includes_channels_without_metrics");
     ExpectWorkerOk(w);
 }

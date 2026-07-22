@@ -10,14 +10,14 @@
  * @par Lifecycle
  * create_datablock_producer() and find_datablock_consumer() require the Data Exchange Hub
  * module to be initialized. In main(), create a LifecycleGuard with
- * pylabhub::hub::GetDataBlockModule() (depends on SecureSubsystem + Logger). See role_main_helpers.hpp
- * or docs/IMPLEMENTATION_GUIDANCE.md.
+ * pylabhub::hub::GetDataBlockModule() (depends on SecureSubsystem + Logger). See
+ * role_main_helpers.hpp or docs/IMPLEMENTATION_GUIDANCE.md.
  */
 #include "pylabhub_utils_export.h"
-#include "utils/data_block_config.hpp"   // Layer 1: DataBlockConfig, DataBlockPageSize, timeouts, policy enums
-#include "utils/context_metrics.hpp"  // ContextMetrics — transport-agnostic timing
+#include "utils/data_block_config.hpp" // Layer 1: DataBlockConfig, DataBlockPageSize, timeouts, policy enums
+#include "utils/context_metrics.hpp" // ContextMetrics — transport-agnostic timing
 #include "utils/shared_memory_spinlock.hpp" // SharedSpinLockState and SharedSpinLock (abstraction over shared memory)
-#include "utils/schema_blds.hpp"         // For SchemaInfo and generate_schema_info
+#include "utils/schema_blds.hpp" // For SchemaInfo and generate_schema_info
 
 #include <chrono>
 #include <functional>
@@ -93,15 +93,19 @@ inline constexpr size_t SLOT_CHECKSUM_ENTRY_SIZE = 33; // 32 hash + 1 valid byte
 inline constexpr size_t HEADER_LAYOUT_HASH_OFFSET = 0;
 /** Size in bytes of the header layout hash (BLAKE2b-256). */
 inline constexpr size_t HEADER_LAYOUT_HASH_SIZE = 32;
-/** Offset within reserved_header[] where segment layout checksum is stored (layout-defining values). */
+/** Offset within reserved_header[] where segment layout checksum is stored (layout-defining
+ * values). */
 inline constexpr size_t LAYOUT_CHECKSUM_OFFSET = 32;
 /** Size in bytes of the layout checksum (BLAKE2b-256). */
 inline constexpr size_t LAYOUT_CHECKSUM_SIZE = 32;
-/** Offset in reserved_header[] for Sequential_sync per-consumer next-read slot ids (8 * uint64_t). */
+/** Offset in reserved_header[] for Sequential_sync per-consumer next-read slot ids (8 * uint64_t).
+ */
 inline constexpr size_t CONSUMER_READ_POSITIONS_OFFSET = 64;
-/** Offset in reserved_header[] for producer heartbeat: producer_id (uint64_t), producer_last_heartbeat_ns (uint64_t). */
+/** Offset in reserved_header[] for producer heartbeat: producer_id (uint64_t),
+ * producer_last_heartbeat_ns (uint64_t). */
 inline constexpr size_t PRODUCER_HEARTBEAT_OFFSET = 128;
-/** Staleness threshold: if (now - last_heartbeat_ns) > this, heartbeat is stale; fall back to is_process_alive. */
+/** Staleness threshold: if (now - last_heartbeat_ns) > this, heartbeat is stale; fall back to
+ * is_process_alive. */
 inline constexpr uint64_t PRODUCER_HEARTBEAT_STALE_THRESHOLD_NS = 5'000'000'000ULL; // 5 seconds
 
 /** DataBlock shared memory header magic number ('PLHB'). */
@@ -113,15 +117,16 @@ inline constexpr uint32_t DATABLOCK_MAGIC_NUMBER = 0x504C4842;
  * @param expected Expected value (e.g. detail::DATABLOCK_MAGIC_NUMBER).
  */
 inline bool is_header_magic_valid(const std::atomic<uint32_t> *magic_ptr,
-                                   uint32_t expected) noexcept
+                                  uint32_t expected) noexcept
 {
     return magic_ptr && magic_ptr->load(std::memory_order_acquire) == expected;
 }
 
 } // namespace detail
 
-/** Returns true if writer (pid) is alive. Uses producer heartbeat if fresh; otherwise is_process_alive.
- * Use for liveness checks: only fall back to PID check when heartbeat is missing or stale. */
+/** Returns true if writer (pid) is alive. Uses producer heartbeat if fresh; otherwise
+ * is_process_alive. Use for liveness checks: only fall back to PID check when heartbeat is missing
+ * or stale. */
 PYLABHUB_UTILS_EXPORT bool is_writer_alive(const SharedMemoryHeader *header, uint64_t pid) noexcept;
 
 // Forward declarations
@@ -139,7 +144,9 @@ struct DataBlockDiagnosticHandleImpl;
  */
 #if defined(_MSC_VER)
 #pragma warning(push)
-#pragma warning(disable : 4324) // structure padded due to alignment specifier — intentional for cache-line isolation
+#pragma warning(                                                                                   \
+    disable                                                                                        \
+    : 4324) // structure padded due to alignment specifier — intentional for cache-line isolation
 #endif
 struct PYLABHUB_UTILS_EXPORT alignas(64) SlotRWState
 {
@@ -225,24 +232,25 @@ struct alignas(PYLABHUB_PHYSICAL_PAGE_SIZE) SharedMemoryHeader
     // (same offset, same 64-byte size) so the rename is
     // schema-hash-only — operators see no on-the-wire change.
     uint8_t reserved_capability_token[64];
-    
+
     // Phase 4: Dual schema support (FlexZone + DataBlock)
-    uint8_t flexzone_schema_hash[32];   // BLAKE2b hash of FlexZone schema
-    uint8_t datablock_schema_hash[32];  // BLAKE2b hash of DataBlock/slot schema
-    uint32_t schema_version;            // Schema version number
-    
+    uint8_t flexzone_schema_hash[32];  // BLAKE2b hash of FlexZone schema
+    uint8_t datablock_schema_hash[32]; // BLAKE2b hash of DataBlock/slot schema
+    uint32_t schema_version;           // Schema version number
+
     // Note: Old layout had schema_hash[32] + padding_sec[28] = 60 bytes
-    // New layout: flexzone_schema_hash[32] + datablock_schema_hash[32] + schema_version[4] = 68 bytes
-    // No padding needed (net +8 bytes absorbed from reserved_header padding at end)
+    // New layout: flexzone_schema_hash[32] + datablock_schema_hash[32] + schema_version[4] = 68
+    // bytes No padding needed (net +8 bytes absorbed from reserved_header padding at end)
 
     // === Ring Buffer Configuration ===
-    DataBlockPolicy policy;               // Single/DoubleBuffer/RingBuffer
+    DataBlockPolicy policy;                  // Single/DoubleBuffer/RingBuffer
     ConsumerSyncPolicy consumer_sync_policy; // Latest_only / Sequential / Sequential_sync
-    uint32_t physical_page_size;          // Physical page size (bytes); allocation granularity
-    uint32_t logical_unit_size;           // Effective per-slot stride (bytes); rounded to 64-byte cache-line boundary at creation; never 0 in header
-    uint32_t ring_buffer_capacity;        // Number of slots
-    uint32_t flexible_zone_size;    // Total TABLE 1 size (u32: 4 GB max is sufficient for metadata)
-    uint8_t checksum_type;          // ChecksumType; always present (BLAKE2b)
+    uint32_t physical_page_size;             // Physical page size (bytes); allocation granularity
+    uint32_t logical_unit_size; // Effective per-slot stride (bytes); rounded to 64-byte cache-line
+                                // boundary at creation; never 0 in header
+    uint32_t ring_buffer_capacity; // Number of slots
+    uint32_t flexible_zone_size;   // Total TABLE 1 size (u32: 4 GB max is sufficient for metadata)
+    uint8_t checksum_type;         // ChecksumType; always present (BLAKE2b)
     ChecksumPolicy checksum_policy;
 
     // === Ring Buffer State (Hot Path) ===
@@ -253,9 +261,10 @@ struct alignas(PYLABHUB_PHYSICAL_PAGE_SIZE) SharedMemoryHeader
 
     // === Metrics Section (256 bytes) ===
     // Slot Coordination (64 bytes)
-    std::atomic<uint64_t> writer_timeout_count;        // Total writer timeouts (all causes)
-    std::atomic<uint64_t> writer_lock_timeout_count;   // Timeouts while waiting for write_lock
-    std::atomic<uint64_t> writer_reader_timeout_count; // Timeouts while waiting for readers to drain
+    std::atomic<uint64_t> writer_timeout_count;      // Total writer timeouts (all causes)
+    std::atomic<uint64_t> writer_lock_timeout_count; // Timeouts while waiting for write_lock
+    std::atomic<uint64_t>
+        writer_reader_timeout_count; // Timeouts while waiting for readers to drain
     std::atomic<uint64_t> writer_blocked_total_ns;
     std::atomic<uint64_t> write_lock_contention;
     std::atomic<uint64_t> write_generation_wraps;
@@ -311,9 +320,9 @@ struct alignas(PYLABHUB_PHYSICAL_PAGE_SIZE) SharedMemoryHeader
     // Written once at producer creation; read-only for consumers and diagnostics.
     // hub_uid/hub_name: identify the hub this channel belongs to.
     // producer_uid/producer_name: identify the process that created this channel.
-    char hub_uid[40];       // Hub unique ID (null-terminated hex string; empty until security phase)
-    char hub_name[64];      // Hub human-readable name (null-terminated; empty until security phase)
-    char producer_uid[40];  // Producer unique ID (null-terminated hex string)
+    char hub_uid[40];      // Hub unique ID (null-terminated hex string; empty until security phase)
+    char hub_name[64];     // Hub human-readable name (null-terminated; empty until security phase)
+    char producer_uid[40]; // Producer unique ID (null-terminated hex string)
     char producer_name[64]; // Producer human-readable name (null-terminated)
 
     // === SharedSpinLock States (256 bytes) ===
@@ -323,7 +332,8 @@ struct alignas(PYLABHUB_PHYSICAL_PAGE_SIZE) SharedMemoryHeader
     struct FlexibleZoneChecksumEntry
     {
         uint8_t checksum_bytes[32];
-        std::atomic<uint8_t> cks_is_valid{0}; // Reader-side verification cache: 0=unverified, 1=verified
+        std::atomic<uint8_t> cks_is_valid{
+            0}; // Reader-side verification cache: 0=unverified, 1=verified
         uint8_t padding[31];
     } flexible_zone_checksums[detail::MAX_FLEXIBLE_ZONE_CHECKSUMS];
 
@@ -348,74 +358,76 @@ static_assert(alignof(SharedMemoryHeader) >= PYLABHUB_PHYSICAL_PAGE_SIZE,
  * Kept next to the struct so fields/types stay correlated; .cpp uses this to build SchemaInfo.
  * (Four trailing fields have dynamic type_id and are added in .cpp after this list.)
  */
-#define PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(OP)                                      \
-    /* Identification and Versioning */                                                      \
-    OP(magic_number, "u32")                                                                   \
-    OP(version_major, "u16")                                                                  \
-    OP(version_minor, "u16")                                                                  \
-    OP(total_block_size, "u64")                                                               \
-    /* Security and Schema (Phase 4: Dual schema) */                                         \
-    OP(reserved_capability_token, "u8[64]")                                                   \
-    OP(flexzone_schema_hash, "u8[32]")                                                        \
-    OP(datablock_schema_hash, "u8[32]")                                                       \
-    OP(schema_version, "u32")                                                                 \
-    /* Ring Buffer Configuration */                                                           \
-    OP(policy, "u32")                                                                         \
-    OP(consumer_sync_policy, "u32")                                                          \
-    OP(physical_page_size, "u32")                                                             \
-    OP(logical_unit_size, "u32")                                                               \
-    OP(ring_buffer_capacity, "u32")                                                           \
-    OP(flexible_zone_size, "u32")                                                             \
-    OP(checksum_type, "u8")                                                                     \
-    OP(checksum_policy, "u32")                                                                \
-    /* Ring Buffer State (Hot Path) */                                                         \
-    OP(write_index, "u64")                                                                    \
-    OP(commit_index, "u64")                                                                   \
-    OP(read_index, "u64")                                                                     \
-    OP(active_consumer_count, "u32")                                                           \
-    /* Metrics: Slot Coordination */                                                          \
-    OP(writer_timeout_count, "u64")                                                           \
-    OP(writer_lock_timeout_count, "u64")                                                      \
-    OP(writer_reader_timeout_count, "u64")                                                    \
-    OP(writer_blocked_total_ns, "u64")                                                         \
-    OP(write_lock_contention, "u64")                                                          \
-    OP(write_generation_wraps, "u64")                                                          \
-    OP(reader_not_ready_count, "u64")                                                          \
-    OP(reader_race_detected, "u64")                                                           \
-    OP(reader_validation_failed, "u64")                                                        \
-    OP(reader_peak_count, "u64")                                                               \
-    OP(reader_timeout_count, "u64")                                                           \
-    /* Metrics: Error Tracking */                                                             \
-    OP(last_error_timestamp_ns, "u64")                                                        \
-    OP(last_error_code, "u32")                                                                 \
-    OP(error_sequence, "u32")                                                                  \
-    OP(slot_acquire_errors, "u64")                                                             \
-    OP(slot_commit_errors, "u64")                                                             \
-    OP(checksum_failures, "u64")                                                               \
-    OP(zmq_send_failures, "u64")                                                               \
-    OP(zmq_recv_failures, "u64")                                                               \
-    OP(zmq_timeout_count, "u64")                                                              \
-    OP(recovery_actions_count, "u64")                                                          \
-    OP(schema_mismatch_count, "u64")                                                          \
-    OP(reserved_errors, "u64[2]")                                                             \
-    /* Metrics: Heartbeat */                                                                   \
-    OP(heartbeat_sent_count, "u64")                                                            \
-    OP(heartbeat_failed_count, "u64")                                                          \
-    OP(last_heartbeat_ns, "u64")                                                               \
-    OP(reserved_hb, "u64")                                                                     \
-    /* Metrics: Performance */                                                                \
-    OP(total_slots_written, "u64")                                                            \
-    OP(total_slots_read, "u64")                                                                \
-    OP(total_bytes_written, "u64")                                                             \
-    OP(total_bytes_read, "u64")                                                                \
-    OP(uptime_seconds, "u64")                                                                  \
-    OP(creation_timestamp_ns, "u64")                                                          \
-    OP(reserved_perf, "u64[2]")                                                                \
-    /* (consumer_heartbeats, spinlock_states, flexible_zone_checksums, reserved_header: dynamic type_id in .cpp) */
+#define PYLABHUB_SHARED_MEMORY_HEADER_SCHEMA_FIELDS(OP)                                            \
+    /* Identification and Versioning */                                                            \
+    OP(magic_number, "u32")                                                                        \
+    OP(version_major, "u16")                                                                       \
+    OP(version_minor, "u16")                                                                       \
+    OP(total_block_size, "u64")                                                                    \
+    /* Security and Schema (Phase 4: Dual schema) */                                               \
+    OP(reserved_capability_token, "u8[64]")                                                        \
+    OP(flexzone_schema_hash, "u8[32]")                                                             \
+    OP(datablock_schema_hash, "u8[32]")                                                            \
+    OP(schema_version, "u32")                                                                      \
+    /* Ring Buffer Configuration */                                                                \
+    OP(policy, "u32")                                                                              \
+    OP(consumer_sync_policy, "u32")                                                                \
+    OP(physical_page_size, "u32")                                                                  \
+    OP(logical_unit_size, "u32")                                                                   \
+    OP(ring_buffer_capacity, "u32")                                                                \
+    OP(flexible_zone_size, "u32")                                                                  \
+    OP(checksum_type, "u8")                                                                        \
+    OP(checksum_policy, "u32")                                                                     \
+    /* Ring Buffer State (Hot Path) */                                                             \
+    OP(write_index, "u64")                                                                         \
+    OP(commit_index, "u64")                                                                        \
+    OP(read_index, "u64")                                                                          \
+    OP(active_consumer_count, "u32")                                                               \
+    /* Metrics: Slot Coordination */                                                               \
+    OP(writer_timeout_count, "u64")                                                                \
+    OP(writer_lock_timeout_count, "u64")                                                           \
+    OP(writer_reader_timeout_count, "u64")                                                         \
+    OP(writer_blocked_total_ns, "u64")                                                             \
+    OP(write_lock_contention, "u64")                                                               \
+    OP(write_generation_wraps, "u64")                                                              \
+    OP(reader_not_ready_count, "u64")                                                              \
+    OP(reader_race_detected, "u64")                                                                \
+    OP(reader_validation_failed, "u64")                                                            \
+    OP(reader_peak_count, "u64")                                                                   \
+    OP(reader_timeout_count, "u64")                                                                \
+    /* Metrics: Error Tracking */                                                                  \
+    OP(last_error_timestamp_ns, "u64")                                                             \
+    OP(last_error_code, "u32")                                                                     \
+    OP(error_sequence, "u32")                                                                      \
+    OP(slot_acquire_errors, "u64")                                                                 \
+    OP(slot_commit_errors, "u64")                                                                  \
+    OP(checksum_failures, "u64")                                                                   \
+    OP(zmq_send_failures, "u64")                                                                   \
+    OP(zmq_recv_failures, "u64")                                                                   \
+    OP(zmq_timeout_count, "u64")                                                                   \
+    OP(recovery_actions_count, "u64")                                                              \
+    OP(schema_mismatch_count, "u64")                                                               \
+    OP(reserved_errors, "u64[2]")                                                                  \
+    /* Metrics: Heartbeat */                                                                       \
+    OP(heartbeat_sent_count, "u64")                                                                \
+    OP(heartbeat_failed_count, "u64")                                                              \
+    OP(last_heartbeat_ns, "u64")                                                                   \
+    OP(reserved_hb, "u64")                                                                         \
+    /* Metrics: Performance */                                                                     \
+    OP(total_slots_written, "u64")                                                                 \
+    OP(total_slots_read, "u64")                                                                    \
+    OP(total_bytes_written, "u64")                                                                 \
+    OP(total_bytes_read, "u64")                                                                    \
+    OP(uptime_seconds, "u64")                                                                      \
+    OP(creation_timestamp_ns, "u64")                                                               \
+    OP(reserved_perf, "u64[2]")                                                                    \
+    /* (consumer_heartbeats, spinlock_states, flexible_zone_checksums, reserved_header: dynamic    \
+     * type_id in .cpp) */
 
 namespace detail
 {
-/** Effective logical slot size from header (bytes per slot). Legacy: 0 in header means use physical_page_size. */
+/** Effective logical slot size from header (bytes per slot). Legacy: 0 in header means use
+ * physical_page_size. */
 inline uint32_t get_slot_stride_bytes(const SharedMemoryHeader *h) noexcept
 {
     return h && h->logical_unit_size != 0 ? h->logical_unit_size : (h ? h->physical_page_size : 0u);
@@ -464,10 +476,10 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
 
     /** @brief Mutable view of the slot buffer. */
     std::span<std::byte> buffer_span() noexcept;
-    /** 
+    /**
      * @brief Mutable view of the flexible zone.
      * @return Empty span if zone is not configured (size == 0).
-     * 
+     *
      * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
      */
     std::span<std::byte> flexible_zone_span() noexcept;
@@ -482,7 +494,7 @@ class PYLABHUB_UTILS_EXPORT SlotWriteHandle
     /** @brief Clear checksum and validity flag for this slot.
      * Call when writing without checksum to prevent stale validity from ring reuse. */
     void invalidate_checksum_slot() noexcept;
-    /** 
+    /**
      * @brief Update checksum for flexible zone (if enabled).
      * @note Phase 2: Single flex zone design. Old index parameter removed.
      */
@@ -521,10 +533,10 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 
     /** @brief Read-only view of the slot buffer. */
     std::span<const std::byte> buffer_span() const noexcept;
-    /** 
+    /**
      * @brief Read-only view of the flexible zone.
      * @return Empty span if zone is not configured (size == 0).
-     * 
+     *
      * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
      */
     std::span<const std::byte> flexible_zone_span() const noexcept;
@@ -534,7 +546,7 @@ class PYLABHUB_UTILS_EXPORT SlotConsumeHandle
 
     /** @brief Verify checksum for this slot (if enabled). */
     [[nodiscard]] bool verify_checksum_slot() const noexcept;
-    /** 
+    /**
      * @brief Verify checksum for flexible zone (if enabled).
      * @note Phase 2: Single flex zone design. Old index parameter removed.
      */
@@ -570,8 +582,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
 
     // ─── Shared Spinlock API ───
     /** Acquire spinlock by index; returns owning guard. Throws if index invalid. */
-    [[nodiscard]] std::unique_ptr<SharedSpinLockGuardOwning> acquire_spinlock(size_t index,
-                                                                const std::string &debug_name = "");
+    [[nodiscard]] std::unique_ptr<SharedSpinLockGuardOwning>
+    acquire_spinlock(size_t index, const std::string &debug_name = "");
     /** Get SharedSpinLock for direct use by index. */
     SharedSpinLock get_spinlock(size_t index);
     /** Total number of spinlocks (MAX_SHARED_SPINLOCKS). */
@@ -588,19 +600,19 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
         }
         return *reinterpret_cast<T *>(span.data());
     }
-    /** 
+    /**
      * @brief Direct view of flexible zone memory.
      * @return Empty span if zone is not configured (size == 0).
-     * 
+     *
      * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
      */
     std::span<std::byte> flexible_zone_span() noexcept;
 
     // ─── Checksum API (BLAKE2b via libsodium; stored in control zone) ───
-    /** 
+    /**
      * @brief Compute BLAKE2b of flexible zone, store in header.
      * @return false if zone not configured (size == 0).
-     * 
+     *
      * @note Phase 2: Single flex zone design. Old index parameter removed.
      */
     [[nodiscard]] bool update_checksum_flexible_zone() noexcept;
@@ -611,7 +623,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     // ─── Primitive Data Transfer API ───
     /** Acquire a slot for writing; returns nullptr on timeout.
      * @note Release or destroy the handle before destroying this producer (see SlotWriteHandle).
-     * @note timeout_ms: use TIMEOUT_IMMEDIATE (0), TIMEOUT_DEFAULT (100), or TIMEOUT_INFINITE (-1). */
+     * @note timeout_ms: use TIMEOUT_IMMEDIATE (0), TIMEOUT_DEFAULT (100), or TIMEOUT_INFINITE (-1).
+     */
     [[nodiscard]] std::unique_ptr<SlotWriteHandle> acquire_write_slot(int timeout_ms = -1) noexcept;
     /**
      * @brief Release a previously acquired slot.
@@ -627,17 +640,17 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     /** @brief Checks the health of registered consumers and cleans up dead ones. */
     void check_consumer_health() noexcept;
 
-    /** @brief Updates producer heartbeat (PID and monotonic timestamp). Call explicitly when idle, or
-     * rely on automatic update on slot commit. Used for liveness: is_process_alive is only checked
-     * when heartbeat is missing or stale. */
+    /** @brief Updates producer heartbeat (PID and monotonic timestamp). Call explicitly when idle,
+     * or rely on automatic update on slot commit. Used for liveness: is_process_alive is only
+     * checked when heartbeat is missing or stale. */
     void update_heartbeat() noexcept;
 
     /** @brief Last committed slot id (commit_index). Returns 0 if producer is invalid. */
     [[nodiscard]] uint64_t last_slot_id() const noexcept;
 
-    /** 
+    /**
      * @brief Retrieve comprehensive metrics and state snapshot from the DataBlock.
-     * 
+     *
      * Fills the provided DataBlockMetrics structure with current metrics including:
      * - State snapshot: commit_index, slot_count
      * - Writer metrics: timeout counts, lock contention, blocked time
@@ -645,16 +658,16 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * - Error tracking: last error timestamp, error codes, error sequence
      * - Checksum metrics: checksum failures
      * - Performance: total slots written/read, total bytes written/read, uptime
-     * 
+     *
      * This is a lightweight operation using relaxed memory ordering suitable for
      * monitoring and diagnostics. All metrics are atomic snapshots.
-     * 
+     *
      * @param out_metrics Reference to DataBlockMetrics struct to fill
      * @return 0 on success, -1 if producer is invalid or error occurred
-     * 
+     *
      * @note Thread-safe. Can be called concurrently with other operations.
      * @note Uses slot_rw_get_metrics() C API internally
-     * 
+     *
      * @par Example
      * @code
      * DataBlockMetrics metrics;
@@ -665,15 +678,15 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @endcode
      */
     [[nodiscard]] int get_metrics(DataBlockMetrics &out_metrics) const noexcept;
-    
+
     /**
      * @brief Reset all metrics counters to zero.
-     * 
+     *
      * Resets metric counters while preserving state information (commit_index, slot_count).
      * Useful for measuring metrics over specific time intervals.
-     * 
+     *
      * @return 0 on success, -1 if producer is invalid or error occurred
-     * 
+     *
      * @note Thread-safe but should be used carefully in production to avoid
      *       losing diagnostic information during incidents.
      * @note Uses slot_rw_reset_metrics() C API internally
@@ -770,8 +783,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     [[nodiscard, deprecated("Not implemented — always throws std::runtime_error")]]
     uint64_t request_structure_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
-        const std::optional<schema::SchemaInfo> &new_datablock_schema
-    ); ///< NOT IMPLEMENTED — always throws std::runtime_error
+        const std::optional<schema::SchemaInfo>
+            &new_datablock_schema); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     /**
      * @brief NOT IMPLEMENTED — throws std::runtime_error at runtime.
@@ -786,10 +799,9 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      */
     [[deprecated("Not implemented — always throws std::runtime_error")]]
     void commit_structure_remap(
-        uint64_t request_id,
-        const std::optional<schema::SchemaInfo> &new_flexzone_schema,
-        const std::optional<schema::SchemaInfo> &new_datablock_schema
-    ); ///< NOT IMPLEMENTED — always throws std::runtime_error
+        uint64_t request_id, const std::optional<schema::SchemaInfo> &new_flexzone_schema,
+        const std::optional<schema::SchemaInfo>
+            &new_datablock_schema); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     // ====================================================================
     // Phase 3: C++ RAII Layer - Type-Safe Transaction API
@@ -805,28 +817,28 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      * @return Result of lambda invocation
      * @throws std::invalid_argument if parameters invalid
      * @throws std::runtime_error if entry validation fails (schema, layout, checksums)
-     * 
+     *
      * **Type-Safe Transaction API** - The primary interface for producer operations.
-     * 
+     *
      * Entry Validation:
      * - Schema validation (if registered): sizeof(FlexZoneT) and sizeof(DataBlockT)
      * - Layout validation: slot count, stride
      * - Checksum policy enforcement
-     * 
+     *
      * Context Lifetime:
      * - Context valid for entire lambda scope
      * - RAII ensures cleanup on exception
      * - Current slot auto-released on scope exit
-     * 
+     *
      * Usage:
      * @code
      * struct MetaData { int status; };
      * struct Payload { double value; };
-     * 
+     *
      * producer.with_transaction<MetaData, Payload>(100ms, [](auto& ctx) {
      *     // Access flexible zone
      *     ctx.flexzone().get().status = 1;
-     *     
+     *
      *     // Iterate over slots (non-terminating)
      *     for (auto result : ctx.slots(100ms)) {
      *         if (!result.is_ok()) {
@@ -836,17 +848,17 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
      *             if (ctx.flexzone().get().shutdown_requested) break;
      *             continue;
      *         }
-     *         
+     *
      *         auto& slot = result.value();
      *         slot.get().value = compute();
      *         ctx.publish();
      *     }
      * });
      * @endcode
-     * 
+     *
      * @note Requires: FlexZoneT and DataBlockT must be trivially copyable.
      * @note Thread-safe: Producer has internal mutex, contexts are per-thread.
-     * 
+     *
      * @see WriteTransactionContext, SlotIterator, Result
      */
     template <typename FlexZoneT, typename DataBlockT, typename Func>
@@ -854,9 +866,10 @@ class PYLABHUB_UTILS_EXPORT DataBlockProducer
     [[nodiscard]] auto with_transaction(std::chrono::milliseconds timeout, Func &&func)
         -> std::invoke_result_t<Func, WriteTransactionContext<FlexZoneT, DataBlockT> &>;
 
-    /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
-     * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
-     * or a generated id "producer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
+    /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance
+     * and cached. Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " |
+     * pid:&lt;pid&gt;-&lt;idx&gt;", or a generated id "producer-&lt;pid&gt;-&lt;idx&gt;" if no name
+     * was provided. For comparison use logical_name(name()). */
     [[nodiscard]] const std::string &name() const noexcept;
 
     /** @brief Returns the checksum policy configured for this DataBlock.
@@ -916,16 +929,16 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /**
      * @brief Read-only view of flexible zone memory.
      * @return Empty span if zone is not configured (size == 0).
-     * 
+     *
      * @note Phase 2: Single flex zone design. Old multi-zone index parameter removed.
      */
     std::span<const std::byte> flexible_zone_span() const noexcept;
 
     // ─── Checksum API (BLAKE2b; verify stored checksum matches computed) ───
-    /** 
+    /**
      * @brief Returns true if stored checksum matches computed BLAKE2b.
      * @return false if zone not configured (size == 0).
-     * 
+     *
      * @note Phase 2: Single flex zone design. Old index parameter removed.
      */
     [[nodiscard]] bool verify_checksum_flexible_zone() const noexcept;
@@ -970,7 +983,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /** Acquire the next slot for reading; returns nullptr on timeout.
      * @note Release or destroy the handle before destroying this consumer (see SlotConsumeHandle).
      * @note Single-threaded: do not call from multiple threads on the same consumer instance. */
-    [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(int timeout_ms = -1) noexcept;
+    [[nodiscard]] std::unique_ptr<SlotConsumeHandle>
+    acquire_consume_slot(int timeout_ms = -1) noexcept;
     /** Acquire a specific slot by ID for reading; returns nullptr on timeout or if slot not
      * available. */
     [[nodiscard]] std::unique_ptr<SlotConsumeHandle> acquire_consume_slot(uint64_t slot_id,
@@ -978,14 +992,15 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     /** Release a previously acquired slot; returns false if checksum verification failed. */
     [[nodiscard]] bool release_consume_slot(SlotConsumeHandle &handle) noexcept;
 
-    /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance and cached.
-     * Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " | pid:&lt;pid&gt;-&lt;idx&gt;",
-     * or a generated id "consumer-&lt;pid&gt;-&lt;idx&gt;" if no name was provided. For comparison use logical_name(name()). */
+    /** @brief Display name (for diagnostics and logging). Not hot path: computed once per instance
+     * and cached. Returns "(null)" if no pImpl. Otherwise returns the user name plus suffix " |
+     * pid:&lt;pid&gt;-&lt;idx&gt;", or a generated id "consumer-&lt;pid&gt;-&lt;idx&gt;" if no name
+     * was provided. For comparison use logical_name(name()). */
     [[nodiscard]] const std::string &name() const noexcept;
 
-    /** 
+    /**
      * @brief Retrieve comprehensive metrics and state snapshot from the DataBlock.
-     * 
+     *
      * Fills the provided DataBlockMetrics structure with current metrics including:
      * - State snapshot: commit_index, slot_count
      * - Writer metrics: timeout counts, lock contention, blocked time
@@ -993,16 +1008,16 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * - Error tracking: last error timestamp, error codes, error sequence
      * - Checksum metrics: checksum failures
      * - Performance: total slots written/read, total bytes written/read, uptime
-     * 
+     *
      * This is a lightweight operation using relaxed memory ordering suitable for
      * monitoring and diagnostics. All metrics are atomic snapshots.
-     * 
+     *
      * @param out_metrics Reference to DataBlockMetrics struct to fill
      * @return 0 on success, -1 if consumer is invalid or error occurred
-     * 
+     *
      * @note Thread-safe. Can be called concurrently with other operations.
      * @note Uses slot_rw_get_metrics() C API internally
-     * 
+     *
      * @par Example
      * @code
      * DataBlockMetrics metrics;
@@ -1014,15 +1029,15 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * @endcode
      */
     [[nodiscard]] int get_metrics(DataBlockMetrics &out_metrics) const noexcept;
-    
+
     /**
      * @brief Reset all metrics counters to zero.
-     * 
+     *
      * Resets metric counters while preserving state information (commit_index, slot_count).
      * Useful for measuring metrics over specific time intervals.
-     * 
+     *
      * @return 0 on success, -1 if consumer is invalid or error occurred
-     * 
+     *
      * @note Thread-safe but should be used carefully in production to avoid
      *       losing diagnostic information during incidents.
      * @note Uses slot_rw_reset_metrics() C API internally
@@ -1077,8 +1092,8 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
     [[deprecated("Not implemented — always throws std::runtime_error")]]
     void reattach_after_remap(
         const std::optional<schema::SchemaInfo> &new_flexzone_schema,
-        const std::optional<schema::SchemaInfo> &new_datablock_schema
-    ); ///< NOT IMPLEMENTED — always throws std::runtime_error
+        const std::optional<schema::SchemaInfo>
+            &new_datablock_schema); ///< NOT IMPLEMENTED — always throws std::runtime_error
 
     // ====================================================================
     // Phase 3: C++ RAII Layer - Type-Safe Transaction API
@@ -1094,24 +1109,24 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      * @return Result of lambda invocation
      * @throws std::invalid_argument if parameters invalid
      * @throws std::runtime_error if entry validation fails (schema, layout, checksums)
-     * 
+     *
      * **Type-Safe Transaction API** - The primary interface for consumer operations.
-     * 
+     *
      * Entry Validation:
      * - Schema validation (if registered): sizeof(FlexZoneT) and sizeof(DataBlockT)
      * - Layout validation: slot count, stride
      * - Checksum policy enforcement
-     * 
+     *
      * Context Lifetime:
      * - Context valid for entire lambda scope
      * - RAII ensures cleanup on exception
      * - Current slot auto-released on scope exit
-     * 
+     *
      * Usage:
      * @code
      * struct MetaData { int status; };
      * struct Payload { double value; };
-     * 
+     *
      * consumer.with_transaction<MetaData, Payload>(100ms, [](auto& ctx) {
      *     // Iterate over slots (non-terminating)
      *     for (auto result : ctx.slots(100ms)) {
@@ -1119,20 +1134,20 @@ class PYLABHUB_UTILS_EXPORT DataBlockConsumer
      *             process_events();
      *             continue;
      *         }
-     *         
+     *
      *         if (!ctx.validate_read()) continue;
-     *         
+     *
      *         if (ctx.flexzone().get().end_of_stream) break;
-     *         
+     *
      *         auto& slot = result.value();
      *         process(slot.get().value);
      *     }
      * });
      * @endcode
-     * 
+     *
      * @note Requires: FlexZoneT and DataBlockT must be trivially copyable.
      * @note Thread-safe: Consumer has internal mutex, contexts are per-thread.
-     * 
+     *
      * @see ReadTransactionContext, SlotIterator, Result
      */
     template <typename FlexZoneT, typename DataBlockT, typename Func>
@@ -1192,8 +1207,7 @@ auto DataBlockProducer::with_transaction(std::chrono::milliseconds timeout, Func
         // which signals to consumers that the flexzone state is unreliable.
         if constexpr (!std::is_void_v<FlexZoneT>)
         {
-            if (!ctx.is_flexzone_checksum_suppressed() &&
-                checksum_policy() != ChecksumPolicy::None)
+            if (!ctx.is_flexzone_checksum_suppressed() && checksum_policy() != ChecksumPolicy::None)
             {
                 (void)update_checksum_flexible_zone();
             }
@@ -1204,8 +1218,7 @@ auto DataBlockProducer::with_transaction(std::chrono::milliseconds timeout, Func
         auto &&result = std::forward<Func>(func)(ctx);
         if constexpr (!std::is_void_v<FlexZoneT>)
         {
-            if (!ctx.is_flexzone_checksum_suppressed() &&
-                checksum_policy() != ChecksumPolicy::None)
+            if (!ctx.is_flexzone_checksum_suppressed() && checksum_policy() != ChecksumPolicy::None)
             {
                 (void)update_checksum_flexible_zone();
             }
@@ -1331,7 +1344,7 @@ class PYLABHUB_UTILS_EXPORT DataBlockObserverHandle
     ~DataBlockObserverHandle() noexcept;
     DataBlockObserverHandle(DataBlockObserverHandle &&) noexcept;
     DataBlockObserverHandle &operator=(DataBlockObserverHandle &&) noexcept;
-    DataBlockObserverHandle(const DataBlockObserverHandle &)            = delete;
+    DataBlockObserverHandle(const DataBlockObserverHandle &) = delete;
     DataBlockObserverHandle &operator=(const DataBlockObserverHandle &) = delete;
 
     /// Read-only pointer to the mapped SharedMemoryHeader.
@@ -1395,11 +1408,10 @@ create_datablock_producer_impl(const std::string &name, DataBlockPolicy policy,
                                const pylabhub::schema::SchemaInfo *datablock_schema);
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_impl(const std::string &name,
-                             const DataBlockConfig *expected_config,
+find_datablock_consumer_impl(const std::string &name, const DataBlockConfig *expected_config,
                              const pylabhub::schema::SchemaInfo *flexzone_schema,
                              const pylabhub::schema::SchemaInfo *datablock_schema,
-                             const char *consumer_uid  = nullptr,
+                             const char *consumer_uid = nullptr,
                              const char *consumer_name = nullptr);
 
 /**
@@ -1421,8 +1433,7 @@ find_datablock_consumer_impl(const std::string &name,
  * @throws std::runtime_error if Data Exchange Hub lifecycle is not initialized
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
-attach_datablock_as_writer_impl(const std::string &name,
-                                const DataBlockConfig *expected_config,
+attach_datablock_as_writer_impl(const std::string &name, const DataBlockConfig *expected_config,
                                 const pylabhub::schema::SchemaInfo *flexzone_schema,
                                 const pylabhub::schema::SchemaInfo *datablock_schema);
 
@@ -1506,10 +1517,8 @@ datablock_layout_total_size(const DataBlockConfig &config);
  *         the fstat size doesn't match the layout size.
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockProducer>
-create_datablock_producer_from_fd_impl(const std::string &logical_name,
-                                       int source_fd,
-                                       DataBlockPolicy policy,
-                                       const DataBlockConfig &config,
+create_datablock_producer_from_fd_impl(const std::string &logical_name, int source_fd,
+                                       DataBlockPolicy policy, const DataBlockConfig &config,
                                        const pylabhub::schema::SchemaInfo *flexzone_schema,
                                        const pylabhub::schema::SchemaInfo *datablock_schema);
 
@@ -1533,12 +1542,11 @@ create_datablock_producer_from_fd_impl(const std::string &logical_name,
  *         header validation times out.
  */
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_from_fd_impl(const std::string &logical_name,
-                                     int source_fd,
+find_datablock_consumer_from_fd_impl(const std::string &logical_name, int source_fd,
                                      const DataBlockConfig *expected_config,
                                      const pylabhub::schema::SchemaInfo *flexzone_schema,
                                      const pylabhub::schema::SchemaInfo *datablock_schema,
-                                     const char *consumer_uid  = nullptr,
+                                     const char *consumer_uid = nullptr,
                                      const char *consumer_name = nullptr);
 
 // Public C++ API: Template-based dual-schema factory functions.
@@ -1622,14 +1630,14 @@ create_datablock_producer(const std::string &name, DataBlockPolicy policy,
     size_t slot_size = config.effective_logical_unit_size();
     if (slot_size < sizeof(DataBlockT))
     {
-        throw std::invalid_argument(
-            "slot size (" + std::to_string(slot_size) +
-            ") too small for DataBlockT (" + std::to_string(sizeof(DataBlockT)) + ")");
+        throw std::invalid_argument("slot size (" + std::to_string(slot_size) +
+                                    ") too small for DataBlockT (" +
+                                    std::to_string(sizeof(DataBlockT)) + ")");
     }
 
     // Call internal implementation with BOTH schemas
-    return create_datablock_producer_impl(name, policy, config,
-                                          &flexzone_schema, &datablock_schema);
+    return create_datablock_producer_impl(name, policy, config, &flexzone_schema,
+                                          &datablock_schema);
 }
 
 /**
@@ -1656,10 +1664,8 @@ create_datablock_producer(const std::string &name, DataBlockPolicy policy,
  */
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockProducer>
-create_datablock_producer_from_fd(const std::string     &logical_name,
-                                  int                    source_fd,
-                                  DataBlockPolicy        policy,
-                                  const DataBlockConfig &config)
+create_datablock_producer_from_fd(const std::string &logical_name, int source_fd,
+                                  DataBlockPolicy policy, const DataBlockConfig &config)
 {
     static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
                   "FlexZoneT must be trivially copyable for shared memory");
@@ -1685,9 +1691,9 @@ create_datablock_producer_from_fd(const std::string     &logical_name,
     size_t slot_size = config.effective_logical_unit_size();
     if (slot_size < sizeof(DataBlockT))
     {
-        throw std::invalid_argument(
-            "slot size (" + std::to_string(slot_size) +
-            ") too small for DataBlockT (" + std::to_string(sizeof(DataBlockT)) + ")");
+        throw std::invalid_argument("slot size (" + std::to_string(slot_size) +
+                                    ") too small for DataBlockT (" +
+                                    std::to_string(sizeof(DataBlockT)) + ")");
     }
 
     return create_datablock_producer_from_fd_impl(logical_name, source_fd, policy, config,
@@ -1711,10 +1717,8 @@ create_datablock_producer_from_fd(const std::string     &logical_name,
  */
 template <typename FlexZoneT, typename DataBlockT>
 [[nodiscard]] std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer(const std::string &name,
-                        const DataBlockConfig &expected_config,
-                        const char *consumer_uid  = nullptr,
-                        const char *consumer_name = nullptr)
+find_datablock_consumer(const std::string &name, const DataBlockConfig &expected_config,
+                        const char *consumer_uid = nullptr, const char *consumer_name = nullptr)
 {
     // Compile-time validation
     static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
@@ -1730,9 +1734,8 @@ find_datablock_consumer(const std::string &name,
         "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
 
     // Call internal implementation with BOTH schemas for validation + consumer identity
-    return find_datablock_consumer_impl(name, &expected_config,
-                                        &expected_flexzone, &expected_datablock,
-                                        consumer_uid, consumer_name);
+    return find_datablock_consumer_impl(name, &expected_config, &expected_flexzone,
+                                        &expected_datablock, consumer_uid, consumer_name);
 }
 
 /**
@@ -1756,12 +1759,9 @@ find_datablock_consumer(const std::string &name,
  *         or layout incompatible.
  */
 template <typename FlexZoneT, typename DataBlockT>
-[[nodiscard]] std::unique_ptr<DataBlockConsumer>
-find_datablock_consumer_from_fd(const std::string     &logical_name,
-                                 int                    source_fd,
-                                 const DataBlockConfig &expected_config,
-                                 const char            *consumer_uid  = nullptr,
-                                 const char            *consumer_name = nullptr)
+[[nodiscard]] std::unique_ptr<DataBlockConsumer> find_datablock_consumer_from_fd(
+    const std::string &logical_name, int source_fd, const DataBlockConfig &expected_config,
+    const char *consumer_uid = nullptr, const char *consumer_name = nullptr)
 {
     static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
                   "FlexZoneT must be trivially copyable for shared memory");
@@ -1773,17 +1773,14 @@ find_datablock_consumer_from_fd(const std::string     &logical_name,
     auto expected_datablock = pylabhub::schema::generate_schema_info<DataBlockT>(
         "DataBlock", pylabhub::schema::SchemaVersion{1, 0, 0});
 
-    return find_datablock_consumer_from_fd_impl(logical_name, source_fd,
-                                                 &expected_config,
-                                                 &expected_flexzone,
-                                                 &expected_datablock,
-                                                 consumer_uid, consumer_name);
+    return find_datablock_consumer_from_fd_impl(logical_name, source_fd, &expected_config,
+                                                &expected_flexzone, &expected_datablock,
+                                                consumer_uid, consumer_name);
 }
 
 // ============================================================================
 // Phase 3: Single-Schema Template Implementations (Deprecated)
 // ============================================================================
-
 
 } // namespace pylabhub::hub
 

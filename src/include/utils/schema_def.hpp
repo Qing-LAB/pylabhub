@@ -61,10 +61,10 @@ namespace pylabhub::schema
  */
 struct SchemaFieldDef
 {
-    std::string name;      ///< Field name (as it appears in the BLDS string)
-    std::string type;      ///< JSON type string: "float64", "uint32", "char", …
-    uint32_t    count{1};  ///< 1 = scalar; >1 = fixed-size array
-    std::string unit;      ///< Optional unit annotation (e.g. "s", "°C")
+    std::string name;        ///< Field name (as it appears in the BLDS string)
+    std::string type;        ///< JSON type string: "float64", "uint32", "char", …
+    uint32_t count{1};       ///< 1 = scalar; >1 = fixed-size array
+    std::string unit;        ///< Optional unit annotation (e.g. "s", "°C")
     std::string description; ///< Optional human description
 };
 
@@ -90,7 +90,7 @@ struct SchemaFieldDef
 struct SchemaLayoutDef
 {
     std::vector<SchemaFieldDef> fields;
-    std::string                 packing{"aligned"}; ///< "aligned" or "packed"
+    std::string packing{"aligned"}; ///< "aligned" or "packed"
 };
 
 // ============================================================================
@@ -113,9 +113,9 @@ struct SchemaLayoutDef
  */
 struct SchemaEntry
 {
-    std::string    schema_id;    ///< Full ID: "$lab.sensors.temperature.raw.v1"
-    uint32_t       version{1};   ///< Schema version integer (the N in @N)
-    std::string    description;  ///< Optional human description from JSON
+    std::string schema_id;   ///< Full ID: "$lab.sensors.temperature.raw.v1"
+    uint32_t version{1};     ///< Schema version integer (the N in @N)
+    std::string description; ///< Optional human description from JSON
 
     SchemaLayoutDef slot;     ///< Slot layout (always present for valid entries)
     SchemaLayoutDef flexzone; ///< FlexZone layout (may be empty if not declared)
@@ -126,10 +126,7 @@ struct SchemaEntry
     SchemaInfo flexzone_info;
 
     /// True if the schema declares any flexzone fields.
-    [[nodiscard]] bool has_flexzone() const noexcept
-    {
-        return !flexzone.fields.empty();
-    }
+    [[nodiscard]] bool has_flexzone() const noexcept { return !flexzone.fields.empty(); }
 };
 
 } // namespace pylabhub::schema

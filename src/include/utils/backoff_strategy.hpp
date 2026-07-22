@@ -60,7 +60,7 @@ inline void precise_sleep(std::chrono::microseconds us) noexcept
     struct TimerHandle
     {
         HANDLE h{nullptr};
-        bool   tried{false}; // true after first attempt (avoids retrying on failure)
+        bool tried{false}; // true after first attempt (avoids retrying on failure)
 
         TimerHandle() = default;
         ~TimerHandle()

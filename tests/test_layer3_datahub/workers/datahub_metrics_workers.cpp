@@ -130,8 +130,8 @@ json hub_overrides_baseline()
 {
     return json{
         {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
-        {"admin",   {{"enabled", false}}},
-        {"script",  {{"path", ""}}},
+        {"admin", {{"enabled", false}}},
+        {"script", {{"path", ""}}},
     };
 }
 
@@ -140,15 +140,13 @@ std::string pid_chan(const std::string &base)
     return base + ".pid" + std::to_string(::getpid());
 }
 
-
 /// Module list for every worker in this TU.  HubConfig load +
 /// HubHost startup transitively require FileLock + JsonConfig.
-#define PLH_METRICS_MODS                                                       \
-    Logger::GetLifecycleModule(),                                              \
-    FileLock::GetLifecycleModule(),                                            \
-    JsonConfig::GetLifecycleModule(),                                          \
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                        \
-    pylabhub::hub::GetZMQContextModule()
+#define PLH_METRICS_MODS                                                                           \
+    Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),                                  \
+        JsonConfig::GetLifecycleModule(),                                                          \
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),                          \
+        pylabhub::hub::GetZMQContextModule()
 
 /// Per-worker fixture: install LogCaptureFixture, seed a CurveKeyStore
 /// for `role_uids`, spin up a HubHost via the canonical harness, run
@@ -165,15 +163,13 @@ std::string pid_chan(const std::string &base)
 /// `start_hubhost_broker`.  Body sites call BRC via
 /// `bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid))`.
 template <typename Body>
-int run_with_broker(std::string_view              worker_name,
-                    std::vector<std::string>      role_uids,
-                    Body                        &&body,
-                    std::vector<std::string>      expect_log_warns = {})
+int run_with_broker(std::string_view worker_name, std::vector<std::string> role_uids, Body &&body,
+                    std::vector<std::string> expect_log_warns = {})
 {
     return run_gtest_worker(
-        [role_uids        = std::move(role_uids),
-         body             = std::forward<Body>(body),
-         expect_log_warns = std::move(expect_log_warns)]() mutable {
+        [role_uids = std::move(role_uids), body = std::forward<Body>(body),
+         expect_log_warns = std::move(expect_log_warns)]() mutable
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
             // Baseline noise allow-list (post-strict-CURVE harness).
@@ -192,15 +188,13 @@ int run_with_broker(std::string_view              worker_name,
             //     producer_pid; broker logs at ERROR for diagnostics
             //     but accepts the heartbeat.  Benign.
             log_cap.ExpectLogError("recovery: Failed to open '");
-            log_cap.ExpectLogError(
-                "' missing or zero producer_pid");
+            log_cap.ExpectLogError("' missing or zero producer_pid");
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 
             auto curve = pylabhub::tests::make_curve_setup(role_uids);
             pylabhub::tests::seed_role_identities(curve);
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hub_overrides_baseline(), curve);
+            auto broker = pylabhub::tests::start_hubhost_broker(hub_overrides_baseline(), curve);
             ASSERT_TRUE(broker.host && broker.host->is_running());
 
             body(broker.endpoint, broker.pubkey, broker.service());
@@ -209,8 +203,7 @@ int run_with_broker(std::string_view              worker_name,
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        std::string(worker_name).c_str(),
-        PLH_METRICS_MODS);
+        std::string(worker_name).c_str(), PLH_METRICS_MODS);
 }
 
 /// Adapter: query metrics for a single channel (empty = all).
@@ -228,23 +221,20 @@ json query_metrics_single(BrokerService &svc, const std::string &channel = {})
 
 // ─── Test #1: HeartbeatMetrics_StoredByBroker ──────────────────────────────
 
-
 // ─── Test #2: ConsumerHeartbeatMetrics_StoredByBroker ──────────────────────
-
 
 // ─── Test #3: QueryMetrics_UnknownChannel_ReturnsEmpty ─────────────────────
 
 int query_metrics_unknown_channel_returns_empty()
 {
-    return run_with_broker(
-        "datahub_metrics::query_metrics_unknown_channel_returns_empty",
-        {},
-        [](const std::string &, const std::string &, BrokerService &svc) {
-            auto result = query_metrics_single(svc, pid_chan("metrics.unknown"));
-            EXPECT_EQ(result.value("status", ""), "success");
-            ASSERT_TRUE(result.contains("metrics"));
-            EXPECT_TRUE(result["metrics"].empty());
-        });
+    return run_with_broker("datahub_metrics::query_metrics_unknown_channel_returns_empty", {},
+                           [](const std::string &, const std::string &, BrokerService &svc)
+                           {
+                               auto result = query_metrics_single(svc, pid_chan("metrics.unknown"));
+                               EXPECT_EQ(result.value("status", ""), "success");
+                               ASSERT_TRUE(result.contains("metrics"));
+                               EXPECT_TRUE(result["metrics"].empty());
+                           });
 }
 
 // ─── Test #4: QueryMetrics_AllChannels ─────────────────────────────────────
@@ -252,26 +242,27 @@ int query_metrics_unknown_channel_returns_empty()
 int query_metrics_all_channels()
 {
     const std::string channel = pid_chan("metrics.all");
-    const std::string uid     = "prod." + channel;
+    const std::string uid = "prod." + channel;
     return run_with_broker(
-        "datahub_metrics::query_metrics_all_channels",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
+        "datahub_metrics::query_metrics_all_channels", {uid},
+        [channel, uid](const std::string &ep, const std::string &pk, BrokerService &svc)
+        {
             pylabhub::tests::BrcHandle bh;
             bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             json metrics;
             metrics["test_field"] = 99;
             bh.brc.send_heartbeat(channel, uid, "producer", metrics);
 
-            ASSERT_TRUE(poll_until([&] {
-                auto r = query_metrics_single(svc);
-                return r.contains("channels") && r["channels"].contains(channel);
-            }, std::chrono::seconds(2)))
+            ASSERT_TRUE(poll_until(
+                [&]
+                {
+                    auto r = query_metrics_single(svc);
+                    return r.contains("channels") && r["channels"].contains(channel);
+                },
+                std::chrono::seconds(2)))
                 << "channel '" << channel
                 << "' did not appear in all-channels query within 2s "
                    "after heartbeat";
@@ -286,28 +277,23 @@ int query_metrics_all_channels()
 
 // ─── Test #5: HeartbeatNoMetrics_BackwardCompat ────────────────────────────
 
-
 // ─── Test #6: MetricsUpdate_OverwriteOnHeartbeat ───────────────────────────
 
-
 // ─── Test #7: ProducerPID_InQueryResult ────────────────────────────────────
-
 
 // ─── Unified query engine — HEP-CORE-0033 §10.3 ────────────────────────────
 
 int query_engine_empty_filter_all_categories_present()
 {
     const std::string channel = pid_chan("query.empty.all");
-    const std::string uid     = "prod." + channel;
+    const std::string uid = "prod." + channel;
     return run_with_broker(
-        "datahub_metrics::query_engine_empty_filter_all_categories_present",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
+        "datahub_metrics::query_engine_empty_filter_all_categories_present", {uid},
+        [channel, uid](const std::string &ep, const std::string &pk, BrokerService &svc)
+        {
             pylabhub::tests::BrcHandle bh;
             bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             pylabhub::hub::MetricsFilter f;
@@ -331,46 +317,44 @@ int query_engine_empty_filter_all_categories_present()
 
 int query_engine_category_filter_only_broker()
 {
-    return run_with_broker(
-        "datahub_metrics::query_engine_category_filter_only_broker",
-        {},
-        [](const std::string &, const std::string &, BrokerService &svc) {
-            pylabhub::hub::MetricsFilter f;
-            f.categories.insert(pylabhub::hub::metrics_category::kBroker);
-            json result = svc.query_metrics(f);
+    return run_with_broker("datahub_metrics::query_engine_category_filter_only_broker", {},
+                           [](const std::string &, const std::string &, BrokerService &svc)
+                           {
+                               pylabhub::hub::MetricsFilter f;
+                               f.categories.insert(pylabhub::hub::metrics_category::kBroker);
+                               json result = svc.query_metrics(f);
 
-            EXPECT_EQ(result.value("status", ""), "success");
-            EXPECT_TRUE(result.contains("broker"));
-            EXPECT_FALSE(result.contains("channels"));
-            EXPECT_FALSE(result.contains("roles"));
-            EXPECT_FALSE(result.contains("bands"));
-            EXPECT_FALSE(result.contains("peers"));
-            EXPECT_FALSE(result.contains("shm"));
-            EXPECT_FALSE(result.contains("schemas"));
+                               EXPECT_EQ(result.value("status", ""), "success");
+                               EXPECT_TRUE(result.contains("broker"));
+                               EXPECT_FALSE(result.contains("channels"));
+                               EXPECT_FALSE(result.contains("roles"));
+                               EXPECT_FALSE(result.contains("bands"));
+                               EXPECT_FALSE(result.contains("peers"));
+                               EXPECT_FALSE(result.contains("shm"));
+                               EXPECT_FALSE(result.contains("schemas"));
 
-            EXPECT_TRUE(result["broker"].contains("_collected_at"));
-        });
+                               EXPECT_TRUE(result["broker"].contains("_collected_at"));
+                           });
 }
 
 int query_engine_channel_identity_filter()
 {
-    const std::string ch1     = pid_chan("query.identity.A");
-    const std::string ch2     = pid_chan("query.identity.B");
-    const std::string uid1    = "prod." + ch1;
-    const std::string uid2    = "prod." + ch2;
+    const std::string ch1 = pid_chan("query.identity.A");
+    const std::string ch2 = pid_chan("query.identity.B");
+    const std::string uid1 = "prod." + ch1;
+    const std::string uid2 = "prod." + ch2;
     return run_with_broker(
-        "datahub_metrics::query_engine_channel_identity_filter",
-        {uid1, uid2},
-        [ch1, ch2, uid1, uid2](const std::string &ep, const std::string &pk,
-                               BrokerService &svc) {
-            pylabhub::tests::BrcHandle b1; b1.start(ep, pk, uid1, pylabhub::tests::role_keystore_name(uid1));
-            auto r1 = b1.brc.register_channel(pylabhub::tests::make_reg_opts(ch1, uid1),
-                                               3000);
+        "datahub_metrics::query_engine_channel_identity_filter", {uid1, uid2},
+        [ch1, ch2, uid1, uid2](const std::string &ep, const std::string &pk, BrokerService &svc)
+        {
+            pylabhub::tests::BrcHandle b1;
+            b1.start(ep, pk, uid1, pylabhub::tests::role_keystore_name(uid1));
+            auto r1 = b1.brc.register_channel(pylabhub::tests::make_reg_opts(ch1, uid1), 3000);
             ASSERT_TRUE(r1.has_value());
 
-            pylabhub::tests::BrcHandle b2; b2.start(ep, pk, uid2, pylabhub::tests::role_keystore_name(uid2));
-            auto r2 = b2.brc.register_channel(pylabhub::tests::make_reg_opts(ch2, uid2),
-                                               3000);
+            pylabhub::tests::BrcHandle b2;
+            b2.start(ep, pk, uid2, pylabhub::tests::role_keystore_name(uid2));
+            auto r2 = b2.brc.register_channel(pylabhub::tests::make_reg_opts(ch2, uid2), 3000);
             ASSERT_TRUE(r2.has_value());
 
             pylabhub::hub::MetricsFilter f;
@@ -390,16 +374,14 @@ int query_engine_channel_identity_filter()
 int query_engine_roles_carry_collected_at()
 {
     const std::string channel = pid_chan("query.role.collected");
-    const std::string uid     = "prod." + channel;
+    const std::string uid = "prod." + channel;
     return run_with_broker(
-        "datahub_metrics::query_engine_roles_carry_collected_at",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
+        "datahub_metrics::query_engine_roles_carry_collected_at", {uid},
+        [channel, uid](const std::string &ep, const std::string &pk, BrokerService &svc)
+        {
             pylabhub::tests::BrcHandle bh;
             bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             json metrics;
@@ -409,11 +391,14 @@ int query_engine_roles_carry_collected_at()
             pylabhub::hub::MetricsFilter f;
             f.categories.insert(pylabhub::hub::metrics_category::kRole);
             f.roles = {uid};
-            ASSERT_TRUE(poll_until([&] {
-                json r = svc.query_metrics(f);
-                return r.contains("roles") && r["roles"].contains(uid)
-                    && !r["roles"][uid].value("_collected_at", "").empty();
-            }, std::chrono::seconds(2)))
+            ASSERT_TRUE(poll_until(
+                [&]
+                {
+                    json r = svc.query_metrics(f);
+                    return r.contains("roles") && r["roles"].contains(uid) &&
+                           !r["roles"][uid].value("_collected_at", "").empty();
+                },
+                std::chrono::seconds(2)))
                 << "role record _collected_at did not populate within 2s";
 
             json result = svc.query_metrics(f);
@@ -432,16 +417,14 @@ int query_engine_roles_carry_collected_at()
 int query_engine_channels_have_producer_and_consumer_metrics()
 {
     const std::string channel = pid_chan("query.channel.metrics");
-    const std::string uid     = "prod." + channel;
+    const std::string uid = "prod." + channel;
     return run_with_broker(
-        "datahub_metrics::query_engine_channels_have_producer_and_consumer_metrics",
-        {uid},
-        [channel, uid](const std::string &ep, const std::string &pk,
-                       BrokerService &svc) {
+        "datahub_metrics::query_engine_channels_have_producer_and_consumer_metrics", {uid},
+        [channel, uid](const std::string &ep, const std::string &pk, BrokerService &svc)
+        {
             pylabhub::tests::BrcHandle bh;
             bh.start(ep, pk, uid, pylabhub::tests::role_keystore_name(uid));
-            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid),
-                                                3000);
+            auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(channel, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
             json metrics;
@@ -451,15 +434,17 @@ int query_engine_channels_have_producer_and_consumer_metrics()
             pylabhub::hub::MetricsFilter f;
             f.categories.insert(pylabhub::hub::metrics_category::kChannel);
             // Wave M2.5 G1: producer_metrics is a per-uid tree.
-            ASSERT_TRUE(poll_until([&] {
-                json r = svc.query_metrics(f);
-                return r.contains("channels") && r["channels"].contains(channel)
-                    && r["channels"][channel].contains("producer_metrics")
-                    && r["channels"][channel]["producer_metrics"]
-                          .contains(uid)
-                    && r["channels"][channel]["producer_metrics"][uid]
-                          .value("iteration_count", 0) == 99;
-            }, std::chrono::seconds(2)))
+            ASSERT_TRUE(poll_until(
+                [&]
+                {
+                    json r = svc.query_metrics(f);
+                    return r.contains("channels") && r["channels"].contains(channel) &&
+                           r["channels"][channel].contains("producer_metrics") &&
+                           r["channels"][channel]["producer_metrics"].contains(uid) &&
+                           r["channels"][channel]["producer_metrics"][uid].value("iteration_count",
+                                                                                 0) == 99;
+                },
+                std::chrono::seconds(2)))
                 << "channel producer_metrics iteration_count=99 not visible "
                    "within 2s";
 
@@ -469,8 +454,7 @@ int query_engine_channels_have_producer_and_consumer_metrics()
             const auto &c = result["channels"][channel];
             EXPECT_TRUE(c.contains("producer_metrics"));
             ASSERT_TRUE(c["producer_metrics"].contains(uid));
-            EXPECT_EQ(c["producer_metrics"][uid].value("iteration_count", 0),
-                      99);
+            EXPECT_EQ(c["producer_metrics"][uid].value("iteration_count", 0), 99);
             EXPECT_TRUE(c.contains("_collected_at"));
 
             bh.stop();
@@ -479,30 +463,27 @@ int query_engine_channels_have_producer_and_consumer_metrics()
 
 // ─── Wave M2.5 G1 — multi-producer metrics isolation ───────────────────────
 
-
 int query_engine_filter_echo()
 {
-    return run_with_broker(
-        "datahub_metrics::query_engine_filter_echo",
-        {},
-        [](const std::string &, const std::string &, BrokerService &svc) {
-            pylabhub::hub::MetricsFilter f;
-            f.categories.insert("role");
-            f.roles = {"prod.specific.uid12345678"};
-            json result = svc.query_metrics(f);
+    return run_with_broker("datahub_metrics::query_engine_filter_echo", {},
+                           [](const std::string &, const std::string &, BrokerService &svc)
+                           {
+                               pylabhub::hub::MetricsFilter f;
+                               f.categories.insert("role");
+                               f.roles = {"prod.specific.uid12345678"};
+                               json result = svc.query_metrics(f);
 
-            ASSERT_TRUE(result.contains("filter"));
-            const auto &echo = result["filter"];
-            EXPECT_TRUE(echo.contains("categories"));
-            ASSERT_TRUE(echo.contains("roles"));
-            ASSERT_EQ(echo["roles"].size(), 1u);
-            EXPECT_EQ(echo["roles"][0].get<std::string>(),
-                      "prod.specific.uid12345678");
-        });
+                               ASSERT_TRUE(result.contains("filter"));
+                               const auto &echo = result["filter"];
+                               EXPECT_TRUE(echo.contains("categories"));
+                               ASSERT_TRUE(echo.contains("roles"));
+                               ASSERT_EQ(echo["roles"].size(), 1u);
+                               EXPECT_EQ(echo["roles"][0].get<std::string>(),
+                                         "prod.specific.uid12345678");
+                           });
 }
 
 // ─── Wave M1.4 (2026-05-11): wire-protocol retirement ──────────────────────
-
 
 // ─── M1.4 + M3 H34: end-to-end multi-presence isolation ────────────────────
 
@@ -510,80 +491,82 @@ int multi_presence_end_to_end_no_cross_attribution()
 {
     const std::string ch_a = pid_chan("metrics.multi.A");
     const std::string ch_b = pid_chan("metrics.multi.B");
-    const std::string p_a  = "prod.A." + ch_a;
-    const std::string p_b  = "prod.B." + ch_b;
-    const std::string c_a  = "cons.A." + ch_a;
-    const std::string c_b  = "cons.B." + ch_b;
+    const std::string p_a = "prod.A." + ch_a;
+    const std::string p_b = "prod.B." + ch_b;
+    const std::string c_a = "cons.A." + ch_a;
+    const std::string c_b = "cons.B." + ch_b;
     return run_with_broker(
-        "datahub_metrics::multi_presence_end_to_end_no_cross_attribution",
-        {p_a, p_b, c_a, c_b},
-        [ch_a, ch_b, p_a, p_b, c_a, c_b](const std::string &ep,
-                                          const std::string &pk,
-                                          BrokerService &svc) {
+        "datahub_metrics::multi_presence_end_to_end_no_cross_attribution", {p_a, p_b, c_a, c_b},
+        [ch_a, ch_b, p_a, p_b, c_a, c_b](const std::string &ep, const std::string &pk,
+                                         BrokerService &svc)
+        {
             pylabhub::tests::BrcHandle prod_a_bh, prod_b_bh;
             prod_a_bh.start(ep, pk, p_a, pylabhub::tests::role_keystore_name(p_a));
             prod_b_bh.start(ep, pk, p_b, pylabhub::tests::role_keystore_name(p_b));
-            ASSERT_TRUE(prod_a_bh.brc.register_channel(
-                            pylabhub::tests::make_reg_opts(ch_a, p_a), 3000).has_value());
-            ASSERT_TRUE(prod_b_bh.brc.register_channel(
-                            pylabhub::tests::make_reg_opts(ch_b, p_b), 3000).has_value());
+            ASSERT_TRUE(
+                prod_a_bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch_a, p_a), 3000)
+                    .has_value());
+            ASSERT_TRUE(
+                prod_b_bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch_b, p_b), 3000)
+                    .has_value());
 
             // HEP-CORE-0036 §5.2 R6 producer-kLive gate (see
             // consumer_heartbeat_metrics_stored_by_broker for the
             // rationale).  Drive both producers to kLive via a probing
             // heartbeat with a marker metric, then poll until the
             // broker has observed both before the consumers register.
-            prod_a_bh.brc.send_heartbeat(ch_a, p_a, "producer",
-                                          json{{"_ready", 1}});
-            prod_b_bh.brc.send_heartbeat(ch_b, p_b, "producer",
-                                          json{{"_ready", 1}});
-            ASSERT_TRUE(poll_until([&] {
-                auto r = query_metrics_single(svc);
-                if (!r.contains("channels")) return false;
-                const auto &chans = r["channels"];
-                return chans.contains(ch_a) && chans.contains(ch_b)
-                    && chans[ch_a].contains("producers")
-                    && chans[ch_b].contains("producers")
-                    && chans[ch_a]["producers"].contains(p_a)
-                    && chans[ch_b]["producers"].contains(p_b)
-                    && chans[ch_a]["producers"][p_a].value("_ready", 0) == 1
-                    && chans[ch_b]["producers"][p_b].value("_ready", 0) == 1;
-            }, std::chrono::seconds(2)))
+            prod_a_bh.brc.send_heartbeat(ch_a, p_a, "producer", json{{"_ready", 1}});
+            prod_b_bh.brc.send_heartbeat(ch_b, p_b, "producer", json{{"_ready", 1}});
+            ASSERT_TRUE(poll_until(
+                [&]
+                {
+                    auto r = query_metrics_single(svc);
+                    if (!r.contains("channels"))
+                        return false;
+                    const auto &chans = r["channels"];
+                    return chans.contains(ch_a) && chans.contains(ch_b) &&
+                           chans[ch_a].contains("producers") && chans[ch_b].contains("producers") &&
+                           chans[ch_a]["producers"].contains(p_a) &&
+                           chans[ch_b]["producers"].contains(p_b) &&
+                           chans[ch_a]["producers"][p_a].value("_ready", 0) == 1 &&
+                           chans[ch_b]["producers"][p_b].value("_ready", 0) == 1;
+                },
+                std::chrono::seconds(2)))
                 << "producers did not reach kLive within 2s";
 
             pylabhub::tests::BrcHandle cons_a_bh, cons_b_bh;
             cons_a_bh.start(ep, pk, c_a, pylabhub::tests::role_keystore_name(c_a));
             cons_b_bh.start(ep, pk, c_b, pylabhub::tests::role_keystore_name(c_b));
-            ASSERT_TRUE(cons_a_bh.brc.register_consumer(
-                            pylabhub::tests::make_cons_opts(ch_a, c_a), 3000).has_value());
-            ASSERT_TRUE(cons_b_bh.brc.register_consumer(
-                            pylabhub::tests::make_cons_opts(ch_b, c_b), 3000).has_value());
+            ASSERT_TRUE(
+                cons_a_bh.brc.register_consumer(pylabhub::tests::make_cons_opts(ch_a, c_a), 3000)
+                    .has_value());
+            ASSERT_TRUE(
+                cons_b_bh.brc.register_consumer(pylabhub::tests::make_cons_opts(ch_b, c_b), 3000)
+                    .has_value());
 
             // Distinct metrics — literal values make cross-attribution
             // impossible to miss in the assertions.
-            prod_a_bh.brc.send_heartbeat(ch_a, p_a, "producer",
-                json{{"tag", "P-A"}, {"v", 11}});
-            prod_b_bh.brc.send_heartbeat(ch_b, p_b, "producer",
-                json{{"tag", "P-B"}, {"v", 22}});
-            cons_a_bh.brc.send_heartbeat(ch_a, c_a, "consumer",
-                json{{"tag", "C-A"}, {"v", 33}});
-            cons_b_bh.brc.send_heartbeat(ch_b, c_b, "consumer",
-                json{{"tag", "C-B"}, {"v", 44}});
+            prod_a_bh.brc.send_heartbeat(ch_a, p_a, "producer", json{{"tag", "P-A"}, {"v", 11}});
+            prod_b_bh.brc.send_heartbeat(ch_b, p_b, "producer", json{{"tag", "P-B"}, {"v", 22}});
+            cons_a_bh.brc.send_heartbeat(ch_a, c_a, "consumer", json{{"tag", "C-A"}, {"v", 33}});
+            cons_b_bh.brc.send_heartbeat(ch_b, c_b, "consumer", json{{"tag", "C-B"}, {"v", 44}});
 
-            ASSERT_TRUE(poll_until([&] {
-                auto r = query_metrics_single(svc);
-                if (!r.contains("channels")) return false;
-                const auto &chans = r["channels"];
-                return chans.contains(ch_a) && chans.contains(ch_b)
-                    && chans[ch_a].contains("producers")
-                    && chans[ch_a].contains("consumers")
-                    && chans[ch_b].contains("producers")
-                    && chans[ch_b].contains("consumers")
-                    && chans[ch_a]["producers"].contains(p_a)
-                    && chans[ch_a]["consumers"].contains(c_a)
-                    && chans[ch_b]["producers"].contains(p_b)
-                    && chans[ch_b]["consumers"].contains(c_b);
-            }, std::chrono::seconds(2)))
+            ASSERT_TRUE(poll_until(
+                [&]
+                {
+                    auto r = query_metrics_single(svc);
+                    if (!r.contains("channels"))
+                        return false;
+                    const auto &chans = r["channels"];
+                    return chans.contains(ch_a) && chans.contains(ch_b) &&
+                           chans[ch_a].contains("producers") && chans[ch_a].contains("consumers") &&
+                           chans[ch_b].contains("producers") && chans[ch_b].contains("consumers") &&
+                           chans[ch_a]["producers"].contains(p_a) &&
+                           chans[ch_a]["consumers"].contains(c_a) &&
+                           chans[ch_b]["producers"].contains(p_b) &&
+                           chans[ch_b]["consumers"].contains(c_b);
+                },
+                std::chrono::seconds(2)))
                 << "Not all four metrics rows appeared within 2 s";
 
             auto r = query_metrics_single(svc);
@@ -592,19 +575,19 @@ int multi_presence_end_to_end_no_cross_attribution()
 
             // Channel A: P-A on producer row, C-A on consumer row.
             EXPECT_EQ(cha["producers"][p_a]["tag"], "P-A");
-            EXPECT_EQ(cha["producers"][p_a]["v"],   11);
+            EXPECT_EQ(cha["producers"][p_a]["v"], 11);
             EXPECT_EQ(cha["consumers"][c_a]["tag"], "C-A");
-            EXPECT_EQ(cha["consumers"][c_a]["v"],   33);
-            EXPECT_FALSE(cha["producers"][p_a].contains("tag")
-                          && cha["producers"][p_a]["tag"] == "C-A")
+            EXPECT_EQ(cha["consumers"][c_a]["v"], 33);
+            EXPECT_FALSE(cha["producers"][p_a].contains("tag") &&
+                         cha["producers"][p_a]["tag"] == "C-A")
                 << "Sanity: producer P-A row must NOT hold C-A's tag "
                    "(H34-root)";
 
             // Channel B: same isolation property.
             EXPECT_EQ(chb["producers"][p_b]["tag"], "P-B");
-            EXPECT_EQ(chb["producers"][p_b]["v"],   22);
+            EXPECT_EQ(chb["producers"][p_b]["v"], 22);
             EXPECT_EQ(chb["consumers"][c_b]["tag"], "C-B");
-            EXPECT_EQ(chb["consumers"][c_b]["v"],   44);
+            EXPECT_EQ(chb["consumers"][c_b]["v"], 44);
 
             // Cross-channel isolation.
             EXPECT_FALSE(cha["producers"].contains(p_b))
@@ -627,35 +610,37 @@ int all_channels_includes_channels_without_metrics()
     // channels) iterated `metrics_store_` (only channels with
     // reports); post-fix iterates HubState's
     // `snapshot().channels` (ALL registered channels).
-    const std::string channel_with    = pid_chan("metrics.has.metrics");
+    const std::string channel_with = pid_chan("metrics.has.metrics");
     const std::string channel_without = pid_chan("metrics.no.metrics");
-    const std::string uid_with        = "prod." + channel_with;
-    const std::string uid_without     = "prod." + channel_without;
+    const std::string uid_with = "prod." + channel_with;
+    const std::string uid_without = "prod." + channel_without;
     return run_with_broker(
-        "datahub_metrics::all_channels_includes_channels_without_metrics",
-        {uid_with, uid_without},
-        [channel_with, channel_without, uid_with, uid_without](
-            const std::string &ep, const std::string &pk,
-            BrokerService &svc) {
+        "datahub_metrics::all_channels_includes_channels_without_metrics", {uid_with, uid_without},
+        [channel_with, channel_without, uid_with,
+         uid_without](const std::string &ep, const std::string &pk, BrokerService &svc)
+        {
             pylabhub::tests::BrcHandle bh1, bh2;
             bh1.start(ep, pk, uid_with, pylabhub::tests::role_keystore_name(uid_with));
             bh2.start(ep, pk, uid_without, pylabhub::tests::role_keystore_name(uid_without));
-            ASSERT_TRUE(bh1.brc.register_channel(
-                            pylabhub::tests::make_reg_opts(channel_with, uid_with), 3000)
-                            .has_value());
-            ASSERT_TRUE(bh2.brc.register_channel(
-                            pylabhub::tests::make_reg_opts(channel_without, uid_without), 3000)
+            ASSERT_TRUE(
+                bh1.brc
+                    .register_channel(pylabhub::tests::make_reg_opts(channel_with, uid_with), 3000)
+                    .has_value());
+            ASSERT_TRUE(bh2.brc
+                            .register_channel(
+                                pylabhub::tests::make_reg_opts(channel_without, uid_without), 3000)
                             .has_value());
 
-            bh1.brc.send_heartbeat(channel_with, uid_with, "producer",
-                                    json{{"data_point", 7}});
+            bh1.brc.send_heartbeat(channel_with, uid_with, "producer", json{{"data_point", 7}});
 
-            ASSERT_TRUE(poll_until([&] {
-                auto r = query_metrics_single(svc);
-                return r.contains("channels")
-                    && r["channels"].contains(channel_with)
-                    && r["channels"][channel_with].contains("producers");
-            }, std::chrono::seconds(2)))
+            ASSERT_TRUE(poll_until(
+                [&]
+                {
+                    auto r = query_metrics_single(svc);
+                    return r.contains("channels") && r["channels"].contains(channel_with) &&
+                           r["channels"][channel_with].contains("producers");
+                },
+                std::chrono::seconds(2)))
                 << "channel_with did not record its metrics within 2s";
 
             auto r = query_metrics_single(svc);
@@ -667,14 +652,10 @@ int all_channels_includes_channels_without_metrics()
                 << "M1.4 contract: channel WITHOUT metrics also appears in "
                    "all-channels query (with empty metrics object).";
 
-            EXPECT_EQ(
-                r["channels"][channel_with]["producers"][uid_with]
-                    ["data_point"],
-                7);
+            EXPECT_EQ(r["channels"][channel_with]["producers"][uid_with]["data_point"], 7);
 
             auto &cw = r["channels"][channel_without];
-            EXPECT_FALSE(cw.contains("producers"))
-                << "Empty channel has no producers metrics";
+            EXPECT_FALSE(cw.contains("producers")) << "Empty channel has no producers metrics";
             EXPECT_FALSE(cw.contains("consumers"));
 
             bh1.stop();
@@ -697,11 +678,11 @@ struct DatahubMetricsRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "datahub_metrics")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "datahub_metrics")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::datahub_metrics;

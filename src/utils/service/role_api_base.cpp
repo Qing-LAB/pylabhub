@@ -4,16 +4,16 @@
  */
 #include "utils/role_api_base.hpp"
 #include "utils/broker_request_comm.hpp"
-#include "utils/role_handler.hpp"         // Wave-B M4c: handler-mode ctrl threads
-#include "utils/script_engine.hpp"        // ScriptEngine, InvokeInbox, ThreadEngineGuard
-#include "utils/zmq_poll_loop.hpp"        // ZmqPollLoop, PeriodicTask
+#include "utils/role_handler.hpp"  // Wave-B M4c: handler-mode ctrl threads
+#include "utils/script_engine.hpp" // ScriptEngine, InvokeInbox, ThreadEngineGuard
+#include "utils/zmq_poll_loop.hpp" // ZmqPollLoop, PeriodicTask
 
 #include "utils/config/checksum_config.hpp"
 #include "utils/format_tools.hpp"
 
 #include "utils/hub_inbox_queue.hpp"
 
-#include "utils/hub_queue_factory.hpp"    // hub::Queue::create_reader/writer, RxOptions/TxOptions, Transport
+#include "utils/hub_queue_factory.hpp" // hub::Queue::create_reader/writer, RxOptions/TxOptions, Transport
 #include "utils/hub_shm_queue.hpp"
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/logger.hpp"
@@ -34,11 +34,11 @@
 #include <functional>
 #include <mutex>
 #include <optional>
-#include <shared_mutex>  // #317 D2 broker_observer_pubkey_mu
+#include <shared_mutex> // #317 D2 broker_observer_pubkey_mu
 #include <span>
 #include <stdexcept>
 #include <string_view>
-#include <cstdlib>  // std::getenv (HEP-0032 §8 slice B strict-mode gate)
+#include <cstdlib> // std::getenv (HEP-0032 §8 slice B strict-mode gate)
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,7 +46,8 @@
 namespace pylabhub::scripting
 {
 
-namespace {
+namespace
+{
 
 /// Internal helper: mutex-guarded per-channel snapshot cache for the
 /// symmetric script-observable peer surfaces (HEP-CORE-0036 §I11).
@@ -57,28 +58,27 @@ namespace {
 /// than being merged on a direction axis.
 class PeerCache
 {
-public:
+  public:
     /// Returns a copy of the per-channel snapshot, or an empty vector
     /// if absent.  Takes the lock internally; callers iterate freely.
-    [[nodiscard]] std::vector<AllowedPeer>
-    snapshot(const std::string &channel) const
+    [[nodiscard]] std::vector<AllowedPeer> snapshot(const std::string &channel) const
     {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = map_.find(channel);
-        if (it == map_.end()) return {};
+        if (it == map_.end())
+            return {};
         return it->second;
     }
 
     /// Replace the per-channel entry with `peers`.  Takes the lock
     /// internally.
-    void put(const std::string &channel,
-             std::vector<AllowedPeer> peers)
+    void put(const std::string &channel, std::vector<AllowedPeer> peers)
     {
         std::lock_guard<std::mutex> lk(mu_);
         map_[channel] = std::move(peers);
     }
 
-private:
+  private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, std::vector<AllowedPeer>> map_;
 };
@@ -100,7 +100,8 @@ private:
 //
 // Convention 1 log format per §8.6:
 //   [<short_tag>] event=BrokerAbiFingerprintReceived role='X' verdict='V' mismatched_axes='...'
-//   [<short_tag>] event=BrokerAbiFingerprintDetail role='X' role_versions='...' broker_versions='...'
+//   [<short_tag>] event=BrokerAbiFingerprintDetail role='X' role_versions='...'
+//   broker_versions='...'
 // Detail line only when verdict != OK, matching broker-side pattern.
 /// @param config_strict Config-driven strict mode (task #327,
 ///                       `RoleAPIBase::strict_abi_mismatch()`).  When
@@ -111,18 +112,14 @@ private:
 ///                       is OR'd in for test-only override.
 /// @return true if strict mode is on AND a MAJOR mismatch was detected;
 ///         caller MUST refuse the Registered transition.
-inline bool log_broker_abi_fingerprint(const nlohmann::json &ack,
-                                        const std::string &short_tag,
-                                        const std::string &role_uid,
-                                        bool config_strict)
+inline bool log_broker_abi_fingerprint(const nlohmann::json &ack, const std::string &short_tag,
+                                       const std::string &role_uid, bool config_strict)
 {
-    if (!ack.contains("broker_abi_fingerprint") ||
-        !ack["broker_abi_fingerprint"].is_object())
+    if (!ack.contains("broker_abi_fingerprint") || !ack["broker_abi_fingerprint"].is_object())
     {
-        LOGGER_INFO(
-            "[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='ABSENT' "
-            "mismatched_axes=''",
-            short_tag, role_uid);
+        LOGGER_INFO("[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='ABSENT' "
+                    "mismatched_axes=''",
+                    short_tag, role_uid);
         return false;
     }
 
@@ -133,28 +130,29 @@ inline bool log_broker_abi_fingerprint(const nlohmann::json &ack,
     }
     catch (const std::exception &e)
     {
-        LOGGER_INFO(
-            "[{}] event=BrokerAbiFingerprintReceived role='{}' "
-            "verdict='INVALID_ENVELOPE' mismatched_axes='' error='{}'",
-            short_tag, role_uid, e.what());
+        LOGGER_INFO("[{}] event=BrokerAbiFingerprintReceived role='{}' "
+                    "verdict='INVALID_ENVELOPE' mismatched_axes='' error='{}'",
+                    short_tag, role_uid, e.what());
         return false;
     }
 
     const std::string bid_str = ack.value("broker_build_id", std::string{});
     const char *broker_bid = bid_str.empty() ? nullptr : bid_str.c_str();
 
-    const auto verdict    = pylabhub::version::verify_peer_versions(broker, broker_bid);
+    const auto verdict = pylabhub::version::verify_peer_versions(broker, broker_bid);
     const auto classified = pylabhub::version::classify_peer_verdict(verdict);
 
     // Strict-mode gate: config-driven (task #327) OR env-var
     // (test-only override).  Env-var snapshot is thread-safe per
     // std::call_once (2026-07-03 review Finding #11).
     static std::once_flag role_strict_once;
-    static bool           role_strict_env_cache = false;
-    std::call_once(role_strict_once, [] {
-        const char *env = std::getenv("PLH_TEST_ROLE_STRICT_ABI_MISMATCH");
-        role_strict_env_cache = env != nullptr && std::string_view(env) == "1";
-    });
+    static bool role_strict_env_cache = false;
+    std::call_once(role_strict_once,
+                   []
+                   {
+                       const char *env = std::getenv("PLH_TEST_ROLE_STRICT_ABI_MISMATCH");
+                       role_strict_env_cache = env != nullptr && std::string_view(env) == "1";
+                   });
     const bool role_strict = config_strict || role_strict_env_cache;
 
     // Map classified.kind → §8.6 verdict string.  Uses shared classifier
@@ -173,8 +171,7 @@ inline bool log_broker_abi_fingerprint(const nlohmann::json &ack,
         verdict_str = "BUILD_ONLY";
         break;
     case pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch:
-        verdict_str = role_strict ? "MAJOR_MISMATCH_REJECTED"
-                                   : "MAJOR_MISMATCH_ACCEPTED";
+        verdict_str = role_strict ? "MAJOR_MISMATCH_REJECTED" : "MAJOR_MISMATCH_ACCEPTED";
         break;
     }
 
@@ -183,35 +180,30 @@ inline bool log_broker_abi_fingerprint(const nlohmann::json &ack,
             ? classified.minor_axes
             : classified.major_axes;
 
-    LOGGER_INFO(
-        "[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='{}' "
-        "mismatched_axes='{}'",
-        short_tag, role_uid, verdict_str, axes_for_log);
+    LOGGER_INFO("[{}] event=BrokerAbiFingerprintReceived role='{}' verdict='{}' "
+                "mismatched_axes='{}'",
+                short_tag, role_uid, verdict_str, axes_for_log);
 
     if (std::string_view(verdict_str) != "OK")
     {
-        LOGGER_INFO(
-            "[{}] event=BrokerAbiFingerprintDetail role='{}' role_versions='{}' "
-            "broker_versions='{}'",
-            short_tag, role_uid,
-            fmt::format("lib={}.{}.{},shm={}.{},broker_proto={}.{},"
-                         "zmq_frame={}.{},script_api={}.{},"
-                         "script_engine={}.{},config={}.{}",
-                         broker.library_major, broker.library_minor,
-                         broker.library_rolling,
-                         broker.shm_major, broker.shm_minor,
-                         broker.broker_proto_major, broker.broker_proto_minor,
-                         broker.zmq_frame_major, broker.zmq_frame_minor,
-                         broker.script_api_major, broker.script_api_minor,
-                         broker.script_engine_major, broker.script_engine_minor,
-                         broker.config_major, broker.config_minor),
-            pylabhub::version::version_info_string());
+        LOGGER_INFO("[{}] event=BrokerAbiFingerprintDetail role='{}' role_versions='{}' "
+                    "broker_versions='{}'",
+                    short_tag, role_uid,
+                    fmt::format("lib={}.{}.{},shm={}.{},broker_proto={}.{},"
+                                "zmq_frame={}.{},script_api={}.{},"
+                                "script_engine={}.{},config={}.{}",
+                                broker.library_major, broker.library_minor, broker.library_rolling,
+                                broker.shm_major, broker.shm_minor, broker.broker_proto_major,
+                                broker.broker_proto_minor, broker.zmq_frame_major,
+                                broker.zmq_frame_minor, broker.script_api_major,
+                                broker.script_api_minor, broker.script_engine_major,
+                                broker.script_engine_minor, broker.config_major,
+                                broker.config_minor),
+                    pylabhub::version::version_info_string());
     }
 
     // Task #327 — refuse Registered when strict mode AND MAJOR mismatch.
-    return role_strict &&
-           classified.kind ==
-               pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch;
+    return role_strict && classified.kind == pylabhub::version::AbiPeerVerdict::Kind::MajorMismatch;
 }
 
 } // namespace
@@ -223,14 +215,12 @@ inline bool log_broker_abi_fingerprint(const nlohmann::json &ack,
 struct RoleAPIBase::Impl
 {
     Impl(RoleHostCore *c, std::string rt, std::string id)
-        : core(c),
-          short_tag(std::move(rt)),
-          uid(std::move(id)),
-          thread_mgr_(std::make_unique<pylabhub::utils::ThreadManager>(
-              short_tag, uid))
-    {}
+        : core(c), short_tag(std::move(rt)), uid(std::move(id)),
+          thread_mgr_(std::make_unique<pylabhub::utils::ThreadManager>(short_tag, uid))
+    {
+    }
 
-    RoleHostCore    *core;
+    RoleHostCore *core;
 
     // Abstract queue ownership — RoleAPIBase sees the unified interface only.
     // Factories (ShmQueue::create_*, ZmqQueue::push_to / pull_from) return
@@ -238,8 +228,8 @@ struct RoleAPIBase::Impl
     // so that every path downstream goes through QueueWriter/QueueReader.
     std::unique_ptr<hub::QueueWriter> tx_queue;
     std::unique_ptr<hub::QueueReader> rx_queue;
-    hub::InboxQueue          *inbox_queue{nullptr};
-    ScriptEngine             *engine{nullptr};
+    hub::InboxQueue *inbox_queue{nullptr};
+    ScriptEngine *engine{nullptr};
 
     /// HEP-CORE-0041 1i-mig-4 (#272) — Consumer-side SHM capability owner.
     ///
@@ -306,8 +296,8 @@ struct RoleAPIBase::Impl
     // role admits any known_role from any hub it registered with.  Consumed
     // by the inbox ROUTER's ZAP arm.  Mutex-guarded: written on the BRC-poll
     // thread as ACKs arrive, read when the inbox facility is armed.
-    mutable std::mutex              inbox_known_roles_mu;
-    std::unordered_set<std::string> inbox_known_roles;  // Z85 pubkeys
+    mutable std::mutex inbox_known_roles_mu;
+    std::unordered_set<std::string> inbox_known_roles; // Z85 pubkeys
 
     // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
     // binding-side live-peer map maintained by phase=live / phase=left
@@ -319,10 +309,10 @@ struct RoleAPIBase::Impl
     //   Shape: channel_name → role_type → set<role_uid>.
     // Mutex-guarded because the BRC poll thread writes and the script
     // reads via the accessors on the script thread.
-    mutable std::mutex                                                     live_peers_mu;
+    mutable std::mutex live_peers_mu;
     std::unordered_map<std::string,
-        std::unordered_map<std::string,
-            std::unordered_set<std::string>>> live_peers;
+                       std::unordered_map<std::string, std::unordered_set<std::string>>>
+        live_peers;
 
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
@@ -338,7 +328,7 @@ struct RoleAPIBase::Impl
     // value with no extra protection.  Adding a field here is a claim
     // that it will NEVER be mutated after `start_ctrl_thread()`.  If
     // that claim ever breaks, move the field into `Shared` below.
-    std::string short_tag;   // "prod", "cons", "proc"
+    std::string short_tag; // "prod", "cons", "proc"
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::Enforced};
     bool stop_on_script_error{false};
     /// HEP-CORE-0032 §8.6 strict-mode ABI reject (task #327).  Set by
@@ -454,7 +444,7 @@ struct RoleAPIBase::Impl
     // `start_handler_threads` flips `ctrl_threads_started_` to true on
     // success; a second call is refused (single-shot per instance).
     std::unique_ptr<RoleHandler> handler_;
-    bool                         ctrl_threads_started_{false};
+    bool ctrl_threads_started_{false};
 
     // A2 (Wave-B M8 prep): per-connection liveness bitmask.  Bit `i`
     // == 1 means handler->connections()[i] has not observed a
@@ -465,7 +455,7 @@ struct RoleAPIBase::Impl
     // any-thread reads + ctrl-thread writes via on_hub_dead lambda.
     // Zero before start_handler_threads; bits 0..n-1 set on spawn;
     // bits cleared individually as each connection dies.
-    std::atomic<std::uint64_t>   connection_alive_mask_{0};
+    std::atomic<std::uint64_t> connection_alive_mask_{0};
 
     // Optional hook for role-specific metrics injection.
     std::function<void(nlohmann::json &)> metrics_hook;
@@ -500,8 +490,7 @@ struct RoleAPIBase::Impl
         return handler_ ? handler_->brc_for_channel(channel) : nullptr;
     }
 
-    [[nodiscard]] hub::BrokerRequestComm *
-    resolve_bc_for_role() const noexcept
+    [[nodiscard]] hub::BrokerRequestComm *resolve_bc_for_role() const noexcept
     {
         return handler_ ? handler_->brc_for_role() : nullptr;
     }
@@ -524,15 +513,18 @@ struct RoleAPIBase::Impl
         namespace sec = pylabhub::utils::security;
         std::size_t added = 0;
         std::size_t total = 0;
-        sec::PeerAllowlist allowlist;  // built only when a re-seed is due
+        sec::PeerAllowlist allowlist; // built only when a re-seed is due
         {
             std::lock_guard<std::mutex> lk(inbox_known_roles_mu);
             for (const auto &e : ack.at("known_roles"))
             {
-                if (!e.is_string()) continue;
+                if (!e.is_string())
+                    continue;
                 auto z85 = e.get<std::string>();
-                if (z85.empty()) continue;
-                if (inbox_known_roles.insert(std::move(z85)).second) ++added;
+                if (z85.empty())
+                    continue;
+                if (inbox_known_roles.insert(std::move(z85)).second)
+                    ++added;
             }
             total = inbox_known_roles.size();
             // Build the ZAP allowlist from the FULL roster only when the
@@ -543,20 +535,18 @@ struct RoleAPIBase::Impl
         }
         if (added == 0)
             return;
-        LOGGER_INFO(
-            "[{}] event=InboxKnownRolesMerged added={} total={} "
-            "(HEP-CORE-0027 §3.5 hub-wide inbox roster)",
-            short_tag, added, total);
+        LOGGER_INFO("[{}] event=InboxKnownRolesMerged added={} total={} "
+                    "(HEP-CORE-0027 §3.5 hub-wide inbox roster)",
+                    short_tag, added, total);
         // Seed the inbox ROUTER's ZAP allowlist so the roster and the CURVE
         // gate move together (HEP-CORE-0027 §3.5 S3 — lifts the ROUTER off
         // its deny-all default).  Inert for roles without an inbox.
         if (inbox_queue != nullptr)
         {
             inbox_queue->set_peer_allowlist(std::move(allowlist));
-            LOGGER_INFO(
-                "[{}] event=InboxAllowlistSeeded size={} "
-                "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP)",
-                short_tag, total);
+            LOGGER_INFO("[{}] event=InboxAllowlistSeeded size={} "
+                        "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP)",
+                        short_tag, total);
         }
     }
 };
@@ -565,9 +555,7 @@ struct RoleAPIBase::Impl
 // Lifecycle
 // ============================================================================
 
-RoleAPIBase::RoleAPIBase(RoleHostCore &core,
-                         std::string   short_tag,
-                         std::string   uid)
+RoleAPIBase::RoleAPIBase(RoleHostCore &core, std::string short_tag, std::string uid)
     : pImpl(std::make_unique<Impl>(&core, std::move(short_tag), std::move(uid)))
 {
     // ThreadManager ctor throws std::invalid_argument if either identity
@@ -588,10 +576,10 @@ RoleAPIBase &RoleAPIBase::operator=(RoleAPIBase &&) noexcept = default;
 namespace
 {
 // Compute 8-byte schema tag from first 8 bytes of hash (empty → nullopt).
-std::optional<std::array<uint8_t, 8>>
-make_schema_tag(const std::string &hash)
+std::optional<std::array<uint8_t, 8>> make_schema_tag(const std::string &hash)
 {
-    if (hash.size() < 8) return std::nullopt;
+    if (hash.size() < 8)
+        return std::nullopt;
     std::array<uint8_t, 8> tag{};
     std::memcpy(tag.data(), hash.data(), 8);
     return tag;
@@ -638,30 +626,27 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         // ShmQueue treats that as "no flexzone allocated."  Passing an
         // empty spec through schema_spec_to_zmq_fields would throw
         // "fields must not be empty," so gate the conversion.
-        auto fz_fields = opts.fz_spec.fields.empty()
-            ? std::vector<hub::SchemaFieldDesc>{}
-            : hub::schema_spec_to_zmq_fields(opts.fz_spec);
+        auto fz_fields = opts.fz_spec.fields.empty() ? std::vector<hub::SchemaFieldDesc>{}
+                                                     : hub::schema_spec_to_zmq_fields(opts.fz_spec);
 
         hub::TxOptions tx_opts;
-        tx_opts.slot_schema           = hub::schema_spec_to_zmq_fields(opts.slot_spec);
-        tx_opts.slot_packing          = opts.slot_spec.packing;
-        tx_opts.fz_schema             = std::move(fz_fields);
-        tx_opts.fz_packing            = opts.fz_spec.packing;
-        tx_opts.channel_name          = tx_channel;
-        tx_opts.ring_buffer_capacity  = opts.shm_config.ring_buffer_capacity;
-        tx_opts.page_size             = opts.shm_config.physical_page_size;
-        tx_opts.policy                = opts.shm_config.policy;
-        tx_opts.sync_policy           = opts.shm_config.consumer_sync_policy;
-        tx_opts.checksum_policy       = opts.shm_config.checksum_policy;
-        tx_opts.always_clear_slot     = opts.always_clear_slot;
-        tx_opts.hub_uid               = opts.shm_config.hub_uid;
-        tx_opts.hub_name              = opts.shm_config.hub_name;
-        tx_opts.producer_uid          = opts.shm_config.producer_uid;
-        tx_opts.producer_name         = opts.shm_config.producer_name;
+        tx_opts.slot_schema = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        tx_opts.slot_packing = opts.slot_spec.packing;
+        tx_opts.fz_schema = std::move(fz_fields);
+        tx_opts.fz_packing = opts.fz_spec.packing;
+        tx_opts.channel_name = tx_channel;
+        tx_opts.ring_buffer_capacity = opts.shm_config.ring_buffer_capacity;
+        tx_opts.page_size = opts.shm_config.physical_page_size;
+        tx_opts.policy = opts.shm_config.policy;
+        tx_opts.sync_policy = opts.shm_config.consumer_sync_policy;
+        tx_opts.checksum_policy = opts.shm_config.checksum_policy;
+        tx_opts.always_clear_slot = opts.always_clear_slot;
+        tx_opts.hub_uid = opts.shm_config.hub_uid;
+        tx_opts.hub_name = opts.shm_config.hub_name;
+        tx_opts.producer_uid = opts.shm_config.producer_uid;
+        tx_opts.producer_name = opts.shm_config.producer_name;
 
-        writer = hub::Queue::create_writer(opts.topology,
-                                            hub::Transport::Shm,
-                                            std::move(tx_opts));
+        writer = hub::Queue::create_writer(opts.topology, hub::Transport::Shm, std::move(tx_opts));
         if (!writer)
         {
             LOGGER_ERROR("[{}] hub::Queue::create_writer failed for SHM "
@@ -671,16 +656,14 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         }
         if (!writer->set_shm_capability_fd(opts.shm_capability_fd))
         {
-            LOGGER_ERROR("[{}] set_shm_capability_fd refused for '{}' fd={}",
-                         pImpl->short_tag, tx_channel,
-                         opts.shm_capability_fd);
+            LOGGER_ERROR("[{}] set_shm_capability_fd refused for '{}' fd={}", pImpl->short_tag,
+                         tx_channel, opts.shm_capability_fd);
             return false;
         }
         if (!writer->start())
         {
-            LOGGER_ERROR("[{}] SHM writer start failed for '{}' fd={}",
-                         pImpl->short_tag, tx_channel,
-                         opts.shm_capability_fd);
+            LOGGER_ERROR("[{}] SHM writer start failed for '{}' fd={}", pImpl->short_tag,
+                         tx_channel, opts.shm_capability_fd);
             return false;
         }
     }
@@ -711,30 +694,26 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->short_tag + ":" + pImpl->uid + ":tx")
                                   : opts.instance_id;
-        const auto schema_hash = hub::compute_schema_hash(opts.slot_spec,
-                                                           opts.fz_spec);
+        const auto schema_hash = hub::compute_schema_hash(opts.slot_spec, opts.fz_spec);
 
         hub::TxOptions tx_opts;
-        tx_opts.slot_schema            = hub::schema_spec_to_zmq_fields(opts.slot_spec);
-        tx_opts.slot_packing           = opts.slot_spec.packing;
+        tx_opts.slot_schema = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        tx_opts.slot_packing = opts.slot_spec.packing;
         // On the dialing side, endpoint_hint MUST be empty per §3.3.0
         // gate 4 — the peer endpoint arrives on REG_ACK.  The config
         // parser currently populates zmq_node_endpoint on both sides;
         // drop it on dialing side here until the parser catches up.
-        tx_opts.endpoint_hint          = is_binding ? opts.zmq_node_endpoint
-                                                    : std::string{};
-        tx_opts.identity_key_name      = pylabhub::utils::security::kRoleIdentityName;
-        tx_opts.zap_domain             = pImpl->uid + ":" + tx_channel + ":tx";
-        tx_opts.schema_tag             = make_schema_tag(schema_hash);
-        tx_opts.sndhwm                 = 0;
-        tx_opts.send_buffer_depth      = opts.zmq_buffer_depth;
-        tx_opts.overflow_policy        = opts.zmq_overflow_policy;
+        tx_opts.endpoint_hint = is_binding ? opts.zmq_node_endpoint : std::string{};
+        tx_opts.identity_key_name = pylabhub::utils::security::kRoleIdentityName;
+        tx_opts.zap_domain = pImpl->uid + ":" + tx_channel + ":tx";
+        tx_opts.schema_tag = make_schema_tag(schema_hash);
+        tx_opts.sndhwm = 0;
+        tx_opts.send_buffer_depth = opts.zmq_buffer_depth;
+        tx_opts.overflow_policy = opts.zmq_overflow_policy;
         tx_opts.send_retry_interval_ms = 10;
-        tx_opts.instance_id            = std::move(inst_id);
+        tx_opts.instance_id = std::move(inst_id);
 
-        writer = hub::Queue::create_writer(opts.topology,
-                                            hub::Transport::Zmq,
-                                            std::move(tx_opts));
+        writer = hub::Queue::create_writer(opts.topology, hub::Transport::Zmq, std::move(tx_opts));
         if (!writer)
             return false;
         // Tx queue is built in Standby here; no PUSH bind, no ZAP arm.
@@ -780,15 +759,13 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // drives Standby → Active immediately.  Production never sets
         // this field at build time.
         hub::RxOptions rx_opts;
-        rx_opts.slot_schema   = hub::schema_spec_to_zmq_fields(opts.slot_spec);
-        rx_opts.slot_packing  = opts.slot_spec.packing;
-        rx_opts.channel_name  = opts.shm_name;
-        rx_opts.consumer_uid  = pImpl->uid;
+        rx_opts.slot_schema = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        rx_opts.slot_packing = opts.slot_spec.packing;
+        rx_opts.channel_name = opts.shm_name;
+        rx_opts.consumer_uid = pImpl->uid;
         rx_opts.consumer_name = pImpl->name;
 
-        reader = hub::Queue::create_reader(opts.topology,
-                                            hub::Transport::Shm,
-                                            std::move(rx_opts));
+        reader = hub::Queue::create_reader(opts.topology, hub::Transport::Shm, std::move(rx_opts));
         if (!reader)
         {
             LOGGER_ERROR("[{}] hub::Queue::create_reader failed for SHM "
@@ -802,16 +779,14 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
             {
                 LOGGER_ERROR("[{}] set_shm_capability_fd refused for "
                              "channel='{}' fd={}",
-                             pImpl->short_tag, rx_channel,
-                             opts.shm_capability_fd);
+                             pImpl->short_tag, rx_channel, opts.shm_capability_fd);
                 return false;
             }
             if (!reader->start())
             {
                 LOGGER_ERROR("[{}] SHM reader start failed for channel='{}' "
                              "fd={}",
-                             pImpl->short_tag, rx_channel,
-                             opts.shm_capability_fd);
+                             pImpl->short_tag, rx_channel, opts.shm_capability_fd);
                 return false;
             }
         }
@@ -841,8 +816,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         std::string inst_id = opts.instance_id.empty()
                                   ? (pImpl->short_tag + ":" + pImpl->uid + ":rx")
                                   : opts.instance_id;
-        const auto expected_hash = hub::compute_schema_hash(opts.slot_spec,
-                                                             opts.fz_spec);
+        const auto expected_hash = hub::compute_schema_hash(opts.slot_spec, opts.fz_spec);
         namespace sec = pylabhub::utils::security;
 
         const bool is_binding = hub::Queue::reader_is_binding_side(opts.topology);
@@ -852,15 +826,13 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // broker round-trip).  Only applies to fan-out and one-to-one
         // (dialing).  On fan-in (binding) the consumer never has a peer
         // pre-known.
-        const bool have_peer =
-            !is_binding
-            && !opts.producer_peers.empty()
-            && !opts.producer_peers.front().endpoint.empty()
-            && !opts.producer_peers.front().pubkey_z85.empty();
+        const bool have_peer = !is_binding && !opts.producer_peers.empty() &&
+                               !opts.producer_peers.front().endpoint.empty() &&
+                               !opts.producer_peers.front().pubkey_z85.empty();
 
         hub::RxOptions rx_opts;
-        rx_opts.slot_schema      = hub::schema_spec_to_zmq_fields(opts.slot_spec);
-        rx_opts.slot_packing     = opts.slot_spec.packing;
+        rx_opts.slot_schema = hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        rx_opts.slot_packing = opts.slot_spec.packing;
         // Binding side (fan-in consumer): endpoint_hint from config
         // (opts.zmq_node_endpoint).  May be tcp://host:0 for
         // ephemeral bind.
@@ -869,23 +841,18 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // Test-legacy exception: if producer_peers is pre-populated on
         // dialing side, take the first peer's endpoint (drives queue
         // to Configured at construction).
-        rx_opts.endpoint_hint    = is_binding
-                                    ? opts.zmq_node_endpoint
-                                    : (have_peer
-                                        ? opts.producer_peers.front().endpoint
-                                        : std::string{});
-        rx_opts.server_pubkey    = have_peer
-                                    ? sec::Z85PublicKey::validate(
-                                          opts.producer_peers.front().pubkey_z85)
-                                    : sec::Z85PublicKey{};
+        rx_opts.endpoint_hint =
+            is_binding ? opts.zmq_node_endpoint
+                       : (have_peer ? opts.producer_peers.front().endpoint : std::string{});
+        rx_opts.server_pubkey =
+            have_peer ? sec::Z85PublicKey::validate(opts.producer_peers.front().pubkey_z85)
+                      : sec::Z85PublicKey{};
         rx_opts.identity_key_name = sec::kRoleIdentityName;
-        rx_opts.max_buffer_depth  = opts.zmq_buffer_depth;
-        rx_opts.schema_tag        = make_schema_tag(expected_hash);
-        rx_opts.instance_id       = std::move(inst_id);
+        rx_opts.max_buffer_depth = opts.zmq_buffer_depth;
+        rx_opts.schema_tag = make_schema_tag(expected_hash);
+        rx_opts.instance_id = std::move(inst_id);
 
-        reader = hub::Queue::create_reader(opts.topology,
-                                            hub::Transport::Zmq,
-                                            std::move(rx_opts));
+        reader = hub::Queue::create_reader(opts.topology, hub::Transport::Zmq, std::move(rx_opts));
         if (!reader)
             return false;
         // Pre-populated test path: start immediately.  Empty peers:
@@ -936,8 +903,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // log for diagnostic value; accepted overhead on this
         // per-role-lifetime path.
         const bool has_producers = ack.contains("producers");
-        const std::string producers_dump =
-            has_producers ? ack["producers"].dump() : "[]";
+        const std::string producers_dump = has_producers ? ack["producers"].dump() : "[]";
 
         // Pre-parse script_view + channel_name BEFORE queue mutation.
         // This eliminates the half-success window: if any of these
@@ -960,7 +926,8 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             script_view.reserve(producers.size());
             for (const auto &p : producers)
             {
-                if (!p.is_object()) continue;
+                if (!p.is_object())
+                    continue;
                 // Wire shape: {role_uid, pubkey, endpoint}.  Script
                 // view exposes only the IDENTITY half ({role_uid,
                 // pubkey}) — endpoint is transport-layer detail per
@@ -989,17 +956,15 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // Post-B-1..B-4 every emitter route is unified on
         // `channel_name`, so absence is unambiguously a contract
         // violation worth a hard error.
-        const auto channel_name =
-            ack.value("channel_name", std::string{});
+        const auto channel_name = ack.value("channel_name", std::string{});
         if (channel_name.empty())
         {
-            LOGGER_ERROR(
-                "[{}] apply_consumer_reg_ack: ACK missing required "
-                "`channel_name` (HEP-CORE-0036 §5b.7 + B-5 #290 — "
-                "broker contract violation; pre-B-5 this would have "
-                "silently skipped cache commit + Authorized FSM "
-                "transition).",
-                pImpl->short_tag);
+            LOGGER_ERROR("[{}] apply_consumer_reg_ack: ACK missing required "
+                         "`channel_name` (HEP-CORE-0036 §5b.7 + B-5 #290 — "
+                         "broker contract violation; pre-B-5 this would have "
+                         "silently skipped cache commit + Authorized FSM "
+                         "transition).",
+                         pImpl->short_tag);
             return false;
         }
 
@@ -1019,9 +984,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             LOGGER_ERROR("[{}] apply_consumer_reg_ack: rx_queue not "
                          "wired — discarding ACK (channel='{}' "
                          "status='{}' producers={})",
-                         pImpl->short_tag,
-                         ack.value("channel_name", "?"),
-                         ack.value("status", "?"),
+                         pImpl->short_tag, ack.value("channel_name", "?"), ack.value("status", "?"),
                          producers_dump);
             return false;
         }
@@ -1034,9 +997,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // 4 expected sequence order.
         LOGGER_INFO("[{}] event=ConsumerRegAckReceived channel='{}' "
                     "status={} producers={}",
-                    pImpl->short_tag,
-                    ack.value("channel_name", "?"),
-                    ack.value("status", "?"),
+                    pImpl->short_tag, ack.value("channel_name", "?"), ack.value("status", "?"),
                     producers_dump);
 
         // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
@@ -1051,14 +1012,13 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // Pass `pImpl->uid` (the consumer's own role UID) rather than
         // reading role_uid from the ACK — the ACK doesn't carry role_uid
         // (2026-07-03 code review Finding #3).
-        const bool abi_refuse = log_broker_abi_fingerprint(
-            ack, pImpl->short_tag, pImpl->uid, pImpl->strict_abi_mismatch);
+        const bool abi_refuse = log_broker_abi_fingerprint(ack, pImpl->short_tag, pImpl->uid,
+                                                           pImpl->strict_abi_mismatch);
         if (abi_refuse)
         {
-            LOGGER_ERROR(
-                "[{}] CONSUMER_REG_ACK strict-ABI reject for channel '{}' — "
-                "refusing Registered transition (task #327)",
-                pImpl->short_tag, ack.value("channel_name", "?"));
+            LOGGER_ERROR("[{}] CONSUMER_REG_ACK strict-ABI reject for channel '{}' — "
+                         "refusing Registered transition (task #327)",
+                         pImpl->short_tag, ack.value("channel_name", "?"));
             return false;
         }
 
@@ -1088,16 +1048,14 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // (ZMQ when SHM is intended, or vice versa) would lead to
         // a confusing later failure deep in the queue or attach
         // protocol.
-        const std::string data_transport_echo =
-            ack.value("data_transport", std::string{});
+        const std::string data_transport_echo = ack.value("data_transport", std::string{});
         if (data_transport_echo != "shm" && data_transport_echo != "zmq")
         {
-            LOGGER_ERROR(
-                "[{}] apply_consumer_reg_ack: channel='{}' ACK has "
-                "missing or unknown `data_transport`='{}' "
-                "(HEP-CORE-0036 §5b.7 + B-5 #290 — must be one of "
-                "{{\"shm\",\"zmq\"}}; broker contract violation).",
-                pImpl->short_tag, channel_name, data_transport_echo);
+            LOGGER_ERROR("[{}] apply_consumer_reg_ack: channel='{}' ACK has "
+                         "missing or unknown `data_transport`='{}' "
+                         "(HEP-CORE-0036 §5b.7 + B-5 #290 — must be one of "
+                         "{{\"shm\",\"zmq\"}}; broker contract violation).",
+                         pImpl->short_tag, channel_name, data_transport_echo);
             return false;
         }
         if (data_transport_echo == "shm")
@@ -1108,24 +1066,19 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             if (!ack.contains("producers") || !ack["producers"].is_array() ||
                 ack["producers"].empty())
             {
-                LOGGER_ERROR(
-                    "[{}] apply_consumer_reg_ack: SHM channel='{}' "
-                    "broker ACK missing producers[] (HEP-CORE-0036 §5b "
-                    "unified shape)",
-                    pImpl->short_tag, channel_name);
+                LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel='{}' "
+                             "broker ACK missing producers[] (HEP-CORE-0036 §5b "
+                             "unified shape)",
+                             pImpl->short_tag, channel_name);
                 return false;
             }
             const auto &p = ack["producers"][0];
-            const std::string shm_endpoint =
-                p.value("endpoint", std::string{});
-            const std::string producer_pubkey_z85 =
-                p.value("pubkey_z85", std::string{});
+            const std::string shm_endpoint = p.value("endpoint", std::string{});
+            const std::string producer_pubkey_z85 = p.value("pubkey_z85", std::string{});
             LOGGER_INFO("[{}] event=ShmCapabilityFieldsReceived channel='{}' "
                         "endpoint='{}' producer_pubkey_z85_len={}",
-                        pImpl->short_tag, channel_name, shm_endpoint,
-                        producer_pubkey_z85.size());
-            if (!apply_consumer_reg_ack_shm_(
-                    channel_name, shm_endpoint, producer_pubkey_z85))
+                        pImpl->short_tag, channel_name, shm_endpoint, producer_pubkey_z85.size());
+            if (!apply_consumer_reg_ack_shm_(channel_name, shm_endpoint, producer_pubkey_z85))
             {
                 return false;
             }
@@ -1163,27 +1116,24 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             std::string consumer_pubkey_z85;
             try
             {
-                consumer_pubkey_z85 = std::string{
-                    sec::secure().keys().pubkey(sec::kRoleIdentityName)};
+                consumer_pubkey_z85 =
+                    std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)};
             }
             catch (const std::exception &e)
             {
-                LOGGER_ERROR(
-                    "[{}] apply_consumer_reg_ack: ZMQ channel '{}' — "
-                    "KeyStore::pubkey('{}') threw: {} (consumer cannot "
-                    "issue §7.1 pre-attach REQs)",
-                    pImpl->short_tag, channel_name,
-                    sec::kRoleIdentityName, e.what());
+                LOGGER_ERROR("[{}] apply_consumer_reg_ack: ZMQ channel '{}' — "
+                             "KeyStore::pubkey('{}') threw: {} (consumer cannot "
+                             "issue §7.1 pre-attach REQs)",
+                             pImpl->short_tag, channel_name, sec::kRoleIdentityName, e.what());
                 return false;
             }
 
             auto *brc = pImpl->resolve_bc_for_channel(channel_name);
             if (!brc)
             {
-                LOGGER_ERROR(
-                    "[{}] apply_consumer_reg_ack: ZMQ channel '{}' — "
-                    "no BRC resolved; cannot issue §7.1 pre-attach REQs",
-                    pImpl->short_tag, channel_name);
+                LOGGER_ERROR("[{}] apply_consumer_reg_ack: ZMQ channel '{}' — "
+                             "no BRC resolved; cannot issue §7.1 pre-attach REQs",
+                             pImpl->short_tag, channel_name);
                 return false;
             }
 
@@ -1192,17 +1142,15 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // surface a broker regression cleanly.
             if (!ack.contains("producers") || !ack["producers"].is_array())
             {
-                LOGGER_ERROR(
-                    "[{}] apply_consumer_reg_ack: ZMQ ACK for channel "
-                    "'{}' missing/malformed `producers` field — HEP-"
-                    "CORE-0036 §5b B-5 broker contract violation.",
-                    pImpl->short_tag, channel_name);
+                LOGGER_ERROR("[{}] apply_consumer_reg_ack: ZMQ ACK for channel "
+                             "'{}' missing/malformed `producers` field — HEP-"
+                             "CORE-0036 §5b B-5 broker contract violation.",
+                             pImpl->short_tag, channel_name);
                 return false;
             }
             const auto &producers_arr = ack["producers"];
-            LOGGER_INFO(
-                "[{}] attach:begin channel={} producers={}",
-                pImpl->short_tag, channel_name, producers_arr.size());
+            LOGGER_INFO("[{}] attach:begin channel={} producers={}", pImpl->short_tag, channel_name,
+                        producers_arr.size());
 
             nlohmann::json admitted_producers = nlohmann::json::array();
             for (const auto &p : producers_arr)
@@ -1216,16 +1164,14 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 // Mirror of the pre-parse guard at ~line 732.
                 if (!p.is_object())
                 {
-                    LOGGER_WARN(
-                        "[{}] attach:malformed_entry channel='{}' — "
-                        "producers[] row is not a JSON object (HEP-0036 "
-                        "§5b contract); skipping this entry, continuing "
-                        "loop",
-                        pImpl->short_tag, channel_name);
+                    LOGGER_WARN("[{}] attach:malformed_entry channel='{}' — "
+                                "producers[] row is not a JSON object (HEP-0036 "
+                                "§5b contract); skipping this entry, continuing "
+                                "loop",
+                                pImpl->short_tag, channel_name);
                     continue;
                 }
-                const auto producer_uid =
-                    p.value("role_uid", std::string{});
+                const auto producer_uid = p.value("role_uid", std::string{});
                 if (producer_uid.empty())
                 {
                     // Malformed entry (missing role_uid).  HEP-CORE-0042
@@ -1235,17 +1181,15 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     // behavior) would strand N-1 valid producers and
                     // fail apply_consumer_reg_ack even if the broker
                     // would have admitted the rest.
-                    LOGGER_WARN(
-                        "[{}] attach:malformed_entry channel='{}' — "
-                        "producers[] row missing `role_uid` (HEP-0036 §5b "
-                        "contract); skipping this entry, continuing loop",
-                        pImpl->short_tag, channel_name);
+                    LOGGER_WARN("[{}] attach:malformed_entry channel='{}' — "
+                                "producers[] row missing `role_uid` (HEP-0036 §5b "
+                                "contract); skipping this entry, continuing loop",
+                                pImpl->short_tag, channel_name);
                     continue;
                 }
 
-                auto reply = brc->consumer_attach_zmq(
-                    channel_name, pImpl->uid, consumer_pubkey_z85,
-                    producer_uid);
+                auto reply = brc->consumer_attach_zmq(channel_name, pImpl->uid, consumer_pubkey_z85,
+                                                      producer_uid);
 
                 // §7.1 null-synthesis: on client-side BRC failure /
                 // timeout, synthesize the SAME §5.6 reason string
@@ -1276,15 +1220,13 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     // — preserving §7.1 fan-in policy (one failed peer
                     // must not fail the batch).
                     const bool abi_refuse = log_broker_abi_fingerprint(
-                        *reply, pImpl->short_tag, pImpl->uid,
-                        pImpl->strict_abi_mismatch);
+                        *reply, pImpl->short_tag, pImpl->uid, pImpl->strict_abi_mismatch);
                     if (abi_refuse)
                     {
-                        LOGGER_ERROR(
-                            "[{}] CONSUMER_ATTACH_ACK_ZMQ strict-ABI reject "
-                            "channel='{}' producer='{}' — dropping producer "
-                            "from filtered_ack (task #327)",
-                            pImpl->short_tag, channel_name, producer_uid);
+                        LOGGER_ERROR("[{}] CONSUMER_ATTACH_ACK_ZMQ strict-ABI reject "
+                                     "channel='{}' producer='{}' — dropping producer "
+                                     "from filtered_ack (task #327)",
+                                     pImpl->short_tag, channel_name, producer_uid);
                         status = "error";
                         reason = "abi_major_mismatch";
                     }
@@ -1305,41 +1247,33 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     // the whole batch.  Log WARN + continue per §7.1
                     // fan-in policy — one under-populated peer must
                     // not fail the batch.
-                    const auto endpoint =
-                        p.value("endpoint", std::string{});
+                    const auto endpoint = p.value("endpoint", std::string{});
                     if (endpoint.empty())
                     {
-                        LOGGER_WARN(
-                            "[{}] attach:success_but_empty_endpoint "
-                            "channel={} producer={} — broker admitted "
-                            "but ACK entry has no endpoint; skipping "
-                            "producer from filtered_ack (would else "
-                            "reject the whole batch at "
-                            "apply_master_approval)",
-                            pImpl->short_tag, channel_name,
-                            producer_uid);
+                        LOGGER_WARN("[{}] attach:success_but_empty_endpoint "
+                                    "channel={} producer={} — broker admitted "
+                                    "but ACK entry has no endpoint; skipping "
+                                    "producer from filtered_ack (would else "
+                                    "reject the whole batch at "
+                                    "apply_master_approval)",
+                                    pImpl->short_tag, channel_name, producer_uid);
                         continue;
                     }
                     admitted_producers.push_back(p);
-                    LOGGER_INFO(
-                        "[{}] attach:success channel={} producer={}",
-                        pImpl->short_tag, channel_name, producer_uid);
+                    LOGGER_INFO("[{}] attach:success channel={} producer={}", pImpl->short_tag,
+                                channel_name, producer_uid);
                 }
                 else if (status == "denied")
                 {
-                    LOGGER_WARN(
-                        "[{}] attach:denied channel={} producer={} "
-                        "reason={}",
-                        pImpl->short_tag, channel_name, producer_uid,
-                        reason);
+                    LOGGER_WARN("[{}] attach:denied channel={} producer={} "
+                                "reason={}",
+                                pImpl->short_tag, channel_name, producer_uid, reason);
                 }
                 else if (status == "timeout")
                 {
-                    LOGGER_WARN(
-                        "[{}] attach:timeout channel={} producer={} "
-                        "reason={}",
-                        pImpl->short_tag, channel_name, producer_uid,
-                        reason);
+                    LOGGER_WARN("[{}] attach:timeout channel={} producer={} "
+                                "reason={}",
+                                pImpl->short_tag, channel_name, producer_uid, reason);
                 }
                 else
                 {
@@ -1347,18 +1281,14 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     // (not ERROR — the loop continues per §7.1) but
                     // exclude from admitted since we can't reason
                     // about the outcome.
-                    LOGGER_WARN(
-                        "[{}] attach:unknown_status channel={} producer={}"
-                        " status='{}' reason='{}' (broker regression?)",
-                        pImpl->short_tag, channel_name, producer_uid,
-                        status, reason);
+                    LOGGER_WARN("[{}] attach:unknown_status channel={} producer={}"
+                                " status='{}' reason='{}' (broker regression?)",
+                                pImpl->short_tag, channel_name, producer_uid, status, reason);
                 }
             }
 
-            LOGGER_INFO(
-                "[{}] attach:complete channel={} admitted={}/{}",
-                pImpl->short_tag, channel_name,
-                admitted_producers.size(), producers_arr.size());
+            LOGGER_INFO("[{}] attach:complete channel={} admitted={}/{}", pImpl->short_tag,
+                        channel_name, admitted_producers.size(), producers_arr.size());
 
             // §7.1 partial-success policy — zero admitted → return
             // false.  Historically this fired when the broker's
@@ -1380,15 +1310,13 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // the raw `is_binding_side()` predicate; use the queue-
             // owned side-identity accessor instead).
             if (admitted_producers.empty() &&
-                !(pImpl->rx_queue &&
-                  !pImpl->rx_queue->binding_role_type().empty()))
+                !(pImpl->rx_queue && !pImpl->rx_queue->binding_role_type().empty()))
             {
-                LOGGER_WARN(
-                    "[{}] apply_consumer_reg_ack: ZERO producers admitted"
-                    " for channel '{}' — queue stays in Standby "
-                    "(HEP-CORE-0042 §7.1 partial-success policy: "
-                    "return false)",
-                    pImpl->short_tag, channel_name);
+                LOGGER_WARN("[{}] apply_consumer_reg_ack: ZERO producers admitted"
+                            " for channel '{}' — queue stays in Standby "
+                            "(HEP-CORE-0042 §7.1 partial-success policy: "
+                            "return false)",
+                            pImpl->short_tag, channel_name);
                 return false;
             }
 
@@ -1396,17 +1324,16 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // Placement decision): only admitted producers reach the
             // Standby → Active transition.
             nlohmann::json filtered_ack = ack;
-            filtered_ack["producers"] = admitted_producers;   // copy for later cache-filter walk
+            filtered_ack["producers"] = admitted_producers; // copy for later cache-filter walk
 
             if (!pImpl->rx_queue->apply_master_approval(filtered_ack))
             {
-                LOGGER_ERROR(
-                    "[{}] apply_consumer_reg_ack: apply_master_approval "
-                    "refused post-filter (HEP-CORE-0036 §6.7 'fully "
-                    "refused' — malformed broker delivery or the "
-                    "filtered ACK produced by §7.1 loop is queue-"
-                    "unacceptable)",
-                    pImpl->short_tag);
+                LOGGER_ERROR("[{}] apply_consumer_reg_ack: apply_master_approval "
+                             "refused post-filter (HEP-CORE-0036 §6.7 'fully "
+                             "refused' — malformed broker delivery or the "
+                             "filtered ACK produced by §7.1 loop is queue-"
+                             "unacceptable)",
+                             pImpl->short_tag);
                 return false;
             }
 
@@ -1427,9 +1354,9 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             admitted_uids.reserve(admitted_producers.size());
             for (const auto &p : admitted_producers)
             {
-                if (!p.is_object()) continue;
-                admitted_uids.insert(
-                    p.value("role_uid", std::string{}));
+                if (!p.is_object())
+                    continue;
+                admitted_uids.insert(p.value("role_uid", std::string{}));
             }
             std::vector<AllowedPeer> filtered_script_view;
             filtered_script_view.reserve(script_view.size());
@@ -1499,16 +1426,13 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         bool have_initial_seed = false;
         if (has_producers)
         {
-            pending_initial_seed_view = script_view;   // copy for callback
+            pending_initial_seed_view = script_view; // copy for callback
             pImpl->allowlist_cache.put(channel_name, script_view);
-            pImpl->producer_peer_cache.put(
-                channel_name, std::move(script_view));
+            pImpl->producer_peer_cache.put(channel_name, std::move(script_view));
             have_initial_seed = true;
-            LOGGER_INFO(
-                "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
-                "(HEP-CORE-0036 §3.6 + §I11.1; consumer-side)",
-                pImpl->short_tag, channel_name,
-                pending_initial_seed_view.size());
+            LOGGER_INFO("[{}] event=InitialAllowlistSeeded channel='{}' size={} "
+                        "(HEP-CORE-0036 §3.6 + §I11.1; consumer-side)",
+                        pImpl->short_tag, channel_name, pending_initial_seed_view.size());
         }
 
         // HEP-CORE-0021 §16 endpoint publish on the BINDING side.
@@ -1525,8 +1449,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // HEP-CORE-0036 §I9.1 (no direct branch on
         // `is_binding_side()` — that raw predicate exists for
         // logging only under the locality invariant).
-        if (pImpl->rx_queue &&
-            !pImpl->rx_queue->binding_role_type().empty())
+        if (pImpl->rx_queue && !pImpl->rx_queue->binding_role_type().empty())
         {
             const std::string ep = pImpl->rx_queue->actual_endpoint();
             if (!ep.empty())
@@ -1534,25 +1457,21 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 if (auto *bc = pImpl->resolve_bc_for_channel(channel_name);
                     bc && bc->is_connected())
                 {
-                    auto res = bc->send_endpoint_update(
-                        channel_name, "zmq_node", ep);
-                    if (!res.has_value() ||
-                        res->value("status", std::string{}) != "success")
+                    auto res = bc->send_endpoint_update(channel_name, "zmq_node", ep);
+                    if (!res.has_value() || res->value("status", std::string{}) != "success")
                     {
-                        LOGGER_WARN(
-                            "[{}] apply_consumer_reg_ack: "
-                            "send_endpoint_update failed for channel='{}' "
-                            "endpoint='{}' — producers dialing this "
-                            "channel won't get a valid REG_ACK until the "
-                            "publish succeeds",
-                            pImpl->short_tag, channel_name, ep);
+                        LOGGER_WARN("[{}] apply_consumer_reg_ack: "
+                                    "send_endpoint_update failed for channel='{}' "
+                                    "endpoint='{}' — producers dialing this "
+                                    "channel won't get a valid REG_ACK until the "
+                                    "publish succeeds",
+                                    pImpl->short_tag, channel_name, ep);
                     }
                     else
                     {
-                        LOGGER_INFO(
-                            "[{}] event=BindingEndpointPublished "
-                            "channel='{}' endpoint='{}'",
-                            pImpl->short_tag, channel_name, ep);
+                        LOGGER_INFO("[{}] event=BindingEndpointPublished "
+                                    "channel='{}' endpoint='{}'",
+                                    pImpl->short_tag, channel_name, ep);
                     }
                 }
             }
@@ -1569,16 +1488,14 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         {
             try
             {
-                pImpl->engine->invoke_on_allowlist_changed(
-                    channel_name, pending_initial_seed_view,
-                    "initial_seed");
+                pImpl->engine->invoke_on_allowlist_changed(channel_name, pending_initial_seed_view,
+                                                           "initial_seed");
             }
             catch (const std::exception &e)
             {
-                LOGGER_ERROR(
-                    "[{}] on_allowlist_changed callback threw for channel "
-                    "'{}' (reason=initial_seed, consumer-side): {}",
-                    pImpl->short_tag, channel_name, e.what());
+                LOGGER_ERROR("[{}] on_allowlist_changed callback threw for channel "
+                             "'{}' (reason=initial_seed, consumer-side): {}",
+                             pImpl->short_tag, channel_name, e.what());
             }
         }
 
@@ -1595,13 +1512,11 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // (no presence routing); guard that one only.
         if (pImpl->handler_)
         {
-            Presence *presence = pImpl->handler_
-                ->find_presence_for_channel(channel_name);
+            Presence *presence = pImpl->handler_->find_presence_for_channel(channel_name);
             if (presence)
             {
-                presence->registration_state.store(
-                    RegistrationState::Authorized,
-                    std::memory_order_release);
+                presence->registration_state.store(RegistrationState::Authorized,
+                                                   std::memory_order_release);
                 LOGGER_INFO("[{}] event=PresenceStateTransition "
                             "channel='{}' role_type=consumer "
                             "from=Registered to=Authorized "
@@ -1626,10 +1541,9 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 
 #if defined(PYLABHUB_PLATFORM_LINUX)
 
-bool RoleAPIBase::apply_consumer_reg_ack_shm_(
-    const std::string &channel_name,
-    const std::string &shm_endpoint,
-    const std::string &producer_pubkey_z85)
+bool RoleAPIBase::apply_consumer_reg_ack_shm_(const std::string &channel_name,
+                                              const std::string &shm_endpoint,
+                                              const std::string &producer_pubkey_z85)
 {
     namespace sec = pylabhub::utils::security;
 
@@ -1639,8 +1553,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
                      "ack missing required fields "
                      "(shm_capability_endpoint='{}' "
                      "producer_pubkey_z85_len={})",
-                     pImpl->short_tag, channel_name, shm_endpoint,
-                     producer_pubkey_z85.size());
+                     pImpl->short_tag, channel_name, shm_endpoint, producer_pubkey_z85.size());
         return false;
     }
 
@@ -1651,7 +1564,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     // producer-side acceptor wiring in
     // RoleHostFrame::spawn_shm_auth_listener_.
     sec::ConsumerAuthMaterial auth;
-    auth.role_uid    = pImpl->uid;
+    auth.role_uid = pImpl->uid;
     try
     {
         auth.pubkey_z85 = std::string{sec::secure().keys().pubkey(sec::kRoleIdentityName)};
@@ -1661,8 +1574,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' — "
                      "KeyStore::pubkey('{}') threw: {} (consumer cannot "
                      "assemble auth material)",
-                     pImpl->short_tag, channel_name,
-                     sec::kRoleIdentityName, e.what());
+                     pImpl->short_tag, channel_name, sec::kRoleIdentityName, e.what());
         return false;
     }
     auth.own_seckey_name = std::string(sec::kRoleIdentityName);
@@ -1673,18 +1585,17 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     // beyond that we fail the registration.  ENOENT (socket file not
     // yet visible) returns nullopt the same way ECONNREFUSED does, so
     // both cases reuse this loop.
-    constexpr int  kMaxDialAttempts   = 10;
+    constexpr int kMaxDialAttempts = 10;
     constexpr auto kDialAttemptPeriod = std::chrono::milliseconds{100};
     std::optional<int> connected_fd_opt;
-    int                attempts_used = 0;
+    int attempts_used = 0;
     for (int attempt = 0; attempt < kMaxDialAttempts; ++attempt)
     {
         ++attempts_used;
         try
         {
             connected_fd_opt = sec::initiate_consumer_handshake(
-                shm_endpoint, auth, producer_pubkey_z85,
-                kDialAttemptPeriod,
+                shm_endpoint, auth, producer_pubkey_z85, kDialAttemptPeriod,
                 pImpl->shm_require_mutual_auth);
         }
         catch (const std::exception &e)
@@ -1693,8 +1604,8 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
             // not the H3a race shape.  Bail immediately.
             LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
                          "handshake to '{}' threw on attempt {}/{}: {}",
-                         pImpl->short_tag, channel_name, shm_endpoint,
-                         attempt + 1, kMaxDialAttempts, e.what());
+                         pImpl->short_tag, channel_name, shm_endpoint, attempt + 1,
+                         kMaxDialAttempts, e.what());
             return false;
         }
         if (connected_fd_opt.has_value())
@@ -1712,8 +1623,7 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
         LOGGER_ERROR("[{}] apply_consumer_reg_ack: SHM channel '{}' "
                      "handshake to '{}' connect-refused after {} attempts "
                      "(~{}ms total) — H3a race exceeded tolerance window",
-                     pImpl->short_tag, channel_name, shm_endpoint,
-                     attempts_used,
+                     pImpl->short_tag, channel_name, shm_endpoint, attempts_used,
                      attempts_used * kDialAttemptPeriod.count());
         return false;
     }
@@ -1728,8 +1638,8 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     std::unique_ptr<sec::IShmCapabilityConsumer> consumer;
     try
     {
-        consumer = sec::attach_shm_capability_consumer_from_socket(
-            connected_fd, std::chrono::milliseconds{2000});
+        consumer = sec::attach_shm_capability_consumer_from_socket(connected_fd,
+                                                                   std::chrono::milliseconds{2000});
     }
     catch (const std::exception &e)
     {
@@ -1776,17 +1686,15 @@ bool RoleAPIBase::apply_consumer_reg_ack_shm_(
     pImpl->shm_consumer = std::move(consumer);
     LOGGER_INFO("[{}] event=ShmCapabilityActivated channel='{}' "
                 "endpoint='{}' attempts={} (HEP-CORE-0041 1i-mig-4)",
-                pImpl->short_tag, channel_name, shm_endpoint,
-                attempts_used);
+                pImpl->short_tag, channel_name, shm_endpoint, attempts_used);
     return true;
 }
 
 #else // non-Linux platforms
 
-bool RoleAPIBase::apply_consumer_reg_ack_shm_(
-    const std::string &channel_name,
-    const std::string & /*shm_endpoint*/,
-    const std::string & /*producer_pubkey_z85*/)
+bool RoleAPIBase::apply_consumer_reg_ack_shm_(const std::string &channel_name,
+                                              const std::string & /*shm_endpoint*/,
+                                              const std::string & /*producer_pubkey_z85*/)
 {
     // HEP-CORE-0041 §6.5 — symmetric "no backend on this platform"
     // surface.  Mirrors the #error shape on the L1/L2b/L2c .cpp files
@@ -1808,280 +1716,263 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
 {
     if (!pImpl->tx_queue)
     {
-        LOGGER_ERROR("[{}] apply_producer_reg_ack: tx_queue not wired",
-                     pImpl->short_tag);
+        LOGGER_ERROR("[{}] apply_producer_reg_ack: tx_queue not wired", pImpl->short_tag);
         return false;
     }
     try
     {
-    // Boundary validation FIRST (before any state mutation).  A
-    // malformed / broker-regressed REG_ACK must be rejected BEFORE
-    // apply_master_approval spawns queue workers — otherwise a
-    // downstream hard-error returns false while the tx queue is
-    // Active, leaving RAII-only cleanup for a half-live state that
-    // the role host can't observe from its own return-value check.
-    //
-    // §5b B-5 hard-error: `channel_name` mandatory.
-    const auto channel_name_pre = ack.value("channel_name", std::string{});
-    if (channel_name_pre.empty())
-    {
-        LOGGER_ERROR(
-            "[{}] apply_producer_reg_ack: ACK missing required "
-            "`channel_name` (HEP-CORE-0036 §5b.4 + B-5 #290 — broker "
-            "contract violation).",
-            pImpl->short_tag);
-        return false;
-    }
-    // §5.5.3 hard-error: `instance_id` mandatory + nonzero.  Reject
-    // before queue mutation so a zero value doesn't defeat the
-    // stale-instance guard silently.
-    const auto instance_id_pre = ack.value("instance_id", std::uint64_t{0});
-    if (instance_id_pre == 0)
-    {
-        LOGGER_ERROR(
-            "[{}] apply_producer_reg_ack: ACK missing/zero "
-            "`instance_id` for channel '{}' — HEP-CORE-0042 §5.5.3 "
-            "requires PRODUCER_REG_ACK to echo the broker-assigned "
-            "instance counter (§5.2 monotonic uint64, starts at 1).",
-            pImpl->short_tag, channel_name_pre);
-        return false;
-    }
-
-    // Producer-side mirror of apply_consumer_reg_ack.  Drive Standby
-    // → Active per HEP-CORE-0036 §6.7 Option B.  For PUSH queues,
-    // apply_master_approval extracts ack["initial_allowlist"] (array
-    // of Z85 pubkey strings per HEP-0036 §6.2), seeds the ZAP cache,
-    // and calls start() internally to bind and spawn the PUSH worker.
-    // For SHM tx, it is a no-op today (config-supplied secret).
-    if (!pImpl->tx_queue->apply_master_approval(ack))
-    {
-        LOGGER_ERROR("[{}] apply_producer_reg_ack: apply_master_approval "
-                     "refused (HEP-CORE-0036 §6.7 'fully refused' — "
-                     "malformed broker delivery)", pImpl->short_tag);
-        return false;
-    }
-
-    // Pre-validated at function entry — reuse locals.  Store instance_id
-    // now that all boundary checks have passed.
-    const auto &channel_name = channel_name_pre;
-    const auto instance_id = instance_id_pre;
-    pImpl->producer_instance_id_.store(instance_id,
-                                        std::memory_order_relaxed);
-    LOGGER_INFO(
-        "[{}] event=ProducerInstanceIdCaptured channel='{}' "
-        "instance_id={} (HEP-CORE-0042 §5.5.3)",
-        pImpl->short_tag, channel_name, instance_id);
-
-    // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
-    // presence's REG_ACK before it seeds the inbox ROUTER ZAP arm.
-    pImpl->merge_inbox_known_roles(ack);
-
-    // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
-    // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist
-    // and fire `on_allowlist_changed(reason="initial_seed")` so a script
-    // observing the callback (or polling `api.allowed_peers(channel)`)
-    // sees the live set immediately on (re)connect — no waiting for the
-    // next CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Same shape as the
-    // NOTIFY-driven path in `handle_channel_auth_notifies` (one cache,
-    // transport-agnostic, callback fires on every write — §I11.1
-    // invariants #1–#3).  For SHM the cache is observability-only
-    // (HEP-CORE-0041 §9 D4 broker pre-confirm at attach IS the gate).
-    //
-    // **Missing `initial_allowlist` MUST NOT clobber the cache** —
-    // §I11.1 invariant #5 + HEP-0036 §6.2 broker contract require the
-    // field to be present (empty array on a fresh channel, never absent).
-    // An absent field is a broker contract violation; log WARN, preserve
-    // the prior cache snapshot, do not fire the callback.
-    // Deferred callback firing (2026-07-02 review-B fix): a slow
-    // `on_allowlist_changed(reason="initial_seed")` callback used to
-    // inflate the broker-observed producer_apply_wait_ms budget
-    // because it fired synchronously BEFORE the APPLIED_REQ RTT.
-    // We now seed the cache here, then emit APPLIED_REQ (fast broker
-    // round-trip), THEN fire the callback — the broker's confirmed_
-    // version[K][P] advances immediately regardless of script latency.
-    std::vector<AllowedPeer> pending_initial_seed_view;
-    bool have_initial_seed = false;
-    {
-        if (ack.contains("initial_allowlist") &&
-            ack.at("initial_allowlist").is_array())
+        // Boundary validation FIRST (before any state mutation).  A
+        // malformed / broker-regressed REG_ACK must be rejected BEFORE
+        // apply_master_approval spawns queue workers — otherwise a
+        // downstream hard-error returns false while the tx queue is
+        // Active, leaving RAII-only cleanup for a half-live state that
+        // the role host can't observe from its own return-value check.
+        //
+        // §5b B-5 hard-error: `channel_name` mandatory.
+        const auto channel_name_pre = ack.value("channel_name", std::string{});
+        if (channel_name_pre.empty())
         {
-            const auto &initial_allowlist = ack.at("initial_allowlist");
-            std::vector<AllowedPeer> script_view;
-            for (const auto &entry : initial_allowlist)
+            LOGGER_ERROR("[{}] apply_producer_reg_ack: ACK missing required "
+                         "`channel_name` (HEP-CORE-0036 §5b.4 + B-5 #290 — broker "
+                         "contract violation).",
+                         pImpl->short_tag);
+            return false;
+        }
+        // §5.5.3 hard-error: `instance_id` mandatory + nonzero.  Reject
+        // before queue mutation so a zero value doesn't defeat the
+        // stale-instance guard silently.
+        const auto instance_id_pre = ack.value("instance_id", std::uint64_t{0});
+        if (instance_id_pre == 0)
+        {
+            LOGGER_ERROR("[{}] apply_producer_reg_ack: ACK missing/zero "
+                         "`instance_id` for channel '{}' — HEP-CORE-0042 §5.5.3 "
+                         "requires PRODUCER_REG_ACK to echo the broker-assigned "
+                         "instance counter (§5.2 monotonic uint64, starts at 1).",
+                         pImpl->short_tag, channel_name_pre);
+            return false;
+        }
+
+        // Producer-side mirror of apply_consumer_reg_ack.  Drive Standby
+        // → Active per HEP-CORE-0036 §6.7 Option B.  For PUSH queues,
+        // apply_master_approval extracts ack["initial_allowlist"] (array
+        // of Z85 pubkey strings per HEP-0036 §6.2), seeds the ZAP cache,
+        // and calls start() internally to bind and spawn the PUSH worker.
+        // For SHM tx, it is a no-op today (config-supplied secret).
+        if (!pImpl->tx_queue->apply_master_approval(ack))
+        {
+            LOGGER_ERROR("[{}] apply_producer_reg_ack: apply_master_approval "
+                         "refused (HEP-CORE-0036 §6.7 'fully refused' — "
+                         "malformed broker delivery)",
+                         pImpl->short_tag);
+            return false;
+        }
+
+        // Pre-validated at function entry — reuse locals.  Store instance_id
+        // now that all boundary checks have passed.
+        const auto &channel_name = channel_name_pre;
+        const auto instance_id = instance_id_pre;
+        pImpl->producer_instance_id_.store(instance_id, std::memory_order_relaxed);
+        LOGGER_INFO("[{}] event=ProducerInstanceIdCaptured channel='{}' "
+                    "instance_id={} (HEP-CORE-0042 §5.5.3)",
+                    pImpl->short_tag, channel_name, instance_id);
+
+        // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
+        // presence's REG_ACK before it seeds the inbox ROUTER ZAP arm.
+        pImpl->merge_inbox_known_roles(ack);
+
+        // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
+        // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist
+        // and fire `on_allowlist_changed(reason="initial_seed")` so a script
+        // observing the callback (or polling `api.allowed_peers(channel)`)
+        // sees the live set immediately on (re)connect — no waiting for the
+        // next CHANNEL_AUTH_CHANGED_NOTIFY doorbell.  Same shape as the
+        // NOTIFY-driven path in `handle_channel_auth_notifies` (one cache,
+        // transport-agnostic, callback fires on every write — §I11.1
+        // invariants #1–#3).  For SHM the cache is observability-only
+        // (HEP-CORE-0041 §9 D4 broker pre-confirm at attach IS the gate).
+        //
+        // **Missing `initial_allowlist` MUST NOT clobber the cache** —
+        // §I11.1 invariant #5 + HEP-0036 §6.2 broker contract require the
+        // field to be present (empty array on a fresh channel, never absent).
+        // An absent field is a broker contract violation; log WARN, preserve
+        // the prior cache snapshot, do not fire the callback.
+        // Deferred callback firing (2026-07-02 review-B fix): a slow
+        // `on_allowlist_changed(reason="initial_seed")` callback used to
+        // inflate the broker-observed producer_apply_wait_ms budget
+        // because it fired synchronously BEFORE the APPLIED_REQ RTT.
+        // We now seed the cache here, then emit APPLIED_REQ (fast broker
+        // round-trip), THEN fire the callback — the broker's confirmed_
+        // version[K][P] advances immediately regardless of script latency.
+        std::vector<AllowedPeer> pending_initial_seed_view;
+        bool have_initial_seed = false;
+        {
+            if (ack.contains("initial_allowlist") && ack.at("initial_allowlist").is_array())
             {
-                // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — payload
-                // shape unified with CONSUMER_REG_ACK.producers[]:
-                // array of {role_uid?, endpoint?, pubkey_z85} objects
-                // (topology-driven size/endpoint per §3.3.0).  Script
-                // view exposes IDENTITY half only ({role_uid, pubkey})
-                // — endpoint is transport-layer detail per §I11
-                // (scripts read membership, not connection mechanics).
-                if (!entry.is_object()) continue;
-                AllowedPeer p;
-                p.role_uid = entry.value("role_uid", std::string{});
-                p.pubkey   = entry.value("pubkey_z85", std::string{});
-                if (p.pubkey.empty()) continue;
-                script_view.push_back(std::move(p));
+                const auto &initial_allowlist = ack.at("initial_allowlist");
+                std::vector<AllowedPeer> script_view;
+                for (const auto &entry : initial_allowlist)
+                {
+                    // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — payload
+                    // shape unified with CONSUMER_REG_ACK.producers[]:
+                    // array of {role_uid?, endpoint?, pubkey_z85} objects
+                    // (topology-driven size/endpoint per §3.3.0).  Script
+                    // view exposes IDENTITY half only ({role_uid, pubkey})
+                    // — endpoint is transport-layer detail per §I11
+                    // (scripts read membership, not connection mechanics).
+                    if (!entry.is_object())
+                        continue;
+                    AllowedPeer p;
+                    p.role_uid = entry.value("role_uid", std::string{});
+                    p.pubkey = entry.value("pubkey_z85", std::string{});
+                    if (p.pubkey.empty())
+                        continue;
+                    script_view.push_back(std::move(p));
+                }
+                pImpl->allowlist_cache.put(channel_name, script_view);
+                LOGGER_INFO("[{}] event=InitialAllowlistSeeded channel='{}' size={} "
+                            "(HEP-CORE-0036 §3.6 + §I11.1)",
+                            pImpl->short_tag, channel_name, script_view.size());
+                pending_initial_seed_view = std::move(script_view);
+                have_initial_seed = true;
             }
-            pImpl->allowlist_cache.put(channel_name, script_view);
-            LOGGER_INFO(
-                "[{}] event=InitialAllowlistSeeded channel='{}' size={} "
-                "(HEP-CORE-0036 §3.6 + §I11.1)",
-                pImpl->short_tag, channel_name, script_view.size());
-            pending_initial_seed_view = std::move(script_view);
-            have_initial_seed = true;
+            else
+            {
+                LOGGER_WARN("[{}] REG_ACK for channel '{}' is missing "
+                            "`initial_allowlist` (or it is not an array) — broker "
+                            "contract violation per HEP-CORE-0036 §6.2 + §I11.1 "
+                            "invariant #5.  Preserving prior allowlist_cache snapshot "
+                            "(do NOT clobber with empty).",
+                            pImpl->short_tag, channel_name);
+            }
         }
-        else
-        {
-            LOGGER_WARN(
-                "[{}] REG_ACK for channel '{}' is missing "
-                "`initial_allowlist` (or it is not an array) — broker "
-                "contract violation per HEP-CORE-0036 §6.2 + §I11.1 "
-                "invariant #5.  Preserving prior allowlist_cache snapshot "
-                "(do NOT clobber with empty).",
-                pImpl->short_tag, channel_name);
-        }
-    }
 
-    // HEP-CORE-0042 §5.5.2 — signal the broker that our cache is at
-    // `snapshot_version`.  Broker advances `confirmed_version[K][P]`
-    // and drains pending wait-path attaches (§5.4 step d).  Sync
-    // REQ with `applied_ack_wait_ms=1000` budget per §5.6; on
-    // timeout / transport failure / STALE_INSTANCE the broker will
-    // re-drive us via the next NOTIFY.
-    //
-    // Emitted ONLY for ZMQ producers (§5.5.2 is scoped to the ZMQ
-    // instantiation per §5.0; SHM channels use broker pre-confirm and
-    // don't participate in the confirmed-version machinery).  Detected
-    // by `dynamic_cast<sec::PeerAdmission*>` — mirror of the NOTIFY-
-    // path gate in `handle_channel_auth_notifies` (single ZMQ marker
-    // shared between the two emission sites).
-    //
-    // Reads `snapshot_version` from the REG_ACK we're processing —
-    // that's the channel_version at the time `initial_allowlist`
-    // above was extracted (§5.5.4).  For a freshly-opened channel
-    // (no consumers yet) this is 0; the broker still accepts and
-    // records the confirmation as a no-op advance.  A REG_ACK without
-    // `snapshot_version` is a §5.5.4 broker-contract violation — log
-    // WARN + skip (do NOT silently emit applied_version=0; that would
-    // stall real wait-path drains).
-    namespace sec = pylabhub::utils::security;
-    auto *admission_tx =
-        dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
-    auto *brc = pImpl->resolve_bc_for_channel(channel_name);
-    if (!admission_tx)
-    {
-        // SHM producer — no APPLIED_REQ emission per §5.0 SHM scope.
-        // Fall through to §4.3.2 FSM transition below.
-    }
-    else if (!ack.contains("snapshot_version") ||
-             !ack.at("snapshot_version").is_number_unsigned())
-    {
-        LOGGER_WARN(
-            "[{}] apply_producer_reg_ack: ACK for channel '{}' missing "
-            "or non-numeric `snapshot_version` — HEP-CORE-0042 §5.5.4 "
-            "broker contract violation.  Skipping APPLIED_REQ emission "
-            "(next NOTIFY drives resync); DO NOT silently substitute "
-            "applied_version=0.",
-            pImpl->short_tag, channel_name);
-    }
-    else if (!brc)
-    {
-        LOGGER_WARN(
-            "[{}] no BRC for channel '{}' at apply_producer_reg_ack; "
-            "skipping CHANNEL_AUTH_APPLIED_REQ (HEP-CORE-0042 §5.5.2 "
-            "silent-drop safe: broker will re-drive on next NOTIFY)",
-            pImpl->short_tag, channel_name);
-    }
-    else
-    {
-        const auto applied_version =
-            ack.at("snapshot_version").get<std::uint64_t>();
-        // apply_producer_reg_ack is producer-side only per the
-        // enclosing function name (channel_auth_applied producer
-        // branch requires role_type="producer" + instance_id > 0).
-        auto reply = brc->channel_auth_applied(
-            channel_name, pImpl->uid,
-            std::string_view{"producer"},
-            applied_version, instance_id);
-        if (!reply.has_value())
+        // HEP-CORE-0042 §5.5.2 — signal the broker that our cache is at
+        // `snapshot_version`.  Broker advances `confirmed_version[K][P]`
+        // and drains pending wait-path attaches (§5.4 step d).  Sync
+        // REQ with `applied_ack_wait_ms=1000` budget per §5.6; on
+        // timeout / transport failure / STALE_INSTANCE the broker will
+        // re-drive us via the next NOTIFY.
+        //
+        // Emitted ONLY for ZMQ producers (§5.5.2 is scoped to the ZMQ
+        // instantiation per §5.0; SHM channels use broker pre-confirm and
+        // don't participate in the confirmed-version machinery).  Detected
+        // by `dynamic_cast<sec::PeerAdmission*>` — mirror of the NOTIFY-
+        // path gate in `handle_channel_auth_notifies` (single ZMQ marker
+        // shared between the two emission sites).
+        //
+        // Reads `snapshot_version` from the REG_ACK we're processing —
+        // that's the channel_version at the time `initial_allowlist`
+        // above was extracted (§5.5.4).  For a freshly-opened channel
+        // (no consumers yet) this is 0; the broker still accepts and
+        // records the confirmation as a no-op advance.  A REG_ACK without
+        // `snapshot_version` is a §5.5.4 broker-contract violation — log
+        // WARN + skip (do NOT silently emit applied_version=0; that would
+        // stall real wait-path drains).
+        namespace sec = pylabhub::utils::security;
+        auto *admission_tx = dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
+        auto *brc = pImpl->resolve_bc_for_channel(channel_name);
+        if (!admission_tx)
         {
-            LOGGER_WARN(
-                "[{}] CHANNEL_AUTH_APPLIED_REQ('{}') no reply within "
-                "budget — cache stays applied, broker may re-drive on "
-                "next NOTIFY (HEP-CORE-0042 §5.5.2 + §5.6)",
-                pImpl->short_tag, channel_name);
+            // SHM producer — no APPLIED_REQ emission per §5.0 SHM scope.
+            // Fall through to §4.3.2 FSM transition below.
         }
-        else if (reply->value("status", std::string{}) != "ok")
+        else if (!ack.contains("snapshot_version") ||
+                 !ack.at("snapshot_version").is_number_unsigned())
         {
-            // STALE_INSTANCE (a re-REG races) or transport error.
-            // Log WARN + continue — the next NOTIFY drives resync.
-            LOGGER_WARN(
-                "[{}] CHANNEL_AUTH_APPLIED_REQ('{}') non-ok reply: "
-                "status='{}' error_code='{}' — cache stays applied",
-                pImpl->short_tag, channel_name,
-                reply->value("status", std::string{}),
-                reply->value("error_code", std::string{}));
-        }
-        else
-        {
-            LOGGER_INFO(
-                "[{}] event=ChannelAuthApplied channel='{}' "
-                "applied_version={} (HEP-CORE-0042 §5.5.2)",
-                pImpl->short_tag, channel_name, applied_version);
-        }
-    }
-
-    // Deferred callback fire (2026-07-02 review-B fix): APPLIED_REQ has
-    // now succeeded (or been correctly WARN-skipped for SHM or missing
-    // snapshot_version).  Fire the script-side on_allowlist_changed
-    // AFTER the broker RTT so a slow callback CANNOT inflate the
-    // broker-observed producer_apply_wait_ms and cause spurious wait-
-    // path timeouts for consumers waiting on this producer's confirm.
-    // §I11 cache-write invariant #2 (callback fires on each write) is
-    // preserved — only the ORDERING versus the broker RTT changes.
-    if (have_initial_seed && pImpl->engine)
-    {
-        try
-        {
-            pImpl->engine->invoke_on_allowlist_changed(
-                channel_name, pending_initial_seed_view, "initial_seed");
-        }
-        catch (const std::exception &e)
-        {
-            LOGGER_ERROR(
-                "[{}] on_allowlist_changed callback threw for channel "
-                "'{}' (reason=initial_seed): {}",
-                pImpl->short_tag, channel_name, e.what());
-        }
-    }
-
-    // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
-    // apply_producer_reg_ack success.  By this point: REG_ACK accepted
-    // (Layers 1+2), apply_master_approval succeeded (Layer 3 — PUSH
-    // bound, CURVE-server armed, ZAP allowlist seeded, worker spawned,
-    // queue Active).  Data plane armed; §8.2 outer guard
-    // (`any_presence_authorized()`) will now admit this presence to
-    // the data loop.
-    // B-5 (#290): channel_name is non-empty by construction
-    // (hard-errored above on absent).  Guard only handler_.
-    if (pImpl->handler_)
-    {
-        Presence *presence = pImpl->handler_
-            ->find_presence_for_channel(channel_name);
-        if (presence)
-        {
-            presence->registration_state.store(
-                RegistrationState::Authorized,
-                std::memory_order_release);
-            LOGGER_INFO("[{}] event=PresenceStateTransition "
-                        "channel='{}' role_type=producer "
-                        "from=Registered to=Authorized "
-                        "trigger=apply_producer_reg_ack_done",
+            LOGGER_WARN("[{}] apply_producer_reg_ack: ACK for channel '{}' missing "
+                        "or non-numeric `snapshot_version` — HEP-CORE-0042 §5.5.4 "
+                        "broker contract violation.  Skipping APPLIED_REQ emission "
+                        "(next NOTIFY drives resync); DO NOT silently substitute "
+                        "applied_version=0.",
                         pImpl->short_tag, channel_name);
         }
-    }
-    return true;
+        else if (!brc)
+        {
+            LOGGER_WARN("[{}] no BRC for channel '{}' at apply_producer_reg_ack; "
+                        "skipping CHANNEL_AUTH_APPLIED_REQ (HEP-CORE-0042 §5.5.2 "
+                        "silent-drop safe: broker will re-drive on next NOTIFY)",
+                        pImpl->short_tag, channel_name);
+        }
+        else
+        {
+            const auto applied_version = ack.at("snapshot_version").get<std::uint64_t>();
+            // apply_producer_reg_ack is producer-side only per the
+            // enclosing function name (channel_auth_applied producer
+            // branch requires role_type="producer" + instance_id > 0).
+            auto reply =
+                brc->channel_auth_applied(channel_name, pImpl->uid, std::string_view{"producer"},
+                                          applied_version, instance_id);
+            if (!reply.has_value())
+            {
+                LOGGER_WARN("[{}] CHANNEL_AUTH_APPLIED_REQ('{}') no reply within "
+                            "budget — cache stays applied, broker may re-drive on "
+                            "next NOTIFY (HEP-CORE-0042 §5.5.2 + §5.6)",
+                            pImpl->short_tag, channel_name);
+            }
+            else if (reply->value("status", std::string{}) != "ok")
+            {
+                // STALE_INSTANCE (a re-REG races) or transport error.
+                // Log WARN + continue — the next NOTIFY drives resync.
+                LOGGER_WARN("[{}] CHANNEL_AUTH_APPLIED_REQ('{}') non-ok reply: "
+                            "status='{}' error_code='{}' — cache stays applied",
+                            pImpl->short_tag, channel_name, reply->value("status", std::string{}),
+                            reply->value("error_code", std::string{}));
+            }
+            else
+            {
+                LOGGER_INFO("[{}] event=ChannelAuthApplied channel='{}' "
+                            "applied_version={} (HEP-CORE-0042 §5.5.2)",
+                            pImpl->short_tag, channel_name, applied_version);
+            }
+        }
+
+        // Deferred callback fire (2026-07-02 review-B fix): APPLIED_REQ has
+        // now succeeded (or been correctly WARN-skipped for SHM or missing
+        // snapshot_version).  Fire the script-side on_allowlist_changed
+        // AFTER the broker RTT so a slow callback CANNOT inflate the
+        // broker-observed producer_apply_wait_ms and cause spurious wait-
+        // path timeouts for consumers waiting on this producer's confirm.
+        // §I11 cache-write invariant #2 (callback fires on each write) is
+        // preserved — only the ORDERING versus the broker RTT changes.
+        if (have_initial_seed && pImpl->engine)
+        {
+            try
+            {
+                pImpl->engine->invoke_on_allowlist_changed(channel_name, pending_initial_seed_view,
+                                                           "initial_seed");
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_ERROR("[{}] on_allowlist_changed callback threw for channel "
+                             "'{}' (reason=initial_seed): {}",
+                             pImpl->short_tag, channel_name, e.what());
+            }
+        }
+
+        // HEP-CORE-0036 §4.3.2 — Registered → Authorized at the END of
+        // apply_producer_reg_ack success.  By this point: REG_ACK accepted
+        // (Layers 1+2), apply_master_approval succeeded (Layer 3 — PUSH
+        // bound, CURVE-server armed, ZAP allowlist seeded, worker spawned,
+        // queue Active).  Data plane armed; §8.2 outer guard
+        // (`any_presence_authorized()`) will now admit this presence to
+        // the data loop.
+        // B-5 (#290): channel_name is non-empty by construction
+        // (hard-errored above on absent).  Guard only handler_.
+        if (pImpl->handler_)
+        {
+            Presence *presence = pImpl->handler_->find_presence_for_channel(channel_name);
+            if (presence)
+            {
+                presence->registration_state.store(RegistrationState::Authorized,
+                                                   std::memory_order_release);
+                LOGGER_INFO("[{}] event=PresenceStateTransition "
+                            "channel='{}' role_type=producer "
+                            "from=Registered to=Authorized "
+                            "trigger=apply_producer_reg_ack_done",
+                            pImpl->short_tag, channel_name);
+            }
+        }
+        return true;
     } // end try
     catch (const nlohmann::json::exception &e)
     {
@@ -2104,28 +1995,27 @@ std::uint64_t RoleAPIBase::producer_instance_id() const noexcept
 
 void RoleAPIBase::reset_tx_queue_metrics()
 {
-    if (pImpl->tx_queue) pImpl->tx_queue->init_metrics();
+    if (pImpl->tx_queue)
+        pImpl->tx_queue->init_metrics();
 }
 
 void RoleAPIBase::reset_rx_queue_metrics()
 {
-    if (pImpl->rx_queue) pImpl->rx_queue->init_metrics();
+    if (pImpl->rx_queue)
+        pImpl->rx_queue->init_metrics();
 }
 
-std::vector<AllowedPeer>
-RoleAPIBase::allowed_peers(const std::string &channel) const
+std::vector<AllowedPeer> RoleAPIBase::allowed_peers(const std::string &channel) const
 {
     return pImpl->allowlist_cache.snapshot(channel);
 }
 
-std::size_t
-RoleAPIBase::admitted_peers_count(const std::string &channel) const
+std::size_t RoleAPIBase::admitted_peers_count(const std::string &channel) const
 {
     return pImpl->allowlist_cache.snapshot(channel).size();
 }
 
-bool RoleAPIBase::channel_admission_populated(
-    const std::string &channel) const noexcept
+bool RoleAPIBase::channel_admission_populated(const std::string &channel) const noexcept
 {
     // HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
     // forward to the queue that holds this channel; the queue's
@@ -2137,22 +2027,20 @@ bool RoleAPIBase::channel_admission_populated(
     // when reader is not present).
     if (!pImpl->out_channel.empty() && channel == pImpl->out_channel)
     {
-        return pImpl->tx_queue
-            ? pImpl->tx_queue->is_admission_populated()
-            : false;
+        return pImpl->tx_queue ? pImpl->tx_queue->is_admission_populated() : false;
     }
     if (channel == pImpl->channel)
     {
-        if (pImpl->rx_queue) return pImpl->rx_queue->is_admission_populated();
-        if (pImpl->tx_queue) return pImpl->tx_queue->is_admission_populated();
+        if (pImpl->rx_queue)
+            return pImpl->rx_queue->is_admission_populated();
+        if (pImpl->tx_queue)
+            return pImpl->tx_queue->is_admission_populated();
     }
     return false;
 }
 
-bool RoleAPIBase::finalize_channel_connect(
-    const std::string           &channel,
-    std::uint64_t                timeout_ms,
-    const std::function<bool()> &is_cancelled) noexcept
+bool RoleAPIBase::finalize_channel_connect(const std::string &channel, std::uint64_t timeout_ms,
+                                           const std::function<bool()> &is_cancelled) noexcept
 {
     // HEP-CORE-0036 §I9.1 + §6.6.3.  Topology-agnostic entry point:
     // no `topology::parse`, no `is_binding_side`, no `has_tx_side`
@@ -2186,10 +2074,9 @@ bool RoleAPIBase::finalize_channel_connect(
         // Consumers on fan-in / fan-out land here for their inbound
         // channel; that is not an error, it means "nothing to
         // finalize on this side."
-        LOGGER_DEBUG(
-            "[{}] finalize_channel_connect('{}'): no writer side on "
-            "this role — no-op success",
-            pImpl->short_tag, channel);
+        LOGGER_DEBUG("[{}] finalize_channel_connect('{}'): no writer side on "
+                     "this role — no-op success",
+                     pImpl->short_tag, channel);
         return true;
     }
 
@@ -2200,40 +2087,36 @@ bool RoleAPIBase::finalize_channel_connect(
     struct BrcOracle : public ::pylabhub::hub::PeerReadinessOracle
     {
         hub::BrokerRequestComm *brc{nullptr};
-        std::string             channel;
-        std::string             role_uid;
-        std::string             pubkey_z85;
-        std::string             short_tag;
+        std::string channel;
+        std::string role_uid;
+        std::string pubkey_z85;
+        std::string short_tag;
 
         PollResult poll() noexcept override
         {
             if (!brc || pubkey_z85.empty())
             {
-                LOGGER_ERROR(
-                    "[{}] finalize_channel_connect oracle: {} — "
-                    "PermanentError",
-                    short_tag,
-                    brc ? "own pubkey unavailable"
-                         : "no BRC resolved for channel");
+                LOGGER_ERROR("[{}] finalize_channel_connect oracle: {} — "
+                             "PermanentError",
+                             short_tag,
+                             brc ? "own pubkey unavailable" : "no BRC resolved for channel");
                 return PollResult::PermanentError;
             }
-            auto reply = brc->check_peer_ready(
-                channel, role_uid, pubkey_z85, 1000);
+            auto reply = brc->check_peer_ready(channel, role_uid, pubkey_z85, 1000);
             if (!reply.has_value())
             {
                 // Transport timeout / broker hiccup — transient.
                 return PollResult::NotReady;
             }
             const auto status = reply->value("status", std::string{});
-            if (status == "ready")   return PollResult::Ready;
+            if (status == "ready")
+                return PollResult::Ready;
             if (status == "error")
             {
-                LOGGER_ERROR(
-                    "[{}] finalize_channel_connect oracle: broker error "
-                    "code='{}' message='{}' — PermanentError",
-                    short_tag,
-                    reply->value("error_code", std::string{}),
-                    reply->value("message",    std::string{}));
+                LOGGER_ERROR("[{}] finalize_channel_connect oracle: broker error "
+                             "code='{}' message='{}' — PermanentError",
+                             short_tag, reply->value("error_code", std::string{}),
+                             reply->value("message", std::string{}));
                 return PollResult::PermanentError;
             }
             // status == "not_ready" — keep polling.
@@ -2242,19 +2125,18 @@ bool RoleAPIBase::finalize_channel_connect(
     };
 
     BrcOracle oracle;
-    oracle.brc        = pImpl->resolve_bc_for_channel(channel);
-    oracle.channel    = channel;
-    oracle.role_uid   = pImpl->uid;
+    oracle.brc = pImpl->resolve_bc_for_channel(channel);
+    oracle.channel = channel;
+    oracle.role_uid = pImpl->uid;
     oracle.pubkey_z85 = q->own_pubkey_z85();
-    oracle.short_tag  = pImpl->short_tag;
+    oracle.short_tag = pImpl->short_tag;
 
     // If the queue is not in deferred-connect state, `finalize_connect`
     // is a no-op and none of BRC / pubkey are consulted.  If it IS
     // deferred and BRC or pubkey is unavailable, the oracle's first
     // poll returns PermanentError and the queue fails fast — surfaced
     // through the returned false.
-    return q->finalize_connect(oracle, timeout_ms, is_cancelled,
-                                 pImpl->short_tag.c_str());
+    return q->finalize_connect(oracle, timeout_ms, is_cancelled, pImpl->short_tag.c_str());
 }
 
 namespace
@@ -2267,54 +2149,45 @@ namespace
 /// populated / this-side-is-dialing-so-map-never-fills.
 std::vector<std::string> live_peer_uids(
     const std::mutex &mu_ref,
-    const std::unordered_map<std::string,
-        std::unordered_map<std::string,
-            std::unordered_set<std::string>>> &map_ref,
-    const std::string &channel,
-    const char *role_type)
+    const std::unordered_map<
+        std::string, std::unordered_map<std::string, std::unordered_set<std::string>>> &map_ref,
+    const std::string &channel, const char *role_type)
 {
     std::lock_guard<std::mutex> lk(const_cast<std::mutex &>(mu_ref));
     auto ch_it = map_ref.find(channel);
-    if (ch_it == map_ref.end()) return {};
+    if (ch_it == map_ref.end())
+        return {};
     auto rt_it = ch_it->second.find(role_type);
-    if (rt_it == ch_it->second.end()) return {};
-    return std::vector<std::string>(rt_it->second.begin(),
-                                     rt_it->second.end());
+    if (rt_it == ch_it->second.end())
+        return {};
+    return std::vector<std::string>(rt_it->second.begin(), rt_it->second.end());
 }
 } // namespace
 
-std::size_t
-RoleAPIBase::consumer_count(const std::string &channel) const
+std::size_t RoleAPIBase::consumer_count(const std::string &channel) const
 {
-    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
-                           channel, "consumer").size();
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers, channel, "consumer").size();
 }
 
-std::size_t
-RoleAPIBase::producer_count(const std::string &channel) const
+std::size_t RoleAPIBase::producer_count(const std::string &channel) const
 {
-    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
-                           channel, "producer").size();
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers, channel, "producer").size();
 }
 
-std::vector<std::string>
-RoleAPIBase::producers(const std::string &channel) const
+std::vector<std::string> RoleAPIBase::producers(const std::string &channel) const
 {
     // HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 — LIVE producer set
     // (from `live_peers[channel]["producer"]` map, populated by
     // `phase=live` NOTIFY dispatch).  Symmetric with `producer_count`
     // (same source).  Empty on producer-side roles / SHM channels /
     // channels where no producer has fired first-heartbeat yet.
-    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
-                           channel, "producer");
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers, channel, "producer");
 }
 
-std::vector<std::string>
-RoleAPIBase::consumers(const std::string &channel) const
+std::vector<std::string> RoleAPIBase::consumers(const std::string &channel) const
 {
     // Symmetric with `producers()`.
-    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers,
-                           channel, "consumer");
+    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers, channel, "consumer");
 }
 
 bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept
@@ -2335,8 +2208,10 @@ bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept
         // consumer/processor-input; tx_queue is set for producer.
         // The first non-null queue is the correct side because
         // single-channel roles only ever have one of the two.
-        if (pImpl->rx_queue) return is_rx_active();
-        if (pImpl->tx_queue) return is_tx_active();
+        if (pImpl->rx_queue)
+            return is_rx_active();
+        if (pImpl->tx_queue)
+            return is_tx_active();
     }
     return false;
 }
@@ -2356,14 +2231,12 @@ void RoleAPIBase::handle_channel_auth_notifies(
             continue;
         }
 
-        const std::string channel =
-            it->details.value("channel_name", std::string{});
+        const std::string channel = it->details.value("channel_name", std::string{});
         if (channel.empty())
         {
-            LOGGER_WARN(
-                "[{}/{}] CHANNEL_AUTH_CHANGED_NOTIFY missing channel_name; "
-                "dropping (HEP-CORE-0036 §6.5)",
-                pImpl->short_tag, pImpl->uid);
+            LOGGER_WARN("[{}/{}] CHANNEL_AUTH_CHANGED_NOTIFY missing channel_name; "
+                        "dropping (HEP-CORE-0036 §6.5)",
+                        pImpl->short_tag, pImpl->uid);
             it = msgs.erase(it);
             continue;
         }
@@ -2377,12 +2250,9 @@ void RoleAPIBase::handle_channel_auth_notifies(
         //                                  only; no pull.
         //   phase absent (pre-migration NOTIFY) → treat as admitted
         //                                  for back-compat.
-        const std::string phase =
-            it->details.value("phase", std::string{});
-        const std::string role_uid =
-            it->details.value("role_uid", std::string{});
-        const std::string role_type =
-            it->details.value("role_type", std::string{});
+        const std::string phase = it->details.value("phase", std::string{});
+        const std::string role_uid = it->details.value("role_uid", std::string{});
+        const std::string role_type = it->details.value("role_type", std::string{});
 
         if (phase == "live")
         {
@@ -2390,12 +2260,10 @@ void RoleAPIBase::handle_channel_auth_notifies(
             {
                 std::lock_guard<std::mutex> lk(pImpl->live_peers_mu);
                 pImpl->live_peers[channel][role_type].insert(role_uid);
-                LOGGER_INFO(
-                    "[{}/{}] event=ChannelAuthLive channel='{}' "
-                    "role_uid='{}' role_type='{}' (HEP-CORE-0007 §CHANNEL_"
-                    "AUTH_CHANGED_NOTIFY phase=live)",
-                    pImpl->short_tag, pImpl->uid, channel,
-                    role_uid, role_type);
+                LOGGER_INFO("[{}/{}] event=ChannelAuthLive channel='{}' "
+                            "role_uid='{}' role_type='{}' (HEP-CORE-0007 §CHANNEL_"
+                            "AUTH_CHANGED_NOTIFY phase=live)",
+                            pImpl->short_tag, pImpl->uid, channel, role_uid, role_type);
             }
             it = msgs.erase(it);
             continue;
@@ -2420,9 +2288,8 @@ void RoleAPIBase::handle_channel_auth_notifies(
         auto *brc = pImpl->resolve_bc_for_channel(channel);
         if (!brc)
         {
-            LOGGER_WARN(
-                "[{}/{}] no BRC for channel '{}' on auth notify; dropping",
-                pImpl->short_tag, pImpl->uid, channel);
+            LOGGER_WARN("[{}/{}] no BRC for channel '{}' on auth notify; dropping",
+                        pImpl->short_tag, pImpl->uid, channel);
             it = msgs.erase(it);
             continue;
         }
@@ -2438,22 +2305,20 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 // Timeout / transport failure.  Per §6.5, log + return;
                 // the next notify retries, and BRC reconnect re-syncs
                 // via REG_ACK.initial_allowlist.
-                LOGGER_WARN(
-                    "[{}/{}] GET_CHANNEL_AUTH_REQ('{}') no reply within 5000ms; "
-                    "allowlist unchanged",
-                    pImpl->short_tag, pImpl->uid, channel);
+                LOGGER_WARN("[{}/{}] GET_CHANNEL_AUTH_REQ('{}') no reply within 5000ms; "
+                            "allowlist unchanged",
+                            pImpl->short_tag, pImpl->uid, channel);
             }
             else if (reply->value("status", std::string{}) != "success")
             {
                 // Broker error (CHANNEL_NOT_FOUND, PRODUCER_NOT_AUTHORIZED,
                 // etc.) — race with dereg / channel close.  Log + skip;
                 // not a fatal condition.
-                LOGGER_WARN(
-                    "[{}/{}] GET_CHANNEL_AUTH_REQ('{}') broker error: "
-                    "code='{}' msg='{}'; allowlist unchanged",
-                    pImpl->short_tag, pImpl->uid, channel,
-                    reply->value("error_code", std::string{}),
-                    reply->value("message", std::string{}));
+                LOGGER_WARN("[{}/{}] GET_CHANNEL_AUTH_REQ('{}') broker error: "
+                            "code='{}' msg='{}'; allowlist unchanged",
+                            pImpl->short_tag, pImpl->uid, channel,
+                            reply->value("error_code", std::string{}),
+                            reply->value("message", std::string{}));
             }
             else
             {
@@ -2476,340 +2341,320 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 // than clobbering with `[]`.  Symmetric with the
                 // REG_ACK `initial_allowlist` guard in
                 // apply_producer_reg_ack.
-                if (!reply->contains("allowlist") ||
-                    !reply->at("allowlist").is_array())
+                if (!reply->contains("allowlist") || !reply->at("allowlist").is_array())
                 {
-                    LOGGER_WARN(
-                        "[{}/{}] GET_CHANNEL_AUTH_ACK for channel "
-                        "'{}' status=success but `allowlist` is "
-                        "missing or not an array — broker contract "
-                        "violation per HEP-CORE-0036 §6.5 + §I11.1 "
-                        "invariant #5.  Preserving prior "
-                        "allowlist_cache snapshot (do NOT clobber).",
-                        pImpl->short_tag, pImpl->uid, channel);
+                    LOGGER_WARN("[{}/{}] GET_CHANNEL_AUTH_ACK for channel "
+                                "'{}' status=success but `allowlist` is "
+                                "missing or not an array — broker contract "
+                                "violation per HEP-CORE-0036 §6.5 + §I11.1 "
+                                "invariant #5.  Preserving prior "
+                                "allowlist_cache snapshot (do NOT clobber).",
+                                pImpl->short_tag, pImpl->uid, channel);
                 }
                 else
                 {
 
-                sec::PeerAllowlist allowlist;
-                std::vector<AllowedPeer> script_view;
-                const auto &arr = reply->at("allowlist");
-                for (const auto &entry : arr)
-                {
-                    if (!entry.is_string()) continue;
-                    const auto pk = entry.get<std::string>();
-                    if (pk.empty()) continue;
-                    allowlist.peers.insert(sec::PeerIdentity{"curve", pk});
-                    script_view.push_back(AllowedPeer{
-                        /*role_uid=*/std::string{}, pk});
-                }
-                const auto reason =
-                    it->details.value("reason", std::string{"unknown"});
-
-                // Queue-side enforcement push, ZMQ binding-side queue.
-                // HEP-CORE-0036 §6.5 binding-side handler flow step 4:
-                // resolve the notified channel to whichever queue on
-                // this role binds it (fan-out producer → `tx_queue`;
-                // fan-in consumer / processor rx-fan-in input →
-                // `rx_queue`; processor tx-fan-out output → `tx_queue`).
-                //
-                // Both queue sides carry independent class hierarchies
-                // (`QueueReader` for rx, `QueueWriter` for tx) but the
-                // concrete `ZmqQueue` implements both AND
-                // `PeerAdmission`, so a `dynamic_cast` from either
-                // side succeeds when the underlying transport is ZMQ.
-                // `ZmqQueue::set_peer_allowlist` self-guards on the
-                // dialing side by returning false — the mutator is
-                // inert without a bind_socket — so a mis-directed apply
-                // is a no-op, not a corruption.
-                //
-                // Channel-to-queue resolution mirrors `is_channel_ready`
-                // (using `pImpl->channel` / `pImpl->out_channel`).
-                //
-                // ShmQueue does NOT implement PeerAdmission; SHM
-                // channels rely on the broker's per-attach pre-confirm
-                // gate per HEP-CORE-0041 §9 D4.  The script-side cache
-                // update below fires unconditionally regardless — the
-                // script-observable surface is transport-agnostic and
-                // side-agnostic per §I11.1 invariant #1.
-                // Channel-to-queue resolution (see also
-                // `finalize_channel_connect` for the writer-only
-                // sibling).  Under HEP-CORE-0036 §I9.1 the queue owns
-                // channel-locality; do NOT cross-resolve between IN
-                // and OUT queues on a two-channel role.  Corrupts
-                // per-channel state (e.g., mixed-transport processor
-                // with SHM IN + ZMQ OUT would install IN's allowlist
-                // onto OUT's ZAP via the old rx→tx fallback).
-                sec::PeerAdmission *admission = nullptr;
-                if (!pImpl->out_channel.empty())
-                {
-                    if (channel == pImpl->out_channel && pImpl->tx_queue)
-                        admission = dynamic_cast<sec::PeerAdmission *>(
-                            pImpl->tx_queue.get());
-                    else if (channel == pImpl->channel && pImpl->rx_queue)
-                        admission = dynamic_cast<sec::PeerAdmission *>(
-                            pImpl->rx_queue.get());
-                    // Two-channel role: NO fallback across channels.
-                }
-                else if (channel == pImpl->channel)
-                {
-                    // Single-channel role: rx_queue if present
-                    // (consumer); tx_queue only when no reader
-                    // (producer).
-                    if (pImpl->rx_queue)
-                        admission = dynamic_cast<sec::PeerAdmission *>(
-                            pImpl->rx_queue.get());
-                    else if (pImpl->tx_queue)
-                        admission = dynamic_cast<sec::PeerAdmission *>(
-                            pImpl->tx_queue.get());
-                }
-
-                bool publish_cache = true;
-                if (admission)
-                {
-                    const bool ok = admission->set_peer_allowlist(allowlist);
-                    if (ok)
+                    sec::PeerAllowlist allowlist;
+                    std::vector<AllowedPeer> script_view;
+                    const auto &arr = reply->at("allowlist");
+                    for (const auto &entry : arr)
                     {
-                        // Event-summary log (dispatcher-level).  Content
-                        // of the snapshot is enumerated as a diff at the
-                        // install site in `ZmqQueue::set_peer_allowlist`
-                        // — see there for the `added=/removed=` trace
-                        // that reconstructs the full pubkey table by
-                        // timestamp replay.  Kept size-only here so the
-                        // dispatcher's timing profile does not shift
-                        // (string ops in the NOTIFY-handler stack unwind
-                        // were closing the race window we were trying
-                        // to observe — 2026-07-12).
-                        LOGGER_INFO(
-                            "[{}/{}] applied channel '{}' allowlist "
-                            "(size={}, reason='{}', HEP-CORE-0036 §6.5)",
-                            pImpl->short_tag, pImpl->uid, channel,
-                            allowlist.peers.size(), reason);
+                        if (!entry.is_string())
+                            continue;
+                        const auto pk = entry.get<std::string>();
+                        if (pk.empty())
+                            continue;
+                        allowlist.peers.insert(sec::PeerIdentity{"curve", pk});
+                        script_view.push_back(AllowedPeer{/*role_uid=*/std::string{}, pk});
                     }
-                    else
-                    {
-                        // `ZmqQueue::set_peer_allowlist` returns false
-                        // on the DIALING side — the mutator is inert
-                        // without a bind_socket per §6.5 (dialing side
-                        // authenticates via curve_serverkey; no server-
-                        // side allowlist).  This is a normal outcome,
-                        // not an error — the dynamic_cast succeeded
-                        // because ZmqQueue implements PeerAdmission on
-                        // both sides, but the underlying queue is not
-                        // running ZAP as server.  We still publish the
-                        // script-side cache below so that
-                        // `api.allowed_peers(channel)` and
-                        // `on_allowlist_changed` observe the broker's
-                        // allowlist regardless of side (§I11.1
-                        // invariant #1: script-observable cache is
-                        // side-agnostic).
-                        LOGGER_DEBUG(
-                            "[{}/{}] set_peer_allowlist returned false for "
-                            "channel '{}' — dialing side (queue not "
-                            "running ZAP as server); script-side cache "
-                            "still publishes for observability",
-                            pImpl->short_tag, pImpl->uid, channel);
-                    }
-                }
-                else
-                {
-                    // Non-binding side or non-PeerAdmission queue.  This
-                    // role does not run ZAP as server for this channel:
-                    //   * Dialing-side reader / writer: the ZAP handler
-                    //     is a client; the framework's cache is pure
-                    //     observability of the broker's authoritative
-                    //     allowlist.
-                    //   * SHM channel: broker pre-confirms per attach
-                    //     (HEP-CORE-0041 §9 D4); no on-role enforcement
-                    //     cache to seed.
-                    // Either way, no `set_peer_allowlist` call — but the
-                    // script-side cache write below still fires so
-                    // `api.allowed_peers` and `on_allowlist_changed`
-                    // remain consistent across sides + transports.
-                    LOGGER_DEBUG(
-                        "[{}/{}] auth notify for channel '{}' on non-binding "
-                        "side or non-ZAP queue; updating script-side cache "
-                        "only (HEP-CORE-0036 §6.5 step 4 non-binding branch)",
-                        pImpl->short_tag, pImpl->uid, channel);
-                }
+                    const auto reason = it->details.value("reason", std::string{"unknown"});
 
-                // Script-side cache + I11 callback.  For ZMQ this runs
-                // AFTER the ZAP cache is in place (HEP §6.5 step 5 —
-                // the snapshot the script sees IS what the next
-                // handshake will admit).  For SHM this is pure
-                // observability of the broker's current allowlist.
-                if (publish_cache)
-                {
-                    pImpl->allowlist_cache.put(channel, script_view);
-                    if (pImpl->engine)
-                    {
-                        try
-                        {
-                            pImpl->engine->invoke_on_allowlist_changed(
-                                channel, script_view, reason);
-                        }
-                        catch (const std::exception &e)
-                        {
-                            // Per §I11: callback exceptions do NOT
-                            // roll back the cache update — log +
-                            // continue.
-                            LOGGER_ERROR(
-                                "[{}/{}] on_allowlist_changed callback "
-                                "threw for channel '{}': {}",
-                                pImpl->short_tag, pImpl->uid, channel,
-                                e.what());
-                        }
-                    }
-
-                    // HEP-CORE-0042 §5.5.2 — cache is now applied at
-                    // GET_CHANNEL_AUTH_ACK.snapshot_version.  Signal
-                    // the broker so it advances confirmed_version[K][P]
-                    // and drains pending wait-path attaches (§5.4 step
-                    // d).  Only emitted for ZMQ (publish_cache branch);
-                    // SHM channels use broker pre-confirm and don't
-                    // participate in the ZMQ confirmed-version machinery.
-                    // Skip if REG_ACK hasn't been observed yet (defensive:
-                    // a NOTIFY should never precede REG_ACK in practice,
-                    // but a zero instance_id would defeat the
-                    // stale-instance guard).
+                    // Queue-side enforcement push, ZMQ binding-side queue.
+                    // HEP-CORE-0036 §6.5 binding-side handler flow step 4:
+                    // resolve the notified channel to whichever queue on
+                    // this role binds it (fan-out producer → `tx_queue`;
+                    // fan-in consumer / processor rx-fan-in input →
+                    // `rx_queue`; processor tx-fan-out output → `tx_queue`).
                     //
-                    // 2026-07-02 review-B fix: sibling of the REG_ACK-
-                    // path guard.  A `GET_CHANNEL_AUTH_ACK` without
-                    // `snapshot_version` is a §5.5.4 broker contract
-                    // violation — WARN + skip emission (DO NOT silently
-                    // substitute applied_version=0; that would advance
-                    // confirmed_version[K][P] to max(current, 0) — a
-                    // no-op — and stall real wait-path drains).
-                    const auto instance_id =
-                        pImpl->producer_instance_id_.load(
-                            std::memory_order_relaxed);
-                    const bool have_snapshot_version =
-                        reply->contains("snapshot_version") &&
-                        reply->at("snapshot_version").is_number_unsigned();
-                    if (!have_snapshot_version)
-                    {
-                        LOGGER_WARN(
-                            "[{}/{}] handle_channel_auth_notifies: "
-                            "GET_CHANNEL_AUTH_ACK for channel '{}' "
-                            "missing or non-numeric `snapshot_version` "
-                            "— HEP-CORE-0042 §5.5.4 broker contract "
-                            "violation.  Skipping APPLIED_REQ emission "
-                            "(next NOTIFY drives resync); DO NOT silently "
-                            "substitute applied_version=0.",
-                            pImpl->short_tag, pImpl->uid, channel);
-                    }
-                    const auto snapshot_version =
-                        have_snapshot_version
-                            ? reply->at("snapshot_version")
-                                  .get<std::uint64_t>()
-                            : std::uint64_t{0};
-
-                    // HEP-CORE-0036 §I9.1 + §6.5 step 6 layer contract:
-                    // the queue tells us its role_type; role code never
-                    // pattern-matches `is_binding_side()`.  Single BRC
-                    // method + broker discriminates on `role_type`.
+                    // Both queue sides carry independent class hierarchies
+                    // (`QueueReader` for rx, `QueueWriter` for tx) but the
+                    // concrete `ZmqQueue` implements both AND
+                    // `PeerAdmission`, so a `dynamic_cast` from either
+                    // side succeeds when the underlying transport is ZMQ.
+                    // `ZmqQueue::set_peer_allowlist` self-guards on the
+                    // dialing side by returning false — the mutator is
+                    // inert without a bind_socket — so a mis-directed apply
+                    // is a no-op, not a corruption.
                     //
-                    // Which queue owns this channel?  Same resolution
-                    // as the `set_peer_allowlist` cast site above:
-                    // rx_queue for the primary channel (consumer /
-                    // processor input), tx_queue for out_channel
-                    // (processor output) or when there is no rx_queue
-                    // (producer).  Non-binding sides return
-                    // `binding_role_type() == ""` and skip APPLIED_REQ
-                    // emission (nothing to confirm — no ZAP allowlist
-                    // was installed on this side).
-                    // Side resolution matches the writer-resolution
-                    // pattern used by `finalize_channel_connect` — do
-                    // NOT fall back from rx_queue to tx_queue on a
-                    // two-channel role (processor).  For processor's
-                    // IN notify, rx_queue's answer is authoritative;
-                    // tx_queue holds OUT, so borrowing its side
-                    // identity for the IN channel would fire the wrong
-                    // wire branch (producer-side APPLIED_REQ against
-                    // the IN channel where the role is a consumer —
-                    // broker rejects, WARN + skip).
-                    std::string_view side{};
+                    // Channel-to-queue resolution mirrors `is_channel_ready`
+                    // (using `pImpl->channel` / `pImpl->out_channel`).
+                    //
+                    // ShmQueue does NOT implement PeerAdmission; SHM
+                    // channels rely on the broker's per-attach pre-confirm
+                    // gate per HEP-CORE-0041 §9 D4.  The script-side cache
+                    // update below fires unconditionally regardless — the
+                    // script-observable surface is transport-agnostic and
+                    // side-agnostic per §I11.1 invariant #1.
+                    // Channel-to-queue resolution (see also
+                    // `finalize_channel_connect` for the writer-only
+                    // sibling).  Under HEP-CORE-0036 §I9.1 the queue owns
+                    // channel-locality; do NOT cross-resolve between IN
+                    // and OUT queues on a two-channel role.  Corrupts
+                    // per-channel state (e.g., mixed-transport processor
+                    // with SHM IN + ZMQ OUT would install IN's allowlist
+                    // onto OUT's ZAP via the old rx→tx fallback).
+                    sec::PeerAdmission *admission = nullptr;
                     if (!pImpl->out_channel.empty())
                     {
                         if (channel == pImpl->out_channel && pImpl->tx_queue)
-                            side = pImpl->tx_queue->binding_role_type();
+                            admission = dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
                         else if (channel == pImpl->channel && pImpl->rx_queue)
-                            side = pImpl->rx_queue->binding_role_type();
-                        // Two-channel role, unknown channel: side stays "".
+                            admission = dynamic_cast<sec::PeerAdmission *>(pImpl->rx_queue.get());
+                        // Two-channel role: NO fallback across channels.
                     }
                     else if (channel == pImpl->channel)
                     {
-                        // Single-channel role.  rx_queue if present
-                        // (consumer); fall back to tx_queue only when
-                        // no reader is wired (producer case).
+                        // Single-channel role: rx_queue if present
+                        // (consumer); tx_queue only when no reader
+                        // (producer).
                         if (pImpl->rx_queue)
-                            side = pImpl->rx_queue->binding_role_type();
+                            admission = dynamic_cast<sec::PeerAdmission *>(pImpl->rx_queue.get());
                         else if (pImpl->tx_queue)
-                            side = pImpl->tx_queue->binding_role_type();
+                            admission = dynamic_cast<sec::PeerAdmission *>(pImpl->tx_queue.get());
                     }
 
-                    if (admission && have_snapshot_version && !side.empty())
+                    bool publish_cache = true;
+                    if (admission)
                     {
-                        // Producer branch: instance_id-guarded per
-                        // HEP-CORE-0042 §5.4 stale-instance discipline
-                        // (broker rejects mismatched instance_id).
-                        // Consumer branch: no stale-instance guard
-                        // (see §5.5.2 amendment — pass instance_id=0).
-                        const bool is_producer = (side == "producer");
-                        const std::uint64_t effective_instance =
-                            is_producer ? instance_id : std::uint64_t{0};
-                        if (is_producer && instance_id == 0)
+                        const bool ok = admission->set_peer_allowlist(allowlist);
+                        if (ok)
                         {
-                            // Producer role hasn't captured REG_ACK's
-                            // instance yet — skip; the next NOTIFY
-                            // after apply_producer_reg_ack retries.
-                            LOGGER_WARN(
-                                "[{}/{}] handle_channel_auth_notifies: "
-                                "producer-side APPLIED_REQ for channel "
-                                "'{}' skipped — instance_id not yet "
-                                "captured (§5.5.2 stale-instance guard)",
-                                pImpl->short_tag, pImpl->uid, channel);
+                            // Event-summary log (dispatcher-level).  Content
+                            // of the snapshot is enumerated as a diff at the
+                            // install site in `ZmqQueue::set_peer_allowlist`
+                            // — see there for the `added=/removed=` trace
+                            // that reconstructs the full pubkey table by
+                            // timestamp replay.  Kept size-only here so the
+                            // dispatcher's timing profile does not shift
+                            // (string ops in the NOTIFY-handler stack unwind
+                            // were closing the race window we were trying
+                            // to observe — 2026-07-12).
+                            LOGGER_INFO("[{}/{}] applied channel '{}' allowlist "
+                                        "(size={}, reason='{}', HEP-CORE-0036 §6.5)",
+                                        pImpl->short_tag, pImpl->uid, channel,
+                                        allowlist.peers.size(), reason);
                         }
                         else
                         {
-                            auto applied = brc->channel_auth_applied(
-                                channel, pImpl->uid, side,
-                                snapshot_version, effective_instance);
-                            if (!applied.has_value())
+                            // `ZmqQueue::set_peer_allowlist` returns false
+                            // on the DIALING side — the mutator is inert
+                            // without a bind_socket per §6.5 (dialing side
+                            // authenticates via curve_serverkey; no server-
+                            // side allowlist).  This is a normal outcome,
+                            // not an error — the dynamic_cast succeeded
+                            // because ZmqQueue implements PeerAdmission on
+                            // both sides, but the underlying queue is not
+                            // running ZAP as server.  We still publish the
+                            // script-side cache below so that
+                            // `api.allowed_peers(channel)` and
+                            // `on_allowlist_changed` observe the broker's
+                            // allowlist regardless of side (§I11.1
+                            // invariant #1: script-observable cache is
+                            // side-agnostic).
+                            LOGGER_DEBUG("[{}/{}] set_peer_allowlist returned false for "
+                                         "channel '{}' — dialing side (queue not "
+                                         "running ZAP as server); script-side cache "
+                                         "still publishes for observability",
+                                         pImpl->short_tag, pImpl->uid, channel);
+                        }
+                    }
+                    else
+                    {
+                        // Non-binding side or non-PeerAdmission queue.  This
+                        // role does not run ZAP as server for this channel:
+                        //   * Dialing-side reader / writer: the ZAP handler
+                        //     is a client; the framework's cache is pure
+                        //     observability of the broker's authoritative
+                        //     allowlist.
+                        //   * SHM channel: broker pre-confirms per attach
+                        //     (HEP-CORE-0041 §9 D4); no on-role enforcement
+                        //     cache to seed.
+                        // Either way, no `set_peer_allowlist` call — but the
+                        // script-side cache write below still fires so
+                        // `api.allowed_peers` and `on_allowlist_changed`
+                        // remain consistent across sides + transports.
+                        LOGGER_DEBUG("[{}/{}] auth notify for channel '{}' on non-binding "
+                                     "side or non-ZAP queue; updating script-side cache "
+                                     "only (HEP-CORE-0036 §6.5 step 4 non-binding branch)",
+                                     pImpl->short_tag, pImpl->uid, channel);
+                    }
+
+                    // Script-side cache + I11 callback.  For ZMQ this runs
+                    // AFTER the ZAP cache is in place (HEP §6.5 step 5 —
+                    // the snapshot the script sees IS what the next
+                    // handshake will admit).  For SHM this is pure
+                    // observability of the broker's current allowlist.
+                    if (publish_cache)
+                    {
+                        pImpl->allowlist_cache.put(channel, script_view);
+                        if (pImpl->engine)
+                        {
+                            try
                             {
-                                LOGGER_WARN(
-                                    "[{}/{}] CHANNEL_AUTH_APPLIED_REQ("
-                                    "role_type='{}', '{}') no reply within "
-                                    "budget — cache stays applied, broker "
-                                    "may re-drive on next NOTIFY (HEP-"
-                                    "CORE-0042 §5.5.2 + §5.6)",
-                                    pImpl->short_tag, pImpl->uid,
-                                    side, channel);
+                                pImpl->engine->invoke_on_allowlist_changed(channel, script_view,
+                                                                           reason);
                             }
-                            else if (applied->value("status",
-                                                     std::string{}) != "ok")
+                            catch (const std::exception &e)
                             {
-                                LOGGER_WARN(
-                                    "[{}/{}] CHANNEL_AUTH_APPLIED_REQ("
-                                    "role_type='{}', '{}') non-ok reply: "
-                                    "status='{}' error_code='{}'",
-                                    pImpl->short_tag, pImpl->uid, side, channel,
-                                    applied->value("status", std::string{}),
-                                    applied->value("error_code", std::string{}));
+                                // Per §I11: callback exceptions do NOT
+                                // roll back the cache update — log +
+                                // continue.
+                                LOGGER_ERROR("[{}/{}] on_allowlist_changed callback "
+                                             "threw for channel '{}': {}",
+                                             pImpl->short_tag, pImpl->uid, channel, e.what());
+                            }
+                        }
+
+                        // HEP-CORE-0042 §5.5.2 — cache is now applied at
+                        // GET_CHANNEL_AUTH_ACK.snapshot_version.  Signal
+                        // the broker so it advances confirmed_version[K][P]
+                        // and drains pending wait-path attaches (§5.4 step
+                        // d).  Only emitted for ZMQ (publish_cache branch);
+                        // SHM channels use broker pre-confirm and don't
+                        // participate in the ZMQ confirmed-version machinery.
+                        // Skip if REG_ACK hasn't been observed yet (defensive:
+                        // a NOTIFY should never precede REG_ACK in practice,
+                        // but a zero instance_id would defeat the
+                        // stale-instance guard).
+                        //
+                        // 2026-07-02 review-B fix: sibling of the REG_ACK-
+                        // path guard.  A `GET_CHANNEL_AUTH_ACK` without
+                        // `snapshot_version` is a §5.5.4 broker contract
+                        // violation — WARN + skip emission (DO NOT silently
+                        // substitute applied_version=0; that would advance
+                        // confirmed_version[K][P] to max(current, 0) — a
+                        // no-op — and stall real wait-path drains).
+                        const auto instance_id =
+                            pImpl->producer_instance_id_.load(std::memory_order_relaxed);
+                        const bool have_snapshot_version =
+                            reply->contains("snapshot_version") &&
+                            reply->at("snapshot_version").is_number_unsigned();
+                        if (!have_snapshot_version)
+                        {
+                            LOGGER_WARN("[{}/{}] handle_channel_auth_notifies: "
+                                        "GET_CHANNEL_AUTH_ACK for channel '{}' "
+                                        "missing or non-numeric `snapshot_version` "
+                                        "— HEP-CORE-0042 §5.5.4 broker contract "
+                                        "violation.  Skipping APPLIED_REQ emission "
+                                        "(next NOTIFY drives resync); DO NOT silently "
+                                        "substitute applied_version=0.",
+                                        pImpl->short_tag, pImpl->uid, channel);
+                        }
+                        const auto snapshot_version =
+                            have_snapshot_version
+                                ? reply->at("snapshot_version").get<std::uint64_t>()
+                                : std::uint64_t{0};
+
+                        // HEP-CORE-0036 §I9.1 + §6.5 step 6 layer contract:
+                        // the queue tells us its role_type; role code never
+                        // pattern-matches `is_binding_side()`.  Single BRC
+                        // method + broker discriminates on `role_type`.
+                        //
+                        // Which queue owns this channel?  Same resolution
+                        // as the `set_peer_allowlist` cast site above:
+                        // rx_queue for the primary channel (consumer /
+                        // processor input), tx_queue for out_channel
+                        // (processor output) or when there is no rx_queue
+                        // (producer).  Non-binding sides return
+                        // `binding_role_type() == ""` and skip APPLIED_REQ
+                        // emission (nothing to confirm — no ZAP allowlist
+                        // was installed on this side).
+                        // Side resolution matches the writer-resolution
+                        // pattern used by `finalize_channel_connect` — do
+                        // NOT fall back from rx_queue to tx_queue on a
+                        // two-channel role (processor).  For processor's
+                        // IN notify, rx_queue's answer is authoritative;
+                        // tx_queue holds OUT, so borrowing its side
+                        // identity for the IN channel would fire the wrong
+                        // wire branch (producer-side APPLIED_REQ against
+                        // the IN channel where the role is a consumer —
+                        // broker rejects, WARN + skip).
+                        std::string_view side{};
+                        if (!pImpl->out_channel.empty())
+                        {
+                            if (channel == pImpl->out_channel && pImpl->tx_queue)
+                                side = pImpl->tx_queue->binding_role_type();
+                            else if (channel == pImpl->channel && pImpl->rx_queue)
+                                side = pImpl->rx_queue->binding_role_type();
+                            // Two-channel role, unknown channel: side stays "".
+                        }
+                        else if (channel == pImpl->channel)
+                        {
+                            // Single-channel role.  rx_queue if present
+                            // (consumer); fall back to tx_queue only when
+                            // no reader is wired (producer case).
+                            if (pImpl->rx_queue)
+                                side = pImpl->rx_queue->binding_role_type();
+                            else if (pImpl->tx_queue)
+                                side = pImpl->tx_queue->binding_role_type();
+                        }
+
+                        if (admission && have_snapshot_version && !side.empty())
+                        {
+                            // Producer branch: instance_id-guarded per
+                            // HEP-CORE-0042 §5.4 stale-instance discipline
+                            // (broker rejects mismatched instance_id).
+                            // Consumer branch: no stale-instance guard
+                            // (see §5.5.2 amendment — pass instance_id=0).
+                            const bool is_producer = (side == "producer");
+                            const std::uint64_t effective_instance =
+                                is_producer ? instance_id : std::uint64_t{0};
+                            if (is_producer && instance_id == 0)
+                            {
+                                // Producer role hasn't captured REG_ACK's
+                                // instance yet — skip; the next NOTIFY
+                                // after apply_producer_reg_ack retries.
+                                LOGGER_WARN("[{}/{}] handle_channel_auth_notifies: "
+                                            "producer-side APPLIED_REQ for channel "
+                                            "'{}' skipped — instance_id not yet "
+                                            "captured (§5.5.2 stale-instance guard)",
+                                            pImpl->short_tag, pImpl->uid, channel);
                             }
                             else
                             {
-                                LOGGER_INFO(
-                                    "[{}/{}] event=ChannelAuthApplied "
-                                    "channel='{}' role_type='{}' "
-                                    "applied_version={} reason='{}' "
-                                    "(HEP-CORE-0042 §5.5.2)",
-                                    pImpl->short_tag, pImpl->uid, channel,
-                                    side, snapshot_version, reason);
+                                auto applied =
+                                    brc->channel_auth_applied(channel, pImpl->uid, side,
+                                                              snapshot_version, effective_instance);
+                                if (!applied.has_value())
+                                {
+                                    LOGGER_WARN("[{}/{}] CHANNEL_AUTH_APPLIED_REQ("
+                                                "role_type='{}', '{}') no reply within "
+                                                "budget — cache stays applied, broker "
+                                                "may re-drive on next NOTIFY (HEP-"
+                                                "CORE-0042 §5.5.2 + §5.6)",
+                                                pImpl->short_tag, pImpl->uid, side, channel);
+                                }
+                                else if (applied->value("status", std::string{}) != "ok")
+                                {
+                                    LOGGER_WARN("[{}/{}] CHANNEL_AUTH_APPLIED_REQ("
+                                                "role_type='{}', '{}') non-ok reply: "
+                                                "status='{}' error_code='{}'",
+                                                pImpl->short_tag, pImpl->uid, side, channel,
+                                                applied->value("status", std::string{}),
+                                                applied->value("error_code", std::string{}));
+                                }
+                                else
+                                {
+                                    LOGGER_INFO("[{}/{}] event=ChannelAuthApplied "
+                                                "channel='{}' role_type='{}' "
+                                                "applied_version={} reason='{}' "
+                                                "(HEP-CORE-0042 §5.5.2)",
+                                                pImpl->short_tag, pImpl->uid, channel, side,
+                                                snapshot_version, reason);
+                                }
                             }
                         }
                     }
-                }
                 } // end of else { /* allowlist field present + array */ }
             }
         }
@@ -2817,9 +2662,8 @@ void RoleAPIBase::handle_channel_auth_notifies(
         {
             // Audit R5: exception safety — a malformed broker reply must
             // not crash the role.  Log + skip; next notify retries.
-            LOGGER_ERROR(
-                "[{}/{}] exception handling auth notify for '{}': {}",
-                pImpl->short_tag, pImpl->uid, channel, e.what());
+            LOGGER_ERROR("[{}/{}] exception handling auth notify for '{}': {}", pImpl->short_tag,
+                         pImpl->uid, channel, e.what());
         }
 
         it = msgs.erase(it);
@@ -2828,7 +2672,8 @@ void RoleAPIBase::handle_channel_auth_notifies(
 
 void RoleAPIBase::sync_tx_flexzone_checksum()
 {
-    if (pImpl->tx_queue) pImpl->tx_queue->sync_flexzone_checksum();
+    if (pImpl->tx_queue)
+        pImpl->tx_queue->sync_flexzone_checksum();
 }
 
 bool RoleAPIBase::tx_has_shm() const noexcept
@@ -2843,27 +2688,71 @@ bool RoleAPIBase::rx_has_shm() const noexcept
 
 void RoleAPIBase::close_queues()
 {
-    if (pImpl->tx_queue) pImpl->tx_queue->stop();
-    if (pImpl->rx_queue) pImpl->rx_queue->stop();
+    if (pImpl->tx_queue)
+        pImpl->tx_queue->stop();
+    if (pImpl->rx_queue)
+        pImpl->rx_queue->stop();
     pImpl->tx_queue.reset();
     pImpl->rx_queue.reset();
 }
 
-void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q) { pImpl->inbox_queue = q; }
+void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q)
+{
+    pImpl->inbox_queue = q;
+}
 // set_uid removed — see note above.
-void RoleAPIBase::set_name(std::string name)          { pImpl->name = std::move(name); }
-void RoleAPIBase::set_channel(std::string c)          { pImpl->channel = std::move(c); }
-void RoleAPIBase::set_out_channel(std::string c)      { pImpl->out_channel = std::move(c); }
-void RoleAPIBase::set_log_level(std::string l)        { pImpl->log_level = std::move(l); }
-void RoleAPIBase::set_script_dir(std::string d)       { pImpl->script_dir = std::move(d); }
-void RoleAPIBase::set_role_dir(std::string d)         { pImpl->role_dir = std::move(d); }
-void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p) { pImpl->checksum_policy = p; }
-void RoleAPIBase::set_engine(ScriptEngine *e)          { pImpl->engine = e; }
-void RoleAPIBase::set_stop_on_script_error(bool v)    { pImpl->stop_on_script_error = v; }
-void RoleAPIBase::set_strict_abi_mismatch(bool v)     { pImpl->strict_abi_mismatch = v; }
-bool RoleAPIBase::strict_abi_mismatch() const         { return pImpl->strict_abi_mismatch; }
-void RoleAPIBase::set_shm_require_mutual_auth(bool v) { pImpl->shm_require_mutual_auth = v; }
-bool RoleAPIBase::shm_require_mutual_auth() const     { return pImpl->shm_require_mutual_auth; }
+void RoleAPIBase::set_name(std::string name)
+{
+    pImpl->name = std::move(name);
+}
+void RoleAPIBase::set_channel(std::string c)
+{
+    pImpl->channel = std::move(c);
+}
+void RoleAPIBase::set_out_channel(std::string c)
+{
+    pImpl->out_channel = std::move(c);
+}
+void RoleAPIBase::set_log_level(std::string l)
+{
+    pImpl->log_level = std::move(l);
+}
+void RoleAPIBase::set_script_dir(std::string d)
+{
+    pImpl->script_dir = std::move(d);
+}
+void RoleAPIBase::set_role_dir(std::string d)
+{
+    pImpl->role_dir = std::move(d);
+}
+void RoleAPIBase::set_checksum_policy(hub::ChecksumPolicy p)
+{
+    pImpl->checksum_policy = p;
+}
+void RoleAPIBase::set_engine(ScriptEngine *e)
+{
+    pImpl->engine = e;
+}
+void RoleAPIBase::set_stop_on_script_error(bool v)
+{
+    pImpl->stop_on_script_error = v;
+}
+void RoleAPIBase::set_strict_abi_mismatch(bool v)
+{
+    pImpl->strict_abi_mismatch = v;
+}
+bool RoleAPIBase::strict_abi_mismatch() const
+{
+    return pImpl->strict_abi_mismatch;
+}
+void RoleAPIBase::set_shm_require_mutual_auth(bool v)
+{
+    pImpl->shm_require_mutual_auth = v;
+}
+bool RoleAPIBase::shm_require_mutual_auth() const
+{
+    return pImpl->shm_require_mutual_auth;
+}
 
 void RoleAPIBase::set_broker_observer_pubkey_z85(std::string pubkey_z85)
 {
@@ -2901,7 +2790,8 @@ pylabhub::utils::ThreadManager &RoleAPIBase::thread_manager()
 
 void RoleAPIBase::stop_ctrl_for_teardown() noexcept
 {
-    if (!pImpl->handler_) return;   // validate-only run, or post-stop
+    if (!pImpl->handler_)
+        return; // validate-only run, or post-stop
     for (const auto &conn : pImpl->handler_->connections())
     {
         if (auto *brc = conn.brc.get())
@@ -2913,8 +2803,7 @@ void RoleAPIBase::stop_ctrl_for_teardown() noexcept
 // install_heartbeat — Wave-B M5: post-REG cadence negotiation + tick install
 // ============================================================================
 
-void RoleAPIBase::install_heartbeat(int role_cfg_ms,
-                                     std::optional<int> hub_max_ms_opt) noexcept
+void RoleAPIBase::install_heartbeat(int role_cfg_ms, std::optional<int> hub_max_ms_opt) noexcept
 {
     // HEP-CORE-0023 §2.5 — hub's heartbeat_interval_ms is the **maximum
     // tolerated silence** (timeout ceiling).  Role's configured cadence is
@@ -2927,19 +2816,17 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
         const int hub_max = *hub_max_ms_opt;
         if (role_cfg_ms > hub_max)
         {
-            LOGGER_WARN(
-                "[{}] heartbeat: configured interval {} ms exceeds hub's "
-                "tolerated max {} ms — resetting to hub max to avoid "
-                "liveness timeout (HEP-CORE-0023 §2.5)",
-                pImpl->short_tag, role_cfg_ms, hub_max);
+            LOGGER_WARN("[{}] heartbeat: configured interval {} ms exceeds hub's "
+                        "tolerated max {} ms — resetting to hub max to avoid "
+                        "liveness timeout (HEP-CORE-0023 §2.5)",
+                        pImpl->short_tag, role_cfg_ms, hub_max);
             effective_interval_ms = hub_max;
         }
         else
         {
-            LOGGER_INFO(
-                "[{}] heartbeat: aligned with hub — role cadence {} ms, "
-                "hub max {} ms",
-                pImpl->short_tag, role_cfg_ms, hub_max);
+            LOGGER_INFO("[{}] heartbeat: aligned with hub — role cadence {} ms, "
+                        "hub max {} ms",
+                        pImpl->short_tag, role_cfg_ms, hub_max);
         }
     }
 
@@ -2951,7 +2838,8 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
     if (pImpl->handler_)
     {
         const auto &conns = pImpl->handler_->connections();
-        if (!conns.empty()) bc_tick = conns[0].brc.get();
+        if (!conns.empty())
+            bc_tick = conns[0].brc.get();
     }
     if (!bc_tick)
     {
@@ -2962,18 +2850,16 @@ void RoleAPIBase::install_heartbeat(int role_cfg_ms,
     }
 
     auto *core_post = pImpl->core;
-    bc_tick->set_periodic_task(
-        [this] { on_heartbeat_tick_(); },
-        effective_interval_ms,
-        [core_post] { return core_post->iteration_count(); });
+    bc_tick->set_periodic_task([this] { on_heartbeat_tick_(); }, effective_interval_ms,
+                               [core_post] { return core_post->iteration_count(); });
 
-    LOGGER_INFO("[{}] heartbeat: periodic tick installed at {}ms",
-                pImpl->short_tag, effective_interval_ms);
+    LOGGER_INFO("[{}] heartbeat: periodic tick installed at {}ms", pImpl->short_tag,
+                effective_interval_ms);
     pImpl->heartbeat_install_at_ = std::chrono::steady_clock::now();
 }
 
 void RoleAPIBase::append_inbox_to_reg(nlohmann::json &opts,
-                                       const config::InboxConfig &inbox_cfg) const
+                                      const config::InboxConfig &inbox_cfg) const
 {
     if (!inbox_cfg.has_inbox())
         return;
@@ -2984,15 +2870,14 @@ void RoleAPIBase::append_inbox_to_reg(nlohmann::json &opts,
     if (pImpl->inbox_queue)
         opts["inbox_endpoint"] = pImpl->inbox_queue->actual_endpoint();
     opts["inbox_schema_json"] = inbox_cfg.schema_fields_json;
-    opts["inbox_packing"]     = inbox_cfg.packing;
-    opts["inbox_checksum"]    = inbox_cfg.checksum;
+    opts["inbox_packing"] = inbox_cfg.packing;
+    opts["inbox_checksum"] = inbox_cfg.checksum;
 }
 
 std::optional<int>
 RoleAPIBase::extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexcept
 {
-    if (reg_ack_body.contains("heartbeat") &&
-        reg_ack_body["heartbeat"].is_object() &&
+    if (reg_ack_body.contains("heartbeat") && reg_ack_body["heartbeat"].is_object() &&
         reg_ack_body["heartbeat"].contains("heartbeat_interval_ms") &&
         reg_ack_body["heartbeat"]["heartbeat_interval_ms"].is_number_integer())
     {
@@ -3005,8 +2890,8 @@ RoleAPIBase::extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexc
 // Broker protocol helpers (require ctrl thread running)
 // ============================================================================
 
-std::optional<nlohmann::json>
-RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(const nlohmann::json &opts,
+                                                                     int timeout_ms)
 {
     // Class A (channel-bound) — route via handler's channel_index_.
     const std::string ch = opts.value("channel_name", std::string{});
@@ -3023,14 +2908,13 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
     // than the previous ambiguous "Shared::producer_channel is still
     // empty").  Transitions to Registered on success or back to
     // Unregistered on failure below.
-    Presence *presence = pImpl->handler_
-        ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
+    Presence *presence = pImpl->handler_ ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
     if (presence)
     {
-        presence->registration_state.store(
-            RegistrationState::RegRequestPending,
-            std::memory_order_release);
-        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer from=Unregistered to=RegRequestPending trigger=REG_REQ_sending",
+        presence->registration_state.store(RegistrationState::RegRequestPending,
+                                           std::memory_order_release);
+        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer "
+                    "from=Unregistered to=RegRequestPending trigger=REG_REQ_sending",
                     pImpl->short_tag, ch);
     }
 
@@ -3040,9 +2924,7 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
     // means no response (timeout/disconnect).  Status field discriminates
     // the success vs error branch; error_code (HEP-0007 §12.4a taxonomy)
     // tells the caller what specifically failed.
-    bool registered =
-        result.has_value() &&
-        result->value("status", std::string{}) == "success";
+    bool registered = result.has_value() && result->value("status", std::string{}) == "success";
 
     if (!result.has_value())
         LOGGER_ERROR("[{}] REG_REQ no response for channel '{}' (timeout/disconnect)",
@@ -3056,22 +2938,19 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
     {
         LOGGER_INFO("[{}] event=RegAckReceived channel='{}' status=success initial_allowlist={}",
                     pImpl->short_tag, opts.value("channel_name", "?"),
-                    result->value("initial_allowlist",
-                                  nlohmann::json::array()).dump());
+                    result->value("initial_allowlist", nlohmann::json::array()).dump());
         // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
         // on REG_ACK.  Task #327: if strict-mode AND MAJOR mismatch,
         // helper returns true and the caller MUST refuse the Registered
         // transition (flip `registered` to false).
-        const bool abi_refuse = log_broker_abi_fingerprint(
-            *result, pImpl->short_tag,
-            opts.value("role_uid", std::string{}),
-            pImpl->strict_abi_mismatch);
+        const bool abi_refuse = log_broker_abi_fingerprint(*result, pImpl->short_tag,
+                                                           opts.value("role_uid", std::string{}),
+                                                           pImpl->strict_abi_mismatch);
         if (abi_refuse)
         {
-            LOGGER_ERROR(
-                "[{}] REG_ACK strict-ABI reject for channel '{}' — "
-                "refusing Registered transition (task #327)",
-                pImpl->short_tag, opts.value("channel_name", "?"));
+            LOGGER_ERROR("[{}] REG_ACK strict-ABI reject for channel '{}' — "
+                         "refusing Registered transition (task #327)",
+                         pImpl->short_tag, opts.value("channel_name", "?"));
             registered = false;
         }
 
@@ -3083,32 +2962,30 @@ RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_m
         // restart (idempotent setter takes an exclusive lock).  Empty
         // string means the broker didn't publish one — the observer
         // path stays "not yet implemented" and legacy behaviour holds.
-        const auto observer_pk =
-            result->value("broker_observer_pubkey_z85", std::string{});
+        const auto observer_pk = result->value("broker_observer_pubkey_z85", std::string{});
         if (!observer_pk.empty())
         {
             set_broker_observer_pubkey_z85(observer_pk);
-            LOGGER_INFO(
-                "[{}] event=BrokerObserverPubkeyReceived channel='{}' "
-                "pubkey_z85='{}'",
-                pImpl->short_tag, opts.value("channel_name", "?"),
-                observer_pk);
+            LOGGER_INFO("[{}] event=BrokerObserverPubkeyReceived channel='{}' "
+                        "pubkey_z85='{}'",
+                        pImpl->short_tag, opts.value("channel_name", "?"), observer_pk);
         }
     }
 
     if (presence)
     {
-        const auto new_state = registered ? RegistrationState::Registered
-                                          : RegistrationState::Unregistered;
+        const auto new_state =
+            registered ? RegistrationState::Registered : RegistrationState::Unregistered;
         presence->registration_state.store(new_state, std::memory_order_release);
-        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer from=RegRequestPending to={}",
+        LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' role_type=producer "
+                    "from=RegRequestPending to={}",
                     pImpl->short_tag, ch, to_string(new_state));
     }
     return result;
 }
 
-std::optional<nlohmann::json>
-RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::discover_channel(const std::string &channel,
+                                                            int timeout_ms)
 {
     // Class A — DISC_REQ asks the broker "what do you know about
     // channel X?", which is valid for ANY channel name, not just
@@ -3119,7 +2996,8 @@ RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
     // roles get a deterministic route; dual-hub roles query the
     // first connection (full multi-hub fall-through is M-future scope).
     auto *bc = pImpl->resolve_bc_for_channel(channel);
-    if (!bc) bc = pImpl->resolve_bc_for_role();
+    if (!bc)
+        bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
         LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->short_tag);
@@ -3131,16 +3009,15 @@ RoleAPIBase::discover_channel(const std::string &channel, int timeout_ms)
                      pImpl->short_tag, channel);
     else if (result->value("status", std::string{}) != "success")
         LOGGER_ERROR("[{}] DISC_REQ failed for channel '{}': error_code='{}' message='{}'",
-                     pImpl->short_tag, channel,
-                     result->value("error_code", std::string{}),
+                     pImpl->short_tag, channel, result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
         LOGGER_INFO("[{}] Discovered channel '{}' from broker", pImpl->short_tag, channel);
     return result;
 }
 
-std::optional<nlohmann::json>
-RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::register_consumer(const nlohmann::json &opts,
+                                                             int timeout_ms)
 {
     // Class A — route via handler when active.
     const std::string ch = opts.value("channel_name", std::string{});
@@ -3153,13 +3030,11 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
 
     // Audit S1+O4 (2026-05-17): per-presence FSM marker, same pattern
     // as `register_producer_channel`.
-    Presence *presence = pImpl->handler_
-        ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
+    Presence *presence = pImpl->handler_ ? pImpl->handler_->find_presence_for_channel(ch) : nullptr;
     if (presence)
     {
-        presence->registration_state.store(
-            RegistrationState::RegRequestPending,
-            std::memory_order_release);
+        presence->registration_state.store(RegistrationState::RegRequestPending,
+                                           std::memory_order_release);
         LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' "
                     "role_type=consumer from=Unregistered "
                     "to=RegRequestPending trigger=CONSUMER_REG_REQ_sending",
@@ -3190,21 +3065,23 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     // out of the retry set (the prior message-substring gate had exactly
     // that bug — it missed `awaiting_endpoint`).  A message-substring
     // check remains as a fallback for a pre-structured-reason broker.
-    const auto is_retryable_reason = [](const nlohmann::json &r) -> bool {
-        static constexpr std::string_view kRetryable[] = {
-            "awaiting_first_heartbeat", "heartbeat_stalled", "awaiting_endpoint"};
+    const auto is_retryable_reason = [](const nlohmann::json &r) -> bool
+    {
+        static constexpr std::string_view kRetryable[] = {"awaiting_first_heartbeat",
+                                                          "heartbeat_stalled", "awaiting_endpoint"};
         const auto reason = r.value("reason", std::string{});
         for (const auto &rr : kRetryable)
-            if (reason == rr) return true;
+            if (reason == rr)
+                return true;
         const auto msg = r.value("message", std::string{});
         for (const auto &rr : kRetryable)
-            if (msg.find(rr) != std::string_view::npos) return true;
+            if (msg.find(rr) != std::string_view::npos)
+                return true;
         return false;
     };
-    const auto retry_deadline = std::chrono::steady_clock::now() +
-                                std::chrono::milliseconds{timeout_ms};
-    while (result.has_value() &&
-           result->value("status", std::string{}) == "error" &&
+    const auto retry_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
+    while (result.has_value() && result->value("status", std::string{}) == "error" &&
            result->value("error_code", std::string{}) == "CHANNEL_NOT_READY" &&
            is_retryable_reason(*result))
     {
@@ -3213,21 +3090,19 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
             LOGGER_WARN("[{}] CONSUMER_REG_REQ for '{}' deadline exceeded while "
                         "waiting for channel to become ready (last broker "
                         "reason: '{}')",
-                        pImpl->short_tag, ch,
-                        result->value("message", std::string{}));
+                        pImpl->short_tag, ch, result->value("message", std::string{}));
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
-        const auto remaining_ms =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                retry_deadline - std::chrono::steady_clock::now()).count();
-        if (remaining_ms <= 0) break;
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      retry_deadline - std::chrono::steady_clock::now())
+                                      .count();
+        if (remaining_ms <= 0)
+            break;
         result = bc->register_consumer(opts, static_cast<int>(remaining_ms));
     }
 
-    bool registered =
-        result.has_value() &&
-        result->value("status", std::string{}) == "success";
+    bool registered = result.has_value() && result->value("status", std::string{}) == "success";
 
     if (!result.has_value())
         LOGGER_ERROR("[{}] CONSUMER_REG_REQ no response for channel '{}' (timeout/disconnect)",
@@ -3238,15 +3113,14 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
                      result->value("error_code", std::string{}),
                      result->value("message", std::string{}));
     else
-        LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker",
-                    pImpl->short_tag, opts.value("channel_name", "?"));
+        LOGGER_INFO("[{}] Registered consumer on channel '{}' with broker", pImpl->short_tag,
+                    opts.value("channel_name", "?"));
 
     if (presence)
     {
-        const auto new_state = registered ? RegistrationState::Registered
-                                          : RegistrationState::Unregistered;
-        presence->registration_state.store(new_state,
-                                           std::memory_order_release);
+        const auto new_state =
+            registered ? RegistrationState::Registered : RegistrationState::Unregistered;
+        presence->registration_state.store(new_state, std::memory_order_release);
         LOGGER_INFO("[{}] event=PresenceStateTransition channel='{}' "
                     "role_type=consumer from=RegRequestPending to={}",
                     pImpl->short_tag, ch, to_string(new_state));
@@ -3254,8 +3128,8 @@ RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms)
     return result;
 }
 
-std::optional<nlohmann::json>
-RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::deregister_producer_channel(const std::string &channel,
+                                                                       int timeout_ms)
 {
     // Class A — route via handler when active.
     auto *bc = pImpl->resolve_bc_for_channel(channel);
@@ -3268,15 +3142,14 @@ RoleAPIBase::deregister_producer_channel(const std::string &channel, int timeout
     // role's intent is "I no longer want to be registered"; even if
     // the broker is offline (no response), our local state should
     // reflect that we've ceased participation.
-    if (Presence *p = pImpl->handler_
-            ? pImpl->handler_->find_presence_for_channel(channel) : nullptr)
-        p->registration_state.store(RegistrationState::Deregistered,
-                                     std::memory_order_release);
+    if (Presence *p =
+            pImpl->handler_ ? pImpl->handler_->find_presence_for_channel(channel) : nullptr)
+        p->registration_state.store(RegistrationState::Deregistered, std::memory_order_release);
     return result;
 }
 
-std::optional<nlohmann::json>
-RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::deregister_consumer(const std::string &channel,
+                                                               int timeout_ms)
 {
     // Class A — route via handler when active.
     auto *bc = pImpl->resolve_bc_for_channel(channel);
@@ -3284,10 +3157,9 @@ RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
         return std::nullopt;
     auto result = bc->deregister_consumer(channel, timeout_ms);
     // Audit S1+O4: same FSM drop as the producer path.
-    if (Presence *p = pImpl->handler_
-            ? pImpl->handler_->find_presence_for_channel(channel) : nullptr)
-        p->registration_state.store(RegistrationState::Deregistered,
-                                     std::memory_order_release);
+    if (Presence *p =
+            pImpl->handler_ ? pImpl->handler_->find_presence_for_channel(channel) : nullptr)
+        p->registration_state.store(RegistrationState::Deregistered, std::memory_order_release);
     return result;
 }
 
@@ -3307,25 +3179,22 @@ RoleAPIBase::deregister_consumer(const std::string &channel, int timeout_ms)
 // caller enqueues a request + waits on CV; the BRC poll thread drains
 // and signals).
 
-std::optional<nlohmann::json>
-RoleAPIBase::consumer_attach(const std::string &channel,
-                             const std::string &consumer_pubkey,
-                             const std::string &consumer_role_uid,
-                             const std::string &producer_role_uid,
-                             int                timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::consumer_attach(const std::string &channel,
+                                                           const std::string &consumer_pubkey,
+                                                           const std::string &consumer_role_uid,
+                                                           const std::string &producer_role_uid,
+                                                           int timeout_ms)
 {
     auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc || !bc->is_connected())
     {
-        LOGGER_WARN(
-            "[{}/{}] consumer_attach for channel '{}': no connected BRC "
-            "— returning nullopt (HEP-CORE-0041 §9 D4)",
-            pImpl->short_tag, pImpl->uid, channel);
+        LOGGER_WARN("[{}/{}] consumer_attach for channel '{}': no connected BRC "
+                    "— returning nullopt (HEP-CORE-0041 §9 D4)",
+                    pImpl->short_tag, pImpl->uid, channel);
         return std::nullopt;
     }
-    return bc->consumer_attach(channel, consumer_pubkey,
-                                consumer_role_uid, producer_role_uid,
-                                timeout_ms);
+    return bc->consumer_attach(channel, consumer_pubkey, consumer_role_uid, producer_role_uid,
+                               timeout_ms);
 }
 
 // ============================================================================
@@ -3352,29 +3221,34 @@ void RoleAPIBase::deregister_from_broker()
     // `resolve_bc_for_channel(channel)` and early-returns on
     // null/disconnected BRC, so we don't need to gate on broker
     // liveness here.
-    if (!pImpl->handler_) return;
+    if (!pImpl->handler_)
+        return;
 
-    auto needs_dereg = [](const Presence &p) noexcept {
+    auto needs_dereg = [](const Presence &p) noexcept
+    {
         const auto s = p.registration_state.load(std::memory_order_acquire);
-        return s == RegistrationState::Registered ||
-               s == RegistrationState::RegRequestPending;
+        return s == RegistrationState::Registered || s == RegistrationState::RegRequestPending;
     };
 
     // Pass 1: producer presences.
     for (const auto &p : pImpl->handler_->presences())
     {
-        if (p.role_kind != RoleKind::Producer) continue;
-        if (!needs_dereg(p)) continue;
-        LOGGER_INFO("[{}] ctrl: deregistering producer channel '{}' from broker",
-                    pImpl->short_tag, p.channel);
+        if (p.role_kind != RoleKind::Producer)
+            continue;
+        if (!needs_dereg(p))
+            continue;
+        LOGGER_INFO("[{}] ctrl: deregistering producer channel '{}' from broker", pImpl->short_tag,
+                    p.channel);
         (void)deregister_producer_channel(p.channel);
     }
 
     // Pass 2: consumer presences.
     for (const auto &p : pImpl->handler_->presences())
     {
-        if (p.role_kind != RoleKind::Consumer) continue;
-        if (!needs_dereg(p)) continue;
+        if (p.role_kind != RoleKind::Consumer)
+            continue;
+        if (!needs_dereg(p))
+            continue;
         LOGGER_INFO("[{}] ctrl: deregistering consumer from channel '{}' from broker",
                     pImpl->short_tag, p.channel);
         (void)deregister_consumer(p.channel);
@@ -3423,11 +3297,13 @@ void RoleAPIBase::on_heartbeat_tick_()
     // §18.3 Class A dispatch).
     for (const auto &p : pImpl->handler_->presences())
     {
-        if (p.channel.empty()) continue;
+        if (p.channel.empty())
+            continue;
         auto *bc = pImpl->resolve_bc_for_channel(p.channel);
-        if (!bc) continue;
+        if (!bc)
+            continue;
         const char *role_type = to_wire_string(p.role_kind);
-        const auto metrics    = snapshot_metrics_for_presence(role_type);
+        const auto metrics = snapshot_metrics_for_presence(role_type);
         LOGGER_TRACE("[{}] ctrl: sending heartbeat for '{}' "
                      "(uid='{}' role_type='{}')",
                      pImpl->short_tag, p.channel, pImpl->uid, role_type);
@@ -3472,8 +3348,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     }
     if (handler == nullptr)
     {
-        LOGGER_ERROR("[{}] start_handler_threads: handler is null",
-                     pImpl->short_tag);
+        LOGGER_ERROR("[{}] start_handler_threads: handler is null", pImpl->short_tag);
         return false;
     }
 
@@ -3482,12 +3357,11 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
 
     LOGGER_INFO("[{}] start_handler_threads: ENTRY — {} presence(s) on {} "
                 "unique hub(s) (uid='{}' name='{}')",
-                pImpl->short_tag, n_pres, n_conn,
-                pImpl->uid, pImpl->name);
+                pImpl->short_tag, n_pres, n_conn, pImpl->uid, pImpl->name);
 
     // ── Phase 1: Allocate + connect each BRC (via handler) ───────────────
-    LOGGER_INFO("[{}] start_handler_threads: Phase 1 — connecting {} BRC(s)",
-                pImpl->short_tag, n_conn);
+    LOGGER_INFO("[{}] start_handler_threads: Phase 1 — connecting {} BRC(s)", pImpl->short_tag,
+                n_conn);
     if (!handler->start_connections(*this))
     {
         LOGGER_ERROR("[{}] start_handler_threads: Phase 1 FAILED — "
@@ -3495,8 +3369,8 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                      pImpl->short_tag);
         return false;
     }
-    LOGGER_INFO("[{}] start_handler_threads: Phase 1 OK — {} BRC(s) connected",
-                pImpl->short_tag, n_conn);
+    LOGGER_INFO("[{}] start_handler_threads: Phase 1 OK — {} BRC(s) connected", pImpl->short_tag,
+                n_conn);
 
     // Take ownership of the handler now — Phase 1 succeeded, so the
     // handler's BRCs are live + we will spawn threads for them.
@@ -3534,9 +3408,8 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     }
     {
         const std::size_t bits = (n_conn > 64) ? 64 : n_conn;
-        const std::uint64_t init_mask = (bits == 64)
-            ? ~std::uint64_t{0}
-            : ((std::uint64_t{1} << bits) - 1);
+        const std::uint64_t init_mask =
+            (bits == 64) ? ~std::uint64_t{0} : ((std::uint64_t{1} << bits) - 1);
         // Release ordering: pairs with the acquire load in
         // `is_connection_alive` / `connections_alive_count` and the
         // acq_rel fetch_and inside the on_hub_dead lambda body
@@ -3554,7 +3427,8 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     for (std::size_t i = 0; i < pImpl->handler_->connections().size(); ++i)
     {
         auto *brc = pImpl->handler_->connections()[i].brc.get();
-        if (brc == nullptr) continue;  // defensive; should be non-null
+        if (brc == nullptr)
+            continue; // defensive; should be non-null
 
         // Audit C3 (2026-05-17): capture this connection's broker
         // endpoint by value so the lambda can stamp every inbound
@@ -3566,8 +3440,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         // per HEP-CORE-0023 §7 + HEP-CORE-0033 §18.3 + §19.4 so a
         // dual-hub processor's script can tell which hub a
         // notification came from.
-        std::string conn_endpoint =
-            pImpl->handler_->connections()[i].broker_endpoint;
+        std::string conn_endpoint = pImpl->handler_->connections()[i].broker_endpoint;
 
         // Notification routing: enqueue every notification to the
         // role's core message queue.  Per-presence tagging (using
@@ -3581,8 +3454,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         // See RoleHostCore "Flag contract" for the full discipline.
         brc->on_notification(
             [core, tag_local, i, conn_endpoint = std::move(conn_endpoint)](
-                const std::string &type,
-                const nlohmann::json &body)
+                const std::string &type, const nlohmann::json &body)
             {
                 if (!core->context_valid())
                 {
@@ -3592,13 +3464,12 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                                 tag_local, i, type);
                     return;
                 }
-                LOGGER_TRACE("[{}/handler_ctrl_{}] notification: {}",
-                             tag_local, i, type);
+                LOGGER_TRACE("[{}/handler_ctrl_{}] notification: {}", tag_local, i, type);
                 IncomingMessage msg;
-                msg.event           = type;
+                msg.event = type;
                 msg.notification_id = pylabhub::scripting::parse_notification_id(type);
-                msg.details         = body;
-                msg.source_hub_uid  = conn_endpoint;
+                msg.details = body;
+                msg.source_hub_uid = conn_endpoint;
                 core->enqueue_message(std::move(msg));
             });
 
@@ -3651,20 +3522,18 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
         // pImpl owns).  Capturing the raw pointer is safe — there's
         // no lifetime hole.
         RoleHandler *handler_ptr = pImpl->handler_.get();
-        const HubConnection *dead_conn =
-            &pImpl->handler_->connections()[i];
+        const HubConnection *dead_conn = &pImpl->handler_->connections()[i];
         // Capture the broker endpoint at lambda-creation time so the
         // synthetic HUB_DEAD msg can carry `source_hub_uid` matching
         // the connection's stable identifier (HEP-0033 §19.2).  Reading
         // the endpoint from `pImpl->handler_->connections()[i]` inside
         // the lambda would race with handler teardown; capturing it
         // here keeps the value alive as long as the lambda exists.
-        const std::string dead_endpoint =
-            pImpl->handler_->connections()[i].broker_endpoint;
+        const std::string dead_endpoint = pImpl->handler_->connections()[i].broker_endpoint;
         const bool is_master_conn = (i == 0);
         brc->on_hub_dead(
-            [core, alive_mask, tag_local, i, handler_ptr, dead_conn,
-             dead_endpoint, is_master_conn]()
+            [core, alive_mask, tag_local, i, handler_ptr, dead_conn, dead_endpoint,
+             is_master_conn]()
             {
                 // V1 safety gate (2026-05-18): slow-waker may fire
                 // this lambda after `stop_handler_threads` Phase 3a
@@ -3694,9 +3563,8 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 // reconnect, etc.) loudly instead of silently piling
                 // duplicate HUB_DEAD msgs into incoming_queue_ (which
                 // would push real notifications out at cap=64).
-                const std::uint64_t bit  = std::uint64_t{1} << i;
-                const std::uint64_t prev = alive_mask->fetch_and(
-                                       ~bit, std::memory_order_acq_rel);
+                const std::uint64_t bit = std::uint64_t{1} << i;
+                const std::uint64_t prev = alive_mask->fetch_and(~bit, std::memory_order_acq_rel);
                 if ((prev & bit) == 0)
                 {
                     LOGGER_ERROR("[{}/handler_ctrl_{}] on_hub_dead fired "
@@ -3723,18 +3591,14 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 // struct carries both counts so we can log the full
                 // impact + (S4-6, Part C/E) enqueue per-band
                 // on_band_lost events once the typed callback is wired.
-                const auto reap =
-                    handler_ptr->mark_connection_disconnected(dead_conn);
+                const auto reap = handler_ptr->mark_connection_disconnected(dead_conn);
                 LOGGER_WARN("[{}/handler_ctrl_{}] hub-dead: {} broker "
                             "connection lost ({} presence(s) marked "
                             "Deregistered, {} band(s) routing lost) — "
                             "dispatching HUB_DEAD to worker (default: {})",
-                            tag_local, i,
-                            is_master_conn ? "MASTER" : "PEER",
-                            reap.presences_transitioned,
-                            reap.bands_lost.size(),
-                            is_master_conn ? "stop role" :
-                                             "continue on master");
+                            tag_local, i, is_master_conn ? "MASTER" : "PEER",
+                            reap.presences_transitioned, reap.bands_lost.size(),
+                            is_master_conn ? "stop role" : "continue on master");
                 // S4-6 (HEP-CORE-0030 amendment 2026-05-19, Part E):
                 // enqueue one synthetic BAND_LOST IncomingMessage per
                 // band whose routing was on the dead connection.  The
@@ -3745,12 +3609,12 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 for (const auto &band : reap.bands_lost)
                 {
                     IncomingMessage bl;
-                    bl.event           = "BAND_LOST";
+                    bl.event = "BAND_LOST";
                     bl.notification_id = NotificationId::BandLost;
-                    bl.details         = nlohmann::json::object();
-                    bl.details["band"]   = band;
+                    bl.details = nlohmann::json::object();
+                    bl.details["band"] = band;
                     bl.details["reason"] = "hub_dead";
-                    bl.source_hub_uid  = dead_endpoint;
+                    bl.source_hub_uid = dead_endpoint;
                     core->enqueue_message(std::move(bl));
                 }
                 // Enqueue synthetic HUB_DEAD notification so the
@@ -3761,12 +3625,12 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
                 // (2026-05-18) — uniform "callback replaces default"
                 // pattern matching `on_channel_closing`.
                 IncomingMessage msg;
-                msg.event           = "HUB_DEAD";
+                msg.event = "HUB_DEAD";
                 msg.notification_id = NotificationId::HubDead;
-                msg.details         = nlohmann::json::object();
+                msg.details = nlohmann::json::object();
                 msg.details["is_master"] = is_master_conn;
-                msg.details["reason"]    = "ctrl_thread_on_hub_dead";
-                msg.source_hub_uid  = dead_endpoint;
+                msg.details["reason"] = "ctrl_thread_on_hub_dead";
+                msg.source_hub_uid = dead_endpoint;
                 core->enqueue_message(std::move(msg));
             });
     }
@@ -3782,38 +3646,32 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     for (std::size_t i = 0; i < pImpl->handler_->connections().size(); ++i)
     {
         auto *brc = pImpl->handler_->connections()[i].brc.get();
-        if (brc == nullptr) continue;
+        if (brc == nullptr)
+            continue;
 
         pylabhub::utils::ThreadManager::SpawnOptions opts;
         opts.is_master = !master_spawned;
 
         const std::string slot_name = "handler_ctrl_" + std::to_string(i);
-        const std::string endpoint  =
-            pImpl->handler_->connections()[i].broker_endpoint;
+        const std::string endpoint = pImpl->handler_->connections()[i].broker_endpoint;
 
         LOGGER_INFO("[{}] start_handler_threads: spawning '{}' for "
                     "hub='{}' role=[{}]",
-                    pImpl->short_tag, slot_name, endpoint,
-                    opts.is_master ? "MASTER" : "peer");
+                    pImpl->short_tag, slot_name, endpoint, opts.is_master ? "MASTER" : "peer");
 
         const bool spawn_ok = tm.spawn(
             slot_name,
-            [brc, slot_name, core, tag_local]
-            (pylabhub::utils::ThreadManager::SlotContext &ctx)
+            [brc, slot_name, core, tag_local](pylabhub::utils::ThreadManager::SlotContext &ctx)
             {
-                LOGGER_INFO("[{}/{}] poll thread started",
-                            tag_local, slot_name);
+                LOGGER_INFO("[{}/{}] poll thread started", tag_local, slot_name);
                 ctx.with_active_loop(
                     [brc, core, &ctx]
                     {
                         brc->run_poll_loop(
-                            [core, &ctx] {
-                                return core->is_running() &&
-                                       !ctx.shutdown_requested();
-                            });
+                            [core, &ctx]
+                            { return core->is_running() && !ctx.shutdown_requested(); });
                     });
-                LOGGER_INFO("[{}/{}] poll thread exiting",
-                            tag_local, slot_name);
+                LOGGER_INFO("[{}/{}] poll thread exiting", tag_local, slot_name);
             },
             opts);
 
@@ -3879,13 +3737,13 @@ void RoleAPIBase::stop_handler_threads() noexcept
                     pImpl->short_tag, n_conn);
         for (auto &c : pImpl->handler_->connections())
         {
-            if (c.brc) c.brc->stop();
+            if (c.brc)
+                c.brc->stop();
         }
     }
 
     // ── Phase 3: Drain the ThreadManager (HEP-CORE-0031 §4.1) ────────────
-    LOGGER_INFO("[{}] stop_handler_threads: Phase 3 — draining ThreadManager",
-                pImpl->short_tag);
+    LOGGER_INFO("[{}] stop_handler_threads: Phase 3 — draining ThreadManager", pImpl->short_tag);
     try
     {
         auto &tm = thread_manager();
@@ -3938,12 +3796,12 @@ void RoleAPIBase::stop_handler_threads() noexcept
     // install_heartbeat.  Zero ticks fired = "0 sent" which is a real
     // observation (broker missed first-tick, install failed, etc.) —
     // do NOT skip the line.
-    const auto sent  = pImpl->heartbeats_sent_.load(std::memory_order_relaxed);
+    const auto sent = pImpl->heartbeats_sent_.load(std::memory_order_relaxed);
     const auto since = pImpl->heartbeat_install_at_.time_since_epoch().count() != 0
-        ? std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - pImpl->heartbeat_install_at_)
-              .count()
-        : 0;
+                           ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - pImpl->heartbeat_install_at_)
+                                 .count()
+                           : 0;
     LOGGER_INFO("[{}] event=HeartbeatCounterReport sent={} over={}ms (since install)",
                 pImpl->short_tag, sent, since);
     LOGGER_INFO("[{}] stop_handler_threads: COMPLETE", pImpl->short_tag);
@@ -3956,9 +3814,12 @@ RoleHandler *RoleAPIBase::handler() const noexcept
 
 bool RoleAPIBase::is_connection_alive(std::size_t i) const noexcept
 {
-    if (i >= 64) return false;   // beyond the bitmask
-    if (!pImpl->handler_) return false;
-    if (i >= pImpl->handler_->connections().size()) return false;
+    if (i >= 64)
+        return false; // beyond the bitmask
+    if (!pImpl->handler_)
+        return false;
+    if (i >= pImpl->handler_->connections().size())
+        return false;
     // Acquire pairs with the release store in start_handler_threads
     // Phase 4 init (audit M3, 2026-05-18) and with the release-ordered
     // bit-clearing from `on_hub_dead` lambdas via fetch_and.
@@ -3968,7 +3829,8 @@ bool RoleAPIBase::is_connection_alive(std::size_t i) const noexcept
 
 std::size_t RoleAPIBase::connections_alive_count() const noexcept
 {
-    if (!pImpl->handler_) return 0;
+    if (!pImpl->handler_)
+        return 0;
     // Acquire pairs with the release store in start_handler_threads
     // Phase 4 init (audit M3, 2026-05-18) and with the release-ordered
     // bit-clearing from `on_hub_dead` lambdas via fetch_and.
@@ -3976,14 +3838,17 @@ std::size_t RoleAPIBase::connections_alive_count() const noexcept
     // Mask out any bits beyond actual connections (defensive — should
     // be 0 already since init_mask only sets bits 0..n-1).
     const auto n = pImpl->handler_->connections().size();
-    const auto cap = (n >= 64) ? ~std::uint64_t{0}
-                                : ((std::uint64_t{1} << n) - 1);
+    const auto cap = (n >= 64) ? ~std::uint64_t{0} : ((std::uint64_t{1} << n) - 1);
 #if defined(__GNUC__) || defined(__clang__)
     return static_cast<std::size_t>(__builtin_popcountll(mask & cap));
 #else
     auto m = mask & cap;
     std::size_t c = 0;
-    while (m) { c += m & 1; m >>= 1; }
+    while (m)
+    {
+        c += m & 1;
+        m >>= 1;
+    }
     return c;
 #endif
 }
@@ -4015,9 +3880,8 @@ void RoleAPIBase::drain_inbox_sync()
 
         if (has_handler)
         {
-            eng->invoke_on_inbox(InvokeInbox{
-                item->data, iq->item_size(),
-                item->sender_id, item->seq});
+            eng->invoke_on_inbox(
+                InvokeInbox{item->data, iq->item_size(), item->sender_id, item->seq});
         }
 
         iq->send_ack(0);
@@ -4029,8 +3893,7 @@ void RoleAPIBase::drain_inbox_sync()
 // ============================================================================
 
 #if defined(PYLABHUB_BUILD_TESTS) && !defined(NDEBUG)
-void RoleAPIBase::install_handler_for_test_(
-    std::unique_ptr<RoleHandler> handler)
+void RoleAPIBase::install_handler_for_test_(std::unique_ptr<RoleHandler> handler)
 {
     // Private; reachable only through the friend
     // `test::RoleAPIBaseTestAccess`.  See the header docstring for the
@@ -4049,24 +3912,48 @@ bool RoleAPIBase::any_presence_authorized() const noexcept
     // (validate-only / test paths that skip handler construction)
     // reports `false` — there are no presences to be authorized, so
     // the data loop's outer guard correctly refuses to enter.
-    if (!pImpl->handler_) return false;
+    if (!pImpl->handler_)
+        return false;
     for (const auto &p : pImpl->handler_->presences())
     {
-        if (p.registration_state.load(std::memory_order_acquire)
-            == RegistrationState::Authorized)
+        if (p.registration_state.load(std::memory_order_acquire) == RegistrationState::Authorized)
             return true;
     }
     return false;
 }
 
-const std::string &RoleAPIBase::short_tag() const   { return pImpl->short_tag; }
-const std::string &RoleAPIBase::uid() const        { return pImpl->uid; }
-const std::string &RoleAPIBase::name() const       { return pImpl->name; }
-const std::string &RoleAPIBase::channel() const    { return pImpl->channel; }
-const std::string &RoleAPIBase::out_channel() const { return pImpl->out_channel; }
-const std::string &RoleAPIBase::log_level() const  { return pImpl->log_level; }
-const std::string &RoleAPIBase::script_dir() const { return pImpl->script_dir; }
-const std::string &RoleAPIBase::role_dir() const   { return pImpl->role_dir; }
+const std::string &RoleAPIBase::short_tag() const
+{
+    return pImpl->short_tag;
+}
+const std::string &RoleAPIBase::uid() const
+{
+    return pImpl->uid;
+}
+const std::string &RoleAPIBase::name() const
+{
+    return pImpl->name;
+}
+const std::string &RoleAPIBase::channel() const
+{
+    return pImpl->channel;
+}
+const std::string &RoleAPIBase::out_channel() const
+{
+    return pImpl->out_channel;
+}
+const std::string &RoleAPIBase::log_level() const
+{
+    return pImpl->log_level;
+}
+const std::string &RoleAPIBase::script_dir() const
+{
+    return pImpl->script_dir;
+}
+const std::string &RoleAPIBase::role_dir() const
+{
+    return pImpl->role_dir;
+}
 
 std::string RoleAPIBase::logs_dir() const
 {
@@ -4078,8 +3965,14 @@ std::string RoleAPIBase::run_dir() const
     return pImpl->role_dir.empty() ? std::string{} : pImpl->role_dir + "/run";
 }
 
-hub::ChecksumPolicy RoleAPIBase::checksum_policy() const { return pImpl->checksum_policy; }
-bool RoleAPIBase::stop_on_script_error() const { return pImpl->stop_on_script_error; }
+hub::ChecksumPolicy RoleAPIBase::checksum_policy() const
+{
+    return pImpl->checksum_policy;
+}
+bool RoleAPIBase::stop_on_script_error() const
+{
+    return pImpl->stop_on_script_error;
+}
 
 // ============================================================================
 // Control
@@ -4097,7 +3990,10 @@ void RoleAPIBase::log(const std::string &level, const std::string &msg)
         LOGGER_INFO("[{}/{}] {}", pImpl->short_tag, pImpl->uid, msg);
 }
 
-void RoleAPIBase::stop()                        { pImpl->core->request_stop(); }
+void RoleAPIBase::stop()
+{
+    pImpl->core->request_stop();
+}
 void RoleAPIBase::set_critical_error(std::string_view msg)
 {
     // Audit S2 (2026-05-18) — uniform "[short_tag/uid] CRITICAL: <msg>"
@@ -4107,13 +4003,18 @@ void RoleAPIBase::set_critical_error(std::string_view msg)
     // format is identical regardless of language.
     if (!msg.empty())
     {
-        LOGGER_ERROR("[{}/{}] CRITICAL: {}",
-                     pImpl->short_tag, pImpl->uid, msg);
+        LOGGER_ERROR("[{}/{}] CRITICAL: {}", pImpl->short_tag, pImpl->uid, msg);
     }
     pImpl->core->set_critical_error();
 }
-bool RoleAPIBase::critical_error() const        { return pImpl->core->is_critical_error(); }
-std::string RoleAPIBase::stop_reason() const    { return pImpl->core->stop_reason_string(); }
+bool RoleAPIBase::critical_error() const
+{
+    return pImpl->core->is_critical_error();
+}
+std::string RoleAPIBase::stop_reason() const
+{
+    return pImpl->core->stop_reason_string();
+}
 
 // ============================================================================
 // Band pub/sub (HEP-CORE-0030)
@@ -4132,8 +4033,9 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
     // wanting to join a band on a specific hub will need explicit
     // `api.in_hub.band_join` / `api.out_hub.band_join` accessors
     // (out of scope here; same pattern as Class C).
-    auto *bc = pImpl->resolve_bc_for_band(channel);   // null on first-time join
-    if (!bc) bc = pImpl->resolve_bc_for_role();       // bootstrap fallback
+    auto *bc = pImpl->resolve_bc_for_band(channel); // null on first-time join
+    if (!bc)
+        bc = pImpl->resolve_bc_for_role(); // bootstrap fallback
     if (!bc)
         return std::nullopt;
     auto result = bc->band_join(channel);
@@ -4154,9 +4056,7 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
     // context (in_hub vs out_hub); the on_band_joined() call
     // signature already accepts a Presence*, so the decision moves
     // to the role-host layer without changing this code.
-    const bool joined =
-        result.has_value() &&
-        result->value("status", std::string{}) == "success";
+    const bool joined = result.has_value() && result->value("status", std::string{}) == "success";
     if (joined && pImpl->handler_)
     {
         const auto &presences = pImpl->handler_->presences();
@@ -4173,8 +4073,7 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
     // timeout) leaves bookkeeping unchanged per the principle that
     // automatic recovery is the script's domain, not the framework's.
     const bool broker_rejected =
-        result.has_value() &&
-        result->value("status", std::string{}) == "error";
+        result.has_value() && result->value("status", std::string{}) == "error";
     if (broker_rejected && pImpl->handler_)
     {
         LOGGER_DEBUG("[{}] band_join('{}') broker_rejected — "
@@ -4185,8 +4084,7 @@ std::optional<nlohmann::json> RoleAPIBase::band_join(const std::string &channel)
     return result;
 }
 
-std::optional<nlohmann::json>
-RoleAPIBase::band_leave(const std::string &channel)
+std::optional<nlohmann::json> RoleAPIBase::band_leave(const std::string &channel)
 {
     // Class D (band-bound) — route via handler's band_index_
     // (HEP-CORE-0033 §18.3).
@@ -4209,8 +4107,7 @@ RoleAPIBase::band_leave(const std::string &channel)
     // where the role thought it was joined but wasn't.  `nullopt`
     // (transport timeout) leaves bookkeeping unchanged — script's
     // domain to recover.
-    const bool broker_responded =
-        result.has_value();
+    const bool broker_responded = result.has_value();
     if (broker_responded && pImpl->handler_)
     {
         const std::string &status = result->value("status", std::string{});
@@ -4231,8 +4128,7 @@ RoleAPIBase::band_leave(const std::string &channel)
     return result;
 }
 
-void RoleAPIBase::band_broadcast(const std::string &channel,
-                                  const nlohmann::json &body)
+void RoleAPIBase::band_broadcast(const std::string &channel, const nlohmann::json &body)
 {
     // Class D (band-bound) — route via handler's band_index_
     // (HEP-CORE-0033 §18.3).  Audit V3 (2026-05-18): WARN log on the
@@ -4271,7 +4167,8 @@ bool RoleAPIBase::is_in_band(const std::string &channel) const noexcept
     // of its own band membership.  Reads `band_index_` directly; no
     // broker round-trip.  See header docstring for the cache vs
     // authority distinction.
-    if (pImpl->handler_ == nullptr) return false;
+    if (pImpl->handler_ == nullptr)
+        return false;
     return pImpl->handler_->is_in_band(channel);
 }
 
@@ -4289,14 +4186,17 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
     // connections per §18.3 — first non-empty answer wins.  Target
     // role's inbox lives on whichever hub it registered with; we
     // don't know which hub a priori, so fall through.
-    if (!pImpl->handler_) return std::nullopt;
+    if (!pImpl->handler_)
+        return std::nullopt;
     const auto &conns = pImpl->handler_->connections();
-    if (conns.empty()) return std::nullopt;
+    if (conns.empty())
+        return std::nullopt;
 
     hub::SchemaSpec result_spec;
     std::string result_packing;
 
-    auto entry = pImpl->core->open_inbox(target_uid,
+    auto entry = pImpl->core->open_inbox(
+        target_uid,
         [&]() -> std::optional<RoleHostCore::InboxCacheEntry>
         {
             // Iterate connections; first query that returns a body
@@ -4308,32 +4208,34 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             for (const auto &conn : conns)
             {
                 auto *bc = conn.brc.get();
-                if (!bc) continue;
+                if (!bc)
+                    continue;
                 auto resp = bc->query_role_info(target_uid, 1000);
-                if (!resp.has_value()) continue;     // transport failure
+                if (!resp.has_value())
+                    continue; // transport failure
                 auto sch = resp->value("inbox_schema", nlohmann::json{});
                 if (sch.is_object() && sch.contains("fields"))
                 {
-                    info  = std::move(*resp);
+                    info = std::move(*resp);
                     found = true;
                     break;
                 }
             }
-            if (!found) return std::nullopt;
+            if (!found)
+                return std::nullopt;
 
             auto inbox_schema = info.value("inbox_schema", nlohmann::json{});
             if (!inbox_schema.is_object() || !inbox_schema.contains("fields"))
                 return std::nullopt;
 
-            auto inbox_packing  = info.value("inbox_packing", std::string{});
+            auto inbox_packing = info.value("inbox_packing", std::string{});
             auto inbox_endpoint = info.value("inbox_endpoint", std::string{});
             auto inbox_checksum = info.value("inbox_checksum", std::string{});
             // HEP-CORE-0027 §3.5 — the receiver's identity pubkey pins the
             // DEALER's curve_serverkey.  Mandatory: without it we cannot
             // establish the CURVE session, and there is no unencrypted
             // (no-CURVE) inbox fallback (hard-enforce per the hub-wide auth model).
-            auto inbox_receiver_pubkey =
-                info.value("inbox_receiver_pubkey_z85", std::string{});
+            auto inbox_receiver_pubkey = info.value("inbox_receiver_pubkey_z85", std::string{});
             if (inbox_receiver_pubkey.empty())
             {
                 LOGGER_WARN("[api] open_inbox('{}'): ROLE_INFO_ACK carried no "
@@ -4350,8 +4252,7 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             }
             catch (const std::exception &e)
             {
-                LOGGER_WARN("[api] open_inbox('{}'): schema parse error: {}",
-                            target_uid, e.what());
+                LOGGER_WARN("[api] open_inbox('{}'): schema parse error: {}", target_uid, e.what());
                 return std::nullopt;
             }
 
@@ -4359,9 +4260,8 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
 
             auto zmq_fields = hub::schema_spec_to_zmq_fields(spec);
 
-            auto client_ptr = hub::InboxClient::connect_to(
-                inbox_endpoint, pImpl->uid,
-                std::move(zmq_fields), inbox_packing);
+            auto client_ptr = hub::InboxClient::connect_to(inbox_endpoint, pImpl->uid,
+                                                           std::move(zmq_fields), inbox_packing);
             if (!client_ptr)
             {
                 LOGGER_WARN("[api] open_inbox('{}'): connect failed", target_uid);
@@ -4379,23 +4279,20 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                 LOGGER_WARN("[api] open_inbox('{}'): start failed", target_uid);
                 return std::nullopt;
             }
-            client_ptr->set_checksum_policy(
-                config::string_to_checksum_policy(inbox_checksum));
+            client_ptr->set_checksum_policy(config::string_to_checksum_policy(inbox_checksum));
 
             result_spec = std::move(spec);
             result_packing = inbox_packing;
 
             return RoleHostCore::InboxCacheEntry{
-                std::shared_ptr<hub::InboxClient>(std::move(client_ptr)),
-                "InboxSlot", item_size};
+                std::shared_ptr<hub::InboxClient>(std::move(client_ptr)), "InboxSlot", item_size};
         });
 
     if (!entry)
         return std::nullopt;
 
-    return InboxOpenResult{
-        entry->client, std::move(result_spec),
-        std::move(result_packing), entry->item_size};
+    return InboxOpenResult{entry->client, std::move(result_spec), std::move(result_packing),
+                           entry->item_size};
 }
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
@@ -4408,12 +4305,13 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
     // iteration until one reports the target present OR all answer
     // not-present.  Each connection's query has its own kPollMs
     // sub-budget; total poll period is N × kPollMs ≈ N × 200ms.
-    if (!pImpl->handler_) return false;
+    if (!pImpl->handler_)
+        return false;
     const auto &conns = pImpl->handler_->connections();
-    if (conns.empty()) return false;
+    if (conns.empty())
+        return false;
 
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::milliseconds{timeout_ms};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
     static constexpr int kPollMs = 200;
     while (std::chrono::steady_clock::now() < deadline)
     {
@@ -4426,7 +4324,8 @@ bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)
         for (const auto &conn : conns)
         {
             auto *bc = conn.brc.get();
-            if (!bc) continue;
+            if (!bc)
+                continue;
             auto resp = bc->query_role_presence(uid, kPollMs);
             if (resp.has_value() && resp->value("present", false))
                 return true;
@@ -4461,12 +4360,14 @@ void *RoleAPIBase::write_acquire(std::chrono::milliseconds timeout) noexcept
 
 void RoleAPIBase::write_commit() noexcept
 {
-    if (pImpl->tx_queue) pImpl->tx_queue->write_commit();
+    if (pImpl->tx_queue)
+        pImpl->tx_queue->write_commit();
 }
 
 void RoleAPIBase::write_discard() noexcept
 {
-    if (pImpl->tx_queue) pImpl->tx_queue->write_discard();
+    if (pImpl->tx_queue)
+        pImpl->tx_queue->write_discard();
 }
 
 size_t RoleAPIBase::write_item_size() const noexcept
@@ -4476,7 +4377,8 @@ size_t RoleAPIBase::write_item_size() const noexcept
 
 bool RoleAPIBase::sync_flexzone_checksum()
 {
-    if (!pImpl->tx_queue) return false;
+    if (!pImpl->tx_queue)
+        return false;
     pImpl->tx_queue->sync_flexzone_checksum();
     return true;
 }
@@ -4503,8 +4405,14 @@ bool RoleAPIBase::update_flexzone_checksum()
     return true;
 }
 
-uint64_t RoleAPIBase::out_slots_written() const { return pImpl->core->out_slots_written(); }
-uint64_t RoleAPIBase::out_drop_count() const    { return pImpl->core->out_drop_count(); }
+uint64_t RoleAPIBase::out_slots_written() const
+{
+    return pImpl->core->out_slots_written();
+}
+uint64_t RoleAPIBase::out_drop_count() const
+{
+    return pImpl->core->out_drop_count();
+}
 
 size_t RoleAPIBase::out_capacity() const
 {
@@ -4533,7 +4441,8 @@ const void *RoleAPIBase::read_acquire(std::chrono::milliseconds timeout) noexcep
 
 void RoleAPIBase::read_release() noexcept
 {
-    if (pImpl->rx_queue) pImpl->rx_queue->read_release();
+    if (pImpl->rx_queue)
+        pImpl->rx_queue->read_release();
 }
 
 size_t RoleAPIBase::read_item_size() const noexcept
@@ -4541,7 +4450,10 @@ size_t RoleAPIBase::read_item_size() const noexcept
     return pImpl->rx_queue ? pImpl->rx_queue->item_size() : 0;
 }
 
-uint64_t RoleAPIBase::in_slots_received() const { return pImpl->core->in_slots_received(); }
+uint64_t RoleAPIBase::in_slots_received() const
+{
+    return pImpl->core->in_slots_received();
+}
 
 uint64_t RoleAPIBase::last_seq() const
 {
@@ -4550,7 +4462,6 @@ uint64_t RoleAPIBase::last_seq() const
     // ZmqQueue uses atomic<uint64_t> with relaxed ordering.
     return pImpl->rx_queue ? pImpl->rx_queue->last_seq() : 0;
 }
-
 
 size_t RoleAPIBase::in_capacity() const
 {
@@ -4575,9 +4486,18 @@ void RoleAPIBase::set_verify_checksum(bool enable)
 // Diagnostics
 // ============================================================================
 
-uint64_t RoleAPIBase::script_error_count() const { return pImpl->core->script_error_count(); }
-uint64_t RoleAPIBase::loop_overrun_count() const { return pImpl->core->loop_overrun_count(); }
-uint64_t RoleAPIBase::last_cycle_work_us() const { return pImpl->core->last_cycle_work_us(); }
+uint64_t RoleAPIBase::script_error_count() const
+{
+    return pImpl->core->script_error_count();
+}
+uint64_t RoleAPIBase::loop_overrun_count() const
+{
+    return pImpl->core->loop_overrun_count();
+}
+uint64_t RoleAPIBase::last_cycle_work_us() const
+{
+    return pImpl->core->last_cycle_work_us();
+}
 
 // ============================================================================
 // Schema sizes
@@ -4589,15 +4509,14 @@ size_t RoleAPIBase::slot_logical_size(std::optional<ChannelSide> side) const
     const bool has_rx = pImpl->core->has_in_slot();
 
     if (side.has_value())
-        return (*side == ChannelSide::Tx)
-            ? (has_tx ? pImpl->core->out_slot_logical_size() : 0)
-            : (has_rx ? pImpl->core->in_slot_logical_size()  : 0);
+        return (*side == ChannelSide::Tx) ? (has_tx ? pImpl->core->out_slot_logical_size() : 0)
+                                          : (has_rx ? pImpl->core->in_slot_logical_size() : 0);
 
     if (has_tx && has_rx)
         throw std::runtime_error("slot_logical_size: side parameter required for processor");
-    return has_tx ? pImpl->core->out_slot_logical_size()
-         : has_rx ? pImpl->core->in_slot_logical_size()
-         : 0;
+    return has_tx   ? pImpl->core->out_slot_logical_size()
+           : has_rx ? pImpl->core->in_slot_logical_size()
+                    : 0;
 }
 
 size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
@@ -4609,15 +4528,16 @@ size_t RoleAPIBase::flexzone_logical_size(std::optional<ChannelSide> side) const
 
     if (side.has_value())
     {
-        return (*side == ChannelSide::Tx) ? fz.tx_logical_size
-                                          : fz.rx_logical_size;
+        return (*side == ChannelSide::Tx) ? fz.tx_logical_size : fz.rx_logical_size;
     }
 
     if (fz.has_tx_fz && fz.has_rx_fz)
         throw std::runtime_error("flexzone_logical_size: side parameter required for processor");
 
-    if (fz.has_tx_fz) return fz.tx_logical_size;
-    if (fz.has_rx_fz) return fz.rx_logical_size;
+    if (fz.has_tx_fz)
+        return fz.tx_logical_size;
+    if (fz.has_rx_fz)
+        return fz.rx_logical_size;
     return 0;
 }
 
@@ -4637,26 +4557,25 @@ size_t RoleAPIBase::flexzone_physical_size(std::optional<ChannelSide> side) cons
 
     if (side.has_value())
     {
-        return (*side == ChannelSide::Tx) ? fz.tx_physical_size
-                                          : fz.rx_physical_size;
+        return (*side == ChannelSide::Tx) ? fz.tx_physical_size : fz.rx_physical_size;
     }
 
     if (fz.has_tx_fz && fz.has_rx_fz)
         throw std::runtime_error("flexzone_physical_size: side parameter required for processor");
 
-    if (fz.has_tx_fz) return fz.tx_physical_size;
-    if (fz.has_rx_fz) return fz.rx_physical_size;
+    if (fz.has_tx_fz)
+        return fz.tx_physical_size;
+    if (fz.has_rx_fz)
+        return fz.rx_physical_size;
     return 0;
 }
 
-void RoleAPIBase::set_flexzone_info_cache_(
-    const FlexzoneInfoCache &cache) noexcept
+void RoleAPIBase::set_flexzone_info_cache_(const FlexzoneInfoCache &cache) noexcept
 {
     pImpl->fz_info_cache = cache;
 }
 
-const RoleAPIBase::FlexzoneInfoCache &
-RoleAPIBase::fz_info_cache() const noexcept
+const RoleAPIBase::FlexzoneInfoCache &RoleAPIBase::fz_info_cache() const noexcept
 {
     return pImpl->fz_info_cache;
 }
@@ -4685,9 +4604,8 @@ hub::SharedSpinLock RoleAPIBase::get_spinlock(size_t index, std::optional<Channe
 
     // No side specified — auto-select for single-side roles, error for dual.
     if (has_tx && has_rx)
-        throw std::runtime_error(
-            "get_spinlock: side parameter required for processor "
-            "(use ChannelSide::Tx or ChannelSide::Rx)");
+        throw std::runtime_error("get_spinlock: side parameter required for processor "
+                                 "(use ChannelSide::Tx or ChannelSide::Rx)");
     if (has_tx)
         return pImpl->tx_queue->get_spinlock(index);
     if (has_rx)
@@ -4709,9 +4627,8 @@ uint32_t RoleAPIBase::spinlock_count(std::optional<ChannelSide> side) const
 
     // No side specified — auto-select for single-side roles, error for dual.
     if (has_tx && has_rx)
-        throw std::runtime_error(
-            "spinlock_count: side parameter required for processor "
-            "(use ChannelSide::Tx or ChannelSide::Rx)");
+        throw std::runtime_error("spinlock_count: side parameter required for processor "
+                                 "(use ChannelSide::Tx or ChannelSide::Rx)");
     if (has_tx)
         return pImpl->tx_queue->spinlock_count();
     if (has_rx)
@@ -4742,8 +4659,7 @@ void RoleAPIBase::clear_custom_metrics()
 // Metrics snapshot — data-driven structure
 // ============================================================================
 
-nlohmann::json
-RoleAPIBase::snapshot_metrics_for_presence(const std::string &role_type) const
+nlohmann::json RoleAPIBase::snapshot_metrics_for_presence(const std::string &role_type) const
 {
     // Per-presence emission shape per HEP-CORE-0019 §2.3 Phase 6.
     // Producer-presence carries tx-side queue + producer-side role
@@ -4789,7 +4705,7 @@ RoleAPIBase::snapshot_metrics_for_presence(const std::string &role_type) const
     else if (role_type == "producer")
     {
         role["out_slots_written"] = pImpl->core->out_slots_written();
-        role["out_drop_count"]    = pImpl->core->out_drop_count();
+        role["out_drop_count"] = pImpl->core->out_drop_count();
     }
     result["role"] = std::move(role);
 
@@ -4821,7 +4737,7 @@ RoleAPIBase::snapshot_metrics_for_presence(const std::string &role_type) const
 nlohmann::json RoleAPIBase::snapshot_metrics_json() const
 {
     nlohmann::json result;
-    const bool has_in  = (pImpl->rx_queue != nullptr);
+    const bool has_in = (pImpl->rx_queue != nullptr);
     const bool has_out = (pImpl->tx_queue != nullptr);
 
     // Queue metrics: key depends on which sides exist.  CURVE
@@ -4859,9 +4775,9 @@ nlohmann::json RoleAPIBase::snapshot_metrics_json() const
 
     // Role metrics — core counters always present, queue-specific gated on pointers.
     nlohmann::json role;
-    role["out_slots_written"]  = pImpl->core->out_slots_written();
-    role["in_slots_received"]  = pImpl->core->in_slots_received();
-    role["out_drop_count"]     = pImpl->core->out_drop_count();
+    role["out_slots_written"] = pImpl->core->out_slots_written();
+    role["in_slots_received"] = pImpl->core->in_slots_received();
+    role["out_drop_count"] = pImpl->core->out_drop_count();
     role["script_error_count"] = pImpl->core->script_error_count();
 
     result["role"] = std::move(role);
@@ -4916,11 +4832,23 @@ void RoleAPIBase::clear_shared_data()
 // Infrastructure access
 // ============================================================================
 
-RoleHostCore *RoleAPIBase::core() const     { return pImpl->core; }
-hub::InboxQueue *RoleAPIBase::inbox_queue() const { return pImpl->inbox_queue; }
+RoleHostCore *RoleAPIBase::core() const
+{
+    return pImpl->core;
+}
+hub::InboxQueue *RoleAPIBase::inbox_queue() const
+{
+    return pImpl->inbox_queue;
+}
 
-bool RoleAPIBase::has_tx_side() const noexcept { return pImpl->tx_queue != nullptr; }
-bool RoleAPIBase::has_rx_side() const noexcept { return pImpl->rx_queue != nullptr; }
+bool RoleAPIBase::has_tx_side() const noexcept
+{
+    return pImpl->tx_queue != nullptr;
+}
+bool RoleAPIBase::has_rx_side() const noexcept
+{
+    return pImpl->rx_queue != nullptr;
+}
 
 hub::QueueMetrics RoleAPIBase::queue_metrics(ChannelSide side) const noexcept
 {

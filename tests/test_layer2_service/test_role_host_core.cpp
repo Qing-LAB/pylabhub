@@ -41,12 +41,9 @@ using pylabhub::scripting::RoleHostCore;
 //   4. No deliberate crashes / death tests.
 // Migrated 2026-05-14 from the SetUpTestSuite-owned `LifecycleGuard`
 // antipattern.
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule()
-)
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule())
 
-class RoleHostCoreTest : public ::testing::Test,
-                          public pylabhub::tests::LogCaptureFixture
+class RoleHostCoreTest : public ::testing::Test, public pylabhub::tests::LogCaptureFixture
 {
   protected:
     // External shutdown flag for `ProcessExitRequested_*` tests.  Held
@@ -61,7 +58,7 @@ class RoleHostCoreTest : public ::testing::Test,
     // no cross-test bleed.
     std::atomic<bool> external_shutdown_flag_{false};
 
-    void SetUp()    override { LogCaptureFixture::Install(); }
+    void SetUp() override { LogCaptureFixture::Install(); }
     void TearDown() override
     {
         AssertNoUnexpectedLogWarnError();
@@ -96,9 +93,8 @@ TEST_F(RoleHostCoreTest, ContextValid_DefaultTrue_OneWayLatch)
 
     // Idempotent: calling set_context_invalid() again is harmless.
     core_.set_context_invalid();
-    EXPECT_FALSE(core_.context_valid())
-        << "V1 contract: set_context_invalid() is idempotent — "
-           "calling it again keeps the latch at false.";
+    EXPECT_FALSE(core_.context_valid()) << "V1 contract: set_context_invalid() is idempotent — "
+                                           "calling it again keeps the latch at false.";
 
     // One-way: there is no inverse setter in the public API.  This
     // test pins that contract at runtime by attempting to construct
@@ -123,17 +119,15 @@ TEST_F(RoleHostCoreTest, ContextValid_IndependentOfIsRunning)
 
     core_.set_running(true);
     EXPECT_TRUE(core_.is_running());
-    EXPECT_TRUE(core_.context_valid())
-        << "Default: both flags reflect their initial states "
-           "independently.";
+    EXPECT_TRUE(core_.context_valid()) << "Default: both flags reflect their initial states "
+                                          "independently.";
 
     // Flip is_running false (worker stopped) — context still valid.
     core_.set_running(false);
     EXPECT_FALSE(core_.is_running());
-    EXPECT_TRUE(core_.context_valid())
-        << "V1: stopping the worker loop does NOT invalidate the "
-           "callback context.  Callbacks may still fire during the "
-           "wait_for_quiescence window and need valid structures.";
+    EXPECT_TRUE(core_.context_valid()) << "V1: stopping the worker loop does NOT invalidate the "
+                                          "callback context.  Callbacks may still fire during the "
+                                          "wait_for_quiescence window and need valid structures.";
 
     // Re-start (it's re-flippable) — context still valid.
     core_.set_running(true);
@@ -142,9 +136,8 @@ TEST_F(RoleHostCoreTest, ContextValid_IndependentOfIsRunning)
 
     // Invalidate context independently.
     core_.set_context_invalid();
-    EXPECT_TRUE(core_.is_running())
-        << "V1: invalidating context does NOT stop the worker — they "
-           "operate on different concerns.";
+    EXPECT_TRUE(core_.is_running()) << "V1: invalidating context does NOT stop the worker — they "
+                                       "operate on different concerns.";
     EXPECT_FALSE(core_.context_valid());
 }
 
@@ -159,11 +152,11 @@ TEST_F(RoleHostCoreTest, DefaultState_AllZero)
            "default; teardown flips this to false exactly once.";
     EXPECT_EQ(core_.stop_reason_string(), "normal");
 
-    EXPECT_EQ(core_.out_slots_written(),       0u);
-    EXPECT_EQ(core_.in_slots_received(),       0u);
-    EXPECT_EQ(core_.out_drop_count(),             0u);
-    EXPECT_EQ(core_.script_error_count(),     0u);
-    EXPECT_EQ(core_.iteration_count(),   0u);
+    EXPECT_EQ(core_.out_slots_written(), 0u);
+    EXPECT_EQ(core_.in_slots_received(), 0u);
+    EXPECT_EQ(core_.out_drop_count(), 0u);
+    EXPECT_EQ(core_.script_error_count(), 0u);
+    EXPECT_EQ(core_.iteration_count(), 0u);
     EXPECT_EQ(core_.last_cycle_work_us(), 0u);
     EXPECT_EQ(core_.acquire_retry_count(), 0u);
 
@@ -335,7 +328,7 @@ TEST_F(RoleHostCoreTest, MetricCounters_CrossThread)
 TEST_F(RoleHostCoreTest, MessageQueue_EnqueueAndDrain)
 {
     IncomingMessage msg;
-    msg.event  = "test_event";
+    msg.event = "test_event";
     msg.sender = "sender1";
     core_.enqueue_message(std::move(msg));
 
@@ -372,15 +365,16 @@ TEST_F(RoleHostCoreTest, MessageQueue_CrossThread)
     ExpectLogWarn("Incoming queue full — dropping message");
     constexpr int kMessages = 100;
 
-    std::thread producer([&]
-    {
-        for (int i = 0; i < kMessages; ++i)
+    std::thread producer(
+        [&]
         {
-            IncomingMessage msg;
-            msg.event = std::to_string(i);
-            core_.enqueue_message(std::move(msg));
-        }
-    });
+            for (int i = 0; i < kMessages; ++i)
+            {
+                IncomingMessage msg;
+                msg.event = std::to_string(i);
+                core_.enqueue_message(std::move(msg));
+            }
+        });
 
     producer.join();
 
@@ -412,10 +406,7 @@ TEST_F(RoleHostCoreTest, ScriptLoadOk_AtomicSetAndRead)
 
 TEST_F(RoleHostCoreTest, ScriptLoadOk_CrossThread)
 {
-    std::thread writer([&]
-    {
-        core_.set_script_load_ok(true);
-    });
+    std::thread writer([&] { core_.set_script_load_ok(true); });
     writer.join();
 
     EXPECT_TRUE(core_.is_script_load_ok());
@@ -510,10 +501,7 @@ TEST_F(RoleHostCoreTest, SharedData_Clear)
 TEST_F(RoleHostCoreTest, SharedData_CrossThread)
 {
     // Writer thread sets a value; reader thread reads it after join.
-    std::thread writer([&]
-    {
-        core_.set_shared_data("from_thread", int64_t{777});
-    });
+    std::thread writer([&] { core_.set_shared_data("from_thread", int64_t{777}); });
     writer.join();
 
     auto val = core_.get_shared_data("from_thread");
@@ -529,11 +517,12 @@ TEST_F(RoleHostCoreTest, SharedData_ConcurrentReadWrite)
     // are always valid (no partial writes, no corruption).
     constexpr int kIterations = 1000;
 
-    std::thread writer([&]
-    {
-        for (int i = 0; i < kIterations; ++i)
-            core_.set_shared_data("counter", int64_t{i});
-    });
+    std::thread writer(
+        [&]
+        {
+            for (int i = 0; i < kIterations; ++i)
+                core_.set_shared_data("counter", int64_t{i});
+        });
     writer.join();
 
     // After join, final value must be the last written.  The std::get

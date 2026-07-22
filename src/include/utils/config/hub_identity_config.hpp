@@ -26,9 +26,9 @@ namespace pylabhub::config
 
 struct HubIdentityConfig
 {
-    std::string uid;                 ///< Hub UID, e.g. "hub.main.uid12345678"
-    std::string name;                ///< Human-readable name
-    std::string log_level{"info"};   ///< "debug" | "info" | "warn" | "error"
+    std::string uid;               ///< Hub UID, e.g. "hub.main.uid12345678"
+    std::string name;              ///< Human-readable name
+    std::string log_level{"info"}; ///< "debug" | "info" | "warn" | "error"
 };
 
 /// Parse hub identity from the "hub" JSON sub-object.
@@ -60,9 +60,9 @@ inline HubIdentityConfig parse_hub_identity_config(const nlohmann::json &j)
     }
 
     HubIdentityConfig hc;
-    hc.name      = sect.value("name", std::string{});
+    hc.name = sect.value("name", std::string{});
     hc.log_level = sect.value("log_level", std::string{"info"});
-    hc.uid       = sect.value("uid", std::string{});
+    hc.uid = sect.value("uid", std::string{});
 
     // HEP-CORE-0033 §6.3 (revised 2026-06-04): empty or absent
     // `hub.uid` is a hard config-load error.  The silent-auto-gen
@@ -74,21 +74,18 @@ inline HubIdentityConfig parse_hub_identity_config(const nlohmann::json &j)
     // `[default: ...]`).
     if (hc.uid.empty())
     {
-        throw std::runtime_error(
-            "hub: 'hub.uid' is empty or missing.  Run `plh_hub --init "
-            "--uid <uid>` (one-shot) or `plh_hub --skeleton` + edit "
-            "hub.json + `plh_hub --keygen` (manual) — see "
-            "HEP-CORE-0033 §6.5.  Required format: HEP-CORE-0033 "
-            "§G2.2.0b PeerUid grammar 'hub.<name>.uid<8hex>', "
-            "e.g. 'hub.main.uid3a7f2b1c'.");
+        throw std::runtime_error("hub: 'hub.uid' is empty or missing.  Run `plh_hub --init "
+                                 "--uid <uid>` (one-shot) or `plh_hub --skeleton` + edit "
+                                 "hub.json + `plh_hub --keygen` (manual) — see "
+                                 "HEP-CORE-0033 §6.5.  Required format: HEP-CORE-0033 "
+                                 "§G2.2.0b PeerUid grammar 'hub.<name>.uid<8hex>', "
+                                 "e.g. 'hub.main.uid3a7f2b1c'.");
     }
-    if (!pylabhub::hub::is_valid_identifier(
-            hc.uid, pylabhub::hub::IdentifierKind::PeerUid))
+    if (!pylabhub::hub::is_valid_identifier(hc.uid, pylabhub::hub::IdentifierKind::PeerUid))
     {
-        throw std::runtime_error(
-            "hub: invalid 'hub.uid' = '" + hc.uid +
-            "'.  Must follow HEP-CORE-0033 §G2.2.0b PeerUid grammar "
-            "'hub.<name>.uid<8hex>', e.g. 'hub.main.uid3a7f2b1c'.");
+        throw std::runtime_error("hub: invalid 'hub.uid' = '" + hc.uid +
+                                 "'.  Must follow HEP-CORE-0033 §G2.2.0b PeerUid grammar "
+                                 "'hub.<name>.uid<8hex>', e.g. 'hub.main.uid3a7f2b1c'.");
     }
 
     return hc;

@@ -20,21 +20,20 @@ struct ViewHolders
     std::string client_nonce;
 };
 
-RegFamilyBodyView
-make_view(const ::pylabhub::wire::ProducerRegReqBody &body, ViewHolders &h)
+RegFamilyBodyView make_view(const ::pylabhub::wire::ProducerRegReqBody &body, ViewHolders &h)
 {
     // ProducerRegReqBody accessors return by value; hold them so the string_view
     // fields remain valid for the duration of gate execution.
-    h.role_uid     = body.role_uid();
+    h.role_uid = body.role_uid();
     h.channel_name = body.channel_name();
-    h.zmq_pubkey   = body.zmq_pubkey();
+    h.zmq_pubkey = body.zmq_pubkey();
     h.client_nonce = body.client_nonce();
 
     RegFamilyBodyView v;
-    v.role_uid       = h.role_uid;
-    v.channel_name   = h.channel_name;
-    v.zmq_pubkey     = h.zmq_pubkey;
-    v.client_nonce   = h.client_nonce;
+    v.role_uid = h.role_uid;
+    v.channel_name = h.channel_name;
+    v.zmq_pubkey = h.zmq_pubkey;
+    v.client_nonce = h.client_nonce;
     v.client_wall_ts = body.client_wall_ts();
     return v;
 }
@@ -42,18 +41,18 @@ make_view(const ::pylabhub::wire::ProducerRegReqBody &body, ViewHolders &h)
 RegRequest make_request(const ::pylabhub::wire::ProducerRegReqBody &body)
 {
     RegRequest r;
-    r.channel_name     = body.channel_name();
-    r.role_uid         = body.role_uid();
-    r.role_name        = body.role_name();
-    r.role_type        = body.role_type();
-    r.zmq_pubkey       = body.zmq_pubkey();
+    r.channel_name = body.channel_name();
+    r.role_uid = body.role_uid();
+    r.role_name = body.role_name();
+    r.role_type = body.role_type();
+    r.zmq_pubkey = body.zmq_pubkey();
     r.channel_topology = body.channel_topology();
-    r.data_transport   = body.data_transport();
-    r.schema_hash      = body.schema_hash();
+    r.data_transport = body.data_transport();
+    r.schema_hash = body.schema_hash();
     // schema_version retired per C2 — version rides inside schema_id.
-    r.schema_id        = body.schema_id();
-    r.schema_blds      = body.schema_blds();
-    r.schema_owner     = body.schema_owner();
+    r.schema_id = body.schema_id();
+    r.schema_blds = body.schema_blds();
+    r.schema_owner = body.schema_owner();
     return r;
 }
 
@@ -64,13 +63,11 @@ RegRejected reject_from_gate(RejectDetail detail)
     return r;
 }
 
-}  // namespace
+} // namespace
 
-RegOutcome
-run_reg_admission(const ::pylabhub::wire::WireEnvelope &env,
-                   const ::pylabhub::wire::ProducerRegReqBody    &body,
-                   const AdmissionContext                &gate_ctx,
-                   const RegCommitFn                     &commit)
+RegOutcome run_reg_admission(const ::pylabhub::wire::WireEnvelope &env,
+                             const ::pylabhub::wire::ProducerRegReqBody &body,
+                             const AdmissionContext &gate_ctx, const RegCommitFn &commit)
 {
     // ── Step 1-2: pre-mutation gates ──────────────────────────────
     //
@@ -99,12 +96,12 @@ run_reg_admission(const ::pylabhub::wire::WireEnvelope &env,
     if (!commit)
     {
         RejectDetail d;
-        d.code    = RejectCode::broker_internal_error;
-        d.field   = "";
+        d.code = RejectCode::broker_internal_error;
+        d.field = "";
         d.message = "internal: commit callback not bound";
         return reject_from_gate(std::move(d));
     }
     return commit(request);
 }
 
-}  // namespace pylabhub::admission
+} // namespace pylabhub::admission

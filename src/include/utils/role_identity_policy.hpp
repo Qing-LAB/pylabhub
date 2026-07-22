@@ -45,11 +45,11 @@ namespace pylabhub::broker
 /// `KnownRolesStore::as_peer_allowlist`.
 struct PYLABHUB_UTILS_EXPORT KnownRole
 {
-    std::string name;        ///< Role human name (e.g. "lab.daq.sensor1")
-    std::string uid;         ///< Role UID string (e.g. "prod.sensor.uid12345678")
-    std::string role;        ///< "producer", "consumer", or "any" (empty = "any")
-    std::string pubkey_z85;  ///< CURVE public key (Z85, 40 chars).  Populated
-                             ///< by `--add-known-role`; the ZAP allowlist anchor.
+    std::string name;       ///< Role human name (e.g. "lab.daq.sensor1")
+    std::string uid;        ///< Role UID string (e.g. "prod.sensor.uid12345678")
+    std::string role;       ///< "producer", "consumer", or "any" (empty = "any")
+    std::string pubkey_z85; ///< CURVE public key (Z85, 40 chars).  Populated
+                            ///< by `--add-known-role`; the ZAP allowlist anchor.
 };
 
 } // namespace pylabhub::broker

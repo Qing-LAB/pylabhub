@@ -36,9 +36,8 @@ using pylabhub::admin::origin_uid;
 using pylabhub::admin::seal_session_id;
 using pylabhub::admin::verify_session_id;
 
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 namespace
 {
@@ -53,7 +52,7 @@ AdminSessionFacts make_facts()
 
 class AdminSessionTest : public ::testing::Test
 {
-protected:
+  protected:
     void SetUp() override { ensure_session_seal_key(); }
 };
 
@@ -125,8 +124,7 @@ TEST_F(AdminSessionTest, MalformedInput_Rejected)
 
 TEST_F(AdminSessionTest, OriginUid_StableStamp)
 {
-    EXPECT_EQ(origin_uid(make_facts()),
-              "alice-laptop@127.0.0.1:52012#1721000000000");
+    EXPECT_EQ(origin_uid(make_facts()), "alice-laptop@127.0.0.1:52012#1721000000000");
 }
 
 } // namespace

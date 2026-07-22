@@ -113,8 +113,8 @@
 #include <fstream>
 #include <string>
 #if !defined(PYLABHUB_PLATFORM_WIN64)
-#  include <sys/stat.h>
-#  include <unistd.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 #include <thread>
 
@@ -122,8 +122,8 @@ namespace fs = std::filesystem;
 using pylabhub::utils::security::AclVerdict;
 using pylabhub::utils::security::KeyFileRole;
 using pylabhub::utils::security::resolve_keyfile_path;
-using pylabhub::utils::security::SetModeResult;
 using pylabhub::utils::security::set_keyfile_mode;
+using pylabhub::utils::security::SetModeResult;
 using pylabhub::utils::security::verify_keyfile_acl;
 using pylabhub::utils::security::verify_ownership;
 
@@ -139,11 +139,10 @@ using pylabhub::utils::security::verify_ownership;
 
 TEST(KeyFileAclTest, Windows_PosixModeChecksSkipped)
 {
-    const AclVerdict v = verify_keyfile_acl(
-        std::filesystem::temp_directory_path(), KeyFileRole::VaultDir);
-    EXPECT_TRUE(v.ok)
-        << "Windows: utility must return ok=true per documented "
-           "platform skip.";
+    const AclVerdict v =
+        verify_keyfile_acl(std::filesystem::temp_directory_path(), KeyFileRole::VaultDir);
+    EXPECT_TRUE(v.ok) << "Windows: utility must return ok=true per documented "
+                         "platform skip.";
     EXPECT_NE(v.diagnostic.find("Windows"), std::string::npos)
         << "Windows: diagnostic must name the platform explicitly.";
     GTEST_SKIP() << "POSIX mode + ownership matrix is not applicable "
@@ -151,7 +150,7 @@ TEST(KeyFileAclTest, Windows_PosixModeChecksSkipped)
                     "remains in effect.  See HEP-CORE-0035 §4.6.";
 }
 
-#else  // POSIX
+#else // POSIX
 
 namespace
 {
@@ -175,16 +174,13 @@ bool contains(const std::string &hay, const std::string &needle)
 
 class KeyFileAclTest : public ::testing::Test
 {
-protected:
+  protected:
     void SetUp() override
     {
         // Per-test unique subdir so parallel ctest runs don't collide.
-        const auto now =
-            std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
         tmp_dir_ = fs::temp_directory_path() /
-                   ("plh_l2_kfacl_" +
-                    std::to_string(::getpid()) + "_" +
-                    std::to_string(now));
+                   ("plh_l2_kfacl_" + std::to_string(::getpid()) + "_" + std::to_string(now));
         fs::create_directories(tmp_dir_);
         ::chmod(tmp_dir_.c_str(), 0700);
     }
@@ -198,7 +194,7 @@ protected:
         {
             std::error_code chmod_ec;
             ::chmod(entry.path().c_str(), 0700);
-            (void) chmod_ec;
+            (void)chmod_ec;
         }
         fs::remove_all(tmp_dir_, ec);
     }
@@ -236,9 +232,9 @@ protected:
 TEST(KeyFileAclResolveTest, Empty_ReturnsEmpty)
 {
     const auto r = resolve_keyfile_path("", "/etc/pylabhub/hub");
-    EXPECT_TRUE(r.empty())
-        << "Empty input must return empty path so callers can use it "
-           "as the ephemeral-CURVE sentinel.  Got: " << r;
+    EXPECT_TRUE(r.empty()) << "Empty input must return empty path so callers can use it "
+                              "as the ephemeral-CURVE sentinel.  Got: "
+                           << r;
 }
 
 TEST(KeyFileAclResolveTest, Empty_EmptyBase_ReturnsEmpty)
@@ -249,8 +245,7 @@ TEST(KeyFileAclResolveTest, Empty_EmptyBase_ReturnsEmpty)
 
 TEST(KeyFileAclResolveTest, AbsolutePath_ReturnedUnchanged)
 {
-    const auto r = resolve_keyfile_path("/srv/secrets/hub.vault",
-                                        "/etc/pylabhub/hub");
+    const auto r = resolve_keyfile_path("/srv/secrets/hub.vault", "/etc/pylabhub/hub");
     EXPECT_EQ(r, fs::path("/srv/secrets/hub.vault"));
 }
 
@@ -259,16 +254,14 @@ TEST(KeyFileAclResolveTest, AbsolutePath_BaseIgnored)
     // Pins that the base_dir parameter is NOT prepended when the
     // input is absolute (a regression here would silently rewrite
     // operator-configured absolute paths).
-    const auto r = resolve_keyfile_path("/srv/secrets/hub.vault",
-                                        "/completely/unrelated/base");
+    const auto r = resolve_keyfile_path("/srv/secrets/hub.vault", "/completely/unrelated/base");
     EXPECT_EQ(r, fs::path("/srv/secrets/hub.vault"));
     EXPECT_TRUE(r.is_absolute());
 }
 
 TEST(KeyFileAclResolveTest, RelativePath_JoinedWithBase)
 {
-    const auto r = resolve_keyfile_path("vault/hub.vault",
-                                        "/etc/pylabhub/hub");
+    const auto r = resolve_keyfile_path("vault/hub.vault", "/etc/pylabhub/hub");
     EXPECT_EQ(r, fs::path("/etc/pylabhub/hub/vault/hub.vault"));
 }
 
@@ -278,8 +271,7 @@ TEST(KeyFileAclResolveTest, RelativePath_TrailingSlashOnBase)
     // transparently; pin that behavior so a hub_dir like
     // "/etc/pylabhub/hub/" (operator typo or convention) still
     // produces the right result.
-    const auto r = resolve_keyfile_path("vault/hub.vault",
-                                        "/etc/pylabhub/hub/");
+    const auto r = resolve_keyfile_path("vault/hub.vault", "/etc/pylabhub/hub/");
     EXPECT_EQ(r, fs::path("/etc/pylabhub/hub/vault/hub.vault"));
 }
 
@@ -287,10 +279,8 @@ TEST(KeyFileAclResolveTest, RelativePath_DotPrefix)
 {
     // Some operators may write "./vault/hub.vault" — should resolve
     // identically to "vault/hub.vault" under the same base.
-    const auto r = resolve_keyfile_path("./vault/hub.vault",
-                                        "/etc/pylabhub/hub");
-    EXPECT_EQ(r.lexically_normal(),
-              fs::path("/etc/pylabhub/hub/vault/hub.vault"));
+    const auto r = resolve_keyfile_path("./vault/hub.vault", "/etc/pylabhub/hub");
+    EXPECT_EQ(r.lexically_normal(), fs::path("/etc/pylabhub/hub/vault/hub.vault"));
 }
 
 TEST(KeyFileAclResolveTest, RelativePath_DotDotTraversal_NotNormalized)
@@ -299,14 +289,14 @@ TEST(KeyFileAclResolveTest, RelativePath_DotDotTraversal_NotNormalized)
     // ACL check runs on the resulting path, so privilege escalation
     // via `..` still requires owning the target.  But the helper
     // itself does not silently rewrite the operator's intent.
-    const auto r = resolve_keyfile_path("../shared/hub.vault",
-                                        "/etc/pylabhub/hub");
+    const auto r = resolve_keyfile_path("../shared/hub.vault", "/etc/pylabhub/hub");
     // The result is the literal join; lexically_normal would collapse
     // /etc/pylabhub/hub/../shared/hub.vault → /etc/pylabhub/shared/hub.vault.
     // We do NOT normalize, so the literal path retains `..`.
     EXPECT_NE(r.string().find(".."), std::string::npos)
         << "helper must preserve `..` for the ACL check to see "
-           "what the operator actually wrote: " << r;
+           "what the operator actually wrote: "
+        << r;
 }
 
 TEST(KeyFileAclResolveTest, TildeNotExpanded)
@@ -315,15 +305,15 @@ TEST(KeyFileAclResolveTest, TildeNotExpanded)
     // not shell-expanded.  Pin that the helper treats `~/...` as a
     // relative path (since `~` is not a path-is_absolute starter
     // under POSIX std::filesystem::path::is_absolute).
-    const auto r = resolve_keyfile_path("~/.pylabhub/vault/x.vault",
-                                        "/etc/pylabhub/role");
+    const auto r = resolve_keyfile_path("~/.pylabhub/vault/x.vault", "/etc/pylabhub/role");
     // Joined as relative → `/etc/pylabhub/role/~/.pylabhub/vault/x.vault`
     // (which the ACL check will then fail at `stat()`, producing an
     // operator-facing error — exactly the desired behavior).
     EXPECT_TRUE(r.string().find("~") != std::string::npos);
     EXPECT_TRUE(r.string().find("/etc/pylabhub/role") == 0)
         << "tilde-bearing relative paths are joined with base, NOT "
-           "expanded to $HOME.  Got: " << r;
+           "expanded to $HOME.  Got: "
+        << r;
 }
 
 TEST(KeyFileAclResolveTest, ResultLength_DoesNotCorrupt)
@@ -366,14 +356,12 @@ TEST(KeyFileAclInsideTest, AbsolutePath_Inside_ReturnsTrue)
     // weakly_canonical operates on lexical paths when no filesystem
     // resolution is needed — these strings exercise the prefix-match
     // logic without requiring the directories to exist.
-    EXPECT_TRUE(keyfile_inside_base_dir("/etc/pylabhub/hub/vault/x.vault",
-                                         "/etc/pylabhub/hub"));
+    EXPECT_TRUE(keyfile_inside_base_dir("/etc/pylabhub/hub/vault/x.vault", "/etc/pylabhub/hub"));
 }
 
 TEST(KeyFileAclInsideTest, AbsolutePath_Outside_ReturnsFalse)
 {
-    EXPECT_FALSE(keyfile_inside_base_dir("/srv/secrets/x.vault",
-                                          "/etc/pylabhub/hub"));
+    EXPECT_FALSE(keyfile_inside_base_dir("/srv/secrets/x.vault", "/etc/pylabhub/hub"));
 }
 
 TEST(KeyFileAclInsideTest, RelativePath_JoinedAndInside_ReturnsTrue)
@@ -422,8 +410,7 @@ TEST(KeyFileAclInsideTest, AbsolutePath_EqualToBase_ReturnsTrue)
     // Edge: keyfile path equals base path.  Component-by-component
     // prefix match still satisfies "base is a prefix of kf", so the
     // predicate returns true.  Documents this corner explicitly.
-    EXPECT_TRUE(keyfile_inside_base_dir("/etc/pylabhub/hub",
-                                         "/etc/pylabhub/hub"));
+    EXPECT_TRUE(keyfile_inside_base_dir("/etc/pylabhub/hub", "/etc/pylabhub/hub"));
 }
 
 TEST(KeyFileAclInsideTest, AbsolutePath_PrefixSubstringNotComponentMatch)
@@ -431,8 +418,7 @@ TEST(KeyFileAclInsideTest, AbsolutePath_PrefixSubstringNotComponentMatch)
     // The predicate compares COMPONENT-BY-COMPONENT, not via string
     // prefix.  Pin that "/etc/pylabhub/hub2" is NOT considered inside
     // "/etc/pylabhub/hub" — a naive substring check would mis-fire.
-    EXPECT_FALSE(keyfile_inside_base_dir("/etc/pylabhub/hub2/vault.x",
-                                          "/etc/pylabhub/hub"));
+    EXPECT_FALSE(keyfile_inside_base_dir("/etc/pylabhub/hub2/vault.x", "/etc/pylabhub/hub"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -461,10 +447,8 @@ TEST_F(KeyFileAclTest, VaultFile_0640_GroupReadable_Error)
 
     EXPECT_FALSE(v.ok);
     EXPECT_EQ(v.observed_mode, 0640u);
-    EXPECT_TRUE(contains(v.diagnostic, "vault file"))
-        << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible"))
-        << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "vault file")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, octal4(0640)))
         << "diagnostic must show observed mode 0640: " << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "chmod 0600"))
@@ -628,9 +612,9 @@ TEST_F(KeyFileAclTest, ConfigFile_0644_Ok_NoWarn)
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_EQ(v.observed_mode, 0644u);
-    EXPECT_TRUE(v.diagnostic.empty())
-        << "plain ConfigFile must NOT warn on group-readable; only "
-           "ConfigFileReferencingVault warns.  Got: " << v.diagnostic;
+    EXPECT_TRUE(v.diagnostic.empty()) << "plain ConfigFile must NOT warn on group-readable; only "
+                                         "ConfigFileReferencingVault warns.  Got: "
+                                      << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, ConfigFile_0640_Ok_NoWarn)
@@ -640,9 +624,9 @@ TEST_F(KeyFileAclTest, ConfigFile_0640_Ok_NoWarn)
     const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFile);
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
-    EXPECT_TRUE(v.diagnostic.empty())
-        << "plain ConfigFile must NOT warn on group-readable.  "
-           "Got: " << v.diagnostic;
+    EXPECT_TRUE(v.diagnostic.empty()) << "plain ConfigFile must NOT warn on group-readable.  "
+                                         "Got: "
+                                      << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, ConfigFile_0666_WorldWritable_Error)
@@ -694,8 +678,7 @@ TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0600_Ok_NoWarn)
 {
     const auto p = tmpfile_with_mode("config_rv_0600", 0600);
 
-    const AclVerdict v = verify_keyfile_acl(
-        p, KeyFileRole::ConfigFileReferencingVault);
+    const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_TRUE(v.diagnostic.empty());
@@ -705,8 +688,7 @@ TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0644_Ok_WarnsGroupReadable)
 {
     const auto p = tmpfile_with_mode("config_rv_0644", 0644);
 
-    const AclVerdict v = verify_keyfile_acl(
-        p, KeyFileRole::ConfigFileReferencingVault);
+    const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "group-readable")) << v.diagnostic;
@@ -718,8 +700,7 @@ TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0640_Ok_WarnsGroupReadable)
 {
     const auto p = tmpfile_with_mode("config_rv_0640", 0640);
 
-    const AclVerdict v = verify_keyfile_acl(
-        p, KeyFileRole::ConfigFileReferencingVault);
+    const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "group-readable")) << v.diagnostic;
@@ -730,8 +711,7 @@ TEST_F(KeyFileAclTest, ConfigFileReferencingVault_0666_WorldWritable_Error)
 {
     const auto p = tmpfile_with_mode("config_rv_0666", 0666);
 
-    const AclVerdict v = verify_keyfile_acl(
-        p, KeyFileRole::ConfigFileReferencingVault);
+    const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_FALSE(v.ok);
     EXPECT_EQ(v.observed_mode, 0666u);
@@ -744,8 +724,7 @@ TEST_F(KeyFileAclTest, ConfigFileReferencingVault_Missing_Error)
 {
     const auto p = tmp_dir_ / "no_config_rv.json";
 
-    const AclVerdict v = verify_keyfile_acl(
-        p, KeyFileRole::ConfigFileReferencingVault);
+    const AclVerdict v = verify_keyfile_acl(p, KeyFileRole::ConfigFileReferencingVault);
 
     EXPECT_FALSE(v.ok);
     EXPECT_TRUE(contains(v.diagnostic, "config file")) << v.diagnostic;
@@ -818,8 +797,7 @@ TEST_F(KeyFileAclTest, VaultFile_ParentDir_0700_NoWarn)
 
     EXPECT_TRUE(v.ok) << v.diagnostic;
     EXPECT_TRUE(v.diagnostic.empty())
-        << "strict 0700 parent must produce empty diagnostic.  Got: "
-        << v.diagnostic;
+        << "strict 0700 parent must produce empty diagnostic.  Got: " << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, VaultFile_ParentDir_0750_WarnsParentLeak)
@@ -834,20 +812,17 @@ TEST_F(KeyFileAclTest, VaultFile_ParentDir_0750_WarnsParentLeak)
 
     const AclVerdict v = verify_keyfile_acl(file_p, KeyFileRole::VaultFile);
 
-    EXPECT_TRUE(v.ok)
-        << "parent-dir leak is a WARN (recoverable), not an ERROR.  "
-           "ok must stay true.  Got diagnostic: " << v.diagnostic;
+    EXPECT_TRUE(v.ok) << "parent-dir leak is a WARN (recoverable), not an ERROR.  "
+                         "ok must stay true.  Got diagnostic: "
+                      << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "parent directory"))
-        << "diagnostic must name the parent dir explicitly: "
-        << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible"))
-        << v.diagnostic;
+        << "diagnostic must name the parent dir explicitly: " << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "0750")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, parent.string()))
         << "diagnostic must include the parent path: " << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "chmod 0700"))
-        << "diagnostic must give the parent-dir fix command: "
-        << v.diagnostic;
+        << "diagnostic must give the parent-dir fix command: " << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, VaultFile_ParentDir_0755_WarnsParentLeak)
@@ -881,8 +856,7 @@ TEST_F(KeyFileAclTest, VerifyOwnership_MatchingUids_VaultFile_Ok)
 {
     const auto p = tmpfile_with_mode("own_match_file", 0600);
 
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultFile, 1000u, 1000u);
+    const AclVerdict v = verify_ownership(p, KeyFileRole::VaultFile, 1000u, 1000u);
 
     EXPECT_TRUE(v.ok);
     EXPECT_TRUE(v.diagnostic.empty()) << v.diagnostic;
@@ -892,8 +866,7 @@ TEST_F(KeyFileAclTest, VerifyOwnership_MatchingUids_VaultDir_Ok)
 {
     const auto p = tmpdir_with_mode("own_match_dir", 0700);
 
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultDir, 42u, 42u);
+    const AclVerdict v = verify_ownership(p, KeyFileRole::VaultDir, 42u, 42u);
 
     EXPECT_TRUE(v.ok);
     EXPECT_TRUE(v.diagnostic.empty()) << v.diagnostic;
@@ -903,9 +876,8 @@ TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_VaultFile_Error)
 {
     const auto p = tmpfile_with_mode("own_mismatch_file", 0600);
 
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultFile,
-                         /*observed=*/9999u, /*expected=*/1000u);
+    const AclVerdict v = verify_ownership(p, KeyFileRole::VaultFile,
+                                          /*observed=*/9999u, /*expected=*/1000u);
 
     EXPECT_FALSE(v.ok);
     EXPECT_TRUE(contains(v.diagnostic, "vault file")) << v.diagnostic;
@@ -919,9 +891,8 @@ TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_VaultDir_Error)
 {
     const auto p = tmpdir_with_mode("own_mismatch_dir", 0700);
 
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultDir,
-                         /*observed=*/9999u, /*expected=*/1000u);
+    const AclVerdict v = verify_ownership(p, KeyFileRole::VaultDir,
+                                          /*observed=*/9999u, /*expected=*/1000u);
 
     EXPECT_FALSE(v.ok);
     EXPECT_TRUE(contains(v.diagnostic, "vault directory")) << v.diagnostic;
@@ -937,15 +908,13 @@ TEST_F(KeyFileAclTest, VerifyOwnership_MismatchedUids_ConfigFile_RoleAwareDiagno
     // hardcoded "vault" would mislead the operator.
     const auto p = tmpfile_with_mode("own_mismatch_cfg", 0600);
 
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::ConfigFile,
-                         /*observed=*/9999u, /*expected=*/1000u);
+    const AclVerdict v = verify_ownership(p, KeyFileRole::ConfigFile,
+                                          /*observed=*/9999u, /*expected=*/1000u);
 
     EXPECT_FALSE(v.ok);
     EXPECT_TRUE(contains(v.diagnostic, "config file")) << v.diagnostic;
     EXPECT_FALSE(contains(v.diagnostic, "vault"))
-        << "diagnostic must not say 'vault' when role is ConfigFile: "
-        << v.diagnostic;
+        << "diagnostic must not say 'vault' when role is ConfigFile: " << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, VerifyOwnership_RootVsUser_VaultFile_Error)
@@ -955,9 +924,8 @@ TEST_F(KeyFileAclTest, VerifyOwnership_RootVsUser_VaultFile_Error)
     // surfaces both uids so the operator can `chown <expected> <path>`.
     const auto p = tmpfile_with_mode("own_root_user", 0600);
 
-    const AclVerdict v =
-        verify_ownership(p, KeyFileRole::VaultFile,
-                         /*observed=*/0u, /*expected=*/1000u);
+    const AclVerdict v = verify_ownership(p, KeyFileRole::VaultFile,
+                                          /*observed=*/0u, /*expected=*/1000u);
 
     EXPECT_FALSE(v.ok);
     EXPECT_TRUE(contains(v.diagnostic, "owned by uid 0")) << v.diagnostic;
@@ -973,8 +941,7 @@ TEST_F(KeyFileAclTest, SetMode_VaultFile_RoundTripFrom0666To0600)
 {
     const auto p = tmpfile_with_mode("rt_vault", 0666);
 
-    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultFile),
-              SetModeResult::Applied);
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultFile), SetModeResult::Applied);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
@@ -988,8 +955,7 @@ TEST_F(KeyFileAclTest, SetMode_VaultDir_RoundTripFrom0777To0700)
 {
     const auto p = tmpdir_with_mode("rt_vault_dir", 0777);
 
-    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultDir),
-              SetModeResult::Applied);
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultDir), SetModeResult::Applied);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
@@ -1003,8 +969,7 @@ TEST_F(KeyFileAclTest, SetMode_PublicKeyFile_RoundTripFrom0600To0644)
 {
     const auto p = tmpfile_with_mode("rt_pub", 0600);
 
-    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::PublicKeyFile),
-              SetModeResult::Applied);
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::PublicKeyFile), SetModeResult::Applied);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
@@ -1019,13 +984,11 @@ TEST_F(KeyFileAclTest, SetMode_ConfigFile_NoCanonicalMode)
     // The pre-set mode must NOT change.
     const auto p = tmpfile_with_mode("rt_config", 0644);
 
-    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::ConfigFile),
-              SetModeResult::NoCanonicalMode);
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::ConfigFile), SetModeResult::NoCanonicalMode);
 
     struct ::stat st{};
     ASSERT_EQ(::stat(p.c_str(), &st), 0);
-    EXPECT_EQ(st.st_mode & 07777, 0644u)
-        << "set_keyfile_mode(ConfigFile) must not chmod the file";
+    EXPECT_EQ(st.st_mode & 07777, 0644u) << "set_keyfile_mode(ConfigFile) must not chmod the file";
 }
 
 TEST_F(KeyFileAclTest, SetMode_ConfigFileReferencingVault_NoCanonicalMode)
@@ -1040,8 +1003,7 @@ TEST_F(KeyFileAclTest, SetMode_MissingPath_ChmodFailed)
 {
     const auto p = tmp_dir_ / "does_not_exist";
 
-    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultFile),
-              SetModeResult::ChmodFailed);
+    EXPECT_EQ(set_keyfile_mode(p, KeyFileRole::VaultFile), SetModeResult::ChmodFailed);
 }
 
-#endif  // !PYLABHUB_PLATFORM_WIN64
+#endif // !PYLABHUB_PLATFORM_WIN64

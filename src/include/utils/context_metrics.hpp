@@ -70,27 +70,57 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     {
         return context_start_time_;
     }
-    [[nodiscard]] uint64_t context_elapsed_us_val()   const noexcept { return context_elapsed_us_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t last_slot_wait_us_val()    const noexcept { return last_slot_wait_us_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t last_iteration_us_val()    const noexcept { return last_iteration_us_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t max_iteration_us_val()     const noexcept { return max_iteration_us_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t last_slot_exec_us_val()    const noexcept { return last_slot_exec_us_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t checksum_error_count_val() const noexcept { return checksum_error_count_.load(std::memory_order_relaxed); }
-    [[nodiscard]] uint64_t configured_period_us_val() const noexcept { return configured_period_us_.load(std::memory_order_relaxed); }
+    [[nodiscard]] uint64_t context_elapsed_us_val() const noexcept
+    {
+        return context_elapsed_us_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t last_slot_wait_us_val() const noexcept
+    {
+        return last_slot_wait_us_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t last_iteration_us_val() const noexcept
+    {
+        return last_iteration_us_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t max_iteration_us_val() const noexcept
+    {
+        return max_iteration_us_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t last_slot_exec_us_val() const noexcept
+    {
+        return last_slot_exec_us_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t checksum_error_count_val() const noexcept
+    {
+        return checksum_error_count_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t configured_period_us_val() const noexcept
+    {
+        return configured_period_us_.load(std::memory_order_relaxed);
+    }
 
     // ── Writers (mutators, relaxed atomic store) ─────────────────────────────
 
     // Session boundaries
-    void set_context_start(Clock::time_point t) noexcept
+    void set_context_start(Clock::time_point t) noexcept { context_start_time_ = t; }
+    void set_context_elapsed(uint64_t us) noexcept
     {
-        context_start_time_ = t;
+        context_elapsed_us_.store(us, std::memory_order_relaxed);
     }
-    void set_context_elapsed(uint64_t us) noexcept { context_elapsed_us_.store(us, std::memory_order_relaxed); }
 
     // Acquire/release timing
-    void set_last_slot_wait(uint64_t us)  noexcept { last_slot_wait_us_.store(us, std::memory_order_relaxed); }
-    void set_last_iteration(uint64_t us)  noexcept { last_iteration_us_.store(us, std::memory_order_relaxed); }
-    void set_max_iteration(uint64_t us)   noexcept { max_iteration_us_.store(us, std::memory_order_relaxed); }
+    void set_last_slot_wait(uint64_t us) noexcept
+    {
+        last_slot_wait_us_.store(us, std::memory_order_relaxed);
+    }
+    void set_last_iteration(uint64_t us) noexcept
+    {
+        last_iteration_us_.store(us, std::memory_order_relaxed);
+    }
+    void set_max_iteration(uint64_t us) noexcept
+    {
+        max_iteration_us_.store(us, std::memory_order_relaxed);
+    }
     void update_max_iteration(uint64_t us) noexcept
     {
         // Relaxed load+store is safe: single writer (data thread).
@@ -100,7 +130,10 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
             max_iteration_us_.store(us, std::memory_order_relaxed);
         }
     }
-    void set_last_slot_exec(uint64_t us) noexcept { last_slot_exec_us_.store(us, std::memory_order_relaxed); }
+    void set_last_slot_exec(uint64_t us) noexcept
+    {
+        last_slot_exec_us_.store(us, std::memory_order_relaxed);
+    }
 
     // Checksum
     void inc_checksum_error() noexcept
@@ -109,7 +142,10 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     }
 
     // Config
-    void set_configured_period(uint64_t us) noexcept { configured_period_us_.store(us, std::memory_order_relaxed); }
+    void set_configured_period(uint64_t us) noexcept
+    {
+        configured_period_us_.store(us, std::memory_order_relaxed);
+    }
 
     // ── Reset ────────────────────────────────────────────────────────────────
 
@@ -117,7 +153,8 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     /// preserved (it's configuration, not a measurement).
     void clear(bool preserve_config = true) noexcept
     {
-        const auto saved = preserve_config ? configured_period_us_.load(std::memory_order_relaxed) : uint64_t{0};
+        const auto saved =
+            preserve_config ? configured_period_us_.load(std::memory_order_relaxed) : uint64_t{0};
         context_start_time_ = {};
         context_elapsed_us_.store(0, std::memory_order_relaxed);
         last_slot_wait_us_.store(0, std::memory_order_relaxed);
@@ -133,20 +170,22 @@ struct PYLABHUB_UTILS_EXPORT ContextMetrics
     // Relaxed ordering: no inter-field consistency guarantee — acceptable for diagnostics.
 
     // Session boundaries
-    Clock::time_point context_start_time_{};        ///< Set on first acquire; not atomic (single-writer).
-    std::atomic<uint64_t> context_elapsed_us_{0};   ///< Elapsed since first acquire (us).
+    Clock::time_point context_start_time_{}; ///< Set on first acquire; not atomic (single-writer).
+    std::atomic<uint64_t> context_elapsed_us_{0}; ///< Elapsed since first acquire (us).
 
     // Acquire/release timing
-    std::atomic<uint64_t> last_slot_wait_us_{0};    ///< Time blocking inside acquire (us).
-    std::atomic<uint64_t> last_iteration_us_{0};    ///< Start-to-start between acquires (us).
-    std::atomic<uint64_t> max_iteration_us_{0};     ///< Peak iteration time since reset. Init 0 = any first measure wins.
-    std::atomic<uint64_t> last_slot_exec_us_{0};    ///< Acquire to release (us).
+    std::atomic<uint64_t> last_slot_wait_us_{0}; ///< Time blocking inside acquire (us).
+    std::atomic<uint64_t> last_iteration_us_{0}; ///< Start-to-start between acquires (us).
+    std::atomic<uint64_t> max_iteration_us_{
+        0}; ///< Peak iteration time since reset. Init 0 = any first measure wins.
+    std::atomic<uint64_t> last_slot_exec_us_{0}; ///< Acquire to release (us).
 
     // Checksum
     std::atomic<uint64_t> checksum_error_count_{0}; ///< Verification failures.
 
     // Config
-    std::atomic<uint64_t> configured_period_us_{0}; ///< Target period (us). 0 = MaxRate. Set by queue.
+    std::atomic<uint64_t> configured_period_us_{
+        0}; ///< Target period (us). 0 = MaxRate. Set by queue.
 };
 
 } // namespace pylabhub::hub

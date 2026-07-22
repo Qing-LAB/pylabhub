@@ -38,7 +38,7 @@
 #endif
 
 namespace fs = std::filesystem;
-using json   = nlohmann::json;
+using json = nlohmann::json;
 
 namespace pylabhub::utils
 {
@@ -62,7 +62,7 @@ struct HubVault::Impl
     /// always full-size after a successful `open()` or `create()`.
     static constexpr std::size_t kSecretLen = 40;
     static constexpr std::size_t kPublicLen = 40;
-    static constexpr std::size_t kAdminLen  = 64;
+    static constexpr std::size_t kAdminLen = 64;
 
     /// The `known_roles` allowlist document (HEP-CORE-0035 §4.8).
     /// PUBLIC-key data — not secret — so it is a plain json member with
@@ -79,14 +79,11 @@ struct HubVault::Impl
         // (byte-addressable char array).
         namespace sec = pylabhub::utils::security;
         sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(broker_secret_z85.data()),
-            broker_secret_z85.size()));
+            reinterpret_cast<std::uint8_t *>(broker_secret_z85.data()), broker_secret_z85.size()));
         sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(broker_public_z85.data()),
-            broker_public_z85.size()));
+            reinterpret_cast<std::uint8_t *>(broker_public_z85.data()), broker_public_z85.size()));
         sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(admin_token_hex.data()),
-            admin_token_hex.size()));
+            reinterpret_cast<std::uint8_t *>(admin_token_hex.data()), admin_token_hex.size()));
     }
 };
 
@@ -108,8 +105,8 @@ std::string generate_admin_token()
     sec::secure().bin2hex(hex, sizeof(hex), raw, sizeof(raw));
     std::string token(hex, kAdminRawBytes * 2);
     sec::secure().memzero(std::span<std::uint8_t>(raw, sizeof(raw)));
-    sec::secure().memzero(std::span<std::uint8_t>(
-        reinterpret_cast<std::uint8_t *>(hex), sizeof(hex)));
+    sec::secure().memzero(
+        std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(hex), sizeof(hex)));
     return token;
 }
 
@@ -120,17 +117,16 @@ std::string generate_admin_token()
 // ============================================================================
 
 HubVault::HubVault() : pImpl(std::make_unique<Impl>()) {}
-HubVault::~HubVault()                       = default;
-HubVault::HubVault(HubVault &&) noexcept    = default;
+HubVault::~HubVault() = default;
+HubVault::HubVault(HubVault &&) noexcept = default;
 HubVault &HubVault::operator=(HubVault &&) noexcept = default;
 
 // ============================================================================
 // HubVault::create
 // ============================================================================
 
-HubVault HubVault::create(const fs::path    &vault_path,
-                           const std::string &hub_uid,
-                           const std::string &password)
+HubVault HubVault::create(const fs::path &vault_path, const std::string &hub_uid,
+                          const std::string &password)
 {
     detail::vault_require_sodium();
 
@@ -152,9 +148,8 @@ HubVault HubVault::create(const fs::path    &vault_path,
     // runs `--add-known-role`).  Stored opaquely as an empty object.
     const json payload = {
         {"broker", {{"curve_secret_key", broker_secret}, {"curve_public_key", broker_public}}},
-        {"admin",  {{"token", admin_tok}}},
-        {"known_roles", json::object()}
-    };
+        {"admin", {{"token", admin_tok}}},
+        {"known_roles", json::object()}};
     if (vault_path.has_parent_path())
     {
         fs::create_directories(vault_path.parent_path());
@@ -165,32 +160,29 @@ HubVault HubVault::create(const fs::path    &vault_path,
         // down the 0600 secret inside.
         namespace sec = pylabhub::utils::security;
         int chmod_err = 0;
-        const auto rc = sec::set_keyfile_mode(
-            vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
+        const auto rc =
+            sec::set_keyfile_mode(vault_path.parent_path(), sec::KeyFileRole::VaultDir, &chmod_err);
         // set_keyfile_mode always populates out_errno on ChmodFailed
         // (chmod failure → errno; bad_alloc fallback → ENOMEM).
         if (rc == sec::SetModeResult::ChmodFailed)
-            throw std::runtime_error(
-                "HubVault: chmod 0700 failed on vault parent dir '" +
-                vault_path.parent_path().string() + "': " +
-                std::strerror(chmod_err));
+            throw std::runtime_error("HubVault: chmod 0700 failed on vault parent dir '" +
+                                     vault_path.parent_path().string() +
+                                     "': " + std::strerror(chmod_err));
     }
     detail::vault_write(vault_path, payload.dump(), password, hub_uid);
 
     HubVault v;
-    if (broker_secret.size() != HubVault::Impl::kSecretLen
-     || broker_public.size() != HubVault::Impl::kPublicLen
-     || admin_tok.size()     != HubVault::Impl::kAdminLen)
+    if (broker_secret.size() != HubVault::Impl::kSecretLen ||
+        broker_public.size() != HubVault::Impl::kPublicLen ||
+        admin_tok.size() != HubVault::Impl::kAdminLen)
     {
-        throw std::runtime_error(
-            "HubVault::create: generated material has unexpected length");
+        throw std::runtime_error("HubVault::create: generated material has unexpected length");
     }
     std::memcpy(v.pImpl->broker_secret_z85.data(), broker_secret.data(),
                 HubVault::Impl::kSecretLen);
     std::memcpy(v.pImpl->broker_public_z85.data(), broker_public.data(),
                 HubVault::Impl::kPublicLen);
-    std::memcpy(v.pImpl->admin_token_hex.data(),   admin_tok.data(),
-                HubVault::Impl::kAdminLen);
+    std::memcpy(v.pImpl->admin_token_hex.data(), admin_tok.data(), HubVault::Impl::kAdminLen);
     return v;
 }
 
@@ -198,9 +190,8 @@ HubVault HubVault::create(const fs::path    &vault_path,
 // HubVault::open
 // ============================================================================
 
-HubVault HubVault::open(const fs::path    &vault_path,
-                         const std::string &hub_uid,
-                         const std::string &password)
+HubVault HubVault::open(const fs::path &vault_path, const std::string &hub_uid,
+                        const std::string &password)
 {
     detail::vault_require_sodium();
 
@@ -209,25 +200,23 @@ HubVault HubVault::open(const fs::path    &vault_path,
     // generously for the small JSON payload (broker keys + admin
     // token + framing); fits comfortably under 4 KiB.
     pylabhub::utils::security::SecureBuffer<4096> json_buf;
-    const std::size_t n =
-        detail::vault_read_secure(vault_path, password, hub_uid, json_buf.span());
+    const std::size_t n = detail::vault_read_secure(vault_path, password, hub_uid, json_buf.span());
 
     HubVault v;
     try
     {
         const auto bytes = json_buf.span().first(n);
-        const json j = json::parse(
-            reinterpret_cast<const char *>(bytes.data()),
-            reinterpret_cast<const char *>(bytes.data() + bytes.size()));
+        const json j = json::parse(reinterpret_cast<const char *>(bytes.data()),
+                                   reinterpret_cast<const char *>(bytes.data() + bytes.size()));
 
-        auto copy_into = [](auto &dst, std::size_t expected_len,
-                            const std::string &src, const char *field) {
+        auto copy_into =
+            [](auto &dst, std::size_t expected_len, const std::string &src, const char *field)
+        {
             if (src.size() != expected_len)
             {
-                throw std::runtime_error(
-                    std::string("HubVault: ") + field + " has unexpected length ("
-                    + std::to_string(src.size()) + ", expected "
-                    + std::to_string(expected_len) + ")");
+                throw std::runtime_error(std::string("HubVault: ") + field +
+                                         " has unexpected length (" + std::to_string(src.size()) +
+                                         ", expected " + std::to_string(expected_len) + ")");
             }
             std::memcpy(dst.data(), src.data(), expected_len);
         };
@@ -245,16 +234,14 @@ HubVault HubVault::open(const fs::path    &vault_path,
         copy_into(v.pImpl->broker_public_z85, HubVault::Impl::kPublicLen,
                   j.at("broker").at("curve_public_key").get<std::string>(),
                   "broker.curve_public_key");
-        copy_into(v.pImpl->admin_token_hex,   HubVault::Impl::kAdminLen,
-                  j.at("admin").at("token").get<std::string>(),
-                  "admin.token");
+        copy_into(v.pImpl->admin_token_hex, HubVault::Impl::kAdminLen,
+                  j.at("admin").at("token").get<std::string>(), "admin.token");
 
         // known_roles (HEP-CORE-0035 §4.8) — PUBLIC data, extracted as
         // an opaque document.  Absent in vaults created before this
         // field existed → empty object (§4.8.4 deny-all bootstrap).
         // Not zeroed: pubkeys are not secret.
-        v.pImpl->known_roles =
-            j.contains("known_roles") ? j.at("known_roles") : json::object();
+        v.pImpl->known_roles = j.contains("known_roles") ? j.at("known_roles") : json::object();
     }
     catch (const json::exception &e)
     {
@@ -269,20 +256,17 @@ HubVault HubVault::open(const fs::path    &vault_path,
 
 std::string_view HubVault::broker_curve_secret_key() const noexcept
 {
-    return std::string_view(pImpl->broker_secret_z85.data(),
-                            Impl::kSecretLen);
+    return std::string_view(pImpl->broker_secret_z85.data(), Impl::kSecretLen);
 }
 
 std::string_view HubVault::broker_curve_public_key() const noexcept
 {
-    return std::string_view(pImpl->broker_public_z85.data(),
-                            Impl::kPublicLen);
+    return std::string_view(pImpl->broker_public_z85.data(), Impl::kPublicLen);
 }
 
 std::string_view HubVault::admin_token() const noexcept
 {
-    return std::string_view(pImpl->admin_token_hex.data(),
-                            Impl::kAdminLen);
+    return std::string_view(pImpl->admin_token_hex.data(), Impl::kAdminLen);
 }
 
 // ============================================================================
@@ -299,8 +283,7 @@ void HubVault::set_known_roles(json roles)
     pImpl->known_roles = std::move(roles);
 }
 
-void HubVault::save(const fs::path    &vault_path,
-                    const std::string &hub_uid,
+void HubVault::save(const fs::path &vault_path, const std::string &hub_uid,
                     const std::string &password) const
 {
     // Reconstruct the full payload from the in-memory state.  The
@@ -310,13 +293,9 @@ void HubVault::save(const fs::path    &vault_path,
     // the same bounded exposure create() already has.
     const json payload = {
         {"broker",
-         {{"curve_secret_key",
-           std::string(pImpl->broker_secret_z85.data(), Impl::kSecretLen)},
-          {"curve_public_key",
-           std::string(pImpl->broker_public_z85.data(), Impl::kPublicLen)}}},
-        {"admin",
-         {{"token",
-           std::string(pImpl->admin_token_hex.data(), Impl::kAdminLen)}}},
+         {{"curve_secret_key", std::string(pImpl->broker_secret_z85.data(), Impl::kSecretLen)},
+          {"curve_public_key", std::string(pImpl->broker_public_z85.data(), Impl::kPublicLen)}}},
+        {"admin", {{"token", std::string(pImpl->admin_token_hex.data(), Impl::kAdminLen)}}},
         {"known_roles", pImpl->known_roles}};
 
     // ATOMIC OVERWRITE: `vault_write` (via write_secure_file) is
@@ -327,9 +306,8 @@ void HubVault::save(const fs::path    &vault_path,
     // leaves either the old vault or the new one intact — never a
     // truncated file.  Temp name is pid-scoped to avoid collisions.
     const fs::path tmp =
-        vault_path.parent_path() /
-        (vault_path.filename().string() + ".tmp." +
-         std::to_string(static_cast<long long>(::getpid())));
+        vault_path.parent_path() / (vault_path.filename().string() + ".tmp." +
+                                    std::to_string(static_cast<long long>(::getpid())));
     std::error_code ec;
     fs::remove(tmp, ec); // clear any stale temp from a prior crash
     detail::vault_write(tmp, payload.dump(), password, hub_uid);
@@ -338,9 +316,8 @@ void HubVault::save(const fs::path    &vault_path,
     {
         std::error_code rmec;
         fs::remove(tmp, rmec);
-        throw std::runtime_error(
-            "HubVault::save: atomic rename failed for '" +
-            vault_path.string() + "': " + ec.message());
+        throw std::runtime_error("HubVault::save: atomic rename failed for '" +
+                                 vault_path.string() + "': " + ec.message());
     }
 }
 
@@ -356,8 +333,7 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         std::ofstream ofs(pubkey_path, std::ios::trunc);
         if (!ofs)
         {
-            throw std::runtime_error("HubVault: cannot write hub.pubkey: " +
-                                     pubkey_path.string());
+            throw std::runtime_error("HubVault: cannot write hub.pubkey: " + pubkey_path.string());
         }
         ofs << broker_curve_public_key();
         if (!ofs)
@@ -440,25 +416,21 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         // precise errno (EEXIST for a leftover file, ELOOP for an
         // unreadable symlink chain).
     }
-    const int fd = ::open(pubkey_path.c_str(),
-                          O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
+    const int fd = ::open(pubkey_path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
                           S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (fd < 0)
     {
         const int err = errno;
         if (err == ELOOP)
-            throw std::runtime_error(
-                "HubVault: '" + pubkey_path.string() +
-                "' is a symbolic link — refusing to follow "
-                "(atomic O_NOFOLLOW guard, HEP-CORE-0035 §4.6.1)");
+            throw std::runtime_error("HubVault: '" + pubkey_path.string() +
+                                     "' is a symbolic link — refusing to follow "
+                                     "(atomic O_NOFOLLOW guard, HEP-CORE-0035 §4.6.1)");
         if (err == EEXIST)
-            throw std::runtime_error(
-                "HubVault: '" + pubkey_path.string() +
-                "' could not be cleared before publish "
-                "(racing writer?)");
-        throw std::runtime_error(
-            "HubVault: cannot create '" + pubkey_path.string() +
-            "': " + std::strerror(err));
+            throw std::runtime_error("HubVault: '" + pubkey_path.string() +
+                                     "' could not be cleared before publish "
+                                     "(racing writer?)");
+        throw std::runtime_error("HubVault: cannot create '" + pubkey_path.string() +
+                                 "': " + std::strerror(err));
     }
     // Normalize mode against pathological umask (subset of write_secure_file
     // hardening — matches the PublicKeyFile canonical mode).
@@ -467,9 +439,8 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
         const int err = errno;
         ::close(fd);
         ::unlink(pubkey_path.c_str());
-        throw std::runtime_error(
-            "HubVault: fchmod 0644 failed for '" + pubkey_path.string() +
-            "': " + std::strerror(err));
+        throw std::runtime_error("HubVault: fchmod 0644 failed for '" + pubkey_path.string() +
+                                 "': " + std::strerror(err));
     }
     const auto key = broker_curve_public_key();
     const char *buf = key.data();
@@ -484,17 +455,15 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
             const int err = errno;
             ::close(fd);
             ::unlink(pubkey_path.c_str());
-            throw std::runtime_error(
-                "HubVault: write failed for '" + pubkey_path.string() +
-                "': " + std::strerror(err));
+            throw std::runtime_error("HubVault: write failed for '" + pubkey_path.string() +
+                                     "': " + std::strerror(err));
         }
-        buf       += n;
+        buf += n;
         remaining -= static_cast<std::size_t>(n);
     }
     if (::close(fd) != 0)
-        throw std::runtime_error(
-            "HubVault: close failed for '" + pubkey_path.string() +
-            "': " + std::strerror(errno));
+        throw std::runtime_error("HubVault: close failed for '" + pubkey_path.string() +
+                                 "': " + std::strerror(errno));
 #endif
 #if defined(PYLABHUB_PLATFORM_WIN64)
     // Windows: set DACL granting owner full access + everyone read.
@@ -533,8 +502,8 @@ void HubVault::publish_public_key(const fs::path &hub_dir) const
                 {
                     SetNamedSecurityInfoW(
                         const_cast<wchar_t *>(pubkey_path.wstring().c_str()), SE_FILE_OBJECT,
-                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                        nullptr, nullptr, acl, nullptr);
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr,
+                        nullptr, acl, nullptr);
                     LocalFree(acl);
                 }
             }

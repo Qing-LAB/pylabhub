@@ -25,9 +25,8 @@
 
 #include <gtest/gtest.h>
 
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 using pylabhub::hub::HubState;
 
@@ -67,8 +66,8 @@ TEST(HubStateNonceDedup, DifferentRolesIndependentWindows)
 TEST(HubStateNonceDedup, EmptyInputsRejected)
 {
     HubState hub;
-    EXPECT_FALSE(hub.nonce_seen("",          "nonce-A", kWindowMs));
-    EXPECT_FALSE(hub.nonce_seen("prod.uid1", "",        kWindowMs));
+    EXPECT_FALSE(hub.nonce_seen("", "nonce-A", kWindowMs));
+    EXPECT_FALSE(hub.nonce_seen("prod.uid1", "", kWindowMs));
 }
 
 TEST(HubStateNonceDedup, TwoDistinctNoncesBothAccepted)

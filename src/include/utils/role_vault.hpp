@@ -58,7 +58,7 @@ namespace pylabhub::utils
  */
 class PYLABHUB_UTILS_EXPORT RoleVault
 {
-public:
+  public:
     /**
      * @brief Create a new vault file at vault_path.
      *
@@ -72,9 +72,8 @@ public:
      * @param password    Master password. Empty string = no encryption (dev mode).
      * @throws std::runtime_error on crypto or I/O failure.
      */
-    static RoleVault create(const std::filesystem::path &vault_path,
-                             const std::string           &role_uid,
-                             const std::string           &password);
+    static RoleVault create(const std::filesystem::path &vault_path, const std::string &role_uid,
+                            const std::string &password);
 
     /**
      * @brief Open an existing vault file at vault_path.
@@ -85,9 +84,8 @@ public:
      *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
-    static RoleVault open(const std::filesystem::path &vault_path,
-                           const std::string           &role_uid,
-                           const std::string           &password);
+    static RoleVault open(const std::filesystem::path &vault_path, const std::string &role_uid,
+                          const std::string &password);
 
     /// CurveZMQ public key (Z85, 40 chars).  View points into the
     /// vault's internal zero-on-destruct storage (HEP-CORE-0040 §175);
@@ -106,10 +104,10 @@ public:
     ~RoleVault();
     RoleVault(RoleVault &&) noexcept;
     RoleVault &operator=(RoleVault &&) noexcept;
-    RoleVault(const RoleVault &)            = delete;
+    RoleVault(const RoleVault &) = delete;
     RoleVault &operator=(const RoleVault &) = delete;
 
-private:
+  private:
     RoleVault();
     struct Impl;
     std::unique_ptr<Impl> pImpl;

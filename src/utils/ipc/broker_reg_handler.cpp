@@ -19,9 +19,7 @@ std::uint64_t system_now_ms()
 {
     using namespace std::chrono;
     return static_cast<std::uint64_t>(
-        duration_cast<milliseconds>(
-            system_clock::now().time_since_epoch())
-            .count());
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
 // Wire-string → typed topology, distinguishing three cases:
@@ -39,16 +37,20 @@ enum class TopologyParse
 };
 struct TopologyResult
 {
-    TopologyParse                                     kind;
-    std::optional<::pylabhub::hub::ChannelTopology>   topology;   // set when valid
+    TopologyParse kind;
+    std::optional<::pylabhub::hub::ChannelTopology> topology; // set when valid
 };
 TopologyResult parse_channel_topology(std::string_view s)
 {
     using T = ::pylabhub::hub::ChannelTopology;
-    if (s.empty())          return {TopologyParse::omitted, std::nullopt};
-    if (s == "fan-in")      return {TopologyParse::valid, T::FanIn};
-    if (s == "fan-out")     return {TopologyParse::valid, T::FanOut};
-    if (s == "one-to-one")  return {TopologyParse::valid, T::OneToOne};
+    if (s.empty())
+        return {TopologyParse::omitted, std::nullopt};
+    if (s == "fan-in")
+        return {TopologyParse::valid, T::FanIn};
+    if (s == "fan-out")
+        return {TopologyParse::valid, T::FanOut};
+    if (s == "one-to-one")
+        return {TopologyParse::valid, T::OneToOne};
     return {TopologyParse::unknown, std::nullopt};
 }
 
@@ -60,23 +62,20 @@ TopologyResult parse_channel_topology(std::string_view s)
 // Nullopt topology means "HubState will infer/default" — call site knows
 // whether the effective topology is fan-in and passes accordingly.
 AdmissionSide side_for(std::string_view role_type,
-                        std::optional<::pylabhub::hub::ChannelTopology> topology)
+                       std::optional<::pylabhub::hub::ChannelTopology> topology)
 {
     using T = ::pylabhub::hub::ChannelTopology;
-    const bool is_producer = (role_type == "producer" ||
-                                role_type == "processor");
-    const T    effective   = topology.value_or(T::OneToOne);
+    const bool is_producer = (role_type == "producer" || role_type == "processor");
+    const T effective = topology.value_or(T::OneToOne);
     switch (effective)
     {
-        case T::FanIn:
-            return is_producer ? AdmissionSide::dialing
-                                : AdmissionSide::binding;
-        case T::FanOut:
-        case T::OneToOne:
-            return is_producer ? AdmissionSide::binding
-                                : AdmissionSide::dialing;
+    case T::FanIn:
+        return is_producer ? AdmissionSide::dialing : AdmissionSide::binding;
+    case T::FanOut:
+    case T::OneToOne:
+        return is_producer ? AdmissionSide::binding : AdmissionSide::dialing;
     }
-    return AdmissionSide::binding;  // unreachable under complete switch
+    return AdmissionSide::binding; // unreachable under complete switch
 }
 
 // Build ProducerEntry from the typed RegRequest.  Populates the fields
@@ -85,12 +84,11 @@ AdmissionSide side_for(std::string_view role_type,
 // zmq_identity per addendum D1/G2) stay defaulted; when broker_service.cpp
 // migrates, per-msg_type body extensions add producer_pid / hostname if
 // still needed.
-::pylabhub::hub::ProducerEntry
-make_producer_entry_from(const RegRequest &r)
+::pylabhub::hub::ProducerEntry make_producer_entry_from(const RegRequest &r)
 {
     ::pylabhub::hub::ProducerEntry entry;
-    entry.role_name  = r.role_name;
-    entry.role_uid   = r.role_uid;
+    entry.role_name = r.role_name;
+    entry.role_uid = r.role_uid;
     entry.zmq_pubkey = r.zmq_pubkey;
     // Legacy fields remain empty; addendum §11 lists them for retirement
     // once the atomic wire cut lands (broker_proto ≥ N).  Retention here
@@ -99,20 +97,18 @@ make_producer_entry_from(const RegRequest &r)
     return entry;
 }
 
-::pylabhub::hub::ChannelSchemaInvariants
-make_schema_from(const RegRequest &r)
+::pylabhub::hub::ChannelSchemaInvariants make_schema_from(const RegRequest &r)
 {
     ::pylabhub::hub::ChannelSchemaInvariants s;
-    s.schema_hash    = r.schema_hash;
-    s.schema_id      = r.schema_id;
-    s.schema_blds    = r.schema_blds;
-    s.schema_owner   = r.schema_owner;
+    s.schema_hash = r.schema_hash;
+    s.schema_id = r.schema_id;
+    s.schema_blds = r.schema_blds;
+    s.schema_owner = r.schema_owner;
     // schema_version retired per C2 — version rides inside schema_id.
     return s;
 }
 
-::pylabhub::hub::ChannelTransportInvariants
-make_transport_from(const RegRequest &r)
+::pylabhub::hub::ChannelTransportInvariants make_transport_from(const RegRequest &r)
 {
     ::pylabhub::hub::ChannelTransportInvariants t;
     t.data_transport = r.data_transport;
@@ -127,20 +123,18 @@ make_transport_from(const RegRequest &r)
 // topology_error_code → invariant_result → producer_result.  Any
 // rejection produces RegRejected; Created / IdempotentEqual maps to
 // RegAccepted.
-RegOutcome translate_producer_admission(
-    const RegRequest                                &r,
-    const ::pylabhub::hub::ProducerAdmissionResult  &result,
-    AdmissionSide                                    side,
-    std::uint64_t                                    assigned_instance_id,
-    std::uint64_t                                    channel_version)
+RegOutcome translate_producer_admission(const RegRequest &r,
+                                        const ::pylabhub::hub::ProducerAdmissionResult &result,
+                                        AdmissionSide side, std::uint64_t assigned_instance_id,
+                                        std::uint64_t channel_version)
 {
     using namespace ::pylabhub::hub;
 
-    auto reject = [](RejectCode code, std::string field,
-                      std::string message) -> RegOutcome {
+    auto reject = [](RejectCode code, std::string field, std::string message) -> RegOutcome
+    {
         RegRejected r_out;
-        r_out.detail.code    = code;
-        r_out.detail.field   = std::move(field);
+        r_out.detail.code = code;
+        r_out.detail.field = std::move(field);
         r_out.detail.message = std::move(message);
         return r_out;
     };
@@ -148,7 +142,7 @@ RegOutcome translate_producer_admission(
     if (result.invalid_identifier)
     {
         return reject(RejectCode::invalid_request, "role_uid",
-                       "HubState grammar rejection at admission");
+                      "HubState grammar rejection at admission");
     }
     if (result.topology_error_code != nullptr)
     {
@@ -158,37 +152,34 @@ RegOutcome translate_producer_admission(
         // typed RejectCode collapses these into invalid_request until
         // §14.5 defines dedicated codes.
         return reject(RejectCode::invalid_request, "channel_topology",
-                       std::string{result.topology_error_code});
+                      std::string{result.topology_error_code});
     }
     if (result.invariant_result == InvariantSetResult::RejectedMismatch)
     {
         return reject(RejectCode::invalid_request, result.mismatched_invariant,
-                       "schema/transport invariant mismatch on existing channel");
+                      "schema/transport invariant mismatch on existing channel");
     }
     if (result.producer_result == AddProducerResult::RejectedUidConflict)
     {
         return reject(RejectCode::uid_conflict, "role_uid",
-                       "role_uid already registered on this channel");
+                      "role_uid already registered on this channel");
     }
 
     RegAccepted accepted;
-    accepted.request              = r;
-    accepted.side                 = side;
-    accepted.channel_opened       = result.channel_opened;
+    accepted.request = r;
+    accepted.side = side;
+    accepted.channel_opened = result.channel_opened;
     accepted.assigned_instance_id = assigned_instance_id;
-    accepted.channel_version      = channel_version;
-    accepted.pending_notifies     = {};
+    accepted.channel_version = channel_version;
+    accepted.pending_notifies = {};
     return accepted;
 }
 
-}  // namespace
+} // namespace
 
 BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
-                                    KnownRolesConfig           known_roles,
-                                    BrokerAdmissionConfig      config)
-    : hub_state_(hub_state)
-    , known_roles_(std::move(known_roles))
-    , config_(config)
+                                   KnownRolesConfig known_roles, BrokerAdmissionConfig config)
+    : hub_state_(hub_state), known_roles_(std::move(known_roles)), config_(config)
 {
     // Bind the gate callbacks against HubState + known_roles.  Bound
     // once here so per-request handling does not re-construct
@@ -196,14 +187,16 @@ BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
     // reference; BrokerRegHandler is non-movable / non-copyable so the
     // captures remain valid for the handler's lifetime.
 
-    gate_callbacks_.lookup_known_role =
-        [this](std::string_view uid,
-                std::string_view pubkey) -> KnownRoleLookup {
+    gate_callbacks_.lookup_known_role = [this](std::string_view uid,
+                                               std::string_view pubkey) -> KnownRoleLookup
+    {
         if (!known_roles_.lookup_pubkey_for_uid)
             return KnownRoleLookup::uid_unknown;
         const std::string registered = known_roles_.lookup_pubkey_for_uid(uid);
-        if (registered.empty())        return KnownRoleLookup::uid_unknown;
-        if (registered != pubkey)      return KnownRoleLookup::pubkey_mismatch;
+        if (registered.empty())
+            return KnownRoleLookup::uid_unknown;
+        if (registered != pubkey)
+            return KnownRoleLookup::pubkey_mismatch;
         return KnownRoleLookup::binding_matches;
     };
 
@@ -213,8 +206,8 @@ BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
     // on-the-fly re-REG with a mismatched pubkey (PUBKEY_MISMATCH), so
     // there is no separate key-rotation gate.
 
-    gate_callbacks_.record_and_check_nonce =
-        [this](std::string_view uid, std::string_view nonce) {
+    gate_callbacks_.record_and_check_nonce = [this](std::string_view uid, std::string_view nonce)
+    {
         // No timestamp crosses here — the ReplayGuard owns its trusted
         // monotonic clock (see ReplayGuard header).
         return hub_state_.nonce_seen(uid, nonce, config_.nonce_window_ms);
@@ -223,15 +216,14 @@ BrokerRegHandler::BrokerRegHandler(::pylabhub::hub::HubState &hub_state,
     gate_callbacks_.wall_now_ms = &system_now_ms;
 }
 
-RegOutcome
-BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
-                          const ::pylabhub::wire::ProducerRegReqBody    &body)
+RegOutcome BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
+                                    const ::pylabhub::wire::ProducerRegReqBody &body)
 {
     // ── Ambient context ──────────────────────────────────────────────
     AdmissionContext ctx;
-    ctx.cb                = &gate_callbacks_;
+    ctx.cb = &gate_callbacks_;
     ctx.skew_tolerance_ms = config_.skew_tolerance_ms;
-    ctx.nonce_window_ms   = config_.nonce_window_ms;
+    ctx.nonce_window_ms = config_.nonce_window_ms;
     // No `broker_proto` field on AdmissionContext (retired per C3);
     // ABI verification uses `abi_fingerprint` at the broker's REG
     // handler, not this pipeline.
@@ -247,7 +239,8 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
     // Producer path wired below.  Consumer path (role_type=="consumer")
     // follows the same shape via _on_consumer_joined — added
     // incrementally as CONSUMER_REG_REQ migrates from broker_service.cpp.
-    RegCommitFn commit = [this](const RegRequest &r) -> RegOutcome {
+    RegCommitFn commit = [this](const RegRequest &r) -> RegOutcome
+    {
         // Parse channel_topology at the boundary.  Unknown values are
         // wire violations and rejected here — silent-fallback pattern
         // (empty-treatment for unknown) prohibited under the CURVE
@@ -256,8 +249,8 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
         if (tp.kind == TopologyParse::unknown)
         {
             RegRejected rej;
-            rej.detail.code    = RejectCode::invalid_request;
-            rej.detail.field   = "channel_topology";
+            rej.detail.code = RejectCode::invalid_request;
+            rej.detail.field = "channel_topology";
             rej.detail.message = "channel_topology='" + r.channel_topology +
                                  "' is not a recognized value "
                                  "(expected 'fan-in' | 'fan-out' | "
@@ -273,8 +266,8 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
         if (r.role_type != "producer" && r.role_type != "processor")
         {
             RegRejected rej;
-            rej.detail.code    = RejectCode::broker_internal_error;
-            rej.detail.field   = "role_type";
+            rej.detail.code = RejectCode::broker_internal_error;
+            rej.detail.field = "role_type";
             rej.detail.message = "role_type='" + r.role_type +
                                  "' not accepted by BrokerRegHandler; "
                                  "dispatch bug — CONSUMER_REG_REQ has "
@@ -306,16 +299,14 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
                 effective_topology = stored->topology;
             }
         }
-        if (effective_topology.has_value() &&
-            *effective_topology == ChTopo::FanIn)
+        if (effective_topology.has_value() && *effective_topology == ChTopo::FanIn)
         {
             RegRejected rej;
-            rej.detail.code    = RejectCode::broker_internal_error;
-            rej.detail.field   = "channel_topology";
-            rej.detail.message =
-                "fan-in producer admission requires R6 pending queue "
-                "(§7.2); not yet wired in BrokerRegHandler.  Consumer "
-                "must open the channel per §3.3.0 binding-side rule.";
+            rej.detail.code = RejectCode::broker_internal_error;
+            rej.detail.field = "channel_topology";
+            rej.detail.message = "fan-in producer admission requires R6 pending queue "
+                                 "(§7.2); not yet wired in BrokerRegHandler.  Consumer "
+                                 "must open the channel per §3.3.0 binding-side rule.";
             return rej;
         }
 
@@ -333,31 +324,33 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
             {
                 for (char c : n)
                 {
-                    const bool cls = (c >= 'a' && c <= 'z') ||
-                                     (c >= 'A' && c <= 'Z') ||
-                                     (c >= '0' && c <= '9') ||
-                                     c == '.' || c == '_' || c == '-';
-                    if (!cls) { ok = false; break; }
+                    const bool cls = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                     (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+                    if (!cls)
+                    {
+                        ok = false;
+                        break;
+                    }
                 }
             }
             if (!ok)
             {
                 RegRejected rej;
-                rej.detail.code    = RejectCode::invalid_request;
-                rej.detail.field   = "role_name";
+                rej.detail.code = RejectCode::invalid_request;
+                rej.detail.field = "role_name";
                 rej.detail.message = "role_name fails identifier grammar "
                                      "(HEP-CORE-0033 §G2.2.0b / §14.5 gate 4)";
                 return rej;
             }
         }
 
-        auto schema    = make_schema_from(r);
+        auto schema = make_schema_from(r);
         auto transport = make_transport_from(r);
-        auto producer  = make_producer_entry_from(r);
+        auto producer = make_producer_entry_from(r);
 
-        auto result = hub_state_._on_producer_added(
-            r.channel_name, std::move(schema), std::move(transport),
-            tp.topology, std::move(producer));
+        auto result =
+            hub_state_._on_producer_added(r.channel_name, std::move(schema), std::move(transport),
+                                          tp.topology, std::move(producer));
 
         // ── Post-admission effective topology + side derivation ──────
         //
@@ -383,13 +376,11 @@ BrokerRegHandler::handle(const ::pylabhub::wire::WireEnvelope &env,
             channel_version = acc->ledger.current_version();
         }
         const AdmissionSide side = side_for(r.role_type, post_topology);
-        const std::uint64_t instance_id =
-            hub_state_.producer_instance(r.role_uid);
-        return translate_producer_admission(r, result, side, instance_id,
-                                              channel_version);
+        const std::uint64_t instance_id = hub_state_.producer_instance(r.role_uid);
+        return translate_producer_admission(r, result, side, instance_id, channel_version);
     };
 
     return run_reg_admission(env, body, ctx, commit);
 }
 
-}  // namespace pylabhub::admission
+} // namespace pylabhub::admission

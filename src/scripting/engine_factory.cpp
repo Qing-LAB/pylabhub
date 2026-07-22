@@ -17,16 +17,16 @@
  */
 
 #include "utils/script_engine_factory.hpp"
-#include "python_interpreter_module.hpp"  // python_interpreter_is_alive / validate
+#include "python_interpreter_module.hpp" // python_interpreter_is_alive / validate
 
 #include "utils/config/script_config.hpp"
 #include "utils/native_engine.hpp"
 #include "utils/script_engine.hpp"
-#include "utils/debug_info.hpp"           // PLH_PANIC for validate failure
+#include "utils/debug_info.hpp" // PLH_PANIC for validate failure
 #include "lua_engine.hpp"
 #include "python_engine.hpp"
 
-#include <pybind11/pybind11.h>            // py::gil_scoped_acquire
+#include <pybind11/pybind11.h> // py::gil_scoped_acquire
 
 #include <atomic>
 
@@ -52,8 +52,7 @@ namespace py = pybind11;
 // references to `Py_None` that are torn down later via
 // PythonEngine's dtor (which lazy-acquires GIL if needed) or via
 // `clear_pyobjects_` detach during `finalize_engine_`.
-std::unique_ptr<ScriptEngine>
-create_engine_impl(const config::ScriptConfig &sc) noexcept
+std::unique_ptr<ScriptEngine> create_engine_impl(const config::ScriptConfig &sc) noexcept
 {
     try
     {
@@ -80,8 +79,7 @@ create_engine_impl(const config::ScriptConfig &sc) noexcept
         auto py_engine = std::make_unique<PythonEngine>();
         if (!sc.python_venv.empty())
             py_engine->set_python_venv(sc.python_venv);
-        py_engine->set_release_global_lock_during_wait(
-            sc.release_global_lock_during_wait);
+        py_engine->set_release_global_lock_during_wait(sc.release_global_lock_during_wait);
         return py_engine;
     }
     catch (...)
@@ -239,15 +237,12 @@ void init_scripting() noexcept
     // work on repeated calls.
     static std::atomic<bool> done{false};
     bool expected = false;
-    if (!done.compare_exchange_strong(expected, true,
-                                       std::memory_order_acq_rel))
+    if (!done.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return;
     register_engine_factory(&create_engine_impl);
-    register_python_gil_helpers(&acquire_python_gil_impl,
-                                 &release_python_gil_impl);
-    register_engine_global_lock_release_helpers(
-        &release_engine_global_lock_impl,
-        &reacquire_engine_global_lock_impl);
+    register_python_gil_helpers(&acquire_python_gil_impl, &release_python_gil_impl);
+    register_engine_global_lock_release_helpers(&release_engine_global_lock_impl,
+                                                &reacquire_engine_global_lock_impl);
 }
 
 } // namespace pylabhub::scripting

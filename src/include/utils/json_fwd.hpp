@@ -29,8 +29,7 @@ inline bool config_has(const nlohmann::json &j, const char *key)
 }
 
 /// Get a JSON value with default, treating null as absent.
-template <typename T>
-T config_value(const nlohmann::json &j, const char *key, const T &default_val)
+template <typename T> T config_value(const nlohmann::json &j, const char *key, const T &default_val)
 {
     if (!j.contains(key) || j[key].is_null())
         return default_val;

@@ -26,9 +26,9 @@ namespace pylabhub::config
 
 struct HubRefConfig
 {
-    std::string hub_dir;        ///< Resolved absolute path to hub directory (or empty).
-    std::string broker;         ///< Broker endpoint, e.g. "tcp://127.0.0.1:5570".
-    std::string broker_pubkey;  ///< Z85 CURVE25519 public key (40 chars, or empty).
+    std::string hub_dir;       ///< Resolved absolute path to hub directory (or empty).
+    std::string broker;        ///< Broker endpoint, e.g. "tcp://127.0.0.1:5570".
+    std::string broker_pubkey; ///< Z85 CURVE25519 public key (40 chars, or empty).
 };
 
 /// Parse a role-side hub reference for a given direction ("in" or "out").
@@ -52,9 +52,8 @@ inline HubRefConfig parse_hub_ref_config(const nlohmann::json &j,
 
     // Resolve relative to role base directory.
     const fs::path p(hub_dir_raw);
-    const fs::path resolved = p.is_absolute()
-                              ? fs::weakly_canonical(p)
-                              : fs::weakly_canonical(base_dir / p);
+    const fs::path resolved =
+        p.is_absolute() ? fs::weakly_canonical(p) : fs::weakly_canonical(base_dir / p);
     hc.hub_dir = resolved.string();
 
     // Read broker endpoint from hub.json.  HEP-0033 §6.2 places
@@ -86,8 +85,8 @@ inline HubRefConfig parse_hub_ref_config(const nlohmann::json &j,
             // sees their hub.json is broken instead of a silent
             // "no broker" symptom.  HubRefConfig is read at role
             // config-load time, after Logger lifecycle is up.
-            LOGGER_WARN("HubRefConfig: hub.json at '{}' is malformed: {}",
-                        resolved.string(), e.what());
+            LOGGER_WARN("HubRefConfig: hub.json at '{}' is malformed: {}", resolved.string(),
+                        e.what());
         }
     }
 

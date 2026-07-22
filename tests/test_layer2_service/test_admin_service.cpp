@@ -27,7 +27,7 @@
 
 #include "admin_wire_client.h"
 #include "binary_lifecycle.h"
-#include "curve_test_setup.h"                // gen_curve_keypair, add_curve_identity
+#include "curve_test_setup.h" // gen_curve_keypair, add_curve_identity
 #include "log_capture_fixture.h"
 
 #include "utils/config/hub_config.hpp"
@@ -58,36 +58,34 @@
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 namespace w = pylabhub::wire;
+using nlohmann::json;
 using pylabhub::admin::AdminService;
 using pylabhub::config::HubAdminConfig;
 using pylabhub::config::HubConfig;
 using pylabhub::hub_host::HubHost;
 using pylabhub::tests::AdminWireClient;
 using pylabhub::utils::HubDirectory;
-using nlohmann::json;
 
-PLH_BINARY_LIFECYCLE_MODULES(
-    pylabhub::utils::Logger::GetLifecycleModule(),
-    pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-    pylabhub::utils::FileLock::GetLifecycleModule(),
-    pylabhub::utils::JsonConfig::GetLifecycleModule(),
-    pylabhub::hub::GetZMQContextModule())
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+                             pylabhub::utils::FileLock::GetLifecycleModule(),
+                             pylabhub::utils::JsonConfig::GetLifecycleModule(),
+                             pylabhub::hub::GetZMQContextModule())
 
 namespace
 {
 
-constexpr auto kTestToken =
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+constexpr auto kTestToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 /// Seed the hub broker identity (`kHubIdentityName`) once via the designed
 /// facility so the admin ROUTER can arm its curve_server (§11.1) and the
 /// console can pin it as `curve_serverkey`.  Returns the server Z85 pubkey.
 const std::string &hub_server_pubkey()
 {
-    static const std::string pub = [] {
+    static const std::string pub = []
+    {
         const auto kp = pylabhub::tests::gen_curve_keypair();
-        pylabhub::tests::add_curve_identity(
-            pylabhub::utils::security::kHubIdentityName, kp);
+        pylabhub::tests::add_curve_identity(pylabhub::utils::security::kHubIdentityName, kp);
         return kp.public_z85;
     }();
     return pub;
@@ -97,20 +95,19 @@ fs::path unique_temp_dir(const char *tag)
 {
     static std::atomic<int> ctr{0};
     fs::path d = fs::temp_directory_path() /
-                 ("plh_l2_admin_" + std::string(tag) + "_" +
-                  std::to_string(::getpid()) + "_" +
+                 ("plh_l2_admin_" + std::string(tag) + "_" + std::to_string(::getpid()) + "_" +
                   std::to_string(ctr.fetch_add(1)));
     fs::remove_all(d);
     return d;
 }
 
-template <typename Pred>
-bool poll_until(Pred pred, std::chrono::milliseconds timeout)
+template <typename Pred> bool poll_until(Pred pred, std::chrono::milliseconds timeout)
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline)
     {
-        if (pred()) return true;
+        if (pred())
+            return true;
         std::this_thread::sleep_for(5ms);
     }
     return pred();
@@ -118,8 +115,7 @@ bool poll_until(Pred pred, std::chrono::milliseconds timeout)
 
 } // namespace
 
-class AdminServiceTest : public ::testing::Test,
-                         public pylabhub::tests::LogCaptureFixture
+class AdminServiceTest : public ::testing::Test, public pylabhub::tests::LogCaptureFixture
 {
   protected:
     void SetUp() override
@@ -153,9 +149,9 @@ class AdminServiceTest : public ::testing::Test,
             j = json::parse(f);
         }
         j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-        j["admin"]["enabled"]           = true;
-        j["admin"]["endpoint"]          = "tcp://127.0.0.1:0";
-        j["script"]["path"]             = "";
+        j["admin"]["enabled"] = true;
+        j["admin"]["endpoint"] = "tcp://127.0.0.1:0";
+        j["script"]["path"] = "";
         {
             std::ofstream f(hub_json);
             f << j.dump(2);
@@ -169,19 +165,16 @@ class AdminServiceTest : public ::testing::Test,
         EXPECT_TRUE(host_->is_running());
         EXPECT_NE(host_->admin(), nullptr);
         EXPECT_TRUE(poll_until(
-            [&] { return host_->admin() && !host_->admin()->bound_endpoint().empty(); },
-            2000ms));
+            [&] { return host_->admin() && !host_->admin()->bound_endpoint().empty(); }, 2000ms));
         return host_->admin() ? host_->admin()->bound_endpoint() : std::string{};
     }
 
     /// A CURVE console connected to @p endpoint with a fresh routing id.
-    AdminWireClient make_console(const std::string &endpoint,
-                                 const std::string &routing_id)
+    AdminWireClient make_console(const std::string &endpoint, const std::string &routing_id)
     {
         const auto ckp = pylabhub::tests::gen_curve_keypair();
-        AdminWireClient::Config cfg{endpoint,          hub_server_pubkey(),
-                                    ckp.public_z85,    ckp.secret_z85,
-                                    routing_id,        2000};
+        AdminWireClient::Config cfg{endpoint,       hub_server_pubkey(), ckp.public_z85,
+                                    ckp.secret_z85, routing_id,          2000};
         return AdminWireClient(pylabhub::hub::get_zmq_context(), cfg);
     }
 
@@ -194,8 +187,8 @@ class AdminServiceTest : public ::testing::Test,
         }
     }
 
-    std::optional<HubHost>  host_;
-    std::vector<fs::path>   paths_to_clean_;
+    std::optional<HubHost> host_;
+    std::vector<fs::path> paths_to_clean_;
 };
 
 // ─── Construction ───────────────────────────────────────────────────────────
@@ -273,8 +266,7 @@ TEST_F(AdminServiceTest, Console_QueryMetrics_ReturnsResult)
     AdminWireClient console = make_console(ep, "op-console-1");
     ASSERT_TRUE(console.establish(kTestToken, "alice"));
 
-    auto r = console.command(w::kAdminQueryMetricsReq,
-                             json{{"filter", json::object()}});
+    auto r = console.command(w::kAdminQueryMetricsReq, json{{"filter", json::object()}});
     ASSERT_TRUE(r.has_value());
     EXPECT_FALSE(r->is_error());
     EXPECT_EQ(r->msg_type, std::string(w::kAdminQueryMetricsAck));
@@ -298,8 +290,7 @@ TEST_F(AdminServiceTest, Console_CloseUnknownChannel_NotFound)
     AdminWireClient console = make_console(ep, "op-console-1");
     ASSERT_TRUE(console.establish(kTestToken, "alice"));
 
-    auto r = console.command(w::kAdminCloseChannelReq,
-                             json{{"channel", "no.such.channel"}});
+    auto r = console.command(w::kAdminCloseChannelReq, json{{"channel", "no.such.channel"}});
     ASSERT_TRUE(r.has_value());
     EXPECT_TRUE(r->is_error());
     EXPECT_EQ(r->msg_type, std::string(w::kAdminError));
@@ -361,8 +352,8 @@ TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
         j = json::parse(f);
     }
     j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
-    j["admin"]["enabled"]           = false;
-    j["script"]["path"]             = "";
+    j["admin"]["enabled"] = false;
+    j["script"]["path"] = "";
     {
         std::ofstream f(dir / "hub.json");
         f << j.dump(2);

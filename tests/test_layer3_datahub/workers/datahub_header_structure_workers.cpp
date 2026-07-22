@@ -16,12 +16,12 @@
 //   - Different type pairs must produce different hashes.
 
 #include "datahub_header_structure_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "test_datahub_types.h"
 #include "plh_datahub.hpp"
-#include "utils/security/shm_capability_channel.hpp"  // _impl variant: inline transport mint
+#include "utils/security/shm_capability_channel.hpp" // _impl variant: inline transport mint
 #include <gtest/gtest.h>
 #include <fmt/core.h>
 #include <algorithm>
@@ -34,8 +34,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::header_structure
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 static bool has_nonzero_bytes(const std::array<uint8_t, 32> &arr)
 {
@@ -66,17 +72,18 @@ int schema_hashes_populated_with_template_api()
             auto p = make_fd_backed_producer_typed<TestFlexZone, TestDataBlock>(
                 channel, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             EXPECT_TRUE(has_nonzero_bytes(producer->flexzone_schema_hash()))
                 << "flexzone_schema_hash must be non-zero when producer created with FlexZone type";
             EXPECT_TRUE(has_nonzero_bytes(producer->datablock_schema_hash()))
-                << "datablock_schema_hash must be non-zero when producer created with DataBlock type";
+                << "datablock_schema_hash must be non-zero when producer created with DataBlock "
+                   "type";
 
             cleanup_test_datablock(channel);
         },
-        "schema_hashes_populated_with_template_api", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "schema_hashes_populated_with_template_api", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -118,7 +125,8 @@ int schema_hashes_zero_without_schema()
             transport.reset();
             cleanup_test_datablock(channel);
         },
-        "schema_hashes_zero_without_schema", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "schema_hashes_zero_without_schema", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -146,13 +154,13 @@ int different_types_produce_different_hashes()
             auto p1 = make_fd_backed_producer_typed<TestFlexZone, TestDataBlock>(
                 ch1, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p1.producer, nullptr);
-            auto& prod1 = p1.producer;
+            auto &prod1 = p1.producer;
 
             cfg.flex_zone_size = sizeof(EmptyFlexZone);
             auto p2 = make_fd_backed_producer_typed<EmptyFlexZone, MinimalData>(
                 ch2, DataBlockPolicy::RingBuffer, cfg);
             ASSERT_NE(p2.producer, nullptr);
-            auto& prod2 = p2.producer;
+            auto &prod2 = p2.producer;
 
             // Both schemas populated
             const auto fz1 = prod1->flexzone_schema_hash();
@@ -171,8 +179,8 @@ int different_types_produce_different_hashes()
             cleanup_test_datablock(ch1);
             cleanup_test_datablock(ch2);
         },
-        "different_types_produce_different_hashes", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "different_types_produce_different_hashes", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::header_structure
@@ -194,8 +202,7 @@ struct HeaderStructureWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "header_structure")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "header_structure")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::header_structure;

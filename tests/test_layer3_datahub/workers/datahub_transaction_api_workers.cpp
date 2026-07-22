@@ -9,7 +9,7 @@
 // - Resource lifecycle is carefully managed (handles destroyed before producer/consumer reset)
 //
 #include "datahub_transaction_api_workers.h"
-#include "datahub_fd_test_helper.h"  // #275-S2: fd-source typed helpers
+#include "datahub_fd_test_helper.h" // #275-S2: fd-source typed helpers
 #include "test_entrypoint.h"
 #include "shared_test_helpers.h"
 #include "plh_datahub.hpp"
@@ -76,21 +76,27 @@ static_assert(std::is_trivially_copyable_v<TxAPITestMessage>);
 
 // Register BLDS schemas for dual-schema validation (must be at file scope)
 PYLABHUB_SCHEMA_BEGIN(TxAPITestFlexZone)
-    PYLABHUB_SCHEMA_MEMBER(transaction_count)
-    PYLABHUB_SCHEMA_MEMBER(test_flag)
+PYLABHUB_SCHEMA_MEMBER(transaction_count)
+PYLABHUB_SCHEMA_MEMBER(test_flag)
 PYLABHUB_SCHEMA_END(TxAPITestFlexZone)
 
 PYLABHUB_SCHEMA_BEGIN(TxAPITestMessage)
-    PYLABHUB_SCHEMA_MEMBER(sequence)
-    PYLABHUB_SCHEMA_MEMBER(value)
-    PYLABHUB_SCHEMA_MEMBER(payload)
+PYLABHUB_SCHEMA_MEMBER(sequence)
+PYLABHUB_SCHEMA_MEMBER(value)
+PYLABHUB_SCHEMA_MEMBER(payload)
 PYLABHUB_SCHEMA_END(TxAPITestMessage)
 
 namespace pylabhub::tests::worker::transaction_api
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // ============================================================================
 // Test: Basic with_transaction Success
@@ -99,21 +105,21 @@ static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
 /**
  * @test with_write_transaction_success
  * @brief Verify basic with_transaction write and read
- * 
+ *
  * @test_strategy
  * Producer:
  *   1. Create producer with dual-schema (TxAPITestFlexZone, TxAPITestMessage)
  *   2. Call producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>()
  *   3. Write data to slot via ctx.slots()
  *   4. Verify transaction completes successfully
- * 
+ *
  * Consumer:
  *   1. Attach consumer with matching dual-schema
  *   2. Call consumer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>()
  *   3. Read and verify data
- * 
+ *
  * Expected: Both transactions succeed, data matches
- * 
+ *
  * @test_level C++ Schema-Aware (v1.0.0 RAII)
  * @coverage Normal usage
  */
@@ -129,20 +135,21 @@ int with_write_transaction_success()
             // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             // Create producer + consumer pair via fd-source helper (dual-schema).
             auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write using v1.0.0 with_transaction API
             const char test_payload[] = "Transaction API v1.0.0 success";
             uint64_t written_seq = 0;
-            
+
             producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
                 5000ms,
                 [&](WriteTransactionContext<TxAPITestFlexZone, TxAPITestMessage> &ctx)
@@ -151,7 +158,7 @@ int with_write_transaction_success()
                     auto zone = ctx.flexzone();
                     zone.get().transaction_count = 1;
                     zone.get().test_flag = 1;
-                    
+
                     // Write one slot
                     for (auto &slot : ctx.slots(50ms))
                     {
@@ -160,13 +167,13 @@ int with_write_transaction_success()
                             ADD_FAILURE() << "Failed to acquire slot";
                             break;
                         }
-                        
+
                         auto &msg = slot.content();
                         written_seq = 12345;
                         msg.get().sequence = written_seq;
                         msg.get().value = 999;
                         std::memcpy(msg.get().payload, test_payload, sizeof(test_payload));
-                        
+
                         break; // Write only one slot
                     }
                 });
@@ -180,7 +187,7 @@ int with_write_transaction_success()
                     auto zone = ctx.flexzone();
                     EXPECT_EQ(zone.get().transaction_count, 1u);
                     EXPECT_TRUE(zone.get().test_flag);
-                    
+
                     // Read one slot
                     for (auto &slot : ctx.slots(50ms))
                     {
@@ -189,12 +196,13 @@ int with_write_transaction_success()
                             ADD_FAILURE() << "Failed to acquire slot";
                             break;
                         }
-                        
+
                         auto &msg = slot.content();
                         EXPECT_EQ(msg.get().sequence, written_seq);
                         EXPECT_EQ(msg.get().value, 999u);
-                        EXPECT_EQ(std::memcmp(msg.get().payload, test_payload, sizeof(test_payload)), 0);
-                        
+                        EXPECT_EQ(
+                            std::memcmp(msg.get().payload, test_payload, sizeof(test_payload)), 0);
+
                         break; // Read only one slot
                     }
                 });
@@ -204,7 +212,8 @@ int with_write_transaction_success()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] with_write_transaction_success ok\n");
         },
-        "with_write_transaction_success", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "with_write_transaction_success", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -214,14 +223,14 @@ int with_write_transaction_success()
 /**
  * @test with_write_transaction_timeout
  * @brief Verify timeout behavior when slots unavailable
- * 
+ *
  * @test_strategy
  * Setup: Single-slot ring buffer
  * Consumer: Hold slot (blocks producer)
  * Producer: Attempt with_transaction with short timeout
  * Expected: Producer transaction times out (exception or early exit)
  * Cleanup: Release consumer slot, verify producer can proceed
- * 
+ *
  * @test_level C++ RAII
  * @coverage Error path (timeout)
  */
@@ -237,14 +246,15 @@ int with_write_transaction_timeout()
             // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 1; // Only one slot
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write and commit one slot
             producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
@@ -271,7 +281,8 @@ int with_write_transaction_timeout()
                 bool timeout_occurred = false;
                 producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
                     100ms, // Short timeout
-                    [&timeout_occurred](WriteTransactionContext<TxAPITestFlexZone, TxAPITestMessage> &ctx)
+                    [&timeout_occurred](
+                        WriteTransactionContext<TxAPITestFlexZone, TxAPITestMessage> &ctx)
                     {
                         for (auto &slot : ctx.slots(50ms))
                         {
@@ -281,13 +292,13 @@ int with_write_transaction_timeout()
                                 timeout_occurred = true;
                                 break;
                             }
-                            
+
                             // Should not reach here
                             ADD_FAILURE() << "Slot should not be available (consumer holds it)";
                             break;
                         }
                     });
-                
+
                 EXPECT_TRUE(timeout_occurred) << "Expected timeout when slot is held by consumer";
                 // read_handle destroyed here
             }
@@ -299,7 +310,8 @@ int with_write_transaction_timeout()
                 {
                     for (auto &slot : ctx.slots(50ms))
                     {
-                        EXPECT_TRUE(slot.is_ok()) << "Slot should be available after consumer released";
+                        EXPECT_TRUE(slot.is_ok())
+                            << "Slot should be available after consumer released";
                         break;
                     }
                 });
@@ -309,7 +321,8 @@ int with_write_transaction_timeout()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] with_write_transaction_timeout ok\n");
         },
-        "with_write_transaction_timeout", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "with_write_transaction_timeout", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -319,7 +332,7 @@ int with_write_transaction_timeout()
 /**
  * @test WriteTransactionGuard_exception_releases_slot
  * @brief Verify exception in transaction triggers automatic slot cleanup
- * 
+ *
  * @test_strategy
  * Producer:
  *   1. Start with_transaction
@@ -327,9 +340,9 @@ int with_write_transaction_timeout()
  *   3. Throw exception before commit
  *   4. Verify slot is automatically released (RAII cleanup)
  *   5. Verify subsequent acquire succeeds
- * 
+ *
  * Expected: Slot is automatically released, no resource leak
- * 
+ *
  * @test_level C++ RAII
  * @coverage Error path (exception safety)
  */
@@ -345,12 +358,13 @@ int WriteTransactionGuard_exception_releases_slot()
             // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto p = make_fd_backed_producer_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
-            auto& producer = p.producer;
+            auto &producer = p.producer;
 
             // Test exception safety
             bool exception_caught = false;
@@ -392,15 +406,16 @@ int WriteTransactionGuard_exception_releases_slot()
                         }
                     }
                 });
-            
+
             EXPECT_TRUE(slot_available) << "Slot should be available after exception cleanup";
 
             producer.reset();
             cleanup_test_datablock(channel);
-            fmt::print(stderr, "[transaction_api] WriteTransactionGuard_exception_releases_slot ok\n");
+            fmt::print(stderr,
+                       "[transaction_api] WriteTransactionGuard_exception_releases_slot ok\n");
         },
-        "WriteTransactionGuard_exception_releases_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "WriteTransactionGuard_exception_releases_slot", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -410,7 +425,7 @@ int WriteTransactionGuard_exception_releases_slot()
 /**
  * @test ReadTransactionGuard_exception_releases_slot
  * @brief Verify exception in read transaction triggers cleanup
- * 
+ *
  * @test_strategy
  * Producer: Write one slot
  * Consumer:
@@ -419,7 +434,7 @@ int WriteTransactionGuard_exception_releases_slot()
  *   3. Throw exception before complete
  *   4. Verify slot is automatically released
  *   5. Verify subsequent acquire succeeds
- * 
+ *
  * @test_level C++ RAII
  * @coverage Error path (exception safety, read side)
  */
@@ -435,14 +450,15 @@ int ReadTransactionGuard_exception_releases_slot()
             // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Producer writes one slot
             producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
@@ -501,16 +517,17 @@ int ReadTransactionGuard_exception_releases_slot()
                         }
                     }
                 });
-            
+
             EXPECT_TRUE(slot_read_ok) << "Slot should be readable after exception cleanup";
 
             producer.reset();
             consumer.reset();
             cleanup_test_datablock(channel);
-            fmt::print(stderr, "[transaction_api] ReadTransactionGuard_exception_releases_slot ok\n");
+            fmt::print(stderr,
+                       "[transaction_api] ReadTransactionGuard_exception_releases_slot ok\n");
         },
-        "ReadTransactionGuard_exception_releases_slot", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module());
+        "ReadTransactionGuard_exception_releases_slot", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -520,19 +537,19 @@ int ReadTransactionGuard_exception_releases_slot()
 /**
  * @test with_typed_write_read_succeeds
  * @brief Verify typed access to both FlexZone and DataBlock
- * 
+ *
  * @test_strategy
  * Producer:
  *   1. Access ctx.flexzone() → TxAPITestFlexZone
  *   2. Access ctx.slots() → TxAPITestMessage
  *   3. Write typed data to both
- * 
+ *
  * Consumer:
  *   1. Read ctx.flexzone() → verify TxAPITestFlexZone data
  *   2. Read ctx.slots() → verify TxAPITestMessage data
- * 
+ *
  * Expected: Both FlexZone and DataBlock typed access work correctly
- * 
+ *
  * @test_level C++ Schema-Aware (v1.0.0)
  * @coverage Normal usage (typed access)
  */
@@ -548,20 +565,21 @@ int with_typed_write_read_succeeds()
             // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 2;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write with typed access
             const uint64_t expected_seq = 12345;
             const uint32_t expected_value = 999;
             const uint32_t expected_count = 42;
-            
+
             producer->with_transaction<TxAPITestFlexZone, TxAPITestMessage>(
                 5000ms,
                 [&](WriteTransactionContext<TxAPITestFlexZone, TxAPITestMessage> &ctx)
@@ -570,7 +588,7 @@ int with_typed_write_read_succeeds()
                     auto zone = ctx.flexzone();
                     zone.get().transaction_count = expected_count;
                     zone.get().test_flag = 1;
-                    
+
                     // Access DataBlock (per-slot message)
                     for (auto &slot : ctx.slots(50ms))
                     {
@@ -594,7 +612,7 @@ int with_typed_write_read_succeeds()
                     auto zone = ctx.flexzone();
                     EXPECT_EQ(zone.get().transaction_count, expected_count);
                     EXPECT_TRUE(zone.get().test_flag);
-                    
+
                     // Verify DataBlock data
                     for (auto &slot : ctx.slots(50ms))
                     {
@@ -614,7 +632,8 @@ int with_typed_write_read_succeeds()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] with_typed_write_read_succeeds ok\n");
         },
-        "with_typed_write_read_succeeds", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "with_typed_write_read_succeeds", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -645,14 +664,15 @@ int raii_slot_iterator_roundtrip()
             // #275-S2: cfg.shared_secret dropped — fd-source factory ignores it.
             config.ring_buffer_capacity = 4;
             config.physical_page_size = DataBlockPageSize::Size4K;
-            config.flex_zone_size = sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
+            config.flex_zone_size =
+                sizeof(TxAPITestFlexZone); // rounded up to PAGE_ALIGNMENT at creation
 
             auto p = make_fd_backed_pair_typed<TxAPITestFlexZone, TxAPITestMessage>(
                 channel, DataBlockPolicy::RingBuffer, config);
             ASSERT_NE(p.producer, nullptr);
             ASSERT_NE(p.consumer, nullptr);
-            auto& producer = p.producer;
-            auto& consumer = p.consumer;
+            auto &producer = p.producer;
+            auto &consumer = p.consumer;
 
             // Write 3 slots
             for (int i = 0; i < 3; ++i)
@@ -686,10 +706,10 @@ int raii_slot_iterator_roundtrip()
                             // Timeout or error - stop reading
                             break;
                         }
-                        
+
                         auto &msg = slot.content();
                         read_values.push_back(msg.get().value);
-                        
+
                         if (read_values.size() >= 3)
                         {
                             break; // Read enough
@@ -707,7 +727,8 @@ int raii_slot_iterator_roundtrip()
             cleanup_test_datablock(channel);
             fmt::print(stderr, "[transaction_api] raii_slot_iterator_roundtrip ok\n");
         },
-        "raii_slot_iterator_roundtrip", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "raii_slot_iterator_roundtrip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::transaction_api

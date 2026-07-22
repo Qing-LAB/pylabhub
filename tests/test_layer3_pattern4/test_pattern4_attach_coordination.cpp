@@ -46,7 +46,7 @@ namespace
 
 class Pattern4AttachCoordinationTest : public IsolatedProcessTest
 {
-protected:
+  protected:
     void TearDown() override
     {
         for (const auto &p : paths_to_clean_)
@@ -78,18 +78,17 @@ protected:
     /// DEALER routing_id per I-DEALER-IDENTITY (HEP-CORE-0046 §8.1)
     /// so the broker's ROUTER routes replies to the intended DEALER
     /// and envelope_hash covers the same identity on both sides.
-    BrokerWireClient make_wire_client(
-        zmq::context_t &ctx,
-        const pylabhub::tests::pattern4::Pattern4Setup &setup,
-        const pylabhub::tests::CurveKeypair &kp,
-        const std::string &role_uid)
+    BrokerWireClient make_wire_client(zmq::context_t &ctx,
+                                      const pylabhub::tests::pattern4::Pattern4Setup &setup,
+                                      const pylabhub::tests::CurveKeypair &kp,
+                                      const std::string &role_uid)
     {
         BrokerWireClient::Config c;
-        c.broker_endpoint  = setup.broker_endpoint;
-        c.broker_pubkey    = setup.curve.hub.public_z85;
-        c.client_pubkey    = kp.public_z85;
-        c.client_seckey    = kp.secret_z85;
-        c.client_role_uid  = role_uid;
+        c.broker_endpoint = setup.broker_endpoint;
+        c.broker_pubkey = setup.curve.hub.public_z85;
+        c.client_pubkey = kp.public_z85;
+        c.client_seckey = kp.secret_z85;
+        c.client_role_uid = role_uid;
         return BrokerWireClient(ctx, c);
     }
 
@@ -107,30 +106,25 @@ protected:
     /// on subsequent CHANNEL_AUTH_APPLIED_REQ.  Tests that only need
     /// the REG side effect (channel opened, producer live) pass
     /// nullptr and ignore.
-    void producer_reg_and_heartbeat(
-        BrokerWireClient   &client,
-        const std::string  &channel,
-        const std::string  &uid,
-        const std::string  &pubkey,
-        int                 data_port,
-        std::uint64_t      *out_instance_id = nullptr,
-        const std::string  &channel_topology = {})
+    void producer_reg_and_heartbeat(BrokerWireClient &client, const std::string &channel,
+                                    const std::string &uid, const std::string &pubkey,
+                                    int data_port, std::uint64_t *out_instance_id = nullptr,
+                                    const std::string &channel_topology = {})
     {
         using pylabhub::kLongTimeoutMs;
 
         pylabhub::hub::ProducerRegInputs in;
-        in.channel           = channel;
-        in.role_uid          = uid;
-        in.role_name         = uid.substr(uid.rfind('.') + 1);
-        in.role_type         = "producer";
-        in.is_zmq_transport  = true;
+        in.channel = channel;
+        in.role_uid = uid;
+        in.role_name = uid.substr(uid.rfind('.') + 1);
+        in.role_type = "producer";
+        in.is_zmq_transport = true;
         in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(data_port);
-        in.zmq_pubkey        = pubkey;
-        in.channel_topology  = channel_topology;
+        in.zmq_pubkey = pubkey;
+        in.channel_topology = channel_topology;
         auto payload = pylabhub::hub::build_producer_reg_payload(in);
-        auto reply = client.request(
-            "REG_REQ", payload, "REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
+        auto reply = client.request("REG_REQ", payload, "REG_ACK",
+                                    std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "producer REG_REQ: no reply";
         ASSERT_EQ(reply->value("status", ""), "success")
             << "producer REG_REQ failed: " << reply->dump();
@@ -140,12 +134,11 @@ protected:
         // regression that drops the field surfaces immediately in
         // every test that uses the helper.
         ASSERT_TRUE(reply->contains("instance_id"))
-            << "REG_ACK missing HEP-CORE-0042 §5.5.3 `instance_id` echo: "
-            << reply->dump();
+            << "REG_ACK missing HEP-CORE-0042 §5.5.3 `instance_id` echo: " << reply->dump();
         const auto instance_id = reply->value("instance_id", std::uint64_t{0});
-        ASSERT_GE(instance_id, 1u)
-            << "instance_id must be >= 1 (§5.2 counter starts at 1 on "
-               "first REG): " << reply->dump();
+        ASSERT_GE(instance_id, 1u) << "instance_id must be >= 1 (§5.2 counter starts at 1 on "
+                                      "first REG): "
+                                   << reply->dump();
         if (out_instance_id != nullptr)
             *out_instance_id = instance_id;
 
@@ -157,12 +150,13 @@ protected:
         // §5.5.4 tests.
         ASSERT_TRUE(reply->contains("snapshot_version"))
             << "REG_ACK missing HEP-CORE-0042 §5.5.4 `snapshot_version` "
-               "echo: " << reply->dump();
+               "echo: "
+            << reply->dump();
 
         nlohmann::json hb;
         hb["channel_name"] = channel;
-        hb["role_uid"]     = uid;
-        hb["role_type"]    = "producer";
+        hb["role_uid"] = uid;
+        hb["role_type"] = "producer";
         hb["producer_pid"] = 1;
         client.send("HEARTBEAT_NOTIFY", hb);
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -172,23 +166,19 @@ protected:
     /// "success".  This mutation bumps `channel_version[K]` by 1 and
     /// fires a fan-out CHANNEL_AUTH_CHANGED_NOTIFY to every producer
     /// of K (per HEP-CORE-0036 §6.5).
-    void consumer_reg(
-        BrokerWireClient  &client,
-        const std::string &channel,
-        const std::string &uid,
-        const std::string &pubkey)
+    void consumer_reg(BrokerWireClient &client, const std::string &channel, const std::string &uid,
+                      const std::string &pubkey)
     {
         using pylabhub::kLongTimeoutMs;
 
         pylabhub::hub::ConsumerRegInputs in;
-        in.channel    = channel;
-        in.role_uid   = uid;
-        in.role_name  = uid.substr(uid.rfind('.') + 1);
+        in.channel = channel;
+        in.role_uid = uid;
+        in.role_name = uid.substr(uid.rfind('.') + 1);
         in.zmq_pubkey = pubkey;
         auto payload = pylabhub::hub::build_consumer_reg_payload(in);
-        auto reply = client.request(
-            "CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
+        auto reply = client.request("CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
+                                    std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "consumer REG_REQ: no reply";
         ASSERT_EQ(reply->value("status", ""), "success")
             << "consumer REG_REQ failed: " << reply->dump();
@@ -202,14 +192,12 @@ protected:
     /// subsequent producer message (APPLIED_REQ, DEREG_REQ) beat the
     /// consumer's ATTACH_REQ to the broker's ROUTER and produce a
     /// wire-identical false-pass reply from the fast-path branch.
-    void wait_for_attach_enqueue(
-        const pylabhub::tests::helper::WorkerProcess &broker,
-        const std::string                           &channel)
+    void wait_for_attach_enqueue(const pylabhub::tests::helper::WorkerProcess &broker,
+                                 const std::string &channel)
     {
         using pylabhub::kMidTimeoutMs;
-        expect_log(broker,
-                    "event=AttachReqZmqEnqueued channel='" + channel + "'",
-                    std::chrono::milliseconds{kMidTimeoutMs});
+        expect_log(broker, "event=AttachReqZmqEnqueued channel='" + channel + "'",
+                   std::chrono::milliseconds{kMidTimeoutMs});
     }
 
     std::vector<fs::path> paths_to_clean_;
@@ -253,10 +241,8 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     const int producer_data_port = pick_unused_port();
 
     // ── 2. Broker subprocess ──
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     // ── 3. Construct one BrokerWireClient per role ──
     zmq::context_t ctx;
@@ -272,13 +258,13 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     // that the producer quotes what the broker returned, not what
     // it guessed.
     std::uint64_t producer_instance = 0;
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port, &producer_instance));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port,
+                                                       &producer_instance));
 
     // ── 5. Consumer CONSUMER_REG_REQ → channel_version 0→1 ──
-    ASSERT_NO_FATAL_FAILURE(consumer_reg(
-        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
+    ASSERT_NO_FATAL_FAILURE(
+        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // ── 6. Producer sends CHANNEL_AUTH_APPLIED_REQ(v=1, instance=echoed) ──
     // Simulates the producer's cache having caught up to the new
@@ -290,20 +276,18 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     // test expects.
     {
         nlohmann::json applied;
-        applied["channel_name"]     = channel_name;
+        applied["channel_name"] = channel_name;
         // ChannelAuthAppliedReqBody wire class requires canonical
         // `role_uid` per HEP-CORE-0046 §14.3 + HEP-CORE-0042 §5.5.2.
-        applied["role_uid"]         = producer_uid;
-        applied["role_type"]        = "producer";
-        applied["applied_version"]  = 1u;
-        applied["instance_id"]      = producer_instance;
+        applied["role_uid"] = producer_uid;
+        applied["role_type"] = "producer";
+        applied["applied_version"] = 1u;
+        applied["instance_id"] = producer_instance;
 
-        auto reply = prod_client.request(
-            "CHANNEL_AUTH_APPLIED_REQ", applied,
-            "CHANNEL_AUTH_APPLIED_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "producer APPLIED_REQ: no reply";
+        auto reply =
+            prod_client.request("CHANNEL_AUTH_APPLIED_REQ", applied, "CHANNEL_AUTH_APPLIED_ACK",
+                                std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "producer APPLIED_REQ: no reply";
         ASSERT_EQ(reply->value("status", ""), "ok")
             << "producer APPLIED_REQ failed: " << reply->dump();
         ASSERT_EQ(reply->value("applied_version", 0u), 1u);
@@ -312,17 +296,15 @@ TEST_F(Pattern4AttachCoordinationTest, FastPathAdmit)
     // ── 7. Consumer sends CONSUMER_ATTACH_REQ_ZMQ → fast-path SUCCESS ──
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
 
-        auto reply = cons_client.request(
-            "CONSUMER_ATTACH_REQ_ZMQ", attach,
-            "CONSUMER_ATTACH_ACK_ZMQ",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer ATTACH_REQ: no reply";
+        auto reply =
+            cons_client.request("CONSUMER_ATTACH_REQ_ZMQ", attach, "CONSUMER_ATTACH_ACK_ZMQ",
+                                std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "consumer ATTACH_REQ: no reply";
         EXPECT_EQ(reply->value("status", ""), "success")
             << "expected §5.4 fast-path admit, got: " << reply->dump();
         EXPECT_EQ(reply->value("channel_name", ""), channel_name);
@@ -360,10 +342,8 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedConsumerNotInAllowlist)
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
@@ -372,29 +352,24 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedConsumerNotInAllowlist)
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     // Producer REG + heartbeat — opens the channel.
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port));
 
     // Consumer attaches WITHOUT registering — its pubkey is not in
     // the channel's allowlist.
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
 
-        auto reply = cons_client.request(
-            "CONSUMER_ATTACH_REQ_ZMQ", attach,
-            "CONSUMER_ATTACH_ACK_ZMQ",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer ATTACH_REQ: no reply";
+        auto reply =
+            cons_client.request("CONSUMER_ATTACH_REQ_ZMQ", attach, "CONSUMER_ATTACH_ACK_ZMQ",
+                                std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "consumer ATTACH_REQ: no reply";
         EXPECT_EQ(reply->value("status", ""), "denied") << reply->dump();
-        EXPECT_EQ(reply->value("reason", ""),
-                   "consumer_not_in_channel_allowlist")
-            << reply->dump();
+        EXPECT_EQ(reply->value("reason", ""), "consumer_not_in_channel_allowlist") << reply->dump();
     }
 
     broker.signal_quit();
@@ -436,10 +411,8 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
@@ -447,11 +420,10 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
     auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
-    ASSERT_NO_FATAL_FAILURE(consumer_reg(
-        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(
+        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Consumer attaches to a BOGUS producer_role_uid on the same channel.
     // The channel exists (producer P is registered) and the consumer is
@@ -460,20 +432,17 @@ TEST_F(Pattern4AttachCoordinationTest, DeniedProducerNotLive)
     // ch->producers[].
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = bogus_producer_uid;
 
-        auto reply = cons_client.request(
-            "CONSUMER_ATTACH_REQ_ZMQ", attach,
-            "CONSUMER_ATTACH_ACK_ZMQ",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer ATTACH_REQ: no reply";
+        auto reply =
+            cons_client.request("CONSUMER_ATTACH_REQ_ZMQ", attach, "CONSUMER_ATTACH_ACK_ZMQ",
+                                std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "consumer ATTACH_REQ: no reply";
         EXPECT_EQ(reply->value("status", ""), "denied") << reply->dump();
-        EXPECT_EQ(reply->value("reason", ""), "producer_not_live")
-            << reply->dump();
+        EXPECT_EQ(reply->value("reason", ""), "producer_not_live") << reply->dump();
     }
 
     broker.signal_quit();
@@ -517,10 +486,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
@@ -529,13 +496,13 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     std::uint64_t producer_instance = 0;
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port, &producer_instance));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port,
+                                                       &producer_instance));
     // Consumer REG bumps channel_version[K] 0→1 and fires NOTIFY at
     // producer (fan-out from CONSUMER_REG's allowlist mutation).
-    ASSERT_NO_FATAL_FAILURE(consumer_reg(
-        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
+    ASSERT_NO_FATAL_FAILURE(
+        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // ── Wait-path trigger: consumer ATTACH_REQ without producer having
     //    APPLIED_REQ first ──
@@ -546,9 +513,9 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     // broker drains the queue.
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
@@ -585,25 +552,23 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     // targeted NOTIFY) so we cleanly see the APPLIED_ACK.
     {
         nlohmann::json applied;
-        applied["channel_name"]      = channel_name;
+        applied["channel_name"] = channel_name;
         // Canonical wire fields per HEP-CORE-0046 §14.3 +
         // HEP-CORE-0042 §5.5.2 — ChannelAuthAppliedReqBody requires
         // `role_uid` (not legacy `producer_role_uid`).
-        applied["role_uid"]          = producer_uid;
-        applied["role_type"]         = "producer";
-        applied["applied_version"]   = 1u;
+        applied["role_uid"] = producer_uid;
+        applied["role_type"] = "producer";
+        applied["applied_version"] = 1u;
         // §5.5.3 echo — quote what REG_ACK returned, not a hardcoded
         // guess.  Pins the round-trip so an echo regression breaks
         // the test with STALE_INSTANCE instead of masquerading as
         // wait-path breakage.
-        applied["instance_id"]       = producer_instance;
+        applied["instance_id"] = producer_instance;
 
-        auto reply = prod_client.request(
-            "CHANNEL_AUTH_APPLIED_REQ", applied,
-            "CHANNEL_AUTH_APPLIED_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "producer APPLIED_REQ: no ACK";
+        auto reply =
+            prod_client.request("CHANNEL_AUTH_APPLIED_REQ", applied, "CHANNEL_AUTH_APPLIED_ACK",
+                                std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "producer APPLIED_REQ: no ACK";
         ASSERT_EQ(reply->value("status", ""), "ok") << reply->dump();
         ASSERT_EQ(reply->value("applied_version", 0u), 1u);
     }
@@ -615,15 +580,12 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathEnqueueAndDrainOnAppliedReq)
     // ACK-side frames (NOTIFYs are targeted at producers), so a
     // plain receive() is sufficient.
     {
-        auto reply = cons_client.receive(
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer did not receive deferred ATTACH_ACK — "
-               "wait-path drain (§5.4 step d) likely broken.";
+        auto reply = cons_client.receive(std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "consumer did not receive deferred ATTACH_ACK — "
+                                          "wait-path drain (§5.4 step d) likely broken.";
         EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ")
             << "got msg_type='" << reply->first << "'";
-        EXPECT_EQ(reply->second.value("status", ""), "success")
-            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("status", ""), "success") << reply->second.dump();
         EXPECT_EQ(reply->second.value("channel_name", ""), channel_name);
         EXPECT_EQ(reply->second.value("producer_role_uid", ""), producer_uid);
     }
@@ -656,50 +618,45 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
 
     const std::string producer1_uid = "prod.p1.uid00000001";
     const std::string producer2_uid = "prod.p2.uid00000002";
-    const std::string consumer_uid  = "cons.c.uid00000003";
-    const std::string channel_name  = "ch.attach.drain_pnotlive";
+    const std::string consumer_uid = "cons.c.uid00000003";
+    const std::string channel_name = "ch.attach.drain_pnotlive";
 
     const fs::path temp_dir = make_test_temp_dir("attach_drain_pnotlive");
-    const auto setup = make_pattern4_setup(
-        {producer1_uid, producer2_uid, consumer_uid});
+    const auto setup = make_pattern4_setup({producer1_uid, producer2_uid, consumer_uid});
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer1_data_port = pick_unused_port();
     const int producer2_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
-    const auto &p1_kp   = setup.curve.role(producer1_uid);
-    const auto &p2_kp   = setup.curve.role(producer2_uid);
+    const auto &p1_kp = setup.curve.role(producer1_uid);
+    const auto &p2_kp = setup.curve.role(producer2_uid);
     const auto &cons_kp = setup.curve.role(consumer_uid);
-    auto p1_client   = make_wire_client(ctx, setup, p1_kp, producer1_uid);
-    auto p2_client   = make_wire_client(ctx, setup, p2_kp, producer2_uid);
+    auto p1_client = make_wire_client(ctx, setup, p1_kp, producer1_uid);
+    auto p2_client = make_wire_client(ctx, setup, p2_kp, producer2_uid);
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
     // Fan-in — two producers on one channel per the topology-migration
     // model.  Default topology (one-to-one) would trip
     // ONE_TO_ONE_CARDINALITY_VIOLATED on producer2.
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        p1_client, channel_name, producer1_uid,
-        p1_kp.public_z85, producer1_data_port,
+        p1_client, channel_name, producer1_uid, p1_kp.public_z85, producer1_data_port,
         /*out_instance_id=*/nullptr, /*channel_topology=*/"fan-in"));
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        p2_client, channel_name, producer2_uid,
-        p2_kp.public_z85, producer2_data_port,
+        p2_client, channel_name, producer2_uid, p2_kp.public_z85, producer2_data_port,
         /*out_instance_id=*/nullptr, /*channel_topology=*/"fan-in"));
-    ASSERT_NO_FATAL_FAILURE(consumer_reg(
-        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
+    ASSERT_NO_FATAL_FAILURE(
+        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path: consumer targets P1.  Fast-path misses because
     // neither producer has sent APPLIED_REQ.
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer1_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
@@ -716,28 +673,23 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
     {
         nlohmann::json dereg;
         dereg["channel_name"] = channel_name;
-        dereg["role_uid"]     = producer1_uid;
+        dereg["role_uid"] = producer1_uid;
         dereg["producer_pid"] = pylabhub::platform::get_pid();
-        auto reply = p1_client.request(
-            "DEREG_REQ", dereg, "DEREG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
+        auto reply = p1_client.request("DEREG_REQ", dereg, "DEREG_ACK",
+                                       std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value());
         ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
     }
 
     // Consumer receives the drain-denied reply.
     {
-        auto reply = cons_client.receive(
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer did not receive drain-denied reply — "
-               "producer-disconnect drain (§5.4 producer_not_live) "
-               "likely broken.";
+        auto reply = cons_client.receive(std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "consumer did not receive drain-denied reply — "
+                                          "producer-disconnect drain (§5.4 producer_not_live) "
+                                          "likely broken.";
         EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ");
-        EXPECT_EQ(reply->second.value("status", ""), "denied")
-            << reply->second.dump();
-        EXPECT_EQ(reply->second.value("reason", ""), "producer_not_live")
-            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("status", ""), "denied") << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""), "producer_not_live") << reply->second.dump();
     }
 
     broker.signal_quit();
@@ -772,10 +724,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
@@ -783,18 +733,17 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
-    ASSERT_NO_FATAL_FAILURE(consumer_reg(
-        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(
+        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path enqueue.
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
@@ -811,11 +760,10 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     {
         nlohmann::json dereg;
         dereg["channel_name"] = channel_name;
-        dereg["role_uid"]     = producer_uid;
+        dereg["role_uid"] = producer_uid;
         dereg["producer_pid"] = pylabhub::platform::get_pid();
-        auto reply = prod_client.request(
-            "DEREG_REQ", dereg, "DEREG_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
+        auto reply = prod_client.request("DEREG_REQ", dereg, "DEREG_ACK",
+                                         std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value());
         ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
     }
@@ -827,13 +775,12 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
     // so we loop until we find the ACK we're actually pinning.
     {
         std::optional<std::pair<std::string, nlohmann::json>> reply;
-        const auto deadline = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds{kLongTimeoutMs};
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds{kLongTimeoutMs};
         while (std::chrono::steady_clock::now() < deadline)
         {
-            auto remaining =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    deadline - std::chrono::steady_clock::now());
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
             auto next = cons_client.receive(remaining);
             if (!next.has_value())
                 break;
@@ -847,10 +794,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnChannelClose)
         ASSERT_TRUE(reply.has_value())
             << "consumer did not receive drain-denied reply — "
                "channel-close drain (§5.4 channel_closing) likely broken.";
-        EXPECT_EQ(reply->second.value("status", ""), "denied")
-            << reply->second.dump();
-        EXPECT_EQ(reply->second.value("reason", ""), "channel_closing")
-            << reply->second.dump();
+        EXPECT_EQ(reply->second.value("status", ""), "denied") << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""), "channel_closing") << reply->second.dump();
     }
 
     broker.signal_quit();
@@ -888,10 +833,8 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
@@ -899,18 +842,17 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
     auto prod_client = make_wire_client(ctx, setup, prod_kp, producer_uid);
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
-    ASSERT_NO_FATAL_FAILURE(consumer_reg(
-        cons_client, channel_name, consumer_uid, cons_kp.public_z85));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(
+        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path enqueue — producer will NEVER send APPLIED_REQ.
     {
         nlohmann::json attach;
-        attach["channel_name"]      = channel_name;
+        attach["channel_name"] = channel_name;
         attach["consumer_role_uid"] = consumer_uid;
-        attach["consumer_pubkey"]   = cons_kp.public_z85;
+        attach["consumer_pubkey"] = cons_kp.public_z85;
         attach["producer_role_uid"] = producer_uid;
         cons_client.send("CONSUMER_ATTACH_REQ_ZMQ", attach);
     }
@@ -926,14 +868,11 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathTimeoutOnMissingAppliedReq)
     // absorb CI jitter.
     {
         auto reply = cons_client.receive(std::chrono::milliseconds{6000});
-        ASSERT_TRUE(reply.has_value())
-            << "consumer did not receive timeout reply within 6s — "
-               "sweep_pending_attach_timeouts_ likely broken.";
+        ASSERT_TRUE(reply.has_value()) << "consumer did not receive timeout reply within 6s — "
+                                          "sweep_pending_attach_timeouts_ likely broken.";
         EXPECT_EQ(reply->first, "CONSUMER_ATTACH_ACK_ZMQ");
-        EXPECT_EQ(reply->second.value("status", ""), "timeout")
-            << reply->second.dump();
-        EXPECT_EQ(reply->second.value("reason", ""),
-                   "producer_did_not_confirm_within_budget")
+        EXPECT_EQ(reply->second.value("status", ""), "timeout") << reply->second.dump();
+        EXPECT_EQ(reply->second.value("reason", ""), "producer_did_not_confirm_within_budget")
             << reply->second.dump();
     }
 
@@ -971,10 +910,8 @@ TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
     write_pattern4_setup(setup, temp_dir / "setup.json");
     const int producer_data_port = pick_unused_port();
 
-    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker",
-                                             {temp_dir.string()});
-    expect_log(broker, "Pattern4Broker: bound endpoint",
-                std::chrono::milliseconds{kMidTimeoutMs});
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_smoke.broker", {temp_dir.string()});
+    expect_log(broker, "Pattern4Broker: bound endpoint", std::chrono::milliseconds{kMidTimeoutMs});
 
     zmq::context_t ctx;
     const auto &prod_kp = setup.curve.role(producer_uid);
@@ -984,9 +921,8 @@ TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
     // first REG.  (Heartbeat is not strictly required for this test
     // since no consumer REG follows, but uses the shared helper for
     // uniformity — the extra 100ms is not on the critical path.)
-    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
-        prod_client, channel_name, producer_uid,
-        prod_kp.public_z85, producer_data_port));
+    ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(prod_client, channel_name, producer_uid,
+                                                       prod_kp.public_z85, producer_data_port));
 
     // Send APPLIED_REQ with a stale instance_id.  Broker returns ERROR
     // with error_code="STALE_INSTANCE" per handle_channel_auth_applied_req.
@@ -994,27 +930,24 @@ TEST_F(Pattern4AttachCoordinationTest, StaleInstanceGuardOnAppliedReq)
     // close-out), so the reply body IS the ERROR envelope.
     {
         nlohmann::json applied;
-        applied["channel_name"]      = channel_name;
+        applied["channel_name"] = channel_name;
         // Canonical wire fields per HEP-CORE-0046 §14.3 +
         // HEP-CORE-0042 §5.5.2 — ChannelAuthAppliedReqBody requires
         // `role_uid` (not legacy `producer_role_uid`).
-        applied["role_uid"]          = producer_uid;
-        applied["role_type"]         = "producer";
-        applied["applied_version"]   = 1u;
-        applied["instance_id"]       = 999u;  // deliberately wrong
+        applied["role_uid"] = producer_uid;
+        applied["role_type"] = "producer";
+        applied["applied_version"] = 1u;
+        applied["instance_id"] = 999u; // deliberately wrong
 
-        auto reply = prod_client.request(
-            "CHANNEL_AUTH_APPLIED_REQ", applied,
-            "CHANNEL_AUTH_APPLIED_ACK",
-            std::chrono::milliseconds{kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value())
-            << "producer APPLIED_REQ: no reply — stale-instance guard "
-               "should surface as an ERROR, not silence.";
+        auto reply =
+            prod_client.request("CHANNEL_AUTH_APPLIED_REQ", applied, "CHANNEL_AUTH_APPLIED_ACK",
+                                std::chrono::milliseconds{kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "producer APPLIED_REQ: no reply — stale-instance guard "
+                                          "should surface as an ERROR, not silence.";
         // The reply IS the ERROR body (status="error",
         // error_code="STALE_INSTANCE").
         EXPECT_EQ(reply->value("status", ""), "error") << reply->dump();
-        EXPECT_EQ(reply->value("error_code", ""), "STALE_INSTANCE")
-            << reply->dump();
+        EXPECT_EQ(reply->value("error_code", ""), "STALE_INSTANCE") << reply->dump();
     }
 
     broker.signal_quit();

@@ -61,7 +61,7 @@
 #include "utils/zmq_context.hpp"
 #include "utils/security/shm_capability_channel.hpp"
 
-#include "curve_test_setup.h"   // seed_curve_identities
+#include "curve_test_setup.h" // seed_curve_identities
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 #include "test_schema_helpers.h"
@@ -76,7 +76,7 @@
 #include <memory>
 #include <string>
 
-#include <unistd.h>  // ::dup for in-process SCM_RIGHTS substitute (#275-S1)
+#include <unistd.h> // ::dup for in-process SCM_RIGHTS substitute (#275-S1)
 
 using pylabhub::scripting::ChannelSide;
 using pylabhub::scripting::RoleAPIBase;
@@ -95,12 +95,21 @@ namespace
 /// Lifecycle modules every flexzone worker needs.  Logger for worker-
 /// begin/end milestones; SecureSubsystem + ZMQContext + DataBlock for the
 /// RoleAPIBase + SHM queue construction.
-static auto logger_module() { return Logger::GetLifecycleModule(); }
-static auto zmq_module()    { return ::pylabhub::hub::GetZMQContextModule(); }
-static auto hub_module()    { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return Logger::GetLifecycleModule();
+}
+static auto zmq_module()
+{
+    return ::pylabhub::hub::GetZMQContextModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 hub::TxQueueOptions make_producer_opts(const hub::SchemaSpec &slot_spec,
-                                        const hub::SchemaSpec &fz_spec)
+                                       const hub::SchemaSpec &fz_spec)
 {
     // HEP-CORE-0041 1i-cleanup #275-S1: capability path only.  No
     // shared_secret (deleted by 1i-cleanup), no shm_name (capability
@@ -112,18 +121,18 @@ hub::TxQueueOptions make_producer_opts(const hub::SchemaSpec &slot_spec,
     // `build_tx_queue`.
     hub::TxQueueOptions opts;
     opts.has_shm = true;
-    opts.shm_config.ring_buffer_capacity  = 4;
-    opts.shm_config.physical_page_size    = hub::system_page_size();
-    opts.shm_config.policy                = hub::DataBlockPolicy::RingBuffer;
-    opts.shm_config.consumer_sync_policy  = hub::ConsumerSyncPolicy::Sequential;
-    opts.shm_config.checksum_policy       = hub::ChecksumPolicy::None;
+    opts.shm_config.ring_buffer_capacity = 4;
+    opts.shm_config.physical_page_size = hub::system_page_size();
+    opts.shm_config.policy = hub::DataBlockPolicy::RingBuffer;
+    opts.shm_config.consumer_sync_policy = hub::ConsumerSyncPolicy::Sequential;
+    opts.shm_config.checksum_policy = hub::ChecksumPolicy::None;
     opts.slot_spec = slot_spec;
-    opts.fz_spec   = fz_spec;
+    opts.fz_spec = fz_spec;
     return opts;
 }
 
 hub::RxQueueOptions make_consumer_opts(const std::string &shm_channel,
-                                        const hub::SchemaSpec &slot_spec)
+                                       const hub::SchemaSpec &slot_spec)
 {
     // HEP-CORE-0041 1i-cleanup #275-S1: capability path only.  No
     // shared_secret (deleted by 1i-cleanup).  `shm_name` is purely a
@@ -132,8 +141,8 @@ hub::RxQueueOptions make_consumer_opts(const std::string &shm_channel,
     // (typically `::dup` of the producer's borrowed fd in L3
     // in-process tests) before passing to `build_rx_queue`.
     hub::RxQueueOptions opts;
-    opts.shm_name          = shm_channel;
-    opts.slot_spec         = slot_spec;
+    opts.shm_name = shm_channel;
+    opts.slot_spec = slot_spec;
     return opts;
 }
 
@@ -142,33 +151,28 @@ hub::RxQueueOptions make_consumer_opts(const std::string &shm_channel,
 /// page) config.  Mirrors `RoleHostFrame::prepare_tx_capability_`
 /// exactly — the fd-source factory validates `fstat(fd).st_size ==
 /// this value` (HEP-CORE-0041 §6.3 + data_block.hpp:1308).
-size_t shm_segment_total_size(const hub::SchemaSpec &slot_spec,
-                              const hub::SchemaSpec &fz_spec,
-                              uint32_t               ring_buffer_capacity,
-                              hub::DataBlockPageSize page_size,
-                              hub::DataBlockPolicy   policy,
-                              hub::ConsumerSyncPolicy sync_policy,
-                              hub::ChecksumPolicy    checksum_policy)
+size_t shm_segment_total_size(const hub::SchemaSpec &slot_spec, const hub::SchemaSpec &fz_spec,
+                              uint32_t ring_buffer_capacity, hub::DataBlockPageSize page_size,
+                              hub::DataBlockPolicy policy, hub::ConsumerSyncPolicy sync_policy,
+                              hub::ChecksumPolicy checksum_policy)
 {
     const auto slot_fields = hub::schema_spec_to_zmq_fields(slot_spec);
-    auto [slot_layout, item_size] =
-        hub::compute_field_layout(slot_fields, slot_spec.packing);
+    auto [slot_layout, item_size] = hub::compute_field_layout(slot_fields, slot_spec.packing);
     size_t fz_size = 0;
     if (fz_spec.has_schema && !fz_spec.fields.empty())
     {
         const auto fz_fields = hub::schema_spec_to_zmq_fields(fz_spec);
-        auto [fz_layout, raw_fz_size] =
-            hub::compute_field_layout(fz_fields, fz_spec.packing);
+        auto [fz_layout, raw_fz_size] = hub::compute_field_layout(fz_fields, fz_spec.packing);
         fz_size = hub::align_to_physical_page(raw_fz_size);
     }
     hub::DataBlockConfig cfg;
-    cfg.logical_unit_size    = item_size;
-    cfg.flex_zone_size       = fz_size;
+    cfg.logical_unit_size = item_size;
+    cfg.flex_zone_size = fz_size;
     cfg.ring_buffer_capacity = ring_buffer_capacity;
-    cfg.physical_page_size   = page_size;
-    cfg.policy               = policy;
+    cfg.physical_page_size = page_size;
+    cfg.policy = policy;
     cfg.consumer_sync_policy = sync_policy;
-    cfg.checksum_policy      = checksum_policy;
+    cfg.checksum_policy = checksum_policy;
     return hub::datablock_layout_total_size(cfg);
 }
 
@@ -199,17 +203,17 @@ std::vector<hub::FieldLayout> layout_for(const hub::SchemaSpec &spec)
 struct PayloadPair
 {
     std::unique_ptr<pylabhub::utils::security::IShmCapabilityProducer> shm_transport;
-    RoleHostCore                 prod_core;
-    RoleHostCore                 cons_core;
+    RoleHostCore prod_core;
+    RoleHostCore cons_core;
     std::unique_ptr<RoleAPIBase> prod;
     std::unique_ptr<RoleAPIBase> cons;
-    size_t                       fz_size{0};
+    size_t fz_size{0};
 
-    PayloadPair()                               = default;
-    PayloadPair(const PayloadPair &)            = delete;
-    PayloadPair(PayloadPair &&)                 = delete;
+    PayloadPair() = default;
+    PayloadPair(const PayloadPair &) = delete;
+    PayloadPair(PayloadPair &&) = delete;
     PayloadPair &operator=(const PayloadPair &) = delete;
-    PayloadPair &operator=(PayloadPair &&)      = delete;
+    PayloadPair &operator=(PayloadPair &&) = delete;
 };
 
 /// Optional knobs for `build_payload_pair`.  Defaults match the flexzone
@@ -217,7 +221,7 @@ struct PayloadPair
 struct PayloadPairOpts
 {
     hub::ChecksumPolicy checksum_policy{hub::ChecksumPolicy::None};
-    bool                flexzone_checksum{false};
+    bool flexzone_checksum{false};
 };
 
 /// IMPORTANT: `build_payload_pair` uses gtest `ASSERT_*` macros from a
@@ -244,15 +248,11 @@ struct PayloadPairOpts
 ///      builds the consumer queue.  The dup is consumed by the queue
 ///      (queue dups internally; we close ours immediately after
 ///      `build_rx_queue` returns).
-void build_payload_pair(PayloadPair &out,
-                         const hub::SchemaSpec &slot_spec,
-                         const hub::SchemaSpec &fz_spec,
-                         const std::string &channel,
-                         const char *uid_tag,
-                         const PayloadPairOpts &opts = {})
+void build_payload_pair(PayloadPair &out, const hub::SchemaSpec &slot_spec,
+                        const hub::SchemaSpec &fz_spec, const std::string &channel,
+                        const char *uid_tag, const PayloadPairOpts &opts = {})
 {
-    out.fz_size = hub::align_to_physical_page(
-        hub::compute_schema_size(fz_spec, fz_spec.packing));
+    out.fz_size = hub::align_to_physical_page(hub::compute_schema_size(fz_spec, fz_spec.packing));
 
     hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec);
     tx_opts.shm_config.checksum_policy = opts.checksum_policy;
@@ -263,21 +263,18 @@ void build_payload_pair(PayloadPair &out,
     // `shm_segment_total_size` above for the size derivation that
     // mirrors `RoleHostFrame::prepare_tx_capability_`).
     namespace sec = pylabhub::utils::security;
-    const size_t total = shm_segment_total_size(
-        slot_spec, fz_spec,
-        tx_opts.shm_config.ring_buffer_capacity,
-        tx_opts.shm_config.physical_page_size,
-        tx_opts.shm_config.policy,
-        tx_opts.shm_config.consumer_sync_policy,
-        opts.checksum_policy);
+    const size_t total =
+        shm_segment_total_size(slot_spec, fz_spec, tx_opts.shm_config.ring_buffer_capacity,
+                               tx_opts.shm_config.physical_page_size, tx_opts.shm_config.policy,
+                               tx_opts.shm_config.consumer_sync_policy, opts.checksum_policy);
     ASSERT_GT(total, 0u) << "shm_segment_total_size returned 0";
     out.shm_transport = sec::create_shm_capability_producer(total);
     ASSERT_NE(out.shm_transport, nullptr)
         << "create_shm_capability_producer(" << total << ") returned nullptr";
     tx_opts.shm_capability_fd = out.shm_transport->borrow_fd();
 
-    out.prod = std::make_unique<RoleAPIBase>(
-        out.prod_core, "prod", std::string("prod.fz.") + uid_tag);
+    out.prod =
+        std::make_unique<RoleAPIBase>(out.prod_core, "prod", std::string("prod.fz.") + uid_tag);
     out.prod->set_channel(channel);
     out.prod->set_name("fz-prod");
     // Populate the FlexzoneInfoCache (see file-header BYPASS PATTERN).
@@ -286,11 +283,9 @@ void build_payload_pair(PayloadPair &out,
     // Producer presence → tx side.
     {
         RoleAPIBase::FlexzoneInfoCache fz_info;
-        fz_info.has_tx_fz        = fz_spec.has_schema;
-        fz_info.tx_logical_size  =
-            hub::compute_schema_size(fz_spec, fz_spec.packing);
-        fz_info.tx_physical_size =
-            hub::align_to_physical_page(fz_info.tx_logical_size);
+        fz_info.has_tx_fz = fz_spec.has_schema;
+        fz_info.tx_logical_size = hub::compute_schema_size(fz_spec, fz_spec.packing);
+        fz_info.tx_physical_size = hub::align_to_physical_page(fz_info.tx_logical_size);
         out.prod->set_flexzone_info_cache_(fz_info);
     }
     ASSERT_TRUE(out.prod->build_tx_queue(tx_opts));
@@ -314,25 +309,23 @@ void build_payload_pair(PayloadPair &out,
     // fd is a distinct integer pointing at the same kernel memfd
     // object, matching what `recvmsg` SCM_RIGHTS would deliver).
     hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec);
-    rx_opts.checksum_policy   = opts.checksum_policy;
+    rx_opts.checksum_policy = opts.checksum_policy;
     rx_opts.flexzone_checksum = opts.flexzone_checksum;
     const int rx_fd_dup = ::dup(out.shm_transport->borrow_fd());
     ASSERT_GE(rx_fd_dup, 0) << "::dup(memfd) failed: errno=" << errno;
     rx_opts.shm_capability_fd = rx_fd_dup;
 
-    out.cons = std::make_unique<RoleAPIBase>(
-        out.cons_core, "cons", std::string("cons.fz.") + uid_tag);
+    out.cons =
+        std::make_unique<RoleAPIBase>(out.cons_core, "cons", std::string("cons.fz.") + uid_tag);
     out.cons->set_channel(channel);
     out.cons->set_name("fz-cons");
     // Populate the FlexzoneInfoCache (see file-header BYPASS PATTERN).
     // Consumer presence → rx side.
     {
         RoleAPIBase::FlexzoneInfoCache fz_info;
-        fz_info.has_rx_fz        = fz_spec.has_schema;
-        fz_info.rx_logical_size  =
-            hub::compute_schema_size(fz_spec, fz_spec.packing);
-        fz_info.rx_physical_size =
-            hub::align_to_physical_page(fz_info.rx_logical_size);
+        fz_info.has_rx_fz = fz_spec.has_schema;
+        fz_info.rx_logical_size = hub::compute_schema_size(fz_spec, fz_spec.packing);
+        fz_info.rx_physical_size = hub::align_to_physical_page(fz_info.rx_logical_size);
         out.cons->set_flexzone_info_cache_(fz_info);
     }
     const bool rx_built = out.cons->build_rx_queue(rx_opts);
@@ -365,11 +358,11 @@ int shm_roundtrip()
         [&]()
         {
             auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::simple_schema();
+            auto fz_spec = pylabhub::tests::simple_schema();
 
             PayloadPair pair;
-            build_payload_pair(pair, slot_spec, fz_spec,
-                make_test_channel_name("fz_roundtrip"), "TEST");
+            build_payload_pair(pair, slot_spec, fz_spec, make_test_channel_name("fz_roundtrip"),
+                               "TEST");
 
             // Flexzone contract — three independent paths must agree:
             //   pair.fz_size                       — test-computed expectation
@@ -383,32 +376,28 @@ int shm_roundtrip()
             // (c) the cache's two stored values are consistent.
 
             void *tx_fz = pair.prod->flexzone(ChannelSide::Tx);
-            ASSERT_NE(tx_fz, nullptr)
-                << "Producer Tx flexzone must be non-null for SHM queue";
+            ASSERT_NE(tx_fz, nullptr) << "Producer Tx flexzone must be non-null for SHM queue";
             EXPECT_TRUE(pair.prod->tx_has_shm());
 
-            const size_t tx_queue_fz_sz   = pair.prod->flexzone_size(ChannelSide::Tx);
+            const size_t tx_queue_fz_sz = pair.prod->flexzone_size(ChannelSide::Tx);
             const size_t tx_cache_logical = pair.prod->flexzone_logical_size(ChannelSide::Tx);
-            const size_t tx_cache_physical= pair.prod->flexzone_physical_size(ChannelSide::Tx);
-            EXPECT_EQ(tx_queue_fz_sz,    pair.fz_size)
+            const size_t tx_cache_physical = pair.prod->flexzone_physical_size(ChannelSide::Tx);
+            EXPECT_EQ(tx_queue_fz_sz, pair.fz_size)
                 << "queue region size must match test computation";
             EXPECT_EQ(tx_cache_physical, tx_queue_fz_sz)
                 << "cache physical_size must match the live queue region";
             EXPECT_EQ(tx_cache_physical, hub::align_to_physical_page(tx_cache_logical))
                 << "cache invariant: physical == align_to_physical_page(logical)";
-            EXPECT_GT(tx_cache_logical, 0u)
-                << "logical size must be > 0 when fz_spec has a schema";
+            EXPECT_GT(tx_cache_logical, 0u) << "logical size must be > 0 when fz_spec has a schema";
 
             void *rx_fz = pair.cons->flexzone(ChannelSide::Rx);
-            ASSERT_NE(rx_fz, nullptr)
-                << "Consumer Rx flexzone must be non-null for SHM queue";
+            ASSERT_NE(rx_fz, nullptr) << "Consumer Rx flexzone must be non-null for SHM queue";
             EXPECT_TRUE(pair.cons->rx_has_shm());
 
-            const size_t rx_queue_fz_sz   = pair.cons->flexzone_size(ChannelSide::Rx);
+            const size_t rx_queue_fz_sz = pair.cons->flexzone_size(ChannelSide::Rx);
             const size_t rx_cache_logical = pair.cons->flexzone_logical_size(ChannelSide::Rx);
-            const size_t rx_cache_physical= pair.cons->flexzone_physical_size(ChannelSide::Rx);
-            EXPECT_EQ(rx_queue_fz_sz,    pair.fz_size)
-                << "Rx queue region size must match Tx";
+            const size_t rx_cache_physical = pair.cons->flexzone_physical_size(ChannelSide::Rx);
+            EXPECT_EQ(rx_queue_fz_sz, pair.fz_size) << "Rx queue region size must match Tx";
             EXPECT_EQ(rx_cache_physical, rx_queue_fz_sz)
                 << "Rx cache physical_size must match the live queue region";
             EXPECT_EQ(rx_cache_physical, hub::align_to_physical_page(rx_cache_logical))
@@ -429,14 +418,14 @@ int shm_roundtrip()
             std::memcpy(rx_fz, &ack, sizeof(ack));
             float prod_read = 0.0f;
             std::memcpy(&prod_read, tx_fz, sizeof(prod_read));
-            EXPECT_FLOAT_EQ(prod_read, ack)
-                << "Producer Tx flexzone must see consumer's ack";
+            EXPECT_FLOAT_EQ(prod_read, ack) << "Producer Tx flexzone must see consumer's ack";
 
             pair.cons->close_queues();
             pair.prod->close_queues();
         },
-        "role_api_flexzone::shm_roundtrip",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_roundtrip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -462,20 +451,19 @@ int zmq_tx_null()
             // valid CURVE keypair works; this test doesn't exercise
             // wire authentication).
             pylabhub::utils::security::secure().keys().add_identity_from_z85(
-                pylabhub::utils::security::kRoleIdentityName,
-                curve.hub.public_z85, curve.hub.secret_z85);
+                pylabhub::utils::security::kRoleIdentityName, curve.hub.public_z85,
+                curve.hub.secret_z85);
 
             RoleHostCore core;
-            auto api = std::make_unique<RoleAPIBase>(
-                core, "prod", "prod.zmq-fz.tx");
+            auto api = std::make_unique<RoleAPIBase>(core, "prod", "prod.zmq-fz.tx");
             api->set_channel("test.fz.zmq.tx");
 
             hub::TxQueueOptions opts;
-            opts.has_shm           = false;
-            opts.data_transport    = "zmq";
+            opts.has_shm = false;
+            opts.data_transport = "zmq";
             opts.zmq_node_endpoint = "tcp://127.0.0.1:0";
-            opts.zmq_bind          = true;
-            opts.slot_spec         = pylabhub::tests::simple_schema();
+            opts.zmq_bind = true;
+            opts.slot_spec = pylabhub::tests::simple_schema();
 
             ASSERT_TRUE(api->build_tx_queue(opts));
             // HEP-CORE-0036 §5b B-5 (#290): `channel_name` is now
@@ -484,12 +472,12 @@ int zmq_tx_null()
             // prior allowlist state) and still drives Standby → Active
             // on the PUSH/bind side, which is what `queue_mechanism`
             // below requires to observe Mechanism::Curve.
-            ASSERT_TRUE(api->apply_producer_reg_ack(nlohmann::json{
-                {"channel_name", "test.fz.zmq.tx"},
-                // HEP-CORE-0042 §5.5.3 — apply_producer_reg_ack
-                // hard-errors on absent/zero `instance_id`.  Broker
-                // assigns starting at 1 (§5.2 monotonic).
-                {"instance_id", 1u}}));
+            ASSERT_TRUE(api->apply_producer_reg_ack(
+                nlohmann::json{{"channel_name", "test.fz.zmq.tx"},
+                               // HEP-CORE-0042 §5.5.3 — apply_producer_reg_ack
+                               // hard-errors on absent/zero `instance_id`.  Broker
+                               // assigns starting at 1 (§5.2 monotonic).
+                               {"instance_id", 1u}}));
 
             EXPECT_EQ(api->flexzone(ChannelSide::Tx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Tx), 0u);
@@ -498,8 +486,7 @@ int zmq_tx_null()
             // C5 follow-up (#186) — script-visible CURVE mechanism
             // accessor pins the HEP-CORE-0035 §2 invariant at the
             // RoleAPIBase tier: any started ZmqQueue reports Curve.
-            EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx),
-                      pylabhub::hub::Mechanism::Curve);
+            EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx), pylabhub::hub::Mechanism::Curve);
             // Rx side is not wired in this scenario — accessor must
             // return Uninitialized (not throw, not return Plaintext).
             EXPECT_EQ(api->queue_mechanism(ChannelSide::Rx),
@@ -513,8 +500,9 @@ int zmq_tx_null()
             EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx),
                       pylabhub::hub::Mechanism::Uninitialized);
         },
-        "role_api_flexzone::zmq_tx_null",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::zmq_tx_null", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -541,17 +529,16 @@ int zmq_rx_null()
             auto curve = pylabhub::tests::make_curve_setup({"prod.zmq-fz.rx"});
             pylabhub::tests::seed_curve_identities(curve);
             pylabhub::utils::security::secure().keys().add_identity_from_z85(
-                pylabhub::utils::security::kRoleIdentityName,
-                curve.hub.public_z85, curve.hub.secret_z85);
+                pylabhub::utils::security::kRoleIdentityName, curve.hub.public_z85,
+                curve.hub.secret_z85);
 
             RoleHostCore core;
-            auto api = std::make_unique<RoleAPIBase>(
-                core, "cons", "cons.zmq-fz.rx");
+            auto api = std::make_unique<RoleAPIBase>(core, "cons", "cons.zmq-fz.rx");
             api->set_channel("test.fz.zmq.rx");
 
             hub::RxQueueOptions rx_opts;
-            rx_opts.data_transport    = "zmq";
-            rx_opts.slot_spec         = pylabhub::tests::simple_schema();
+            rx_opts.data_transport = "zmq";
+            rx_opts.slot_spec = pylabhub::tests::simple_schema();
             // Stage 1D (task #193, 2026-06-15): the consumer's connect
             // target now lives ONLY in producer_peers (HEP-CORE-0036
             // §6.4 + §6.7).  Test pre-populates here to enter Configured
@@ -582,8 +569,9 @@ int zmq_rx_null()
 
             api->close_queues();
         },
-        "role_api_flexzone::zmq_rx_null",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::zmq_rx_null", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -596,12 +584,11 @@ int shm_checksum_roundtrip()
         [&]()
         {
             auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::simple_schema();
+            auto fz_spec = pylabhub::tests::simple_schema();
 
             PayloadPair pair;
-            build_payload_pair(pair, slot_spec, fz_spec,
-                make_test_channel_name("fz_checksum"), "CSUM",
-                {hub::ChecksumPolicy::Enforced, /*flexzone_checksum=*/true});
+            build_payload_pair(pair, slot_spec, fz_spec, make_test_channel_name("fz_checksum"),
+                               "CSUM", {hub::ChecksumPolicy::Enforced, /*flexzone_checksum=*/true});
 
             void *tx_fz = pair.prod->flexzone(ChannelSide::Tx);
             ASSERT_NE(tx_fz, nullptr);
@@ -631,17 +618,16 @@ int shm_checksum_roundtrip()
 
             // The committed slot (written by build_payload_pair) must
             // read back successfully under enforced verify.
-            const void *rs = pair.cons->read_acquire(
-                std::chrono::milliseconds{500});
-            ASSERT_NE(rs, nullptr)
-                << "read_acquire must succeed when checksum is valid";
+            const void *rs = pair.cons->read_acquire(std::chrono::milliseconds{500});
+            ASSERT_NE(rs, nullptr) << "read_acquire must succeed when checksum is valid";
             pair.cons->read_release();
 
             pair.cons->close_queues();
             pair.prod->close_queues();
         },
-        "role_api_flexzone::shm_checksum_roundtrip",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_checksum_roundtrip", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -666,11 +652,11 @@ int shm_roundtrip_padding_sensitive()
         [&]()
         {
             auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::padding_schema();
+            auto fz_spec = pylabhub::tests::padding_schema();
 
             PayloadPair pair;
-            build_payload_pair(pair, slot_spec, fz_spec,
-                                make_test_channel_name("fz_padding"), "PAD");
+            build_payload_pair(pair, slot_spec, fz_spec, make_test_channel_name("fz_padding"),
+                               "PAD");
 
             const auto layout = layout_for(fz_spec);
             ASSERT_EQ(layout.size(), 3u) << "padding_schema has 3 fields";
@@ -678,45 +664,45 @@ int shm_roundtrip_padding_sensitive()
             // mis-pad would be caught here even without the downstream
             // read-back assertions.  padding_schema total = 16 aligned
             // (13 packed) per test_schema_helpers.h.
-            EXPECT_EQ(layout[0].offset, 0u);   // ts: float64 @ 0
-            EXPECT_EQ(layout[1].offset, 8u);   // flag: uint8 @ 8
-            EXPECT_EQ(layout[2].offset, 12u);  // count: int32 @ 12 (3 byte pad)
+            EXPECT_EQ(layout[0].offset, 0u);  // ts: float64 @ 0
+            EXPECT_EQ(layout[1].offset, 8u);  // flag: uint8 @ 8
+            EXPECT_EQ(layout[2].offset, 12u); // count: int32 @ 12 (3 byte pad)
             EXPECT_EQ(hub::compute_schema_size(fz_spec, "aligned"), 16u);
-            EXPECT_EQ(hub::compute_schema_size(fz_spec, "packed"),  13u);
+            EXPECT_EQ(hub::compute_schema_size(fz_spec, "packed"), 13u);
 
             // Producer: write distinctive values at computed offsets.
-            auto *tx = static_cast<uint8_t*>(pair.prod->flexzone(ChannelSide::Tx));
+            auto *tx = static_cast<uint8_t *>(pair.prod->flexzone(ChannelSide::Tx));
             ASSERT_NE(tx, nullptr);
 
-            const double  ts     = 3.14159265358979;
-            const uint8_t flag   = 0xAB;
-            const int32_t count  = -42;
+            const double ts = 3.14159265358979;
+            const uint8_t flag = 0xAB;
+            const int32_t count = -42;
 
-            std::memcpy(tx + layout[0].offset, &ts,    sizeof(ts));
-            std::memcpy(tx + layout[1].offset, &flag,  sizeof(flag));
+            std::memcpy(tx + layout[0].offset, &ts, sizeof(ts));
+            std::memcpy(tx + layout[1].offset, &flag, sizeof(flag));
             std::memcpy(tx + layout[2].offset, &count, sizeof(count));
 
             // Consumer: read each field at the SAME offsets, verify bit-exact.
-            auto *rx = static_cast<const uint8_t*>(
-                pair.cons->flexzone(ChannelSide::Rx));
+            auto *rx = static_cast<const uint8_t *>(pair.cons->flexzone(ChannelSide::Rx));
             ASSERT_NE(rx, nullptr);
 
-            double  read_ts = 0.0;
+            double read_ts = 0.0;
             uint8_t read_flag = 0;
             int32_t read_count = 0;
-            std::memcpy(&read_ts,    rx + layout[0].offset, sizeof(read_ts));
-            std::memcpy(&read_flag,  rx + layout[1].offset, sizeof(read_flag));
+            std::memcpy(&read_ts, rx + layout[0].offset, sizeof(read_ts));
+            std::memcpy(&read_flag, rx + layout[1].offset, sizeof(read_flag));
             std::memcpy(&read_count, rx + layout[2].offset, sizeof(read_count));
 
-            EXPECT_DOUBLE_EQ(read_ts,   ts);
-            EXPECT_EQ(read_flag,  flag);
+            EXPECT_DOUBLE_EQ(read_ts, ts);
+            EXPECT_EQ(read_flag, flag);
             EXPECT_EQ(read_count, count);
 
             pair.cons->close_queues();
             pair.prod->close_queues();
         },
-        "role_api_flexzone::shm_roundtrip_padding_sensitive",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_roundtrip_padding_sensitive", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -735,11 +721,11 @@ int shm_roundtrip_all_types()
         [&]()
         {
             auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::all_types_schema();
+            auto fz_spec = pylabhub::tests::all_types_schema();
 
             PayloadPair pair;
-            build_payload_pair(pair, slot_spec, fz_spec,
-                                make_test_channel_name("fz_alltypes"), "ALL");
+            build_payload_pair(pair, slot_spec, fz_spec, make_test_channel_name("fz_alltypes"),
+                               "ALL");
 
             const auto layout = layout_for(fz_spec);
             ASSERT_EQ(layout.size(), 13u);
@@ -751,79 +737,89 @@ int shm_roundtrip_all_types()
             // shift this number and be caught here.
             EXPECT_EQ(hub::compute_schema_size(fz_spec, "aligned"), 56u);
 
-            auto *tx = static_cast<uint8_t*>(
-                pair.prod->flexzone(ChannelSide::Tx));
+            auto *tx = static_cast<uint8_t *>(pair.prod->flexzone(ChannelSide::Tx));
             ASSERT_NE(tx, nullptr);
 
             // Distinctive sentinels — value chosen so that misreading at a
             // neighbour's offset would show up as a different (visible) number.
-            const double   v_f64    = -1.7976931348623157e+100;  // near-min double
-            const int64_t  v_i64    = static_cast<int64_t>(0x0123456789ABCDEFLL);
-            const uint64_t v_u64    = 0xFEDCBA9876543210ULL;
-            const float    v_f32    = 1.5e10F;
-            const int32_t  v_i32    = -0x12345678;
-            const uint32_t v_u32    = 0xDEADBEEFu;
-            const int16_t  v_i16    = -0x1234;
-            const uint16_t v_u16    = 0xBEEF;
-            const bool     v_bool   = true;
-            const int8_t   v_i8     = -42;
-            const uint8_t  v_u8     = 0x5A;
-            const uint8_t  v_bytes[4] = {0x11, 0x22, 0x33, 0x44};
-            const char     v_str[8]   = {'h','e','l','l','o','\0','P','Q'};
+            const double v_f64 = -1.7976931348623157e+100; // near-min double
+            const int64_t v_i64 = static_cast<int64_t>(0x0123456789ABCDEFLL);
+            const uint64_t v_u64 = 0xFEDCBA9876543210ULL;
+            const float v_f32 = 1.5e10F;
+            const int32_t v_i32 = -0x12345678;
+            const uint32_t v_u32 = 0xDEADBEEFu;
+            const int16_t v_i16 = -0x1234;
+            const uint16_t v_u16 = 0xBEEF;
+            const bool v_bool = true;
+            const int8_t v_i8 = -42;
+            const uint8_t v_u8 = 0x5A;
+            const uint8_t v_bytes[4] = {0x11, 0x22, 0x33, 0x44};
+            const char v_str[8] = {'h', 'e', 'l', 'l', 'o', '\0', 'P', 'Q'};
 
-            std::memcpy(tx + layout[0].offset,  &v_f64,  sizeof(v_f64));
-            std::memcpy(tx + layout[1].offset,  &v_i64,  sizeof(v_i64));
-            std::memcpy(tx + layout[2].offset,  &v_u64,  sizeof(v_u64));
-            std::memcpy(tx + layout[3].offset,  &v_f32,  sizeof(v_f32));
-            std::memcpy(tx + layout[4].offset,  &v_i32,  sizeof(v_i32));
-            std::memcpy(tx + layout[5].offset,  &v_u32,  sizeof(v_u32));
-            std::memcpy(tx + layout[6].offset,  &v_i16,  sizeof(v_i16));
-            std::memcpy(tx + layout[7].offset,  &v_u16,  sizeof(v_u16));
-            std::memcpy(tx + layout[8].offset,  &v_bool, sizeof(v_bool));
-            std::memcpy(tx + layout[9].offset,  &v_i8,   sizeof(v_i8));
-            std::memcpy(tx + layout[10].offset, &v_u8,   sizeof(v_u8));
+            std::memcpy(tx + layout[0].offset, &v_f64, sizeof(v_f64));
+            std::memcpy(tx + layout[1].offset, &v_i64, sizeof(v_i64));
+            std::memcpy(tx + layout[2].offset, &v_u64, sizeof(v_u64));
+            std::memcpy(tx + layout[3].offset, &v_f32, sizeof(v_f32));
+            std::memcpy(tx + layout[4].offset, &v_i32, sizeof(v_i32));
+            std::memcpy(tx + layout[5].offset, &v_u32, sizeof(v_u32));
+            std::memcpy(tx + layout[6].offset, &v_i16, sizeof(v_i16));
+            std::memcpy(tx + layout[7].offset, &v_u16, sizeof(v_u16));
+            std::memcpy(tx + layout[8].offset, &v_bool, sizeof(v_bool));
+            std::memcpy(tx + layout[9].offset, &v_i8, sizeof(v_i8));
+            std::memcpy(tx + layout[10].offset, &v_u8, sizeof(v_u8));
             std::memcpy(tx + layout[11].offset, v_bytes, sizeof(v_bytes));
-            std::memcpy(tx + layout[12].offset, v_str,   sizeof(v_str));
+            std::memcpy(tx + layout[12].offset, v_str, sizeof(v_str));
 
-            auto *rx = static_cast<const uint8_t*>(
-                pair.cons->flexzone(ChannelSide::Rx));
+            auto *rx = static_cast<const uint8_t *>(pair.cons->flexzone(ChannelSide::Rx));
             ASSERT_NE(rx, nullptr);
 
-            double   r_f64 = 0;   std::memcpy(&r_f64, rx + layout[0].offset,  sizeof(r_f64));
-            int64_t  r_i64 = 0;   std::memcpy(&r_i64, rx + layout[1].offset,  sizeof(r_i64));
-            uint64_t r_u64 = 0;   std::memcpy(&r_u64, rx + layout[2].offset,  sizeof(r_u64));
-            float    r_f32 = 0;   std::memcpy(&r_f32, rx + layout[3].offset,  sizeof(r_f32));
-            int32_t  r_i32 = 0;   std::memcpy(&r_i32, rx + layout[4].offset,  sizeof(r_i32));
-            uint32_t r_u32 = 0;   std::memcpy(&r_u32, rx + layout[5].offset,  sizeof(r_u32));
-            int16_t  r_i16 = 0;   std::memcpy(&r_i16, rx + layout[6].offset,  sizeof(r_i16));
-            uint16_t r_u16 = 0;   std::memcpy(&r_u16, rx + layout[7].offset,  sizeof(r_u16));
-            bool     r_bool= false;std::memcpy(&r_bool,rx + layout[8].offset, sizeof(r_bool));
-            int8_t   r_i8  = 0;   std::memcpy(&r_i8,  rx + layout[9].offset,  sizeof(r_i8));
-            uint8_t  r_u8  = 0;   std::memcpy(&r_u8,  rx + layout[10].offset, sizeof(r_u8));
-            uint8_t  r_bytes[4] = {0,0,0,0};
+            double r_f64 = 0;
+            std::memcpy(&r_f64, rx + layout[0].offset, sizeof(r_f64));
+            int64_t r_i64 = 0;
+            std::memcpy(&r_i64, rx + layout[1].offset, sizeof(r_i64));
+            uint64_t r_u64 = 0;
+            std::memcpy(&r_u64, rx + layout[2].offset, sizeof(r_u64));
+            float r_f32 = 0;
+            std::memcpy(&r_f32, rx + layout[3].offset, sizeof(r_f32));
+            int32_t r_i32 = 0;
+            std::memcpy(&r_i32, rx + layout[4].offset, sizeof(r_i32));
+            uint32_t r_u32 = 0;
+            std::memcpy(&r_u32, rx + layout[5].offset, sizeof(r_u32));
+            int16_t r_i16 = 0;
+            std::memcpy(&r_i16, rx + layout[6].offset, sizeof(r_i16));
+            uint16_t r_u16 = 0;
+            std::memcpy(&r_u16, rx + layout[7].offset, sizeof(r_u16));
+            bool r_bool = false;
+            std::memcpy(&r_bool, rx + layout[8].offset, sizeof(r_bool));
+            int8_t r_i8 = 0;
+            std::memcpy(&r_i8, rx + layout[9].offset, sizeof(r_i8));
+            uint8_t r_u8 = 0;
+            std::memcpy(&r_u8, rx + layout[10].offset, sizeof(r_u8));
+            uint8_t r_bytes[4] = {0, 0, 0, 0};
             std::memcpy(r_bytes, rx + layout[11].offset, sizeof(r_bytes));
-            char     r_str[8]   = {0,0,0,0,0,0,0,0};
-            std::memcpy(r_str,   rx + layout[12].offset, sizeof(r_str));
+            char r_str[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+            std::memcpy(r_str, rx + layout[12].offset, sizeof(r_str));
 
             EXPECT_DOUBLE_EQ(r_f64, v_f64);
-            EXPECT_EQ(r_i64,  v_i64);
-            EXPECT_EQ(r_u64,  v_u64);
+            EXPECT_EQ(r_i64, v_i64);
+            EXPECT_EQ(r_u64, v_u64);
             EXPECT_FLOAT_EQ(r_f32, v_f32);
-            EXPECT_EQ(r_i32,  v_i32);
-            EXPECT_EQ(r_u32,  v_u32);
-            EXPECT_EQ(r_i16,  v_i16);
-            EXPECT_EQ(r_u16,  v_u16);
+            EXPECT_EQ(r_i32, v_i32);
+            EXPECT_EQ(r_u32, v_u32);
+            EXPECT_EQ(r_i16, v_i16);
+            EXPECT_EQ(r_u16, v_u16);
             EXPECT_EQ(r_bool, v_bool);
-            EXPECT_EQ(r_i8,   v_i8);
-            EXPECT_EQ(r_u8,   v_u8);
+            EXPECT_EQ(r_i8, v_i8);
+            EXPECT_EQ(r_u8, v_u8);
             EXPECT_EQ(std::memcmp(r_bytes, v_bytes, 4), 0);
-            EXPECT_EQ(std::memcmp(r_str,   v_str,   8), 0);
+            EXPECT_EQ(std::memcmp(r_str, v_str, 8), 0);
 
             pair.cons->close_queues();
             pair.prod->close_queues();
         },
-        "role_api_flexzone::shm_roundtrip_all_types",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_roundtrip_all_types", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -839,36 +835,34 @@ int shm_roundtrip_array_field()
         [&]()
         {
             auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::fz_array_schema();
+            auto fz_spec = pylabhub::tests::fz_array_schema();
 
             PayloadPair pair;
-            build_payload_pair(pair, slot_spec, fz_spec,
-                                make_test_channel_name("fz_array"), "ARR");
+            build_payload_pair(pair, slot_spec, fz_spec, make_test_channel_name("fz_array"), "ARR");
 
             const auto layout = layout_for(fz_spec);
             ASSERT_EQ(layout.size(), 2u);
-            EXPECT_EQ(layout[0].offset, 0u);   // uint32 @ 0
-            EXPECT_EQ(layout[1].offset, 8u);   // float64[2] @ 8 (4 byte pad)
+            EXPECT_EQ(layout[0].offset, 0u); // uint32 @ 0
+            EXPECT_EQ(layout[1].offset, 8u); // float64[2] @ 8 (4 byte pad)
             EXPECT_EQ(layout[1].byte_size, sizeof(double) * 2u);
             // Total aligned = 4 (u32) + 4 (pad) + 16 (f64[2]) = 24.
             EXPECT_EQ(hub::compute_schema_size(fz_spec, "aligned"), 24u);
 
-            auto *tx = static_cast<uint8_t*>(pair.prod->flexzone(ChannelSide::Tx));
+            auto *tx = static_cast<uint8_t *>(pair.prod->flexzone(ChannelSide::Tx));
             ASSERT_NE(tx, nullptr);
 
             const uint32_t version = 7;
-            const double   values[2] = {1.5, 2.5};
+            const double values[2] = {1.5, 2.5};
             std::memcpy(tx + layout[0].offset, &version, sizeof(version));
-            std::memcpy(tx + layout[1].offset, values,   sizeof(values));
+            std::memcpy(tx + layout[1].offset, values, sizeof(values));
 
-            auto *rx = static_cast<const uint8_t*>(
-                pair.cons->flexzone(ChannelSide::Rx));
+            auto *rx = static_cast<const uint8_t *>(pair.cons->flexzone(ChannelSide::Rx));
             ASSERT_NE(rx, nullptr);
 
             uint32_t r_version = 0;
-            double   r_values[2] = {0.0, 0.0};
+            double r_values[2] = {0.0, 0.0};
             std::memcpy(&r_version, rx + layout[0].offset, sizeof(r_version));
-            std::memcpy(r_values,   rx + layout[1].offset, sizeof(r_values));
+            std::memcpy(r_values, rx + layout[1].offset, sizeof(r_values));
 
             EXPECT_EQ(r_version, version);
             EXPECT_DOUBLE_EQ(r_values[0], values[0]);
@@ -877,8 +871,9 @@ int shm_roundtrip_array_field()
             pair.cons->close_queues();
             pair.prod->close_queues();
         },
-        "role_api_flexzone::shm_roundtrip_array_field",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_roundtrip_array_field", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ============================================================================
@@ -1008,12 +1003,12 @@ int shm_slot_checksum_corrupt_detected()
     return run_gtest_worker(
         [&]()
         {
-            auto slot_spec = pylabhub::tests::padding_schema();  // 16B aligned
-            auto fz_spec   = pylabhub::tests::simple_schema();
+            auto slot_spec = pylabhub::tests::padding_schema(); // 16B aligned
+            auto fz_spec = pylabhub::tests::simple_schema();
 
             const std::string channel = make_test_channel_name("fz_csum_corrupt");
 
-            const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
+            const size_t fz_logical = hub::compute_schema_size(fz_spec, fz_spec.packing);
             const size_t fz_physical = hub::align_to_physical_page(fz_logical);
 
             // HEP-CORE-0041 1i-cleanup #275-S1: capability path.  Mint
@@ -1023,12 +1018,9 @@ int shm_slot_checksum_corrupt_detected()
             hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec);
             tx_opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
             const size_t total = shm_segment_total_size(
-                slot_spec, fz_spec,
-                tx_opts.shm_config.ring_buffer_capacity,
-                tx_opts.shm_config.physical_page_size,
-                tx_opts.shm_config.policy,
-                tx_opts.shm_config.consumer_sync_policy,
-                hub::ChecksumPolicy::Enforced);
+                slot_spec, fz_spec, tx_opts.shm_config.ring_buffer_capacity,
+                tx_opts.shm_config.physical_page_size, tx_opts.shm_config.policy,
+                tx_opts.shm_config.consumer_sync_policy, hub::ChecksumPolicy::Enforced);
             ASSERT_GT(total, 0u);
             auto shm_transport = sec::create_shm_capability_producer(total);
             ASSERT_NE(shm_transport, nullptr);
@@ -1036,14 +1028,13 @@ int shm_slot_checksum_corrupt_detected()
 
             // Producer: enforced slot checksum.
             RoleHostCore prod_core;
-            auto prod = std::make_unique<RoleAPIBase>(
-                prod_core, "prod", "prod.fz-csum.bad");
+            auto prod = std::make_unique<RoleAPIBase>(prod_core, "prod", "prod.fz-csum.bad");
             prod->set_channel(channel);
             prod->set_name("fz-csum-bad-prod");
             {
                 RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = fz_spec.has_schema;
-                fz_info.tx_logical_size  = fz_logical;
+                fz_info.has_tx_fz = fz_spec.has_schema;
+                fz_info.tx_logical_size = fz_logical;
                 fz_info.tx_physical_size = fz_physical;
                 prod->set_flexzone_info_cache_(fz_info);
             }
@@ -1057,8 +1048,8 @@ int shm_slot_checksum_corrupt_detected()
             // affect.
 
             // Write + commit a slot with a known pattern.
-            auto *slot = static_cast<uint8_t*>(prod->write_acquire(
-                std::chrono::milliseconds{500}));
+            auto *slot =
+                static_cast<uint8_t *>(prod->write_acquire(std::chrono::milliseconds{500}));
             ASSERT_NE(slot, nullptr);
             std::memset(slot, 0xAA, prod->write_item_size());
             prod->write_commit();
@@ -1076,14 +1067,13 @@ int shm_slot_checksum_corrupt_detected()
 
             // Consumer attaches with enforced verify.
             RoleHostCore cons_core;
-            auto cons = std::make_unique<RoleAPIBase>(
-                cons_core, "cons", "cons.fz-csum.bad");
+            auto cons = std::make_unique<RoleAPIBase>(cons_core, "cons", "cons.fz-csum.bad");
             cons->set_channel(channel);
             cons->set_name("fz-csum-bad-cons");
             {
                 RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_rx_fz        = fz_spec.has_schema;
-                fz_info.rx_logical_size  = fz_logical;
+                fz_info.has_rx_fz = fz_spec.has_schema;
+                fz_info.rx_logical_size = fz_logical;
                 fz_info.rx_physical_size = fz_physical;
                 cons->set_flexzone_info_cache_(fz_info);
             }
@@ -1115,30 +1105,26 @@ int shm_slot_checksum_corrupt_detected()
                 cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
 
             // read_acquire returns nullptr on verify failure (enforced).
-            const void *rs = cons->read_acquire(
-                std::chrono::milliseconds{200});
-            const uint64_t errors_after =
-                cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
+            const void *rs = cons->read_acquire(std::chrono::milliseconds{200});
+            const uint64_t errors_after = cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
 
             // Observable outcome: either the read returns null (slot
             // rejected by verify) OR the error counter increments.
             // Both are legitimate framework-defined failure signals;
             // the test requires at least one to fire.
-            const bool detected =
-                (rs == nullptr) || (errors_after > errors_before);
-            EXPECT_TRUE(detected)
-                << "corrupted slot must be rejected: read_acquire="
-                << (rs ? "non-null" : "null")
-                << ", checksum_error_count delta="
-                << (errors_after - errors_before);
+            const bool detected = (rs == nullptr) || (errors_after > errors_before);
+            EXPECT_TRUE(detected) << "corrupted slot must be rejected: read_acquire="
+                                  << (rs ? "non-null" : "null") << ", checksum_error_count delta="
+                                  << (errors_after - errors_before);
 
             if (rs != nullptr)
                 cons->read_release();
             cons->close_queues();
             prod->close_queues();
         },
-        "role_api_flexzone::shm_slot_checksum_corrupt_detected",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_slot_checksum_corrupt_detected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 // ----------------------------------------------------------------------------
@@ -1164,11 +1150,11 @@ int shm_flexzone_checksum_corrupt_detected()
         [&]()
         {
             auto slot_spec = pylabhub::tests::simple_schema();
-            auto fz_spec   = pylabhub::tests::simple_schema();
+            auto fz_spec = pylabhub::tests::simple_schema();
 
             const std::string channel = make_test_channel_name("fz_fz_csum_corrupt");
 
-            const size_t fz_logical  = hub::compute_schema_size(fz_spec, fz_spec.packing);
+            const size_t fz_logical = hub::compute_schema_size(fz_spec, fz_spec.packing);
             const size_t fz_physical = hub::align_to_physical_page(fz_logical);
 
             // HEP-CORE-0041 1i-cleanup #275-S1: capability path.  Mint
@@ -1180,28 +1166,24 @@ int shm_flexzone_checksum_corrupt_detected()
             // one we're going to drive.
             hub::TxQueueOptions tx_opts = make_producer_opts(slot_spec, fz_spec);
             tx_opts.shm_config.checksum_policy = hub::ChecksumPolicy::Enforced;
-            tx_opts.flexzone_checksum          = true;
+            tx_opts.flexzone_checksum = true;
             const size_t total = shm_segment_total_size(
-                slot_spec, fz_spec,
-                tx_opts.shm_config.ring_buffer_capacity,
-                tx_opts.shm_config.physical_page_size,
-                tx_opts.shm_config.policy,
-                tx_opts.shm_config.consumer_sync_policy,
-                hub::ChecksumPolicy::Enforced);
+                slot_spec, fz_spec, tx_opts.shm_config.ring_buffer_capacity,
+                tx_opts.shm_config.physical_page_size, tx_opts.shm_config.policy,
+                tx_opts.shm_config.consumer_sync_policy, hub::ChecksumPolicy::Enforced);
             ASSERT_GT(total, 0u);
             auto shm_transport = sec::create_shm_capability_producer(total);
             ASSERT_NE(shm_transport, nullptr);
             tx_opts.shm_capability_fd = shm_transport->borrow_fd();
 
             RoleHostCore prod_core;
-            auto prod = std::make_unique<RoleAPIBase>(
-                prod_core, "prod", "prod.fz-fz-csum.bad");
+            auto prod = std::make_unique<RoleAPIBase>(prod_core, "prod", "prod.fz-fz-csum.bad");
             prod->set_channel(channel);
             prod->set_name("fz-fz-csum-bad-prod");
             {
                 RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_tx_fz        = fz_spec.has_schema;
-                fz_info.tx_logical_size  = fz_logical;
+                fz_info.has_tx_fz = fz_spec.has_schema;
+                fz_info.tx_logical_size = fz_logical;
                 fz_info.tx_physical_size = fz_physical;
                 prod->set_flexzone_info_cache_(fz_info);
             }
@@ -1215,14 +1197,14 @@ int shm_flexzone_checksum_corrupt_detected()
             // affect.
 
             // Write a slot with a pattern the consumer's slot-verify accepts.
-            auto *slot = static_cast<uint8_t*>(prod->write_acquire(
-                std::chrono::milliseconds{500}));
+            auto *slot =
+                static_cast<uint8_t *>(prod->write_acquire(std::chrono::milliseconds{500}));
             ASSERT_NE(slot, nullptr);
             std::memset(slot, 0x11, prod->write_item_size());
             prod->write_commit();
 
             // Write flexzone, then update its checksum (stored in header).
-            auto *fz = static_cast<uint8_t*>(prod->flexzone(ChannelSide::Tx));
+            auto *fz = static_cast<uint8_t *>(prod->flexzone(ChannelSide::Tx));
             ASSERT_NE(fz, nullptr);
             std::memset(fz, 0xA5, fz_physical);
             ASSERT_TRUE(prod->update_flexzone_checksum())
@@ -1237,14 +1219,13 @@ int shm_flexzone_checksum_corrupt_detected()
 
             // Consumer: enforced slot verify + flexzone verify.
             RoleHostCore cons_core;
-            auto cons = std::make_unique<RoleAPIBase>(
-                cons_core, "cons", "cons.fz-fz-csum.bad");
+            auto cons = std::make_unique<RoleAPIBase>(cons_core, "cons", "cons.fz-fz-csum.bad");
             cons->set_channel(channel);
             cons->set_name("fz-fz-csum-bad-cons");
             {
                 RoleAPIBase::FlexzoneInfoCache fz_info;
-                fz_info.has_rx_fz        = fz_spec.has_schema;
-                fz_info.rx_logical_size  = fz_logical;
+                fz_info.has_rx_fz = fz_spec.has_schema;
+                fz_info.rx_logical_size = fz_logical;
                 fz_info.rx_physical_size = fz_physical;
                 cons->set_flexzone_info_cache_(fz_info);
             }
@@ -1253,7 +1234,7 @@ int shm_flexzone_checksum_corrupt_detected()
             // SCM_RIGHTS handoff (the queue's fd-source factory dups
             // internally — we close ours right after build_rx_queue).
             hub::RxQueueOptions rx_opts = make_consumer_opts(channel, slot_spec);
-            rx_opts.checksum_policy   = hub::ChecksumPolicy::Enforced;
+            rx_opts.checksum_policy = hub::ChecksumPolicy::Enforced;
             rx_opts.flexzone_checksum = true;
             const int rx_fd_dup = ::dup(shm_transport->borrow_fd());
             ASSERT_GE(rx_fd_dup, 0) << "::dup(memfd) failed: errno=" << errno;
@@ -1271,29 +1252,25 @@ int shm_flexzone_checksum_corrupt_detected()
             const uint64_t errors_before =
                 cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
 
-            const void *rs = cons->read_acquire(
-                std::chrono::milliseconds{200});
-            const uint64_t errors_after =
-                cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
+            const void *rs = cons->read_acquire(std::chrono::milliseconds{200});
+            const uint64_t errors_after = cons->queue_metrics(ChannelSide::Rx).checksum_error_count;
 
             // Either path is framework-legal: null return on enforced-fail
             // OR counter increment (the ShmQueue verify path bumps
             // checksum_error_count before returning nullptr).
-            const bool detected =
-                (rs == nullptr) || (errors_after > errors_before);
-            EXPECT_TRUE(detected)
-                << "corrupted flexzone must be rejected: read_acquire="
-                << (rs ? "non-null" : "null")
-                << ", checksum_error_count delta="
-                << (errors_after - errors_before);
+            const bool detected = (rs == nullptr) || (errors_after > errors_before);
+            EXPECT_TRUE(detected) << "corrupted flexzone must be rejected: read_acquire="
+                                  << (rs ? "non-null" : "null") << ", checksum_error_count delta="
+                                  << (errors_after - errors_before);
 
             if (rs != nullptr)
                 cons->read_release();
             cons->close_queues();
             prod->close_queues();
         },
-        "role_api_flexzone::shm_flexzone_checksum_corrupt_detected",
-        logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(), hub_module());
+        "role_api_flexzone::shm_flexzone_checksum_corrupt_detected", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
 }
 
 } // namespace pylabhub::tests::worker::role_api_flexzone
@@ -1316,8 +1293,7 @@ struct RoleApiFlexzoneWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 const auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "role_api_flexzone")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "role_api_flexzone")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::role_api_flexzone;
@@ -1346,9 +1322,7 @@ struct RoleApiFlexzoneWorkerRegistrar
                 if (sc == "shm_flexzone_checksum_corrupt_detected")
                     return shm_flexzone_checksum_corrupt_detected();
 
-                fmt::print(stderr,
-                           "[role_api_flexzone] ERROR: unknown scenario '{}'\n",
-                           sc);
+                fmt::print(stderr, "[role_api_flexzone] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
             });
     }

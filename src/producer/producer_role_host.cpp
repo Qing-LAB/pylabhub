@@ -15,7 +15,7 @@
  * its setup_infrastructure_() / teardown_infrastructure_() helpers.
  */
 #include "producer_role_host.hpp"
-#include "utils/script_engine_factory.hpp"  // scripting::create_engine — worker_main_ Step 0
+#include "utils/script_engine_factory.hpp" // scripting::create_engine — worker_main_ Step 0
 #include "utils/thread_manager.hpp"
 #include "producer_fields.hpp"
 #include "service/cycle_ops.hpp"
@@ -30,11 +30,11 @@
 #include "utils/role_config_translation.hpp"
 #include "utils/zmq_poll_loop.hpp"
 #include "utils/role_reg_payload.hpp"
-#include "utils/role_handler.hpp"     // Wave-B M5: handler-mode startup
-#include "utils/security/key_store.hpp"  // HEP-CORE-0040 §173: identity pubkey
-#include "utils/security/shm_capability_channel.hpp"  // HEP-CORE-0041 §5.1: default endpoint helper
+#include "utils/role_handler.hpp"                    // Wave-B M5: handler-mode startup
+#include "utils/security/key_store.hpp"              // HEP-CORE-0040 §173: identity pubkey
+#include "utils/security/shm_capability_channel.hpp" // HEP-CORE-0041 §5.1: default endpoint helper
 
-#include "utils/role_presence.hpp"    // Wave-B M5: Presence + RoleKind
+#include "utils/role_presence.hpp" // Wave-B M5: Presence + RoleKind
 #include "utils/schema_utils.hpp"
 #include "utils/lifecycle.hpp"
 
@@ -54,15 +54,14 @@ using Clock = std::chrono::steady_clock;
 // Constructor / Destructor
 // ============================================================================
 
-ProducerRoleHost::ProducerRoleHost(config::RoleConfig config,
-                                     std::atomic<bool> *shutdown_flag)
-    : scripting::RoleHostFrame(std::move(config),
-                                shutdown_flag,
-                                // HEP-CORE-0036 §5b.10: short_tag derived
-                                // once from role_type via short_role_tag().
-                                { /*role_type=*/        "producer",
-                                  /*short_tag=*/        std::string(pylabhub::hub::short_role_tag("producer")),
-                                  /*required_callback=*/"on_produce" })
+ProducerRoleHost::ProducerRoleHost(config::RoleConfig config, std::atomic<bool> *shutdown_flag)
+    : scripting::RoleHostFrame(
+          std::move(config), shutdown_flag,
+          // HEP-CORE-0036 §5b.10: short_tag derived
+          // once from role_type via short_role_tag().
+          {/*role_type=*/"producer",
+           /*short_tag=*/std::string(pylabhub::hub::short_role_tag("producer")),
+           /*required_callback=*/"on_produce"})
 {
     // Engine is constructed in worker_main_ Step 0 (HEP-CORE-0011
     // §"Engine Construction Lifecycle").  Not constructed here.
@@ -100,26 +99,27 @@ void ProducerRoleHost::worker_main_()
     // so PythonEngine's `py::object{py::none()}` member-default-
     // initializers run under GIL safely.  Lua / Native engines have
     // no module dependency; they construct self-contained.
-    auto       &core_       = core();
-    const auto &config_     = config();
-    auto       &promise_ref = ready_promise();
+    auto &core_ = core();
+    const auto &config_ = config();
+    auto &promise_ref = ready_promise();
 
     set_engine_(scripting::create_engine(config_.script()));
     if (!has_engine())
     {
         LOGGER_ERROR("[prod] scripting::create_engine returned null for "
-                     "script.type='{}'", config_.script().type);
+                     "script.type='{}'",
+                     config_.script().type);
         promise_ref.set_value(false);
         return;
     }
     auto &engine_ref = engine();
-    auto &api_ref    = api();
+    auto &api_ref = api();
 
-    const auto &id   = config_.identity();
-    const auto &sc   = config_.script();
-    const auto &hub  = config_.out_hub();
-    const auto &tr   = config_.out_transport();
-    const auto &pf   = config_.role_data<ProducerFields>();
+    const auto &id = config_.identity();
+    const auto &sc = config_.script();
+    const auto &hub = config_.out_hub();
+    const auto &tr = config_.out_transport();
+    const auto &pf = config_.role_data<ProducerFields>();
 
     // Warn if script type was not explicitly set in config.
     if (!sc.type_explicit)
@@ -134,9 +134,9 @@ void ProducerRoleHost::worker_main_()
     // (slot + fz).  presences_[i] is the canonical per-channel home;
     // every downstream consumer (wire-emission readers, params.*,
     // FlexzoneInfoCache populate) reads from it.
-    const std::filesystem::path base_path =
-        sc.path.empty() ? std::filesystem::current_path()
-                        : std::filesystem::weakly_canonical(sc.path);
+    const std::filesystem::path base_path = sc.path.empty()
+                                                ? std::filesystem::current_path()
+                                                : std::filesystem::weakly_canonical(sc.path);
     const std::filesystem::path script_dir = base_path / "script" / sc.type;
 
     try
@@ -166,12 +166,11 @@ void ProducerRoleHost::worker_main_()
     {
         std::vector<std::string> schema_dirs;
         if (!hub.hub_dir.empty())
-            schema_dirs.push_back(
-                (std::filesystem::path(hub.hub_dir) / "schemas").string());
+            schema_dirs.push_back((std::filesystem::path(hub.hub_dir) / "schemas").string());
         try
         {
-            inbox_spec_local = hub::resolve_schema(
-                config_.inbox().schema_json, false, "prod", schema_dirs);
+            inbox_spec_local =
+                hub::resolve_schema(config_.inbox().schema_json, false, "prod", schema_dirs);
         }
         catch (const std::exception &e)
         {
@@ -185,8 +184,7 @@ void ProducerRoleHost::worker_main_()
     // Slot and flexzone each carry their own packing; script/wire/SHM all honor
     // the schema's packing for that side.  "aligned" fallback for flexzone-only
     // roles where out_slot_spec_ is unset.
-    const std::string packing =
-        out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
+    const std::string packing = out_slot_spec_.has_schema ? out_slot_spec_.packing : "aligned";
 
     // Compute and store slot logical size on core (infrastructure-authoritative).
     // Flexzone sizes live on RoleAPIBase::FlexzoneInfoCache, populated by
@@ -212,15 +210,14 @@ void ProducerRoleHost::worker_main_()
     // sequence.  `set_inbox_queue` stays AFTER setup_infrastructure_
     // because the inbox queue object is created there.
     api_ref.set_name(id.name);
-    wire_api_for_presences_(presences_);  // sets channel from presences_
+    wire_api_for_presences_(presences_); // sets channel from presences_
     api_ref.set_log_level(id.log_level);
     api_ref.set_script_dir(script_dir.string());
     api_ref.set_role_dir(config_.base_dir().string());
     api_ref.set_checksum_policy(config_.checksum().policy);
     api_ref.set_stop_on_script_error(sc.stop_on_script_error);
     api_ref.set_strict_abi_mismatch(config_.startup().strict_abi_mismatch);
-    api_ref.set_shm_require_mutual_auth(
-        config_.startup().shm_require_mutual_auth);
+    api_ref.set_shm_require_mutual_auth(config_.startup().shm_require_mutual_auth);
     api_ref.set_engine(&engine_ref);
 
     // ── Step 2b: Setup infrastructure (inherited from RoleHostFrame) ─────────
@@ -248,24 +245,24 @@ void ProducerRoleHost::worker_main_()
     engine_module_name_ = fmt::format("ScriptEngine:{}:{}", sc.type, id.uid);
 
     scripting::EngineModuleParams params;
-    params.engine             = &engine_ref;
-    params.api                = &api_ref;
-    params.tag                = "prod";
-    params.script_dir         = script_dir;
+    params.engine = &engine_ref;
+    params.api = &api_ref;
+    params.tag = "prod";
+    params.script_dir = script_dir;
     // Audit B12 (2026-05-21, demo-harness discovery): native engines
     // need a .so filename, not "__init__.py".  Pre-fix the ternary
     // covered only lua/python; type=="native" fell through to
     // "__init__.py" and the native engine's load_script tried
     // <dir>/__init__.py + <dir> (as a .so), both failed.
-    params.entry_point        = (sc.type == "lua")    ? "init.lua"
-                              : (sc.type == "native") ? "plugin.so"
-                                                      : "__init__.py";
-    params.required_callback  = "on_produce";
-    params.out_slot_spec      = out_slot_spec_;
-    params.out_fz_spec        = out_fz_local;
-    params.inbox_spec         = inbox_spec_local;
-    params.out_packing        = packing;
-    params.module_name        = engine_module_name_;
+    params.entry_point = (sc.type == "lua")      ? "init.lua"
+                         : (sc.type == "native") ? "plugin.so"
+                                                 : "__init__.py";
+    params.required_callback = "on_produce";
+    params.out_slot_spec = out_slot_spec_;
+    params.out_fz_spec = out_fz_local;
+    params.inbox_spec = inbox_spec_local;
+    params.out_packing = packing;
+    params.module_name = engine_module_name_;
 
     try
     {
@@ -317,8 +314,8 @@ void ProducerRoleHost::worker_main_()
         std::vector<scripting::Presence> presences;
         {
             scripting::Presence p;
-            p.hub       = config_.out_hub();
-            p.channel   = config_.out_channel();
+            p.hub = config_.out_hub();
+            p.channel = config_.out_channel();
             p.role_kind = scripting::RoleKind::Producer;
             presences.push_back(std::move(p));
         }
@@ -328,13 +325,12 @@ void ProducerRoleHost::worker_main_()
         // path read it on-site via `secure().keys().with_seckey` /
         // `pubkey` — no plumbing through RoleAPIBase.
 
-        auto handler = std::make_unique<scripting::RoleHandler>(
-            std::move(presences));
+        auto handler = std::make_unique<scripting::RoleHandler>(std::move(presences));
 
         if (!api_ref.start_handler_threads(std::move(handler)))
         {
             LOGGER_ERROR("[prod] start_handler_threads failed");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -344,29 +340,29 @@ void ProducerRoleHost::worker_main_()
         // (§10.2).  Layered builder pattern identical to the pre-M5 code
         // — only the dispatch target (api.register_producer_channel
         // instead of bundling inside ctrl_cfg) changed.
-        const auto &ch  = config_.out_channel();
+        const auto &ch = config_.out_channel();
         const auto &shm = config_.out_shm();
         hub::ProducerRegInputs reg_in;
-        reg_in.channel           = ch;
-        reg_in.role_uid          = id.uid;
-        reg_in.role_name         = id.name;
-        reg_in.role_type          = "producer";
-        reg_in.has_shm           = shm.enabled;
-        reg_in.is_zmq_transport  = (tr.transport == config::Transport::Zmq);
+        reg_in.channel = ch;
+        reg_in.role_uid = id.uid;
+        reg_in.role_name = id.name;
+        reg_in.role_type = "producer";
+        reg_in.has_shm = shm.enabled;
+        reg_in.is_zmq_transport = (tr.transport == config::Transport::Zmq);
         reg_in.zmq_node_endpoint = tr.zmq_endpoint;
         // 2026-07-08 topology migration — producer declares its output
         // channel topology.  Empty when the config didn't set
         // `out_channel_topology`; the builder skips wire emission and
         // the broker applies default "one-to-one" + overwrite semantics
         // per HEP-CORE-0007 §12.3.  Config authority: HEP-CORE-0018 §5.3.
-        reg_in.channel_topology  = config_.out_channel_topology();
+        reg_in.channel_topology = config_.out_channel_topology();
         // HEP-CORE-0036 §4.1 + §5.1 + §6.4 — producer's CURVE identity
         // pubkey is REQUIRED on REG_REQ.  Broker stores it on
         // ChannelEntry::producers[i].zmq_pubkey and emits it back to
         // consumers via CONSUMER_REG_ACK.producers[] so the consumer can
         // use it as the data-plane curve_serverkey.
-        reg_in.zmq_pubkey        = std::string(
-            pylabhub::utils::security::secure().keys().pubkey(pylabhub::utils::security::kRoleIdentityName));
+        reg_in.zmq_pubkey = std::string(pylabhub::utils::security::secure().keys().pubkey(
+            pylabhub::utils::security::kRoleIdentityName));
         // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels publish
         // the producer's per-channel L2 capability-transport endpoint
         // so the broker can echo it back to authorized consumers via
@@ -383,8 +379,8 @@ void ProducerRoleHost::worker_main_()
 
         // Schema fields (HEP-CORE-0034 §10.1).  Empty fields → broker
         // takes the legacy/anonymous path.
-        const auto wire_schema = hub::make_wire_schema_fields(
-            pf.out_slot_schema_json, out_slot_spec_, out_fz_local);
+        const auto wire_schema =
+            hub::make_wire_schema_fields(pf.out_slot_schema_json, out_slot_spec_, out_fz_local);
         hub::apply_producer_schema_fields(reg_opts, wire_schema);
 
         // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
@@ -398,8 +394,7 @@ void ProducerRoleHost::worker_main_()
         // 2026-05-17 — replaces the pre-S1 `shared.producer_channel`
         // string).
         auto reg_result = api_ref.register_producer_channel(reg_opts);
-        if (!reg_result.has_value() ||
-            reg_result->value("status", std::string{}) != "success")
+        if (!reg_result.has_value() || reg_result->value("status", std::string{}) != "success")
         {
             // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL — there
             // is no "operate locally" mode under the AUTH-gate principle (an
@@ -407,7 +402,7 @@ void ProducerRoleHost::worker_main_()
             // a port-holder with no peers).
             LOGGER_ERROR("[prod] Broker registration failed — "
                          "aborting role startup");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -423,13 +418,12 @@ void ProducerRoleHost::worker_main_()
         {
             LOGGER_ERROR("[prod] apply_producer_reg_ack failed — "
                          "tx queue did not activate; aborting startup");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
         auto hub_max = scripting::RoleAPIBase::extract_hub_heartbeat_max(*reg_result);
-        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms,
-                                   hub_max);
+        api_ref.install_heartbeat(config_.timing().heartbeat_interval_ms, hub_max);
 
         // Step 6d.1 — HEP-CORE-0036 §I9.1 topology-agnostic finalize.
         // The queue decides whether a deferred connect must be
@@ -437,20 +431,17 @@ void ProducerRoleHost::worker_main_()
         // (every other topology / transport combination).  Role host
         // sees a uniform verb; no `topology == FanIn` branching, no
         // SMS penetration for the pubkey, no wait/dial pairing.
-        auto is_cancelled = [&core_]() -> bool {
-            return core_.is_shutdown_requested() ||
-                   core_.is_critical_error() ||
+        auto is_cancelled = [&core_]() -> bool
+        {
+            return core_.is_shutdown_requested() || core_.is_critical_error() ||
                    core_.is_process_exit_requested();
         };
-        if (!api_ref.finalize_channel_connect(
-                config_.out_channel(),
-                config_.timing().init_timeout_ms,
-                is_cancelled))
+        if (!api_ref.finalize_channel_connect(config_.out_channel(),
+                                              config_.timing().init_timeout_ms, is_cancelled))
         {
-            LOGGER_ERROR(
-                "[prod] Startup: finalize_channel_connect('{}') failed "
-                "— aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
-                config_.out_channel());
+            LOGGER_ERROR("[prod] Startup: finalize_channel_connect('{}') failed "
+                         "— aborting (HEP-CORE-0036 §I9.1 / §6.6.3)",
+                         config_.out_channel());
             teardown_infrastructure_();
             promise_ref.set_value(false);
             return;
@@ -465,7 +456,7 @@ void ProducerRoleHost::worker_main_()
         if (!scripting::wait_for_roles(api_ref, config_.startup().wait_for_roles, "[prod]"))
         {
             LOGGER_ERROR("[prod] Startup coordination failed — required roles not available");
-            teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+            teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
         }
@@ -485,7 +476,7 @@ void ProducerRoleHost::worker_main_()
     // fired yet.  No-op when shm_transport_ is null (ZMQ TX channels).
     if (shm_transport_ && !spawn_shm_auth_listener_())
     {
-        teardown_infrastructure_();  // H3b — unwind L1 socket + queues
+        teardown_infrastructure_(); // H3b — unwind L1 socket + queues
         promise_ref.set_value(false);
         return;
     }
@@ -502,22 +493,19 @@ void ProducerRoleHost::worker_main_()
     else
     {
         const auto &tc_loop = config_.timing();
-        ProducerCycleOps ops(api_ref, engine_ref, core_,
-                             sc.stop_on_script_error);
+        ProducerCycleOps ops(api_ref, engine_ref, core_, sc.stop_on_script_error);
         scripting::LoopConfig lcfg;
-        lcfg.period_us                   = tc_loop.period_us;
-        lcfg.loop_timing                 = tc_loop.loop_timing;
+        lcfg.period_us = tc_loop.period_us;
+        lcfg.loop_timing = tc_loop.loop_timing;
         lcfg.queue_io_wait_timeout_ratio = tc_loop.queue_io_wait_timeout_ratio;
-        lcfg.release_global_lock_during_wait =
-            engine_ref.release_global_lock_during_wait();
-        lcfg.init_timeout_ms             = tc_loop.init_timeout_ms;
+        lcfg.release_global_lock_during_wait = engine_ref.release_global_lock_during_wait();
+        lcfg.init_timeout_ms = tc_loop.init_timeout_ms;
         scripting::run_data_loop(api_ref, core_, lcfg, ops, engine_ref);
     }
 
     // Steps 9-14: shared epilogue (HEP-CORE-0034 Phase 5c).
-    scripting::do_role_teardown(
-        engine_ref, api_ref, core_, has_api(),
-        [this] { teardown_infrastructure_(); });
+    scripting::do_role_teardown(engine_ref, api_ref, core_, has_api(),
+                                [this] { teardown_infrastructure_(); });
 }
 
 // ============================================================================
@@ -534,14 +522,12 @@ void ProducerRoleHost::worker_main_()
 // byte-identical — collapsing them into the shared free function is
 // pure de-duplication.
 
-hub::TxQueueOptions
-ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
-                                const hub::SchemaSpec    &out_slot_spec,
-                                const hub::SchemaSpec    &out_fz_spec,
-                                bool                      has_tx_fz)
+hub::TxQueueOptions ProducerRoleHost::make_tx_opts(const config::RoleConfig &config,
+                                                   const hub::SchemaSpec &out_slot_spec,
+                                                   const hub::SchemaSpec &out_fz_spec,
+                                                   bool has_tx_fz)
 {
-    return scripting::make_tx_opts(config, out_slot_spec, out_fz_spec,
-                                    has_tx_fz);
+    return scripting::make_tx_opts(config, out_slot_spec, out_fz_spec, has_tx_fz);
 }
 
 // ============================================================================
@@ -561,20 +547,17 @@ std::vector<scripting::Presence>
 ProducerRoleHost::build_presences_(const config::RoleConfig &c) const
 {
     scripting::Presence p;
-    p.hub       = c.out_hub();
-    p.channel   = c.out_channel();
+    p.hub = c.out_hub();
+    p.channel = c.out_channel();
     p.role_kind = scripting::RoleKind::Producer;
 
     std::vector<std::string> schema_dirs;
     if (!p.hub.hub_dir.empty())
-        schema_dirs.push_back(
-            (std::filesystem::path(p.hub.hub_dir) / "schemas").string());
+        schema_dirs.push_back((std::filesystem::path(p.hub.hub_dir) / "schemas").string());
 
     const auto &fields = c.role_data<ProducerFields>();
-    p.slot_spec = hub::resolve_schema(
-        fields.out_slot_schema_json, false, "prod", schema_dirs);
-    p.fz_spec = hub::resolve_schema(
-        fields.out_flexzone_schema_json, true, "prod", schema_dirs);
+    p.slot_spec = hub::resolve_schema(fields.out_slot_schema_json, false, "prod", schema_dirs);
+    p.fz_spec = hub::resolve_schema(fields.out_flexzone_schema_json, true, "prod", schema_dirs);
 
     std::vector<scripting::Presence> v;
     v.push_back(std::move(p));

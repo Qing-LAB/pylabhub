@@ -23,8 +23,14 @@ using namespace pylabhub::tests::helper;
 namespace pylabhub::tests::worker::config_validation
 {
 
-static auto logger_module() { return ::pylabhub::utils::Logger::GetLifecycleModule(); }
-static auto hub_module() { return ::pylabhub::hub::GetDataBlockModule(); }
+static auto logger_module()
+{
+    return ::pylabhub::utils::Logger::GetLifecycleModule();
+}
+static auto hub_module()
+{
+    return ::pylabhub::hub::GetDataBlockModule();
+}
 
 // Returns a fully-valid baseline config. Tests override individual fields to trigger throws.
 static DataBlockConfig make_valid_config()
@@ -46,28 +52,23 @@ static DataBlockConfig make_valid_config()
 // not path-discriminating; a regression where field A's check fails
 // to fire and field B's check fires instead would silently pass the
 // type check.
-static void expect_invalid_arg(const std::string &channel,
-                               const DataBlockConfig &cfg,
-                               DataBlockPolicy policy_arg,
-                               std::string_view needle)
+static void expect_invalid_arg(const std::string &channel, const DataBlockConfig &cfg,
+                               DataBlockPolicy policy_arg, std::string_view needle)
 {
     bool threw = false;
     std::string msg;
     try
     {
-        (void)create_datablock_producer_impl(channel, policy_arg, cfg,
-                                             nullptr, nullptr);
+        (void)create_datablock_producer_impl(channel, policy_arg, cfg, nullptr, nullptr);
     }
     catch (const std::invalid_argument &e)
     {
         threw = true;
         msg = e.what();
     }
-    EXPECT_TRUE(threw)
-        << "create_datablock_producer_impl must throw std::invalid_argument";
+    EXPECT_TRUE(threw) << "create_datablock_producer_impl must throw std::invalid_argument";
     EXPECT_NE(msg.find(needle), std::string::npos)
-        << "wrong invalid_argument path; expected substring '" << needle
-        << "', got: " << msg;
+        << "wrong invalid_argument path; expected substring '" << needle << "', got: " << msg;
 }
 
 // ============================================================================
@@ -87,7 +88,8 @@ int policy_unset_throws()
             expect_invalid_arg(channel, cfg, DataBlockPolicy::Unset,
                                "DataBlockConfig::policy must be set explicitly");
         },
-        "policy_unset_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "policy_unset_throws", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -107,7 +109,8 @@ int consumer_sync_policy_unset_throws()
             expect_invalid_arg(channel, cfg, cfg.policy,
                                "DataBlockConfig::consumer_sync_policy must be set explicitly");
         },
-        "consumer_sync_policy_unset_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "consumer_sync_policy_unset_throws", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -127,7 +130,8 @@ int physical_page_size_unset_throws()
             expect_invalid_arg(channel, cfg, cfg.policy,
                                "DataBlockConfig::physical_page_size must be set explicitly");
         },
-        "physical_page_size_unset_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "physical_page_size_unset_throws", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -147,7 +151,8 @@ int ring_buffer_capacity_zero_throws()
             expect_invalid_arg(channel, cfg, cfg.policy,
                                "DataBlockConfig::ring_buffer_capacity must be set");
         },
-        "ring_buffer_capacity_zero_throws", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "ring_buffer_capacity_zero_throws", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -162,15 +167,16 @@ int valid_config_creates_successfully()
             std::string channel = make_test_channel_name("CfgValid");
 
             DataBlockConfig cfg = make_valid_config();
-            auto producer = create_datablock_producer_impl(channel, cfg.policy,
-                                                           cfg, nullptr, nullptr);
+            auto producer =
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
             EXPECT_NE(producer, nullptr)
                 << "create_datablock_producer_impl must succeed with a fully valid config";
 
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "valid_config_creates_successfully", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "valid_config_creates_successfully", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 // ============================================================================
@@ -188,10 +194,10 @@ int sub_cache_line_logical_size_rounds_up()
             // 48 is not a multiple of 64.  The library silently rounds up to 64.
             cfg.logical_unit_size = 48;
 
-            auto producer = create_datablock_producer_impl(channel, cfg.policy,
-                                                           cfg, nullptr, nullptr);
-            ASSERT_NE(producer, nullptr)
-                << "create_datablock_producer_impl must succeed: library rounds up logical_unit_size";
+            auto producer =
+                create_datablock_producer_impl(channel, cfg.policy, cfg, nullptr, nullptr);
+            ASSERT_NE(producer, nullptr) << "create_datablock_producer_impl must succeed: library "
+                                            "rounds up logical_unit_size";
 
             // Verify the slot buffer is 64 bytes (rounded from 48).
             auto write_handle = producer->acquire_write_slot(5000);
@@ -203,7 +209,8 @@ int sub_cache_line_logical_size_rounds_up()
             producer.reset();
             cleanup_test_datablock(channel);
         },
-        "sub_cache_line_logical_size_rounds_up", logger_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
+        "sub_cache_line_logical_size_rounds_up", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module());
 }
 
 } // namespace pylabhub::tests::worker::config_validation
@@ -225,8 +232,7 @@ struct ConfigValidationWorkerRegistrar
                     return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "config_validation")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "config_validation")
                     return -1;
                 std::string scenario(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::config_validation;

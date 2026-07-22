@@ -18,8 +18,8 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_policy.hpp"
-#include "utils/json_fwd.hpp"                 // nlohmann::json fwd-decl
-#include "utils/shared_memory_spinlock.hpp"   // SharedSpinLock (spinlock accessors on base)
+#include "utils/json_fwd.hpp"               // nlohmann::json fwd-decl
+#include "utils/shared_memory_spinlock.hpp" // SharedSpinLock (spinlock accessors on base)
 
 #include <chrono>
 #include <cstddef>
@@ -52,7 +52,7 @@ namespace pylabhub::hub
  */
 class PeerReadinessOracle
 {
-public:
+  public:
     enum class PollResult
     {
         /// Peer's binding-side ZAP allowlist is confirmed to contain
@@ -102,16 +102,18 @@ enum class OverflowPolicy
  */
 inline OverflowPolicy parse_overflow_policy(const std::string &s, const char *context = "config")
 {
-    if (s == "drop")  return OverflowPolicy::Drop;
-    if (s == "block") return OverflowPolicy::Block;
-    throw std::runtime_error(
-        std::string(context) + ": invalid overflow policy = '" + s +
-        "' (expected 'drop' or 'block')");
+    if (s == "drop")
+        return OverflowPolicy::Drop;
+    if (s == "block")
+        return OverflowPolicy::Block;
+    throw std::runtime_error(std::string(context) + ": invalid overflow policy = '" + s +
+                             "' (expected 'drop' or 'block')");
 }
 
 /**
  * @struct QueueMetrics
- * @brief Unified transport-agnostic diagnostic counters for QueueReader/QueueWriter implementations.
+ * @brief Unified transport-agnostic diagnostic counters for QueueReader/QueueWriter
+ * implementations.
  *
  * All counters are read atomically per-field.  Neighbouring fields may reflect
  * slightly different instants if a concurrent write is in progress — this is
@@ -132,14 +134,15 @@ inline OverflowPolicy parse_overflow_policy(const std::string &s, const char *co
 struct QueueMetrics
 {
     // ── Domain 2: Acquire/release timing (both transports) ───────────────────
-    uint64_t last_slot_wait_us{0};    ///< Time blocked inside acquire (µs).
-    uint64_t last_iteration_us{0};    ///< Start-to-start time between consecutive acquires (µs).
-    uint64_t max_iteration_us{0};     ///< Peak start-to-start time since reset (µs).
-    uint64_t context_elapsed_us{0};   ///< Elapsed since first acquire (µs). Updated per acquire.
+    uint64_t last_slot_wait_us{0};  ///< Time blocked inside acquire (µs).
+    uint64_t last_iteration_us{0};  ///< Start-to-start time between consecutive acquires (µs).
+    uint64_t max_iteration_us{0};   ///< Peak start-to-start time since reset (µs).
+    uint64_t context_elapsed_us{0}; ///< Elapsed since first acquire (µs). Updated per acquire.
 
     // ── Domain 3: Data flow (both transports) ──────────────────────────
-    uint64_t last_slot_exec_us{0};    ///< Time from acquire to release (µs).
-    uint64_t data_drop_count{0};        ///< Data lost: SHM Latest_only overwrite, ZMQ write buffer full/timeout. 0 for readers.
+    uint64_t last_slot_exec_us{0}; ///< Time from acquire to release (µs).
+    uint64_t data_drop_count{
+        0}; ///< Data lost: SHM Latest_only overwrite, ZMQ write buffer full/timeout. 0 for readers.
 
     // ── Receive side (read_acquire path) ─────────────────────────────────────
     /// Items permanently lost because the receive ring buffer was full (oldest discarded).
@@ -185,19 +188,20 @@ struct QueueMetrics
  * #undef X
  * @endcode
  */
-// NOLINTBEGIN(cppcoreguidelines-macro-usage) — X-macro is the standard pattern for struct↔serialization sync
-#define PYLABHUB_QUEUE_METRICS_FIELDS(X) \
-    X(last_slot_wait_us)                 \
-    X(last_iteration_us)                 \
-    X(max_iteration_us)                  \
-    X(context_elapsed_us)                \
-    X(last_slot_exec_us)                 \
-    X(data_drop_count)                   \
-    X(recv_overflow_count)               \
-    X(recv_frame_error_count)            \
-    X(recv_gap_count)                    \
-    X(send_drop_count)                   \
-    X(send_retry_count)                  \
+// NOLINTBEGIN(cppcoreguidelines-macro-usage) — X-macro is the standard pattern for
+// struct↔serialization sync
+#define PYLABHUB_QUEUE_METRICS_FIELDS(X)                                                           \
+    X(last_slot_wait_us)                                                                           \
+    X(last_iteration_us)                                                                           \
+    X(max_iteration_us)                                                                            \
+    X(context_elapsed_us)                                                                          \
+    X(last_slot_exec_us)                                                                           \
+    X(data_drop_count)                                                                             \
+    X(recv_overflow_count)                                                                         \
+    X(recv_frame_error_count)                                                                      \
+    X(recv_gap_count)                                                                              \
+    X(send_drop_count)                                                                             \
+    X(send_retry_count)                                                                            \
     X(checksum_error_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)
 
@@ -230,9 +234,9 @@ struct QueueMetrics
 ///   returns `Uninitialized`.
 enum class Mechanism
 {
-    Uninitialized,  ///< `start()` not called, queue stopped, or no auth wired.
-    Curve,          ///< libzmq reported `ZMQ_CURVE` post-start.
-    ShmCapability,  ///< SHM capability-transport authed (HEP-CORE-0041 §6.1).
+    Uninitialized, ///< `start()` not called, queue stopped, or no auth wired.
+    Curve,         ///< libzmq reported `ZMQ_CURVE` post-start.
+    ShmCapability, ///< SHM capability-transport authed (HEP-CORE-0041 §6.1).
 };
 
 /// String name for a `Mechanism` value — stable surface for script
@@ -249,9 +253,12 @@ enum class Mechanism
 {
     switch (m)
     {
-    case Mechanism::Curve:         return "Curve";
-    case Mechanism::ShmCapability: return "ShmCapability";
-    case Mechanism::Uninitialized: return "Uninitialized";
+    case Mechanism::Curve:
+        return "Curve";
+    case Mechanism::ShmCapability:
+        return "ShmCapability";
+    case Mechanism::Uninitialized:
+        return "Uninitialized";
     }
     return "Uninitialized";
 }
@@ -273,7 +280,7 @@ enum class Mechanism
  */
 class PYLABHUB_UTILS_EXPORT QueueReader
 {
-public:
+  public:
     virtual ~QueueReader() = default;
 
     // ── Reading ───────────────────────────────────────────────────────────────
@@ -284,7 +291,7 @@ public:
      * Blocks for at most @p timeout.  Returns nullptr on timeout, stop, or checksum error.
      * The returned pointer is valid until the next read_release() call.
      */
-    virtual const void* read_acquire(std::chrono::milliseconds timeout) noexcept = 0;
+    virtual const void *read_acquire(std::chrono::milliseconds timeout) noexcept = 0;
 
     /**
      * @brief Release the slot acquired by the last read_acquire().
@@ -330,17 +337,18 @@ public:
     // ── Metadata ──────────────────────────────────────────────────────────────
 
     /** @brief Size of one data item in bytes (set at construction). */
-    virtual size_t      item_size()     const noexcept = 0;
+    virtual size_t item_size() const noexcept = 0;
     /** @brief Human-readable channel or endpoint name (for diagnostics). */
-    virtual std::string name()          const = 0;
+    virtual std::string name() const = 0;
     /** @brief Diagnostic counter snapshot (timing + transport counters). Thread-safe. */
-    virtual QueueMetrics metrics()      const noexcept { return {}; }
+    virtual QueueMetrics metrics() const noexcept { return {}; }
 
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
 
     /** @brief Full initialization at session start. Resets counters AND transport state
-     *  (e.g., sequence tracking). Call once before the data loop. Default: calls reset_metrics(). */
+     *  (e.g., sequence tracking). Call once before the data loop. Default: calls reset_metrics().
+     */
     virtual void init_metrics() { reset_metrics(); }
 
     /** @brief Set the target loop period (informational — stored in ContextMetrics). */
@@ -403,7 +411,7 @@ public:
     virtual bool start() { return true; }
 
     /** @brief Stop the reader (join background threads, close sockets). Idempotent. */
-    virtual void stop()  {}
+    virtual void stop() {}
 
     /** @brief Returns true if running (after start(), before stop()). */
     virtual bool is_running() const noexcept { return true; }
@@ -430,7 +438,7 @@ public:
      * on malformed `artifacts`, return `false` and leave queue state
      * unchanged.
      */
-    virtual bool apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
+    virtual bool apply_master_approval(const nlohmann::json & /*artifacts*/) noexcept
     {
         return true;
     }
@@ -527,10 +535,7 @@ public:
     /// it).  `ZmqQueue` overrides to return `Curve` after libzmq
     /// reports `ZMQ_CURVE`; `ShmQueue` overrides to return
     /// `ShmCapability` once `start()` has attached the DataBlock.
-    [[nodiscard]] virtual Mechanism mechanism() const noexcept
-    {
-        return Mechanism::Uninitialized;
-    }
+    [[nodiscard]] virtual Mechanism mechanism() const noexcept { return Mechanism::Uninitialized; }
 };
 
 /**
@@ -549,7 +554,7 @@ public:
  */
 class PYLABHUB_UTILS_EXPORT QueueWriter
 {
-public:
+  public:
     virtual ~QueueWriter() = default;
 
     // ── Writing ───────────────────────────────────────────────────────────────
@@ -564,7 +569,7 @@ public:
      *                  For Drop policy: ignored (immediate).
      * @return          Writable pointer, or nullptr if no slot is available.
      */
-    virtual void* write_acquire(std::chrono::milliseconds timeout) noexcept = 0;
+    virtual void *write_acquire(std::chrono::milliseconds timeout) noexcept = 0;
 
     /**
      * @brief Commit (publish) the output buffer acquired by write_acquire().
@@ -572,7 +577,7 @@ public:
      * Makes the written data visible to downstream readers.
      * No-op if write_acquire() returned nullptr.
      */
-    virtual void  write_commit() noexcept = 0;
+    virtual void write_commit() noexcept = 0;
 
     /**
      * @brief Discard the output buffer acquired by write_acquire().
@@ -580,7 +585,7 @@ public:
      * The slot is returned without being published.
      * No-op if write_acquire() returned nullptr.
      */
-    virtual void  write_discard() noexcept = 0;
+    virtual void write_discard() noexcept = 0;
 
     // ── Ring buffer status ────────────────────────────────────────────────────
 
@@ -603,17 +608,18 @@ public:
     // ── Metadata ──────────────────────────────────────────────────────────────
 
     /** @brief Size of one data item in bytes (set at construction). */
-    virtual size_t      item_size()     const noexcept = 0;
+    virtual size_t item_size() const noexcept = 0;
     /** @brief Human-readable channel or endpoint name (for diagnostics). */
-    virtual std::string name()          const = 0;
+    virtual std::string name() const = 0;
     /** @brief Diagnostic counter snapshot (timing + transport counters). Thread-safe. */
-    virtual QueueMetrics metrics()      const noexcept { return {}; }
+    virtual QueueMetrics metrics() const noexcept { return {}; }
 
     /** @brief Reset all metric counters. Called at role startup before the data loop. */
     virtual void reset_metrics() {}
 
     /** @brief Full initialization at session start. Resets counters AND transport state
-     *  (e.g., sequence tracking). Call once before the data loop. Default: calls reset_metrics(). */
+     *  (e.g., sequence tracking). Call once before the data loop. Default: calls reset_metrics().
+     */
     virtual void init_metrics() { reset_metrics(); }
 
     /** @brief Set the target loop period (informational — stored in ContextMetrics). */
@@ -668,7 +674,7 @@ public:
     virtual bool start() { return true; }
 
     /** @brief Stop the writer (join background threads, close sockets). Idempotent. */
-    virtual void stop()  {}
+    virtual void stop() {}
 
     /** @brief Returns true if running (after start(), before stop()). */
     virtual bool is_running() const noexcept { return true; }
@@ -682,7 +688,7 @@ public:
      * handshake at L2 (HEP-CORE-0041 §5.5), so `apply_master_approval`
      * is a no-op returning true on the SHM tx side.
      */
-    virtual bool apply_master_approval(const nlohmann::json& /*artifacts*/) noexcept
+    virtual bool apply_master_approval(const nlohmann::json & /*artifacts*/) noexcept
     {
         return true;
     }
@@ -752,10 +758,9 @@ public:
      *         completed successfully; `false` on timeout /
      *         cancellation / permanent error.
      */
-    virtual bool finalize_connect(PeerReadinessOracle & /*oracle*/,
-                                    std::uint64_t         /*timeout_ms*/,
-                                    const std::function<bool()> & /*is_cancelled*/,
-                                    const char *          /*log_tag*/) noexcept
+    virtual bool finalize_connect(PeerReadinessOracle & /*oracle*/, std::uint64_t /*timeout_ms*/,
+                                  const std::function<bool()> & /*is_cancelled*/,
+                                  const char * /*log_tag*/) noexcept
     {
         return true;
     }

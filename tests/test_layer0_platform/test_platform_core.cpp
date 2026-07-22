@@ -244,7 +244,8 @@ TEST(PlatformCoreTest, IsProcessAlive_DetectsAliveThenDeadProcess)
     pi.hThread = INVALID_HANDLE_VALUE;
 
     char cmdline[] = "cmd.exe /c ping 127.0.0.1 -n 6 >nul";
-    BOOL ok = CreateProcessA(nullptr, cmdline, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+    BOOL ok =
+        CreateProcessA(nullptr, cmdline, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
     ASSERT_TRUE(ok) << "CreateProcess failed";
 
     uint64_t pid = static_cast<uint64_t>(pi.dwProcessId);
@@ -367,7 +368,6 @@ TEST(VersionRegistryTest, CurrentReturnsConsistentValues)
     EXPECT_GT(v.script_api_major, 0);
     EXPECT_GT(v.script_engine_major, 0);
     EXPECT_GT(v.config_major, 0);
-
 }
 
 TEST(VersionRegistryTest, ReleaseVersionNotEmpty)
@@ -442,8 +442,7 @@ TEST(VersionRegistryTest, AbiInfoJsonCLinkageMatchesCpp)
     ASSERT_NE(c_result, nullptr);
 
     const std::string cpp_result = pylabhub::version::version_info_json();
-    EXPECT_EQ(std::string(c_result), cpp_result)
-        << "C-linkage and C++ version info should match";
+    EXPECT_EQ(std::string(c_result), cpp_result) << "C-linkage and C++ version info should match";
 
     // Must parse as valid JSON.
     nlohmann::json j;

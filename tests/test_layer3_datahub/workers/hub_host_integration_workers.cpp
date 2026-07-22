@@ -62,24 +62,21 @@ namespace
 // `tests/test_framework/broker_test_harness.h`.  Broker hard-errors on
 // missing `role_type` / `data_transport` / pubkey fields per
 // `apply_*_reg_ack` invariants.
-json make_reg_opts(const std::string &channel,
-                   const pylabhub::tests::CurveSetup &curve,
+json make_reg_opts(const std::string &channel, const pylabhub::tests::CurveSetup &curve,
                    const std::string &uid)
 {
-    auto opts = pylabhub::hub::build_producer_reg_payload(
-        pylabhub::hub::ProducerRegInputs{
-            .channel    = channel,
-            .role_uid   = uid,
-            .role_name  = "test_producer",
-            .role_type  = "producer",
-            .has_shm    = true,
-            .is_zmq_transport  = false,
-            .zmq_node_endpoint = {},
-            .zmq_pubkey = curve.role(uid).public_z85,
-            .shm_capability_endpoint =
-                pylabhub::utils::security::default_shm_capability_endpoint(
-                    channel),
-        });
+    auto opts = pylabhub::hub::build_producer_reg_payload(pylabhub::hub::ProducerRegInputs{
+        .channel = channel,
+        .role_uid = uid,
+        .role_name = "test_producer",
+        .role_type = "producer",
+        .has_shm = true,
+        .is_zmq_transport = false,
+        .zmq_node_endpoint = {},
+        .zmq_pubkey = curve.role(uid).public_z85,
+        .shm_capability_endpoint =
+            pylabhub::utils::security::default_shm_capability_endpoint(channel),
+    });
     opts["producer_pid"] = ::getpid();
     return opts;
 }
@@ -95,8 +92,8 @@ json hubhost_overrides()
 {
     return json{
         {"network", {{"broker_endpoint", "tcp://127.0.0.1:0"}}},
-        {"admin",   {{"enabled", false}}},
-        {"script",  {{"path", ""}}},
+        {"admin", {{"enabled", false}}},
+        {"script", {{"path", ""}}},
     };
 }
 
@@ -105,15 +102,15 @@ json hubhost_overrides()
 int hubhost_brokerreachable_afterstartup()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
             const std::string uid = "prod.test.uid_reachable";
             auto curve = pylabhub::tests::make_curve_setup({uid});
             pylabhub::tests::seed_role_identities(curve);
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hubhost_overrides(), curve);
+            auto broker = pylabhub::tests::start_hubhost_broker(hubhost_overrides(), curve);
             ASSERT_FALSE(broker.endpoint.empty())
                 << "HubHost::broker_endpoint() empty after startup — "
                    "bind didn't happen";
@@ -128,10 +125,8 @@ int hubhost_brokerreachable_afterstartup()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_host_integration::hubhost_brokerreachable_afterstartup",
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
-        JsonConfig::GetLifecycleModule(),
+        "hub_host_integration::hubhost_brokerreachable_afterstartup", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
@@ -139,23 +134,22 @@ int hubhost_brokerreachable_afterstartup()
 int hubhost_regreq_roundtripsviaspawnedbroker()
 {
     return run_gtest_worker(
-        [] {
+        []
+        {
             LogCaptureFixture log_cap;
             log_cap.Install();
 
-            const std::string uid     = "prod.cam.uid_regreq";
+            const std::string uid = "prod.cam.uid_regreq";
             const std::string channel = pid_chan("hubhost.regreq");
             auto curve = pylabhub::tests::make_curve_setup({uid});
             pylabhub::tests::seed_role_identities(curve);
-            auto broker = pylabhub::tests::start_hubhost_broker(
-                hubhost_overrides(), curve);
+            auto broker = pylabhub::tests::start_hubhost_broker(hubhost_overrides(), curve);
 
             pylabhub::tests::BrcHandle client;
             client.start(broker.endpoint, broker.pubkey, uid,
                          pylabhub::tests::role_keystore_name(uid));
 
-            auto reg = client.brc.register_channel(
-                make_reg_opts(channel, curve, uid), 3000);
+            auto reg = client.brc.register_channel(make_reg_opts(channel, curve, uid), 3000);
             ASSERT_TRUE(reg.has_value()) << "REG_REQ timed out";
             EXPECT_EQ(reg->value("status", ""), "success");
 
@@ -175,8 +169,7 @@ int hubhost_regreq_roundtripsviaspawnedbroker()
             log_cap.Uninstall();
         },
         "hub_host_integration::hubhost_regreq_roundtripsviaspawnedbroker",
-        Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(),
+        Logger::GetLifecycleModule(), FileLock::GetLifecycleModule(),
         JsonConfig::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
@@ -207,11 +200,11 @@ struct HubHostIntegrationRegistrar
         register_worker_dispatcher(
             [](int argc, char **argv) -> int
             {
-                if (argc < 2) return -1;
+                if (argc < 2)
+                    return -1;
                 std::string_view mode = argv[1];
                 auto dot = mode.find('.');
-                if (dot == std::string_view::npos ||
-                    mode.substr(0, dot) != "hub_host_integration")
+                if (dot == std::string_view::npos || mode.substr(0, dot) != "hub_host_integration")
                     return -1;
                 std::string sc(mode.substr(dot + 1));
                 using namespace pylabhub::tests::worker::hub_host_integration;

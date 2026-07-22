@@ -39,22 +39,20 @@ using pylabhub::tests::pattern4::write_pattern4_setup;
 namespace
 {
 
-class Pattern4ChannelGroupTest
-    : public pylabhub::tests::pattern4::Pattern4WireTest
+class Pattern4ChannelGroupTest : public pylabhub::tests::pattern4::Pattern4WireTest
 {
-protected:
+  protected:
     // Synchronous BAND_JOIN_REQ → returns the ACK body (carries the
     // member list per broker_service.cpp handle_band_join_req).  Pins
     // status=="success" here: `request()` also returns the ERROR body, so a
     // caller gating only on `has_value()` would silently accept a rejected
     // join — this turns that into a precise failure at the join site.
-    std::optional<nlohmann::json> band_join(BrokerWireClient    &c,
-                                            const std::string   &band,
-                                            const std::string   &uid)
+    std::optional<nlohmann::json> band_join(BrokerWireClient &c, const std::string &band,
+                                            const std::string &uid)
     {
         nlohmann::json req;
-        req["band"]      = band;
-        req["role_uid"]  = uid;
+        req["band"] = band;
+        req["role_uid"] = uid;
         req["role_name"] = uid;
         auto reply = c.request("BAND_JOIN_REQ", req, "BAND_JOIN_ACK",
                                std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
@@ -69,15 +67,13 @@ protected:
 
     // Fire-and-forget BAND_BROADCAST_SEND_NOTIFY (matches BRC
     // band_broadcast: sender key is `role_uid`, payload under `body`).
-    void band_broadcast(BrokerWireClient     &c,
-                        const std::string    &band,
-                        const std::string    &uid,
+    void band_broadcast(BrokerWireClient &c, const std::string &band, const std::string &uid,
                         const nlohmann::json &body)
     {
         nlohmann::json p;
-        p["band"]     = band;
+        p["band"] = band;
         p["role_uid"] = uid;
-        p["body"]     = body;
+        p["body"] = body;
         c.send("BAND_BROADCAST_SEND_NOTIFY", p);
     }
 };
@@ -88,25 +84,25 @@ constexpr auto kNotifyBudget = std::chrono::milliseconds{2000};
 // its absence after the window is the factual negative result.
 constexpr auto kAbsenceBudget = std::chrono::milliseconds{400};
 
-}  // namespace
+} // namespace
 
 // ─── message fan-out: broadcast body delivered verbatim to a peer ──────────
 TEST_F(Pattern4ChannelGroupTest, MessageFanout_BodyDeliveredToPeer)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.sender" + suffix;
-    const std::string uid_b  = "cons.recvr" + suffix;
-    const std::string band   = "!msg_ch" + suffix;
+    const std::string uid_a = "prod.sender" + suffix;
+    const std::string uid_b = "cons.recvr" + suffix;
+    const std::string band = "!msg_ch" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_fanout");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    const auto setup = make_pattern4_setup({uid_a, uid_b});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
                                             {temp_dir.string(), "default"});
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
+               milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
     auto a = make_wire_client(ctx, setup, uid_a);
@@ -118,8 +114,7 @@ TEST_F(Pattern4ChannelGroupTest, MessageFanout_BodyDeliveredToPeer)
     band_broadcast(a, band, uid_a, {{"event", "hello"}, {"value", 42}});
 
     auto deliver = drain_for(b, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
-    ASSERT_TRUE(deliver.has_value())
-        << "receiver never got BAND_BROADCAST_DELIVER_NOTIFY";
+    ASSERT_TRUE(deliver.has_value()) << "receiver never got BAND_BROADCAST_DELIVER_NOTIFY";
     const auto body = deliver->value("body", nlohmann::json::object());
     EXPECT_EQ(body.value("event", std::string{}), "hello");
     EXPECT_EQ(body.value("value", 0), 42);
@@ -132,18 +127,18 @@ TEST_F(Pattern4ChannelGroupTest, JoinNotification_ExistingMemberNotified)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.first" + suffix;
-    const std::string uid_b  = "prod.second" + suffix;
-    const std::string band   = "!notify_ch" + suffix;
+    const std::string uid_a = "prod.first" + suffix;
+    const std::string uid_b = "prod.second" + suffix;
+    const std::string band = "!notify_ch" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_joinnotify");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    const auto setup = make_pattern4_setup({uid_a, uid_b});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
                                             {temp_dir.string(), "default"});
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
+               milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
     auto a = make_wire_client(ctx, setup, uid_a);
@@ -173,18 +168,18 @@ TEST_F(Pattern4ChannelGroupTest, LeaveNotification_RemainingMemberNotified)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.stayer" + suffix;
-    const std::string uid_b  = "prod.leaver" + suffix;
-    const std::string band   = "!leave_ch" + suffix;
+    const std::string uid_a = "prod.stayer" + suffix;
+    const std::string uid_b = "prod.leaver" + suffix;
+    const std::string band = "!leave_ch" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_leavenotify");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    const auto setup = make_pattern4_setup({uid_a, uid_b});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
                                             {temp_dir.string(), "default"});
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
+               milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
     auto a = make_wire_client(ctx, setup, uid_a);
@@ -195,12 +190,11 @@ TEST_F(Pattern4ChannelGroupTest, LeaveNotification_RemainingMemberNotified)
 
     // Leaver B departs voluntarily.
     nlohmann::json lreq;
-    lreq["band"]     = band;
+    lreq["band"] = band;
     lreq["role_uid"] = uid_b;
-    auto leave = b.request("BAND_LEAVE_REQ", lreq, "BAND_LEAVE_ACK",
-                           milliseconds{pylabhub::kLongTimeoutMs});
-    ASSERT_TRUE(leave.has_value() &&
-                leave->value("status", std::string{}) == "success");
+    auto leave =
+        b.request("BAND_LEAVE_REQ", lreq, "BAND_LEAVE_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(leave.has_value() && leave->value("status", std::string{}) == "success");
 
     auto notify = drain_for(a, "BAND_LEAVE_NOTIFY", kNotifyBudget);
     ASSERT_TRUE(notify.has_value()) << "stayer A never got BAND_LEAVE_NOTIFY";
@@ -217,18 +211,18 @@ TEST_F(Pattern4ChannelGroupTest, Broadcast_SenderExcludedFromOwnMessage)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.sender" + suffix;
-    const std::string uid_b  = "cons.recvr" + suffix;
-    const std::string band   = "!self_ch" + suffix;
+    const std::string uid_a = "prod.sender" + suffix;
+    const std::string uid_b = "cons.recvr" + suffix;
+    const std::string band = "!self_ch" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_selfexcl");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    const auto setup = make_pattern4_setup({uid_a, uid_b});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
                                             {temp_dir.string(), "default"});
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
+               milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
     auto a = make_wire_client(ctx, setup, uid_a);
@@ -256,25 +250,25 @@ TEST_F(Pattern4ChannelGroupTest, MultiChannel_BroadcastStaysInItsBand)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.alpha_only" + suffix;   // member of alpha ONLY
-    const std::string uid_c  = "prod.beta_only" + suffix;    // member of beta ONLY
-    const std::string uid_b  = "prod.broadcaster" + suffix;  // member of BOTH
-    const std::string alpha  = "!ch_alpha" + suffix;
-    const std::string beta   = "!ch_beta" + suffix;
+    const std::string uid_a = "prod.alpha_only" + suffix;  // member of alpha ONLY
+    const std::string uid_c = "prod.beta_only" + suffix;   // member of beta ONLY
+    const std::string uid_b = "prod.broadcaster" + suffix; // member of BOTH
+    const std::string alpha = "!ch_alpha" + suffix;
+    const std::string beta = "!ch_beta" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_multi");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b, uid_c});
+    const auto setup = make_pattern4_setup({uid_a, uid_b, uid_c});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
                                             {temp_dir.string(), "default"});
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
+               milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
-    auto a = make_wire_client(ctx, setup, uid_a);  // alpha only
-    auto c = make_wire_client(ctx, setup, uid_c);  // beta only
-    auto b = make_wire_client(ctx, setup, uid_b);  // broadcaster, both bands
+    auto a = make_wire_client(ctx, setup, uid_a); // alpha only
+    auto c = make_wire_client(ctx, setup, uid_c); // beta only
+    auto b = make_wire_client(ctx, setup, uid_b); // broadcaster, both bands
 
     ASSERT_TRUE(band_join(a, alpha, uid_a).has_value());
     ASSERT_TRUE(band_join(c, beta, uid_c).has_value());
@@ -287,8 +281,7 @@ TEST_F(Pattern4ChannelGroupTest, MultiChannel_BroadcastStaysInItsBand)
     // alone is copied from the sender's request and cannot prove routing.
     band_broadcast(b, alpha, uid_b, {{"target", "alpha"}});
     auto at_a = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
-    ASSERT_TRUE(at_a.has_value())
-        << "alpha member A did not receive the alpha broadcast";
+    ASSERT_TRUE(at_a.has_value()) << "alpha member A did not receive the alpha broadcast";
     EXPECT_EQ(at_a->value("band", std::string{}), alpha);
     auto leak_c = drain_for(c, "BAND_BROADCAST_DELIVER_NOTIFY", kAbsenceBudget);
     EXPECT_FALSE(leak_c.has_value())
@@ -298,8 +291,7 @@ TEST_F(Pattern4ChannelGroupTest, MultiChannel_BroadcastStaysInItsBand)
     // member (A) must NOT.
     band_broadcast(b, beta, uid_b, {{"target", "beta"}});
     auto at_c = drain_for(c, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
-    ASSERT_TRUE(at_c.has_value())
-        << "beta member C did not receive the beta broadcast";
+    ASSERT_TRUE(at_c.has_value()) << "beta member C did not receive the beta broadcast";
     EXPECT_EQ(at_c->value("band", std::string{}), beta);
     auto leak_a = drain_for(a, "BAND_BROADCAST_DELIVER_NOTIFY", kAbsenceBudget);
     EXPECT_FALSE(leak_a.has_value())
@@ -316,18 +308,18 @@ TEST_F(Pattern4ChannelGroupTest, FullLifecycle_JoinNotifyBroadcastMembersLeave)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string uid_a  = "prod.role.a" + suffix;
-    const std::string uid_b  = "prod.role.b" + suffix;
-    const std::string band   = "!api_test_ch" + suffix;
+    const std::string uid_a = "prod.role.a" + suffix;
+    const std::string uid_b = "prod.role.b" + suffix;
+    const std::string band = "!api_test_ch" + suffix;
 
     const fs::path temp_dir = make_test_temp_dir("channel_group_full");
-    const auto     setup    = make_pattern4_setup({uid_a, uid_b});
+    const auto setup = make_pattern4_setup({uid_a, uid_b});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
     auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
                                             {temp_dir.string(), "default"});
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
-                milliseconds{pylabhub::kMidTimeoutMs});
+               milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
     auto a = make_wire_client(ctx, setup, uid_a);
@@ -344,8 +336,7 @@ TEST_F(Pattern4ChannelGroupTest, FullLifecycle_JoinNotifyBroadcastMembersLeave)
     band_broadcast(a, band, uid_a, {{"action", "start"}, {"seq", 1}});
     auto deliver = drain_for(b, "BAND_BROADCAST_DELIVER_NOTIFY", kNotifyBudget);
     ASSERT_TRUE(deliver.has_value()) << "B never got the broadcast";
-    EXPECT_EQ(deliver->value("body", nlohmann::json::object())
-                  .value("action", std::string{}),
+    EXPECT_EQ(deliver->value("body", nlohmann::json::object()).value("action", std::string{}),
               "start");
 
     // MEMBERS query shows both.
@@ -358,12 +349,11 @@ TEST_F(Pattern4ChannelGroupTest, FullLifecycle_JoinNotifyBroadcastMembersLeave)
 
     // A leaves.
     nlohmann::json lreq;
-    lreq["band"]     = band;
+    lreq["band"] = band;
     lreq["role_uid"] = uid_a;
-    auto leave = a.request("BAND_LEAVE_REQ", lreq, "BAND_LEAVE_ACK",
-                           milliseconds{pylabhub::kLongTimeoutMs});
-    ASSERT_TRUE(leave.has_value() &&
-                leave->value("status", std::string{}) == "success");
+    auto leave =
+        a.request("BAND_LEAVE_REQ", lreq, "BAND_LEAVE_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(leave.has_value() && leave->value("status", std::string{}) == "success");
 
     broker.signal_quit();
 }

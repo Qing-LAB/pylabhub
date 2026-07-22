@@ -56,8 +56,7 @@ TEST_F(LoopPolicyMetricsTest, ProducerMetricsClear)
 
 TEST_F(LoopPolicyMetricsTest, LoopOverrunCount_IncrementAndAccumulate)
 {
-    auto w = SpawnWorker(
-        "role_api_loop_policy.loop_overrun_count_increment_and_accumulate", {});
+    auto w = SpawnWorker("role_api_loop_policy.loop_overrun_count_increment_and_accumulate", {});
     ExpectWorkerOk(w);
 }
 

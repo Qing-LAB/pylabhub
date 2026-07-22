@@ -47,21 +47,22 @@ namespace pylabhub::scripting
  */
 struct PeriodicTask
 {
-    std::function<void()>                  action;
-    std::chrono::milliseconds              interval;
-    std::chrono::steady_clock::time_point  last_fired;
+    std::function<void()> action;
+    std::chrono::milliseconds interval;
+    std::chrono::steady_clock::time_point last_fired;
 
     /// Optional iteration gate. When set, task only fires if iteration advanced.
-    std::function<uint64_t()>              get_iteration;
-    uint64_t                               last_iter{0};
+    std::function<uint64_t()> get_iteration;
+    uint64_t last_iter{0};
 
     PeriodicTask(std::function<void()> a, int interval_ms,
                  std::function<uint64_t()> iter_fn = nullptr)
-        : action{std::move(a)}
-        , interval{interval_ms > 0 ? interval_ms : 2000}
-        , last_fired{std::chrono::steady_clock::now() - interval} // fire on first tick
-        , get_iteration{std::move(iter_fn)}
-    {}
+        : action{std::move(a)}, interval{interval_ms > 0 ? interval_ms : 2000},
+          last_fired{std::chrono::steady_clock::now() - interval} // fire on first tick
+          ,
+          get_iteration{std::move(iter_fn)}
+    {
+    }
 
     /// Check and fire. Returns time until next fire (for poll timeout calculation).
     std::chrono::milliseconds tick()
@@ -73,16 +74,15 @@ struct PeriodicTask
             {
                 // No iteration progress — skip.
                 auto elapsed = std::chrono::steady_clock::now() - last_fired;
-                auto remaining = interval -
-                    std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+                auto remaining =
+                    interval - std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
                 return std::max(remaining, std::chrono::milliseconds{0});
             }
             last_iter = iter;
         }
 
         auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - last_fired);
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_fired);
         if (elapsed >= interval)
         {
             action();
@@ -105,8 +105,8 @@ struct PeriodicTask
  */
 struct ZmqPollEntry
 {
-    zmq::socket_ref        socket;
-    std::function<void()>  dispatch;
+    zmq::socket_ref socket;
+    std::function<void()> dispatch;
 };
 
 // ============================================================================
@@ -128,7 +128,7 @@ struct ZmqPollLoop
 {
     // --- Shutdown predicate (required) ---
     std::function<bool()> should_run;
-    std::string           log_prefix;
+    std::string log_prefix;
 
     // --- Sockets to poll for POLLIN ---
     std::vector<ZmqPollEntry> sockets;
@@ -146,7 +146,8 @@ struct ZmqPollLoop
 
     ZmqPollLoop(std::function<bool()> run_pred, std::string prefix)
         : should_run{std::move(run_pred)}, log_prefix{std::move(prefix)}
-    {}
+    {
+    }
 
     /// Execute the poll loop (blocks until should_run() returns false).
     void run()
@@ -169,9 +170,7 @@ struct ZmqPollLoop
         }
 
         // Signal socket is always last in the array.
-        const int signal_idx = signal_socket
-            ? static_cast<int>(items.size())
-            : -1;
+        const int signal_idx = signal_socket ? static_cast<int>(items.size()) : -1;
         if (signal_socket)
         {
             zmq::pollitem_t pi{};
@@ -189,9 +188,8 @@ struct ZmqPollLoop
         const auto nfds = items.size();
         const auto n_data = dispatchers.size();
 
-        LOGGER_INFO("[{}] started (polling {} socket{}, {} periodic task{})",
-                    log_prefix, nfds, nfds == 1 ? "" : "s",
-                    periodic_tasks.size(),
+        LOGGER_INFO("[{}] started (polling {} socket{}, {} periodic task{})", log_prefix, nfds,
+                    nfds == 1 ? "" : "s", periodic_tasks.size(),
                     periodic_tasks.size() == 1 ? "" : "s");
 
         while (should_run())
@@ -203,8 +201,7 @@ struct ZmqPollLoop
                 auto remaining = task.tick();
                 if (remaining < timeout)
                 {
-                    timeout = std::max(remaining,
-                                       std::chrono::milliseconds{1}); // floor 1ms
+                    timeout = std::max(remaining, std::chrono::milliseconds{1}); // floor 1ms
                 }
             }
 
@@ -232,15 +229,13 @@ struct ZmqPollLoop
             }
 
             // Signal socket: drain wake-up bytes, then drain command queue.
-            if (signal_idx >= 0 &&
-                (items[static_cast<size_t>(signal_idx)].revents & ZMQ_POLLIN))
+            if (signal_idx >= 0 && (items[static_cast<size_t>(signal_idx)].revents & ZMQ_POLLIN))
             {
                 // Consume all pending signal bytes.
                 zmq::message_t discard;
                 while (true)
                 {
-                    auto result = signal_socket.recv(discard,
-                                                     zmq::recv_flags::dontwait);
+                    auto result = signal_socket.recv(discard, zmq::recv_flags::dontwait);
                     if (!result.has_value())
                     {
                         break;

@@ -30,8 +30,7 @@ namespace pylabhub::hub
 {
 
 // Forward declaration (implemented at end of slot_iterator.hpp)
-template <typename DataBlockT, bool IsWrite>
-class SlotIterator;
+template <typename DataBlockT, bool IsWrite> class SlotIterator;
 
 /**
  * @class TransactionContext
@@ -85,25 +84,29 @@ class SlotIterator;
  * create its own transaction context. The underlying Producer/Consumer are
  * thread-safe (internal mutex).
  */
-template <typename FlexZoneT, typename DataBlockT, bool IsWrite>
-class TransactionContext
+template <typename FlexZoneT, typename DataBlockT, bool IsWrite> class TransactionContext
 {
   public:
     // Type aliases for clarity
-    using ZoneRefType = std::conditional_t<IsWrite, WriteZoneRef<FlexZoneT>, ReadZoneRef<FlexZoneT>>;
-    using SlotRefType = std::conditional_t<IsWrite, WriteSlotRef<DataBlockT>, ReadSlotRef<DataBlockT>>;
+    using ZoneRefType =
+        std::conditional_t<IsWrite, WriteZoneRef<FlexZoneT>, ReadZoneRef<FlexZoneT>>;
+    using SlotRefType =
+        std::conditional_t<IsWrite, WriteSlotRef<DataBlockT>, ReadSlotRef<DataBlockT>>;
     using HandleType = std::conditional_t<IsWrite, DataBlockProducer, DataBlockConsumer>;
 
     // Compile-time checks
     // Note: std::atomic<T> members make a type non-trivially copyable on MSVC.
     // Use plain POD types in FlexZoneT/DataBlockT; apply std::atomic_ref<T> at call sites
     // for any fields that require lock-free access outside the with_transaction spinlock scope.
-    static_assert(std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
-                  "FlexZoneT must be trivially copyable for shared memory (or void for no flexzone). "
-                  "std::atomic<T> members are not allowed — use plain POD + std::atomic_ref<T> at call sites.");
+    static_assert(
+        std::is_void_v<FlexZoneT> || std::is_trivially_copyable_v<FlexZoneT>,
+        "FlexZoneT must be trivially copyable for shared memory (or void for no flexzone). "
+        "std::atomic<T> members are not allowed — use plain POD + std::atomic_ref<T> at call "
+        "sites.");
     static_assert(std::is_trivially_copyable_v<DataBlockT>,
                   "DataBlockT must be trivially copyable for shared memory. "
-                  "std::atomic<T> members are not allowed — use plain POD + std::atomic_ref<T> at call sites.");
+                  "std::atomic<T> members are not allowed — use plain POD + std::atomic_ref<T> at "
+                  "call sites.");
 
     // ====================================================================
     // Construction (Internal - called by with_transaction)
@@ -148,10 +151,7 @@ class TransactionContext
      * zone.get().status = Status::Active;  // Type-safe
      * @endcode
      */
-    [[nodiscard]] ZoneRefType flexzone()
-    {
-        return ZoneRefType(m_handle);
-    }
+    [[nodiscard]] ZoneRefType flexzone() { return ZoneRefType(m_handle); }
 
     /**
      * @brief Get const reference to flexible zone (always read-only, consumer contexts only)
@@ -160,7 +160,8 @@ class TransactionContext
      * which cannot construct ReadZoneRef (read-only, requires DataBlockConsumer *).
      * Call the non-const flexzone() on a write context to get a WriteZoneRef instead.
      */
-    [[nodiscard]] ReadZoneRef<FlexZoneT> flexzone() const requires(!IsWrite)
+    [[nodiscard]] ReadZoneRef<FlexZoneT> flexzone() const
+        requires(!IsWrite)
     {
         return ReadZoneRef<FlexZoneT>(m_handle);
     }
@@ -201,10 +202,7 @@ class TransactionContext
      * @brief Get slot iterator with default timeout
      * @return SlotIterator with the timeout specified at context creation
      */
-    [[nodiscard]] SlotIterator<DataBlockT, IsWrite> slots()
-    {
-        return slots(m_default_timeout);
-    }
+    [[nodiscard]] SlotIterator<DataBlockT, IsWrite> slots() { return slots(m_default_timeout); }
 
     // ====================================================================
     // Transaction Operations (Producer only)
@@ -225,7 +223,8 @@ class TransactionContext
      *
      * ctx.publish() and auto-publish are both safe to use; publish() is idempotent.
      */
-    void publish() requires IsWrite
+    void publish()
+        requires IsWrite
     {
         if (!m_current_write_slot)
         {
@@ -262,7 +261,8 @@ class TransactionContext
      *
      * No-op if FlexZoneT is void or the handle is null.
      */
-    void publish_flexzone() requires IsWrite
+    void publish_flexzone()
+        requires IsWrite
     {
         if constexpr (!std::is_void_v<FlexZoneT>)
         {
@@ -284,7 +284,8 @@ class TransactionContext
      * Has no effect when called during exception propagation (auto-update is already
      * suppressed on the exception path).
      */
-    void suppress_flexzone_checksum() requires IsWrite
+    void suppress_flexzone_checksum()
+        requires IsWrite
     {
         m_suppress_flexzone_checksum = true;
     }
@@ -293,7 +294,8 @@ class TransactionContext
      * @brief Returns true if flexzone checksum auto-update is suppressed.
      * Called by with_transaction after the lambda returns to decide whether to update.
      */
-    [[nodiscard]] bool is_flexzone_checksum_suppressed() const noexcept requires IsWrite
+    [[nodiscard]] bool is_flexzone_checksum_suppressed() const noexcept
+        requires IsWrite
     {
         return m_suppress_flexzone_checksum;
     }
@@ -354,8 +356,8 @@ class TransactionContext
     [[nodiscard]] HandleType *handle() const noexcept { return m_handle; }
 
   private:
-    HandleType *m_handle;                         // Producer or Consumer
-    std::chrono::milliseconds m_default_timeout;  // Default timeout for slot ops
+    HandleType *m_handle;                        // Producer or Consumer
+    std::chrono::milliseconds m_default_timeout; // Default timeout for slot ops
 
     // Non-owning pointer to the current write slot (owned by SlotIterator).
     // Set by SlotIterator via the pointer-to-pointer mechanism in slots().

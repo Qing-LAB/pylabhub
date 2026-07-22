@@ -15,7 +15,7 @@
 #include "utils/json_fwd.hpp"
 #include "utils/metrics_json.hpp"
 #include "metrics_pydict.hpp"
-#include "../scripting/json_py_helpers.hpp"   // detail::json_to_py (S5)
+#include "../scripting/json_py_helpers.hpp" // detail::json_to_py (S5)
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
@@ -85,14 +85,12 @@ bool ProducerAPI::is_in_band(const std::string &channel) const
 // Pythonic shape: return bool / int rather than int tristate.  Raise on
 // transport failure rather than returning -1 sentinel.
 
-bool ProducerAPI::band_member_contains(const std::string &channel,
-                                        const std::string &role_uid)
+bool ProducerAPI::band_member_contains(const std::string &channel, const std::string &role_uid)
 {
     // Bug fix 2026-06-16 (#235): see ConsumerAPI counterpart.  Raw
     // broker reply is `{"members": [...]}`; previous `result->is_array()`
     // check was always false; function silently returned false.
-    const auto members =
-        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
     for (const auto &m : members)
         if (m.value("role_uid", std::string{}) == role_uid)
             return true;
@@ -102,8 +100,7 @@ bool ProducerAPI::band_member_contains(const std::string &channel,
 int ProducerAPI::band_member_count(const std::string &channel)
 {
     // Bug fix 2026-06-16 (#235): see ConsumerAPI counterpart.
-    const auto members =
-        scripting::detail::fetch_band_members_or_throw(base_, channel);
+    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
     int count = 0;
     for (const auto &m : members)
         if (!m.value("role_uid", std::string{}).empty())
@@ -112,7 +109,7 @@ int ProducerAPI::band_member_count(const std::string &channel)
 }
 
 bool ProducerAPI::allowed_peer_contains(const std::string &channel,
-                                         const std::string &role_uid) const
+                                        const std::string &role_uid) const
 {
     for (const auto &p : base_->allowed_peers(channel))
         if (p.role_uid == role_uid)
@@ -133,8 +130,7 @@ py::dict ProducerAPI::metrics() const
     // uses on the dispatch hot path; semantics match for metrics
     // payloads (no NaN/Inf, no deep recursion — see header docstring
     // for the divergence rows).
-    return scripting::detail::json_to_py(base_->snapshot_metrics_json())
-        .cast<py::dict>();
+    return scripting::detail::json_to_py(base_->snapshot_metrics_json()).cast<py::dict>();
 }
 
 py::list ProducerAPI::allowed_peers(const std::string &channel) const
@@ -168,13 +164,17 @@ py::list ProducerAPI::consumers(const std::string &channel) const
 uint64_t ProducerAPI::slot_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->slot_logical_size(
-        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+        side.has_value()
+            ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)}
+            : std::nullopt));
 }
 
 uint64_t ProducerAPI::flexzone_logical_size(std::optional<int> side) const
 {
     return static_cast<uint64_t>(base_->flexzone_logical_size(
-        side.has_value() ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)} : std::nullopt));
+        side.has_value()
+            ? std::optional<scripting::ChannelSide>{static_cast<scripting::ChannelSide>(*side)}
+            : std::nullopt));
 }
 
 static std::optional<scripting::ChannelSide> to_channel_side(std::optional<int> side)
@@ -228,13 +228,13 @@ py::object ProducerAPI::open_inbox(const std::string &target_uid)
         return py::none();
 
     py::object slot_type = result->spec.fields.empty()
-        ? py::none()
-        : scripting::build_ctypes_struct(result->spec, "InboxSlot");
+                               ? py::none()
+                               : scripting::build_ctypes_struct(result->spec, "InboxSlot");
 
-    py::object handle = py::cast(
-        scripting::InboxHandle(std::move(result->client), std::move(result->spec),
-                               std::move(slot_type), result->item_size),
-        py::return_value_policy::move);
+    py::object handle =
+        py::cast(scripting::InboxHandle(std::move(result->client), std::move(result->spec),
+                                        std::move(slot_type), result->item_size),
+                 py::return_value_policy::move);
     inbox_cache_[target_uid] = handle;
     return handle;
 }
@@ -258,13 +258,13 @@ void ProducerAPI::clear_inbox_cache()
             // Cleanup path — must not throw out (called during stop).
             // Log so broken handles do not silently leak Python refs;
             // continue draining the rest of the cache.
-            LOGGER_WARN("ProducerAPI: clear_inbox_cache uid='{}' threw: {}",
-                        uid, e.what());
+            LOGGER_WARN("ProducerAPI: clear_inbox_cache uid='{}' threw: {}", uid, e.what());
         }
         catch (...)
         {
             LOGGER_WARN("ProducerAPI: clear_inbox_cache uid='{}' "
-                        "threw (non-std exception)", uid);
+                        "threw (non-std exception)",
+                        uid);
         }
     }
     inbox_cache_.clear();
@@ -292,97 +292,88 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def_readwrite("slot", &scripting::PyRxChannel::slot);
 
     py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
-        .def_readonly("data",       &scripting::PyInboxMsg::data)
+        .def_readonly("data", &scripting::PyInboxMsg::data)
         .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
-        .def_readonly("seq",        &scripting::PyInboxMsg::seq);
+        .def_readonly("seq", &scripting::PyInboxMsg::seq);
 
-    m.def("version_info", []() -> py::str
-    {
-        return pylabhub::version::version_info_json();
-    });
+    m.def("version_info", []() -> py::str { return pylabhub::version::version_info_json(); });
 
     py::class_<scripting::SpinLockPy>(m, "SpinLock")
-        .def("lock",    &scripting::SpinLockPy::lock)
-        .def("unlock",  &scripting::SpinLockPy::unlock)
+        .def("lock", &scripting::SpinLockPy::lock)
+        .def("unlock", &scripting::SpinLockPy::unlock)
         .def("try_lock_for", &scripting::SpinLockPy::try_lock_for, py::arg("timeout_ms"))
         .def("is_locked_by_current_process", &scripting::SpinLockPy::is_locked_by_current_process)
         .def("__enter__", &scripting::SpinLockPy::enter, py::return_value_policy::reference)
-        .def("__exit__",  &scripting::SpinLockPy::exit);
+        .def("__exit__", &scripting::SpinLockPy::exit);
 
     py::class_<scripting::InboxHandle>(m, "InboxHandle")
-        .def("acquire",  &scripting::InboxHandle::acquire)
-        .def("send",     &scripting::InboxHandle::send, py::arg("timeout_ms") = 5000)
-        .def("discard",  &scripting::InboxHandle::discard)
+        .def("acquire", &scripting::InboxHandle::acquire)
+        .def("send", &scripting::InboxHandle::send, py::arg("timeout_ms") = 5000)
+        .def("discard", &scripting::InboxHandle::discard)
         .def("is_ready", &scripting::InboxHandle::is_ready)
-        .def("close",    &scripting::InboxHandle::close);
+        .def("close", &scripting::InboxHandle::close);
 
     py::class_<producer::ProducerAPI>(m, "ProducerAPI")
-        .def("uid",          &producer::ProducerAPI::uid)
-        .def("name",         &producer::ProducerAPI::name)
-        .def("channel",      &producer::ProducerAPI::channel)
-        .def("log_level",    &producer::ProducerAPI::log_level)
-        .def("script_dir",   &producer::ProducerAPI::script_dir)
-        .def("role_dir",     &producer::ProducerAPI::role_dir)
-        .def("logs_dir",     &producer::ProducerAPI::logs_dir)
-        .def("run_dir",      &producer::ProducerAPI::run_dir)
-        .def("stop",         &producer::ProducerAPI::stop)
-        .def("set_critical_error",    &producer::ProducerAPI::set_critical_error,
-             py::arg("msg"),
+        .def("uid", &producer::ProducerAPI::uid)
+        .def("name", &producer::ProducerAPI::name)
+        .def("channel", &producer::ProducerAPI::channel)
+        .def("log_level", &producer::ProducerAPI::log_level)
+        .def("script_dir", &producer::ProducerAPI::script_dir)
+        .def("role_dir", &producer::ProducerAPI::role_dir)
+        .def("logs_dir", &producer::ProducerAPI::logs_dir)
+        .def("run_dir", &producer::ProducerAPI::run_dir)
+        .def("stop", &producer::ProducerAPI::stop)
+        .def("set_critical_error", &producer::ProducerAPI::set_critical_error, py::arg("msg"),
              "Flag a critical (unrecoverable) error and request shutdown. "
              "msg is REQUIRED — logged at ERROR level by the framework "
              "before flipping state (uniform across Python/Lua/Native). "
              "stop_reason becomes 'critical_error'. For ordinary stop "
              "use api.stop() (reason='normal').")
-        .def("critical_error",        &producer::ProducerAPI::critical_error)
-        .def("flexzone",     &producer::ProducerAPI::flexzone,
-             py::arg("side") = py::none(),
+        .def("critical_error", &producer::ProducerAPI::critical_error)
+        .def("flexzone", &producer::ProducerAPI::flexzone, py::arg("side") = py::none(),
              "Flexzone typed view. Returns None if no flexzone configured.")
         .def("update_flexzone_checksum", &producer::ProducerAPI::update_flexzone_checksum)
-        .def("band_join",         &producer::ProducerAPI::band_join, py::arg("channel"))
-        .def("band_leave",        &producer::ProducerAPI::band_leave, py::arg("channel"))
-        .def("band_broadcast",    &producer::ProducerAPI::band_broadcast,
-             py::arg("channel"), py::arg("body"))
-        .def("band_members",      &producer::ProducerAPI::band_members, py::arg("channel"))
+        .def("band_join", &producer::ProducerAPI::band_join, py::arg("channel"))
+        .def("band_leave", &producer::ProducerAPI::band_leave, py::arg("channel"))
+        .def("band_broadcast", &producer::ProducerAPI::band_broadcast, py::arg("channel"),
+             py::arg("body"))
+        .def("band_members", &producer::ProducerAPI::band_members, py::arg("channel"))
         .def("band_member_contains", &producer::ProducerAPI::band_member_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the band's "
              "member list.  Equivalent to `role_uid in api.band_members(ch)` "
              "but avoids materialising the full list in Python.")
-        .def("band_member_count", &producer::ProducerAPI::band_member_count,
-             py::arg("channel"),
+        .def("band_member_count", &producer::ProducerAPI::band_member_count, py::arg("channel"),
              "Engine-parity inquiry — band member count.  Raises "
              "ValueError on broker transport failure.")
-        .def("is_in_band",        &producer::ProducerAPI::is_in_band, py::arg("channel"))
+        .def("is_in_band", &producer::ProducerAPI::is_in_band, py::arg("channel"))
         .def("script_error_count", &producer::ProducerAPI::script_error_count)
-        .def("out_slots_written",  &producer::ProducerAPI::out_slots_written)
-        .def("out_drop_count",     &producer::ProducerAPI::out_drop_count)
+        .def("out_slots_written", &producer::ProducerAPI::out_slots_written)
+        .def("out_drop_count", &producer::ProducerAPI::out_drop_count)
         .def("loop_overrun_count", &producer::ProducerAPI::loop_overrun_count,
              "Cycles where start-to-start time exceeded configured period. "
              "0 when period==0 (free-run) or not connected.")
-        .def("out_capacity",       &producer::ProducerAPI::out_capacity,
+        .def("out_capacity", &producer::ProducerAPI::out_capacity,
              "Ring/send buffer slot count for the output transport queue. 0 if not connected.")
-        .def("out_policy",         &producer::ProducerAPI::out_policy,
+        .def("out_policy", &producer::ProducerAPI::out_policy,
              "Overflow policy description (e.g. 'shm_write', 'zmq_push_drop').")
         .def("last_cycle_work_us", &producer::ProducerAPI::last_cycle_work_us,
              "Microseconds of active work (acquire+script+commit) in the last iteration.")
-        .def("metrics",            &producer::ProducerAPI::metrics,
+        .def("metrics", &producer::ProducerAPI::metrics,
              "Combined metrics dict: DataBlock ContextMetrics + loop_overruns + script_errors.")
-        .def("allowed_peers",      &producer::ProducerAPI::allowed_peers,
-             py::arg("channel"),
+        .def("allowed_peers", &producer::ProducerAPI::allowed_peers, py::arg("channel"),
              "HEP-CORE-0036 §I11 polling surface — snapshot of "
              "authorized peers for the named channel.  Returns a list of "
              "{'role_uid': str, 'pubkey': str} dicts.  Empty when no "
              "GET_CHANNEL_AUTH_REQ has completed.  Engine-parity with "
              "Lua's api.allowed_peers; read-only.")
-        .def("producers",          &producer::ProducerAPI::producers,
-             py::arg("channel"),
+        .def("producers", &producer::ProducerAPI::producers, py::arg("channel"),
              "HEP-CORE-0028 §6a + HEP-CORE-0017 §3.3.2 — live producer "
              "role_uid list, backed by live_peers[channel] populated by "
              "phase=live NOTIFY.  Returns list[str].  Empty on non-"
              "binding side (documented sentinel per HEP-CORE-0011 "
              "Cross-Engine Surface Parity).")
-        .def("consumers",          &producer::ProducerAPI::consumers,
-             py::arg("channel"),
+        .def("consumers", &producer::ProducerAPI::consumers, py::arg("channel"),
              "HEP-CORE-0028 §6a — live consumer role_uid list, symmetric "
              "with producers().  Fan-out / one-to-one producer role's "
              "binding-side observation of live subscribers; use with "
@@ -392,12 +383,10 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "Engine-parity inquiry — true iff role_uid is in the "
              "channel's authorized-peer list.  O(N) in the local cache; "
              "no broker round-trip.")
-        .def("allowed_peer_count", &producer::ProducerAPI::allowed_peer_count,
-             py::arg("channel"),
+        .def("allowed_peer_count", &producer::ProducerAPI::allowed_peer_count, py::arg("channel"),
              "Engine-parity inquiry — authorized-peer count for the "
              "channel.  Served from local cache; no broker round-trip.")
-        .def("consumer_count", &producer::ProducerAPI::consumer_count,
-             py::arg("channel"),
+        .def("consumer_count", &producer::ProducerAPI::consumer_count, py::arg("channel"),
              "HEP-CORE-0028 §6a — binding-side live consumer count "
              "backed by the broker's phase=live NOTIFY stream "
              "(HEP-CORE-0007 lines 1834-1838).  Fan-out producers gate "
@@ -405,55 +394,49 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
              "PUB/SUB slow-joiner window.  0 when the map is not "
              "populated for this role (documented sentinel per "
              "HEP-CORE-0011 Cross-Engine Surface Parity).")
-        .def("producer_count", &producer::ProducerAPI::producer_count,
-             py::arg("channel"),
+        .def("producer_count", &producer::ProducerAPI::producer_count, py::arg("channel"),
              "HEP-CORE-0028 §6a — binding-side live producer count "
              "(symmetric with consumer_count on the consumer side of "
              "the channel).")
-        .def("is_channel_ready",   &producer::ProducerAPI::is_channel_ready,
-             py::arg("channel"),
+        .def("is_channel_ready", &producer::ProducerAPI::is_channel_ready, py::arg("channel"),
              "HEP-CORE-0036 §6.7 (#190) — true iff the queue serving the "
              "named channel is in the Active state.  Use as a script-side "
              "gate from non-data-loop callbacks (on_init, on_band_message, "
              "etc.) — cycle ops already short-circuits the data-loop "
              "callback on Standby.  Read-only.  Engine-parity with "
              "Lua's api.is_channel_ready.")
-        .def("queue_mechanism",    &producer::ProducerAPI::queue_mechanism,
-             py::arg("side"),
+        .def("queue_mechanism", &producer::ProducerAPI::queue_mechanism, py::arg("side"),
              "HEP-CORE-0035 §2 (#194) — direct mechanism accessor: returns "
              "the libzmq-negotiated mechanism name "
              "('Curve'/'Plaintext'/'Uninitialized') for the named side "
              "(0=Tx, 1=Rx).  Engine-parity with Lua's api.queue_mechanism; "
              "closes the parity gap left by #186 which only wired Lua.")
         .def("slot_logical_size", &producer::ProducerAPI::slot_logical_size,
-             py::arg("side") = py::none(),
-             "Logical C struct size for the slot schema (bytes).")
+             py::arg("side") = py::none(), "Logical C struct size for the slot schema (bytes).")
         .def("flexzone_logical_size", &producer::ProducerAPI::flexzone_logical_size,
-             py::arg("side") = py::none(),
-             "Logical C struct size for the flexzone schema (bytes).")
-        .def("spinlock",       &producer::ProducerAPI::spinlock,
-             py::arg("index"), py::arg("side") = py::none())
-        .def("spinlock_count", &producer::ProducerAPI::spinlock_count,
+             py::arg("side") = py::none(), "Logical C struct size for the flexzone schema (bytes).")
+        .def("spinlock", &producer::ProducerAPI::spinlock, py::arg("index"),
              py::arg("side") = py::none())
-        .def_property_readonly_static("Tx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Tx); })
-        .def_property_readonly_static("Rx", [](py::object) { return static_cast<int>(scripting::ChannelSide::Rx); })
-        .def("report_metric", &producer::ProducerAPI::report_metric,
-             py::arg("key"), py::arg("value"),
-             "Report a custom metric (key-value pair) for broker aggregation.")
-        .def("report_metrics", &producer::ProducerAPI::report_metrics,
-             py::arg("kv"),
+        .def("spinlock_count", &producer::ProducerAPI::spinlock_count, py::arg("side") = py::none())
+        .def_property_readonly_static("Tx", [](py::object)
+                                      { return static_cast<int>(scripting::ChannelSide::Tx); })
+        .def_property_readonly_static("Rx", [](py::object)
+                                      { return static_cast<int>(scripting::ChannelSide::Rx); })
+        .def("report_metric", &producer::ProducerAPI::report_metric, py::arg("key"),
+             py::arg("value"), "Report a custom metric (key-value pair) for broker aggregation.")
+        .def("report_metrics", &producer::ProducerAPI::report_metrics, py::arg("kv"),
              "Report multiple custom metrics at once.")
         .def("clear_custom_metrics", &producer::ProducerAPI::clear_custom_metrics,
              "Clear all custom metrics.")
-        .def("open_inbox",         &producer::ProducerAPI::open_inbox, py::arg("target_uid"))
-        .def("clear_inbox_cache",  &producer::ProducerAPI::clear_inbox_cache)
-        .def("wait_for_role",      &producer::ProducerAPI::wait_for_role,
-             py::arg("uid"), py::arg("timeout_ms") = 5000)
-        .def("stop_reason",        &producer::ProducerAPI::stop_reason,
+        .def("open_inbox", &producer::ProducerAPI::open_inbox, py::arg("target_uid"))
+        .def("clear_inbox_cache", &producer::ProducerAPI::clear_inbox_cache)
+        .def("wait_for_role", &producer::ProducerAPI::wait_for_role, py::arg("uid"),
+             py::arg("timeout_ms") = 5000)
+        .def("stop_reason", &producer::ProducerAPI::stop_reason,
              "Why the role stopped: 'normal', 'peer_dead', 'hub_dead', or 'critical_error'.")
-        .def_readwrite("shared_data",   &producer::ProducerAPI::shared_data_,
-             "Shared script data dictionary. Persists across callbacks.")
+        .def_readwrite("shared_data", &producer::ProducerAPI::shared_data_,
+                       "Shared script data dictionary. Persists across callbacks.")
         .def_static("as_numpy", &scripting::as_numpy_view, py::arg("ctypes_array"),
-             "Convert a ctypes array field to a numpy ndarray view (zero-copy).")
-        .def("log",          &producer::ProducerAPI::log, py::arg("level"), py::arg("msg"));
+                    "Convert a ctypes array field to a numpy ndarray view (zero-copy).")
+        .def("log", &producer::ProducerAPI::log, py::arg("level"), py::arg("msg"));
 }
