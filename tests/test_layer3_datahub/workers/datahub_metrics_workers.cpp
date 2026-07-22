@@ -455,6 +455,16 @@ int query_engine_channels_have_producer_and_consumer_metrics()
             EXPECT_TRUE(c.contains("producer_metrics"));
             ASSERT_TRUE(c["producer_metrics"].contains(uid));
             EXPECT_EQ(c["producer_metrics"][uid].value("iteration_count", 0), 99);
+            // Per-group freshness (HEP-CORE-0019 §4.2): each uid-keyed group is
+            // one reporter, so it carries its OWN `_collected_at` — the time the
+            // broker last received that role's heartbeat-borne metrics — distinct
+            // from the channel-level `_collected_at` below.
+            EXPECT_TRUE(c["producer_metrics"][uid].contains("_collected_at"))
+                << "per-reporter metrics group must carry _collected_at; body="
+                << c["producer_metrics"][uid].dump();
+            EXPECT_FALSE(
+                c["producer_metrics"][uid].value("_collected_at", std::string{}).empty())
+                << "per-group _collected_at must be a non-empty timestamp";
             EXPECT_TRUE(c.contains("_collected_at"));
 
             bh.stop();

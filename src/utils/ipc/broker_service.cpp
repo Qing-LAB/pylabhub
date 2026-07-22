@@ -5228,30 +5228,72 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(const nlohmann::jso
             ? entry->data_endpoint.value_or(std::string{})
             : entry->producer_zmq_node_endpoint(sender_role_uid).value_or(std::string{});
     auto current = pylabhub::validate_tcp_endpoint(current_value);
-    if (current.ok() && current.port != 0)
+    const bool already_resolved = current.ok() && current.port != 0;
+
+    if (already_resolved && current_value == endpoint)
     {
-        if (current_value == endpoint)
-        {
-            LOGGER_DEBUG("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} — "
-                         "already set to '{}' (idempotent)",
-                         channel_name, sender_role_uid, endpoint_type, endpoint);
-        }
-        else
-        {
-            LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} "
-                        "rejected — already set to '{}', cannot change to '{}'",
-                        channel_name, sender_role_uid, endpoint_type, current_value, endpoint);
-            return make_error(corr_id, "ENDPOINT_ALREADY_SET",
-                              endpoint_type + " endpoint already set to '" + current_value + "'");
-        }
+        // HEP-CORE-0021 §16.4 row 3 — idempotent resolved(X) → resolved(X):
+        // ACK ok, no mutation.  Fixed-port producers hit this on every
+        // startup (config endpoint == resolved endpoint).
+        LOGGER_DEBUG("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} — "
+                     "already set to '{}' (idempotent)",
+                     channel_name, sender_role_uid, endpoint_type, endpoint);
     }
     else
     {
-        LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' role='{}' {} "
-                    "updated to '{}'",
-                    channel_name, sender_role_uid,
-                    sender_is_consumer_binding ? "consumer(binding)" : "producer", endpoint_type,
-                    endpoint);
+        // HEP-CORE-0021 §16.4 rows 2/4/5 + §16.8 mid-life rules.
+        //
+        // The endpoint under update is always the BINDING side's data-plane
+        // address (producer for fan-out/one-to-one; fan-in binding consumer's
+        // data_endpoint).  A change AWAY from an already-resolved value
+        // (resolved(X) → resolved(Y), Y≠X) is a mid-life re-update, allowed
+        // only while NO dialing-side peer has been admitted to `X` — otherwise
+        // those peers hold live connections to X (HEP-CORE-0036 §I5 makes them
+        // trusted for the session) and a silent switch to Y would strand them.
+        //
+        // The channel's admission ledger holds the admitted DIALING-side peers
+        // (consumers under fan-out; producers under fan-in), so a non-empty
+        // ledger is exactly "peers are dialing the endpoint being changed."
+        if (already_resolved)
+        {
+            std::size_t admitted = 0;
+            if (auto access = hub_state_->channel_access(channel_name); access.has_value())
+                admitted = access->ledger.admitted_count();
+
+            if (admitted > 0)
+            {
+                // §16.4 row 5 / §16.8 — consumers attached: change FORBIDDEN.
+                // Producer keeps its existing bound port; restart-with-fresh-
+                // instance is the supported migration.
+                LOGGER_WARN("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} rejected — "
+                            "endpoint change forbidden: {} dialing peer(s) already "
+                            "admitted to '{}' (HEP-0021 §16.8; restart with a fresh "
+                            "instance to change)",
+                            channel_name, sender_role_uid, endpoint_type, admitted,
+                            current_value);
+                return make_error(corr_id, "ENDPOINT_CHANGE_FORBIDDEN",
+                                  endpoint_type + " endpoint change forbidden: " +
+                                      std::to_string(admitted) +
+                                      " dialing peer(s) already admitted to '" + current_value +
+                                      "'; restart with a fresh instance to change");
+            }
+            // §16.4 row 4 / §16.8 special case — zero consumers admitted:
+            // change ACCEPTED (pre-first-consumer administrative migration).
+            LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' {} changed "
+                        "'{}' → '{}' (no dialing peer admitted; resolved→resolved, "
+                        "HEP-0021 §16.8)",
+                        channel_name, sender_role_uid, endpoint_type, current_value, endpoint);
+        }
+        else
+        {
+            // §16.4 row 2 — unset → resolved.
+            LOGGER_INFO("Broker: ENDPOINT_UPDATE_REQ for '{}' uid='{}' role='{}' {} "
+                        "updated to '{}'",
+                        channel_name, sender_role_uid,
+                        sender_is_consumer_binding ? "consumer(binding)" : "producer",
+                        endpoint_type, endpoint);
+        }
+
         const bool applied = sender_is_consumer_binding
                                  ? hub_state_->_set_channel_data_endpoint(channel_name, endpoint)
                                  : hub_state_->_set_producer_zmq_node_endpoint(

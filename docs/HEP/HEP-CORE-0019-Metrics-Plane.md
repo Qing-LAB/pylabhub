@@ -433,12 +433,34 @@ round-trip involved.
 ```
 
 **Response (`METRICS_ACK`)** — per-channel rows aggregating each
-presence registered on the channel.  Producer-presence rows appear
-under `producer`; consumer-presence rows appear in the `consumers`
-list keyed by uid.  Each row has its own `_collected_at` timestamp
-(when the broker last received an update for that
-`(channel, uid, role_type)` tuple) and `last_report` (alias) for
-back-compat with Phase 1-5 admin tools.
+presence registered on the channel.  Metrics are grouped by the
+**reporting role**: producer-presence rows under `producers`,
+consumer-presence rows under `consumers`, each a map **keyed by
+`uid`** (one entry per reporting role).  The keyed-by-uid shape is
+required because a channel may carry several producers (fan-in;
+HEP-CORE-0021 §16.3, HEP-CORE-0036) and several consumers.  The
+channel-listing admin view (`get_channel` / `list_channels`)
+surfaces the same rows under `producer_metrics` / `consumer_metrics`.
+
+**Per-group freshness — `_collected_at`.**  Each uid-keyed group
+carries a single `_collected_at`: the instant the broker last
+received THAT role's heartbeat-borne metrics for this channel
+(metrics ride on `HEARTBEAT_NOTIFY` — see §2.3, and the broker
+stamps the presence's `metrics_collected_at` on arrival).  The
+timestamp lives on the group, not elsewhere, and this placement is
+deliberate:
+
+- **Not channel-wide.**  Each role heartbeats on its own cadence, so
+  there is no single collection time for the channel — only a
+  per-reporter one.
+- **Not per-field.**  A group's `base` and `custom` numbers all
+  arrive together on that one heartbeat, so one timestamp covers the
+  whole group.
+
+`_collected_at` is the freshness signal an admin uses to judge how
+stale a row is; the same per-presence value is also visible on the
+roles/presence query.  A `last_report` alias is retained for
+back-compat with older admin tools.
 
 ```json
 {
@@ -446,24 +468,24 @@ back-compat with Phase 1-5 admin tools.
   "status":   "success",
   "channels": {
     "sensor.data": {
-      "producer": {
-        "uid": "prod.sensor.a1b2c3d4",
-        "pid": 1234,
-        "_collected_at": "2026-03-02T14:30:01.234Z",
-        "base": {
-          "out_written":     50042,
-          "drops":           3,
-          "script_errors":   0,
-          "iteration_count": 50045
-        },
-        "custom": {
-          "events_above_threshold": 127,
-          "avg_processing_ms":      2.3
+      "producers": {
+        "prod.sensor.a1b2c3d4": {
+          "pid": 1234,
+          "_collected_at": "2026-03-02T14:30:01.234Z",
+          "base": {
+            "out_written":     50042,
+            "drops":           3,
+            "script_errors":   0,
+            "iteration_count": 50045
+          },
+          "custom": {
+            "events_above_threshold": 127,
+            "avg_processing_ms":      2.3
+          }
         }
       },
-      "consumers": [
-        {
-          "uid": "cons.logger.a1b2c3d4",
+      "consumers": {
+        "cons.logger.a1b2c3d4": {
           "pid": 5678,
           "_collected_at": "2026-03-02T14:30:00.891Z",
           "base": {
@@ -475,7 +497,7 @@ back-compat with Phase 1-5 admin tools.
             "bytes_logged": 2048576
           }
         }
-      ],
+      },
       "shm": {
         "write_lock_contention": 12,
         "writer_timeout_count":  0,
@@ -492,9 +514,9 @@ the SHM segment.  If the SHM is unavailable (e.g., ZMQ-only channel),
 `shm` is omitted.
 
 For a processor, both its `(in_channel, proc_uid, "consumer")` row
-(under `channels.in_channel.consumers[]`) and its
+(under `channels.in_channel.consumers[proc_uid]`) and its
 `(out_channel, proc_uid, "producer")` row (under
-`channels.out_channel.producer`) appear in the response —
+`channels.out_channel.producers[proc_uid]`) appear in the response —
 admin tools can correlate the two by uid to get the full per-cycle
 picture for the processor.
 

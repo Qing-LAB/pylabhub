@@ -264,6 +264,120 @@ TEST_F(Pattern4ZmqEndpointRegistryTest, EndpointUpdateReflectedInDiscovery)
     broker.signal_quit();
 }
 
+TEST_F(Pattern4ZmqEndpointRegistryTest, EndpointChangeAcceptedWhenNoConsumerAdmitted)
+{
+    // HEP-CORE-0021 §16.4 row 4 / §16.8 special case: a producer may change
+    // its already-resolved endpoint (resolved(X) → resolved(Y)) as long as NO
+    // dialing peer has been admitted to the channel.  This pins the behavior
+    // FLIP — the broker previously rejected ANY change with the (non-catalog)
+    // ENDPOINT_ALREADY_SET code regardless of consumer state.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "zmqvc.ep.change_ok" + suffix;
+    const std::string uid = "prod.ep." + channel;
+    const std::string cons_uid = "cons.ep." + channel;
+    const std::string ep_a = "tcp://127.0.0.1:44446";
+    const std::string ep_b = "tcp://127.0.0.1:44447";
+
+    const fs::path temp_dir = make_test_temp_dir("zep_change_ok");
+    const auto setup = make_pattern4_setup({uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, uid);
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer_zmq_ep(prod, setup, channel, uid, "tcp://127.0.0.1:0"));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, uid));
+
+    // First update resolves the endpoint (unset → resolved(A)).
+    auto upd_a = endpoint_update(prod, channel, "zmq_node", ep_a);
+    ASSERT_TRUE(upd_a.has_value()) << "first ENDPOINT_UPDATE_REQ timed out";
+    ASSERT_EQ(upd_a->value("status", std::string{}), "success") << "body=" << upd_a->dump();
+
+    // Idempotent re-send of the SAME endpoint (resolved(A) → resolved(A)):
+    // accepted (HEP-0021 §16.4 row 3 — fixed-port producers do this on every
+    // startup, config endpoint == resolved endpoint).
+    auto upd_idem = endpoint_update(prod, channel, "zmq_node", ep_a);
+    ASSERT_TRUE(upd_idem.has_value()) << "idempotent ENDPOINT_UPDATE_REQ timed out";
+    EXPECT_EQ(upd_idem->value("status", std::string{}), "success")
+        << "idempotent same-endpoint update must be accepted; body=" << upd_idem->dump();
+
+    // Second update CHANGES it (resolved(A) → resolved(B)).  No consumer has
+    // been admitted, so §16.8 accepts the change.
+    auto upd_b = endpoint_update(prod, channel, "zmq_node", ep_b);
+    ASSERT_TRUE(upd_b.has_value()) << "second ENDPOINT_UPDATE_REQ timed out";
+    EXPECT_EQ(upd_b->value("status", std::string{}), "success")
+        << "resolved→resolved change with zero admitted peers must be ACCEPTED "
+           "(HEP-0021 §16.8); body=" << upd_b->dump();
+
+    // Discovery reflects the latest endpoint.
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    auto disc = discover(cons, channel);
+    ASSERT_TRUE(disc.has_value()) << "DISC_REQ timed out";
+    EXPECT_EQ(disc->value("zmq_node_endpoint", std::string{}), ep_b);
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4ZmqEndpointRegistryTest, EndpointChangeForbiddenWhenConsumerAdmitted)
+{
+    // HEP-CORE-0021 §16.4 row 5 / §16.8: once a dialing peer is admitted to the
+    // channel, the producer's resolved endpoint is frozen — a change returns
+    // error_code ENDPOINT_CHANGE_FORBIDDEN (restart with a fresh instance is
+    // the supported migration).  A fan-out consumer's CONSUMER_REG_REQ admits
+    // its pubkey to the channel ledger (broker_service.cpp:3578), so a single
+    // registered consumer arms the freeze.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "zmqvc.ep.frozen" + suffix;
+    const std::string uid = "prod.ep." + channel;
+    const std::string cons_uid = "cons.ep." + channel;
+    const std::string ep_a = "tcp://127.0.0.1:44448";
+    const std::string ep_b = "tcp://127.0.0.1:44449";
+
+    const fs::path temp_dir = make_test_temp_dir("zep_frozen");
+    const auto setup = make_pattern4_setup({uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, uid);
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer_zmq_ep(prod, setup, channel, uid, "tcp://127.0.0.1:0"));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, uid));
+
+    // Resolve the endpoint (unset → resolved(A)).
+    auto upd_a = endpoint_update(prod, channel, "zmq_node", ep_a);
+    ASSERT_TRUE(upd_a.has_value()) << "first ENDPOINT_UPDATE_REQ timed out";
+    ASSERT_EQ(upd_a->value("status", std::string{}), "success") << "body=" << upd_a->dump();
+
+    // Admit a consumer — CONSUMER_REG_REQ adds its pubkey to the ledger.
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+
+    // The producer now tries to CHANGE its endpoint → FORBIDDEN.
+    auto upd_b = endpoint_update(prod, channel, "zmq_node", ep_b);
+    ASSERT_TRUE(upd_b.has_value()) << "second ENDPOINT_UPDATE_REQ timed out";
+    EXPECT_EQ(upd_b->value("status", std::string{}), "error")
+        << "change must be rejected once a consumer is admitted; body=" << upd_b->dump();
+    EXPECT_EQ(upd_b->value("error_code", std::string{}), "ENDPOINT_CHANGE_FORBIDDEN")
+        << "body=" << upd_b->dump();
+
+    // The rejected change must NOT have mutated the record — discovery still
+    // shows the original resolved endpoint.
+    auto disc = discover(cons, channel);
+    if (disc.has_value())
+        EXPECT_EQ(disc->value("zmq_node_endpoint", std::string{}), ep_a)
+            << "rejected change must not mutate the stored endpoint; body=" << disc->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4ZmqEndpointRegistryTest, EndpointUpdateNonProducerReturnsError)
 {
     using namespace std::chrono;

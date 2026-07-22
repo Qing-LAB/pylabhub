@@ -380,6 +380,12 @@ nlohmann::json HubState::channel_metrics_snapshot(const std::string &channel) co
             // pid is a per-channel-producer property, lives on
             // ChannelEntry.producers[].producer_pid (not on RolePresence).
             one["pid"] = prod.producer_pid;
+            // Per-group freshness (HEP-CORE-0019 §4.2): each uid-keyed group is
+            // ONE reporter, so `_collected_at` is that presence's last
+            // heartbeat-arrival time — one timestamp per group, not per field.
+            if (p->metrics_collected_at.time_since_epoch().count() != 0)
+                one["_collected_at"] =
+                    pylabhub::format_tools::formatted_time(p->metrics_collected_at);
             producers[prod.role_uid] = std::move(one);
         }
         for (const auto &cons : cit->second.consumers)
@@ -392,7 +398,12 @@ nlohmann::json HubState::channel_metrics_snapshot(const std::string &channel) co
             const auto *p = rit->second.find_presence(channel, "consumer");
             if (p == nullptr || p->latest_metrics.is_null())
                 continue;
-            consumers[cons.role_uid] = p->latest_metrics;
+            nlohmann::json one = p->latest_metrics;
+            // Per-group freshness (HEP-CORE-0019 §4.2) — see producer branch.
+            if (p->metrics_collected_at.time_since_epoch().count() != 0)
+                one["_collected_at"] =
+                    pylabhub::format_tools::formatted_time(p->metrics_collected_at);
+            consumers[cons.role_uid] = std::move(one);
         }
     }
     if (!producers.empty())
