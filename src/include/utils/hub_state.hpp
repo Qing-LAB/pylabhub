@@ -351,6 +351,8 @@ struct ProducerEntry
 /// `SCHEMA_MISMATCH` (see `InvariantSetResult`).
 struct ChannelSchemaInvariants
 {
+    /// 128-hex two-zone fingerprint `datablock_half ‖ flexzone_half`
+    /// (HEP-CORE-0034 §6.3).  A single compare covers both zones.
     std::string schema_hash;
     // C2 resolution: `schema_version` field retired.  Version rides
     // inside `schema_id` string (`$name.v<N>` per HEP-CORE-0033
@@ -359,8 +361,11 @@ struct ChannelSchemaInvariants
     // `schema_hash`.  Use `pylabhub::hub::parse_schema_id(schema_id)`
     // if the version integer is needed structurally.
     std::string schema_id;
-    std::string schema_blds;
+    std::string schema_blds;   ///< datablock canonical BLDS ("" = absent)
     std::string schema_owner;
+    std::string flexzone_blds; ///< flexzone canonical BLDS ("" = absent).
+                               ///< Packing is not stored separately — it folds
+                               ///< into `schema_hash` (same as the datablock).
 };
 
 /// Aggregate of channel-wide transport invariants supplied by REG_REQ.
@@ -586,14 +591,17 @@ struct ChannelEntry
                              ///< serves as the SHM block identifier
                              ///< (HEP-CORE-0036 §5b.4 — pre-§5b
                              ///< `shm_name` was a duplicate of this).
-    std::string schema_hash; ///< Hex (64 chars).  Channel-wide
-                             ///< invariant — all producers MUST
+    std::string schema_hash; ///< Hex (128 chars) — the 64-byte two-zone
+                             ///< fingerprint `datablock_half ‖ flexzone_half`.
+                             ///< Channel-wide invariant — all producers MUST
                              ///< agree (HEP-CORE-0023 §2.1.1).
     // C2 resolution: `schema_version` field retired here too.  Version
     // rides inside `schema_id` (`$name.v<N>`) per HEP-CORE-0033 §G2.2.0b;
     // no separate integer needed.
-    std::string schema_id; ///< Named-schema id; empty = anonymous.
-    std::string schema_blds;
+    std::string schema_id;     ///< Named-schema id; empty = anonymous.
+    std::string schema_blds;   ///< datablock canonical BLDS ("" = absent).
+    std::string flexzone_blds; ///< flexzone canonical BLDS ("" = absent).
+                               ///< Packing folds into `schema_hash`.
 
     /// HEP-CORE-0034 §11 — foreign key into `HubState.schemas`.  When
     /// non-empty, identifies the schema record this channel is contracted
@@ -1589,14 +1597,15 @@ struct HubStateTestAccess;
 /// the named-registry branch validates `(channel_owner, channel_id)`.
 struct SchemaCitationInput
 {
-    // The channel's stored / intended schema — the source of truth.  Packing
-    // is NOT a separate field: it is folded into the fingerprint by
-    // `compute_canonical_hash_from_wire`, so a packing difference changes the
-    // hash and is caught by the hash comparison.  (`ChannelEntry` likewise
-    // stores no separate packing.)
+    // The channel's stored / intended schema — the source of truth.  The
+    // fingerprint is the 64-byte two-zone value `datablock_half ‖ flexzone_half`
+    // (`compute_fingerprint_from_wire`); packing folds into each half, so a
+    // packing difference changes the fingerprint and is caught by the compare.
+    // A single equality check covers BOTH zones (absent matches absent), so a
+    // flexzone mismatch cannot silently slip through.
     std::string channel_owner;                      ///< "" = unnamed (role-provided)
     std::string channel_id;                         ///< "" = unnamed (role-provided)
-    std::array<uint8_t, 32> channel_hash{};         ///< wire fingerprint (packing folded in)
+    std::array<uint8_t, 64> channel_hash{};         ///< 64-byte `db‖fz` fingerprint
     std::vector<std::string> channel_producer_uids; ///< for the cross-citation rule
 
     // The joiner's claim.
@@ -1604,7 +1613,8 @@ struct SchemaCitationInput
     std::string cited_owner;                 ///< joiner's claimed schema owner;
                                              ///< "" = joiner names no owner
                                              ///< (consumers) → owner check skipped
-    std::array<uint8_t, 32> expected_hash{}; ///< computed-from-string when a
+    std::array<uint8_t, 64> expected_hash{}; ///< 64-byte `db‖fz` fingerprint,
+                                             ///< computed-from-string when a
                                              ///< structure was supplied
 
     /// Run the named-registry check (§9 step 3): the cited owner must be hub

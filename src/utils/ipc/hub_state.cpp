@@ -27,6 +27,7 @@
 #include "utils/format_tools.hpp" // bytes_to_hex — normalized schema diagnostics
 #include "utils/naming.hpp"
 #include "utils/replay_guard.hpp" // shared sliding-window nonce dedup
+#include "utils/schema_utils.hpp" // schema_records_equivalent (HEP-CORE-0034 §9)
 
 #include <algorithm>
 #include <atomic>
@@ -1239,6 +1240,7 @@ ChannelEntry *HubState::_open_channel_locked(const std::string &channel_name,
     // schema_version retired per C2 — version rides inside schema_id.
     entry.schema_id = schema.schema_id;
     entry.schema_blds = schema.schema_blds;
+    entry.flexzone_blds = schema.flexzone_blds;
     entry.schema_owner = schema.schema_owner;
     entry.data_transport = transport.data_transport;
     entry.topology = topology;
@@ -2237,11 +2239,19 @@ schema::SchemaRegOutcome HubState::_on_schema_registered(schema::SchemaRecord re
     //     (Phase 3), so we only catch the empty-string case here.
     //   - Schema id must be present (defensive — REG_REQ shape check
     //     should catch this earlier in Phase 3).
-    //   - Hash and packing must be consistent (we rely on parse_schema_json
-    //     / SchemaRegistry to build them, so we only check non-empty here).
+    //   - At least one zone must be present (datablock or flexzone), and each
+    //     PRESENT zone must be well-formed: a non-empty `blds` implies a
+    //     non-empty `packing` (both fold into that zone's fingerprint half).
+    //     A flexzone-only record legitimately has an empty datablock
+    //     `packing` — hence the per-zone checks rather than a blanket
+    //     `packing.empty()` reject.
     if (rec.owner_uid.empty() || rec.schema_id.empty())
         return O::kForbiddenOwner;
-    if (rec.packing.empty())
+    if (!rec.has_datablock() && !rec.has_flexzone())
+        return O::kForbiddenOwner;
+    if (rec.has_datablock() && rec.packing.empty())
+        return O::kForbiddenOwner;
+    if (rec.has_flexzone() && rec.flexzone_packing.empty())
         return O::kForbiddenOwner;
 
     std::unique_lock lk(pImpl->mu);
@@ -2250,10 +2260,10 @@ schema::SchemaRegOutcome HubState::_on_schema_registered(schema::SchemaRecord re
     auto it = pImpl->schemas.find(key);
     if (it != pImpl->schemas.end())
     {
-        // Existing record under this (owner, id).  Idempotent only if
-        // hash AND packing match exactly — bytewise-equal layout means
-        // the caller is re-asserting the same record.
-        if (it->second.hash == rec.hash && it->second.packing == rec.packing)
+        // Existing record under this (owner, id).  Idempotent only if the
+        // two-zone fingerprints match — a single 64-byte compare covers both
+        // zones' layout and packing (both fold into the fingerprint).
+        if (schema_records_equivalent(it->second, rec))
             return O::kIdempotent;
         return O::kHashMismatchSelf;
     }
@@ -2308,8 +2318,24 @@ schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitation
     { return s.empty() ? std::string("(anonymous)") : ("'" + s + "'"); };
     auto show_owner = [](const std::string &s)
     { return s.empty() ? std::string("(none)") : ("'" + s + "'"); };
-    auto short_hash = [](const std::array<uint8_t, 32> &h)
+    // Renders the datablock-half prefix (first 4 bytes) of the 64-byte
+    // two-zone fingerprint — enough to disambiguate in a rejection message.
+    auto short_hash = [](const std::array<uint8_t, 64> &h)
     { return pylabhub::format_tools::bytes_to_hex({reinterpret_cast<const char *>(h.data()), 4}); };
+    // Names which zone(s) of the 64-byte `db‖fz` fingerprint disagree, so a
+    // rejection tells the operator exactly which half broke (HEP-CORE-0034 §6.3).
+    auto mismatch_zone = [](const std::array<uint8_t, 64> &a, const std::array<uint8_t, 64> &b)
+    {
+        const bool db_diff = !std::equal(a.begin(), a.begin() + 32, b.begin());
+        const bool fz_diff = !std::equal(a.begin() + 32, a.end(), b.begin() + 32);
+        if (db_diff && fz_diff)
+            return std::string("datablock+flexzone");
+        if (db_diff)
+            return std::string("datablock");
+        if (fz_diff)
+            return std::string("flexzone");
+        return std::string("none");
+    };
 
     // ── Step 2 (HEP-CORE-0034 §9 matching contract) — channel match ──────────
     // The channel's stored schema is the source of truth.  A joiner must match
@@ -2321,8 +2347,10 @@ schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitation
     if (in.expected_hash != in.channel_hash)
     {
         out.reason = R::kFingerprintMismatch;
-        out.detail = "schema fingerprint mismatch: channel hash=" + short_hash(in.channel_hash) +
-                     "… cited hash=" + short_hash(in.expected_hash) + "…";
+        out.detail = "schema fingerprint mismatch (" +
+                     mismatch_zone(in.channel_hash, in.expected_hash) +
+                     " zone): channel hash=" + short_hash(in.channel_hash) + "… cited hash=" +
+                     short_hash(in.expected_hash) + "…";
     }
     // (b) schema_id must be EXACTLY equal.  This enforces the named/anonymous
     //     symmetry: a named citation against an anonymous channel, an anonymous
@@ -2380,8 +2408,10 @@ schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitation
             {
                 out.reason = R::kFingerprintMismatch;
                 out.detail =
-                    "schema fingerprint mismatch: registry record (owner=" + show_owner(owner) +
-                    ", id=" + show_id(in.channel_id) + ") hash=" + short_hash(it->second.hash) +
+                    "schema fingerprint mismatch (" +
+                    mismatch_zone(it->second.hash, in.channel_hash) +
+                    " zone): registry record (owner=" + show_owner(owner) + ", id=" +
+                    show_id(in.channel_id) + ") hash=" + short_hash(it->second.hash) +
                     "… differs from channel hash=" + short_hash(in.channel_hash) + "…";
             }
         }

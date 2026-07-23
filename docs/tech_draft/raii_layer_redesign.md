@@ -832,7 +832,7 @@ particular:
   metadata).
 - **I6** — when the typed addon emits a fingerprint for the wire, it
   uses HEP-0034 wire form
-  (`compute_canonical_hash_from_wire(canonical_fields_str(spec)+packing)`),
+  (`compute_fingerprint_from_wire(canonical_fields_str(spec)+packing)`),
   **not** the HEP-0002 BLDS form in `SchemaInfo::hash`. Mixing the two
   is a category error.
 

@@ -15,6 +15,7 @@
 // new co-host workers here; add wire tests under tests/test_layer3_pattern4/.
 #include "datahub_broker_workers.h"
 #include "curve_test_setup.h"
+#include "test_sync_utils.h" // poll_until — coordinate on events, not sleeps
 #include "hub_vault_test_seed.h" // provision_hub_vault + load_hub_keypair_fresh (HEP-0035 §4.8)
 #include "broker_test_harness.h"
 #include "test_entrypoint.h"
@@ -26,11 +27,12 @@
 #include "utils/file_lock.hpp"
 #include "utils/hub_directory.hpp"
 #include "utils/hub_host.hpp"
+#include "utils/hub_inbox_queue.hpp" // InboxQueue / InboxClient (HEP-0027 discovery round-trip)
 #include "utils/hub_state.hpp"
 #include "utils/json_config.hpp"
 #include "plh_datahub.hpp"
 #include "utils/role_reg_payload.hpp"
-#include "utils/schema_utils.hpp" // compute_canonical_hash_from_wire (HEP-0034 §6.3)
+#include "utils/schema_utils.hpp" // compute_fingerprint_from_wire (HEP-0034 §6.3)
 #include "utils/format_tools.hpp" // bytes_to_hex
 #include "utils/security/key_store.hpp"
 #include "utils/security/known_roles.hpp"
@@ -54,6 +56,8 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <atomic>
+#include <stop_token>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -600,14 +604,15 @@ void raw_heartbeat(const std::string &endpoint, const std::string &server_pubkey
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
 
-// Hex string of N zero bytes (for use as a schema_hash in JSON payloads).
-std::string zero_hex(size_t bytes = 32)
+// Hex string of N zero bytes (schema_hash placeholder for anonymous channels).
+// Default 64 bytes = 128 hex = the two-zone fingerprint width (HEP-0034 §6.3).
+std::string zero_hex(size_t bytes = 64)
 {
     return std::string(bytes * 2, '0');
 }
 
-// Hex string of N 'aa' bytes (for a different schema_hash).
-std::string aa_hex(size_t bytes = 32)
+// Hex string of N 'aa' bytes (a different schema_hash placeholder).
+std::string aa_hex(size_t bytes = 64)
 {
     return std::string(bytes * 2, 'a');
 }
@@ -1253,8 +1258,8 @@ nlohmann::json baseline_reg_req(const std::string &channel, const std::string &u
 std::string canonical_hash_hex(const std::string &slot_blds, const std::string &slot_packing,
                                const std::string &fz_blds = {}, const std::string &fz_packing = {})
 {
-    const auto h = pylabhub::hub::compute_canonical_hash_from_wire(slot_blds, slot_packing, fz_blds,
-                                                                   fz_packing);
+    const auto h = pylabhub::hub::compute_fingerprint_from_wire(slot_blds, slot_packing, fz_blds,
+                                                                fz_packing);
     return pylabhub::format_tools::bytes_to_hex(
         {reinterpret_cast<const char *>(h.data()), h.size()});
 }
@@ -1619,145 +1624,6 @@ int broker_sch_schema_req_owner_id()
         zmq_module());
 }
 
-// ── Inbox path-A: REG_REQ inbox metadata creates record under (uid, "inbox") ─
-
-int broker_sch_inbox_path_a()
-{
-    return run_gtest_worker(
-        []()
-        {
-            auto [broker] = setup_broker_test({"prod.broker.inbox.uid00000001"},
-
-                                              "broker.broker_sch_inbox_path_a");
-
-            const std::string channel = "broker.sch.inbox";
-            const std::string uid = "prod.broker.inbox.uid00000001";
-            const std::string inbox_ep = "tcp://127.0.0.1:9988";
-            const std::string ibj = R"([{"type":"float64","count":1,"length":0}])";
-
-            auto reg = baseline_reg_req(channel, uid);
-            reg["inbox_endpoint"] = inbox_ep;
-            reg["inbox_schema_json"] = ibj;
-            reg["inbox_packing"] = "aligned";
-            reg["inbox_checksum"] = "enforced";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
-                              "prod.broker.inbox.uid00000001")
-                          .value("status", std::string{}),
-                      "success");
-
-            // SCHEMA_REQ for the inbox record returns the same fields the
-            // broker recorded.  Hash and BLDS come back as-stored.
-            nlohmann::json sreq;
-            sreq["owner"] = uid;
-            sreq["schema_id"] = "inbox";
-            auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
-                                 "prod.broker.inbox.uid00000001");
-            ASSERT_FALSE(sresp.is_null());
-            EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
-            EXPECT_EQ(sresp.value("owner", std::string{}), uid);
-            EXPECT_EQ(sresp.value("schema_id", std::string{}), "inbox");
-            EXPECT_EQ(sresp.value("packing", std::string{}), "aligned");
-            EXPECT_EQ(sresp.value("blds", std::string{}), ibj);
-            // Hash is opaque (broker computed it); just assert it has a
-            // reasonable shape (32 bytes / 64 hex chars).
-            const auto hash_hex = sresp.value("schema_hash", std::string{});
-            EXPECT_EQ(hash_hex.size(), 64u);
-
-            broker.stop_and_join();
-        },
-        "broker.broker_sch_inbox_path_a", logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
-        zmq_module());
-}
-
-// ── Inbox: same uid, different inbox schema → SCHEMA_HASH_MISMATCH_SELF ─────
-
-int broker_sch_inbox_hash_mismatch_self()
-{
-    return run_gtest_worker(
-        []()
-        {
-            auto [broker] = setup_broker_test({"prod.broker.ibmm.uid00000001"},
-
-                                              "broker.broker_sch_inbox_hash_mismatch_self");
-
-            const std::string ch1 = "broker.sch.inbox_mm.a";
-            const std::string ch2 = "broker.sch.inbox_mm.b";
-            const std::string uid = "prod.broker.ibmm.uid00000001";
-
-            auto reg1 = baseline_reg_req(ch1, uid);
-            reg1["inbox_endpoint"] = "tcp://127.0.0.1:9989";
-            reg1["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
-            reg1["inbox_packing"] = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey,
-                              "prod.broker.ibmm.uid00000001")
-                          .value("status", std::string{}),
-                      "success");
-
-            // Same uid, NEW channel, different inbox schema.  HEP-0034
-            // §11.4 says the inbox record is keyed by (role_uid, "inbox")
-            // independent of channel name → second REG_REQ collides.
-            auto reg2 = baseline_reg_req(ch2, uid);
-            reg2["inbox_endpoint"] = "tcp://127.0.0.1:9990";
-            reg2["inbox_schema_json"] = R"([{"type":"int32","count":4,"length":0}])";
-            reg2["inbox_packing"] = "aligned";
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey,
-                              "prod.broker.ibmm.uid00000001");
-            ASSERT_FALSE(r2.is_null());
-            EXPECT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
-            EXPECT_EQ(r2.value("error_code", std::string{}), "SCHEMA_HASH_MISMATCH_SELF");
-
-            broker.stop_and_join();
-        },
-        "broker.broker_sch_inbox_hash_mismatch_self", logger_module(), file_lock_module(),
-        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module(), zmq_module());
-}
-
-// ── Inbox: idempotent re-registration (same uid + same fields → success) ────
-
-int broker_sch_inbox_idempotent()
-{
-    return run_gtest_worker(
-        []()
-        {
-            auto [broker] = setup_broker_test({"prod.broker.idem.uid00000001"},
-
-                                              "broker.broker_sch_inbox_idempotent");
-
-            const std::string ch1 = "broker.sch.inbox_idem.a";
-            const std::string ch2 = "broker.sch.inbox_idem.b";
-            const std::string uid = "prod.broker.idem.uid00000001";
-            const std::string ibj = R"([{"type":"float64","count":1,"length":0}])";
-
-            auto reg1 = baseline_reg_req(ch1, uid);
-            reg1["inbox_endpoint"] = "tcp://127.0.0.1:9991";
-            reg1["inbox_schema_json"] = ibj;
-            reg1["inbox_packing"] = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg1, 2000, broker.pubkey,
-                              "prod.broker.idem.uid00000001")
-                          .value("status", std::string{}),
-                      "success");
-
-            // Same uid, same inbox schema, NEW channel — idempotent at
-            // registry level, so the broker should accept (and HubState
-            // returns kIdempotent without bumping the registered counter).
-            auto reg2 = baseline_reg_req(ch2, uid);
-            reg2["inbox_endpoint"] = "tcp://127.0.0.1:9992";
-            reg2["inbox_schema_json"] = ibj;   // identical fields
-            reg2["inbox_packing"] = "aligned"; // identical packing
-            auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey,
-                              "prod.broker.idem.uid00000001");
-            ASSERT_FALSE(r2.is_null()) << "raw_req timed out for r2 on this call";
-            EXPECT_EQ(r2.value("status", std::string{}), "success") << r2.dump();
-
-            broker.stop_and_join();
-        },
-        "broker.broker_sch_inbox_idempotent", logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
-        zmq_module());
-}
-
 // ── Inbox: malformed inbox_schema_json → INBOX_SCHEMA_INVALID ───────────────
 
 int broker_sch_inbox_invalid_json()
@@ -1803,71 +1669,6 @@ int broker_sch_inbox_invalid_json()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_invalid_json", logger_module(), file_lock_module(), json_module(),
-        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
-        zmq_module());
-}
-
-// ── Inbox: two different roles, each with own inbox → both records exist ────
-
-int broker_sch_inbox_two_owners()
-{
-    return run_gtest_worker(
-        []()
-        {
-            auto [broker] =
-                setup_broker_test({"prod.broker.ib2a.uid00000001", "prod.broker.ib2b.uid00000002"},
-
-                                  "broker.broker_sch_inbox_two_owners");
-
-            const std::string ch_a = "broker.sch.inbox_2a";
-            const std::string ch_b = "broker.sch.inbox_2b";
-            const std::string uid_a = "prod.broker.ib2a.uid00000001";
-            const std::string uid_b = "prod.broker.ib2b.uid00000002";
-
-            // Same schema fields under two different owners (uid_a and uid_b).
-            // HEP-0034 §8: namespace-by-owner; both records coexist.
-            const std::string ibj = R"([{"type":"float64","count":1,"length":0}])";
-
-            // Honest production-mirror: each owner uses its OWN CURVE
-            // identity on the wire (a separate process would).  Pre-fix
-            // the test sent uid_b's REG_REQ over uid_a's wire identity,
-            // which the broker's §6.3 Layer-2 binding check would now
-            // catch as PUBKEY_MISMATCH once F7's decoration-vs-wire
-            // alignment landed (REVIEW_C2_2026-06-29 F1).
-            auto rA = baseline_reg_req(ch_a, uid_a);
-            rA["inbox_endpoint"] = "tcp://127.0.0.1:9995";
-            rA["inbox_schema_json"] = ibj;
-            rA["inbox_packing"] = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rA, 2000, broker.pubkey, uid_a)
-                          .value("status", std::string{}),
-                      "success");
-
-            auto rB = baseline_reg_req(ch_b, uid_b);
-            rB["inbox_endpoint"] = "tcp://127.0.0.1:9996";
-            rB["inbox_schema_json"] = ibj; // SAME content
-            rB["inbox_packing"] = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", rB, 2000, broker.pubkey, uid_b)
-                          .value("status", std::string{}),
-                      "success")
-                << "Different owner with same fields must succeed";
-
-            // Both records resolvable via SCHEMA_REQ — each owner reads
-            // its OWN record using its own wire identity (mirrors a
-            // producer querying the schema it just registered).
-            for (const auto &uid : {uid_a, uid_b})
-            {
-                nlohmann::json sreq;
-                sreq["owner"] = uid;
-                sreq["schema_id"] = "inbox";
-                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, uid);
-                ASSERT_FALSE(sresp.is_null()) << "SCHEMA_REQ timed out for owner=" << uid;
-                EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
-                EXPECT_EQ(sresp.value("owner", std::string{}), uid);
-            }
-
-            broker.stop_and_join();
-        },
-        "broker.broker_sch_inbox_two_owners", logger_module(), file_lock_module(), json_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
         zmq_module());
 }
@@ -1937,6 +1738,220 @@ int broker_sch_inbox_invalid_packing()
             broker.stop_and_join();
         },
         "broker.broker_sch_inbox_invalid_packing", logger_module(), file_lock_module(),
+        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        hub_module(), zmq_module());
+}
+
+// Typed view of the discovery-round-trip inbox message.  Packed (no padding) to
+// match the advertised `"packing":"packed"` layout exactly; a `static_assert`
+// plus a runtime `sizeof == item_size` check ties this struct to the schema the
+// sender DISCOVERED, so the typed field access below can't silently drift.
+#pragma pack(push, 1)
+struct InboxDiscoveryMsg
+{
+    uint64_t seq;
+    int32_t samples[4];
+    int16_t code;
+    uint32_t flags;
+};
+#pragma pack(pop)
+static_assert(sizeof(InboxDiscoveryMsg) == 8 + 16 + 2 + 4,
+              "packed inbox message must have no padding");
+
+// ── Inbox schema is discovered as JSON via ROLE_INFO, NOT the registry ──────
+//
+// End-to-end exercise of the post-2026-07-22 inbox-schema design (HEP-0027 §4.0
+// + HEP-0034 §11.4): a receiver advertises its inbox schema on REG_REQ; a sender
+// discovers it as a JSON object via ROLE_INFO_REQ (never SCHEMA_REQ / the
+// registry), builds an InboxClient from the *discovered* schema, and delivers a
+// typed message.  Pins: (1) ROLE_INFO_ACK carries the inbox schema fields that
+// were advertised; (2) SCHEMA_REQ(uid,"inbox") returns SCHEMA_UNKNOWN — the
+// inbox is not a registry record; (3) a client built from the discovered schema
+// delivers a typed message read back by value.  (Wrong-schema schema_tag
+// rejection is covered separately by InboxQueueTest.SchemaMismatch_*.)
+int broker_sch_inbox_discovery_roundtrip()
+{
+    return run_gtest_worker(
+        []()
+        {
+            namespace hub = ::pylabhub::hub;
+            using ms = std::chrono::milliseconds;
+
+            const std::string recv_uid = "prod.broker.ibx_recv.uid00000001";
+            const std::string send_uid = "prod.broker.ibx_send.uid00000002";
+            const std::string channel = "broker.sch.inbox_disc";
+            // A genuinely representative inbox layout — NOT a single scalar — so the
+            // round-trip exercises the schema across mixed types: unsigned 64,
+            // float64, a padding-sensitive int16, a numeric array (float32[4]), a
+            // fixed string, and a variable-length bytes field.  Object form
+            // {packing, fields:[{name,type,count,length}]} — the shape
+            // parse_schema_json + ROLE_INFO discovery consume (HEP-0027 §6).
+            // "packed" so the item has NO inter-field padding — the content
+            // checksum is over the whole decoded buffer, and the typed codec
+            // zeroes padding on decode, so a pattern-filled aligned layout would
+            // fail the checksum.  Integer types across widths + an array give a
+            // genuine mix whose exact bytes round-trip (floats would canonicalize
+            // NaN/denormal bit patterns).
+            const std::string inbox_schema_json =
+                R"({"packing":"packed","fields":[)"
+                R"({"name":"seq","type":"uint64","count":1,"length":0},)"
+                R"({"name":"samples","type":"int32","count":4,"length":0},)"
+                R"({"name":"code","type":"int16","count":1,"length":0},)"
+                R"({"name":"flags","type":"uint32","count":1,"length":0}]})";
+
+            // Receiver's real InboxQueue bound to a loopback OS-assigned port with
+            // the SAME layout + packing — this is the endpoint + schema it advertises.
+            std::vector<hub::SchemaFieldDesc> recv_schema = {
+                {"uint64", 1, 0}, {"int32", 4, 0}, {"int16", 1, 0}, {"uint32", 1, 0}};
+            auto q = hub::InboxQueue::bind_at("tcp://127.0.0.1:0", recv_schema, "packed");
+            ASSERT_NE(q, nullptr);
+            ASSERT_TRUE(q->start());
+            const std::string inbox_ep = q->actual_endpoint();
+            ASSERT_FALSE(inbox_ep.empty());
+
+            auto [broker] = setup_broker_test({recv_uid, send_uid},
+                                              "broker.broker_sch_inbox_discovery_roundtrip");
+
+            // 1. Receiver registers, advertising its inbox.
+            auto reg = baseline_reg_req(channel, recv_uid);
+            reg["inbox_endpoint"] = inbox_ep;
+            reg["inbox_schema_json"] = inbox_schema_json;
+            reg["inbox_packing"] = "packed";
+            ASSERT_EQ(
+                raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, recv_uid)
+                    .value("status", std::string{}),
+                "success");
+
+            // 2. Sender discovers the inbox via ROLE_INFO_REQ — schema comes back
+            //    as a JSON object whose fields match what the receiver advertised.
+            nlohmann::json rinfo;
+            rinfo["role_uid"] = recv_uid;
+            auto info =
+                raw_req(broker.endpoint, "ROLE_INFO_REQ", rinfo, 2000, broker.pubkey, send_uid);
+            ASSERT_FALSE(info.is_null());
+            EXPECT_EQ(info.value("found", false), true) << info.dump();
+            EXPECT_EQ(info.value("inbox_endpoint", std::string{}), inbox_ep);
+            EXPECT_EQ(info.value("inbox_packing", std::string{}), "packed");
+            ASSERT_TRUE(info.contains("inbox_schema") && info["inbox_schema"].is_object())
+                << "ROLE_INFO_ACK must carry the inbox schema as a JSON object; " << info.dump();
+            const auto &fields = info["inbox_schema"]["fields"];
+            ASSERT_TRUE(fields.is_array());
+            ASSERT_EQ(fields.size(), 4u) << "ROLE_INFO must return the full advertised layout";
+            EXPECT_EQ(fields[0].value("name", std::string{}), "seq");
+            EXPECT_EQ(fields[0].value("type", std::string{}), "uint64");
+            EXPECT_EQ(fields[1].value("type", std::string{}), "int32");
+            EXPECT_EQ(fields[1].value("count", 0u), 4u);
+            EXPECT_EQ(fields[2].value("type", std::string{}), "int16");
+            EXPECT_EQ(fields[3].value("type", std::string{}), "uint32");
+
+            // 3. Design contract: the inbox is NOT a schema-registry record —
+            //    SCHEMA_REQ(receiver_uid, "inbox") must be unknown.
+            nlohmann::json sreq;
+            sreq["owner"] = recv_uid;
+            sreq["schema_id"] = "inbox";
+            auto sresp =
+                raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, send_uid);
+            ASSERT_FALSE(sresp.is_null());
+            EXPECT_EQ(sresp.value("status", std::string{}), "error") << sresp.dump();
+            EXPECT_EQ(sresp.value("error_code", std::string{}), "SCHEMA_UNKNOWN") << sresp.dump();
+            LOGGER_INFO("inbox_disc: discovery OK — {} fields, SCHEMA_REQ(inbox)='{}'",
+                        fields.size(), sresp.value("error_code", std::string{}));
+
+            // 4. Build an InboxClient from the DISCOVERED schema and deliver a
+            //    typed message — proves a sender can act purely on ROLE_INFO.
+            auto discovered_spec = hub::parse_schema_json(info["inbox_schema"]);
+            auto discovered_fields = hub::schema_spec_to_zmq_fields(discovered_spec);
+            auto c = hub::InboxClient::connect_to(inbox_ep, send_uid, discovered_fields, discovered_spec.packing);
+            ASSERT_NE(c, nullptr);
+            ASSERT_TRUE(c->start());
+
+            // Sender and receiver computed the same item size from the same
+            // (discovered vs bound) layout — the whole point of the schema.
+            const size_t item_sz = c->item_size();
+            ASSERT_GT(item_sz, 0u);
+            EXPECT_EQ(item_sz, q->item_size())
+                << "sender's discovered item size must match the receiver's bound size";
+
+            // The acquire() buffer is an over-aligned, struct-shaped region;
+            // hub_zmq_queue.hpp guarantees typed C++ struct casts are safe.  Cast
+            // to the packed view of the DISCOVERED schema and set fields with `=`.
+            ASSERT_EQ(item_sz, sizeof(InboxDiscoveryMsg))
+                << "the discovered schema must match the typed view";
+
+            auto *msg = static_cast<InboxDiscoveryMsg *>(c->acquire());
+            ASSERT_NE(msg, nullptr);
+            msg->seq = 0xA1B2C3D4E5F60718ull;
+            msg->samples[0] = -7;
+            msg->samples[1] = 11;
+            msg->samples[2] = -13;
+            msg->samples[3] = 17;
+            msg->code = -1234;
+            msg->flags = 0xDEADBEEFu;
+
+            // A single receiver pump drains recv_one continuously on its own
+            // thread; the main thread sends and coordinates on the ACTUAL events
+            // via poll_until (delivery + frame-error counters) — no sleep-to-order,
+            // so it stays deterministic under parallel-ctest CPU contention.
+            namespace helper = ::pylabhub::tests::helper;
+            std::atomic<int> delivered_count{0};
+            InboxDiscoveryMsg received{};
+            std::string received_sender;
+            // std::jthread: auto-stops-and-joins on EVERY scope exit, including a
+            // failing ASSERT_* (which returns from this lambda) — so a delivery
+            // failure surfaces as a clean test failure, never a joinable-thread
+            // std::terminate.  `q` is declared earlier, so it outlives the pump.
+            std::jthread pump(
+                [&](std::stop_token st)
+                {
+                    while (!st.stop_requested())
+                    {
+                        const hub::InboxItem *it = q->recv_one(ms{100});
+                        if (it != nullptr && it->data != nullptr)
+                        {
+                            std::memcpy(&received, it->data, sizeof(received));
+                            received_sender = it->sender_id;
+                            q->send_ack(0);
+                            delivered_count.fetch_add(1, std::memory_order_release);
+                        }
+                    }
+                });
+
+            LOGGER_INFO("inbox_disc: sending typed frame item_sz={} to '{}'", item_sz, inbox_ep);
+            const uint8_t ack = c->send(ms{5000});
+            LOGGER_INFO("inbox_disc: send returned ack={} delivered={}", static_cast<int>(ack),
+                        delivered_count.load());
+            ASSERT_TRUE(helper::poll_until(
+                [&] { return delivered_count.load(std::memory_order_acquire) >= 1; },
+                std::chrono::seconds{10}))
+                << "discovered-schema frame not delivered (ack=" << static_cast<int>(ack)
+                << ", frame_err=" << q->recv_frame_error_count() << ")";
+            LOGGER_INFO("inbox_disc: delivered ok, sender='{}'", received_sender);
+            EXPECT_EQ(ack, 0u);
+            EXPECT_EQ(received_sender, send_uid);
+
+            // Read the delivered message through the same typed view.
+            EXPECT_EQ(received.seq, 0xA1B2C3D4E5F60718ull);
+            EXPECT_EQ(received.samples[0], -7);
+            EXPECT_EQ(received.samples[1], 11);
+            EXPECT_EQ(received.samples[2], -13);
+            EXPECT_EQ(received.samples[3], 17);
+            EXPECT_EQ(received.code, -1234);
+            EXPECT_EQ(received.flags, 0xDEADBEEFu);
+            c->stop();
+
+            // (Schema-tag rejection of a WRONG-schema sender is covered directly
+            // by InboxQueueTest.SchemaMismatch_DifferentType/DifferentSize; this
+            // test's unique job is the discovery→build-from-discovered→deliver
+            // contract above, so it does not re-test rejection here.)
+
+            // Stop the pump BEFORE tearing down the queue/broker it reads.
+            pump.request_stop();
+            pump.join();
+
+            broker.stop_and_join();
+            q->stop();
+        },
+        "broker.broker_sch_inbox_discovery_roundtrip", logger_module(), file_lock_module(),
         json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module(), zmq_module());
 }
@@ -2270,72 +2285,6 @@ int broker_sch_cons_named_with_structure_mismatch()
             broker.stop_and_join();
         },
         "broker.broker_sch_cons_named_with_structure_mismatch", logger_module(), file_lock_module(),
-        json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
-        hub_module(), zmq_module());
-}
-
-int broker_sch_inbox_evicts_on_disconnect()
-{
-    return run_gtest_worker(
-        []()
-        {
-            auto [broker] = setup_broker_test({"prod.broker.ibev.uid00000001"},
-
-                                              "broker.broker_sch_inbox_evicts_on_disconnect");
-
-            const std::string ch = "broker.sch.inbox_evict";
-            const std::string uid = "prod.broker.ibev.uid00000001";
-            const auto producer_pid = pylabhub::platform::get_pid();
-
-            // Register a producer with inbox metadata.
-            auto reg = baseline_reg_req(ch, uid);
-            reg["producer_pid"] = producer_pid;
-            reg["inbox_endpoint"] = "tcp://127.0.0.1:9998";
-            reg["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
-            reg["inbox_packing"] = "aligned";
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
-                              "prod.broker.ibev.uid00000001")
-                          .value("status", std::string{}),
-                      "success");
-
-            // Confirm inbox record exists before disconnect.
-            {
-                nlohmann::json sreq;
-                sreq["owner"] = uid;
-                sreq["schema_id"] = "inbox";
-                auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
-                                     "prod.broker.ibev.uid00000001");
-                ASSERT_FALSE(sresp.is_null()) << "raw_req timed out for sresp on this call";
-                EXPECT_EQ(sresp.value("status", std::string{}), "success") << sresp.dump();
-            }
-
-            // Trigger channel close via DEREG_REQ (cleaner than waiting
-            // for heartbeat timeout — same `_on_channel_closed` cascade).
-            // broker_proto 2→3: `role_uid` REQUIRED on DEREG_REQ.
-            nlohmann::json dereg;
-            dereg["channel_name"] = ch;
-            dereg["role_uid"] = uid;
-            dereg["producer_pid"] = producer_pid;
-            auto dr = raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey,
-                              "prod.broker.ibev.uid00000001");
-            ASSERT_FALSE(dr.is_null()) << "raw_req timed out for dr on this call";
-            ASSERT_EQ(dr.value("status", std::string{}), "success") << dr.dump();
-
-            // Inbox record must be evicted by the cascade.
-            nlohmann::json sreq;
-            sreq["owner"] = uid;
-            sreq["schema_id"] = "inbox";
-            auto after = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
-                                 "prod.broker.ibev.uid00000001");
-            ASSERT_FALSE(after.is_null()) << "raw_req timed out for after on this call";
-            EXPECT_EQ(after.value("status", std::string{}), "error") << after.dump();
-            EXPECT_EQ(after.value("error_code", std::string{}), "SCHEMA_UNKNOWN")
-                << "Inbox record should evict on producer disconnect "
-                   "(HEP-CORE-0034 §7.2 cascade via _on_channel_closed)";
-
-            broker.stop_and_join();
-        },
-        "broker.broker_sch_inbox_evicts_on_disconnect", logger_module(), file_lock_module(),
         json_module(), ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
         hub_module(), zmq_module());
 }
@@ -2860,17 +2809,17 @@ int broker_sch_wire_helpers_anonymous_citation()
 // Worker D — slot + flexzone via helpers, full round-trip.
 //
 // Pins:
-//   - HEP-0034 §6.3 fz section: helper folds flexzone_blds /
-//     flexzone_packing into the canonical bytes
-//     (compute_canonical_hash_from_wire), broker recomputes the same
-//     bytes, hashes match.
+//   - HEP-0034 §6.3 two-zone: helper hashes flexzone_blds /
+//     flexzone_packing into the flexzone half of the 64-byte fingerprint
+//     (compute_fingerprint_from_wire), broker recomputes the same bytes,
+//     fingerprints match.
 //   - apply_producer_schema_fields emits the flexzone_* keys (the gap
 //     Phase 4a closed at the broker side, mirrored on the producer
 //     side here).
-//   - SchemaRecord stores slot-only `blds` / `packing` (per
-//     to_hub_schema_record), but `hash` includes the flexzone — verified
-//     by SCHEMA_REQ owner+id round-trip below (response.schema_hash ==
-//     helper-computed hash that includes the fz section).
+//   - SchemaRecord stores both zones un-merged (`blds`/`packing` +
+//     `flexzone_blds`/`flexzone_packing`); `hash` carries both halves —
+//     verified by SCHEMA_REQ owner+id round-trip below (response.schema_hash
+//     == helper-computed 128-hex fingerprint that includes the fz half).
 //   - apply_consumer_schema_fields emits expected_flexzone_blds /
 //     expected_flexzone_packing; broker's CONSUMER_REG_REQ handler
 //     reads and folds them into the recompute (Phase 5a fix mirrored
@@ -2905,7 +2854,8 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             fz_spec.packing = "aligned";
             fz_spec.fields.push_back({"cal", "float64", 8u, 0u});
 
-            // Helper-emitted full payload, slot + fz folded into the hash.
+            // Helper-emitted full payload; slot + fz each hashed into their
+            // half of the 64-byte fingerprint (HEP-0034 §6.3).
             const auto w =
                 pylabhub::hub::make_wire_schema_fields(nlohmann::json(sid), slot_spec, fz_spec);
 
@@ -3049,20 +2999,14 @@ struct BrokerWorkerRegistrar
                     return broker_sch_no_packing_backward_compat();
                 if (scenario == "broker_sch_schema_req_owner_id")
                     return broker_sch_schema_req_owner_id();
-                if (scenario == "broker_sch_inbox_path_a")
-                    return broker_sch_inbox_path_a();
-                if (scenario == "broker_sch_inbox_hash_mismatch_self")
-                    return broker_sch_inbox_hash_mismatch_self();
-                if (scenario == "broker_sch_inbox_idempotent")
-                    return broker_sch_inbox_idempotent();
                 if (scenario == "broker_sch_inbox_invalid_json")
                     return broker_sch_inbox_invalid_json();
-                if (scenario == "broker_sch_inbox_two_owners")
-                    return broker_sch_inbox_two_owners();
                 if (scenario == "broker_sch_schema_req_invalid")
                     return broker_sch_schema_req_invalid();
                 if (scenario == "broker_sch_inbox_invalid_packing")
                     return broker_sch_inbox_invalid_packing();
+                if (scenario == "broker_sch_inbox_discovery_roundtrip")
+                    return broker_sch_inbox_discovery_roundtrip();
                 if (scenario == "broker_sch_reg_missing_packing")
                     return broker_sch_reg_missing_packing();
                 if (scenario == "broker_sch_reg_fingerprint_inconsistent")
@@ -3077,8 +3021,6 @@ struct BrokerWorkerRegistrar
                     return broker_sch_cons_anonymous_vs_named_rejected();
                 if (scenario == "broker_sch_cons_named_with_structure_mismatch")
                     return broker_sch_cons_named_with_structure_mismatch();
-                if (scenario == "broker_sch_inbox_evicts_on_disconnect")
-                    return broker_sch_inbox_evicts_on_disconnect();
                 if (scenario == "broker_sch_hub_globals_loaded_at_startup")
                     return broker_sch_hub_globals_loaded_at_startup();
                 if (scenario == "broker_sch_path_c_adoption_succeeds")

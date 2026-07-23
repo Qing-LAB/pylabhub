@@ -177,44 +177,11 @@ TEST_F(DatahubBrokerTest, Sch_SchemaReq_OwnerIdRoundTrip)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubBrokerTest, Sch_InboxPathA)
-{
-    // REG_REQ with inbox metadata creates a SchemaRecord under
-    // (role_uid, "inbox"); SCHEMA_REQ for that key returns it.
-    auto proc = SpawnWorker("broker.broker_sch_inbox_path_a", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubBrokerTest, Sch_InboxHashMismatchSelf)
-{
-    // Same uid, different inbox schema → SCHEMA_HASH_MISMATCH_SELF.
-    // Pins HEP-0034 §11.4: inbox record is keyed by role_uid, not by
-    // channel name; one inbox per role.
-    auto proc = SpawnWorker("broker.broker_sch_inbox_hash_mismatch_self", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubBrokerTest, Sch_InboxIdempotent)
-{
-    // Same uid + same inbox schema across two REG_REQs → registry treats
-    // second as idempotent; broker accepts both.
-    auto proc = SpawnWorker("broker.broker_sch_inbox_idempotent", {});
-    ExpectWorkerOk(proc);
-}
-
 TEST_F(DatahubBrokerTest, Sch_InboxInvalidJson)
 {
     // Malformed inbox_schema_json → INBOX_SCHEMA_INVALID before any
     // state is persisted.
     auto proc = SpawnWorker("broker.broker_sch_inbox_invalid_json", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubBrokerTest, Sch_InboxTwoOwners)
-{
-    // Two roles each register their own inbox with same field shape →
-    // both records exist (HEP-0034 §8 namespace-by-owner).
-    auto proc = SpawnWorker("broker.broker_sch_inbox_two_owners", {});
     ExpectWorkerOk(proc);
 }
 
@@ -230,6 +197,17 @@ TEST_F(DatahubBrokerTest, Sch_InboxInvalidPacking)
     // inbox_packing must be "aligned" or "packed" — robustness gap caught
     // during Phase 3b self-review.
     auto proc = SpawnWorker("broker.broker_sch_inbox_invalid_packing", {});
+    ExpectWorkerOk(proc);
+}
+
+TEST_F(DatahubBrokerTest, Sch_InboxSchemaDiscoveryRoundTrip)
+{
+    // Post-2026-07-22 inbox design (HEP-0027 §4.0 / HEP-0034 §11.4): the inbox
+    // schema is discovered as JSON via ROLE_INFO_REQ — NOT the schema registry.
+    // Receiver advertises → sender discovers the schema, confirms
+    // SCHEMA_REQ(uid,"inbox")→SCHEMA_UNKNOWN, builds an InboxClient from the
+    // discovered schema and delivers a typed message read back by value.
+    auto proc = SpawnWorker("broker.broker_sch_inbox_discovery_roundtrip", {});
     ExpectWorkerOk(proc);
 }
 
@@ -285,14 +263,6 @@ TEST_F(DatahubBrokerTest, Sch_ConsumerNamed_WithStructureMismatch)
     // Defense-in-depth: named citation + structure that doesn't hash
     // to the channel's hash → FINGERPRINT_INCONSISTENT.
     auto proc = SpawnWorker("broker.broker_sch_cons_named_with_structure_mismatch", {});
-    ExpectWorkerOk(proc);
-}
-
-TEST_F(DatahubBrokerTest, Sch_InboxEvictsOnDisconnect)
-{
-    // Audit-found gap: producer's (uid, "inbox") record evicts on
-    // channel close (DEREG_REQ → `_on_channel_closed` cascade).
-    auto proc = SpawnWorker("broker.broker_sch_inbox_evicts_on_disconnect", {});
     ExpectWorkerOk(proc);
 }
 

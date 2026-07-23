@@ -86,6 +86,50 @@ cited as authoritative.
 acceptance — HEP-CORE-0007 §12.2.1); `C1`/`C2` = Cat 1 / Cat 2 broker
 notification (`IMPLEMENTATION_GUIDANCE § Error Taxonomy`).
 
+### 3.0 Wire encoding surfaces (where each payload form lives)
+
+The registry below (§3.1–3.9) is the **control plane** and is one of **four**
+distinct wire-encoding surfaces.  Each surface has its own framing **and a single
+owning entry point in code** — no other module hand-rolls that encoding — so
+future format/type expansion has exactly one place to change per surface.
+
+| Surface | Encoding | Single entry point (code) | Frame discriminator | HEP |
+|---|---|---|---|---|
+| **Control plane** (this registry, §3.1–3.9; incl. band control + band JSON bodies) | **JSON** body in the 5-frame envelope `[identity, 'C', msg_type, correlation_id, body]` | `WireEnvelope` (`wire_envelope.cpp`) | Frame-1 marker byte `kFrameTypeControl = 'C'` — **single value today**; parser rejects anything else (`ParseError::frame_type_marker`) | HEP-CORE-0046 (envelope), -0007/-0030 (bodies) |
+| **Typed data plane** — ZMQ data queue **and** inbox | **MessagePack** `fixarray[5] = [magic, schema_tag, seq, payload, checksum]` | **`wire_detail` in `src/include/utils/zmq_wire_helpers.hpp`** (`pack_frame` / `unpack_payload`) — the **only** msgpack (de)coder in the tree; `hub::ZmqQueue` and `hub::InboxQueue` both call it | `magic = 0x51484C50 ('PLHQ')` + `schema_tag` (8-byte BLAKE2b slice, or zeros if unset) | HEP-CORE-0002 §7.1 (queue), -0027 (inbox) |
+| **SHM data plane** | raw slot bytes (no msgpack/JSON) | `DataBlock` (`data_block.cpp`) | SHM header magic | HEP-CORE-0002 §3 |
+| **SHM attach handshake** | binary frames + `SCM_RIGHTS` | `attach_protocol.cpp` / `shm_capability_channel.cpp` | fixed binary frame layout | HEP-CORE-0041/-0044/-0045 |
+
+**Design intent — and the extension points:**
+
+- **msgpack is centralized, not scattered.** All MessagePack encoding/decoding is
+  in `wire_detail` (`zmq_wire_helpers.hpp`); the data queue and the inbox are two
+  *use cases* of that one core, not two copies.  A new typed-data **format or
+  version** is added there — extend the header (`magic` version bump or a marker
+  in/alongside `schema_tag`) and its `pack_frame`/`unpack_payload` — and because
+  both queues share the core, one change covers data **and** inbox.  Nothing
+  bypasses it.
+- **The control plane grows via typed body classes**, not new encodings: add an
+  `XxxReqBody`/`XxxAckBody` under the JSON envelope (HEP-CORE-0046 §14.3), not a
+  new wire format.
+- **Do NOT confuse the two discriminators.** The Frame-1 `'C'` marker gates the
+  **JSON control** envelope; it is **not** the msgpack selector.  The msgpack
+  selector is the `magic`/`schema_tag` header inside `wire_detail`.  Today each is
+  effectively single-valued (`'C'`; `'PLHQ'`), i.e. one format per surface — the
+  discriminator fields exist as guards and forward-compatible extension points,
+  and a second value must be added at the surface's single entry point above.
+
+- **⚠ Known partial bypass — federation (to be cleaned up in the federation
+  redesign).** The msgpack surface has no bypass, but the JSON control surface
+  has one: the broker↔broker federation handshake (`HUB_PEER_HELLO` /
+  `HUB_PEER_BYE`, `broker_service.cpp:1095`, `:1338`) **hand-rolls** its frames
+  with raw `socket.send(kFrameTypeControl…)` instead of
+  `WireEnvelope::build_router_send`, and uses a **divergent layout** —
+  `['C', msg_type, body]` (3 frames, no `correlation_id`) vs the standard
+  `['C', msg_type, correlation_id, body]`. So federation is a second, drifting
+  copy of the control format. This is deferred to the federation redesign
+  (route `HUB_PEER_*`/relay through `WireEnvelope`); see `MESSAGEHUB_TODO.md`.
+
 ### 3.1 Registration & channel lifecycle
 
 > **Registration is channel creation.**  There is no dedicated

@@ -3783,11 +3783,12 @@ every presence's registration payload, so any hub the role
 participates in can answer `ROLE_INFO_REQ` with the same endpoint
 (see HEP-CORE-0027 §4.1 + §4.5).
 
-The receiver-as-authority schema model (HEP-CORE-0034 §11.4) is
-unaffected: the inbox schema record lives under
-`(role_uid, "inbox")` in `HubState.schemas`, with the same hash
-across hubs because every advertisement carries the same canonical
-schema bytes.
+The receiver-as-authority inbox model is unaffected: the inbox schema
+is advertised (as JSON) in every presence's registration payload and
+answered via `ROLE_INFO_REQ`, so any hub the role participates in
+returns the same inbox schema.  (The inbox schema is NOT a
+`HubState.schemas` registry record — HEP-CORE-0034 §11.4, HEP-CORE-0027
+§4.)
 
 ### 19.6 Hub-dead detection
 

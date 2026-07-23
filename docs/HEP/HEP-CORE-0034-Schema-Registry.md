@@ -21,7 +21,7 @@ The table below names the files; the binding rules live in §2.4.
 | `src/include/utils/schema_blds.hpp` | L3 (public) | HEP-0002 BLDS string generation, `SchemaRegistry<T>` template traits, `SchemaInfo::hash` (SHM-header form, **not** registry form — §2.4 I6) |
 | `src/include/utils/schema_def.hpp` | L3 (public) | `SchemaDef`, `SchemaLayoutDef`, `SchemaEntry` — file-record types |
 | `src/include/utils/schema_field_layout.hpp` | L3 (public) | `compute_field_layout()` — packing-aware field offsets |
-| `src/include/utils/schema_utils.hpp` | L3 (public) | HEP-0034 wire form: `canonical_fields_str`, `compute_canonical_hash_from_wire`, `to_hub_schema_record` (the only sanctioned bridge into the registry — §2.4 I2), `WireSchemaFields` + `apply_*_schema_fields` |
+| `src/include/utils/schema_utils.hpp` | L3 (public) | HEP-0034 two-zone API: `compute_zone_hash`, `compute_fingerprint_from_wire`, `make_schema_record` (THE builder), `schema_records_equivalent`, `verify_request_fingerprint`, `canonical_fields_str`, `to_hub_schema_record` (routes to the builder), `WireSchemaFields` + `apply_*_schema_fields`. (`compute_schema_hash` here is the separate Job-1 data-plane tag.) |
 | `src/include/utils/schema_loader.hpp` | L3 (public) | Stateless parsers — `load_from_file`, `load_from_string`, `load_all_from_dirs`, `default_search_dirs`. No class state, no maps, no caches (§2.4 I5). Renamed from `schema_library.hpp` by Phase 4. |
 | `src/utils/schema/schema_loader.cpp` | impl | Parser implementation |
 | `src/include/utils/hub_state.hpp` | L3 (public) | `SchemaRecord`, `schemas` map; sole runtime authority (§2.4 I1+I3+I4) |
@@ -46,7 +46,7 @@ pure translator:
 | Type | Namespace | Members | Purpose |
 |------|-----------|---------|---------|
 | `SchemaFieldDef` | `pylabhub::schema` | `name`, `type` (string), `count`, `unit`, `description` | File-form: parsed from a JSON schema file.  Carries optional `unit` / `description` metadata for documentation and tooling. |
-| `FieldDef` | `pylabhub::hub` | `name`, `type_str`, `count`, `length` | Runtime form: consumed by queues (ZmqQueue, InboxQueue) and the canonical-form helpers (`canonical_fields_str`, `compute_canonical_hash_from_wire`). Carries `length` for variable-width types (`string`, `bytes`); `unit`/`description` are dropped because the runtime path does not need them. |
+| `FieldDef` | `pylabhub::hub` | `name`, `type_str`, `count`, `length` | Runtime form: consumed by queues (ZmqQueue, InboxQueue) and the canonical-form helpers (`canonical_fields_str`, `compute_fingerprint_from_wire`). Carries `length` for variable-width types (`string`, `bytes`); `unit`/`description` are dropped because the runtime path does not need them. |
 
 The translator is `schema_entry_to_spec(SchemaLayoutDef) → SchemaSpec`
 in `src/include/utils/schema_utils.hpp`.  It maps the JSON-form `"char"`
@@ -89,10 +89,13 @@ and "who is authoritative on disagreement?".
 
 ### 2.2 Hash + packing is the fingerprint
 
-The fingerprint of a schema is `BLAKE2b-256(canonical(fields) || packing)`.
-Two schemas have the same memory layout if and only if their fingerprints are
-equal. This corrects the HEP-0016-era hash, which omitted packing and could
-collide unrelated layouts.
+A schema describes ONE protocol built from up to two zones (datablock +
+flexzone). Its fingerprint is the 64-byte value `datablock_half ‖ flexzone_half`,
+each half `BLAKE2b-256(zone_blds || "|pack:" || zone_packing)`; an absent zone's
+half is all-zero (§6.3). Two schemas have the same layout iff their 64-byte
+fingerprints are equal — a single compare that covers both zones (absent matches
+absent). This corrects the HEP-0016-era hash, which omitted packing and folded
+the two zones into one hash (losing the flexzone from the record).
 
 ### 2.3 Citation is an ownership claim
 
@@ -133,8 +136,10 @@ flowchart TB
     end
 
     subgraph XLATE["schema_utils (pure helpers — no state)"]
-        T1["to_hub_schema_record(SchemaEntry) → SchemaRecord"]
-        T2["compute_canonical_hash_from_wire(...)"]
+        T0["compute_zone_hash(blds, packing) → 32-byte half"]
+        T2["compute_fingerprint_from_wire(db, fz) → 64-byte db‖fz"]
+        T1["make_schema_record(owner,id,db,fz) → SchemaRecord<br/>(THE single builder; to_hub_schema_record routes here)"]
+        T0 --> T2 --> T1
     end
 
     subgraph AUTH["Runtime authority (HEP-0033 §G2)"]
@@ -162,24 +167,23 @@ flowchart TB
    mutator); schemas are not exempt.
 
 2. **Sanctioned record-construction sources** *(I2)* — every `SchemaRecord`
-   reaches `HubState` via `_on_schema_registered` (I1).  The record itself
-   may be constructed in exactly two sanctioned ways:
-   - **From a parsed JSON file** — must go through
-     `to_hub_schema_record(SchemaEntry)`, which produces the wire-form
-     canonical hash via `compute_canonical_hash_from_wire`.  This is the
-     hub-globals path (`load_hub_globals_` at broker startup).
-   - **From wire fields on REG_REQ** — `handle_reg_req` (paths B/C) and
-     the inbox path-A handler read `schema_id` / `schema_blds` /
-     `schema_packing` / `schema_hash` (or the `inbox_*` equivalents) from
-     the incoming JSON and construct a `SchemaRecord` inline.  The
-     broker's Stage-2 verification (`compute_canonical_hash_from_wire`
-     vs claimed `schema_hash`) runs before the record is forwarded to
-     the mutator, so the canonical-form rule (I6) is enforced.
+   reaches `HubState` via `_on_schema_registered` (I1), and every record is
+   built by the single two-zone builder `make_schema_record(...)` (→
+   `compute_fingerprint_from_wire`).  There are exactly two callers of the
+   builder:
+   - **From a parsed JSON file** — `to_hub_schema_record(SchemaEntry)` routes
+     through `make_schema_record`.  This is the hub-globals path
+     (`load_hub_globals_` at broker startup).
+   - **From wire fields on REG_REQ** — `handle_reg_req` (paths B/C) calls
+     `make_schema_record` from `schema_id` / `schema_blds` / `schema_packing`
+     / `flexzone_blds` / `flexzone_packing`.  The broker's Stage-2
+     self-consistency check (`verify_request_fingerprint` vs the claimed
+     128-hex `schema_hash`) runs first, so the canonical-form rule (I6) is
+     enforced before the record is forwarded to the mutator.
 
-   No third path exists; no module may bypass the mutator.  Both
-   sanctioned paths use the same canonical-form algorithm
-   (`compute_canonical_hash_from_wire` for slot/flexzone schemas;
-   `compute_inbox_schema_tag` form for inbox schemas — see §11.4).
+   No third path exists; no module may bypass the builder or the mutator.
+   (Inbox message layouts are NOT registry records and never call the builder
+   — see §11.4.)
 
 3. **Single reader** *(I3)* — code that needs to look up a schema by
    `(owner, id)` calls `HubState::schema(owner, id)`. There is no parallel
@@ -196,11 +200,11 @@ flowchart TB
    registry inline — that duplication is the defect this rule forbids. Two
    companion rules keep the surface single:
    - **Request self-consistency is a separate pre-check** —
-     `verify_request_fingerprint` (in `schema_utils`) recomputes the wire hash
-     and compares it to the caller's *own* claimed hash
-     (`FINGERPRINT_INCONSISTENT`). It is the ONLY place a handler calls
-     `compute_canonical_hash_from_wire`; it runs before the validator and is not
-     itself a citation check.
+     `verify_request_fingerprint` (in `schema_utils`) recomputes the 64-byte
+     `db‖fz` fingerprint from the wire fields and compares it to the caller's
+     *own* claimed 128-hex hash (`FINGERPRINT_INCONSISTENT`). It is the ONLY
+     place a handler calls `compute_fingerprint_from_wire`; it runs before the
+     validator and is not itself a citation check.
    - **The `_on_producer_added` re-check is a tripwire, not a second validator**
      — after the front-door validator accepts, the state-mutation step
      re-asserts the schema invariants and refuses to mutate on mismatch. In
@@ -221,10 +225,14 @@ flowchart TB
      **SHM-header self-description** so a memory-mapped block can be
      introspected without external metadata. Internal to a single process
      image.
-   - **HEP-0034 wire form** (`slot:name:type:count:length|...|pack:...|fz:...|fzpack:...`),
-     computed by `compute_canonical_hash_from_wire()`, populates
-     `SchemaRecord::hash`. Used by the **cross-process schema registry** for
-     citation, adoption, and Stage-2 verification.
+   - **HEP-0034 wire form** — the 64-byte two-zone fingerprint
+     `datablock_half ‖ flexzone_half`, each half
+     `BLAKE2b-256(zone_blds || "|pack:" || zone_packing)` with NO
+     `slot:`/`fz:` prefix (§6.3), computed by `compute_fingerprint_from_wire()`
+     and populating `SchemaRecord::hash` (128 hex on the wire). Used by the
+     **cross-process schema registry** for citation, adoption, and Stage-2
+     verification. (The pre-2026-07 folded `slot:…|fz:…` form is retired for
+     the registry; it survives only as the Job-1 data-plane `schema_tag`.)
 
    These two hashes are **different by design** for the same logical schema.
    Cross-comparison is a category error: it cannot succeed for a non-trivial
@@ -280,13 +288,14 @@ flowchart TB
 
 | Term | Definition |
 |------|-----------|
-| **Schema record** | Hub-side entry: `(owner_uid, schema_id) → {hash, packing, blds, registered_at}` |
+| **Schema record** | Hub-side entry: `(owner_uid, schema_id) → {hash(64B db‖fz), packing, blds, flexzone_packing, flexzone_blds, registered_at}` — one record, two un-merged zones (§4.1) |
 | **Owner** | Either a registered role uid (`prod.<name>.uid<8hex>`) or the literal `hub` |
 | **Public / global schema** | Schema record whose owner is the hub (loaded from `<hub_dir>/schemas/`) |
 | **Private schema** | Schema record whose owner is a producer role |
 | **Citation** | Reference of the form `(owner_uid, schema_id)` carried in a registration message |
 | **Adoption** | A producer chooses a hub-global as its channel schema, by citing `(hub, id)` in REG_REQ |
-| **Fingerprint** | `BLAKE2b-256` over canonical field list + packing — bytewise-equal layout iff fingerprint equal |
+| **Fingerprint** | 64-byte `datablock_half ‖ flexzone_half`; each half `BLAKE2b-256(zone_blds \|\| "\|pack:" \|\| packing)`, absent zone → zero half (§6.3). Equal fingerprints ⇔ both zones' layouts match. |
+| **Data-plane `schema_tag`** | Separate Job-1 mechanism: first 8 bytes of the **folded** whole-protocol hash, stamped per data message for drift detection. NOT the registry fingerprint. |
 | **BLDS** | Basic Layout Description String — canonical text form of the field list (from HEP-CORE-0002 §11) |
 
 ---
@@ -300,16 +309,27 @@ namespace pylabhub::schema {
 
 struct SchemaRecord
 {
-    std::string                  owner_uid;     // "hub" or "prod.<name>.uid<8hex>"
-    std::string                  schema_id;     // "frame", "lab.sensors.temperature.raw@1", ...
-    std::array<uint8_t, 32>      hash;          // BLAKE2b-256(canonical || packing)
-    std::string                  packing;       // "aligned" | "packed"
-    std::string                  blds;          // canonical BLDS text (for reconstruction)
+    std::string                  owner_uid;        // "hub" or "prod.<name>.uid<8hex>"
+    std::string                  schema_id;        // "frame", "lab.sensors.temperature.raw@1", ...
+    std::array<uint8_t, 64>      hash;             // two-zone fingerprint: datablock_half ‖ flexzone_half
+    std::string                  packing;          // datablock "aligned" | "packed" ("" = absent)
+    std::string                  blds;             // datablock canonical BLDS ("" = absent)
+    std::string                  flexzone_packing; // flexzone packing ("" = absent)
+    std::string                  flexzone_blds;    // flexzone canonical BLDS ("" = absent)
     std::chrono::system_clock::time_point registered_at;
+
+    bool has_datablock() const { return !blds.empty(); }
+    bool has_flexzone()  const { return !flexzone_blds.empty(); }
 };
 
 } // namespace pylabhub::schema
 ```
+
+A named schema defines ONE channel data protocol built from up to TWO zones —
+the **datablock** (slot) and the **flexzone** — either of which may be absent
+(but at least one is always present).  Both zones live un-merged in one record;
+their content (`blds`/`packing`) is stored per zone, and the single 64-byte
+`hash` carries both zones' fingerprints (§6.3).
 
 ### 4.2 Stored in `HubState`
 
@@ -339,9 +359,12 @@ The hub guarantees referential integrity at mutation time (a channel's
 `schema_owner` is always either `hub` or the producer of that channel).
 
 **Denormalized cache fields.** `ChannelEntry` also carries `schema_hash`
-(hex 64), `schema_blds` (canonical wire form), and `schema_packing` directly
-on the channel.  These are **denormalized cache copies** of values that
-appear in the referenced `SchemaRecord`; they exist for two reasons:
+(hex 128 — the 64-byte two-zone `datablock_half ‖ flexzone_half` fingerprint),
+`schema_blds` (datablock canonical wire form), and `flexzone_blds` (flexzone
+canonical wire form) directly on the channel.  Packing is not a separate
+channel field — it folds into `schema_hash`.  These are **denormalized cache
+copies** of values that appear in the referenced `SchemaRecord`; they exist for
+two reasons:
 
 1. **Channel-mismatch gate** (HEP-0007 Cat-1 invariant) — re-registration
    of an existing channel name with a different schema_hash is rejected
@@ -463,15 +486,52 @@ fingerprint.)
 
 ### 6.3 Fingerprint canonical form
 
-```
-canonical(slot, fz)
-  = "slot:" + canon_fields(slot.fields) + "|pack:" + slot.packing
-  + ( "|fz:"  + canon_fields(fz.fields)  + "|fzpack:" + fz.packing  if fz present )
+**Two jobs, do not conflate.** "Schema hash" names two mechanisms in different
+layers:
 
-canon_fields(fields) = "name:type:count:length" joined with "|"
+- **Job 1 — data-plane per-message `schema_tag`** (HEP-0002 / `hub_zmq_queue`).
+  A **folded** whole-protocol hash whose first 8 bytes are stamped on every data
+  message as a drift tripwire. A message is valid only if BOTH zones agree, so it
+  stays folded. This is NOT the registry fingerprint and is out of scope here.
+- **Job 2 — control-plane registry / citation fingerprint** (this section). A
+  **64-byte** value `datablock_half ‖ flexzone_half`, stored in `SchemaRecord`,
+  carried on the wire as `schema_hash` (128 hex), matched at registration/join,
+  returned by `SCHEMA_ACK`.
 
-fingerprint = BLAKE2b-256(canonical_bytes)
+The Job-2 fingerprint is computed **per zone**, then concatenated:
+
 ```
+zone_hash(blds, packing) = BLAKE2b-256( blds || "|pack:" || packing )   // 32 bytes
+                         = 0…0 (32 zero bytes)  if the zone is absent (blds empty)
+
+fingerprint = zone_hash(datablock.blds, datablock.packing)    // bytes  0..31
+            ‖ zone_hash(flexzone.blds,  flexzone.packing)     // bytes 32..63   (64 bytes)
+
+blds = canon_fields(fields) = "name:type:count:length" joined with "|"
+```
+
+Properties:
+
+- **Per zone, no zone prefix.** Each half hashes only that zone's own fields —
+  the same field layout hashes identically whether it lives in the datablock or
+  the flexzone. Position (which half) is what distinguishes them.
+- **Absent = all-zero half.** A real zone hashing to all-zero is a 1-in-2²⁵⁶
+  impossibility, so a zero half unambiguously means "absent." Datablock-only =
+  `H(db)‖0`; flexzone-only = `0‖H(fz)`; both = `H(db)‖H(fz)`.
+- **Never all-zero.** At least one zone is always present. This is enforced in
+  depth: the wire requires a datablock when `schema_id` is set (`MISSING_BLDS`),
+  so an all-zero fingerprint is structurally unreachable there; `make_schema_record`
+  asserts it as a contract guard; and `_on_schema_registered` rejects a record
+  carrying neither zone (`SCHEMA_FORBIDDEN_OWNER`).
+- **One compare covers both zones.** Citation and idempotency compare the full 64
+  bytes in a single equality check — a flexzone mismatch cannot silently slip
+  through (absent matches absent; present matches present).
+- **Packing folds into each half**, so a packing difference changes the
+  fingerprint. Records store no separate packing field for matching.
+
+The **folded** form that earlier revisions used for Job 2 (`"slot:" + … "|fz:" +
+…`) is **retired** for the registry/citation fingerprint; it survives only as the
+Job-1 data-plane `schema_tag`.
 
 **Type token convention:** `type` is the **JSON type name** as it appears in the
 schema file's `"type"` field — `"float32"`, `"float64"`, `"int8"`, `"int16"`,
@@ -487,16 +547,47 @@ recomputes from its globals at startup.
 byte length declared in the schema (HEP-0002 §11.1). `count` is the array
 arity (`1` for scalar, `>1` for array; HEP-0002 §11.2).
 
-Worked example for `[{"name":"v","type":"float32"}]` with `packing="aligned"`:
+Worked example — datablock `[{"name":"v","type":"float32"}]`, `packing="aligned"`,
+no flexzone:
 
 ```
-canon_fields = "v:float32:1:0"
-canonical    = "slot:v:float32:1:0|pack:aligned"
-fingerprint  = BLAKE2b-256("slot:v:float32:1:0|pack:aligned")
+canon_fields   = "v:float32:1:0"
+datablock_half = BLAKE2b-256("v:float32:1:0|pack:aligned")   // 32 bytes
+flexzone_half  = 0…0                                         // absent → 32 zero bytes
+fingerprint    = datablock_half ‖ flexzone_half              // 64 bytes; 128 hex on the wire
 ```
 
-This corrects the HEP-0016 fingerprint, which omitted both packing strings.
-Migration: see §15 Phase 1.
+The same layout in the flexzone instead (datablock absent) yields
+`0…0 ‖ BLAKE2b-256("v:float32:1:0|pack:aligned")` — same half value, other
+position. Migration: see §15 Phase 1.
+
+**Byte layout for the three cases** (an absent zone's 32-byte half is all-zero;
+the full 64 bytes are never all-zero):
+
+| Case | bytes 0–31 (datablock half) | bytes 32–63 (flexzone half) |
+|---|---|---|
+| both zones | `compute_zone_hash(db_blds, db_packing)` | `compute_zone_hash(fz_blds, fz_packing)` |
+| datablock-only | `compute_zone_hash(db_blds, db_packing)` | `00…00` |
+| flexzone-only | `00…00` | `compute_zone_hash(fz_blds, fz_packing)` |
+
+**Construction (built once by `make_schema_record` / `compute_fingerprint_from_wire`):**
+
+```mermaid
+flowchart LR
+    DB["db_blds + db_packing"] --> ZD["compute_zone_hash → 32B<br/>(or 00…00 if db_blds empty)"]
+    FZ["fz_blds + fz_packing"] --> ZF["compute_zone_hash → 32B<br/>(or 00…00 if fz_blds empty)"]
+    ZD --> CAT["concatenate: db_half ‖ fz_half"]
+    ZF --> CAT
+    CAT --> FP["64-byte fingerprint<br/>(SchemaRecord.hash; 128 hex on the wire)"]
+    FP --> ASSERT{"all-zero?"}
+    ASSERT -->|yes → reject| ERR["no zone present — invalid"]
+    ASSERT -->|no| OK["valid record"]
+```
+
+Because it is one contiguous value, a single `fingerprint_a == fingerprint_b`
+compare covers BOTH zones at once — a flexzone mismatch can never slip past a
+datablock-only check (§9). The validator names the failing half (`datablock`,
+`flexzone`, or `datablock+flexzone`) in its rejection detail.
 
 ---
 
@@ -597,7 +688,7 @@ public:
         const std::unordered_set<std::string>& channel_producer_uids,
         const std::string& cited_owner,
         const std::string& cited_id,
-        const std::array<uint8_t, 32>& expected_hash,
+        const std::array<uint8_t, 64>& expected_hash,  // two-zone fingerprint
         const std::string& expected_packing);
 };
 ```
@@ -741,6 +832,39 @@ publishes, then sets `ChannelEntry.schema_owner=hub`. Subsequent
 consumer/processor citations of `(hub, schema_id)` are accepted by §9.1
 clause (ii).
 
+**Where each helper runs on REG_REQ (paths B/C):**
+
+```mermaid
+flowchart TB
+    W["REG_REQ wire fields:<br/>schema_id, schema_blds, schema_packing,<br/>flexzone_blds, flexzone_packing, schema_hash (128 hex)"]
+    W --> SC["verify_request_fingerprint(db, fz, claimed 128-hex)<br/>self-consistency: does the structure hash to the claim?"]
+    SC -->|inconsistent| E1["FINGERPRINT_INCONSISTENT"]
+    SC -->|consistent| BR{"schema_owner?"}
+    BR -->|self / empty → Path B| PB["make_schema_record(role_uid, id, db, fz)<br/>→ _on_schema_registered (single mutator)"]
+    BR -->|hub → Path C| PC["_validate_schema_citation<br/>(check registry: (hub,id) exists + fingerprint matches)"]
+    PC -->|ok| SET["ChannelEntry.schema_owner = hub"]
+    PC -->|fail| E2["SCHEMA_UNKNOWN / FINGERPRINT_INCONSISTENT"]
+    PB --> CH["channel invariants set<br/>(ChannelSchemaInvariants → ChannelEntry)"]
+    SET --> CH
+    CH --> J["later joiners (2nd producer / consumer):<br/>_validate_schema_citation vs the channel's stored 64-byte hash"]
+```
+
+**Worked example — a flexzone mismatch is caught by the single 64-byte compare.**
+Channel established with datablock `ts:float64:1:0` + flexzone `cal:float64:8:0`
+(both aligned). A joiner cites the same datablock but a different flexzone
+`cal:float64:16:0`:
+
+```
+channel fp = H("ts:float64:1:0|pack:aligned") ‖ H("cal:float64:8:0|pack:aligned")
+joiner  fp = H("ts:float64:1:0|pack:aligned") ‖ H("cal:float64:16:0|pack:aligned")
+             └── bytes 0–31 identical ──┘        └── bytes 32–63 differ ──┘
+```
+
+`_validate_schema_citation` compares the full 64 bytes → not equal →
+`kFingerprintMismatch`, detail `"schema fingerprint mismatch (flexzone zone): …"`.
+The datablock-only match does **not** admit the joiner — exactly the silent
+flexzone bypass the single-value fingerprint prevents.
+
 ### 9.3 Why hash equality is not enough
 
 Bytewise compatibility (equal fingerprint) is a **necessary** condition for a
@@ -810,23 +934,29 @@ writer lock (concurrent admin-plane readers) and still checks `data_transport`
 Schema fields:
 
 ```
-schema_id      : string   ""  = anonymous; non-empty triggers path B / C
-schema_hash    : hex(32)  required when schema_id is non-empty
-schema_blds    : string   required when schema_id is non-empty
-                          (canonical wire form — see below)
-schema_packing : string   required when schema_id is non-empty;
-                          one of "aligned" | "packed"
-schema_owner   : string   "" = self (path B) | "hub" (path C; Phase 4+)
+schema_id        : string   ""  = anonymous; non-empty triggers path B / C
+schema_hash      : hex(128) 128 hex chars (64 bytes) — the two-zone fingerprint
+                            datablock_half ‖ flexzone_half; required when
+                            schema_id is non-empty
+schema_blds      : string   datablock canonical wire form — required when
+                            schema_id is non-empty (see below)
+schema_packing   : string   datablock packing "aligned" | "packed" — required
+                            when schema_id is non-empty
+flexzone_blds    : string   flexzone canonical wire form ("" = no flexzone)
+flexzone_packing : string   flexzone packing ("" = no flexzone)
+schema_owner     : string   "" = self (path B) | "hub" (path C; Phase 4+)
 ```
 
-**Wire-form `schema_blds`** is the **canonical fields string** of the slot
-schema (HEP-CORE-0034 §6.3): `name:type:count:length` joined by `|`,
-where `type` is the **JSON type name** (e.g. `"float32"`), NOT the
-HEP-0002 BLDS token form (`"f32"`).  Example:
-`ts:float64:1:0|value:float32:1:0`.  The broker recomputes
-`BLAKE2b-256(canonical(blds, packing))` and verifies it equals
-`schema_hash` (Stage-2 fingerprint check) — a mismatch returns
-`FINGERPRINT_INCONSISTENT`.
+**Wire-form `schema_blds`** (and `flexzone_blds`) is the **canonical fields
+string** of that zone (HEP-CORE-0034 §6.3): `name:type:count:length` joined by
+`|`, where `type` is the **JSON type name** (e.g. `"float32"`), NOT the HEP-0002
+BLDS token form (`"f32"`).  Example: `ts:float64:1:0|value:float32:1:0`.  The
+broker recomputes the 64-byte fingerprint `zone_hash(schema_blds, schema_packing)
+‖ zone_hash(flexzone_blds, flexzone_packing)` and verifies it equals the claimed
+128-hex `schema_hash` (Stage-2 fingerprint check) — a mismatch returns
+`FINGERPRINT_INCONSISTENT`.  Today a REG_REQ with a `schema_id` requires a
+datablock (`schema_blds` → `MISSING_BLDS`), which guarantees a non-zero
+fingerprint; flexzone-only records reach the registry via hub-globals.
 
 Path resolution:
 - `schema_id=""` → anonymous channel; the channel's `schema_hash` /
@@ -853,9 +983,10 @@ Two citation modes per HEP-CORE-0034 §10.3:
 All consumer-side wire fields carry the `expected_schema_*`
 or `expected_flexzone_*` prefix to mirror the producer's
 `schema_*` / `flexzone_*` fields (Phase 4d naming alignment,
-2026-04-28).  The form `expected_blds` / `expected_packing` (no
-`schema_` infix) was used in pre-Phase-4d code and is no longer
-accepted.
+2026-04-28).  `expected_schema_hash` is the same 128-hex two-zone
+fingerprint as the producer's `schema_hash` (§6.3).  The form
+`expected_blds` / `expected_packing` (no `schema_` infix) was used in
+pre-Phase-4d code and is no longer accepted.
 
 A request with `expected_schema_id` but no `expected_schema_hash` is
 rejected with `MISSING_HASH_FOR_NAMED_CITATION`.  A request with no
@@ -872,17 +1003,20 @@ Owner+id keying:
 ```
 SCHEMA_REQ  { owner: string, schema_id: string }
 SCHEMA_ACK  { owner: string, schema_id: string,
-              schema_hash: hex(32), packing: string, blds: string }
+              schema_hash: hex(128),          // 64 bytes — datablock_half ‖ flexzone_half
+              packing: string, blds: string,               // datablock ("" = absent)
+              flexzone_packing: string, flexzone_blds: string }  // flexzone ("" = absent)
 ```
 
-Allows any participant (post-handshake) to fetch a record by owner+id.
-Unknown record → `SCHEMA_UNKNOWN`.
+Returns the WHOLE record — both zones, un-merged.  Either zone's fields are
+empty when that zone is absent.  Allows any participant (post-handshake) to
+fetch a record by owner+id.  Unknown record → `SCHEMA_UNKNOWN`.
 
 **Legacy form** (HEP-CORE-0016 era) is retained: `SCHEMA_REQ
 { channel_name }` returns `{ channel_name, schema_id, schema_owner,
-schema_hash, blds }` — note the legacy form does **not** include the
-`packing` field (it was inferred from `aligned` pre-Phase-1).
-New clients should prefer the owner+id form.
+schema_hash, blds, flexzone_blds }` — the legacy form carries no separate
+`packing` (it folds into `schema_hash`).  New clients should prefer the
+owner+id form.
 
 ### 10.4 Error codes
 
@@ -896,7 +1030,7 @@ they are **not** a separate wire frame.
 | `MISSING_BLDS`                             | REG_REQ / CONSUMER_REG_REQ           | `schema_id` set but `schema_blds` missing (REG); or partial structure on consumer named-citation defense-in-depth |
 | `MISSING_HASH`                             | REG_REQ                              | `schema_id` set but `schema_hash` missing |
 | `MISSING_ROLE_UID`                         | REG_REQ                              | `schema_id` set but no `role_uid` for owner attribution |
-| `FINGERPRINT_INCONSISTENT`                 | REG_REQ / CONSUMER_REG_REQ           | producer's claimed `schema_hash` does not equal `BLAKE2b(canonical(blds) || "\|pack:" + packing)`; or consumer-side equivalent |
+| `FINGERPRINT_INCONSISTENT`                 | REG_REQ / CONSUMER_REG_REQ           | producer's claimed 128-hex `schema_hash` does not equal the recomputed two-zone fingerprint `zone_hash(schema_blds,schema_packing) ‖ zone_hash(flexzone_blds,flexzone_packing)`; or consumer-side equivalent |
 | `SCHEMA_HASH_MISMATCH_SELF`                | REG_REQ                              | producer re-registers own `(owner, id)` with different fingerprint |
 | `SCHEMA_FORBIDDEN_OWNER`                   | REG_REQ                              | producer attempts to register under another owner uid |
 | `SCHEMA_MISMATCH`                          | REG_REQ                              | producer joins a channel whose stored schema differs on any step-2 axis — **fingerprint, id, or owner** (producer-side "does not match channel"). The umbrella producer code; the `error_message` names the exact axis that failed (e.g. `schema id mismatch: channel id=… cited id=…`, `schema owner mismatch: …`). |
@@ -960,89 +1094,29 @@ Three counters added to `BrokerCounters`:
 | `schema_evicted_total`           | each record removed by `_on_schemas_evicted_for_owner` |
 | `schema_citation_rejected_total` | `_validate_schema_citation` returns non-ok |
 
-### 11.4 Inbox schemas (HEP-CORE-0027 integration)
+### 11.4 Inbox schemas are NOT registry records (see HEP-CORE-0027)
 
-The inbox messaging protocol (HEP-CORE-0027) is receiver-authoritative — the
-inbox owner provides schema, packing, and checksum policy at REG_REQ time, and
-senders adopt these values via `ROLE_INFO_REQ` (HEP-0027 §4.1, line 132-133;
-checksum policy explicitly receiver-dictated, §4.1 step 7-8). This maps
-directly onto HEP-0034's owner model.
+An inbox schema is a role's **mailbox message layout**, not a channel
+datablock/flexzone data schema. It does **not** live in `HubState.schemas` and
+is **not** reachable via `SCHEMA_REQ`. The registry (`HubState.schemas`) holds
+channel schemas only — every record in it is created by `make_schema_record`.
 
-**Record key.** Inbox schemas live in `HubState.schemas` under
-`(receiver_uid, "inbox")`. The schema_id is the literal string `"inbox"`; one
-inbox per role uid. A role that owns both a producer-channel schema and an
-inbox schema gets two records: `(role_uid, "frame")` and `(role_uid, "inbox")`
-— no collision (§8 namespace-by-owner).
+The inbox schema flows entirely through HEP-CORE-0027:
 
-**Lifecycle.** Identical to private producer schemas. Created from the
-receiver's REG_REQ when the inbox-config block is present and non-empty;
-cascade-evicted from `_on_role_deregistered` along with the role's other
-schema records, in the same mutator section. No special path.
+- The receiver declares `inbox_schema` in config, builds a typed `InboxQueue`
+  at startup (which validates the schema locally,
+  `hub_inbox_queue.cpp::validate_inbox_schema`), and advertises
+  `inbox_schema_json` / `inbox_packing` / `inbox_endpoint` / `inbox_checksum` on
+  REG_REQ. The broker stores these on the `ProducerEntry` / `ConsumerEntry`.
+- A sender discovers them as **JSON** via `ROLE_INFO_REQ` → `ROLE_INFO_ACK`
+  (`inbox_schema` object), then builds an `InboxClient`. See HEP-CORE-0027
+  §"Inbox initiation & execution".
 
-**Citation by senders.** Senders cite via path A `(receiver_uid, "inbox")` in
-`CONSUMER_REG_REQ` / `PROC_REG_REQ` (or in any other message that establishes
-an inbox connection). The §9.1 invariant remains intact: senders are
-connecting to the inbox owner, so the cited owner equals the channel
-authority. Cross-citation — e.g., a sender citing role A's `inbox` while
-connecting to role B's inbox — is rejected with `cross_citation`.
-
-**Wire-protocol mapping.** The existing inbox fields in REG_REQ
-(`inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum` —
-HEP-0027 §4.1 line 140) carry the equivalent of schema_id=`"inbox"`, BLDS,
-packing, and checksum policy. Phase 3 implementation routes these fields
-through `_on_schema_registered({owner: receiver_uid, id: "inbox", ...})`
-inside the same handler that processes the rest of REG_REQ. The wire-format
-field names are retained for HEP-0027 compatibility; only the broker-side
-storage is unified into `HubState.schemas`.
-
-**Discovery.** HEP-0027's `ROLE_INFO_REQ` flow (§4.1 step 5) for fetching
-inbox metadata remains supported and is the recommended path for
-sender-side configuration. `SCHEMA_REQ(receiver_uid, "inbox")` is an
-equivalent lower-level fallback that returns just the schema record;
-`ROLE_INFO_REQ` additionally returns the endpoint and checksum policy.
-
-**Inbox canonical form.** Inbox tags use a **different canonical form**
-than slot/flexzone schemas (§6.3) — deliberately, because inbox messages
-are envelope-typed and carry no field names on the wire (the receiver
-already knows the schema by `(receiver_uid, "inbox")` lookup):
-
-```
-canon_inbox(fields) = "type:count:length;" per field, concatenated
-canonical_inbox     = canon_inbox(fields) + "|pack:" + packing
-fingerprint_inbox   = BLAKE2b-256(canonical_inbox)
-schema_tag          = fingerprint_inbox[0..8]   (first 8 bytes; runtime guard)
-```
-
-Worked example for `[{"name":"sender_uid","type":"uint64"},
-{"name":"timestamp","type":"float64"},{"name":"payload","type":"bytes","length":256}]`
-with `packing="aligned"`:
-
-```
-canon_inbox = "uint64:1:0;float64:1:0;bytes:1:256;"
-canonical   = "uint64:1:0;float64:1:0;bytes:1:256;|pack:aligned"
-fingerprint = BLAKE2b-256("uint64:1:0;float64:1:0;bytes:1:256;|pack:aligned")
-```
-
-Differences from the slot/flexzone canonical form (§6.3):
-
-| Aspect | Slot/flexzone (§6.3) | Inbox (§11.4) |
-|---|---|---|
-| Field-name component | included (`name:type:count:length`) | omitted (`type:count:length`) |
-| Field separator | `\|` | `;` |
-| Section prefix | `slot:` (and optional `\|fz:`) | none |
-| Wire envelope | named-field msgpack array | envelope-typed bin payload |
-| Tag length on wire | 32 bytes (in SchemaRecord) | 8 bytes (msgpack frame) |
-
-Both forms are computed via `BLAKE2b-256` and stored as
-`SchemaRecord.hash` for their respective records; the broker's REG_REQ
-inbox handler (`broker_service.cpp::handle_reg_req`) and
-`compute_inbox_schema_tag` (`hub_inbox_queue.cpp`) build identical
-canonical bytes so the 32-byte SchemaRecord.hash and the 8-byte wire
-schema_tag agree bytewise (`tag = hash[0..8]`).
-
-Implementations: `compute_inbox_schema_tag` in
-`src/utils/hub/hub_inbox_queue.cpp`; broker-side mirror in
-`src/utils/ipc/broker_service.cpp::handle_reg_req` (path-A inbox block).
+The broker's only inbox-schema action on REG_REQ is a fail-fast validity check
+on the advertised JSON (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`); it
+does not file a record. The data-plane per-message drift tag
+(`compute_inbox_schema_tag`, `hub_inbox_queue.cpp`) is a HEP-0027 concern, not
+a HEP-0034 registry fingerprint.
 
 ---
 
@@ -1266,13 +1340,12 @@ Sliced into two commits for review manageability:
   `{owner, schema_id, packing, blds, schema_hash}`.  Unknown record →
   SCHEMA_UNKNOWN.  Legacy `channel_name` form retained and now also
   surfaces `schema_owner`.
-- Inbox path-A integration (HEP-0034 §11.4): when REG_REQ carries
-  inbox metadata, the broker validates `inbox_packing`, parses
-  `inbox_schema_json`, computes the canonical form (matches
-  `compute_inbox_schema_tag` so `SchemaRecord.hash[0..7] == wire
-  schema_tag`), hashes BLAKE2b-256, and registers under
-  `(role_uid, "inbox")`.  Same outcome mapping as path B; new error
-  codes INBOX_SCHEMA_INVALID and INVALID_INBOX_PACKING.
+- Inbox schema validation (HEP-0027, NOT a registry record — §11.4):
+  when REG_REQ carries inbox metadata, the broker fail-fast validates
+  `inbox_packing` and parses `inbox_schema_json` (codes
+  INVALID_INBOX_PACKING / INBOX_SCHEMA_INVALID).  It does NOT file a
+  `HubState.schemas` record; the inbox schema is stored on the
+  Producer/Consumer entry and advertised as JSON via ROLE_INFO_REQ.
 - Defensive null-payload handling in `handle_schema_req` (DoS hardening
   surfaced by the new SCHEMA_REQ-Invalid test).
 
@@ -1303,7 +1376,7 @@ Sliced into three sub-phases for review manageability:
 - Added `to_hub_schema_record(SchemaEntry)` bridge helper that
   produces a `SchemaRecord` keyed under `(owner_uid="hub", schema_id)`,
   computing the wire-form canonical hash via
-  `compute_canonical_hash_from_wire(canonical_fields_str(slot_spec),
+  `compute_fingerprint_from_wire(canonical_fields_str(slot_spec),
   ...)`.  Critical: this is NOT the same hash as
   `SchemaEntry::slot_info.hash` — the SHM-header hash uses the
   HEP-0002 BLDS format (`name:tok[count];...`) while the wire/registry
@@ -1312,7 +1385,7 @@ Sliced into three sub-phases for review manageability:
   the stored record must use that form (§2.4 I6).
 - Folded in a Phase 3 follow-up bug fix surfaced while writing the
   helper: broker REG_REQ Stage-2 verification was passing only
-  `slot_blds` + `slot_packing` to `compute_canonical_hash_from_wire`,
+  `slot_blds` + `slot_packing` to `compute_fingerprint_from_wire`,
   so any producer with a flexzone would NACK
   `FINGERPRINT_INCONSISTENT`.  Broker now reads `flexzone_blds` +
   `flexzone_packing` from the wire and includes them in the
@@ -1526,7 +1599,7 @@ helpers for the same fields driven by struct types:
   selected via `expected_schema_id`.
 
 Both helpers are stateless wrappers over the existing
-`canonical_fields_str` + `compute_canonical_hash_from_wire` primitives
+`canonical_fields_str` + `compute_fingerprint_from_wire` primitives
 (§2.4 I5+I6); they consult no registry (§2.4 I3) and perform no
 client-side validation (§2.4 I4).
 
@@ -1564,7 +1637,7 @@ broker-side gates.  The end-to-end story is gated on Phase 4b's
 | HEP-CORE-0016 (Named Schema Registry) | **Superseded by this HEP.** |
 | HEP-CORE-0023 (Startup Coordination) | `_on_role_deregistered` cascade extended to schemas. State machine unchanged. |
 | HEP-CORE-0024 (Role Directory Service) | Role-side `<role_dir>/schemas/` is local cache only — see §13. |
-| HEP-CORE-0027 (Inbox Messaging) | Inbox schemas integrated as `(receiver_uid, "inbox")` records owned by the inbox receiver — see §11.4. Existing HEP-0027 wire fields retained; broker-side storage unified into `HubState.schemas`. |
+| HEP-CORE-0027 (Inbox Messaging) | Inbox message layouts are NOT schema-registry records (§11.4). They are stored on the Producer/Consumer entry and discovered as JSON via `ROLE_INFO_REQ`; the broker only fail-fast validates the advertised inbox JSON on REG_REQ. |
 | HEP-CORE-0030 (Band Messaging) | Band payloads are free-form JSON (HEP-0030 §1, §326, §413); no schema records, no HEP-0034 integration. |
 | HEP-CORE-0033 (Hub Character) | Schema records live in `HubState.schemas`. §G2 hub-as-mutator invariant covers schema mutations. §9 message-processing contract applies to schema messages. |
 

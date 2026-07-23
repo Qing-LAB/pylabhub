@@ -13,6 +13,7 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/schema_utils.hpp" // make_schema_record (HEP-CORE-0034 §6.3)
 #include "utils/logger.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
@@ -80,7 +81,7 @@ ChannelEntry make_channel(const std::string &name,
 {
     ChannelEntry e;
     e.name = name;
-    e.schema_hash = std::string(64, 'a');
+    e.schema_hash = std::string(128, 'a');
     // schema_version retired per C2 — version rides inside schema_id.
     // Test-helper channels default to `FanIn` (matches pre-migration
     // multi-producer test patterns).  Multi-consumer skeleton tests
@@ -1035,13 +1036,15 @@ namespace
 SchemaRecord make_schema_rec(std::string owner_uid, std::string schema_id,
                              std::string packing = "aligned", uint8_t seed = 0x11)
 {
-    SchemaRecord rec;
-    rec.owner_uid = std::move(owner_uid);
-    rec.schema_id = std::move(schema_id);
-    rec.packing = std::move(packing);
-    rec.blds = "v:f64;count:u32";
-    rec.hash.fill(seed);
-    return rec;
+    // Build via the production builder so the 64-byte fingerprint reflects
+    // blds + packing exactly as the broker computes it (HEP-CORE-0034 §6.3): a
+    // different `seed` varies the datablock fields (→ a different fingerprint),
+    // and a different `packing` also changes the fingerprint (it folds into the
+    // datablock half).  This keeps the test faithful to how records are really
+    // constructed — there is no "same hash, different packing" state to forge.
+    const std::string blds = "v:f64:1:0|seed:u8:" + std::to_string(seed) + ":0";
+    return pylabhub::hub::make_schema_record(std::move(owner_uid), std::move(schema_id), blds,
+                                             std::move(packing));
 }
 
 } // namespace
@@ -1302,7 +1305,7 @@ TEST(HubStateSchemas, ValidateCitation_FingerprintMismatch_Rejected)
     // Wrong fingerprint → mismatch (step 1, channel-hash compare).  Packing is
     // folded into the fingerprint, so a packing difference is a hash difference
     // — there is no separate "matching hash, wrong packing" state to test.
-    std::array<uint8_t, 32> wrong_hash;
+    std::array<uint8_t, 64> wrong_hash;
     wrong_hash.fill(0x99);
     in.expected_hash = wrong_hash;
     auto out_h = HubStateTestAccess::validate_schema_citation(s, in);
@@ -1321,7 +1324,7 @@ TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
     // Named channel owned by a channel producer, but no registry record exists
     // under (owner, id) → unknown schema.  channel_hash == expected_hash so the
     // check reaches the registry branch.
-    std::array<uint8_t, 32> any_hash{};
+    std::array<uint8_t, 64> any_hash{};
     pylabhub::hub::SchemaCitationInput in;
     in.channel_owner = prod_uid;
     in.channel_id = "frame";
@@ -1342,7 +1345,7 @@ TEST(HubStateSchemas, ValidateCitation_UnknownSchema_Rejected)
 TEST(HubStateSchemas, ValidateCitation_RoleProvidedChannel_HashOnly)
 {
     HubState s;
-    std::array<uint8_t, 32> h;
+    std::array<uint8_t, 64> h;
     h.fill(0x42);
 
     pylabhub::hub::SchemaCitationInput in; // channel_id / channel_owner empty
@@ -1351,7 +1354,7 @@ TEST(HubStateSchemas, ValidateCitation_RoleProvidedChannel_HashOnly)
     auto ok = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_TRUE(ok.ok()) << "unnamed channel, matching hash → ok; " << ok.detail;
 
-    std::array<uint8_t, 32> wrong;
+    std::array<uint8_t, 64> wrong;
     wrong.fill(0x43);
     in.expected_hash = wrong;
     auto bad = HubStateTestAccess::validate_schema_citation(s, in);
@@ -1368,7 +1371,7 @@ TEST(HubStateSchemas, ValidateCitation_RoleProvidedChannel_HashOnly)
 TEST(HubStateSchemas, ValidateCitation_NamedCitationVsAnonymousChannel_Rejected)
 {
     HubState s;
-    std::array<uint8_t, 32> h;
+    std::array<uint8_t, 64> h;
     h.fill(0x42);
 
     pylabhub::hub::SchemaCitationInput in; // channel_id empty → anonymous channel
@@ -1389,7 +1392,7 @@ TEST(HubStateSchemas, ValidateCitation_AnonymousCitationVsNamedChannel_Rejected)
 {
     HubState s;
     const std::string prod_uid = "prod.cam.uid01234567";
-    std::array<uint8_t, 32> h;
+    std::array<uint8_t, 64> h;
     h.fill(0x55);
 
     pylabhub::hub::SchemaCitationInput in;
@@ -1415,7 +1418,7 @@ TEST(HubStateSchemas, ValidateCitation_JoinNamedChannel_NoRegistryRecord_Ok)
 {
     HubState s;
     const std::string prod_uid = "prod.cam.uid01234567";
-    std::array<uint8_t, 32> h;
+    std::array<uint8_t, 64> h;
     h.fill(0x55);
 
     // Named channel (id + owner set), but NO on_schema_registered → no record.
@@ -1431,6 +1434,73 @@ TEST(HubStateSchemas, ValidateCitation_JoinNamedChannel_NoRegistryRecord_Ok)
     auto out = HubStateTestAccess::validate_schema_citation(s, in);
     EXPECT_TRUE(out.ok()) << "a join must not require a registry record; " << out.detail;
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 0u);
+}
+
+// A flexzone-only record (no datablock) round-trips through the registry —
+// hub-globals may declare a flexzone with no slot (HEP-CORE-0034 §6.3).
+TEST(HubStateSchemas, OnSchemaRegistered_FlexzoneOnlyRecord_Created)
+{
+    HubState s;
+    auto rec = pylabhub::hub::make_schema_record("prod.cam.uid01234567", "frame_fz",
+                                                 /*db_blds=*/"", /*db_packing=*/"",
+                                                 /*fz_blds=*/"cal:float64:8:0", "aligned");
+    ASSERT_FALSE(rec.has_datablock());
+    ASSERT_TRUE(rec.has_flexzone());
+
+    auto out = HubStateTestAccess::on_schema_registered(s, rec);
+    EXPECT_EQ(out, SchemaRegOutcome::kCreated);
+    auto fetched = s.schema("prod.cam.uid01234567", "frame_fz");
+    ASSERT_TRUE(fetched.has_value());
+    EXPECT_TRUE(fetched->blds.empty());
+    EXPECT_EQ(fetched->flexzone_blds, "cal:float64:8:0");
+    EXPECT_EQ(fetched->hash, rec.hash);
+}
+
+// A record carrying NEITHER zone is meaningless and must be rejected (the
+// "at least one zone" invariant; HEP-CORE-0034 §6.3).  Built directly (not via
+// make_schema_record, which asserts the invariant) to exercise the runtime guard.
+TEST(HubStateSchemas, OnSchemaRegistered_ZonelessRecord_ForbiddenOwner)
+{
+    HubState s;
+    SchemaRecord rec;
+    rec.owner_uid = "prod.x.uid00000001";
+    rec.schema_id = "frame";
+    // blds and flexzone_blds both empty → neither zone present.
+    auto out = HubStateTestAccess::on_schema_registered(s, rec);
+    EXPECT_EQ(out, SchemaRegOutcome::kForbiddenOwner);
+    EXPECT_EQ(s.schema_count(), 0u);
+}
+
+// Split-hash contract at the validator: a joiner whose DATABLOCK half matches
+// the channel but whose FLEXZONE half differs is rejected — a flexzone mismatch
+// cannot slip through the single 64-byte compare (HEP-CORE-0034 §9 / §6.3).
+TEST(HubStateSchemas, ValidateCitation_FlexzoneMismatch_Rejected)
+{
+    HubState s;
+    const std::string prod_uid = "prod.cam.uid01234567";
+    HubStateTestAccess::set_role_registered(s, make_role(prod_uid));
+
+    const auto channel_fp = pylabhub::hub::compute_fingerprint_from_wire(
+        "ts:float64:1:0", "aligned", "cal:float64:8:0", "aligned");
+    const auto joiner_fp = pylabhub::hub::compute_fingerprint_from_wire(
+        "ts:float64:1:0", "aligned", "cal:float64:16:0", "aligned"); // flexzone differs
+
+    // Datablock halves are identical; only the flexzone half differs.
+    ASSERT_EQ(0, std::memcmp(channel_fp.data(), joiner_fp.data(), 32));
+    ASSERT_NE(0, std::memcmp(channel_fp.data() + 32, joiner_fp.data() + 32, 32));
+
+    pylabhub::hub::SchemaCitationInput in;
+    in.channel_owner = prod_uid;
+    in.channel_id = "frame";
+    in.channel_hash = channel_fp;
+    in.channel_producer_uids = {prod_uid};
+    in.cited_id = "frame";
+    in.cited_owner = prod_uid;
+    in.expected_hash = joiner_fp;
+    auto out = HubStateTestAccess::validate_schema_citation(s, in);
+    EXPECT_FALSE(out.ok()) << "a flexzone mismatch must reject even with a matching datablock";
+    EXPECT_EQ(out.reason, CitationOutcome::Reason::kFingerprintMismatch);
+    EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 
 // ─── Wave M2.5 — controlled-access API on ChannelEntry ─────────────────────
@@ -1859,7 +1929,7 @@ using pylabhub::hub::ChannelTransportInvariants;
 using pylabhub::hub::InvariantSetResult;
 using pylabhub::hub::ProducerAdmissionResult;
 
-ChannelSchemaInvariants make_schema_invariants(const std::string &hash = std::string(64, 'a'))
+ChannelSchemaInvariants make_schema_invariants(const std::string &hash = std::string(128, 'a'))
 {
     ChannelSchemaInvariants s;
     s.schema_hash = hash;
@@ -1907,7 +1977,7 @@ TEST(HubStateProducerAdmission, FirstProducer_FreshChannel_OpensAndFires)
     ASSERT_TRUE(ch.has_value());
     EXPECT_EQ(ch->producer_count(), 1u);
     EXPECT_EQ(ch->find_producer("prod.camA.uid00000001")->producer_pid, 1001u);
-    EXPECT_EQ(ch->schema_hash, std::string(64, 'a'));
+    EXPECT_EQ(ch->schema_hash, std::string(128, 'a'));
 }
 
 TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
@@ -2467,7 +2537,7 @@ TEST(HubStateBandCascade, MultiPresenceRole_StaysAlive_KeepsBandMembership)
                                               {
                                                   ChannelEntry e;
                                                   e.name = "ch.bandcascade.b";
-                                                  e.schema_hash = std::string(64, 'a');
+                                                  e.schema_hash = std::string(128, 'a');
                                                   // schema_version retired per C2.
                                                   ProducerEntry p;
                                                   p.producer_pid = 9999;
@@ -2571,7 +2641,7 @@ TEST(HubStateLifecycle, ReRegister_AfterPartialDereg_PresenceFreshConnected)
                                               {
                                                   ChannelEntry e;
                                                   e.name = "ch.rereg.b";
-                                                  e.schema_hash = std::string(64, 'a');
+                                                  e.schema_hash = std::string(128, 'a');
                                                   // schema_version retired per C2.
                                                   ProducerEntry p;
                                                   p.producer_pid = 9999;

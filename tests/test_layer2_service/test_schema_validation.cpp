@@ -349,46 +349,58 @@ TEST(SchemaValidationTest, FingerprintIncludesPacking_MatchingPackingProducesSam
 // HEP-CORE-0034 Phase 4a — wire-form / SchemaSpec hash equality
 // ============================================================================
 
-TEST(SchemaValidationTest, WireForm_HashMatchesSchemaSpecHash)
+TEST(SchemaValidationTest, WireForm_DatablockHalfMatchesZoneHash)
 {
-    // Pin: `compute_canonical_hash_from_wire(canonical_fields_str(spec),
-    // spec.packing)` produces the same 32 bytes as
-    // `compute_schema_hash(spec, empty_fz)`.  Without this invariant
-    // the broker's Stage-2 verification would always reject producer
-    // hashes (broker-2619b17 follow-up).
+    // Pin (HEP-CORE-0034 §6.3): the datablock half (bytes 0..31) of the 64-byte
+    // wire fingerprint equals `compute_zone_hash(slot_blds, slot_packing)`, and
+    // the flexzone half (bytes 32..63) is all-zero when no flexzone is present.
     auto s = make_schema({make_field("ts", "float64"), make_field("v", "float32")}, "aligned");
     auto spec = parse_schema_json(s);
 
-    const auto from_spec = compute_schema_hash(spec, SchemaSpec{});
-    const auto from_wire =
-        compute_canonical_hash_from_wire(canonical_fields_str(spec), spec.packing);
-    EXPECT_EQ(from_spec.size(), from_wire.size());
-    EXPECT_EQ(0, std::memcmp(from_spec.data(), from_wire.data(), from_wire.size()));
+    const auto fp = compute_fingerprint_from_wire(canonical_fields_str(spec), spec.packing);
+    const auto db_half = compute_zone_hash(canonical_fields_str(spec), spec.packing);
+    ASSERT_EQ(fp.size(), 64u);
+    EXPECT_EQ(0, std::memcmp(fp.data(), db_half.data(), 32));
+    for (size_t i = 32; i < 64; ++i)
+        EXPECT_EQ(fp[i], 0u) << "flexzone half must be zero when absent (byte " << i << ")";
 }
 
-TEST(SchemaValidationTest, WireForm_FlexzoneIncluded)
+TEST(SchemaValidationTest, WireForm_FlexzoneOccupiesSecondHalf)
 {
-    // Pin: when the producer's REG_REQ has both slot AND flexzone,
-    // the broker MUST recompute over both — otherwise a producer
-    // with flexzone NACKs FINGERPRINT_INCONSISTENT (the bug fixed
-    // alongside Phase 4a).
+    // Pin: adding a flexzone leaves the datablock half unchanged and fills the
+    // flexzone half with that zone's hash; slot-only vs slot+fz fingerprints
+    // differ (a producer with a flexzone must not NACK FINGERPRINT_INCONSISTENT).
     auto slot = make_schema({make_field("x", "int32")}, "aligned");
     auto fz = make_schema({make_field("y", "float64")}, "aligned");
     auto slot_spec = parse_schema_json(slot);
     auto fz_spec = parse_schema_json(fz);
 
-    const auto from_spec_slot_only = compute_schema_hash(slot_spec, SchemaSpec{});
-    const auto from_spec_with_fz = compute_schema_hash(slot_spec, fz_spec);
-    EXPECT_NE(from_spec_slot_only, from_spec_with_fz)
-        << "flexzone must be part of the slot+fz fingerprint";
+    const auto fp_slot_only =
+        compute_fingerprint_from_wire(canonical_fields_str(slot_spec), slot_spec.packing);
+    const auto fp_with_fz =
+        compute_fingerprint_from_wire(canonical_fields_str(slot_spec), slot_spec.packing,
+                                      canonical_fields_str(fz_spec), fz_spec.packing);
+    EXPECT_NE(fp_slot_only, fp_with_fz) << "flexzone must be part of the fingerprint";
+    // Datablock half unchanged by the flexzone.
+    EXPECT_EQ(0, std::memcmp(fp_slot_only.data(), fp_with_fz.data(), 32));
+    // Flexzone half equals the flexzone's own zone hash.
+    const auto fz_half = compute_zone_hash(canonical_fields_str(fz_spec), fz_spec.packing);
+    EXPECT_EQ(0, std::memcmp(fp_with_fz.data() + 32, fz_half.data(), 32));
+}
 
-    // Wire form: pass slot + flexzone fields → must match
-    // compute_schema_hash(slot, fz).
-    const auto from_wire_with_fz =
-        compute_canonical_hash_from_wire(canonical_fields_str(slot_spec), slot_spec.packing,
-                                         canonical_fields_str(fz_spec), fz_spec.packing);
-    EXPECT_EQ(0, std::memcmp(from_spec_with_fz.data(), from_wire_with_fz.data(),
-                             from_wire_with_fz.size()));
+TEST(SchemaValidationTest, WireForm_ZoneAgnostic_SameLayoutSameHalf)
+{
+    // Pin: the same field layout hashes to the same 32-byte half whether it sits
+    // in the datablock or the flexzone — position differs, half value does not.
+    auto lay = make_schema({make_field("v", "float32")}, "aligned");
+    auto spec = parse_schema_json(lay);
+    const auto in_db = compute_fingerprint_from_wire(canonical_fields_str(spec), spec.packing);
+    const auto in_fz =
+        compute_fingerprint_from_wire(std::string{}, std::string{}, canonical_fields_str(spec),
+                                      spec.packing);
+    // db half of in_db == fz half of in_fz (same layout, same half value).
+    EXPECT_EQ(0, std::memcmp(in_db.data(), in_fz.data() + 32, 32));
+    EXPECT_NE(in_db, in_fz) << "same layout in different zones → different fingerprints";
 }
 
 // ============================================================================
@@ -408,7 +420,7 @@ TEST(SchemaValidationTest, MakeWireFields_NamedSchema_PopulatesId)
     EXPECT_FALSE(w.schema_blds.empty());
     EXPECT_EQ(w.schema_packing, "aligned");
     EXPECT_FALSE(w.schema_hash.empty());
-    EXPECT_EQ(w.schema_hash.size(), 64u); // 32 bytes hex
+    EXPECT_EQ(w.schema_hash.size(), 128u); // 64-byte two-zone fingerprint, hex
     EXPECT_TRUE(w.flexzone_blds.empty());
     EXPECT_TRUE(w.flexzone_packing.empty());
 }
@@ -438,10 +450,10 @@ TEST(SchemaValidationTest, MakeWireFields_FlexzonePopulated)
     EXPECT_EQ(w.schema_packing, "aligned");
     EXPECT_FALSE(w.flexzone_blds.empty());
     EXPECT_EQ(w.flexzone_packing, "packed");
-    // Sanity: the hash matches what compute_canonical_hash_from_wire
+    // Sanity: the hash matches what compute_fingerprint_from_wire
     // produces for the same inputs.
-    const auto h_expected = compute_canonical_hash_from_wire(w.schema_blds, w.schema_packing,
-                                                             w.flexzone_blds, w.flexzone_packing);
+    const auto h_expected = compute_fingerprint_from_wire(w.schema_blds, w.schema_packing,
+                                                          w.flexzone_blds, w.flexzone_packing);
     EXPECT_EQ(w.schema_hash,
               ::pylabhub::format_tools::bytes_to_hex(
                   {reinterpret_cast<const char *>(h_expected.data()), h_expected.size()}));
@@ -464,7 +476,7 @@ TEST(SchemaValidationTest, ApplyProducerFields_AddsKeysWithSchemaPrefix)
 {
     WireSchemaFields w;
     w.schema_id = "$lab.x.v1";
-    w.schema_hash = std::string(64, 'a');
+    w.schema_hash = std::string(128, 'a');
     w.schema_blds = "ts:f64:1:0";
     w.schema_packing = "aligned";
     w.flexzone_blds = "p:u64:1:0";
@@ -487,7 +499,7 @@ TEST(SchemaValidationTest, ApplyConsumerFields_AddsKeysWithExpectedPrefix)
 {
     WireSchemaFields w;
     w.schema_id = "$lab.x.v1";
-    w.schema_hash = std::string(64, 'a');
+    w.schema_hash = std::string(128, 'a');
     w.schema_blds = "ts:f64:1:0";
     w.schema_packing = "aligned";
     w.flexzone_blds = "p:u64:1:0";
@@ -517,4 +529,88 @@ TEST(SchemaValidationTest, ApplyFields_EmptyWireFields_NoKeysAdded)
     json reg2;
     apply_consumer_schema_fields(reg2, w);
     EXPECT_TRUE(reg2.empty());
+}
+
+// ============================================================================
+// HEP-CORE-0034 §6.3 — two-zone builder / comparison / verify primitives
+// (compute_zone_hash absent-sentinel, make_schema_record, schema_records_
+//  equivalent, verify_request_fingerprint — the split-hash comparison API)
+// ============================================================================
+
+TEST(SchemaValidationTest, ZoneHash_EmptyBldsIsAbsentSentinel)
+{
+    // An absent zone (empty blds) hashes to the all-zero half regardless of
+    // packing — this zero is the "absent" sentinel of the 64-byte fingerprint.
+    const auto z = compute_zone_hash("", "aligned");
+    for (uint8_t b : z)
+        EXPECT_EQ(b, 0u);
+    EXPECT_EQ(compute_zone_hash("", "packed"), compute_zone_hash("", "aligned"));
+    // A present zone never collides with the sentinel.
+    EXPECT_NE(compute_zone_hash("v:float32:1:0", "aligned"), z);
+}
+
+TEST(SchemaValidationTest, MakeSchemaRecord_BothZones)
+{
+    auto rec = make_schema_record("prod.cam.uid01234567", "frame", "ts:float64:1:0", "aligned",
+                                  "cal:float64:8:0", "packed");
+    EXPECT_TRUE(rec.has_datablock());
+    EXPECT_TRUE(rec.has_flexzone());
+    EXPECT_EQ(rec.blds, "ts:float64:1:0");
+    EXPECT_EQ(rec.packing, "aligned");
+    EXPECT_EQ(rec.flexzone_blds, "cal:float64:8:0");
+    EXPECT_EQ(rec.flexzone_packing, "packed");
+    EXPECT_EQ(rec.hash, compute_fingerprint_from_wire("ts:float64:1:0", "aligned", "cal:float64:8:0",
+                                                      "packed"));
+}
+
+TEST(SchemaValidationTest, MakeSchemaRecord_DatablockOnly_And_FlexzoneOnly)
+{
+    // Datablock-only: flexzone absent, flexzone half zero.
+    auto db = make_schema_record("hub", "temp", "v:float32:1:0", "aligned");
+    EXPECT_TRUE(db.has_datablock());
+    EXPECT_FALSE(db.has_flexzone());
+    for (size_t i = 32; i < 64; ++i)
+        EXPECT_EQ(db.hash[i], 0u);
+
+    // Flexzone-only (a shape the wire REG path can't make, but hub-globals can):
+    // datablock absent, datablock half zero, flexzone half filled.
+    auto fz = make_schema_record("hub", "frame_fz", "", "", "cal:float64:8:0", "aligned");
+    EXPECT_FALSE(fz.has_datablock());
+    EXPECT_TRUE(fz.has_flexzone());
+    for (size_t i = 0; i < 32; ++i)
+        EXPECT_EQ(fz.hash[i], 0u);
+    EXPECT_EQ(0, std::memcmp(fz.hash.data() + 32,
+                             compute_zone_hash("cal:float64:8:0", "aligned").data(), 32));
+}
+
+TEST(SchemaValidationTest, SchemaRecordsEquivalent_ByFullFingerprint)
+{
+    auto a = make_schema_record("o", "id", "v:float32:1:0", "aligned");
+    auto same = make_schema_record("o", "id", "v:float32:1:0", "aligned");
+    auto diff_packing = make_schema_record("o", "id", "v:float32:1:0", "packed");
+    auto with_fz = make_schema_record("o", "id", "v:float32:1:0", "aligned", "x:int32:1:0", "aligned");
+    EXPECT_TRUE(schema_records_equivalent(a, same));
+    EXPECT_FALSE(schema_records_equivalent(a, diff_packing)) << "packing folds into the fingerprint";
+    EXPECT_FALSE(schema_records_equivalent(a, with_fz)) << "flexzone presence changes the fingerprint";
+}
+
+TEST(SchemaValidationTest, VerifyRequestFingerprint_Consistency)
+{
+    const std::string db = "ts:float64:1:0";
+    const std::string fz = "cal:float64:8:0";
+    const auto fp = compute_fingerprint_from_wire(db, "aligned", fz, "packed");
+    const std::string claimed = ::pylabhub::format_tools::bytes_to_hex(
+        {reinterpret_cast<const char *>(fp.data()), fp.size()});
+
+    // Correct 128-hex claim → consistent, recomputed 64-byte fingerprint matches.
+    auto ok = verify_request_fingerprint(db, "aligned", fz, "packed", claimed);
+    EXPECT_TRUE(ok.consistent);
+    EXPECT_EQ(ok.hash, fp);
+    // Flip the flexzone packing → the claim no longer matches → inconsistent.
+    auto bad = verify_request_fingerprint(db, "aligned", fz, "aligned", claimed);
+    EXPECT_FALSE(bad.consistent);
+    // Empty claim → "just compute": consistent, hash still the full fingerprint.
+    auto compute_only = verify_request_fingerprint(db, "aligned", fz, "packed", "");
+    EXPECT_TRUE(compute_only.consistent);
+    EXPECT_EQ(compute_only.hash, fp);
 }

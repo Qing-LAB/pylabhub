@@ -12,13 +12,17 @@
  *     REG_REQ.  Lifetime = role process lifetime; cascade-evicted from
  *     `_set_role_disconnected` (HEP-CORE-0034 §7.2).
  *
- * The fingerprint stored here is `BLAKE2b-256(canonical_fields || packing)`
- * per HEP-CORE-0034 §6.3.  The same fingerprint is computed on the
- * SchemaSpec / SchemaInfo paths and on the inbox-tag path (Phase 1,
- * 2026-04-27).
+ * The fingerprint stored here is the 64-byte two-zone value
+ * `datablock_half ‖ flexzone_half`, each half
+ * `BLAKE2b-256(zone_blds || "|pack:" || zone_packing)` per HEP-CORE-0034
+ * §6.3.  An absent zone's half is all-zero; the full 64 bytes are never
+ * all-zero (at least one zone is always present).  This is the
+ * control-plane registry/citation fingerprint (Job 2); it is distinct
+ * from the data-plane per-message `schema_tag` (Job 1), which stays the
+ * folded 8-byte whole-protocol tag computed by `compute_schema_hash`.
  *
- * @see HEP-CORE-0034-Schema-Registry.md §4 (record model), §11 (HubState),
- *      §15 Phase 2 (this file lands as part of Phase 2 work).
+ * @see HEP-CORE-0034-Schema-Registry.md §4.1 (record model), §6.3
+ *      (two-zone fingerprint), §11 (HubState registry).
  */
 
 #include <array>
@@ -43,24 +47,41 @@ struct SchemaRecord
 
     /// Schema identifier under the owner's namespace.  May be a namespaced
     /// id (`lab.sensors.temperature.raw@1`) for hub-globals, or a flat id
-    /// (`frame`, `inbox`) for private records.
+    /// (`frame`) for private records.  The registry holds channel schemas
+    /// only — inbox message layouts are NOT registry records (HEP-CORE-0034
+    /// §11.4 / HEP-CORE-0027).
     std::string schema_id;
 
-    /// BLAKE2b-256 over canonical(BLDS, packing) — the wire fingerprint
-    /// (HEP-CORE-0034 §6.3).  Equality of fingerprint ⇔ bytewise-equal layout.
-    std::array<uint8_t, 32> hash;
+    /// Two-zone fingerprint `datablock_half ‖ flexzone_half` (HEP-CORE-0034
+    /// §6.3).  Each half is BLAKE2b-256 over that zone's `blds || "|pack:" ||
+    /// packing`; an absent zone's half is all-zero.  Equality of the full 64
+    /// bytes ⇔ both zones' layouts match (absent matches absent).  Never
+    /// all-zero — at least one zone is present (enforced by `make_schema_record`).
+    std::array<uint8_t, 64> hash;
 
-    /// "aligned" or "packed".  Part of the fingerprint; not redundant with
-    /// the BLDS string, which encodes only the field list.
+    /// Datablock (slot) packing: "aligned" or "packed".  Empty iff the
+    /// datablock zone is absent.  Part of the datablock half's fingerprint.
     std::string packing;
 
-    /// Canonical BLDS text (`name:type[N];...`) — sufficient for ctypes
-    /// reconstruction by remote citers (e.g. via SCHEMA_REQ in Phase 3).
+    /// Datablock (slot) canonical BLDS text (`name:type:count:length` joined
+    /// with `|`).  Empty iff the datablock zone is absent.  Sufficient for
+    /// ctypes reconstruction by remote citers (e.g. via SCHEMA_REQ).
     std::string blds;
+
+    /// Flexzone packing: "aligned" or "packed".  Empty iff the flexzone zone
+    /// is absent.  Part of the flexzone half's fingerprint.
+    std::string flexzone_packing;
+
+    /// Flexzone canonical BLDS text.  Empty iff the flexzone zone is absent.
+    std::string flexzone_blds;
 
     /// When the record was inserted into `HubState.schemas` (set by the
     /// capability op, not by the caller).
     std::chrono::system_clock::time_point registered_at{std::chrono::system_clock::now()};
+
+    /// A zone is present iff its BLDS text is non-empty.
+    [[nodiscard]] bool has_datablock() const noexcept { return !blds.empty(); }
+    [[nodiscard]] bool has_flexzone() const noexcept { return !flexzone_blds.empty(); }
 };
 
 /// Outcome of `HubState::_on_schema_registered`.

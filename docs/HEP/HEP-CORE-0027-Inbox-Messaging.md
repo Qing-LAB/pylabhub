@@ -3,7 +3,7 @@
 **Status**: Implemented (documenting existing system); CURVE wiring deferred to HEP-CORE-0036 Phase 4+ (see §3.5 below).  Reachability + multi-hub advertisement section (§4.5) added 2026-05-06 to align with HEP-CORE-0033 §19 (multi-presence roles, planned — Wave A item A7) and HEP-CORE-0019 §2.3 (Phase 6 per-presence heartbeats).
 **Created**: 2026-03-27
 **Scope**: InboxQueue, InboxClient, peer-to-peer messaging side channel
-**Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK), HEP-CORE-0034 §11.4 (inbox-as-schema-record), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement), HEP-CORE-0036 §9.3 (CURVE wiring on inbox sockets — role identity keypair + per-channel allowlist inheritance)
+**Depends on**: HEP-CORE-0007 §12.4 (ROLE_INFO_REQ/ACK — the inbox schema is discovered here, as JSON), HEP-CORE-0033 §8 (HubState entry types — `ChannelEntry` / `ConsumerEntry` hold per-presence inbox metadata), HEP-CORE-0033 §18 (broker routing classes — ROLE_INFO_REQ is Class B), HEP-CORE-0033 §19 (multi-presence roles — drives per-presence inbox advertisement), HEP-CORE-0036 §9.3 (CURVE wiring on inbox sockets — role identity keypair + per-channel allowlist inheritance)
 
 ---
 
@@ -24,6 +24,20 @@ These use cases require:
 - **Independence** from the data plane (inbox messages don't interfere with data flow)
 
 The Inbox provides this as an optional side channel, available to all roles.
+
+> **Inbox is TYPED; for JSON messages use a Band.** The two role↔role messaging
+> facilities carry different payload forms and must not be confused:
+>
+> | Facility | Payload | Shape | Validation | HEP |
+> |---|---|---|---|---|
+> | **Inbox** | **msgpack, schema-typed** (the same typed slot model as the data queue) | point-to-point (role→role, ACKed) | schema mandatory + always-on: `schema_tag` + field count/type + checksum, per frame | **HEP-CORE-0027** (this) |
+> | **Band** | **JSON string** | pub/sub group (`!band` broadcast) | none (free-form `dict`/JSON body) | **HEP-CORE-0030** |
+>
+> An `InboxQueue`/`InboxClient` **cannot** be constructed without a non-empty
+> schema (§3, "Schema validation is mandatory and always-on"), and every inbox
+> frame is validated against that schema — there
+> is no schemaless/JSON inbox mode. A role that needs to exchange free-form JSON
+> with peers joins a **Band** (HEP-CORE-0030, *"All band message bodies are JSON"*).
 
 ---
 
@@ -74,6 +88,7 @@ Role A (sender)                          Role B (receiver)
 | Component | Relationship |
 |-----------|-------------|
 | Data queue (SHM/ZMQ) | Orthogonal. Inbox is a separate ZMQ channel. Both can be active simultaneously. |
+| Bands (HEP-CORE-0030) | The **other** role↔role messaging facility, and the complement of the inbox: bands carry **JSON** bodies in a pub/sub group, whereas the inbox carries **msgpack schema-typed** payloads point-to-point (§1). A role uses the inbox for typed targeted messages and a band for free-form JSON broadcast. |
 | BrokerRequestComm | Discovery only.  Routes ROLE_INFO_REQ to broker; not involved in inbox data flow.  Per HEP-CORE-0033 §18, the lookup is a Class B fall-through across all the asker's hub connections. |
 | Broker | Metadata storage only.  Stores `inbox_endpoint` + schema fields per-presence — on `ChannelEntry.producers[i]` for producers and on the `ConsumerEntry` row for consumers (NOT channel-wide; supports Fan-In where each producer has its own inbox).  Populated from REG_REQ / CONSUMER_REG_REQ (§4.1); served via ROLE_INFO_REQ.  Not in the inbox data path. |
 | RoleHostCore | Owns the InboxQueue (one per role) + the inbox cache for outbound `InboxClient`s.  Inbox metrics serialised through the RoleHostCore metrics pipeline (HEP-CORE-0019 §5.4). |
@@ -235,6 +250,36 @@ refresh live rosters is a later refinement.
 ---
 
 ## 4. Data Flow
+
+### 4.0 Inbox initiation & execution (authoritative summary)
+
+An inbox is **receiver-authoritative** and discovered as **JSON via
+`ROLE_INFO_REQ`** — never through the schema registry (`HubState.schemas`) and
+never via `SCHEMA_REQ`. The inbox `schema` is a mailbox message layout, not a
+channel datablock/flexzone schema (HEP-CORE-0034 §11.4). End-to-end:
+
+1. **Receiver setup** (§4.1). The receiver declares `inbox_schema` (+ packing,
+   checksum policy) in config, builds a typed `InboxQueue` (ROUTER) bound to its
+   inbox endpoint — which validates the schema locally
+   (`hub_inbox_queue.cpp::validate_inbox_schema`) — and advertises
+   `inbox_endpoint` / `inbox_schema_json` / `inbox_packing` / `inbox_checksum`
+   on REG_REQ (producer) or CONSUMER_REG_REQ (consumer). The broker stores these
+   on the sender-visible `ProducerEntry` / `ConsumerEntry` and fail-fast
+   validates the advertised JSON (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`).
+   It does **not** create a schema-registry record.
+2. **Sender initiation** (§4.2). A role calls `open_inbox(target_uid)`, which
+   sends **`ROLE_INFO_REQ`** for the target and reads back **`ROLE_INFO_ACK`**:
+   `inbox_endpoint`, `inbox_schema` (JSON object), `inbox_packing`,
+   `inbox_checksum`, and the receiver's CURVE `inbox_receiver_pubkey_z85`. From
+   the JSON schema it builds an `InboxClient` (DEALER), pinning that pubkey.
+3. **Execution** (§4.3). Sender `acquire()` → fill the typed slot → `send()`.
+   The wire frame is `msgpack fixarray[5] = [magic, schema_tag, seq, payload,
+   checksum]`, where `schema_tag` is the first 8 bytes of BLAKE2b-256 over the
+   canonical schema (`compute_inbox_schema_tag`). The receiver's `InboxQueue`
+   validates magic, `schema_tag` (drift), field count, replay nonce, and
+   per-sender sequence, then dispatches to the `on_inbox` handler and ACKs.
+
+The rest of §4 details each step.
 
 ### 4.1 Receiver Setup (role host startup)
 
@@ -662,12 +707,13 @@ elif ack == 255:
 - **HEP-CORE-0033 §19**: Multi-presence roles — defines presence list + per-hub registration that drives §4.1's per-presence advertisement
 - **HEP-CORE-0015 §4, §6.4** (SUPERSEDED — see HEP-CORE-0033 §19): historical processor inbox config fields + InboxHandle API
 - **HEP-CORE-0018 §15.6** (SUPERSEDED): historical inbox plane overview — superseded by this document
-- **HEP-CORE-0034 §11.4**: Inbox schemas integrate into the hub's owner-authoritative
-  schema registry as `(receiver_uid, "inbox")` records. Receiver-as-authority model
-  (this HEP §4.1 step 7-8) maps directly onto HEP-0034 ownership rules; existing wire
-  fields (`inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum`) are
-  retained, with broker-side storage unified into `HubState.schemas`. The broker
-  computes the SchemaRecord fingerprint using the same canonical bytes as
-  `compute_inbox_schema_tag` so `SchemaRecord.hash[0..7] == wire schema_tag`. Inbox
-  records cascade-evict via `_on_channel_closed` when the producer's data channel
-  closes (DEREG_REQ or heartbeat timeout) — see HEP-0034 §7.2.
+- **HEP-CORE-0034 §11.4**: Inbox message layouts are **NOT** schema-registry
+  records. The registry (`HubState.schemas`) holds channel datablock/flexzone
+  schemas only. The inbox schema is stored on the sender-visible
+  `ProducerEntry` / `ConsumerEntry` (from `inbox_schema_json` / `inbox_packing`
+  / `inbox_endpoint` / `inbox_checksum` on REG_REQ) and discovered by senders as
+  **JSON via `ROLE_INFO_REQ`** (§4.0, §4.2) — never via `SCHEMA_REQ`. On REG_REQ
+  the broker only fail-fast validates the advertised inbox JSON
+  (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`); it files no record. The
+  per-message drift `schema_tag` (`compute_inbox_schema_tag`) is a data-plane
+  concern of this HEP, not a HEP-0034 registry fingerprint.

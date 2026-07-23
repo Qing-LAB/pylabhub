@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -181,28 +182,31 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
     return parse_schema_json(schema_json);
 }
 
-// ── Schema hash ──────────────────────────────────────────────────────────────
+// ── Schema hash — two jobs, do NOT conflate (HEP-CORE-0034 §6.3) ─────────────
 //
-// Canonical form (HEP-CORE-0034 §6.3):
+// "Schema hash" covers two distinct mechanisms in different layers:
 //
-//   slot:<canonical_fields>|pack:<packing>
-//   [|fz:<canonical_fields>|fzpack:<packing>]
+//   Job 1 — data-plane per-message `schema_tag`.  The folded whole-protocol
+//     hash `compute_schema_hash(slot_spec, fz_spec)` below; its first 8 bytes
+//     are stamped on every ZMQ data message as a drift tripwire.  Stays
+//     FOLDED — a message is valid only if BOTH zones agree.
 //
-// where canonical_fields = "name:type:count:length" joined with "|"
-//
-// The "|pack:..." suffix is appended for each present section so two
-// layouts with identical fields and different packing produce different
-// fingerprints (Phase 1 correction).
+//   Job 2 — control-plane registry / citation fingerprint.  A 64-byte value
+//     `datablock_half ‖ flexzone_half`, each half
+//     `BLAKE2b-256(zone_blds || "|pack:" || zone_packing)` over ONLY that
+//     zone's own fields.  An absent zone's half is all-zero; the full 64
+//     bytes are never all-zero.  Stored in `SchemaRecord`, carried on
+//     REG_REQ as `schema_hash` (128 hex), matched at registration/join,
+//     returned by SCHEMA_ACK.  Built by `compute_fingerprint_from_wire()` /
+//     `compute_zone_hash()` below.
 //
 // Wire-format invariant (HEP-0034 §10.1):
 //
-//   The wire field `schema_blds` is precisely the `canonical_fields`
-//   string for the slot (no "slot:" prefix, no "|pack:..." suffix).  The
-//   wire field `flexzone_blds` is the same form for the flexzone.
-//   Packing is sent as a separate `schema_packing` / `flexzone_packing`
-//   field.  This split lets the broker recompute the full canonical
-//   bytes deterministically and verify the producer's claimed hash —
-//   `compute_canonical_hash_from_wire()` below is the verification path.
+//   `schema_blds` is precisely the slot's `canonical_fields` string (no
+//   "slot:" prefix, no "|pack:" suffix); `flexzone_blds` is the same for
+//   the flexzone.  Packing rides in separate `schema_packing` /
+//   `flexzone_packing` fields.  The broker recomputes each half from these
+//   and compares to the producer's claimed 128-hex `schema_hash`.
 
 /// Build the slot's `canonical_fields` portion of the canonical bytes
 /// (HEP-CORE-0034 §6.3 / §10.1).  Public so producer-side code can
@@ -260,61 +264,75 @@ inline std::string compute_schema_hash(const SchemaSpec &slot_spec, const Schema
     return std::string(reinterpret_cast<const char *>(hash.data()), hash.size());
 }
 
-/// Reconstruct the canonical bytes from the wire fields and hash.
-///
-/// The producer sends `schema_blds` = `canonical_fields_str(slot_spec)`
-/// and `schema_packing` (and optionally `flexzone_blds` /
-/// `flexzone_packing`).  The broker calls this helper to recompute the
-/// 32-byte fingerprint and compare against the producer's claimed
-/// `schema_hash`.  Identical algorithm to `compute_schema_hash` above
-/// — just operating on already-canonical wire strings instead of
-/// SchemaSpec inputs.
-inline std::array<uint8_t, 32> compute_canonical_hash_from_wire(const std::string &slot_blds,
-                                                                const std::string &slot_packing,
-                                                                const std::string &fz_blds = {},
-                                                                const std::string &fz_packing = {})
+/// Per-zone hash (Job 2): `BLAKE2b-256(zone_blds || "|pack:" || zone_packing)`
+/// over ONLY that zone's own fields, with NO `slot:`/`fz:` prefix — so the
+/// same field layout hashes identically whether it lives in the datablock or
+/// the flexzone (zone-agnostic per half).  An absent zone (empty `blds`)
+/// hashes to all-zero, which is the "absent" sentinel used in the 64-byte
+/// fingerprint.  A real zone hashing to all-zero is a 1-in-2^256
+/// impossibility, so zero is unambiguous.
+inline std::array<uint8_t, 32> compute_zone_hash(const std::string &blds,
+                                                 const std::string &packing)
 {
+    if (blds.empty())
+        return {}; // absent zone → all-zero half
     std::string canonical;
-    canonical.reserve(slot_blds.size() + fz_blds.size() + 64);
-    if (!slot_blds.empty())
-    {
-        canonical += "slot:";
-        canonical += slot_blds;
-        canonical += "|pack:";
-        canonical += slot_packing;
-    }
-    if (!fz_blds.empty())
-    {
-        canonical += slot_blds.empty() ? "fz:" : "|fz:";
-        canonical += fz_blds;
-        canonical += slot_blds.empty() ? "|pack:" : "|fzpack:";
-        canonical += fz_packing;
-    }
+    canonical.reserve(blds.size() + packing.size() + 8);
+    canonical += blds;
+    canonical += "|pack:";
+    canonical += packing;
     return pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
                                                                      canonical.size());
+}
+
+/// Recompute the 64-byte Job-2 registry/citation fingerprint
+/// `datablock_half ‖ flexzone_half` from the already-canonical wire fields
+/// (`schema_blds`/`schema_packing` + `flexzone_blds`/`flexzone_packing`).
+/// Each half is `compute_zone_hash`; an absent zone contributes 32 zero
+/// bytes.  This is the verification path the broker uses to check the
+/// producer's claimed 128-hex `schema_hash`, and the source of the value
+/// stored in `SchemaRecord`.
+inline std::array<uint8_t, 64> compute_fingerprint_from_wire(const std::string &slot_blds,
+                                                             const std::string &slot_packing,
+                                                             const std::string &fz_blds = {},
+                                                             const std::string &fz_packing = {})
+{
+    std::array<uint8_t, 64> fp{};
+    const auto db_half = compute_zone_hash(slot_blds, slot_packing);
+    const auto fz_half = compute_zone_hash(fz_blds, fz_packing);
+    std::copy(db_half.begin(), db_half.end(), fp.begin());
+    std::copy(fz_half.begin(), fz_half.end(), fp.begin() + 32);
+    return fp;
+}
+
+/// True iff every byte of a fingerprint is zero — i.e. neither zone present.
+/// `make_schema_record` rejects this; a wire claim of all-zero is invalid.
+inline bool fingerprint_is_all_zero(const std::array<uint8_t, 64> &fp) noexcept
+{
+    return std::all_of(fp.begin(), fp.end(), [](uint8_t b) { return b == 0; });
 }
 
 /// Result of `verify_request_fingerprint` (HEP-CORE-0034 §9, Job A).
 struct RequestFingerprint
 {
-    std::array<uint8_t, 32> hash{}; ///< recomputed wire fingerprint
+    std::array<uint8_t, 64> hash{}; ///< recomputed 64-byte `db‖fz` fingerprint
     bool consistent{true};          ///< false iff a non-empty claimed
                                     ///< hash disagrees with `hash`
 };
 
 /// Request self-consistency pre-check (HEP-CORE-0034 §9 step 1 / §2.4 I4).
 ///
-/// Recomputes the wire-canonical fingerprint from the caller's supplied
-/// structure and, if the caller ALSO gave a claimed hash, verifies the two
-/// agree.  This is the ONE place a registration handler recomputes the wire
-/// fingerprint — the channel/registry validator (`_validate_schema_citation`)
-/// only ever compares already-computed hashes, never recomputes.
+/// Recomputes the 64-byte `db‖fz` fingerprint from the caller's supplied
+/// wire structure and, if the caller ALSO gave a claimed 128-hex hash,
+/// verifies the two agree.  This is the ONE place a registration handler
+/// recomputes the fingerprint — the channel/registry validator
+/// (`_validate_schema_citation`) only ever compares already-computed
+/// fingerprints, never recomputes.
 ///
 /// Required-field presence (which fields a given wire mode demands) is
-/// mode-specific and stays at the call site; this helper assumes the slot
-/// structure is present.  `claimed_hash_hex` empty means "no claim — just
-/// compute".  A `consistent == false` result maps to the wire code
-/// `FINGERPRINT_INCONSISTENT` at every caller.
+/// mode-specific and stays at the call site.  `claimed_hash_hex` empty means
+/// "no claim — just compute".  A `consistent == false` result maps to the
+/// wire code `FINGERPRINT_INCONSISTENT` at every caller.
 inline RequestFingerprint verify_request_fingerprint(const std::string &slot_blds,
                                                      const std::string &slot_packing,
                                                      const std::string &fz_blds,
@@ -322,7 +340,7 @@ inline RequestFingerprint verify_request_fingerprint(const std::string &slot_bld
                                                      const std::string &claimed_hash_hex)
 {
     RequestFingerprint out;
-    out.hash = compute_canonical_hash_from_wire(slot_blds, slot_packing, fz_blds, fz_packing);
+    out.hash = compute_fingerprint_from_wire(slot_blds, slot_packing, fz_blds, fz_packing);
     if (!claimed_hash_hex.empty())
     {
         const std::string claimed = ::pylabhub::format_tools::bytes_from_hex(claimed_hash_hex);
@@ -333,6 +351,40 @@ inline RequestFingerprint verify_request_fingerprint(const std::string &slot_bld
     return out;
 }
 
+/// THE single builder for a two-zone `SchemaRecord` (HEP-CORE-0034 §4.1).
+/// Fills both zones' content un-merged and the 64-byte `db‖fz` fingerprint.
+/// An empty `db_blds` (resp. `fz_blds`) means that zone is absent (its half
+/// is all-zero).  Asserts the record carries at least one zone — a record
+/// with neither is meaningless.  Both `to_hub_schema_record` and the broker
+/// path-B builder route through this.
+inline ::pylabhub::schema::SchemaRecord
+make_schema_record(const std::string &owner, const std::string &id, const std::string &db_blds,
+                   const std::string &db_packing, const std::string &fz_blds = {},
+                   const std::string &fz_packing = {})
+{
+    ::pylabhub::schema::SchemaRecord rec;
+    rec.owner_uid = owner;
+    rec.schema_id = id;
+    rec.blds = db_blds;
+    rec.packing = db_packing;
+    rec.flexzone_blds = fz_blds;
+    rec.flexzone_packing = fz_packing;
+    rec.hash = compute_fingerprint_from_wire(db_blds, db_packing, fz_blds, fz_packing);
+    assert(!fingerprint_is_all_zero(rec.hash) &&
+           "make_schema_record: a SchemaRecord must carry at least one zone");
+    return rec;
+}
+
+/// THE single per-record comparison (HEP-CORE-0034 §9): two records describe
+/// the same protocol iff their 64-byte fingerprints are equal (packing folds
+/// into each half, so a packing difference changes the fingerprint).  Used by
+/// registration idempotency and citation fingerprint-match.
+inline bool schema_records_equivalent(const ::pylabhub::schema::SchemaRecord &a,
+                                      const ::pylabhub::schema::SchemaRecord &b) noexcept
+{
+    return a.hash == b.hash;
+}
+
 // ── HEP-CORE-0034 §12 hub-global record helpers ─────────────────────────────
 //
 // `to_hub_schema_record(SchemaEntry)` is the bridge between the file-loader
@@ -341,36 +393,29 @@ inline RequestFingerprint verify_request_fingerprint(const std::string &slot_bld
 //
 // Used by hub startup (Phase 4b — deferred until plh_hub binary lands) to
 // register globals via `_on_schema_registered({owner: "hub", id, hash, ...})`.
-// The hash is the WIRE-FORM fingerprint
-// (`compute_canonical_hash_from_wire`), NOT `SchemaEntry::slot_info.hash`
-// — those use different canonical forms (the SHM-header hash includes only
-// the slot's BLDS, while wire/registry hashes use canonical_fields_str).
-// Consumer citation against `(hub, id)` recomputes the wire hash, so the
-// stored record must use the same form.
+// The hash is the WIRE-FORM two-zone fingerprint
+// (`make_schema_record` → `compute_fingerprint_from_wire`), NOT
+// `SchemaEntry::slot_info.hash` — those use different canonical forms (the
+// SHM-header hash includes only the slot's BLDS, while wire/registry hashes
+// use canonical_fields_str).  Consumer citation against `(hub, id)` recomputes
+// the wire fingerprint, so the stored record must use the same form.
 
 inline ::pylabhub::schema::SchemaRecord
 to_hub_schema_record(const ::pylabhub::schema::SchemaEntry &entry)
 {
-    ::pylabhub::schema::SchemaRecord rec;
-    rec.owner_uid = "hub";
-    rec.schema_id = entry.schema_id;
-
     // SchemaEntry::slot is `SchemaLayoutDef` (uses "char" for char arrays);
     // schema_entry_to_spec maps "char[N]" → string{length=N}.  This gives
     // us a SchemaSpec whose canonical_fields_str() exactly matches what
-    // a wire client would build via the same conversion.
+    // a wire client would build via the same conversion.  Both zones are
+    // carried un-merged; the flexzone (if declared) is its own half of the
+    // 64-byte fingerprint.
     auto slot_spec = schema_entry_to_spec(entry.slot);
-    auto fz_spec = entry.has_flexzone() ? schema_entry_to_spec(entry.flexzone) : SchemaSpec{};
-
-    // Hub-globals are slot-canonical for citation purposes.  If a global
-    // schema declares a flexzone, the canonical form folds it in too —
-    // identical to the producer's path.
-    rec.blds = canonical_fields_str(slot_spec);
-    rec.packing = entry.slot.packing;
-    rec.hash = compute_canonical_hash_from_wire(
-        rec.blds, rec.packing, fz_spec.has_schema ? canonical_fields_str(fz_spec) : std::string{},
-        fz_spec.has_schema ? entry.flexzone.packing : std::string{});
-    return rec;
+    const bool has_fz = entry.has_flexzone();
+    auto fz_spec = has_fz ? schema_entry_to_spec(entry.flexzone) : SchemaSpec{};
+    return make_schema_record(
+        "hub", entry.schema_id, canonical_fields_str(slot_spec), entry.slot.packing,
+        has_fz ? canonical_fields_str(fz_spec) : std::string{},
+        has_fz ? entry.flexzone.packing : std::string{});
 }
 
 // ── HEP-CORE-0034 §10 wire fields — producer + consumer payload helpers ─────
@@ -401,8 +446,9 @@ struct WireSchemaFields
     /// self-registration.  Tests may set it manually.
     std::string schema_owner;
 
-    /// Hex-encoded BLAKE2b-256 fingerprint over canonical(slot, fz)
-    /// per HEP-CORE-0034 §6.3.  Empty when the role has no schema.
+    /// Hex-encoded 64-byte two-zone fingerprint `datablock_half ‖
+    /// flexzone_half` per HEP-CORE-0034 §6.3 (128 hex chars).  An absent
+    /// zone contributes 32 zero bytes.  Empty when the role has no schema.
     std::string schema_hash;
 
     /// `canonical_fields_str(slot_spec)`.  Empty when no slot schema.
@@ -450,8 +496,8 @@ inline WireSchemaFields make_wire_schema_fields(const nlohmann::json &slot_schem
     }
     if (slot_spec.has_schema || fz_spec.has_schema)
     {
-        const auto h = compute_canonical_hash_from_wire(w.schema_blds, w.schema_packing,
-                                                        w.flexzone_blds, w.flexzone_packing);
+        const auto h = compute_fingerprint_from_wire(w.schema_blds, w.schema_packing,
+                                                     w.flexzone_blds, w.flexzone_packing);
         w.schema_hash = pylabhub::format_tools::bytes_to_hex(
             {reinterpret_cast<const char *>(h.data()), h.size()});
     }

@@ -6,6 +6,48 @@
 
 ## Archive batches
 
+### 2026-07-22 (schema two-zone unification draft — implemented, merged into HEP-CORE-0034)
+
+Design draft `DRAFT_schema_two_zone_unification.md` implemented and folded into
+`docs/HEP/HEP-CORE-0034-Schema-Registry.md`, then archived to
+`docs/archive/transient-2026-07-22/`.
+
+**Merge map (draft → HEP-0034):**
+- Two-zone `SchemaRecord` + single 64-byte `datablock_half ‖ flexzone_half`
+  fingerprint → §2.2, §4.1, §6.3 (with byte-layout table + construction Mermaid).
+- Unified API (`compute_zone_hash`, `compute_fingerprint_from_wire`,
+  `make_schema_record`, `schema_records_equivalent`, `verify_request_fingerprint`)
+  → §2.4 I2/I4/I6, §3 source-file table, §9.4.
+- Two-jobs split (registry fingerprint vs data-plane `schema_tag`) → §2.2, §6.3, §3.
+- Registration paths B/C flow + wrong-flexzone worked example → §9.2.
+- Wire (128-hex `schema_hash`/`expected_schema_hash`, both zones on SCHEMA_ACK)
+  → §10.1, §10.2, §10.3.
+
+**As-built deviations from the draft checklist:** (1) the "inbox record →
+make_schema_record" item was *superseded* — the inbox-as-schema-record was
+removed entirely (broker block + HEP-0034 §11.4 rewritten to "not a registry
+record" + HEP-0027 §4.0 "Inbox initiation & execution" + 5 `Sch_Inbox*` tests
+retired); (2) `flexzone_packing` intentionally not added to channel structs
+(packing folds into the fingerprint); (3) per-zone rejection-detail labeling
+implemented (`hub_state.cpp::mismatch_zone`).
+
+**Verification:** full sweep green — 2639/2639 (from 2644; −5 retired inbox tests).
+New coverage added: L2 unit (`compute_zone_hash`, `make_schema_record`
+both/db-only/fz-only, `schema_records_equivalent`, `verify_request_fingerprint`),
+L2 state (flexzone-only record, zoneless-forbidden, flexzone-mismatch citation).
+
+Also archived this batch: **`DRAFT_schema_validation_consolidation_2026-07-20.md`**
+(single-validator consolidation, task #68 item 1). Verified fully implemented +
+merged: `verify_request_fingerprint` (Job A) + `_validate_schema_citation` as the
+single validator on every joiner path (Jobs B+C) + `CitationOutcome::kSchemaIdMismatch`
+all shipped (commit `2020078a`); model merged into HEP-0034 §9 (three-questions
+process), §2.4 I4, §9.2, §9.4. Its stale "No code yet" status was corrected before
+archiving. (The draft's `compute_canonical_hash_from_wire` references predate the
+two-zone rename to `compute_fingerprint_from_wire`.) Also fixed superseded
+`REVIEW_FullSystem_2026-07-20.md` findings — schema_utils.hpp:239 duplication
+(RESOLVED-BY-REDESIGN: two-jobs split) and schema_utils.hpp:331 flexzone-loss
+(FIXED: two-zone record).
+
 ### 2026-07-12 (REG/REG_ACK protocol redesign draft promoted to HEP-CORE-0046)
 
 Design draft `DRAFT_reg_ack_protocol_redesign.md` (2143 lines, DESIGN

@@ -1,7 +1,17 @@
 # DRAFT — Schema-validation consolidation (single validator, HEP-0034 I4)
 
-**Status:** design for review. No code yet. When approved, the model here
-merges into HEP-CORE-0034 (§9/§10/I4) and this draft is archived.
+**Status:** **IMPLEMENTED + MERGED + ARCHIVED (2026-07-22).** The reconciled
+model shipped: `verify_request_fingerprint` (Job A), `_validate_schema_citation`
+as the single validator on every joiner path (Jobs B+C, channel-first),
+`CitationOutcome` extended with `kSchemaIdMismatch` / `kSchemaOwnerMismatch`, and
+per-caller neutral-reason→wire-code mapping (`SCHEMA_MISMATCH` vs
+`SCHEMA_CITATION_REJECTED`). Merged into HEP-CORE-0034 §9 (three-questions
+process walkthrough), §2.4 I4 (single validator), §9.2 (flow diagram + worked
+example), §9.4 (function reference). Note: the primitive named
+`compute_canonical_hash_from_wire` throughout this draft was later renamed
+`compute_fingerprint_from_wire` and split into per-zone form by the 2026-07-22
+two-zone unification — the validator/consolidation model here is unchanged (one
+64-byte hash compare). Original design record below.
 **Origin:** REVIEW_FullSystem_2026-07-20 finding — `_validate_schema_citation`
 is defined but never called (task #68, item 1). Investigation showed the check
 is *not* missing (it happens inline) but is **duplicated across several sites

@@ -152,14 +152,14 @@ TEST_F(Pattern4BrokerHealthTest, SchemaMismatchNotify)
     // schema_hash without schema_blds → stored as an opaque citation (no
     // canonical recomputation).
     auto body_a = producer_reg_body(setup, channel, uid_a, /*shm=*/true);
-    body_a["schema_hash"] = std::string(64, 'a');
+    body_a["schema_hash"] = std::string(128, 'a');
     auto reg_a = a.request("REG_REQ", body_a, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(reg_a.has_value());
     ASSERT_EQ(reg_a->value("status", std::string{}), "success") << "body=" << reg_a->dump();
 
     auto b = make_wire_client(ctx, setup, uid_b);
     auto body_b = producer_reg_body(setup, channel, uid_b, /*shm=*/true);
-    body_b["schema_hash"] = std::string(64, 'b');
+    body_b["schema_hash"] = std::string(128, 'b');
     auto reg_b = b.request("REG_REQ", body_b, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(reg_b.has_value()) << "broker should respond with ERROR, not silent timeout";
     EXPECT_EQ(reg_b->value("status", std::string{}), "error");

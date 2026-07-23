@@ -694,7 +694,7 @@ that legitimately need in-process broker state inspection keep
     `schema_hash_stored_on_reg` stays (schema_hash not on any wire ACK).
     Fidelity note: schema_hash must be the real canonical BLAKE2b of
     `schema_blds`+packing (broker rejects `FINGERPRINT_INCONSISTENT`) —
-    compute via `hub::compute_canonical_hash_from_wire`, not a stub.
+    compute via `hub::compute_fingerprint_from_wire`, not a stub.
   - **Full read-based classification (2026-07-15, via per-file audit
     agents — grep is unreliable here).**  The sweep target is the 7
     files using `HubHostBrokerHandle` specifically; files using

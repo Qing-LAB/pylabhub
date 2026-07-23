@@ -24,6 +24,41 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### Schema registry — two-zone unification + inbox-record removal (2026-07-22) ✅
+
+- **Two-zone `SchemaRecord`**: one record carries datablock + flexzone un-merged;
+  single 64-byte `datablock_half ‖ flexzone_half` fingerprint (each half
+  `BLAKE2b(zone_blds||"|pack:"||packing)`, absent zone = zero half, never
+  all-zero). Unified API in `schema_utils.hpp`: `compute_zone_hash`,
+  `compute_fingerprint_from_wire` (was `compute_canonical_hash_from_wire`),
+  `make_schema_record` (THE single builder), `schema_records_equivalent`,
+  `verify_request_fingerprint`. Wire `schema_hash`/`expected_schema_hash` now
+  128 hex; `SCHEMA_ACK`/DISC_ACK/snapshot return both zones. Data-plane
+  `schema_tag` (`compute_schema_hash`) left folded — separate Job-1 mechanism.
+  Fixes the SCHEMA_REQ flexzone-loss bug (REVIEW_FullSystem finding).
+- **Inbox removed from the registry**: the broker no longer files a
+  `(uid,"inbox")` `SchemaRecord`; it only fail-fast validates `inbox_schema_json`
+  / `inbox_packing` (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`). Inbox
+  schema is discovered as JSON via `ROLE_INFO_REQ` (HEP-0027 §4.0). Registry now
+  holds channel schemas only; `make_schema_record` is the sole creation path.
+- **Docs**: HEP-0034 (§2.2/2.4/3/4.1/4.3/6.3/9/10/11.4 + Mermaid + worked
+  examples), HEP-0027 §4.0 "Inbox initiation & execution", HEP-0033 §19.5. Two
+  design drafts archived (`docs/archive/transient-2026-07-22/`); DOC_ARCHIVE_LOG
+  updated. Green: 2639/2639.
+- **Note — flexzone wiring is already implemented (RETRACTED false "gap" list).**
+  An earlier draft of this entry listed a "wiring arc" of flexzone gaps sourced
+  from an unverified subagent map; on direct code review those were wrong.
+  Flexzone is carried and verified: SHM flexzone identity lives in the data-block
+  header (`data_block.hpp:237 flexzone_schema_hash[32]`) and the reader verifies
+  it (`hub::RxOptions::{fz_schema,fz_packing,verify_fz}`, `hub_queue_factory.hpp`);
+  mismatches are rejected (tests `FlexzoneMismatchRejected` /
+  `BothSchemasMismatchRejected`, `test_datahub_schema_validation.cpp`). Flexzone
+  is SHM-only by design (ZMQ folds `fz_spec` into the drift `schema_tag` only),
+  and flexzone-only SHM channels are supported. The only genuinely-deferred item
+  is the runtime role-side `SCHEMA_REQ` *sender* (owner decision (ii): handler
+  correct now, sender later) — and even that is optional, since roles resolve
+  named schemas from the local cache and the broker validates on REG_REQ.
+
 ### REG/REG_ACK Protocol Redesign — HEP-CORE-0046 promoted (2026-07-12)
 
 **Design authority:** `docs/HEP/HEP-CORE-0046-REG-Protocol-Redesign.md`
@@ -174,6 +209,24 @@ L1 pin `test_wire_dispatch_table.cpp` updated.
 ---
 
 ## Open broker-specific items
+
+### Federation control-envelope bypass → fold into the federation redesign (filed 2026-07-22)
+
+The broker↔broker federation handshake **bypasses `WireEnvelope`** and hand-rolls
+a **divergent** control frame layout: `HUB_PEER_HELLO` (`broker_service.cpp:1095`)
+and `HUB_PEER_BYE` (`:1338`) send `[kFrameTypeControl, msg_type, body]` (3 frames,
+**no `correlation_id`**) via raw `socket.send`, vs the standard
+`WireEnvelope::build_router_send` layout `['C', msg_type, correlation_id, body]`.
+So federation is a second, drifting copy of the JSON control format. All *other*
+control traffic uses `WireEnvelope`, and the msgpack data plane is already
+centralized in `wire_detail` (`zmq_wire_helpers.hpp`) with no bypass — federation
+is the lone exception (documented in HEP-CORE-0047 §3.0).
+
+**Cleanup (do as part of the federation redesign, not standalone):** route
+`HUB_PEER_HELLO`/`HUB_PEER_BYE`/`HUB_TARGETED_MSG`/`HUB_RELAY_MSG` through
+`WireEnvelope::build_router_send` (+ the parse side through `receive_and_validate`)
+so there is genuinely ONE control-envelope path. Federation is slated for a
+broader redesign anyway (HEP-CORE-0022); this rides along.
 
 ### Native engine inbox API parity gap (filed 2026-07-17; RE-SCOPED 2026-07-18)
 

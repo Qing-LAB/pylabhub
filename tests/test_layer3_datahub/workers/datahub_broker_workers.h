@@ -76,25 +76,13 @@ int broker_sch_no_packing_backward_compat();
  *  packing, blds); legacy `channel_name` form still works alongside. */
 int broker_sch_schema_req_owner_id();
 
-/** REG_REQ with inbox metadata creates a schema record under
- *  (role_uid, "inbox"); SCHEMA_REQ for that key returns the record. */
-int broker_sch_inbox_path_a();
 
-/** Two REG_REQs from same uid with different inbox schemas →
- *  SCHEMA_HASH_MISMATCH_SELF on the second.  Pins HEP-0034 §11.4
- *  "schemas live with the role" semantics for inbox. */
-int broker_sch_inbox_hash_mismatch_self();
 
-/** Same uid, same inbox schema → idempotent (second REG_REQ succeeds). */
-int broker_sch_inbox_idempotent();
 
 /** Malformed `inbox_schema_json` (not JSON, or not an array) → broker
  *  returns INBOX_SCHEMA_INVALID before persisting any state. */
 int broker_sch_inbox_invalid_json();
 
-/** Two different roles each register their own inbox → both records
- *  exist independently (HEP-0034 §8 namespace-by-owner applied to inbox). */
-int broker_sch_inbox_two_owners();
 
 /** SCHEMA_REQ with neither (owner+schema_id) nor channel_name →
  *  INVALID_REQUEST. */
@@ -103,6 +91,14 @@ int broker_sch_schema_req_invalid();
 /** REG_REQ with `inbox_packing` that is neither "aligned" nor "packed"
  *  → INVALID_INBOX_PACKING. */
 int broker_sch_inbox_invalid_packing();
+
+/** End-to-end inbox schema discovery (HEP-0027 §4.0 / HEP-0034 §11.4): a
+ *  receiver advertises its inbox schema; a sender discovers it as JSON via
+ *  ROLE_INFO_REQ, confirms SCHEMA_REQ(uid,"inbox")→SCHEMA_UNKNOWN (not a
+ *  registry record), builds an InboxClient from the discovered schema and
+ *  delivers a typed message read back by value. (Wrong-schema rejection is
+ *  covered separately by InboxQueueTest.SchemaMismatch_*.) */
+int broker_sch_inbox_discovery_roundtrip();
 
 // ── HEP-0034 Phase 3 follow-up — Stage-2 verification + tightened gates ────
 
@@ -130,10 +126,6 @@ int broker_sch_cons_anonymous_missing_packing();
  *  (defense-in-depth catches consumer-local blds drift). */
 int broker_sch_cons_named_with_structure_mismatch();
 
-/** Producer with inbox metadata; on role disconnect (heartbeat
- *  timeout), the (uid, "inbox") schema record evicts atomically.
- *  Audit-found gap. */
-int broker_sch_inbox_evicts_on_disconnect();
 
 // ── HEP-0034 Phase 4b — hub-globals + path-C adoption ──────────────────────
 

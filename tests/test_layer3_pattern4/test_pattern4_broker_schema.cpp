@@ -49,7 +49,7 @@ constexpr const char *kSchemaPacking = "aligned";
 
 std::string canonical_hash_hex(const std::string &blds, const std::string &packing)
 {
-    const auto h = pylabhub::hub::compute_canonical_hash_from_wire(blds, packing);
+    const auto h = pylabhub::hub::compute_fingerprint_from_wire(blds, packing);
     return pylabhub::format_tools::bytes_to_hex(
         {reinterpret_cast<const char *>(h.data()), h.size()});
 }

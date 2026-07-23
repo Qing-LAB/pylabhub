@@ -9,7 +9,7 @@
 
 #include "utils/recovery_api.hpp"
 #include "utils/schema_loader.hpp"
-#include "utils/schema_utils.hpp" // canonical_fields_str, compute_canonical_hash_from_wire
+#include "utils/schema_utils.hpp" // canonical_fields_str, compute_fingerprint_from_wire, make_schema_record
 
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
@@ -56,17 +56,18 @@ constexpr std::chrono::milliseconds kPollTimeout{100};
 // Universal framing: Frame 0 type byte for all ZMQ messages.
 constexpr char kFrameTypeControl = 'C';
 
-/// Convert a 64-char hex-encoded schema hash string ->std::array<uint8_t, 32>.
-/// Returns a zero-filled array on format error (wrong length or invalid hex).
-std::array<uint8_t, 32> hex_to_hash_array(const std::string &hex) noexcept
+/// Convert a 128-char hex-encoded two-zone fingerprint (`datablock_half ‖
+/// flexzone_half`, HEP-CORE-0034 §6.3) -> std::array<uint8_t, 64>.  Returns a
+/// zero-filled array on format error (wrong length or invalid hex).
+std::array<uint8_t, 64> hex_to_fingerprint_array(const std::string &hex) noexcept
 {
-    std::array<uint8_t, 32> result{};
-    if (hex.size() != 64)
+    std::array<uint8_t, 64> result{};
+    if (hex.size() != 128)
         return result;
     const auto decoded = format_tools::bytes_from_hex(hex);
-    if (decoded.size() != 32)
+    if (decoded.size() != 64)
         return result; // invalid chars ->bytes_from_hex returned original
-    std::memcpy(result.data(), decoded.data(), 32);
+    std::memcpy(result.data(), decoded.data(), 64);
     return result;
 }
 
@@ -2130,7 +2131,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
         pylabhub::hub::SchemaCitationInput sin;
         sin.channel_owner = existing_opt->schema_owner;
         sin.channel_id = existing_opt->schema_id;
-        sin.channel_hash = hex_to_hash_array(existing_opt->schema_hash);
+        sin.channel_hash = hex_to_fingerprint_array(existing_opt->schema_hash);
         sin.channel_producer_uids.reserve(existing_opt->producers.size());
         for (const auto &p : existing_opt->producers)
             sin.channel_producer_uids.push_back(p.role_uid);
@@ -2138,7 +2139,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
         // Effective owner: an empty schema_owner means self-registration.
         const std::string claimed_owner = req.value("schema_owner", "");
         sin.cited_owner = claimed_owner.empty() ? role_uid : claimed_owner;
-        sin.expected_hash = hex_to_hash_array(attempted_schema);
+        sin.expected_hash = hex_to_fingerprint_array(attempted_schema);
 
         if (const auto vc = hub_state_->_validate_schema_citation(sin); !vc.ok())
         {
@@ -2319,13 +2320,11 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
         }
         else
         {
-            // Path B: self-registration.
-            pylabhub::schema::SchemaRecord rec;
-            rec.owner_uid = role_uid;
-            rec.schema_id = req_schema_id_raw;
-            rec.hash = h_recomputed;
-            rec.packing = req_schema_packing;
-            rec.blds = schema_blds_in;
+            // Path B: self-registration.  THE single builder computes the
+            // 64-byte `db‖fz` fingerprint from both zones (== h_recomputed).
+            auto rec = pylabhub::hub::make_schema_record(role_uid, req_schema_id_raw, schema_blds_in,
+                                                         req_schema_packing, req_flexzone_blds,
+                                                         req_flexzone_packing);
 
             using O = pylabhub::schema::SchemaRegOutcome;
             const auto outcome = hub_state_->_on_schema_registered(rec);
@@ -2353,32 +2352,22 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
         }
     }
 
-    // ── HEP-CORE-0034 §11.4 Phase 3b — inbox schema record (path A) ─────
+    // ── HEP-CORE-0027 — validate the advertised inbox schema (fail-fast) ──
     //
-    // When the producer's REG_REQ carries inbox metadata
-    // (`inbox_endpoint` + `inbox_schema_json` + `inbox_packing`), the
-    // broker constructs a SchemaRecord under (role_uid, "inbox") so
-    // sender-side citers can resolve it via `(role_uid, "inbox")`.
-    //
-    // Canonical form mirrors `compute_inbox_schema_tag` exactly so the
-    // 32-byte SchemaRecord.hash and the 8-byte wire `schema_tag` agree
-    // bytewise (tag = hash[0..7]).
-    //
-    // Backward compat: REG_REQs without `inbox_packing` skip this block;
-    // inbox metadata is still stored on `entry.producers.front()` but no
-    // SchemaRecord exists for it.
-    //
-    // Inbox info lives on ProducerEntry (HEP-CORE-0023 §2.1.1 + §2.6 +
-    // HEP-CORE-0027) — read from the ProducerEntry we just built.
+    // The inbox schema is a role's *mailbox message layout*, NOT a channel
+    // datablock/flexzone schema.  It is stored on the ProducerEntry
+    // (`inbox_schema_json`) and advertised to senders as JSON via
+    // ROLE_INFO_ACK (HEP-CORE-0027 §4) — it is NOT filed in
+    // `HubState.schemas` and is NOT reachable via SCHEMA_REQ.  The receiver
+    // already validates its own inbox schema when it builds its InboxQueue
+    // (`hub_inbox_queue.cpp::validate_inbox_schema`); here we only fail-fast
+    // on a malformed advertisement at the wire trust boundary.
     const auto &p_inbox = primary_producer;
     if (!p_inbox.inbox_endpoint.empty() && !p_inbox.inbox_schema_json.empty() &&
         !p_inbox.inbox_packing.empty() && !role_uid.empty())
     {
         // Reject invalid packing strings up-front — mirrors the queue-layer
-        // check in `hub_inbox_queue.cpp::validate_inbox_packing`.  Without
-        // this, the broker would compute a canonical form with a bogus
-        // packing string and persist it, but no inbox queue could later
-        // bind/connect against it.
+        // check in `hub_inbox_queue.cpp::validate_inbox_packing`.
         if (p_inbox.inbox_packing != "aligned" && p_inbox.inbox_packing != "packed")
         {
             LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_packing '{}' "
@@ -2389,31 +2378,18 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
                                   "' must be 'aligned' or 'packed'");
         }
 
-        // Compute the 32-byte fingerprint over inbox fields + packing.
-        std::string canonical;
+        // Validate the JSON shape: an object with a "fields" array, or a bare
+        // fields array (HEP-CORE-0027 §6 — the same shape the role's serializer
+        // emits and ROLE_INFO discovery consumes).
         try
         {
             const auto schema_parsed = nlohmann::json::parse(p_inbox.inbox_schema_json);
-            // Canonical inbox schema is the object form {"fields":[...], ...}
-            // per HEP-CORE-0027 §6 — the same shape the role's serializer emits
-            // and parse_schema_json / ROLE_INFO discovery consume.  Extract the
-            // fields array for the fingerprint (tolerate a bare array too).
             const nlohmann::json &schema_arr =
                 (schema_parsed.is_object() && schema_parsed.contains("fields"))
                     ? schema_parsed.at("fields")
                     : schema_parsed;
             if (!schema_arr.is_array())
                 throw std::runtime_error("inbox_schema_json has no fields array");
-            canonical.reserve(schema_arr.size() * 16 + 16);
-            for (const auto &f : schema_arr)
-            {
-                canonical += f.value("type", "");
-                canonical += ':';
-                canonical += std::to_string(f.value("count", uint32_t{1}));
-                canonical += ':';
-                canonical += std::to_string(f.value("length", uint32_t{0}));
-                canonical += ';';
-            }
         }
         catch (const std::exception &ex)
         {
@@ -2422,42 +2398,6 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
             return make_error(corr_id, "INBOX_SCHEMA_INVALID",
                               std::string("inbox_schema_json parse error: ") + ex.what());
         }
-        canonical += "|pack:";
-        canonical += p_inbox.inbox_packing;
-
-        pylabhub::schema::SchemaRecord rec;
-        rec.owner_uid = role_uid;
-        rec.schema_id = "inbox";
-        rec.hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
-                                                                             canonical.size());
-        rec.packing = p_inbox.inbox_packing;
-        rec.blds = p_inbox.inbox_schema_json;
-
-        using O = pylabhub::schema::SchemaRegOutcome;
-        const auto outcome = hub_state_->_on_schema_registered(rec);
-        if (outcome == O::kHashMismatchSelf)
-        {
-            LOGGER_WARN("Broker: REG_REQ inbox schema record mismatch for ({}, inbox): "
-                        "existing record under producer's namespace differs",
-                        role_uid);
-            return make_error(corr_id, "SCHEMA_HASH_MISMATCH_SELF",
-                              "Inbox schema record (" + role_uid +
-                                  ", inbox) already exists with a different "
-                                  "hash or packing");
-        }
-        if (outcome == O::kForbiddenOwner)
-        {
-            return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
-                              "Inbox schema record (" + role_uid +
-                                  ", inbox) rejected — missing required fields");
-        }
-        // Created or Idempotent → success.  No need to set anything on
-        // `entry`: the inbox schema record is keyed by the producer's
-        // role uid (not by channel name), so citers always look up
-        // `(<producer.role_uid>, "inbox")` against the matching
-        // `ProducerEntry` — there is no per-channel inbox-record
-        // reference to maintain.  See HEP-CORE-0027 §3
-        // (per-producer/per-consumer inbox ownership).
     }
 
     // ── Wave M2.5 step 3: controlled-access admission ───────────────
@@ -2487,6 +2427,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     schema_inv.schema_id = final_schema_id;
     schema_inv.schema_blds = schema_blds_in;
     schema_inv.schema_owner = final_schema_owner;
+    // HEP-CORE-0034 §6.3 two-zone — carry the flexzone content so the channel
+    // can return it (SCHEMA_ACK / DISC_ACK).  The flexzone half is already
+    // folded into `attempted_schema` (the 128-hex fingerprint).
+    schema_inv.flexzone_blds = req.value("flexzone_blds", "");
 
     pylabhub::hub::ChannelTransportInvariants transport_inv;
     // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
@@ -2907,7 +2851,8 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json &req)
     LOGGER_INFO("Broker: discovered channel '{}'", channel_name);
     nlohmann::json resp;
     resp["status"] = "success";
-    resp["schema_hash"] = entry_ref.schema_hash;
+    resp["schema_hash"] = entry_ref.schema_hash; // 128-hex `db‖fz` fingerprint
+    resp["flexzone_blds"] = entry_ref.flexzone_blds; // two-zone (HEP-CORE-0034 §6.3)
     // schema_version retired per C2 — consumers can parse the version
     // from `schema_id` via `pylabhub::hub::parse_schema_id()` if needed.
     // metadata wire shape decided in §6.1: per-producer tree keyed by
@@ -3337,7 +3282,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
                               "CONSUMER_REG_REQ with expected_schema_id requires "
                               "expected_schema_hash (HEP-CORE-0034 §10.3)");
 
-        std::array<uint8_t, 32> joiner_hash{};
+        std::array<uint8_t, 64> joiner_hash{};
         if (has_structure || !named)
         {
             // Named-with-structure (defense-in-depth) or anonymous: the full
@@ -3364,15 +3309,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
         }
         else
         {
-            // Named without structure: the claim IS the cited hash.
-            joiner_hash = hex_to_hash_array(expected_hash_hex);
+            // Named without structure: the claim IS the cited fingerprint.
+            joiner_hash = hex_to_fingerprint_array(expected_hash_hex);
         }
 
         // Step 2/3 — channel match + named-registry via the single validator.
         pylabhub::hub::SchemaCitationInput sin;
         sin.channel_owner = channel_entry.schema_owner;
         sin.channel_id = channel_entry.schema_id;
-        sin.channel_hash = hex_to_hash_array(channel_entry.schema_hash);
+        sin.channel_hash = hex_to_fingerprint_array(channel_entry.schema_hash);
         sin.channel_producer_uids.reserve(channel_entry.producers.size());
         for (const auto &p : channel_entry.producers)
             sin.channel_producer_uids.push_back(p.role_uid);
@@ -3473,6 +3418,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
         // expected_schema_id (`$name.v<N>`) per HEP-CORE-0034 §5.1.
         s.schema_id = expected_schema_id;
         s.schema_blds = expected_blds;
+        s.flexzone_blds = expected_fz_blds; // two-zone content (fingerprint folds packing)
         s.schema_owner = req.value("expected_schema_owner", std::string{});
         open_schema = std::move(s);
 
@@ -5425,8 +5371,12 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json &req)
         resp["status"] = "success";
         resp["owner"] = rec->owner_uid;
         resp["schema_id"] = rec->schema_id;
+        // Both zones, un-merged (HEP-CORE-0034 §10.3).  `packing`/`blds` are the
+        // datablock; `flexzone_*` the flexzone; empty strings ⇒ that zone absent.
         resp["packing"] = rec->packing;
         resp["blds"] = rec->blds;
+        resp["flexzone_packing"] = rec->flexzone_packing;
+        resp["flexzone_blds"] = rec->flexzone_blds;
         resp["schema_hash"] = format_tools::bytes_to_hex(
             {reinterpret_cast<const char *>(rec->hash.data()), rec->hash.size()});
         if (!corr_id.empty())
@@ -5457,7 +5407,8 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json &req)
     resp["schema_id"] = entry->schema_id;
     resp["schema_owner"] = entry->schema_owner; // HEP-0034 — empty for legacy channels
     resp["blds"] = entry->schema_blds;
-    resp["schema_hash"] = entry->schema_hash;
+    resp["flexzone_blds"] = entry->flexzone_blds; // two-zone (HEP-CORE-0034 §10.3)
+    resp["schema_hash"] = entry->schema_hash;     // 128-hex `db‖fz` fingerprint
     if (!corr_id.empty())
     {
         resp["correlation_id"] = corr_id;
@@ -6888,8 +6839,11 @@ nlohmann::json BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &
             nlohmann::json sj;
             sj["owner_uid"] = key.first;
             sj["schema_id"] = key.second;
+            // Both zones, un-merged (HEP-CORE-0034 §6.3); empty ⇒ zone absent.
             sj["packing"] = rec.packing;
             sj["blds"] = rec.blds;
+            sj["flexzone_packing"] = rec.flexzone_packing;
+            sj["flexzone_blds"] = rec.flexzone_blds;
             sj["hash"] = pylabhub::format_tools::bytes_to_hex(
                 std::string_view(reinterpret_cast<const char *>(rec.hash.data()), rec.hash.size()));
             sj["_collected_at"] = fmt_time(rec.registered_at);

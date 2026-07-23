@@ -97,8 +97,8 @@ class PYLABHUB_UTILS_EXPORT SchemaLibrary
      * @note The returned `SchemaInfo::hash` is the **HEP-0002 BLDS form**
      *       (used by the SHM-header self-description), NOT the HEP-0034
      *       wire/registry form. The two are different by design — see
-     *       HEP-CORE-0034 §2.4 I6. For wire/registry use, call
-     *       `compute_canonical_hash_from_wire` in `schema_utils.hpp`.
+     *       HEP-CORE-0034 §2.4 I6 / §6.3. For wire/registry use, call
+     *       `compute_fingerprint_from_wire` in `schema_utils.hpp`.
      *
      * @param fields    Parsed field list (from a SchemaLayoutDef).
      * @param packing   "aligned" or "packed" (HEP-CORE-0034 §6.2). Folded into

@@ -924,14 +924,14 @@ TEST_F(Pattern4BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
     zmq::context_t ctx;
     auto p1 = make_wire_client(ctx, setup, uid1);
     auto b1 = producer_reg_body(setup, channel, uid1, /*shm=*/true);
-    b1["schema_hash"] = std::string(64, 'a');
+    b1["schema_hash"] = std::string(128, 'a'); // 64-byte two-zone fingerprint width
     auto r1 = p1.request("REG_REQ", b1, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(r1.has_value()) << "first REG_REQ timed out";
     ASSERT_EQ(r1->value("status", std::string{}), "success");
 
     auto p2 = make_wire_client(ctx, setup, uid2);
     auto b2 = producer_reg_body(setup, channel, uid2, /*shm=*/true);
-    b2["schema_hash"] = std::string(64, 'b');
+    b2["schema_hash"] = std::string(128, 'b'); // 64-byte two-zone fingerprint width
     auto r2 = p2.request("REG_REQ", b2, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(r2.has_value()) << "broker should respond with ERROR, not silent timeout";
     EXPECT_EQ(r2->value("status", std::string{}), "error");
