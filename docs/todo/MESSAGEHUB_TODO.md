@@ -81,20 +81,40 @@ Wire discipline binding rule:
   KnownRolesConfig in `broker_reg_handler.hpp`.  14 L2 tests.
 - `HubState::nonce_seen` replay-bound primitive.  6 L2 tests.
 
-**Phase B (LOAD-BEARING NEXT COMMIT):**
-- `broker_service.cpp` dispatch rewire: parse via
-  `WireEnvelope::parse_router_recv`; every REG-family handler
-  switches to typed-body signature; `BrokerRegHandler` becomes a
-  member of `BrokerServiceImpl` and handles REG_REQ +
-  CONSUMER_REG_REQ.
-- BRC (`broker_request_comm.cpp`) rewire: DEALER `ZMQ_ROUTING_ID`
-  set to `role_uid`; every REG-family send method builds a typed
-  body + stamps `envelope_hash` + sends via
-  `WireEnvelope::build_dealer_send`; poll thread parses via
-  `parse_dealer_recv`; `pending_requests` re-keyed from `msg_type`
-  to `correlation_id`.
-- Atomic: A + B ship together, no runtime tolerance for mixed
-  old/new deployments (HEP-CORE-0046 §14.6 `I-WIRE-VERSION-ATOMIC`).
+**Phase B (LOAD-BEARING NEXT — task #57).  Sequenced plan (2026-07-23,
+code-verified).**  Coverage confirmed: every REG-family typed body already
+exists (Phase A; `CONSUMER_DEREG_REQ` reuses `DeregReqBody`) and the recv path
+already parses each message to its `Validated*` form — so there is NO body-class
+work; the handler rewire is wire-neutral and stageable, with a single atomic
+BRC/ACK flip.  Design authority + verified approach: **HEP-CORE-0046 §12
+Phase B**.
+
+- **B.1 — broker recv-handler rewire (internal, staged, reviewable).**  Convert
+  the 9 hand-parsed handlers (`handle_reg_req`, `handle_consumer_reg_req`,
+  `handle_dereg_req`, `handle_consumer_dereg_req`, `handle_endpoint_update_req`,
+  `handle_channel_auth_applied_req`, `handle_heartbeat_req`,
+  `handle_get_channel_auth_req`, `handle_disc_req`) to consume the typed
+  `Validated*` directly, retiring `to_legacy` / `dispatch_legacy`
+  (`broker_service.cpp:1422-1518`) per handler.  Acks stay legacy-JSON here
+  (input-only flip → wire-neutral).  Wire in the built `BrokerRegHandler` /
+  `reg_admission_pipeline` for REG + CONSUMER_REG; write typed handlers for the
+  other 7.  Sub-slices: (a) REG + CONSUMER_REG; (b) auth family (DEREG,
+  CONSUMER_DEREG, ENDPOINT_UPDATE, GET_CHANNEL_AUTH, CHANNEL_AUTH_APPLIED);
+  (c) HEARTBEAT_NOTIFY + DISC.  Each behavior-preserving; existing L2/L3 REG
+  round-trip tests stay green.
+- **B.2 — `inbox_schema_json` → typed `SchemaSpec` sub-structure.**  The
+  doubly-encoded field; see the design requirement + critical-path trace below.
+- **B.3 — BRC + ACK flip (the one atomic commit).**  BRC: `ZMQ_ROUTING_ID =
+  role_uid`; every REG-family send builds a typed body + `envelope_hash` +
+  `build_dealer_send`; poll thread `parse_dealer_recv`; `pending_requests`
+  re-keyed `msg_type → correlation_id`.  Broker: ack build → typed bodies.
+  `I-WIRE-VERSION-ATOMIC` version bump (§14.6) — send + ack flip together, no
+  mixed old/new deployment.  Highest blast radius (every registration) →
+  verify at L3/L4 + full sweep.
+- **B.4 — drift guard + retire legacy surface.**  Land the deferred
+  `process_message` embedded-JSON drift-guard test (its correct anchor, below).
+  Delete the dead JSON `handle_*_req` bodies + `to_legacy` / `dispatch_legacy`.
+  Full L2/L3/L4 sweep as the atomic close.
 
 **Phase B design requirement — guard embedded-JSON shape drift:**
 The typed-envelope work MUST cover *doubly-encoded* fields (a wire

@@ -1221,6 +1221,30 @@ before topology admission, atomic wire cut for the whole chain.
    msg_type body class.  Every handler signature becomes
    `handle_XXX(const WireEnvelope& env, const XxxBody& body, ...)`.
 
+**Phase B — verified state + staging discipline (checked against code
+2026-07-23).**  Two facts shape how Phase B lands:
+
+- **Typed-body coverage is already complete.**  Every REG-family message has
+  its `Validated*` type and `Xxx{Req,Ack}Body` from Phase A
+  (`CONSUMER_DEREG_REQ` reuses `DeregReqBody`), and the recv path already
+  parses each message into its `Validated*` form before dispatch.  So no
+  body-class work remains — Phase B is purely the handler + BRC rewire.
+- **The handler rewire is wire-neutral, the BRC flip is the only atomic
+  commit.**  Because the recv side already holds the typed form, converting a
+  broker handler to consume it directly is an INTERNAL change (acks stay
+  legacy-JSON meanwhile).  The nine recv handlers therefore convert one-by-one
+  behind the still-live recv path, retiring the `to_legacy` / `dispatch_legacy`
+  bridge per handler — behavior-preserving, reviewable in slices.  The single
+  atomic, high-blast-radius commit is the BRC send + ACK flip (typed bodies +
+  `envelope_hash` + `correlation_id`-keyed pending + the
+  `I-WIRE-VERSION-ATOMIC` bump, §14.6); no mixed old/new deployment.
+
+The doubly-encoded `inbox_schema_json` (§14.3) collapses to a typed
+`SchemaSpec` sub-structure parsed once at the envelope boundary, so the broker
+validator and ROLE_INFO discovery share one parse — structurally retiring the
+divergent-hand-parse bug class (the array-vs-object mismatch that rejected every
+inbox-configured producer).
+
 **Phase C — Admission-gate ordering (security first).**
 
 6. Broker REG-family handlers: run gates 1-7 per §14.5 BEFORE any
