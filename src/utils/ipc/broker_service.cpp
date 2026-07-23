@@ -662,7 +662,10 @@ class BrokerServiceImpl
     /// Always returns a response. The returned JSON's status field indicates
     /// the DISC response variant: "success" (DISC_ACK), "pending" (DISC_PENDING),
     /// or "error" (CHANNEL_NOT_FOUND). See HEP-CORE-0023 §2.2.
-    nlohmann::json handle_disc_req(const nlohmann::json &req);
+    // HEP-CORE-0046 Phase B (B.1a): typed-body signature.  `corr_id` comes
+    // from the envelope; `channel_name` from the typed `DiscReqBody`.
+    nlohmann::json handle_disc_req(const ::pylabhub::wire::DiscReqBody &body,
+                                   const std::string &corr_id);
     nlohmann::json handle_dereg_req(const nlohmann::json &req, zmq::socket_t &socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json &req,
                                            const zmq::message_t &identity, zmq::socket_t &socket);
@@ -1515,7 +1518,21 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
                 dispatch_legacy(to_legacy(std::move(v), "GET_CHANNEL_AUTH_REQ"));
             else if constexpr (std::is_same_v<T, wd::ValidatedDiscReq>)
-                dispatch_legacy(to_legacy(std::move(v), "DISC_REQ"));
+            {
+                // HEP-CORE-0046 Phase B (B.1a): DISC_REQ consumes its typed body
+                // directly — the admission gates already ran in
+                // `receive_and_validate`, so there is no `to_legacy` round-trip.
+                // Read-only handler (HEP-CORE-0023 §2.2 three-response dispatch);
+                // the ACK stays legacy-JSON until the B.3 wire flip.
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_disc_req(v.body, v.correlation_id());
+                const std::string status = resp.value("status", "");
+                const std::string ack = (status == "success")   ? "DISC_ACK"
+                                        : (status == "pending") ? "DISC_PENDING"
+                                                                : "ERROR";
+                send_reply(socket, id_frame, ack, resp);
+            }
         },
         std::move(received));
 }
@@ -1583,23 +1600,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
             }
             send_reply(socket, identity, ack, resp);
         }
-        else if (msg_type == "DISC_REQ")
-        {
-            // Three-response dispatch (HEP-CORE-0023 §2.2):
-            //   "success" -> DISC_ACK (channel Ready)
-            //   "pending" -> DISC_PENDING (client retries)
-            //   otherwise -> ERROR (CHANNEL_NOT_FOUND)
-            nlohmann::json resp = handle_disc_req(payload);
-            const std::string status = resp.value("status", "");
-            std::string ack;
-            if (status == "success")
-                ack = "DISC_ACK";
-            else if (status == "pending")
-                ack = "DISC_PENDING";
-            else
-                ack = "ERROR";
-            send_reply(socket, identity, ack, resp);
-        }
+        // DISC_REQ retired from process_message — it now dispatches typed from
+        // `dispatch_received` (HEP-CORE-0046 Phase B, B.1a).  It always arrives
+        // as `ValidatedDiscReq`, so this branch was unreachable.
         else if (msg_type == "DEREG_REQ")
         {
             nlohmann::json resp = handle_dereg_req(payload, socket);
@@ -2764,10 +2767,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_disc_req(const nlohmann::json &req)
+nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::DiscReqBody &body,
+                                                  const std::string &corr_id)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
+    const std::string channel_name = body.channel_name();
     if (channel_name.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
