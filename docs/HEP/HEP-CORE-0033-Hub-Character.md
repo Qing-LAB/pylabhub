@@ -1813,6 +1813,11 @@ un-drained lines simply linger in the capped buffer until the next establish or
 shutdown. This is acceptable because the buffer is bounded and a returning
 operator re-establishes (which flushes and resets).
 
+The caps (line count, total bytes, per-line bytes) are operator-tunable via
+`admin.output_buffer` in hub config — defaults 1000 lines / 1 MiB / 64 KiB, and
+`max_line_bytes` must be `<= max_bytes` (else one line could evict the buffer),
+enforced at config load.
+
 **Internal — queue record (admin/script thread → broker thread):** a
 control method translates its `params` into a minimal typed record and
 enqueues it. Every record carries an `origin_uid` — the provenance stamp of
