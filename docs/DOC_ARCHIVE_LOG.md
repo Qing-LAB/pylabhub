@@ -6,6 +6,43 @@
 
 ## Archive batches
 
+### 2026-07-22 (admin console output-buffer design — merged into HEP-CORE-0033 §11)
+
+Design note `DRAFT_admin_console_output_buffer_2026-07-22.md` merged into
+`docs/HEP/HEP-CORE-0033-Hub-Character.md` §11 and archived to
+`docs/archive/transient-2026-07-22/`. This **replaces the reverse push
+notification path** the HEP previously sketched (an admin-thread notification
+queue that pushed unsolicited `{notify, origin_uid}` frames) with a
+**client-polled output buffer**.
+
+**Merge map (draft → HEP-0033 §11):**
+- Layer 6 rewritten push → pull output buffer + `admin_console_print` source →
+  §11.0.1 (text + flowchart).
+- Output-poll wire (`RESPONSE_QUERY_REQ` → `{status, lines[], dropped_count}`),
+  queue record gains `request_id`, response-semantics completion-via-buffer →
+  §11.0.4.
+- `response_query` method (return-and-clear, no replay nonce) → §11.2.
+- Plane-character + thread-model + transport rejustified (no push; persistent
+  session + polling) → §11.0.2 table, §11.0.3 (table + hand-off rule + sequence
+  diagram), §11.1 (message set, ROUTER/DEALER rationale, status blockquote,
+  transport sequence diagram).
+
+**Design decisions folded in:** one console at a time → one buffer (init on
+connect, flush-to-log + clear on disconnect); return-and-clear poll; log is a
+spill/flush sink only (overflow + non-empty-at-shutdown), never a per-line trail;
+cap is a safety valve for the abnormal path (hung console / script flood); every
+response JSON with explicit `status:"empty"` and each line's `content` a JSON
+object; poll is session-id + skew checked with **no replay nonce** (idempotent
+read); script source named `admin_console_print` (snake_case, matches
+`band_join`/`on_init`). The §11.0.4 "fire-and-forget vs synchronous `not_found`"
+tension needed no change — §11.0.4 already documented the accepted-not-completed
+model and the synchronous validation reject.
+
+**Remaining (IMPL, tracked `AUTH_TODO.md` Line E):** the buffer + `response_query`
+handler + `admin_console_print` HubAPI (Lua/Python/native) + `origin_uid`/`request_id`
+on the broker request records. Cap defaults + exact `admin_console_print` signature
+are impl-time choices.
+
 ### 2026-07-22 (schema two-zone unification draft — implemented, merged into HEP-CORE-0034)
 
 Design draft `DRAFT_schema_two_zone_unification.md` implemented and folded into

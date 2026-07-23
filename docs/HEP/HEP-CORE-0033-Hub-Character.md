@@ -1559,9 +1559,9 @@ own main loop. The admin socket never mutates hub state directly; it only
 
 #### 11.0.1 Logical layers
 
-An admin command passes through five forward layers; a sixth reverse layer
-carries notifications back. Each layer has a single responsibility and a
-defined hand-off to the next.
+An admin command passes through five forward layers; a sixth layer holds the
+hub's output for the operator to pull by polling. Each layer has a single
+responsibility and a defined hand-off to the next.
 
 1. **Ingress** — the command enters the hub.
    - *Operator (external):* a `DEALER` console holds a persistent CURVE
@@ -1586,12 +1586,15 @@ defined hand-off to the next.
 5. **Egress to roles** — actuation emits wire `NOTIFY` frames to the
    affected roles over the broker `ROUTER` — i.e. it re-enters the role
    plane's downstream.
-6. **Console notification (reverse path)** — actuation completion and hub
-   events are enqueued onto an admin-thread-owned notification queue; the
-   admin worker drains it and pushes `{notify, origin_uid, …}` frames to the
-   operator console. A script may also emit console notifications via
-   `HubAPI`. This is what makes the plane a *console* rather than a
-   request/reply RPC.
+6. **Console output (pull path)** — the hub appends output lines to a single
+   output buffer: the late result of an accepted command (tagged with the
+   command's `request_id`), a message the hub volunteers, or a line a script
+   emits via `admin_console_print`. The operator **polls** with
+   `RESPONSE_QUERY_REQ`; the admin worker returns the buffered lines and clears
+   them. There is no push — every hub→operator message is a reply to a poll, so
+   the plane stays strict request/reply while still being a *console*. The
+   buffer is capped; overflow and a non-empty buffer at shutdown spill to the
+   log (§11.0.4).
 
 ```mermaid
 flowchart TB
@@ -1605,7 +1608,7 @@ flowchart TB
         DISP["dispatch()<br/>session-id check → method table"]
         QRY["Query handler<br/>read state snapshot"]
         CTL["Control handler<br/>enqueue request record"]
-        NTX["notification drain<br/>→ push to console"]
+        BUF["Output buffer (single)<br/>read + clear on poll"]
     end
 
     subgraph bt["Broker thread — the hub main loop"]
@@ -1616,7 +1619,7 @@ flowchart TB
 
     ROLES["Roles<br/>DEALER peers"]
 
-    OP -->|"{method, session_id, params}"| RTR
+    OP -->|"command {method, session_id, params}"| RTR
     RTR --> DISP
     SC -.->|HubAPI| CTL
     SC -.->|HubAPI| QRY
@@ -1624,12 +1627,13 @@ flowchart TB
     DISP -->|control_*| CTL
     QRY -->|"{status:ok, result}"| OP
     CTL -->|"{status:ok} = accepted"| OP
-    CTL -->|"push record + origin_uid"| DRAIN
+    CTL -->|"record + origin_uid + request_id"| DRAIN
     POLL --> DRAIN --> ACT
     ACT -->|"CLOSING / BROADCAST NOTIFY"| ROLES
-    ACT -.->|"enqueue notification"| NTX
-    SC -.->|"admin_notify"| NTX
-    NTX -.->|"{notify, origin_uid}"| OP
+    ACT -.->|"append late result (request_id)"| BUF
+    SC -.->|"admin_console_print"| BUF
+    OP -->|"RESPONSE_QUERY_REQ (poll)"| RTR
+    BUF -.->|"lines[] + dropped_count"| OP
 ```
 
 #### 11.0.2 Why a separate plane — operator console vs role plane
@@ -1644,10 +1648,10 @@ channel with a different trust model, session model, and purpose.
 |---|---|---|
 | Peers | Many roles, each a `DEALER`, admitted continuously | One operator `DEALER` console, one persistent session |
 | Who talks | Data-plane roles — producers / consumers / processors | The operator (a human or a CLI tool) |
-| Session model | Stateless per-request admission of many peers | A single stateful session: establish once, stream commands + notifications |
+| Session model | Stateless per-request admission of many peers | A single stateful session: establish once, then commands + output polls |
 | Message form | Typed `WireEnvelope` (`REG_REQ`, `ATTACH_REQ`, …) | Typed `WireEnvelope` (`ADMIN_HELLO_REQ`, `ADMIN_*`, …) — same envelope, admin `msg_type`s (§11.1) |
 | Auth model | CURVE **+ ZAP key allowlist** — only known roles are admitted | CURVE crypto-only **+ sealed session id** — token once at establishment, no key gating |
-| Traffic profile | Continuous, high-volume control for the data plane | Rare, low-volume operator commands + event notifications |
+| Traffic profile | Continuous, high-volume control for the data plane | Rare, low-volume operator commands + output polls |
 
 Three reasons the hub keeps these as distinct planes rather than one:
 
@@ -1660,8 +1664,8 @@ Three reasons the hub keeps these as distinct planes rather than one:
    session-secret gate.
 2. **Different session and purpose.** The role plane admits many
    independent data-plane peers with no per-peer session state. The console
-   is one long-lived operator session with server-minted identity and a
-   bidirectional command+notification stream. Folding operator control onto
+   is one long-lived operator session with server-minted identity carrying
+   commands and output polls. Folding operator control onto
    the role `ROUTER` would entangle operator session identity with role
    admission and interleave operator commands with the data-plane fan-out.
 3. **Isolation from the single-pumper handler.** The broker owns exactly
@@ -1682,9 +1686,9 @@ part of the contract.
 
 | Thread | Owns | Admin-path responsibility |
 |---|---|---|
-| **Admin worker** (`"admin"`, spawned by `HubHost` via `ThreadManager`) | the `AdminService` `ROUTER` socket | Layers 1–3 + 6: recv, dispatch, session-id check, **query reads**, **control enqueue**, and **drains the reverse notification queue** to push console notifications. Never actuates. |
-| **Broker** (`"broker"`, spawned by `HubHost` via `ThreadManager`) | the broker `ROUTER` + hub registry | Layers 4–5: drains the request queues in its post-poll phase and actuates. The only thread that mutates channel/registry state; enqueues completion notifications back to the admin thread. |
-| **Script worker** (`HubScriptRunner`, present only when a script is loaded, §12) | the script engine | An *alternate* ingress: its `HubAPI` calls enqueue to the same broker queues (control), read snapshots (query augmentation), or enqueue console notifications (`admin_notify`). |
+| **Admin worker** (`"admin"`, spawned by `HubHost` via `ThreadManager`) | the `AdminService` `ROUTER` socket + the output buffer | Layers 1–3 + 6: recv, dispatch, session-id check, **query reads**, **control enqueue**, and — on a `response_query` poll — **returns and clears the output buffer**. Never actuates. |
+| **Broker** (`"broker"`, spawned by `HubHost` via `ThreadManager`) | the broker `ROUTER` + hub registry | Layers 4–5: drains the request queues in its post-poll phase and actuates. The only thread that mutates channel/registry state; appends completion results to the console output buffer. |
+| **Script worker** (`HubScriptRunner`, present only when a script is loaded, §12) | the script engine | An *alternate* ingress: its `HubAPI` calls enqueue to the same broker queues (control), read snapshots (query augmentation), or append lines to the console output buffer (`admin_console_print`). |
 
 Hand-off rules — the load-bearing invariant is **one thread owns each
 socket; every other thread reaches it only through a queue**:
@@ -1694,12 +1698,12 @@ socket; every other thread reaches it only through a queue**:
   queue's mutex, then returns. The broker thread drains it on its next loop
   iteration. The admin thread and broker thread never touch each other's
   sockets.
-- **Notification is a cross-thread enqueue (reverse).** The broker thread
-  (on actuation) and the script worker (`admin_notify`) push notification
-  records onto an **admin-thread-owned** queue; the admin worker drains it
-  and pushes over its `ROUTER`. Symmetric to the forward path — the admin
-  thread owns the console socket, so all notification senders enqueue rather
-  than write the socket directly.
+- **Output is a cross-thread append (reverse).** The broker thread (on
+  actuation completion) and the script worker (`admin_console_print`) append
+  lines to an **admin-thread-owned** output buffer guarded by its mutex. The
+  admin worker returns and clears those lines on the operator's next
+  `response_query` poll — no thread but the admin worker ever writes the
+  console socket, so producers append rather than push.
 - **Query is a cross-thread snapshot read.** A query handler on the admin
   thread takes a consistent snapshot of hub state; the broker serializes
   registry reads/writes under `m_query_mu` so the snapshot is coherent
@@ -1714,20 +1718,22 @@ sequenceDiagram
     participant OP as Operator console (DEALER)
     participant AT as Admin worker thread
     participant Q as Broker request queue
-    participant NQ as Console notify queue
+    participant BUF as Console output buffer
     participant BT as Broker thread (main loop)
     participant R as Roles (DEALER)
 
-    OP->>AT: {method:"close_channel", session_id, params}  (CURVE)
+    OP->>AT: {method:"close_channel", session_id, request_id, params}  (CURVE)
     AT->>AT: session-id check (facts match)
-    AT->>Q: enqueue {channel, origin_uid = session_id}
+    AT->>Q: enqueue {channel, origin_uid = session_id, request_id}
     AT-->>OP: {status:"ok"}  ← ACCEPTED, not yet completed
     Note over BT: next poll tick — post-poll phase, under m_query_mu
     BT->>Q: drain records
     BT->>R: CHANNEL_CLOSING_NOTIFY + teardown  (sender_uid = origin_uid)
-    BT->>NQ: enqueue {notify:"completed", origin_uid}
-    NQ-->>AT: drain
-    AT--)OP: {notify:"completed", origin_uid}  (async push)
+    BT->>BUF: append {request_id, ts, content:{completed}}
+    Note over OP: later — operator polls on its own cadence
+    OP->>AT: RESPONSE_QUERY_REQ  (CURVE)
+    AT->>BUF: read + clear
+    AT-->>OP: {status:"ok", lines:[{request_id, ts, content}], dropped_count}
 ```
 
 #### 11.0.4 Data-format contract
@@ -1774,25 +1780,36 @@ be absent.
 
 `error.code` is drawn from the finite, wire-stable catalog in §11.5.
 
-**Wire — notification (console → operator, unsolicited):**
+**Wire — output poll (operator → console):**
 
 ```json
-{ "notify": "<topic>", "origin_uid": "<stamp>", ... }
+{ "session_id": "<opaque sealed id>" }
+→ { "status": "ok" | "empty",
+    "lines": [ { "ts": <ms>, "request_id": "<id|absent>", "content": { ... } } ],
+    "dropped_count": <n> }
 ```
 
-Pushed by the reverse path (§11.0.1 layer 6): control-command completion and
-hub events. `origin_uid` names what caused it (§11.0.5).
+`RESPONSE_QUERY_REQ` drains the single output buffer (§11.0.1 layer 6): the
+console polls, the hub returns the buffered lines and **clears** them. An empty
+buffer returns `status:"empty"` explicitly — never silence. Each line's
+`content` is itself a JSON object (a plain message is `{"message":"…"}`); a line
+that answers an earlier command carries that command's `request_id`, so the
+operator pairs it back. Lines dropped to the log on overflow are counted in
+`dropped_count`. The poll is a read — session-id + skew-checked, no replay
+nonce (§11.1).
 
 **Internal — queue record (admin/script thread → broker thread):** a
 control method translates its `params` into a minimal typed record and
 enqueues it. Every record carries an `origin_uid` — the provenance stamp of
 the issuing session (§11.0.5) — which the broker uses as the `sender_uid` on
-the resulting `NOTIFY` and as the log tag for the whole actuation cascade.
+the resulting `NOTIFY` and as the log tag for the whole actuation cascade; and
+the `request_id` of the accepting command, so the broker can append the late
+completion result to the output buffer tagged with it (§11.0.1 layer 6).
 
 | Control method | Queue record |
 |---|---|
-| `close_channel` | `{ channel, origin_uid }` |
-| `broadcast_channel` | `{ channel, message, data, origin_uid }` |
+| `close_channel` | `{ channel, origin_uid, request_id }` |
+| `broadcast_channel` | `{ channel, message, data, origin_uid, request_id }` |
 
 **Actuation output (broker → roles, over `ROUTER`):** the drained record
 becomes a role-plane `NOTIFY` — `CHANNEL_CLOSING_NOTIFY` + teardown for a
@@ -1807,9 +1824,11 @@ different things by `{"status":"ok"}`:
   read has already happened.
 - **Control `ok`** — the command **passed synchronous validation** (target
   exists, params well-formed) and the actuation was **accepted and
-  enqueued**; it has **not** necessarily *completed* (there is no completion
-  acknowledgement — observe the effect via a subsequent query or the
-  role-plane `NOTIFY`). Commands the hub can reject up front do so
+  enqueued**; it has **not** necessarily *completed*. The completion result is
+  appended to the output buffer, tagged with the command's `request_id`, and
+  the operator observes it on a later poll (§11.0.1 layer 6) — or via a
+  subsequent query, or the role-plane `NOTIFY`. Commands the hub can reject up
+  front do so
   synchronously with a typed `ADMIN_ERROR`: e.g. `close_channel` on an
   unregistered channel returns `not_found` (§11.5), never `ok`. So `ok` is
   a promise of *acceptance*, not completion — but it is never returned for a
@@ -1938,11 +1957,11 @@ and the reference for task #57.)
 
 ### 11.1 Transport
 
-The admin plane is a **CURVE-secured operator console**: a persistent,
-bidirectional session over which the operator sends commands and the hub
-returns both replies *and* unsolicited notifications. It is CURVE-secured
-like every other hub interface (broker↔role, role↔role); it is not a
-plaintext exception.
+The admin plane is a **CURVE-secured operator console**: a persistent session
+over which the operator sends commands and output polls, and the hub returns
+replies — including the buffered output the operator pulls (§11.0.1 layer 6).
+It is CURVE-secured like every other hub interface (broker↔role, role↔role); it
+is not a plaintext exception.
 
 - **`ROUTER` socket** at `admin.endpoint` (default `tcp://127.0.0.1:5600`),
   configured as a **`curve_server`** keyed with the hub's **broker CURVE
@@ -1951,8 +1970,9 @@ plaintext exception.
   transport reuses the hub's existing keypair; there is no separate admin
   keypair. The operator connects a **`DEALER`** console that stays connected
   for the life of the session. `ROUTER`/`DEALER` — not `REQ`/`REP` — because
-  the hub must push notifications to the console at any time, not only in
-  reply to a command (the reverse path, §11.0.1).
+  the operator pipelines many requests over the one session (commands
+  interleaved with frequent output polls), which `DEALER` allows and strict
+  lock-step `REQ`/`REP` does not.
 - The operator connects with its own (ephemeral) CURVE keypair and pins the
   hub's broker public key as `curve_serverkey`. This authenticates the
   *server* to the operator — an impostor lacking the broker secret key fails
@@ -1977,9 +1997,10 @@ plaintext exception.
     (§11.0.5). The raw token is sent only here.
   - *command* — `{ "method", "session_id", "params" }` →
     `{ "status", "result"|"error" }`.
-  - *notification* (hub → console, unsolicited) —
-    `{ "notify":"<topic>", "origin_uid", ... }`. Completion of a control
-    command and hub events arrive this way (§11.0.3).
+  - *output poll* — `{ "session_id" }` →
+    `{ "status", "lines":[...], "dropped_count" }`. The operator pulls buffered
+    output (late command results, hub messages, script lines) this way; the hub
+    never pushes (§11.0.1 layer 6, §11.0.4).
 - The console carries the **typed `WireEnvelope`** (HEP-CORE-0046 §14) — the
   same 5-frame control-plane envelope the role plane uses — with **new admin
   `msg_type`s and `wire_bodies` bodies**. There is no JSON
@@ -1988,7 +2009,7 @@ plaintext exception.
   envelope with no `to_legacy` down-conversion, so it doubles as the
   reference implementation for the broader JSON→typed migration
   (**task #57 / HEP-CORE-0046 Phase B**, which converts the broker REG-family
-  handlers). Commands, responses, and notifications are all typed envelopes;
+  handlers). Commands, responses, and output polls are all typed envelopes;
   the logical field content is as shown in §11.0.4.
 
 > **Implementation status.** The `ROUTER` typed console is **shipped**:
@@ -2003,11 +2024,14 @@ plaintext exception.
 > `{method,token,params}` surface is retired.
 >
 > **Not yet implemented** (tracked in `docs/todo/AUTH_TODO.md` Line E):
-> the **reverse notification path** (§11.0.1 layer 6 — command-completion and
-> hub-event pushes; the console currently answers commands but does not yet
-> push notifications), and **`origin_uid` provenance** (§11.0.5 — the session
-> id is minted and used for the session gate, but is not yet threaded into the
-> broker request records, so actuations are not yet stamped with it).
+> the **console output buffer + `response_query` poll** (§11.0.1 layer 6 /
+> §11.0.4 — the console answers commands and queries today but has no output
+> buffer yet, so late results and hub messages have nowhere to land), the
+> **`admin_console_print` HubAPI** (the script source of output lines), and
+> **`origin_uid` + `request_id` on the broker request records** (§11.0.5 — the
+> session id is minted and used for the session gate, but is not yet threaded
+> into the broker request records, so actuations are not yet stamped and
+> completion results can't yet be tagged for the buffer).
 >
 > **Control-command semantics — resolved 2026-07-19** (CURVE-integration
 > review): control commands **validate synchronously** — `close_channel` on
@@ -2035,9 +2059,11 @@ sequenceDiagram
         HB-->>AD: data
         AD-->>OP: {status:ok, result}
     else control_*
-        AD->>HB: enqueue {…, origin_uid = session_id}
+        AD->>HB: enqueue {…, origin_uid = session_id, request_id}
         AD-->>OP: {status:ok}  (accepted)
-        HB--)OP: {notify:"completed", origin_uid, …}  (async, after actuation)
+        HB->>AD: append completion → output buffer (tagged request_id)
+    else response_query (poll)
+        AD-->>OP: {status:ok|empty, lines[…], dropped_count}
     end
 ```
 
@@ -2046,6 +2072,10 @@ sequenceDiagram
 
 **Query**: `list_channels`, `get_channel`, `list_roles`, `get_role`,
 `list_bands`, `list_peers`, `query_metrics`, `list_known_roles`.
+
+**Output**: `response_query` — drain and return the console output buffer
+(§11.0.4). A read, but distinct from a state query: it **consumes** what it
+returns (return-and-clear), and it carries no replay nonce (§11.1).
 
 **Control**: `close_channel`, `broadcast_channel`, `revoke_role`,
 `add_known_role`, `remove_known_role`, `reload_config`, `request_shutdown`.
