@@ -2195,6 +2195,13 @@ void HubState::console_on_disconnect()
     pImpl->console_buffer.on_disconnect();
 }
 
+void HubState::set_console_buffer_caps(std::size_t max_lines, std::size_t max_bytes,
+                                       std::size_t max_line_bytes)
+{
+    pImpl->console_buffer.set_caps(
+        pylabhub::utils::ConsoleOutputBuffer::Caps{max_lines, max_bytes, max_line_bytes});
+}
+
 std::uint64_t HubState::_on_role_confirmed(const std::string &channel_name,
                                            const std::string &role_uid,
                                            std::uint64_t applied_version)

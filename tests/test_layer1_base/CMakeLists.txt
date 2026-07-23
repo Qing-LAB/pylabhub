@@ -475,6 +475,38 @@ gtest_discover_tests(test_layer1_console_output_buffer
 )
 
 # ============================================================================
+# Test: parse_hub_admin_config — the admin.output_buffer console-buffer caps
+# (HEP-CORE-0033 §11.0.4).  Pure-function parse + strict validation.
+# ============================================================================
+
+add_executable(test_layer1_hub_admin_config
+    test_hub_admin_config.cpp
+)
+
+target_link_libraries(test_layer1_hub_admin_config
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_hub_admin_config)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_hub_admin_config
+    SUITE_NAME "Layer1_HubAdminConfig"
+)
+layer1_require_staged_utils(test_layer1_hub_admin_config)
+
+gtest_discover_tests(test_layer1_hub_admin_config
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer1;admin;config"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: wire_dispatch::kDispatchTable regression pin (Group 5 gap 3)
 # ============================================================================
 

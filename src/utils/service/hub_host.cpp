@@ -35,7 +35,13 @@ namespace pylabhub::hub_host
 
 struct HubHost::Impl
 {
-    explicit Impl(config::HubConfig c) : cfg(std::move(c)) {}
+    explicit Impl(config::HubConfig c) : cfg(std::move(c))
+    {
+        // Wire the operator-console output-buffer caps from config (§11.0.4)
+        // before any thread can append — cfg and state are both live here.
+        const auto &ob = cfg.admin().output_buffer;
+        state.set_console_buffer_caps(ob.max_lines, ob.max_bytes, ob.max_line_bytes);
+    }
 
     config::HubConfig cfg;
     hub::HubState state;                              // owned by HubHost

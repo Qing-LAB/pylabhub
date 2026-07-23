@@ -91,6 +91,16 @@ class ConsoleOutputBuffer
     {
     }
 
+    /// Set the caps (operator-tunable via hub config, §11.0.4).  Intended to be
+    /// called once at hub construction, before any thread appends — but locked
+    /// for safety.  Does not retroactively evict; the new caps apply to the
+    /// next append.
+    void set_caps(Caps caps)
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        caps_ = caps;
+    }
+
     /// Append one line. `request_id` is empty for hub/script-volunteered
     /// lines. A non-object or oversize `content` is replaced with a
     /// truncation marker. Overflow drops the oldest lines to the log sink and

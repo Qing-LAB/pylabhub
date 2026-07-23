@@ -136,7 +136,7 @@ class AdminServiceTest : public ::testing::Test, public pylabhub::tests::LogCapt
 
     /// A started HubHost with admin enabled; returns the admin ROUTER
     /// endpoint once bound.  Broker is up (ZAP handler active).
-    std::string start_hub(const char *tag)
+    std::string start_hub(const char *tag, std::size_t console_max_lines = 0)
     {
         const fs::path dir = unique_temp_dir(tag);
         paths_to_clean_.push_back(dir);
@@ -151,6 +151,8 @@ class AdminServiceTest : public ::testing::Test, public pylabhub::tests::LogCapt
         j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
         j["admin"]["enabled"] = true;
         j["admin"]["endpoint"] = "tcp://127.0.0.1:0";
+        if (console_max_lines != 0)
+            j["admin"]["output_buffer"]["max_lines"] = console_max_lines;
         j["script"]["path"] = "";
         {
             std::ofstream f(hub_json);
@@ -425,6 +427,35 @@ TEST_F(AdminServiceTest, Console_ResponseQuery_ReturnsAppendedLinesThenClears)
     ASSERT_TRUE(r2.has_value());
     EXPECT_EQ(r2->body["result"].value("status", std::string{}), "empty");
     EXPECT_TRUE(r2->body["result"]["lines"].empty());
+
+    TearDownHub();
+}
+
+TEST_F(AdminServiceTest, Console_ResponseQuery_ConfigCapEnforced)
+{
+    // `admin.output_buffer.max_lines` from config must reach the buffer: with a
+    // cap of 2, appending 3 lines spills the oldest to the log; the poll returns
+    // only the newest 2 + dropped_count=1.  The spill WARN both proves the
+    // config cap fired (not the default 1000) and is the expected log line.
+    ExpectLogWarnMustFire("[admin_console] output line spilled");
+    const std::string ep = start_hub("rq_cap", /*console_max_lines=*/2);
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
+
+    host_->append_console_line("", json{{"message", "l1"}});
+    host_->append_console_line("", json{{"message", "l2"}});
+    host_->append_console_line("", json{{"message", "l3"}});
+
+    auto r = console.command(w::kAdminResponseQueryReq);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_TRUE(r->body["result"].is_object());
+    EXPECT_EQ(r->body["result"].value("status", std::string{}), "ok");
+    const auto &lines = r->body["result"]["lines"];
+    ASSERT_EQ(lines.size(), 2u) << "config max_lines=2 not enforced; got " << lines.size();
+    EXPECT_EQ(lines[0]["content"].value("message", std::string{}), "l2");
+    EXPECT_EQ(lines[1]["content"].value("message", std::string{}), "l3");
+    EXPECT_EQ(r->body["result"].value("dropped_count", 0U), 1U);
 
     TearDownHub();
 }

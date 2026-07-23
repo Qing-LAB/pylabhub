@@ -1719,6 +1719,10 @@ class PYLABHUB_UTILS_EXPORT HubState
     [[nodiscard]] nlohmann::json drain_console_output();
     void console_on_connect();
     void console_on_disconnect();
+    /// Set the console output-buffer caps (operator-tunable via
+    /// `admin.output_buffer`, §11.0.4).  Called once at hub construction.
+    void set_console_buffer_caps(std::size_t max_lines, std::size_t max_bytes,
+                                 std::size_t max_line_bytes);
 
     /// HEP-CORE-0042 §5.4 + §5.5.2 (unified 2026-07-13) — advance
     /// `ledger.confirm(role_uid, applied_version)` for the named
