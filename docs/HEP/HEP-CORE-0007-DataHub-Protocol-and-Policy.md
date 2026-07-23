@@ -1763,7 +1763,14 @@ Dispatch:   `on_notification(cb)` callback receives msg_type
 
 Payload:
   channel_name          string
-  reason                string   ("script_requested" | "heartbeat_timeout" | "voluntary_close")
+  reason                string   ADVISORY hint only — delivered to the script's
+                                 on_channel_closing(channel, reason) callback and
+                                 the logs; NO framework code branches on it (unlike
+                                 the attach-retry reasons, which are). A short word
+                                 for why the channel is closing, e.g.
+                                 "producer_deregistered", "heartbeat_timeout",
+                                 "pending_timeout", "script_requested" (a hub script
+                                 asked), "admin_requested" (an operator asked).
 
 Script host behavior: Queued as IncomingMessage{event="channel_closing"}.
   Delivered in FIFO order alongside other messages (broadcasts, data, etc.).

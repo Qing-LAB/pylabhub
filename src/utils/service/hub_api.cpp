@@ -367,11 +367,16 @@ void HubAPI::admin_console_print(nlohmann::json content)
 {
     if (!impl_->host)
         return;
-    // Ergonomic: a bare string becomes {"message": "…"} so a script can call
-    // admin_console_print("hello"); structured objects pass through unchanged
-    // (the buffer guards any remaining non-object shape, §11.0.4).
-    if (content.is_string())
-        content = nlohmann::json{{"message", std::move(content)}};
+    // Ergonomic normalization (one place): a script may pass any value; a
+    // non-object becomes {"message": <text>} so the console always shows
+    // something sensible — a bare string/number/array/bool/null renders as its
+    // text form.  Objects pass through unchanged.  The buffer's size guard
+    // (§11.0.4) remains the backstop for oversize content.
+    if (!content.is_object())
+    {
+        std::string text = content.is_string() ? content.get<std::string>() : content.dump();
+        content = nlohmann::json{{"message", std::move(text)}};
+    }
     // Script-originated console line (§11.0.4): empty request_id (not a reply
     // to an operator command); the buffer stamps the timestamp.
     impl_->host->append_console_line(std::string{}, std::move(content));

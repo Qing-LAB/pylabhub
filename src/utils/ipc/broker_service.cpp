@@ -1163,9 +1163,17 @@ void BrokerServiceImpl::run()
                     // race with the close), then call _on_channel_closed
                     // which marks the producer-presence Disconnected, fires
                     // CHANNEL_CLOSED handlers, and erases the channel entry.
-                    LOGGER_INFO("Broker: requested close for channel '{}'", ch);
-                    send_closing_notify(router, ch, *hub_entry, "script_requested");
-                    on_channel_closed(router, ch, *hub_entry, "script_requested");
+                    // The closing `reason` is an ADVISORY hint delivered to the
+                    // consumer's on_channel_closing(channel, reason) callback +
+                    // logs; no framework code branches on it (contrast the
+                    // attach-retry reasons at role_api_base, which ARE branched
+                    // on).  Report it accurately: an operator close carries an
+                    // origin_uid, a script close does not.
+                    const char *close_reason =
+                        cr.origin_uid.empty() ? "script_requested" : "admin_requested";
+                    LOGGER_INFO("Broker: requested close for channel '{}' ({})", ch, close_reason);
+                    send_closing_notify(router, ch, *hub_entry, close_reason);
+                    on_channel_closed(router, ch, *hub_entry, close_reason);
                     hub_state_->_on_channel_closed(ch,
                                                    pylabhub::hub::ChannelCloseReason::AdminClose);
                     // HEP-CORE-0036 §6.5 + HEP-CORE-0042 §5.4: drop the

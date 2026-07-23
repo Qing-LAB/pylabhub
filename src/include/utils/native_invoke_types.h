@@ -78,8 +78,9 @@ typedef struct
 typedef struct
 {
     const char *channel; /**< Closed channel name. */
-    const char *reason;  /**< e.g. "producer_deregistered",
-                              "pending_timeout", "script_requested". */
+    const char *reason;  /**< Advisory hint (not branched on): e.g.
+                              "producer_deregistered", "pending_timeout",
+                              "script_requested", "admin_requested". */
 } plh_channel_closing_args_t;
 
 /** on_consumer_died args (HEP-CORE-0011; HEP-CORE-0023 §2.1.1).

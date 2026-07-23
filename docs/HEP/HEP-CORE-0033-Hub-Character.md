@@ -1798,6 +1798,21 @@ operator pairs it back. Lines dropped to the log on overflow are counted in
 `dropped_count`. The poll is a read — session-id + skew-checked, no replay
 nonce (§11.1).
 
+`status:"empty"` means **nothing happened** since the last poll — no lines *and*
+no drops. If lines were spilled to the log to stay under the cap, the reply is
+`status:"ok"` with `dropped_count > 0` even when no lines remain to return, so a
+drop is never hidden behind an "empty".
+
+**Buffer lifecycle.** One console at a time, so one buffer. It is initialized
+empty when a console **establishes** (a fresh session starts clean); a prior
+console's un-drained lines are flushed to the log at that point (the prior
+console is, by the one-at-a-time rule, gone). It is flushed to the log again at
+hub **shutdown** if non-empty. A bare transport disconnect (the `DEALER` drops
+without a new establish and without shutdown) is not separately detected — the
+un-drained lines simply linger in the capped buffer until the next establish or
+shutdown. This is acceptable because the buffer is bounded and a returning
+operator re-establishes (which flushes and resets).
+
 **Internal — queue record (admin/script thread → broker thread):** a
 control method translates its `params` into a minimal typed record and
 enqueues it. Every record carries an `origin_uid` — the provenance stamp of

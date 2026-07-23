@@ -2172,12 +2172,15 @@ nlohmann::json HubState::drain_console_output()
     // §11.0.4 output-poll result document — return-and-clear.  `status:"empty"`
     // when nothing was buffered; each line's `content` is a JSON object.
     auto d = pImpl->console_buffer.drain();
-    const bool had_lines = !d.lines.empty();
+    // status:"empty" means nothing happened since the last poll — no lines AND
+    // no drops.  If lines were spilled to the log, dropped_count>0 is news, so
+    // the status is "ok" even when no lines remain to return.
+    const bool nothing = d.lines.empty() && d.dropped_count == 0;
     nlohmann::json lines = nlohmann::json::array();
     for (auto &l : d.lines)
         lines.push_back(nlohmann::json{
             {"ts", l.ts_ms}, {"request_id", l.request_id}, {"content", std::move(l.content)}});
-    return nlohmann::json{{"status", had_lines ? "ok" : "empty"},
+    return nlohmann::json{{"status", nothing ? "empty" : "ok"},
                           {"lines", std::move(lines)},
                           {"dropped_count", d.dropped_count}};
 }
