@@ -366,3 +366,81 @@ TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
     EXPECT_EQ(host_->admin(), nullptr) << "admin.enabled=false → no AdminService";
     TearDownHub();
 }
+
+// ── Output poll — RESPONSE_QUERY (HEP-CORE-0033 §11.0.4) ──────────────────────
+
+TEST_F(AdminServiceTest, Console_ResponseQuery_EmptyBufferReturnsEmpty)
+{
+    // A poll of an empty buffer returns an explicit status:"empty" (never
+    // silence, §11.0.4).  Exercises the read-gate (session + skew, no replay
+    // nonce, §11.1) and the drain over the real CURVE wire.
+    const std::string ep = start_hub("rq_empty");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
+
+    auto r = console.command(w::kAdminResponseQueryReq);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->is_error());
+    EXPECT_EQ(r->msg_type, std::string(w::kAdminResponseQueryAck));
+    ASSERT_TRUE(r->body["result"].is_object());
+    EXPECT_EQ(r->body["result"].value("status", std::string{}), "empty");
+    EXPECT_TRUE(r->body["result"]["lines"].empty());
+    EXPECT_EQ(r->body["result"].value("dropped_count", 999U), 0U);
+
+    TearDownHub();
+}
+
+TEST_F(AdminServiceTest, Console_ResponseQuery_ReturnsAppendedLinesThenClears)
+{
+    // The hub appends output lines — a command completion tagged with a
+    // request_id (what the broker does, §11.0.4), and a script line with none
+    // (what admin_console_print does) — and the console pulls them, matched by
+    // request_id, oldest-first.  A second poll is empty (return-and-clear).
+    const std::string ep = start_hub("rq_lines");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    ASSERT_TRUE(console.establish(kTestToken, "alice"));
+
+    host_->append_console_line("req-42", json{{"event", "channel_closed"}, {"channel", "ch.x"}});
+    host_->append_console_line("", json{{"message", "hello operator"}});
+
+    auto r = console.command(w::kAdminResponseQueryReq);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FALSE(r->is_error());
+    EXPECT_EQ(r->msg_type, std::string(w::kAdminResponseQueryAck));
+    ASSERT_TRUE(r->body["result"].is_object());
+    EXPECT_EQ(r->body["result"].value("status", std::string{}), "ok");
+    const auto &lines = r->body["result"]["lines"];
+    ASSERT_EQ(lines.size(), 2U);
+    EXPECT_EQ(lines[0].value("request_id", std::string{}), "req-42");
+    EXPECT_EQ(lines[0]["content"].value("event", std::string{}), "channel_closed");
+    EXPECT_EQ(lines[0]["content"].value("channel", std::string{}), "ch.x");
+    EXPECT_TRUE(lines[0].contains("ts"));
+    EXPECT_EQ(lines[1].value("request_id", std::string{}), "");
+    EXPECT_EQ(lines[1]["content"].value("message", std::string{}), "hello operator");
+
+    // Return-and-clear: the buffer is empty on the next poll.
+    auto r2 = console.command(w::kAdminResponseQueryReq);
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_EQ(r2->body["result"].value("status", std::string{}), "empty");
+    EXPECT_TRUE(r2->body["result"]["lines"].empty());
+
+    TearDownHub();
+}
+
+TEST_F(AdminServiceTest, Console_ResponseQuery_NoSessionRejected)
+{
+    // The poll is session-gated (§11.1) even though it carries no replay nonce —
+    // a missing/invalid session is rejected exactly like a command.
+    const std::string ep = start_hub("rq_nosess");
+    ASSERT_FALSE(ep.empty());
+    AdminWireClient console = make_console(ep, "op-console-1");
+    // No establish() — session_id is empty.
+    auto r = console.command(w::kAdminResponseQueryReq);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(r->is_error());
+    EXPECT_EQ(r->body.value("code", std::string{}), "unauthorized");
+
+    TearDownHub();
+}

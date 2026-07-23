@@ -485,7 +485,10 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
         w::AdminSessionReqBody b(body);
         if (auto rej = read_gate(b.session_id()))
             return *rej;
-        return to_reply(w::kAdminResponseQueryAck, host.drain_console_output(), true);
+        // The drain document ({status, lines[], dropped_count}) IS the result;
+        // wrap it as the handler `{status:"ok", result:…}` envelope to_reply
+        // expects (its own status:"empty" is data inside result, not an error).
+        return to_reply(w::kAdminResponseQueryAck, make_ok(host.drain_console_output()), true);
     }
 
     // ── Control methods → AdminStatusAck (accepted, §11.0.4 fire-and-forget) ──
