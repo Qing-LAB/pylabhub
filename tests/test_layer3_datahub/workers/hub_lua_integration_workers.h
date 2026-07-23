@@ -11,6 +11,7 @@ namespace hub_lua_integration
 {
 
 int real_lua_script_on_init_on_stop_fire_and_log();
+int real_lua_script_admin_console_print();
 int script_syntax_error_startup_throws();
 int on_tick_fires_periodically_when_idle();
 int on_tick_catch_up_fixed_rate_with_compensation();

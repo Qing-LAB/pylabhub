@@ -104,18 +104,22 @@ class ConsoleOutputBuffer
         std::lock_guard<std::mutex> lk(mu_);
         line.ts_ms = now_ms_();
 
+        // Measure the content once; re-measure only on the rare truncation
+        // paths (the marker is tiny), never twice on the common path.
+        std::size_t content_sz = content_bytes_(line.content);
         if (!line.content.is_object())
         {
             line.content = nlohmann::json{{"truncated", true}, {"reason", "not_an_object"}};
+            content_sz = content_bytes_(line.content);
         }
-        else if (content_bytes_(line.content) > caps_.max_line_bytes)
+        else if (content_sz > caps_.max_line_bytes)
         {
-            const auto n = content_bytes_(line.content);
-            line.content =
-                nlohmann::json{{"truncated", true}, {"reason", "line_too_large"}, {"bytes", n}};
+            line.content = nlohmann::json{
+                {"truncated", true}, {"reason", "line_too_large"}, {"bytes", content_sz}};
+            content_sz = content_bytes_(line.content);
         }
 
-        bytes_ += line_bytes_(line);
+        bytes_ += content_sz + line.request_id.size() + sizeof(std::uint64_t);
         lines_.push_back(std::move(line));
         enforce_caps_("overflow");
     }

@@ -367,6 +367,66 @@ int real_lua_script_on_init_on_stop_fire_and_log()
         "hub_lua_integration::real_lua_script_on_init_on_stop_fire_and_log", PLH_LUA_INT_MODS);
 }
 
+// A real Lua hub script calls api.admin_console_print — a structured table AND
+// a bare string — from on_init.  Proves the whole script→buffer path
+// (HEP-CORE-0033 §11.0.4): the Lua binding (lua_to_json) → HubAPI coercion
+// (bare string → {"message":…}) → HubState console buffer → drain.  Verified by
+// draining the host's output buffer directly (no admin console needed).
+int real_lua_script_admin_console_print()
+{
+    return run_gtest_worker(
+        []
+        {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+            pylabhub::scripting::init_scripting();
+
+            const std::string lua_body =
+                "function on_init(api)\n"
+                "    api.admin_console_print({event=\"hub_ready\", uid=api.uid()})\n"
+                "    api.admin_console_print(\"plain hub message\")\n"
+                "end\n";
+
+            const fs::path dir = make_lua_hub_dir("aconsole", lua_body);
+            auto cfg = HubConfig::load_from_directory(dir.string());
+            const std::string expected_uid = cfg.identity().uid;
+
+            auto ks_curve_ = pylabhub::tests::make_curve_setup({});
+            pylabhub::tests::seed_curve_identities(ks_curve_);
+
+            HubHost host(std::move(cfg));
+            ASSERT_NO_THROW(host.startup());
+            EXPECT_TRUE(host.is_running());
+
+            // on_init has fired during startup — drain the console buffer and
+            // pin the two lines it appended (drain BEFORE shutdown so the
+            // buffer is empty at teardown → no flush-to-log warning).
+            const json drained = host.drain_console_output();
+            EXPECT_EQ(drained.value("status", std::string{}), "ok");
+            const auto &lines = drained["lines"];
+            ASSERT_EQ(lines.size(), 2u) << "expected 2 admin_console_print lines; got:\n"
+                                        << drained.dump(2);
+
+            // Line 0 — a structured table passes through unchanged; it is
+            // script-originated so request_id is empty.
+            EXPECT_TRUE(lines[0].value("request_id", std::string{"X"}).empty());
+            EXPECT_EQ(lines[0]["content"].value("event", std::string{}), "hub_ready");
+            EXPECT_EQ(lines[0]["content"].value("uid", std::string{}), expected_uid);
+            EXPECT_TRUE(lines[0].contains("ts"));
+
+            // Line 1 — a bare string is coerced to {"message": …} by HubAPI.
+            EXPECT_EQ(lines[1]["content"].value("message", std::string{}), "plain hub message");
+
+            host.shutdown();
+            EXPECT_FALSE(host.is_running());
+
+            log_cap.AssertNoUnexpectedLogWarnError();
+            log_cap.Uninstall();
+            remove_tree(dir);
+        },
+        "hub_lua_integration::real_lua_script_admin_console_print", PLH_LUA_INT_MODS);
+}
+
 // ─── Test #2 ────────────────────────────────────────────────────────────────
 
 int script_syntax_error_startup_throws()
@@ -1209,6 +1269,8 @@ struct HubLuaIntegrationRegistrar
 
                 if (sc == "real_lua_script_on_init_on_stop_fire_and_log")
                     return real_lua_script_on_init_on_stop_fire_and_log();
+                if (sc == "real_lua_script_admin_console_print")
+                    return real_lua_script_admin_console_print();
                 if (sc == "script_syntax_error_startup_throws")
                     return script_syntax_error_startup_throws();
                 if (sc == "on_tick_fires_periodically_when_idle")

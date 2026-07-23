@@ -31,6 +31,12 @@ TEST_F(HubLuaIntegrationTest, RealLuaScript_OnInitOnStop_FireAndLog)
     ExpectWorkerOk(w);
 }
 
+TEST_F(HubLuaIntegrationTest, RealLuaScript_AdminConsolePrint_LandsInBuffer)
+{
+    auto w = SpawnWorker("hub_lua_integration.real_lua_script_admin_console_print");
+    ExpectWorkerOk(w);
+}
+
 TEST_F(HubLuaIntegrationTest, ScriptSyntaxError_StartupThrows)
 {
     auto w = SpawnWorker("hub_lua_integration.script_syntax_error_startup_throws");
