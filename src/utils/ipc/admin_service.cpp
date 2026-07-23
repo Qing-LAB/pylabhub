@@ -248,6 +248,9 @@ void AdminService::run()
         reply.send(sock);
     }
 
+    // Shutdown is the ultimate console disconnect: flush any un-drained output
+    // to the log so it is not lost (§11.0.4).
+    impl_->host.console_on_disconnect();
     sock.close();
     LOGGER_INFO("[admin] AdminService stopped (was bound to {})", impl_->bound_endpoint);
 }
@@ -335,6 +338,11 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
         w::AdminHelloReqBody b(body);
         if (!token_ok(b.token()))
             return err_reply("unauthorized", "invalid admin token");
+        // A new console session (§11.0.4, one console at a time): the prior
+        // console — if any — is gone, so flush its un-drained output to the log,
+        // then start this session's buffer clean.
+        host.console_on_disconnect();
+        host.console_on_connect();
         const AdminSessionFacts facts{b.label(), std::string(peer_address), std::string(routing_id),
                                       now_ms()};
         return {std::string(w::kAdminHelloAck), json{{"session_id", seal_session_id(facts)}}};
@@ -353,7 +361,12 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // MUST be >= 2 * skew: dedup prunes against the trusted `now` clock,
     // but a replay stays skew-valid for up to 2*skew after the original.
     constexpr std::uint64_t kReplayWindowMs = 2 * kReplaySkewMs;
-    const auto gate = [&](std::string_view sid) -> std::optional<std::pair<std::string, json>>
+    // Session + wall-clock-skew verification, shared by commands and the
+    // output poll.  Fills `out_facts` and returns nullopt to proceed, or the
+    // typed error reply on failure.
+    const auto session_skew_gate =
+        [&](std::string_view sid,
+            AdminSessionFacts &out_facts) -> std::optional<std::pair<std::string, json>>
     {
         auto facts = verify_session_id(sid, peer_address, routing_id);
         if (!facts)
@@ -362,17 +375,34 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
         const std::uint64_t now = now_ms();
         const std::uint64_t skew = now > ts ? now - ts : ts - now;
         if (skew > kReplaySkewMs)
-            return err_reply("replay_or_skew", "admin command wall-clock skew "
-                                               "exceeds tolerance");
-        const std::string origin = origin_uid(*facts);
+            return err_reply("replay_or_skew", "admin wall-clock skew exceeds tolerance");
+        out_facts = std::move(*facts);
+        return std::nullopt;
+    };
+
+    // Command gate: session + skew + in-session nonce dedup (§11.0.5).  The
+    // ReplayGuard prunes against its OWN trusted monotonic clock — no timestamp
+    // is passed, so the client `ts` (confined to the skew gate) cannot reach the
+    // dedup window (see ReplayGuard header).
+    const auto gate = [&](std::string_view sid) -> std::optional<std::pair<std::string, json>>
+    {
+        AdminSessionFacts facts{};
+        if (auto rej = session_skew_gate(sid, facts))
+            return rej;
+        const std::string origin = origin_uid(facts);
         const std::string nonce = body.value("client_nonce", std::string{});
-        // Dedup: the ReplayGuard prunes against its OWN trusted monotonic
-        // clock — no timestamp is passed, so the client `ts` (confined to
-        // the skew gate above) cannot reach the dedup window (see
-        // ReplayGuard header).
         if (!host.nonce_seen(origin, nonce, kReplayWindowMs))
             return err_reply("replay_or_skew", "client_nonce reused (in-session replay)");
         return std::nullopt;
+    };
+
+    // Read gate: session + skew only, NO replay nonce (§11.1).  A poll is an
+    // idempotent read — nonce dedup buys nothing and would forbid safely
+    // retrying a dropped poll (same nonce → rejected as a replay).
+    const auto read_gate = [&](std::string_view sid) -> std::optional<std::pair<std::string, json>>
+    {
+        AdminSessionFacts facts{};
+        return session_skew_gate(sid, facts);
     };
 
     // ── Query methods → AdminResultAck ──
@@ -442,6 +472,17 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
         json req;
         req["params"] = b.filter();
         return to_reply(w::kAdminQueryMetricsAck, handle_query_metrics(req), true);
+    }
+
+    // ── Output poll → AdminResultAck (§11.0.4).  A read: session + skew only,
+    //    NO replay nonce (§11.1).  Drains the console output buffer
+    //    (return-and-clear) into `{status, lines[], dropped_count}`. ──
+    if (mt == w::kAdminResponseQueryReq)
+    {
+        w::AdminSessionReqBody b(body);
+        if (auto rej = read_gate(b.session_id()))
+            return *rej;
+        return to_reply(w::kAdminResponseQueryAck, host.drain_console_output(), true);
     }
 
     // ── Control methods → AdminStatusAck (accepted, §11.0.4 fire-and-forget) ──
