@@ -13,8 +13,8 @@
  * ctx with the 16 `hub_*` fn ptrs wired through).  See `is_hub()` predicate
  * in the C++ wrapper and §4.9 in HEP-CORE-0028.
  *
- * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v8 (2026-06-25)
- * is the latest; v3..v7 history is in the version log.
+ * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v11 (2026-07-23)
+ * is the latest; earlier history is in the version log at the `#define`.
  *
  * ## Minimal Producer Native engine (C)
  *
