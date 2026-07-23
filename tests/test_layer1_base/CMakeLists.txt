@@ -441,6 +441,40 @@ gtest_discover_tests(test_layer1_replay_guard
 )
 
 # ============================================================================
+# Test: ConsoleOutputBuffer (header-only pull output buffer for the operator
+# console — HEP-CORE-0033 §11.0.1 layer 6 / §11.0.4).  Pins append/drain
+# return-and-clear, request_id tagging, the JSON-object content contract, and
+# the cap-as-safety-valve overflow→log + dropped_count behaviour.
+# ============================================================================
+
+add_executable(test_layer1_console_output_buffer
+    test_console_output_buffer.cpp
+)
+
+target_link_libraries(test_layer1_console_output_buffer
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_console_output_buffer)
+
+pylabhub_register_test_for_staging(
+    TARGET test_layer1_console_output_buffer
+    SUITE_NAME "Layer1_ConsoleOutputBuffer"
+)
+layer1_require_staged_utils(test_layer1_console_output_buffer)
+
+gtest_discover_tests(test_layer1_console_output_buffer
+    PROPERTIES
+        FIXTURES_REQUIRED Guardrails
+        LABELS "layer1;admin;console"
+        TIMEOUT 30
+)
+
+# ============================================================================
 # Test: wire_dispatch::kDispatchTable regression pin (Group 5 gap 3)
 # ============================================================================
 
