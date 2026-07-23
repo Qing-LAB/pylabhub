@@ -201,6 +201,15 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_hub, m) // NOLINT
              "a channel.  `data` defaults to empty for pure control "
              "messages.")
 
+        .def(
+            "admin_console_print",
+            [](HubAPI &self, const py::object &content)
+            { self.admin_console_print(pylabhub::scripting::detail::py_to_json(content)); },
+            py::arg("content"),
+            "Append a line to the operator console output buffer "
+            "(HEP-CORE-0033 §11.0.4).  `content` is a dict; the operator sees "
+            "it on the next response_query poll.")
+
         .def("request_shutdown", &HubAPI::request_shutdown,
              "Request hub shutdown.  Sets the host's shutdown flag and "
              "wakes any caller of host.run_main_loop().  Idempotent.")

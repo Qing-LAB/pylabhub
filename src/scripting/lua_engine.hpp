@@ -281,6 +281,7 @@ class LuaEngine : public ScriptEngine
     // Control delegates (§12.3 control block).
     static int lua_api_hub_close_channel(lua_State *L);
     static int lua_api_hub_broadcast_channel(lua_State *L);
+    static int lua_api_hub_admin_console_print(lua_State *L);
     static int lua_api_hub_request_shutdown(lua_State *L);
     // HEP-CORE-0033 §12.2.3 — user-posted events.
     static int lua_api_hub_post_event(lua_State *L);

@@ -516,6 +516,7 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
     // Control delegates (HEP-CORE-0033 §12.3 control block).
     push_closure("close_channel", lua_api_hub_close_channel);
     push_closure("broadcast_channel", lua_api_hub_broadcast_channel);
+    push_closure("admin_console_print", lua_api_hub_admin_console_print);
     push_closure("request_shutdown", lua_api_hub_request_shutdown);
     // Events (HEP-CORE-0033 §12.2.3 user-posted events).
     push_closure("post_event", lua_api_hub_post_event);
@@ -2089,6 +2090,15 @@ int LuaEngine::lua_api_hub_broadcast_channel(lua_State *L)
     // Optional third arg: data payload, default empty.
     const char *data = (lua_gettop(L) >= 3 && lua_isstring(L, 3)) ? lua_tostring(L, 3) : "";
     self->hub_api_->broadcast_channel(channel, message, data);
+    return 0;
+}
+
+int LuaEngine::lua_api_hub_admin_console_print(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    // Accept a table (structured content) or a bare string; HubAPI wraps a
+    // bare string as {"message": "…"} (HEP-CORE-0033 §11.0.4).
+    self->hub_api_->admin_console_print(lua_to_json(L, 1));
     return 0;
 }
 

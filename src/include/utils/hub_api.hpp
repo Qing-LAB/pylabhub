@@ -239,6 +239,14 @@ class PYLABHUB_UTILS_EXPORT HubAPI
     void broadcast_channel(const std::string &channel, const std::string &message,
                            const std::string &data = "");
 
+    /// Append a line to the operator console's output buffer
+    /// (HEP-CORE-0033 §11.0.4).  `content` is a structured object (a plain
+    /// message is `{"message":"…"}`); the buffer stamps the timestamp and
+    /// leaves request_id empty (script-originated, not a command result).
+    /// The operator sees it on the next `response_query` poll.  No-op before
+    /// `set_host` wires the HubHost backref.
+    void admin_console_print(nlohmann::json content);
+
     /// Request hub shutdown.  Sets the host's shutdown flag and wakes
     /// any thread blocked on `host.run_main_loop()` (or an equivalent
     /// wait-for-shutdown caller).  The orderly teardown sequence

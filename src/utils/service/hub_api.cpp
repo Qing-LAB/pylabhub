@@ -363,6 +363,20 @@ void HubAPI::broadcast_channel(const std::string &channel, const std::string &me
     impl_->host->broker().request_broadcast_channel(channel, message, data);
 }
 
+void HubAPI::admin_console_print(nlohmann::json content)
+{
+    if (!impl_->host)
+        return;
+    // Ergonomic: a bare string becomes {"message": "…"} so a script can call
+    // admin_console_print("hello"); structured objects pass through unchanged
+    // (the buffer guards any remaining non-object shape, §11.0.4).
+    if (content.is_string())
+        content = nlohmann::json{{"message", std::move(content)}};
+    // Script-originated console line (§11.0.4): empty request_id (not a reply
+    // to an operator command); the buffer stamps the timestamp.
+    impl_->host->append_console_line(std::string{}, std::move(content));
+}
+
 void HubAPI::request_shutdown() noexcept
 {
     if (!impl_->host)
