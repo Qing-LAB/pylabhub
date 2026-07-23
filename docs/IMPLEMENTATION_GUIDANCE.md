@@ -2418,13 +2418,19 @@ centralizes both concerns: one wire contract, one gate order,
 one dispatch pattern.  This rule prevents the scatter from
 re-emerging as future REG-family features get added.
 
-**Enforcement.**  Reviewers apply this at code review.  A future
-CTest guardrail may scan `broker_service.cpp` for `body.value(`
-in REG-family handlers, and BRC for msg_type-keyed pending-request
-maps; those checks are follow-up work.
+**Enforcement.**  Reviewers apply this at code review against the
+concrete conformance contract in **HEP-CORE-0046 §14.7** — a canonical
+compliant handler (the live DISC handler), a table of rejected
+anti-patterns paired with their fixes, and a grep-able checklist
+(`.value(` / `body[` on input → empty; `handle_XXX(const WireEnvelope&,
+…)` signature; no `to_legacy(` / residual `process_message` arm; replies
+via `send_reply` / `build_*_send`; no in-handler gate re-check).  A
+future CTest guardrail codifies that checklist.
 
 **Cross-reference:** HEP-CORE-0046 §14 (typed envelope + body
-classes), §14.5 (admission gates), §12 (Phase A–F sequencing).
+classes), §14.5 (admission gates), **§14.7 (handler conformance —
+examples + anti-patterns + enforcement checklist)**, §12 (Phase A–F
+sequencing).
 
 ---
 

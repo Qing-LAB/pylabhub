@@ -2460,3 +2460,89 @@ ATOMIC.  Mixed old/new deployments break I-DEALER-IDENTITY,
 I-CORRELATION-STABLE, I-REPLAY-BOUND, and I-ENVELOPE-BODY-BINDING
 for the duration of the mix.  No runtime tolerance.  Old clients
 after the cut receive `UNSUPPORTED_PROTO` on their first REQ.
+
+### 14.7 Handler conformance — the enforceable contract
+
+§14.4/§14.5 give the shape; this section makes it enforceable.  A REG-family
+handler is CONFORMANT iff all five hold — plain language first, then the
+mechanics:
+
+1. **It reads its input only through the envelope and typed body.**  No
+   `body.value("field", default)`, no `req["field"]`, no re-parsing an embedded
+   JSON string.  A hand-parse is a second reader that silently drifts from the
+   typed class (this is the `inbox_schema_json` array-vs-object bug that rejected
+   every inbox producer, §14.3).
+2. **Its signature is the uniform `handle_XXX(const WireEnvelope& env, const
+   XxxBody& body, …)`.**  `env` carries the identity / correlation_id /
+   envelope_hash / broker_proto; the body carries the payload.  A narrower
+   signature (e.g. passing just `corr_id`) cannot reach the other envelope
+   fields and does not scale.
+3. **It trusts the shared admission gates — it never re-implements one.**  By
+   the time a handler runs, `receive_and_validate` (§14.5) has already applied
+   gates 1–6 and handed it a `Validated<Body>`.  A per-handler identity /
+   replay / known-role check is redundant and WILL drift from the one true
+   pipeline.
+4. **It runs any protocol gates (§14.5 gate 7) BEFORE mutating `HubState`.**  No
+   half-applied state under a later-failing gate.
+5. **It replies only through the typed envelope.**  Build the reply body and
+   send via `send_reply` / `WireEnvelope::build_router_send` (which stamps the
+   envelope hash + echoes `correlation_id`).  Never `socket.send(json.dump())`.
+
+**Positive example — the canonical shape (the live DISC handler).**
+
+```cpp
+// Dispatch: one typed arm per msg_type.  receive_and_validate already ran the
+// gates and produced a Validated<Body>; route it STRAIGHT to the typed handler
+// (no to_legacy round-trip).  Wire I/O lives here, at the broker layer.
+else if constexpr (std::is_same_v<T, wd::ValidatedDiscReq>)
+{
+    const std::string identity = v.identity();
+    zmq::message_t id_frame(identity.data(), identity.size());
+    const nlohmann::json resp = handle_disc_req(v.env, v.body);   // (env, body)
+    const std::string status  = resp.value("status", "");
+    const std::string ack     = (status == "success")  ? "DISC_ACK"
+                                : (status == "pending") ? "DISC_PENDING"
+                                                        : "ERROR";
+    send_reply(socket, id_frame, ack, resp);                       // typed envelope
+}
+
+// Handler: uniform signature, envelope for corr_id, typed accessors for payload.
+nlohmann::json BrokerServiceImpl::handle_disc_req(const wire::WireEnvelope& env,
+                                                  const wire::DiscReqBody&  body)
+{
+    const std::string corr_id      = std::string(env.correlation_id());  // envelope
+    const std::string channel_name = body.channel_name();                // typed accessor
+    if (channel_name.empty())
+        return make_error(corr_id, "INVALID_REQUEST", "Missing 'channel_name'");
+    // … read-only logic; gates already ran upstream; no HubState mutation here …
+}
+```
+
+**Negative examples — reject these in review.**  Each is a real failure mode
+with the invariant it breaks and the one-line fix.
+
+| ❌ Anti-pattern (in a REG-family handler) | Breaks | ✅ Fix |
+|---|---|---|
+| `req.value("channel_name", "")` / `body["role_uid"]` on input | typed-input (§14.4) — a drifting hand-parse; a wrong default silently mis-reads | `body.channel_name()` |
+| `handle_x(const XxxBody& body, const std::string& corr_id)` — drops `env` | uniform signature (§14.4) — can't reach identity/hash/proto | `handle_x(const WireEnvelope& env, const XxxBody& body)` |
+| `dispatch_legacy(to_legacy(v, "X"))` — down-convert typed→JSON→old handler | the entire point of Phase B; re-introduces the retired JSON round-trip | route the `Validated<Body>` straight to the typed handler |
+| `if (!nonce_seen(...)) ...` / re-check identity or known-role in the handler | §14.5 single pipeline — a per-handler gate drifts from the shared one | trust `receive_and_validate`; never re-implement a gate |
+| mutate `HubState`, *then* find a gate fails | §14.5 gate-before-mutate — half-applied state | run every gate first; mutate only after all pass |
+| `socket.send(zmq::message_t(resp.dump()))` — reply outside the envelope | I-ENVELOPE-BODY-BINDING / I-CORRELATION-STABLE — no hash, no correlation | `send_reply(...)` / `build_router_send(...)` |
+| pending-reply map keyed on `msg_type` | I-CORRELATION-STABLE — collides on concurrent same-type REQs | key on `correlation_id` |
+| add a wire field via `body["new"] = v` at a call site | §14.3 — a second reader hand-parses it and drifts | extend the typed `XxxReqBody`/`XxxAckBody` class (§14.3), bump `broker_proto` (§14.6) |
+
+**Enforcement checklist (reviewer + future CI).**  A diff touching a REG-family
+handler passes iff, scoped to that handler:
+
+- `grep -nE '\.value\(|\breq\[|\bbody\[|\benv\.body\[' ` → empty (no raw JSON on
+  REG-family input; the escape hatch `XxxAckBody::raw_body()` for
+  protocol-extensible *reply* payloads is the only sanctioned exception, §14.3);
+- signature matches `handle_\w+\(const .*WireEnvelope ?&`;
+- no `to_legacy(` for that msg_type, and no residual `process_message` arm;
+- every reply path routes through `send_reply` / `build_\w+_send`;
+- no `nonce_seen` / `verify_known_role` / `env.identity() ==` re-check inside the
+  handler body.
+
+The authoritative operational rule that binds this to the codebase is
+`docs/IMPLEMENTATION_GUIDANCE.md § "REG Protocol Wire Discipline (HEP-CORE-0046)"`.
