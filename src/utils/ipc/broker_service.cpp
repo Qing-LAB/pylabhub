@@ -543,8 +543,15 @@ class BrokerServiceImpl
 
     /// Guards close_request_queue_ for thread-safe request_close_channel().
     mutable std::mutex m_close_req_mu;
-    /// Script-requested channel closes; drained in run() post-poll phase under m_query_mu.
-    std::deque<std::string> close_request_queue_;
+    /// Script/admin-requested channel closes; drained in run() post-poll phase
+    /// under m_query_mu.  Carries the issuing session's `origin_uid` (§11.0.5
+    /// provenance stamp) and the command's `request_id` (to tag the §11.0.4
+    /// console completion line).  Script/hub-internal closes leave both empty.
+    struct CloseRequest
+    {
+        std::string channel, origin_uid, request_id;
+    };
+    std::deque<CloseRequest> close_request_queue_;
 
     /// Wave M3 step 5f (2026-05-11) — handler-driven BAND_LEAVE_NOTIFY
     /// fan-out.  HubState's `_set_role_disconnected` /
@@ -576,7 +583,7 @@ class BrokerServiceImpl
     /// Admin-shell-requested broadcasts; drained in run() post-poll phase under m_query_mu.
     struct BroadcastRequest
     {
-        std::string channel, message, data;
+        std::string channel, message, data, origin_uid, request_id;
     };
     std::deque<BroadcastRequest> broadcast_request_queue_;
 
@@ -1136,24 +1143,27 @@ void BrokerServiceImpl::run()
         {
             std::lock_guard<std::mutex> lock(m_query_mu);
 
-            // Drain script-requested channel closes.
-            std::vector<std::string> pending_closes;
+            // Drain script/admin-requested channel closes.
+            std::vector<CloseRequest> pending_closes;
             {
                 std::lock_guard<std::mutex> close_lk(m_close_req_mu);
-                pending_closes.assign(close_request_queue_.begin(), close_request_queue_.end());
+                pending_closes.assign(std::make_move_iterator(close_request_queue_.begin()),
+                                      std::make_move_iterator(close_request_queue_.end()));
                 close_request_queue_.clear();
             }
-            for (const auto &ch : pending_closes)
+            for (const auto &cr : pending_closes)
             {
+                const std::string &ch = cr.channel;
                 auto hub_entry = hub_state_->channel(ch);
-                if (hub_entry.has_value())
+                const bool closed = hub_entry.has_value();
+                if (closed)
                 {
                     // HEP-CORE-0023 §2.1 atomic teardown: emit a best-effort
                     // CHANNEL_CLOSING_NOTIFY (informational; consumers may
                     // race with the close), then call _on_channel_closed
                     // which marks the producer-presence Disconnected, fires
                     // CHANNEL_CLOSED handlers, and erases the channel entry.
-                    LOGGER_INFO("Broker: script-requested close for channel '{}'", ch);
+                    LOGGER_INFO("Broker: requested close for channel '{}'", ch);
                     send_closing_notify(router, ch, *hub_entry, "script_requested");
                     on_channel_closed(router, ch, *hub_entry, "script_requested");
                     hub_state_->_on_channel_closed(ch,
@@ -1171,6 +1181,16 @@ void BrokerServiceImpl::run()
                     // outcome even when the close was operator-initiated.
                     drain_pending_attach_queue_for_channel_denied_(router, ch, "channel_closing");
                 }
+                // HEP-CORE-0033 §11.0.4: report the completion to the operator
+                // console when this close came from an admin command
+                // (request_id non-empty).  `channel_absent` = the channel was
+                // already gone by actuation time (accepted, then a no-op).
+                if (!cr.request_id.empty())
+                    hub_state_->append_console_line(
+                        cr.request_id,
+                        nlohmann::json{{"event", closed ? "channel_closed" : "channel_absent"},
+                                       {"channel", ch},
+                                       {"origin_uid", cr.origin_uid}});
             }
 
             // Drain hub-side broadcast requests (originating from
@@ -1186,21 +1206,30 @@ void BrokerServiceImpl::run()
             }
             for (const auto &br : pending_broadcasts)
             {
-                // Build a synthetic CHANNEL_BROADCAST_SEND_NOTIFY payload and delegate.
-                // sender_uid = self_hub_uid: the broadcast originates inside
-                // this hub instance (the request_broadcast_channel API has
-                // no caller-identity field — the natural sender is the hub).
-                // Falls back to "hub" when self_hub_uid is unset (test
-                // configurations + early HubHost::startup before identity
-                // is wired).
+                // Build a synthetic CHANNEL_BROADCAST_SEND_NOTIFY payload and
+                // delegate.  §11.0.5 provenance: an operator-triggered broadcast
+                // carries the issuing session's `origin_uid` as `sender_uid`;
+                // script / hub-internal broadcasts fall back to `self_hub_uid`
+                // (or "hub" before identity is wired).
+                const std::string sender =
+                    !br.origin_uid.empty()
+                        ? br.origin_uid
+                        : (cfg.self_hub_uid.empty() ? std::string("hub") : cfg.self_hub_uid);
                 nlohmann::json req;
                 req["target_channel"] = br.channel;
-                req["sender_uid"] =
-                    cfg.self_hub_uid.empty() ? std::string("hub") : cfg.self_hub_uid;
+                req["sender_uid"] = sender;
                 req["message"] = br.message;
                 if (!br.data.empty())
                     req["data"] = br.data;
                 handle_channel_broadcast_req(router, req);
+                // HEP-CORE-0033 §11.0.4: report the completion to the operator
+                // console when this broadcast came from an admin command.
+                if (!br.request_id.empty())
+                    hub_state_->append_console_line(br.request_id,
+                                                    nlohmann::json{{"event", "channel_broadcast_sent"},
+                                                                   {"channel", br.channel},
+                                                                   {"message", br.message},
+                                                                   {"origin_uid", br.origin_uid}});
             }
 
             // Drain hub_targeted_msg queue (thread-safe send from external callers).
@@ -6855,18 +6884,21 @@ nlohmann::json BrokerService::query_metrics(const pylabhub::hub::MetricsFilter &
     return result;
 }
 
-void BrokerService::request_close_channel(const std::string &name)
+void BrokerService::request_close_channel(const std::string &name, const std::string &origin_uid,
+                                          const std::string &request_id)
 {
     LOGGER_TRACE("Broker: request_close_channel('{}')", name);
     std::lock_guard<std::mutex> lk(pImpl->m_close_req_mu);
-    pImpl->close_request_queue_.push_back(name);
+    pImpl->close_request_queue_.push_back({name, origin_uid, request_id});
 }
 
 void BrokerService::request_broadcast_channel(const std::string &channel,
-                                              const std::string &message, const std::string &data)
+                                              const std::string &message, const std::string &data,
+                                              const std::string &origin_uid,
+                                              const std::string &request_id)
 {
     std::lock_guard<std::mutex> lk(pImpl->m_broadcast_req_mu);
-    pImpl->broadcast_request_queue_.push_back({channel, message, data});
+    pImpl->broadcast_request_queue_.push_back({channel, message, data, origin_uid, request_id});
 }
 
 void BrokerService::send_hub_targeted_msg(const std::string &target_hub_uid,

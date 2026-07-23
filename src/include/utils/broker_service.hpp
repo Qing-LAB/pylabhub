@@ -434,8 +434,13 @@ class PYLABHUB_UTILS_EXPORT BrokerService
      * registry, exactly as a heartbeat timeout would.
      *
      * @param name  Channel name to close.  Silently ignored if not registered.
+     * @param origin_uid  Issuing admin session's provenance stamp (§11.0.5);
+     *                    empty for script/hub-internal closes.
+     * @param request_id  Command id to tag the §11.0.4 console completion line;
+     *                    empty for non-console callers.
      */
-    void request_close_channel(const std::string &name);
+    void request_close_channel(const std::string &name, const std::string &origin_uid = {},
+                               const std::string &request_id = {});
 
     /**
      * @brief Broadcast a message to all members of a channel.
@@ -449,9 +454,13 @@ class PYLABHUB_UTILS_EXPORT BrokerService
      * @param channel  Target channel name.
      * @param message  Broadcast message tag (e.g., "start", "stop").
      * @param data     Optional payload string (JSON or plain text).
+     * @param origin_uid  Issuing admin session's provenance stamp (§11.0.5);
+     *                    empty for script/hub-internal broadcasts.
+     * @param request_id  Command id to tag the §11.0.4 console completion line.
      */
     void request_broadcast_channel(const std::string &channel, const std::string &message,
-                                   const std::string &data = {});
+                                   const std::string &data = {}, const std::string &origin_uid = {},
+                                   const std::string &request_id = {});
 
     /**
      * @brief Query aggregated metrics from the MetricsStore (HEP-CORE-0019).

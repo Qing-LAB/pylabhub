@@ -384,7 +384,8 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // ReplayGuard prunes against its OWN trusted monotonic clock — no timestamp
     // is passed, so the client `ts` (confined to the skew gate) cannot reach the
     // dedup window (see ReplayGuard header).
-    const auto gate = [&](std::string_view sid) -> std::optional<std::pair<std::string, json>>
+    const auto gate = [&](std::string_view sid, std::string *out_origin = nullptr)
+        -> std::optional<std::pair<std::string, json>>
     {
         AdminSessionFacts facts{};
         if (auto rej = session_skew_gate(sid, facts))
@@ -393,6 +394,8 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
         const std::string nonce = body.value("client_nonce", std::string{});
         if (!host.nonce_seen(origin, nonce, kReplayWindowMs))
             return err_reply("replay_or_skew", "client_nonce reused (in-session replay)");
+        if (out_origin != nullptr)
+            *out_origin = origin;
         return std::nullopt;
     };
 
@@ -489,21 +492,30 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminCloseChannelReq)
     {
         w::AdminCloseChannelReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        std::string origin;
+        if (auto rej = gate(b.session_id(), &origin))
             return *rej;
+        // §11.0.4 queue record: stamp the issuing session's origin_uid + the
+        // command's request_id (= correlation_id) so the broker can tag the
+        // deferred completion line and the role NOTIFY provenance.
         json req;
         req["params"]["channel"] = b.channel();
+        req["origin_uid"] = origin;
+        req["request_id"] = std::string(env.correlation_id());
         return to_reply(w::kAdminCloseChannelAck, handle_close_channel(req), false);
     }
     if (mt == w::kAdminBroadcastChannelReq)
     {
         w::AdminBroadcastChannelReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        std::string origin;
+        if (auto rej = gate(b.session_id(), &origin))
             return *rej;
         json req;
         req["params"]["channel"] = b.channel();
         req["params"]["message"] = b.message();
         req["params"]["data"] = b.data();
+        req["origin_uid"] = origin;
+        req["request_id"] = std::string(env.correlation_id());
         return to_reply(w::kAdminBroadcastChannelAck, handle_broadcast_channel(req), false);
     }
     if (mt == w::kAdminRequestShutdownReq)
@@ -720,7 +732,8 @@ json AdminService::Impl::handle_close_channel(const json &request)
     const auto &name = (*pit)["channel"].get_ref<const std::string &>();
     if (!host.state().channel(name))
         return make_error("not_found", std::string("channel '") + name + "' not registered");
-    host.broker().request_close_channel(name);
+    host.broker().request_close_channel(name, request.value("origin_uid", std::string{}),
+                                        request.value("request_id", std::string{}));
     return make_ok(json{{"queued", true}, {"channel", name}});
 }
 
@@ -748,7 +761,9 @@ json AdminService::Impl::handle_broadcast_channel(const json &request)
                               "broadcast_channel: params.data must be a string if present");
         data = dit->get<std::string>();
     }
-    host.broker().request_broadcast_channel(channel, message, data);
+    host.broker().request_broadcast_channel(channel, message, data,
+                                            request.value("origin_uid", std::string{}),
+                                            request.value("request_id", std::string{}));
     return make_ok(json{{"queued", true}, {"channel", channel}, {"message", message}});
 }
 
