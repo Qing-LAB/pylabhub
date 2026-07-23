@@ -681,7 +681,10 @@ class BrokerServiceImpl
     /// registered producer of the named channel).
     /// Defence-in-depth: never return another channel's allowlist to a
     /// non-producer caller.
-    nlohmann::json handle_get_channel_auth_req(const nlohmann::json &req);
+    // HEP-CORE-0046 Phase B (B.1b): typed-body signature.  `corr_id` from the
+    // envelope; `channel_name` / `role_uid` from the typed body.
+    nlohmann::json handle_get_channel_auth_req(const ::pylabhub::wire::GetChannelAuthReqBody &body,
+                                               const std::string &corr_id);
 
     /// `CONSUMER_ATTACH_REQ_SHM` handler (SHM binding, HEP-CORE-0041
     /// §9 D4 step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
@@ -1516,7 +1519,19 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             else if constexpr (std::is_same_v<T, wd::ValidatedHeartbeatNotify>)
                 dispatch_legacy(to_legacy(std::move(v), "HEARTBEAT_NOTIFY"));
             else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
-                dispatch_legacy(to_legacy(std::move(v), "GET_CHANNEL_AUTH_REQ"));
+            {
+                // HEP-CORE-0046 Phase B (B.1b): GET_CHANNEL_AUTH_REQ consumes its
+                // typed body directly — gates already ran in
+                // `receive_and_validate`, so no `to_legacy` round-trip.  Read-
+                // only; the ACK stays legacy-JSON until the B.3 wire flip.
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp =
+                    handle_get_channel_auth_req(v.body, v.correlation_id());
+                const std::string ack =
+                    (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedDiscReq>)
             {
                 // HEP-CORE-0046 Phase B (B.1a): DISC_REQ consumes its typed body
@@ -1633,15 +1648,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
             }
             send_reply(socket, identity, ack, resp);
         }
-        else if (msg_type == "GET_CHANNEL_AUTH_REQ")
-        {
-            // HEP-CORE-0036 §6.5 — producer pulls the current channel-scope
-            // allowlist.
-            nlohmann::json resp = handle_get_channel_auth_req(payload);
-            const std::string ack =
-                (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
-            send_reply(socket, identity, ack, resp);
-        }
+        // GET_CHANNEL_AUTH_REQ retired from process_message — it now dispatches
+        // typed from `dispatch_received` (HEP-CORE-0046 Phase B, B.1b); it always
+        // arrives as `ValidatedGetChannelAuthReq`, so this branch was unreachable.
         else if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
         {
             // HEP-CORE-0041 §9 D4 = HEP-CORE-0042 §6.1 Bindings.SHM.  Producer's
@@ -3760,16 +3769,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socke
 
 // ─── Channel-auth pull + notify helpers (HEP-CORE-0036 §6.5) ───────────────
 
-nlohmann::json BrokerServiceImpl::handle_get_channel_auth_req(const nlohmann::json &req)
+nlohmann::json BrokerServiceImpl::handle_get_channel_auth_req(
+    const ::pylabhub::wire::GetChannelAuthReqBody &body, const std::string &corr_id)
 {
     // HEP-CORE-0036 §6.5 — producer pulls the channel-scope
     // authorized-consumer allowlist.
-    // Request shape: { channel_name, role_uid, [correlation_id] }.
     // Reply (success): { status="success", allowlist=[z85, ...], corr_id }.
     // Reply (error):   { status="error", error_code, message, corr_id }.
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
-    const std::string caller_uid = req.value("role_uid", "");
+    const std::string channel_name = body.channel_name();
+    const std::string caller_uid = body.role_uid();
 
     if (channel_name.empty() || caller_uid.empty())
     {
