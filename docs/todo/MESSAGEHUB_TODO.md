@@ -92,7 +92,10 @@ Phase B**.
 - **B.1 — broker recv-handler rewire (internal, staged, reviewable).**  Convert
   the 9 hand-parsed handlers to consume the typed `Validated*` directly,
   retiring `to_legacy` / `dispatch_legacy` (`broker_service.cpp:1422-1518`) per
-  handler.  Acks stay legacy-JSON here (input-only flip → wire-neutral).  **Two
+  handler.  Wire-neutral: the reply already ships as a typed `WireEnvelope` via
+  `send_reply` — only the handler INPUT flips (JSON-key extraction → typed
+  accessors on the uniform `handle_XXX(const WireEnvelope&, const XxxBody&)`
+  signature).  **Two
   kinds of work (verified against code 2026-07-23):**
   - **Simple swaps — do FIRST.**  `handle_disc_req`, `handle_get_channel_auth_req`,
     `handle_heartbeat_req`, `handle_dereg_req`, `handle_consumer_dereg_req`,

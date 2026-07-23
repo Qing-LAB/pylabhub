@@ -1231,10 +1231,13 @@ before topology admission, atomic wire cut for the whole chain.
   body-class work remains — Phase B is purely the handler + BRC rewire.
 - **The handler rewire is wire-neutral, the BRC flip is the only atomic
   commit.**  Because the recv side already holds the typed form, converting a
-  broker handler to consume it directly is an INTERNAL change (acks stay
-  legacy-JSON meanwhile).  The nine recv handlers therefore convert one-by-one
-  behind the still-live recv path, retiring the `to_legacy` / `dispatch_legacy`
-  bridge per handler — behavior-preserving, reviewable in slices.  The single
+  broker handler to consume it directly is an INTERNAL change: the reply already
+  ships as a typed `WireEnvelope` (`send_reply` → `build_router_send`), so only
+  the handler's INPUT flips from JSON-key extraction to typed accessors on the
+  uniform signature `handle_XXX(const WireEnvelope&, const XxxBody&)`.  The nine
+  recv handlers therefore convert one-by-one behind the still-live recv path,
+  retiring the `to_legacy` / `dispatch_legacy` bridge per handler —
+  behavior-preserving, reviewable in slices.  The single
   atomic, high-blast-radius commit is the BRC send + ACK flip (typed bodies +
   `envelope_hash` + `correlation_id`-keyed pending + the
   `I-WIRE-VERSION-ATOMIC` bump, §14.6); no mixed old/new deployment.

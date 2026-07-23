@@ -662,10 +662,11 @@ class BrokerServiceImpl
     /// Always returns a response. The returned JSON's status field indicates
     /// the DISC response variant: "success" (DISC_ACK), "pending" (DISC_PENDING),
     /// or "error" (CHANNEL_NOT_FOUND). See HEP-CORE-0023 §2.2.
-    // HEP-CORE-0046 Phase B (B.1a): typed-body signature.  `corr_id` comes
-    // from the envelope; `channel_name` from the typed `DiscReqBody`.
-    nlohmann::json handle_disc_req(const ::pylabhub::wire::DiscReqBody &body,
-                                   const std::string &corr_id);
+    // HEP-CORE-0046 §12 step 5 (B.1a): uniform typed handler signature
+    // `handle_XXX(const WireEnvelope&, const XxxBody&)`.  `corr_id` is read from
+    // the envelope; `channel_name` from the typed `DiscReqBody`.
+    nlohmann::json handle_disc_req(const ::pylabhub::wire::WireEnvelope &env,
+                                   const ::pylabhub::wire::DiscReqBody &body);
     nlohmann::json handle_dereg_req(const nlohmann::json &req, zmq::socket_t &socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json &req,
                                            const zmq::message_t &identity, zmq::socket_t &socket);
@@ -681,10 +682,11 @@ class BrokerServiceImpl
     /// registered producer of the named channel).
     /// Defence-in-depth: never return another channel's allowlist to a
     /// non-producer caller.
-    // HEP-CORE-0046 Phase B (B.1b): typed-body signature.  `corr_id` from the
-    // envelope; `channel_name` / `role_uid` from the typed body.
-    nlohmann::json handle_get_channel_auth_req(const ::pylabhub::wire::GetChannelAuthReqBody &body,
-                                               const std::string &corr_id);
+    // HEP-CORE-0046 §12 step 5 (B.1b): uniform typed handler signature.
+    // `corr_id` from the envelope; `channel_name` / `role_uid` from the body.
+    nlohmann::json handle_get_channel_auth_req(
+        const ::pylabhub::wire::WireEnvelope &env,
+        const ::pylabhub::wire::GetChannelAuthReqBody &body);
 
     /// `CONSUMER_ATTACH_REQ_SHM` handler (SHM binding, HEP-CORE-0041
     /// §9 D4 step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
@@ -1520,28 +1522,28 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                 dispatch_legacy(to_legacy(std::move(v), "HEARTBEAT_NOTIFY"));
             else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
             {
-                // HEP-CORE-0046 Phase B (B.1b): GET_CHANNEL_AUTH_REQ consumes its
-                // typed body directly — gates already ran in
-                // `receive_and_validate`, so no `to_legacy` round-trip.  Read-
-                // only; the ACK stays legacy-JSON until the B.3 wire flip.
+                // HEP-CORE-0046 §12 step 5 (B.1b): typed handler on the validated
+                // envelope + body — gates already ran in `receive_and_validate`,
+                // so no `to_legacy` round-trip.  Read-only; the reply already
+                // ships as a typed `WireEnvelope` via `send_reply`.
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
-                const nlohmann::json resp =
-                    handle_get_channel_auth_req(v.body, v.correlation_id());
+                const nlohmann::json resp = handle_get_channel_auth_req(v.env, v.body);
                 const std::string ack =
                     (resp.value("status", "") == "success") ? "GET_CHANNEL_AUTH_ACK" : "ERROR";
                 send_reply(socket, id_frame, ack, resp);
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedDiscReq>)
             {
-                // HEP-CORE-0046 Phase B (B.1a): DISC_REQ consumes its typed body
-                // directly — the admission gates already ran in
-                // `receive_and_validate`, so there is no `to_legacy` round-trip.
-                // Read-only handler (HEP-CORE-0023 §2.2 three-response dispatch);
-                // the ACK stays legacy-JSON until the B.3 wire flip.
+                // HEP-CORE-0046 §12 step 5 (B.1a): DISC_REQ runs the typed
+                // handler directly on the validated envelope + body — the
+                // admission gates already ran in `receive_and_validate`, so
+                // there is no `to_legacy` round-trip.  Read-only handler
+                // (HEP-CORE-0023 §2.2 three-response dispatch); the reply already
+                // ships as a typed `WireEnvelope` via `send_reply`.
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
-                const nlohmann::json resp = handle_disc_req(v.body, v.correlation_id());
+                const nlohmann::json resp = handle_disc_req(v.env, v.body);
                 const std::string status = resp.value("status", "");
                 const std::string ack = (status == "success")   ? "DISC_ACK"
                                         : (status == "pending") ? "DISC_PENDING"
@@ -2776,9 +2778,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::DiscReqBody &body,
-                                                  const std::string &corr_id)
+nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::WireEnvelope &env,
+                                                  const ::pylabhub::wire::DiscReqBody &body)
 {
+    const std::string corr_id = std::string(env.correlation_id());
     const std::string channel_name = body.channel_name();
     if (channel_name.empty())
     {
@@ -3770,12 +3773,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socke
 // ─── Channel-auth pull + notify helpers (HEP-CORE-0036 §6.5) ───────────────
 
 nlohmann::json BrokerServiceImpl::handle_get_channel_auth_req(
-    const ::pylabhub::wire::GetChannelAuthReqBody &body, const std::string &corr_id)
+    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::GetChannelAuthReqBody &body)
 {
     // HEP-CORE-0036 §6.5 — producer pulls the channel-scope
     // authorized-consumer allowlist.
     // Reply (success): { status="success", allowlist=[z85, ...], corr_id }.
     // Reply (error):   { status="error", error_code, message, corr_id }.
+    const std::string corr_id = std::string(env.correlation_id());
     const std::string channel_name = body.channel_name();
     const std::string caller_uid = body.role_uid();
 
