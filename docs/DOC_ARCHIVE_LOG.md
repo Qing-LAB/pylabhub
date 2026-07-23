@@ -48,6 +48,16 @@ two-zone rename to `compute_fingerprint_from_wire`.) Also fixed superseded
 (RESOLVED-BY-REDESIGN: two-jobs split) and schema_utils.hpp:331 flexzone-loss
 (FIXED: two-zone record).
 
+Also archived this batch: **`DRAFT_curve_admin_protocol_2026-07-15.md`** — the
+admin-CURVE implementation checklist. The design SHIPPED 2026-07-19 (`132732ca`,
+`07ca94c9`, `be9d8dfc`, `5cd3be62`, `43050a98`, `f54da590`): CURVE-secured admin
+socket + typed operator-console (ROUTER + session + all 11 methods) + in-session
+replay defense (`HubHost::nonce_seen`). Design of record is now HEP-CORE-0033
+§11.1 + §11.3; the draft already carried its own "Superseded 2026-07-19" banner.
+The 2026-07-18 KEEP note ("impl not started = next work") is thereby superseded.
+Residual polish (reverse-notify, `origin_uid`, 3 admin-test migrations) tracked in
+`AUTH_TODO.md` Line E, not in the archived draft.
+
 ### 2026-07-12 (REG/REG_ACK protocol redesign draft promoted to HEP-CORE-0046)
 
 Design draft `DRAFT_reg_ack_protocol_redesign.md` (2143 lines, DESIGN

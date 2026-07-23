@@ -17,9 +17,13 @@
  *     but a Pattern 4 test cannot INVOKE the close without the admin wire.
  *   WHY NOT THE SINGLE-PUMPER ANTIPATTERN: one `HubHost` broker = one ZAP
  *     pump; the client (when present) is a bare `BrcHandle` (no ZAP pump).
- *   FUTURE: once the admin plane is CURVE-secured (HEP-CORE-0033 §11) and an
- *     `AdminWireClient` exists, these re-home to Pattern 4 — the same blocker
- *     as the 3 admin-triggered tests tracked in AUTH_TODO.
+ *   READY TO MIGRATE (2026-07-22): both preconditions are now met — the admin
+ *     plane is CURVE-secured (HEP-CORE-0033 §11, shipped 2026-07-19) and an
+ *     `AdminWireClient` exists (`tests/test_framework/admin_wire_client.h`).
+ *     The blocker is cleared; these two `close_channel_*` workers + the 3
+ *     admin-triggered sweep tests tracked in AUTH_TODO Line E item (5) can now
+ *     re-home to Pattern 4 by driving the close over the admin wire instead of
+ *     the in-process `request_close_channel` call.  (Not yet done — mechanical.)
  */
 
 #include "broker_admin_workers.h"

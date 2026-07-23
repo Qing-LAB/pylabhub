@@ -3,41 +3,55 @@
 **Scope:** strategic execution plan, current status, pointers to subtopic
 detail.  Per `docs/DOC_STRUCTURE.md` §1.1 + §2.1.1: **keep this concise
 (≤ 200 lines)** — detailed task tracking lives in `docs/todo/<area>_TODO.md`;
-git is the historical record.  Completed-phase narrative extracted 2026-07-18
-to `docs/archive/transient-2026-07-18/todo-completions/TODO_MASTER_completions_2026-07-18.md`
-(verbatim pre-compression text at commit `633d51c0`).
+git is the historical record.  Completed-phase narrative extracted to
+`docs/archive/transient-2026-07-{18,22}/todo-completions/TODO_MASTER_completions_2026-07-{18,22}.md`
+(07-18 verbatim pre-compression text at commit `633d51c0`; 07-22 = the
+post-reconcile shipped-sprint detail).
 
 ---
 
-## Current status (2026-07-18)
+## Current status (2026-07-22)
 
-- **Line 1 — CURVE auth chain:** 🟢 **PHASE 1 PRODUCTION-READY** (2026-07-17,
-  REVIEW-E).  Single-hub CURVE end-to-end across ZMQ (libzmq CURVE+ZAP) and
-  SHM (`AttachProtocol`, HEP-0044).  Replay hardened + live.  Out of Phase-1
-  scope + tracked below: admin plane (Line E), inbox ✅ done, federation (#105).
-- **Inbox:** ✅ CURVE-authenticated (hub-wide `known_roles`) + full cross-engine
-  parity (native send added, ABI v10) — 2026-07-18.
-- **Line 2 — SMS consolidation (HEP-0043):** ✅ shipped 2026-07-07.  Access is
-  `secure().keys()`.  Residual: SEC-Fold-1b §8/§10 vault + script-crypto content
-  migration (housekeeping).
+> **Reconciled 2026-07-22** against `git log b0aa0f51..fc08850f` (34 commits since
+> the 2026-07-18 fact-check), the subtopic TODOs, and code.  Shipped-work detail
+> (admin CURVE commits, vault/inbox-replay, schema two-zone, the 27 resolved
+> review findings) extracted to
+> `archive/transient-2026-07-22/todo-completions/TODO_MASTER_completions_2026-07-22.md`.
+
+**Closed lines** (detail in the completions index above):
+- **Line 1 — CURVE auth chain:** 🟢 Phase 1 production-ready (REVIEW-E); + vault
+  `known_roles` (HEP-0035 §4.8) + inbox replay defense (HEP-0027 §3.6).
+- **Line E — Admin-plane CURVE:** ✅ shipped 2026-07-19 (was the #1 open security
+  surface).  Residual polish only — `AUTH_TODO.md` Line E.
+- **Inbox:** ✅ CURVE + cross-engine parity + replay + schema two-zone.
+- **Line 2 — SMS (HEP-0043):** ✅ shipped.  Residual: SEC-Fold-1b §8/§10 vault +
+  script-crypto content migration (housekeeping).
+- **Line 4 — IAttachChannel (HEP-0044):** ✅ shipped.
+
+**Open lines:**
 - **Line 3 — Broker SHM observer (HEP-0045):** 🚧 Phases A/B + D1/D2 + C.2.a/b
-  shipped; C.2.c–C.5 open (below).
-- **Line 4 — IAttachChannel foundation (HEP-0044):** ✅ shipped; no next-action.
-- **Topology migration:** Phases A/B/C-step1-2 + D-phase-field ✅; C step 3 ✅;
-  **C step 7, D R6 gate, Phases E–H open.**  Design LOCKED
-  (`DRAFT_topology_singular_side_2026-07.md`); tracker `TOPOLOGY_TODO.md`.
+  shipped; **C.2.c–C.5 open** (below).
+- **Topology migration:** static layer ✅; **C step 7, D R6 gate, Phases E–H
+  open.**  Design LOCKED (`DRAFT_topology_singular_side_2026-07.md`); tracker
+  `TOPOLOGY_TODO.md`.
 - **REG protocol redesign (HEP-0046):** Phase A + islanded Phase C shipped;
   **Phase B (typed-envelope commit rewire) = task #57**, tech-debt not a
   functional gap (envelope + gates + BRC already live on broker_proto 7).
+- **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **27
+  resolved / 29 open** — see "Active code reviews" for the open clusters.
 
 ---
 
 ## Active / next work (open, roughly by leverage)
 
 **Security (top open surface):**
-- **Admin-plane CURVE (Line E)** — admin plane is still plaintext/loopback-only;
-  the #1 open security surface per REVIEW-E.  Simple-version spec: HEP-0033 §11 +
-  `DRAFT_curve_admin_protocol_2026-07-15.md`.
+- **Federation ingress hardening** — broker↔broker peer-DEALER ingress bypasses
+  the sanctioned `receive_and_validate` admission chain (REVIEW_FullSystem, high).
+  Federation is post-MVP (#105) + slated for redesign, so noted, not in-flight.
+  *(Admin-plane CURVE — the former #1 surface — ✅ SHIPPED 2026-07-19; residual
+  polish only, AUTH_TODO Line E.)*
+- **FullSystem-review remediation (29 open of 56)** — the running work queue below
+  is now the review's open clusters; see "Active code reviews" for the breakdown.
 
 **In-flight arcs:**
 - **#52** HubHostBrokerHandle → Pattern 4 sweep (in progress; ~21 in-process
@@ -66,11 +80,6 @@ to `docs/archive/transient-2026-07-18/todo-completions/TODO_MASTER_completions_2
   Phase 3 MaxRate pacing already shipped in `slot_iterator.hpp`).
 - **Phase 3 (#155, in flight)** — CLI `--init` one-shot bundling + 24+ L4
   test-site migration (`--init` mode flag parses; bundling incomplete).
-
-(Note: #235 Python band-accessor fix and #238 log-format standardization were
-verified SHIPPED 2026-06-27 against code — `consumer_api.cpp:75` anchor;
-`event=` format deployed — the old master's "HIGH-priority open" listing was
-stale.  Only residual: #235 L3 parity regression tests, fold into #232.)
 
 ---
 
@@ -130,14 +139,10 @@ the pre-composition inheritance hierarchy + wrong threading model / class
 names).  Rewrite tracked here so it isn't lost (was only in a since-deleted
 review memory).
 
-**Parked git stashes (inventory 2026-07-18):** 5 stashes exist; 4 are MOOT —
-`stash@{1}` (zap_router CMake, landed), `stash@{2}` (phase6.1 AuthContext,
-superseded by the CURVE-admin design), `stash@{3}` (unified CycleOps — landed
-instead into `cycle_ops.hpp`), `stash@{4}` (Gemini, obsolete `cpp/` layout).
-Only **`stash@{0}`** (AUTH-2 #162 producer-side BRC ZAP-pump PeriodicTask) may
-still be wanted: AUTH_TODO marks AUTH-2 shipped, but that producer-side pump is
-NOT on the branch (broker ships a single per-cycle `pump_one`, not the stash's
-drain-loop) — reconcile before dropping.
+**Parked git stashes (2026-07-18):** 5 exist; `stash@{1..4}` MOOT (landed or
+superseded).  Only **`stash@{0}`** (AUTH-2 #162 producer-side BRC ZAP-pump
+PeriodicTask) may still be wanted — that pump is NOT on the branch (broker ships
+per-cycle `pump_one`, not the stash's drain-loop); reconcile before dropping.
 
 ---
 
@@ -149,16 +154,23 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (5 — updated 2026-07-20)
+## Active code reviews (5 — updated 2026-07-22)
 
-- `code_review/REVIEW_FullSystem_2026-07-20.md` — **NEW, full-system HEP-vs-code
-  audit** (multi-agent, 47 verified findings + cross-cutting synthesis). ❌ OPEN.
-  Load-bearing: (1) `ReplayGuard` prunes on client `wall_ts` — replay defeatable on
-  all 3 planes when window==skew (`replay_guard.hpp:58`, hand-verified, from #64);
-  (2) four dead/no-op identity validators; (3) federation peer-DEALER ingress skips
-  the admission gate chain; (4) consumer teardown leaks on failure paths;
-  (5) masked HubHost lifecycle FSM suite; (6) systemic HEP↔code drift across 8+ HEPs.
-  Tasks #67–#72 filed for the highest-severity items. No fixes applied yet.
+- `code_review/REVIEW_FullSystem_2026-07-20.md` — full-system HEP-vs-code audit
+  (56 findings). 🚧 **27 RESOLVED (07-20→07-22), 29 OPEN.**  Resolved-finding
+  detail (#67–#72 + schema) in the 07-22 completions index; per-finding evidence
+  in the review doc's `✅` blocks.  **29 OPEN, by cluster** (files in review doc):
+  - **Federation ingress bypass** (1, high) — peer-DEALER skips the admission
+    gate chain; post-MVP #105 / redesign-bound.
+  - **Systemic HEP↔code drift** (7, high) — governing HEPs describe superseded
+    models (HEP-0032/0026/0033/0027/0020/0019 + synthesis).
+  - **Dead-residue, post-CURVE/vault cutover** (8, med) — broker/inbox/vault/
+    keystore residue + authoritative-storage doc contradictions.
+  - **Typed-envelope BRC bypass** (4, med) — raw-JSON scatter off the typed path;
+    folds into **#57** (HEP-0046 Phase B).
+  - **Test-coverage / design gaps** (5) — harness + pattern4 + inbox-worker +
+    vault + logger.
+  - **Misc hep-gap** (4) — hub_cli, hub_state, consumer_api, script_engine_factory.
 - `code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — D2+D3 follow-ups
   (X6 `ChecksumRepairPolicy::Repair` no-op `broker_service.cpp:6219`; X2 dead
   `query_shm_info`); tracked in API_TODO.
