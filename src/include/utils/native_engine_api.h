@@ -475,6 +475,12 @@ extern "C"
         int (*hub_broadcast_channel)(const struct PlhNativeContext *ctx, const char *channel,
                                      const char *message, const char *data_json);
 
+        /** hub_admin_console_print (API v11 #hep-0033-11): append a line to the
+         *  operator console output buffer (HEP-CORE-0033 §11.0.4).  `content_json`
+         *  is a JSON document — an object is used as-is; a scalar / invalid JSON
+         *  becomes {"message": <text>}.  1 on accept, -1 on error. */
+        int (*hub_admin_console_print)(const struct PlhNativeContext *ctx, const char *content_json);
+
         /** hub_post_event: post a user-defined event onto the worker's
          *  main-loop queue (fires on_app_<name>(api, data) on the worker
          *  thread).  Name MUST be a valid identifier per HEP-CORE-0033
@@ -689,7 +695,13 @@ extern "C"
  * range-based).  This is a native-plugin-ABI bump only; the
  * inter-process ComponentVersions registry is unchanged (a role with
  * this engine talks to the broker identically). */
-#define PLH_NATIVE_API_VERSION 10
+/* v11 (2026-07-23): ADDITIVE — `hub_admin_console_print` appended to the
+ * hub-side control delegates (HEP-CORE-0033 §11.0.4), giving native hub
+ * plugins parity with Lua/Python `api.admin_console_print(...)`.  Sits before
+ * the opaque `_core`/`_api` tail (offsets for prior callbacks unchanged);
+ * exact-match api_version gate still requires a rebuild.  Native-plugin-ABI
+ * bump only; the inter-process ComponentVersions registry is unchanged. */
+#define PLH_NATIVE_API_VERSION 11
 
     /* =========================================================================
      * C-visible pylabhub ComponentVersions constants
@@ -1506,6 +1518,14 @@ class Context
     {
         return c_ && c_->hub_broadcast_channel &&
                c_->hub_broadcast_channel(c_, channel, message, data_json) == 1;
+    }
+    /// Append a line to the operator console output buffer (HEP-CORE-0033
+    /// §11.0.4).  `content_json` is a JSON document — an object is used as-is,
+    /// a scalar / invalid JSON becomes {"message": <text>}.  Accept on true.
+    [[nodiscard]] bool hub_admin_console_print(const char *content_json) const noexcept
+    {
+        return c_ && c_->hub_admin_console_print &&
+               c_->hub_admin_console_print(c_, content_json) == 1;
     }
     /// Post a user-defined event.  Returns a tristate (§4.9):
     ///  - `Accepted`       — event queued; `on_app_<name>` will fire.

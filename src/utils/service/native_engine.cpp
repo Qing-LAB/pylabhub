@@ -288,6 +288,29 @@ int ctx_hub_broadcast_channel(const PlhNativeContext *ctx, const char *channel, 
     }
 }
 
+// hub_admin_console_print (API v11): append a line to the operator console
+// output buffer (HEP-CORE-0033 §11.0.4).
+int ctx_hub_admin_console_print(const PlhNativeContext *ctx, const char *content_json)
+{
+    if (!ctx || !ctx->_api || !content_json)
+        return -1;
+    try
+    {
+        // `content_json` is a JSON document; if it doesn't parse, treat the raw
+        // bytes as a plain message string.  HubAPI normalizes any non-object to
+        // {"message": <text>}.
+        auto content = nlohmann::json::parse(content_json, nullptr, /*allow_exceptions=*/false);
+        if (content.is_discarded())
+            content = std::string(content_json);
+        static_cast<hub_host::HubAPI *>(ctx->_api)->admin_console_print(std::move(content));
+        return 1;
+    }
+    catch (...)
+    {
+        return -1;
+    }
+}
+
 int ctx_hub_post_event(const PlhNativeContext *ctx, const char *name, const char *data_json)
 {
     if (!ctx || !ctx->_api || !name)
@@ -479,6 +502,10 @@ extern "C"
     }
     int role_stub_hub_broadcast_channel(const PlhNativeContext *, const char *, const char *,
                                         const char *) noexcept
+    {
+        return -1;
+    }
+    int role_stub_hub_admin_console_print(const PlhNativeContext *, const char *) noexcept
     {
         return -1;
     }
@@ -1460,6 +1487,7 @@ struct NativeEngine::NativeContextStorage
         ctx.hub_get_peer_json = ctx_hub_get_peer_json;
         ctx.hub_close_channel = ctx_hub_close_channel;
         ctx.hub_broadcast_channel = ctx_hub_broadcast_channel;
+        ctx.hub_admin_console_print = ctx_hub_admin_console_print;
         ctx.hub_post_event = ctx_hub_post_event;
         ctx.hub_augment_timeout_ms = ctx_hub_augment_timeout_ms;
         ctx.hub_set_augment_timeout = ctx_hub_set_augment_timeout;
@@ -1577,6 +1605,7 @@ struct NativeEngine::NativeContextStorage
         ctx.hub_get_peer_json = role_stub_hub_json_query_arg;
         ctx.hub_close_channel = role_stub_hub_close_channel;
         ctx.hub_broadcast_channel = role_stub_hub_broadcast_channel;
+        ctx.hub_admin_console_print = role_stub_hub_admin_console_print;
         ctx.hub_post_event = role_stub_hub_post_event;
         ctx.hub_augment_timeout_ms = role_stub_hub_augment_timeout_ms;
         ctx.hub_set_augment_timeout = role_stub_hub_set_augment_timeout;
