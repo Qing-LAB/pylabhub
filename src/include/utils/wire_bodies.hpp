@@ -810,6 +810,12 @@ inline constexpr std::string_view kAdminGetRoleReq = "ADMIN_GET_ROLE_REQ";
 inline constexpr std::string_view kAdminGetRoleAck = "ADMIN_GET_ROLE_ACK";
 inline constexpr std::string_view kAdminQueryMetricsReq = "ADMIN_QUERY_METRICS_REQ";
 inline constexpr std::string_view kAdminQueryMetricsAck = "ADMIN_QUERY_METRICS_ACK";
+/// Console output poll (HEP-CORE-0033 §11.0.4).  Request reuses
+/// `AdminSessionReqBody` (session id only); the ack reuses `AdminResultAckBody`
+/// with `result = { status, lines[], dropped_count }`.  A read: session-id +
+/// skew checked, NO replay nonce (§11.1).
+inline constexpr std::string_view kAdminResponseQueryReq = "ADMIN_RESPONSE_QUERY_REQ";
+inline constexpr std::string_view kAdminResponseQueryAck = "ADMIN_RESPONSE_QUERY_ACK";
 /// Typed error reply for any admin failure (unauthorized, invalid session,
 /// bad params, not-found).  Carries the §11.5 error code + message.
 inline constexpr std::string_view kAdminError = "ADMIN_ERROR";

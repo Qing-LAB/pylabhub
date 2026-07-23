@@ -629,6 +629,28 @@ bool HubHost::nonce_seen(std::string_view identity, std::string_view client_nonc
     return impl_->state.nonce_seen(identity, client_nonce, window_ms);
 }
 
+// Operator console output buffer (HEP-CORE-0033 §11.0.1 layer 6 / §11.0.4) —
+// forward to the one buffer on the owned HubState (self-locked; §4).
+void HubHost::append_console_line(std::string request_id, nlohmann::json content)
+{
+    impl_->state.append_console_line(std::move(request_id), std::move(content));
+}
+
+nlohmann::json HubHost::drain_console_output()
+{
+    return impl_->state.drain_console_output();
+}
+
+void HubHost::console_on_connect()
+{
+    impl_->state.console_on_connect();
+}
+
+void HubHost::console_on_disconnect()
+{
+    impl_->state.console_on_disconnect();
+}
+
 const std::string &HubHost::broker_endpoint() const noexcept
 {
     return impl_->bound_endpoint;

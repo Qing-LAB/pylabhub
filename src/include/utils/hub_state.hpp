@@ -1706,6 +1706,20 @@ class PYLABHUB_UTILS_EXPORT HubState
     [[nodiscard]] bool nonce_seen(std::string_view role_uid, std::string_view client_nonce,
                                   std::uint64_t window_ms);
 
+    /// Operator console output buffer (HEP-CORE-0033 §11.0.1 layer 6 /
+    /// §11.0.4).  Self-locked (like `nonce_seen`), so these are safe from any
+    /// thread.  `append_console_line` is called by the broker thread (command
+    /// completion, tagged with the command's `request_id`) and the script
+    /// worker (`admin_console_print`, empty `request_id`).
+    /// `drain_console_output` returns the §11.0.4 poll document
+    /// (`{status, lines[], dropped_count}`, return-and-clear) for the admin
+    /// worker.  `console_on_connect`/`console_on_disconnect` bound the single
+    /// console session (init empty / flush-to-log + clear).
+    void append_console_line(std::string request_id, nlohmann::json content);
+    [[nodiscard]] nlohmann::json drain_console_output();
+    void console_on_connect();
+    void console_on_disconnect();
+
     /// HEP-CORE-0042 §5.4 + §5.5.2 (unified 2026-07-13) — advance
     /// `ledger.confirm(role_uid, applied_version)` for the named
     /// channel.  Role-agnostic: works for BOTH the fan-in consumer

@@ -82,6 +82,7 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/json_fwd.hpp"
 
 #include <memory>
 #include <string>
@@ -213,6 +214,18 @@ class PYLABHUB_UTILS_EXPORT HubHost
     /// >= 2 * the caller's skew tolerance.
     [[nodiscard]] bool nonce_seen(std::string_view identity, std::string_view client_nonce,
                                   std::uint64_t window_ms) noexcept;
+
+    /// Operator console output buffer (HEP-CORE-0033 §11.0.1 layer 6 /
+    /// §11.0.4) — forwarders to the one buffer on the owned HubState.
+    /// `append_console_line`: broker completion result (with `request_id`) or
+    /// script `admin_console_print` (empty `request_id`).
+    /// `drain_console_output`: the `RESPONSE_QUERY` poll document
+    /// (`{status, lines[], dropped_count}`, return-and-clear).
+    /// connect/disconnect bound the single console session.
+    void append_console_line(std::string request_id, nlohmann::json content);
+    [[nodiscard]] nlohmann::json drain_console_output();
+    void console_on_connect();
+    void console_on_disconnect();
 
     /// Bound broker endpoint (e.g. `tcp://127.0.0.1:5570`).  Empty
     /// before `startup()` returns.  After successful startup, this

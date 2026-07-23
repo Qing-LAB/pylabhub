@@ -46,7 +46,8 @@
 #include <utility>
 #include <vector>
 
-#include <nlohmann/json.hpp>
+#include "utils/json_fwd.hpp"
+#include "utils/logger.hpp"
 
 namespace pylabhub::utils
 {
@@ -180,7 +181,14 @@ class ConsoleOutputBuffer
     void spill_to_log_(const Line &l, const char *reason) const
     {
         if (log_sink_)
+        {
             log_sink_(l, reason);
+            return;
+        }
+        // Default sink: the hub log. The buffer is a spill/flush sink, so a
+        // dropped line is not lost — it lands here. Tests inject their own sink.
+        LOGGER_WARN("[admin_console] output line spilled ({}): request_id='{}' content={}", reason,
+                    l.request_id, l.content.dump());
     }
 
     std::uint64_t now_ms_() const

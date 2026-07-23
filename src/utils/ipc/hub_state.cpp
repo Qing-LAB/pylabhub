@@ -24,7 +24,8 @@
  */
 #include "utils/hub_state.hpp"
 
-#include "utils/format_tools.hpp" // bytes_to_hex — normalized schema diagnostics
+#include "utils/console_output_buffer.hpp" // operator console pull output buffer (§11.0.4)
+#include "utils/format_tools.hpp"           // bytes_to_hex — normalized schema diagnostics
 #include "utils/naming.hpp"
 #include "utils/replay_guard.hpp" // shared sliding-window nonce dedup
 #include "utils/schema_utils.hpp" // schema_records_equivalent (HEP-CORE-0034 §9)
@@ -205,6 +206,13 @@ struct HubState::Impl
     // mechanism the role inbox uses (HEP-CORE-0027 §3); one component,
     // two callers.  Self-locked, so `nonce_seen` does not take `mu`.
     pylabhub::utils::ReplayGuard replay_guard;
+
+    // HEP-CORE-0033 §11.0.1 layer 6 / §11.0.4 — the operator console's single
+    // pull output buffer.  Self-locked (like `replay_guard`), so the console
+    // accessors do not take `mu`.  Appended by the broker thread (command
+    // completion) and the script worker (`admin_console_print`); drained by the
+    // admin worker on `RESPONSE_QUERY` poll.
+    pylabhub::utils::ConsoleOutputBuffer console_buffer;
 
     BrokerCounters counters;
 
@@ -2146,6 +2154,42 @@ bool HubState::nonce_seen(std::string_view role_uid, std::string_view client_non
     // dedup window (see ReplayGuard header).  The caller's separate skew
     // gate consumes the client stamp.
     return pImpl->replay_guard.check_and_record(role_uid, client_nonce, window_ms);
+}
+
+// ── Operator console output buffer (HEP-CORE-0033 §11.0.1 layer 6 / §11.0.4) ──
+// Self-locked (like `nonce_seen`), so these take no `pImpl->mu`.  Appended by
+// the broker thread (command completion) and the script worker
+// (`admin_console_print`); drained by the admin worker on a `RESPONSE_QUERY`
+// poll; connect/disconnect driven by the admin console session.
+
+void HubState::append_console_line(std::string request_id, nlohmann::json content)
+{
+    pImpl->console_buffer.append(std::move(request_id), std::move(content));
+}
+
+nlohmann::json HubState::drain_console_output()
+{
+    // §11.0.4 output-poll result document — return-and-clear.  `status:"empty"`
+    // when nothing was buffered; each line's `content` is a JSON object.
+    auto d = pImpl->console_buffer.drain();
+    const bool had_lines = !d.lines.empty();
+    nlohmann::json lines = nlohmann::json::array();
+    for (auto &l : d.lines)
+        lines.push_back(nlohmann::json{
+            {"ts", l.ts_ms}, {"request_id", l.request_id}, {"content", std::move(l.content)}});
+    return nlohmann::json{{"status", had_lines ? "ok" : "empty"},
+                          {"lines", std::move(lines)},
+                          {"dropped_count", d.dropped_count}};
+}
+
+void HubState::console_on_connect()
+{
+    pImpl->console_buffer.on_connect();
+}
+
+void HubState::console_on_disconnect()
+{
+    pImpl->console_buffer.on_disconnect();
 }
 
 std::uint64_t HubState::_on_role_confirmed(const std::string &channel_name,
