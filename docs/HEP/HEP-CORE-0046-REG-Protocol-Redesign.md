@@ -1238,6 +1238,20 @@ before topology admission, atomic wire cut for the whole chain.
   atomic, high-blast-radius commit is the BRC send + ACK flip (typed bodies +
   `envelope_hash` + `correlation_id`-keyed pending + the
   `I-WIRE-VERSION-ATOMIC` bump, §14.6); no mixed old/new deployment.
+- **Two kinds of handler work — seven simple swaps; REG/CONSUMER a relocation.**
+  `DEREG_REQ`, `CONSUMER_DEREG_REQ`, `ENDPOINT_UPDATE_REQ`,
+  `GET_CHANNEL_AUTH_REQ`, `CHANNEL_AUTH_APPLIED_REQ`, `HEARTBEAT_NOTIFY`,
+  `DISC_REQ` are already gated (`run_authenticated_reg_family_gates`), so each
+  converts by swapping JSON-key extraction for typed `Validated*` / body
+  accessors — a mechanical, behavior-preserving change.  `REG_REQ` +
+  `CONSUMER_REG_REQ` are larger: the typed `BrokerRegHandler` commit path is a
+  **~15% producer / 0% consumer skeleton today** (invoked only from tests), so
+  their conversion RELOCATES the complete handcrafted `handle_reg_req` /
+  `handle_consumer_reg_req` logic (ABI, schema-record, inbox, `ProducerEntry`,
+  `REG_ACK`) into the pipeline's commit callback.  The handcrafted handlers are
+  the tested reference — a relocate-and-retire job, no redesign.  Sequencing:
+  the mechanical swaps land FIRST (establish the pattern on the lowest-risk
+  handler), the REG/CONSUMER relocation LAST as its own focused effort.
 
 The doubly-encoded `inbox_schema_json` (§14.3) collapses to a typed
 `SchemaSpec` sub-structure parsed once at the envelope boundary, so the broker

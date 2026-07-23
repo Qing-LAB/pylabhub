@@ -90,18 +90,27 @@ BRC/ACK flip.  Design authority + verified approach: **HEP-CORE-0046 §12
 Phase B**.
 
 - **B.1 — broker recv-handler rewire (internal, staged, reviewable).**  Convert
-  the 9 hand-parsed handlers (`handle_reg_req`, `handle_consumer_reg_req`,
-  `handle_dereg_req`, `handle_consumer_dereg_req`, `handle_endpoint_update_req`,
-  `handle_channel_auth_applied_req`, `handle_heartbeat_req`,
-  `handle_get_channel_auth_req`, `handle_disc_req`) to consume the typed
-  `Validated*` directly, retiring `to_legacy` / `dispatch_legacy`
-  (`broker_service.cpp:1422-1518`) per handler.  Acks stay legacy-JSON here
-  (input-only flip → wire-neutral).  Wire in the built `BrokerRegHandler` /
-  `reg_admission_pipeline` for REG + CONSUMER_REG; write typed handlers for the
-  other 7.  Sub-slices: (a) REG + CONSUMER_REG; (b) auth family (DEREG,
-  CONSUMER_DEREG, ENDPOINT_UPDATE, GET_CHANNEL_AUTH, CHANNEL_AUTH_APPLIED);
-  (c) HEARTBEAT_NOTIFY + DISC.  Each behavior-preserving; existing L2/L3 REG
-  round-trip tests stay green.
+  the 9 hand-parsed handlers to consume the typed `Validated*` directly,
+  retiring `to_legacy` / `dispatch_legacy` (`broker_service.cpp:1422-1518`) per
+  handler.  Acks stay legacy-JSON here (input-only flip → wire-neutral).  **Two
+  kinds of work (verified against code 2026-07-23):**
+  - **Simple swaps — do FIRST.**  `handle_disc_req`, `handle_get_channel_auth_req`,
+    `handle_heartbeat_req`, `handle_dereg_req`, `handle_consumer_dereg_req`,
+    `handle_endpoint_update_req`, `handle_channel_auth_applied_req` are already
+    gated by `run_authenticated_reg_family_gates`; each just swaps
+    `req.value(...)` for the typed body accessor and builds a typed ack —
+    mechanical, behavior-preserving.  **B.1a = `handle_disc_req`** (read-only,
+    smallest) as the pattern-setter, then the rest of the set.
+  - **REG/CONSUMER relocation — do LAST.**  `BrokerRegHandler` /
+    `reg_admission_pipeline` is a **~15% producer / 0% consumer SKELETON today**
+    (invoked only from tests; see `broker_reg_handler.hpp:7-24`).  This slice
+    RELOCATES the full handcrafted `handle_reg_req` / `handle_consumer_reg_req`
+    logic (ABI, schema-record, inbox, `ProducerEntry`, `REG_ACK`) into the
+    pipeline's commit callback — its own focused effort; the handcrafted
+    handlers are the complete tested reference (relocate-and-retire, no
+    redesign).
+  Each conversion behavior-preserving; existing L2/L3 REG round-trip tests stay
+  green.
 - **B.2 — `inbox_schema_json` → typed `SchemaSpec` sub-structure.**  The
   doubly-encoded field; see the design requirement + critical-path trace below.
 - **B.3 — BRC + ACK flip (the one atomic commit).**  BRC: `ZMQ_ROUTING_ID =
