@@ -18,7 +18,7 @@ int broker_channel_not_found();
 int broker_dereg_happy_path();
 
 /** Deregister with wrong pid → broker replies NOT_REGISTERED; channel still discoverable. */
-int broker_dereg_pid_mismatch();
+int broker_dereg_ignores_pid();
 
 // ── R3.5b (2026-05-19) — wire-boundary identifier validation ────────────────
 

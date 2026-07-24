@@ -2945,25 +2945,28 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json &req, zm
     const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
     const std::string wire_role_uid = req.value("role_uid", "");
 
-    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
-    // multi-producer DEREG target resolution.
-    // Grammar + tag policy (DEREG_REQ tag set {prod, proc} per
-    // HEP-CORE-0033 §G2.2.0b.8) already ran at the wire_dispatch
-    // pipeline.  Legacy validate_identity_fields retired
-    // (2026-07-14 task #46).
+    // Target resolution is by `role_uid` ALONE — the authoritative unique
+    // producer key (HEP-CORE-0023 §2.1.1 + same-uid-restart-replace: a channel
+    // never holds two producer-presences under one role_uid).  `producer_pid`
+    // is carried + logged for debug/record only and is NEVER validated: a PID
+    // is machine-local and meaningless to a hub on another host, and role_uid
+    // already disambiguates fully — a (pid, role_uid) match would only add a
+    // spurious rejection when a role restarts with a fresh PID.  Grammar + tag
+    // policy (DEREG_REQ tag set {prod, proc} per HEP-CORE-0033 §G2.2.0b.8) and
+    // the identity gate (env.identity() == role_uid) already ran at the
+    // wire_dispatch pipeline, so a role can only present its OWN role_uid.
 
-    // Resolve via (pid, role_uid) tuple — both must match the same
-    // admitted producer.  HEP-CORE-0023 §2.1.1 + atomic-teardown
-    // contract: removing one producer leaves the channel alive iff
-    // other producers remain; channel teardown fires only when the
-    // LAST producer leaves.  `_on_producer_dropped` encapsulates this.
+    // HEP-CORE-0023 §2.1.1 atomic-teardown contract: removing one producer
+    // leaves the channel alive iff other producers remain; channel teardown
+    // fires only when the LAST producer leaves.  `_on_producer_dropped`
+    // encapsulates this.
     auto entry = hub_state_->channel(channel_name);
     std::string target_role_uid;
     if (entry.has_value())
     {
         for (const auto &prod : entry->producers)
         {
-            if (prod.producer_pid == producer_pid && prod.role_uid == wire_role_uid)
+            if (prod.role_uid == wire_role_uid)
             {
                 target_role_uid = prod.role_uid;
                 break;
@@ -3693,15 +3696,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socke
     const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
     const std::string wire_role_uid = req.value("role_uid", "");
 
-    // broker_proto 2→3 (audit C3, 2026-05-15): `role_uid` REQUIRED for
-    // multi-consumer DEREG target resolution.
-    // Grammar + tag policy (CONSUMER_DEREG_REQ tag set {cons, proc} per
-    // HEP-CORE-0033 §G2.2.0b.8) already ran at the wire_dispatch
-    // pipeline.  Legacy validate_identity_fields retired
-    // (2026-07-14 task #46).
+    // Target resolution is by `role_uid` ALONE — the authoritative unique
+    // consumer key (HEP-CORE-0023 §2.1.1).  `consumer_pid` is carried + logged
+    // for debug/record only and is NEVER validated (a PID is machine-local and
+    // meaningless to a remote hub; role_uid disambiguates fully).  Grammar + tag
+    // policy (CONSUMER_DEREG_REQ tag set {cons, proc} per HEP-CORE-0033
+    // §G2.2.0b.8) and the identity gate (env.identity() == role_uid) already ran
+    // at the wire_dispatch pipeline, so a role can only present its OWN role_uid.
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
-    // Resolution by (pid, role_uid) tuple — both must match.
     pylabhub::hub::ConsumerEntry closing_entry{};
     bool have_entry = false;
     {
@@ -3710,7 +3713,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socke
         {
             for (const auto &c : ch->consumers)
             {
-                if (c.consumer_pid == consumer_pid && c.role_uid == wire_role_uid)
+                if (c.role_uid == wire_role_uid)
                 {
                     closing_entry = c;
                     have_entry = true;
@@ -5021,17 +5024,11 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
                     channel_name);
     }
 
-    const std::uint64_t producer_pid = body.producer_pid();
-    if (producer_pid == 0)
-    {
-        // `producer_pid` is retained on the wire from Phase 1 for
-        // diagnostic / audit purposes only; the broker no longer uses
-        // it for presence resolution (the Phase 6 `(channel, uid,
-        // role_type)` tuple is authoritative).  Missing or zero pid
-        // is logged for diagnostics but does not reject the heartbeat.
-        LOGGER_ERROR("Broker: HEARTBEAT_NOTIFY for '{}' missing or zero producer_pid",
-                     channel_name);
-    }
+    // `producer_pid` is NOT read here — it is a debug/record-only wire field
+    // (machine-local; never an input to any broker decision).  The heartbeat's
+    // authoritative key is `(role_uid, channel, role_type)`; a missing/zero pid
+    // is not an error and never affects presence.  It is echoed in the metrics
+    // log below purely for per-presence attribution.
 
     // Refresh the presence row keyed on `(role_uid, channel, role_type)`
     // per HEP-CORE-0023 §2.5.2 + HEP-CORE-0019 §2.3.  Each heartbeat
@@ -5047,13 +5044,14 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
     // a metrics object, log the stored per-presence metrics so an operator
     // (and L3 tests that verify wire→storage) can observe them without
     // reaching into HubState.  Metrics heartbeats are periodic, not
-    // per-tick, so this is bounded.  `producer_pid` is echoed for the
-    // per-presence attribution tests.
+    // per-tick, so this is bounded.  `producer_pid` is echoed (debug/record)
+    // for per-presence attribution.
     if (metrics_opt.has_value())
     {
         LOGGER_INFO("[broker] event=HeartbeatMetricsStored channel='{}' "
                     "role_uid='{}' role_type='{}' producer_pid={} metrics={}",
-                    channel_name, wire_uid, wire_role_type, producer_pid, metrics_opt->dump());
+                    channel_name, wire_uid, wire_role_type, body.producer_pid(),
+                    metrics_opt->dump());
     }
 
     // HEP-CORE-0023 §2.5 telemetry — first-heartbeat observability.

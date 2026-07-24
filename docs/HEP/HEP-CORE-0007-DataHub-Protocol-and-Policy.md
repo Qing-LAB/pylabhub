@@ -1248,12 +1248,12 @@ role_type field (added 2026-03-10):
 ```
 Direction:  Consumer → Broker → Consumer
 Trigger:    Consumer::close() or graceful shutdown
-Effect:     Broker removes the consumer matching (channel_name, consumer_pid,
-            role_uid) from ChannelEntry.consumers[].  Resolution is by the
-            (pid, role_uid) tuple — both must match the same admitted
-            consumer.  pid-only resolution was racy under OS pid reuse
-            across consumer restarts (broker_proto 2→3 closure, 2026-05-15;
-            audit C3).
+Effect:     Broker removes the consumer matching (channel_name, role_uid)
+            from ChannelEntry.consumers[].  Resolution is by `role_uid`
+            ALONE — the authoritative unique key.  `consumer_pid` is carried
+            for debug/record only and is NEVER validated (a PID is
+            machine-local, meaningless to a hub on another host — see
+            HEP-CORE-0023 "A PID is debug/record only").
 
 Payload (CONSUMER_DEREG_REQ):
   channel_name          string
@@ -1332,11 +1332,13 @@ Direction:  Producer → Broker → Producer
 Trigger:    BrokerRequestComm::deregister_channel() during role shutdown
 Effect:     Removes the producer-presence (or, if this is the LAST
             producer, the channel record itself + atomic CHANNEL_CLOSING_NOTIFY
-            fan-out per HEP-CORE-0023 §2.1.1).  Resolution is by the
-            (pid, role_uid) tuple — both must match the same admitted
-            producer.  HEP-CORE-0023 §2.1.1 multi-producer channels admit
-            multiple producers; pid-alone resolution was racy under OS
-            pid reuse (broker_proto 2→3 closure, 2026-05-15; audit C3).
+            fan-out per HEP-CORE-0023 §2.1.1).  Resolution is by `role_uid`
+            ALONE — the authoritative unique key (HEP-CORE-0023 §2.1.1
+            multi-producer channels admit multiple producers, each with a
+            unique role_uid).  `producer_pid` is carried for debug/record
+            only and is NEVER validated (a PID is machine-local, meaningless
+            to a hub on another host — see HEP-CORE-0023 "A PID is
+            debug/record only").
 
 Payload (DEREG_REQ):
   channel_name          string
@@ -1685,7 +1687,7 @@ same change.
 | `CHANNEL_NOT_FOUND` | DISC_REQ / CONSUMER_REG_REQ / DEREG_REQ / CONSUMER_DEREG_REQ for a channel that is not registered, OR for a channel whose producer-presence has just been reaped (rare race per HEP-CORE-0023 §2.1). | Retry within the client's discover budget; producer may register shortly.  Give up after the timeout. |
 | `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field: `awaiting_first_heartbeat` \| `heartbeat_stalled` per HEP-CORE-0036 §6.6.  Endpoint-resolution waiting (HEP-CORE-0021 §16.7 R6 extension for port-0 producers) does NOT surface as a distinct `reason` — the REG_REQ is held pending on R6 the same way it waits for `awaiting_first_heartbeat`; the `awaiting_endpoint` reason string retired 2026-06-12 stays retired even after §16 adoption 2026-07-08. | Wait briefly and retry; producer presence is still warming up (first heartbeat or endpoint publish) or stalled. |
 | `TRANSPORT_MISMATCH` | CONSUMER_REG_REQ where the consumer's declared transport (`shm`/`zmq`) doesn't match the producer's. | Programming error or misconfiguration; reconcile the channel's transport setting. |
-| `NOT_REGISTERED` | DEREG_REQ where the (producer_pid, role_uid) tuple doesn't match any admitted producer; CONSUMER_DEREG_REQ where the (consumer_pid, role_uid) tuple doesn't match any admitted consumer.  broker_proto 2→3 (2026-05-15): role_uid mismatch is a NOT_REGISTERED variant; missing role_uid is INVALID_REQUEST instead. | Verify the calling process actually registered first and is sending its own role_uid (not someone else's).  No retry — the request itself is logically wrong. |
+| `NOT_REGISTERED` | DEREG_REQ / CONSUMER_DEREG_REQ where `role_uid` doesn't match any admitted producer / consumer.  Resolution is by `role_uid` alone — `producer_pid`/`consumer_pid` is debug/record only and never validated.  Missing role_uid is INVALID_REQUEST instead. | Verify the calling process actually registered first and is sending its own role_uid (not someone else's).  No retry — the request itself is logically wrong. |
 | `NOT_CHANNEL_OWNER` | ENDPOINT_UPDATE_REQ where the ZMTP-identity of the sender does not match any registered producer of the channel (broker uses connection-bound identity, not a wire `role_uid`, per HEP-CORE-0021 §16.5).  **Un-retired 2026-07-08** — HEP-CORE-0021 §16 reinstated ENDPOINT_UPDATE_REQ for post-bind endpoint publish. | Programming error: sender is not a producer of this channel.  No retry — the request is logically wrong. |
 | `SCHEMA_MISMATCH` | REG_REQ for an existing channel where the new producer's schema_hash differs from the channel-wide invariant (HEP-CORE-0023 §2.1.1: all producers on a channel must agree). | Reconcile schemas across producers; the channel cannot be re-registered with a different schema. |
 | `MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM` | Second REG_REQ on a `data_transport == "shm"` channel from a different `role_uid` (HEP-CORE-0023 §2.1.1: SHM is physically single-producer; multi-producer channels require ZMQ transport).  Same-`role_uid` does NOT reach this code path — the broker resolves same-uid first and rejects with `UID_CONFLICT` (see next row).  Structurally, the check lives in `ChannelEntry::add_producer` itself rather than the wire layer, so the wire handler cannot bypass it.  **Superseded 2026-07-08** by `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` for the SHM+fan-in case (checked upfront at REG_REQ entry before any state mutation).  The older code stays live for legacy handlers; new code paths should prefer the topology-aware error. | Choose a different channel name, or use ZMQ transport for multi-producer Fan-In topologies (HEP-CORE-0017 §4.6). |

@@ -184,11 +184,11 @@ int run_with_broker(std::string_view worker_name, std::vector<std::string> role_
             //   - SHM recovery probes the test's fresh channel name
             //     before producer reg; channel doesn't exist yet so
             //     `open()` fails.  Benign.
-            //   - HEARTBEAT_NOTIFY from a CONSUMER carries no
-            //     producer_pid; broker logs at ERROR for diagnostics
-            //     but accepts the heartbeat.  Benign.
+            // (The former "missing or zero producer_pid" ERROR allow-list
+            //  entry retired: producer_pid is now a debug/record-only wire
+            //  field and its absence is no longer logged at ERROR — the
+            //  #308 source-side fix.)
             log_cap.ExpectLogError("recovery: Failed to open '");
-            log_cap.ExpectLogError("' missing or zero producer_pid");
             for (auto &w : expect_log_warns)
                 log_cap.ExpectLogWarn(w);
 

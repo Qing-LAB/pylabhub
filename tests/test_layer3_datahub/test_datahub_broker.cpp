@@ -47,11 +47,12 @@ TEST_F(DatahubBrokerTest, DeregHappyPath)
     ExpectWorkerOk(proc);
 }
 
-TEST_F(DatahubBrokerTest, DeregPidMismatch)
+TEST_F(DatahubBrokerTest, DeregIgnoresPid_ResolvesByRoleUid)
 {
-    // Deregister with wrong pid → NOT_REGISTERED (raw ZMQ); broker logs LOGGER_WARN only.
-    // No ERROR-level log expected; use plain ExpectWorkerOk to catch any unexpected ERRORs.
-    auto proc = SpawnWorker("broker.broker_dereg_pid_mismatch", {});
+    // A PID is debug/record only, never validated: DEREG with a stale/wrong
+    // producer_pid but the correct role_uid SUCCEEDS (resolution is by role_uid
+    // alone).  Raw ZMQ; no ERROR-level log expected — ExpectWorkerOk catches any.
+    auto proc = SpawnWorker("broker.broker_dereg_ignores_pid", {});
     ExpectWorkerOk(proc);
 }
 

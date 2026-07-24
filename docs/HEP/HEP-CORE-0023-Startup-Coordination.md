@@ -229,16 +229,32 @@ removed.  Consumers leaving (`CONSUMER_DEREG_REQ`) does **not**
 trigger channel removal regardless of how many consumers were
 attached.
 
-**Multi-producer DEREG target resolution.**  Because a channel can
-admit multiple producers (and multiple consumers), `DEREG_REQ` and
-`CONSUMER_DEREG_REQ` MUST carry the calling role's `role_uid` on the
-wire alongside the pid.  The broker resolves the target by the
-`(pid, role_uid)` tuple — both must match the same admitted
-producer / consumer.  pid-alone resolution is racy under OS pid reuse
-across role restarts (multiple producers on the same channel can,
-across restart events, end up sharing a PID — see
-broker_proto 2→3 closure 2026-05-15 / audit C3).  Wire payload
-details: HEP-CORE-0007 §`DEREG_REQ` and §`CONSUMER_DEREG_REQ`.
+**Multi-producer DEREG target resolution — `role_uid` is the sole key.**
+A channel can admit multiple producers (and multiple consumers), so
+`DEREG_REQ` and `CONSUMER_DEREG_REQ` MUST carry the calling role's
+`role_uid`, and the broker resolves the target by `role_uid` ALONE.
+`role_uid` is the authoritative unique key — a channel never holds two
+producer- (or consumer-) presences under one `role_uid` (a same-uid REG is
+a restart-replace, below), so it disambiguates fully.  The identity gate
+(`env.identity() == role_uid`, HEP-CORE-0046 §14.5) guarantees a role can
+only present its own `role_uid`, so `role_uid`-sole resolution is
+authenticated as well.
+
+**A PID is debug/record only — never a validation input.**  Roles MAY carry
+`producer_pid` / `consumer_pid` on REG / DEREG / HEARTBEAT, and the broker
+MAY store and log it for diagnostics, but **no broker decision — target
+resolution, admission, liveness, or rejection — may read it.**  A PID is
+machine-local: once the hub and a role can run on different hosts, a PID is
+meaningless to the broker except as an opaque value the role echoes back;
+even co-located it adds nothing the unique `role_uid` does not already
+carry.  Putting a PID in any key only manufactures spurious rejections —
+e.g. a role that restarts with a fresh PID.  (This replaces an earlier
+`(pid, role_uid)` tuple resolution, which had added `role_uid` to fix
+pid-alone raciness but left the now-redundant pid half in the key.)  This
+same rule governs the data-plane crash-detection PID in the SHM header,
+which is a *separate*, necessarily co-located mechanism and is out of scope
+here.  Wire payload details: HEP-CORE-0007 §`DEREG_REQ` and
+§`CONSUMER_DEREG_REQ`.
 
 **Cross-tag admission.**  Per HEP-CORE-0017 (Pipeline Architecture),
 processors are producers on their `out_channel`.  A channel may have

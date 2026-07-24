@@ -24,6 +24,29 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### PID is debug/record only — never a validation input (2026-07-24) ✅
+
+- **Design ratified**: a PID is machine-local and meaningless to a hub on
+  another host, and `role_uid` is already the authoritative unique key (same-uid
+  REG is a restart-replace, so a channel never holds two presences under one
+  `role_uid`).  So `producer_pid` / `consumer_pid` may be transferred, stored,
+  and logged for debug/record, but **no broker decision may read a PID**.
+- **DEREG + CONSUMER_DEREG resolve by `role_uid` ALONE** (was the residual
+  `(pid, role_uid)` tuple).  The tuple had only ever added `role_uid` to fix
+  pid-alone raciness; the pid half was redundant.  broker_service.cpp `handle_dereg_req`
+  + `handle_consumer_dereg_req`.
+- **Heartbeat**: removed the `LOGGER_ERROR("missing or zero producer_pid")` — a
+  debug field's absence is not an error.  This is the **#308 source-side fix**, so
+  the `datahub_metrics_workers` ERROR allow-list entry retired with it.
+- **Docs**: HEP-CORE-0023 §"role_uid is the sole key" + "A PID is debug/record
+  only"; HEP-CORE-0007 DEREG/CONSUMER_DEREG effects + NOT_REGISTERED row reconciled.
+- **Test**: `broker_dereg_pid_mismatch` → `broker_dereg_ignores_pid`
+  (`DatahubBrokerTest.DeregIgnoresPid_ResolvesByRoleUid`) — now pins that a wrong
+  pid + correct role_uid SUCCEEDS, with a repeat-DEREG side-effect check.
+- **NOT retired (debug/record, intentionally kept)**: pid on the wire (REG/DEREG/
+  HEARTBEAT), `ProducerEntry.producer_pid` storage, admin/list/snapshot pid fields,
+  and the SHM data-plane crash-detection pid (a separate, co-located mechanism).
+
 ### Schema registry — two-zone unification + inbox-record removal (2026-07-22) ✅
 
 - **Two-zone `SchemaRecord`**: one record carries datablock + flexzone un-merged;

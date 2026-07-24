@@ -825,81 +825,75 @@ int broker_dereg_happy_path()
 }
 
 // ============================================================================
-// broker_dereg_pid_mismatch — deregister with wrong pid → NOT_REGISTERED,
-//                             channel still discoverable
+// broker_dereg_ignores_pid — a PID is debug/record only, NEVER validated
+// (HEP-CORE-0023 "role_uid is the sole key" + "A PID is debug/record only").
+// A DEREG carrying a STALE/wrong producer_pid but the CORRECT role_uid
+// SUCCEEDS — resolution is by role_uid alone.  Side-effect: the sole producer
+// is actually removed (channel torn down), so a repeat DEREG is NOT_REGISTERED.
 // ============================================================================
 
-int broker_dereg_pid_mismatch()
+int broker_dereg_ignores_pid()
 {
     return run_gtest_worker(
         []()
         {
-            auto [broker] = setup_broker_test({"prod.broker.pid_mismatch.uid00000001"},
+            auto [broker] = setup_broker_test({"prod.broker.ignores_pid.uid00000001"},
 
-                                              "broker.broker_dereg_pid_mismatch");
+                                              "broker.broker_dereg_ignores_pid");
 
-            const std::string channel = "broker.pid_mismatch.ch";
-            const std::string role_uid = "prod.broker.pid_mismatch.uid00000001";
-            const uint64_t correct_pid = 55555;
-            const uint64_t wrong_pid = 99999;
+            const std::string channel = "broker.ignores_pid.ch";
+            const std::string role_uid = "prod.broker.ignores_pid.uid00000001";
+            const uint64_t reg_pid = 55555;
+            const uint64_t stale_pid = 99999;
 
             // Register via raw ZMQ.  Per HEP-CORE-0033 §G2.2.0a +
             // HEP-CORE-0023 §2.6, REG_REQ MUST carry `role_uid` for the
-            // broker to create the producer-presence row that
-            // subsequent DISC_REQ derives its observable from
-            // (HEP-CORE-0023 §2.2 — Phase 4 protocol).
+            // broker to create the producer-presence row.
             nlohmann::json reg_req;
             reg_req["channel_name"] = channel;
             reg_req["schema_hash"] = zero_hex();
-            reg_req["producer_pid"] = correct_pid;
+            reg_req["producer_pid"] = reg_pid;
             reg_req["producer_hostname"] = "localhost";
             reg_req["role_uid"] = role_uid;
-            nlohmann::json reg_resp =
-                raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey,
-                        "prod.broker.pid_mismatch.uid00000001");
-            ASSERT_FALSE(reg_resp.is_null()) << "REG_REQ timed out";
-            EXPECT_EQ(reg_resp.value("status", std::string("")), "success");
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg_req, 2000, broker.pubkey, role_uid)
+                          .value("status", std::string{}),
+                      "success");
 
-            // Send HEARTBEAT_NOTIFY with the producer's REAL pid so the
-            // broker flips `first_heartbeat_seen=true` and the
-            // presence is kLive (HEP-CORE-0019 §4.1 + broker_proto 5
-            // R3.5b).  Fire-and-forget via raw_heartbeat helper.
-            raw_heartbeat(broker.endpoint, broker.pubkey, channel, role_uid, correct_pid);
+            // Drive the presence kLive (heartbeat carries a pid too, but pid is
+            // not used for resolution there either — HEP-CORE-0019 §4.1).
+            raw_heartbeat(broker.endpoint, broker.pubkey, channel, role_uid, reg_pid);
 
-            // DEREG_REQ with wrong pid + correct role_uid → NOT_REGISTERED.
-            // broker_proto 2→3 (2026-05-15 audit C3): `role_uid` is now
-            // REQUIRED; the broker resolves the target by (pid, role_uid)
-            // tuple — a mismatch on EITHER half is NOT_REGISTERED.  This
-            // test pins the pid-mismatch half; missing-role_uid is pinned
-            // by `broker_dereg_missing_role_uid_rejected` below.
-            nlohmann::json dereg_req;
-            dereg_req["channel_name"] = channel;
-            dereg_req["role_uid"] = role_uid;
-            dereg_req["producer_pid"] = wrong_pid;
-            nlohmann::json dereg_resp =
-                raw_req(broker.endpoint, "DEREG_REQ", dereg_req, 2000, broker.pubkey,
-                        "prod.broker.pid_mismatch.uid00000001");
-            ASSERT_FALSE(dereg_resp.is_null()) << "DEREG_REQ timed out";
-            EXPECT_EQ(dereg_resp.value("status", std::string("")), "error")
-                << "DEREG_REQ with wrong pid must be rejected; got: " << dereg_resp.dump();
-            EXPECT_EQ(dereg_resp.value("error_code", std::string("")), "NOT_REGISTERED")
-                << "Error code must be NOT_REGISTERED; got: " << dereg_resp.dump();
+            // DEREG with a STALE pid but the CORRECT role_uid → SUCCESS.  pid is
+            // debug/record only; the broker resolves the target by role_uid
+            // alone (this is the exact case the old (pid, role_uid) tuple wrongly
+            // rejected; missing-role_uid is still an error, pinned by
+            // `broker_dereg_missing_role_uid_rejected` below).
+            nlohmann::json dereg;
+            dereg["channel_name"] = channel;
+            dereg["role_uid"] = role_uid;
+            dereg["producer_pid"] = stale_pid; // deliberately != reg_pid
+            nlohmann::json resp =
+                raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey, role_uid);
+            ASSERT_FALSE(resp.is_null()) << "DEREG_REQ timed out";
+            EXPECT_EQ(resp.value("status", std::string{}), "success")
+                << "DEREG with the correct role_uid must succeed regardless of pid; got: "
+                << resp.dump();
 
-            // Channel still discoverable via DISC_REQ.
-            nlohmann::json disc_req;
-            disc_req["channel_name"] = channel;
-            nlohmann::json disc_resp =
-                raw_req(broker.endpoint, "DISC_REQ", disc_req, 2000, broker.pubkey,
-                        "prod.broker.pid_mismatch.uid00000001");
-            ASSERT_FALSE(disc_resp.is_null()) << "DISC_REQ timed out";
-            EXPECT_EQ(disc_resp.value("status", std::string("")), "success")
-                << "Channel must still be registered after pid-mismatch deregister attempt";
-            // HEP-CORE-0036 §5b.4: shm_name retired (was always == channel_name).
-            // The success status above already proves the channel is still registered.
+            // Side-effect verification: the producer really left (sole producer
+            // → channel torn down), so a repeat DEREG for the same role_uid is
+            // NOT_REGISTERED.  This proves the first DEREG resolved + removed by
+            // role_uid, not that it was a no-op.
+            nlohmann::json resp2 =
+                raw_req(broker.endpoint, "DEREG_REQ", dereg, 2000, broker.pubkey, role_uid);
+            ASSERT_FALSE(resp2.is_null()) << "second DEREG_REQ timed out";
+            EXPECT_EQ(resp2.value("status", std::string{}), "error")
+                << "producer must be gone after the first dereg; got: " << resp2.dump();
+            EXPECT_EQ(resp2.value("error_code", std::string{}), "NOT_REGISTERED")
+                << "Error code must be NOT_REGISTERED; got: " << resp2.dump();
 
             broker.stop_and_join();
         },
-        "broker.broker_dereg_pid_mismatch", logger_module(), file_lock_module(), json_module(),
+        "broker.broker_dereg_ignores_pid", logger_module(), file_lock_module(), json_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), hub_module(),
         zmq_module());
 }
@@ -2971,8 +2965,8 @@ struct BrokerWorkerRegistrar
                     return broker_channel_not_found();
                 if (scenario == "broker_dereg_happy_path")
                     return broker_dereg_happy_path();
-                if (scenario == "broker_dereg_pid_mismatch")
-                    return broker_dereg_pid_mismatch();
+                if (scenario == "broker_dereg_ignores_pid")
+                    return broker_dereg_ignores_pid();
                 if (scenario == "broker_dereg_missing_role_uid_rejected")
                     return broker_dereg_missing_role_uid_rejected();
                 if (scenario == "gate_reg_req_rejects_empty_uid")
