@@ -789,7 +789,9 @@ class BrokerServiceImpl
     nlohmann::json handle_check_peer_ready_req(const nlohmann::json &req,
                                                const zmq::message_t &identity);
 
-    nlohmann::json handle_channel_auth_applied_req(const nlohmann::json &req,
+    nlohmann::json handle_channel_auth_applied_req(const ::pylabhub::wire::WireEnvelope &env,
+                                                   const ::pylabhub::wire::ChannelAuthAppliedReqBody
+                                                       &body,
                                                    zmq::socket_t &socket);
 
     /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to the BINDING
@@ -818,8 +820,8 @@ class BrokerServiceImpl
     /// align its periodic-task schedule.  Always populated from
     /// `cfg.heartbeat_*` — no per-channel override.
     nlohmann::json heartbeat_ack_block() const;
-    nlohmann::json handle_endpoint_update_req(const nlohmann::json &req,
-                                              const zmq::message_t &identity);
+    nlohmann::json handle_endpoint_update_req(const ::pylabhub::wire::WireEnvelope &env,
+                                              const ::pylabhub::wire::EndpointUpdateReqBody &body);
     nlohmann::json handle_schema_req(const nlohmann::json &req);
 
     /// HEP-CORE-0034 Phase 4b — register hub-global schemas at broker startup.
@@ -1540,9 +1542,28 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                 send_reply(socket, id_frame, ack, resp);
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedEndpointUpdateReq>)
-                dispatch_legacy(to_legacy(std::move(v), "ENDPOINT_UPDATE_REQ"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1f): typed handler on the validated
+                // envelope + body — gates already ran; no to_legacy round-trip.
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_endpoint_update_req(v.env, v.body);
+                const std::string ack =
+                    (resp.value("status", "") == "success") ? "ENDPOINT_UPDATE_ACK" : "ERROR";
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedChannelAuthAppliedReq>)
-                dispatch_legacy(to_legacy(std::move(v), "CHANNEL_AUTH_APPLIED_REQ"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1g): typed handler on the validated
+                // envelope + body — gates already ran; no to_legacy round-trip.
+                // NOTE: success status here is "ok" (not "success").
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_channel_auth_applied_req(v.env, v.body, socket);
+                const std::string ack =
+                    (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedHeartbeatNotify>)
             {
                 // HEP-CORE-0046 §12 step 5 (B.1c): HEARTBEAT_NOTIFY runs the typed
@@ -1740,17 +1761,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
                 send_reply(socket, identity, ack, resp);
             }
         }
-        else if (msg_type == "CHANNEL_AUTH_APPLIED_REQ")
-        {
-            // HEP-CORE-0042 §5.5.2.  Producer confirms allowlist snapshot
-            // applied; broker advances confirmed_version and drains pending
-            // ATTACH_REQ_ZMQ entries.  Phase 2.1 stub returns INTERNAL_ERROR
-            // → ERROR envelope.
-            nlohmann::json resp = handle_channel_auth_applied_req(payload, socket);
-            const std::string ack =
-                (resp.value("status", "") == "ok") ? "CHANNEL_AUTH_APPLIED_ACK" : "ERROR";
-            send_reply(socket, identity, ack, resp);
-        }
+        // CHANNEL_AUTH_APPLIED_REQ retired from process_message — it now dispatches
+        // typed from `dispatch_received` (HEP-CORE-0046 Phase B, B.1g); it always
+        // arrives as `ValidatedChannelAuthAppliedReq`, so this branch was unreachable.
         else if (msg_type == "CHECK_PEER_READY_REQ")
         {
             // HEP-CORE-0036 §6.6.3.  Dialing-side role pulls its
@@ -1839,14 +1852,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
             // HEP-CORE-0022: hub-targeted message from a peer (via peer's DEALER ->our ROUTER).
             handle_hub_targeted_msg(payload);
         }
-        else if (msg_type == "ENDPOINT_UPDATE_REQ")
-        {
-            // HEP-0021 §16: update a channel's endpoint after ephemeral port bind.
-            nlohmann::json resp = handle_endpoint_update_req(payload, identity);
-            const std::string ack =
-                (resp.value("status", "") == "success") ? "ENDPOINT_UPDATE_ACK" : "ERROR";
-            send_reply(socket, identity, ack, resp);
-        }
+        // ENDPOINT_UPDATE_REQ retired from process_message — it now dispatches typed
+        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1f); it always arrives
+        // as `ValidatedEndpointUpdateReq`, so this branch was unreachable.
         // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
         else if (msg_type == "BAND_JOIN_REQ")
         {
@@ -4325,8 +4333,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(const nlohmann:
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(const nlohmann::json &req,
-                                                                  zmq::socket_t &socket)
+// HEP-CORE-0046 §12 step 5 (B.1g): typed handler on the validated envelope +
+// body.  Gates already ran in receive_and_validate.
+nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
+    const ::pylabhub::wire::WireEnvelope &env,
+    const ::pylabhub::wire::ChannelAuthAppliedReqBody &body, zmq::socket_t &socket)
 {
     // HEP-CORE-0042 §5.4 APPLIED_REQ handler.  Implements step (a)
     // stale-instance guard, step (b) reply, step (c) confirmed_version
@@ -4336,26 +4347,26 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(const nlohmann
     // entry whose target_version has been surpassed.  See
     // docs/HEP/HEP-CORE-0042 §5.4 "Implementation status" for the
     // authoritative phase mapping.
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
-    // HEP-CORE-0042 §5.5.2 amendment 2026-07-11: accept both the
-    // producer-side wire (`producer_role_uid` field) and the amended
-    // binding-side-role-agnostic wire (`role_uid` + optional
-    // `role_type`).  Producer-only wire is back-compat: `role_type`
-    // absent implies `"producer"`.
-    const std::string role_type = req.value("role_type", std::string{"producer"});
-    const std::string legacy_prod_uid = req.value("producer_role_uid", std::string{});
-    const std::string role_uid =
-        req.contains("role_uid") ? req.value("role_uid", std::string{}) : legacy_prod_uid;
-    const std::uint64_t incoming_instance = req.value("instance_id", std::uint64_t{0});
-    const std::uint64_t applied_version = req.value("applied_version", std::uint64_t{0});
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel_name = body.channel_name();
+    // HEP-CORE-0042 §5.5.2: the broker discriminates its producer vs consumer
+    // branch on `role_type`; absent → "producer" (producer-only back-compat
+    // wire).  `role_uid` is the applier's identity; the legacy `producer_role_uid`
+    // wire alias is retired — the current wire always carries `role_uid` (the BRC
+    // still writes a duplicate `producer_role_uid` for pre-amendment brokers,
+    // which this broker ignores).
+    std::string role_type = body.role_type();
+    if (role_type.empty())
+        role_type = "producer";
+    const std::string role_uid = body.role_uid();
+    const std::uint64_t incoming_instance = body.instance_id();
+    const std::uint64_t applied_version = body.applied_version();
 
     if (channel_name.empty() || role_uid.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST",
                           "CHANNEL_AUTH_APPLIED_REQ requires non-empty "
-                          "channel_name and role_uid (or legacy "
-                          "producer_role_uid)");
+                          "channel_name and role_uid");
     }
 
     // HEP-CORE-0042 §5.5.2 registration guard (Agent-2 review finding
@@ -5112,13 +5123,15 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
 // ENDPOINT_UPDATE_REQ handler (HEP-0021 §16)
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(const nlohmann::json &req,
-                                                             const zmq::message_t &identity)
+// HEP-CORE-0046 §12 step 5 (B.1f): typed handler on the validated envelope +
+// body.  Gates already ran in receive_and_validate.
+nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
+    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::EndpointUpdateReqBody &body)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
-    const std::string endpoint_type = req.value("endpoint_type", "");
-    const std::string endpoint = req.value("endpoint", "");
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel_name = body.channel_name();
+    const std::string endpoint_type = body.endpoint_type();
+    const std::string endpoint = body.endpoint();
 
     if (channel_name.empty() || endpoint_type.empty() || endpoint.empty())
     {
@@ -5149,8 +5162,10 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(const nlohmann::jso
     // Identity-based resolution (matching sender's ZMTP identity to
     // stored `zmq_identity`) is more secure than trusting a wire
     // `role_uid`.  Both producer + consumer paths use the same
-    // identity mechanism.
-    const std::string sender_id(static_cast<const char *>(identity.data()), identity.size());
+    // identity mechanism.  `env.identity()` is the authoritative ROUTER
+    // frame-0 identity (HEP-CORE-0046 I-DEALER-IDENTITY) — same bytes the
+    // legacy `identity` frame carried.
+    const std::string sender_id(env.identity());
     std::string sender_role_uid;
     bool sender_is_consumer_binding = false;
     for (const auto &prod : entry->producers)

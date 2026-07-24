@@ -140,7 +140,18 @@ Phase B**.
       resolves by `role_uid` alone (no pid accessor — see the PID entry above).
     - ✅ **B.1e `handle_consumer_dereg_req`** (2026-07-24) — typed; shares `DeregReqBody`
       with B.1d; `role_uid`-only resolution.
-    - ⏳ Remaining: `handle_endpoint_update_req`, `handle_channel_auth_applied_req`.
+    - ✅ **B.1f `handle_endpoint_update_req`** (2026-07-24) — typed `(env, EndpointUpdateReqBody)`;
+      `sender_id` now from `env.identity()` (authoritative I-DEALER-IDENTITY frame).
+    - ✅ **B.1g `handle_channel_auth_applied_req`** (2026-07-24) — typed
+      `(env, ChannelAuthAppliedReqBody, socket)`; added a `role_type()` accessor
+      (load-bearing — drives the registration guard + producer/consumer branch);
+      dropped the dead `producer_role_uid` broker-side fallback (current wire always
+      carries `role_uid`).
+    - **✅ ALL 7 simple swaps landed.** Next: the REG/CONSUMER relocation (below).
+    - ⏳ **Residue follow-on (sender-side):** the BRC `channel_auth_applied` still
+      writes a duplicate `producer_role_uid = role_uid` "for pre-amendment brokers"
+      (`broker_request_comm.cpp:1219`).  No reader remains (this broker ignores it);
+      retire the write in a focused wire-cleanup (it is a wire-shape change → own step).
   - **REG/CONSUMER relocation — do LAST.**  `BrokerRegHandler` /
     `reg_admission_pipeline` is a **~15% producer / 0% consumer SKELETON today**
     (invoked only from tests; see `broker_reg_handler.hpp:7-24`).  This slice

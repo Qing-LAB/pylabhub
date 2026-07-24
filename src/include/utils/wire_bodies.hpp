@@ -415,6 +415,14 @@ public:
 {
     return detail::read_string(body_, "role_uid");
 }
+// Binding-side role of the applier (HEP-CORE-0042 §5.5.2): "producer" |
+// "consumer" | "processor".  The broker discriminates its branch on this and
+// checks registration by (channel, role_uid, role_type).  Absent → the handler
+// treats it as "producer" (producer-only back-compat wire).
+[[nodiscard]] std::string role_type() const
+{
+    return detail::read_string(body_, "role_type");
+}
 [[nodiscard]] std::uint64_t applied_version() const
 {
     return detail::read_u64(body_, "applied_version");
