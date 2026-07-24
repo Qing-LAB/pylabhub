@@ -147,21 +147,40 @@ Phase B**.
       (load-bearing — drives the registration guard + producer/consumer branch);
       dropped the dead `producer_role_uid` broker-side fallback (current wire always
       carries `role_uid`).
-    - **✅ ALL 7 simple swaps landed.** Next: the REG/CONSUMER relocation (below).
+    - **✅ ALL 7 simple swaps landed.** Next: REG_REQ / CONSUMER_REG_REQ (below).
     - ⏳ **Residue follow-on (sender-side):** the BRC `channel_auth_applied` still
       writes a duplicate `producer_role_uid = role_uid` "for pre-amendment brokers"
       (`broker_request_comm.cpp:1219`).  No reader remains (this broker ignores it);
       retire the write in a focused wire-cleanup (it is a wire-shape change → own step).
-  - **REG/CONSUMER relocation — do LAST.**  `BrokerRegHandler` /
-    `reg_admission_pipeline` is a **~15% producer / 0% consumer SKELETON today**
-    (invoked only from tests; see `broker_reg_handler.hpp:7-24`).  This slice
-    RELOCATES the full handcrafted `handle_reg_req` / `handle_consumer_reg_req`
-    logic (ABI, schema-record, inbox, `ProducerEntry`, `REG_ACK`) into the
-    pipeline's commit callback — its own focused effort; the handcrafted
-    handlers are the complete tested reference (relocate-and-retire, no
-    redesign).
-  Each conversion behavior-preserving; existing L2/L3 REG round-trip tests stay
+  - **REG_REQ / CONSUMER_REG_REQ — the SAME typed-input swap, only larger.**
+    ⚠ **Framing corrected 2026-07-24:** this is NOT a "relocation into a pipeline
+    commit callback."  The HEP-0046 framework types + validates the wire (§14.4/
+    §14.7); it does not restructure handler logic.  `handle_reg_req` /
+    `handle_consumer_reg_req` convert exactly like the seven above — signature →
+    `(const WireEnvelope&, const ProducerRegReqBody&/ConsumerRegReqBody&, …)`,
+    every `req.value(...)` → typed accessor, **logic kept in place**, duplicated
+    in-handler gate checks deleted.  They are larger only because they read more
+    fields, so the swap first adds four still-missing accessors (§14.3):
+    `producer_hostname()`, `metadata()` on `ProducerRegReqBody`;
+    `consumer_queue_type()`, `expected_schema_owner()` on `ConsumerRegReqBody`.
+    The old `BrokerRegHandler` / `reg_admission_pipeline` skeleton (test-only,
+    parallel re-implementation of the already-live gates) is **retired**, not a
+    target — see the retirement note below.
+  Each conversion behavior-preserving; existing L2/L3/L4 REG round-trip tests stay
   green.
+
+- **✅ `BrokerRegHandler` / `reg_admission_pipeline` skeleton RETIRED (2026-07-24).**
+  A prior arc built a parallel typed REG-admission pipeline (`RegRequest` +
+  `RegCommitFn` commit callback) that duplicated the live gates and was invoked
+  ONLY by tests — production always ran the handcrafted handlers behind the live
+  `receive_and_validate` gate path.  It drifted from HEP-0046's actual purpose
+  (type + validate the wire; do not restructure handler logic), so the four files
+  (`{include/utils,utils/ipc}/{broker_reg_handler,reg_admission_pipeline}.*`) +
+  their L1/L2 tests (`test_reg_admission_pipeline`, `test_broker_reg_handler`) are
+  deleted.  Gate coverage is unaffected — it lives on the live path: L1
+  `test_admission_gates` (`AdmissionGate_*`), L2 `test_hub_state_nonce_dedup`, L3
+  `test_datahub_broker` (`Gate_RegReq_*`/`Gate_ConsumerReg_*`).  HEP-0046 §12 +
+  IMPLEMENTATION_GUIDANCE "REG Wire Discipline" rule 2 corrected to match.
 - **B.2 — `inbox_schema_json` → typed `SchemaSpec` sub-structure.**  The
   doubly-encoded field; see the design requirement + critical-path trace below.
 - **B.3 — BRC + ACK flip (the one atomic commit).**  BRC: `ZMQ_ROUTING_ID =

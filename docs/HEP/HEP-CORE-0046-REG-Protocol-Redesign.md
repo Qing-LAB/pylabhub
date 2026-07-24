@@ -4,7 +4,7 @@
 |---|---|
 | **HEP** | `HEP-CORE-0046` |
 | **Title** | REG/REG_ACK Protocol Redesign — Typed Wire Envelope + Admission-Gate Pipeline |
-| **Status** | 🚧 **DESIGN LOCKED; IMPLEMENTATION IN FLIGHT.**  Phase A (typed envelope + body classes) SHIPPED with L1 coverage (46 tests).  **The admission GATES ARE LIVE** — `receive_and_validate` runs `run_reg_family_gates` (identity, grammar, known-role/I-PUBKEY-BINDING, key-rotation, I-REPLAY-BOUND) on every REG-family message at the recv loop (`broker_service.cpp:1377`); the security invariants hold in production today.  What remains **PENDING is Phase B — the HANDLER rewire** (replace `to_legacy → JSON handlers` with the typed `run_reg_admission → typed handlers` path); it is a refactor, NOT a security switch-on.  See the "What is LIVE today vs. what Phase B still does" section below for the exact call chain + code anchors.  Phases D (retirements), E (integration tests), F (federation follow-on) PENDING.  Promoted from `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md` on 2026-07-12. |
+| **Status** | 🚧 **DESIGN LOCKED; IMPLEMENTATION IN FLIGHT.**  Phase A (typed envelope + body classes) SHIPPED with L1 coverage (46 tests).  **The admission GATES ARE LIVE** — `receive_and_validate` runs `run_reg_family_gates` (identity, grammar, known-role/I-PUBKEY-BINDING, key-rotation, I-REPLAY-BOUND) on every REG-family message at the recv loop (`broker_service.cpp:1377`); the security invariants hold in production today.  What remains **PENDING is Phase B — the HANDLER rewire** (replace `to_legacy → JSON handlers` with plain typed-input handlers that read their `XxxReqBody` via typed accessors, §14.4); it is a refactor, NOT a security switch-on.  See the "What is LIVE today vs. what Phase B still does" section below for the exact call chain + code anchors.  Phases D (retirements), E (integration tests), F (federation follow-on) PENDING.  Promoted from `docs/tech_draft/DRAFT_reg_ack_protocol_redesign.md` on 2026-07-12. |
 | **Created** | 2026-07-12 (design content dates back to earlier tech-draft revs) |
 | **Depends on** | HEP-CORE-0017 §3.3.0 (topology-parametric queue factory — the abstraction that makes this cleanup possible), HEP-CORE-0036 §I11 (allowlist mutator locality — REG remains the only path that mutates channel membership), HEP-CORE-0035 §4 (Hub-Role Authentication — REG carries the CURVE identity used by ZAP), HEP-CORE-0040 §5 (KeyStore — the source of role identity keys REG proves), HEP-CORE-0023 §2 (Startup Coordination — REG is the first wire a role sends after CURVE handshake) |
 | **Related — REG-family cross-refs** | HEP-CORE-0007 §12 (DataHub protocol catalog — REG_REQ/CONSUMER_REG_REQ/DEREG_REQ live here today; retirements listed in §3 land as amendments to §12), HEP-CORE-0021 (ZMQ Endpoint Registry — `ENDPOINT_UPDATE_REQ` is REG-family under this HEP's envelope), HEP-CORE-0042 §5.5 (Channel Attach Coordination — `CHANNEL_AUTH_APPLIED_REQ` and `CHANNEL_AUTH_CHANGED_NOTIFY` flow through this envelope), HEP-CORE-0033 (Hub Character — `broker_proto` version and REG dispatch site owned by BrokerServiceImpl), HEP-CORE-0018 (Producer/Consumer Binaries — role hosts send REG_REQ / CONSUMER_REG_REQ; `binding_role_type()` naming from HEP-CORE-0036 §I9.1 flows into role_type discriminator) |
@@ -73,17 +73,20 @@ flowchart TD
 The context (`admission_binder_.context`) is wired once at broker init
 (`broker_service.cpp:6615-6682`): `record_and_check_nonce → HubState::nonce_seen`,
 `wall_now_ms`, `skew_tolerance_ms`, `nonce_window_ms`.  Rejections are enforced
-(client gets an ERROR reply — see `dispatch_received`).  Coverage:
-`test_broker_reg_handler.cpp:228` (duplicate nonce → `replay_or_skew`),
-`test_hub_state_nonce_dedup.cpp`, `test_reg_admission_pipeline.cpp`.
+(client gets an ERROR reply — see `dispatch_received`).  Coverage (live path):
+`test_admission_gates.cpp` (`AdmissionGate_*` — identity / grammar / known-role /
+role-tag), `test_hub_state_nonce_dedup.cpp` (`HubStateNonceDedup.*` — duplicate
+nonce → `replay_or_skew`, window≥skew), `test_datahub_broker.cpp`
+(`Gate_RegReq_*` / `Gate_ConsumerReg_*` — end-to-end REG gate rejection).
 
 **What Phase B actually does (and does NOT do):** Phase A (typed envelope +
 body classes) shipped and is live.  The remaining Phase B work rewires the
-**handler layer** — replace the `to_legacy → JSON handlers` bridge with the
-typed `run_reg_admission → typed handlers → commit` path (`reg_admission_pipeline`).
-That is a maintainability/consistency refactor.  **It does NOT switch on the
-security invariants — those are already enforced by the LIVE gates above.**  The
-only genuinely islanded module is the typed *handler* path, not the gates.
+**handler layer** — replace the `to_legacy → JSON handlers` bridge with plain
+typed-input handlers: each handler consumes its `XxxReqBody` via typed accessors
+(§14.4) and keeps its own logic.  That is a maintainability/consistency refactor.
+**It does NOT switch on the security invariants — those are already enforced by
+the LIVE gates above.**  The only genuinely islanded work is the per-handler
+input swap, not the gates.
 
 **Config-soundness invariant (`nonce_window_ms ≥ skew_tolerance_ms`) — FIXED
 2026-07-17.** The live `nonce_window_ms` was 10 s while `skew_tolerance_ms` is
@@ -107,11 +110,12 @@ particular:
   handler call site.
 - **Adding a new REG-family message** — define a new typed body
   class per §14.3, hook it into the dispatch table §14.4, and
-  route it through the admission pipeline §14.5 if it mutates
-  membership state.
+  run it through the shared gates in `receive_and_validate` §14.5
+  if it mutates membership state.
 - **Adding a new admission gate** — extend §14.5's ordered list;
-  every handler that gates on it gets it uniformly via
-  `reg_admission_pipeline`, never re-implemented per handler.
+  it lands in the shared gate runner (`run_reg_family_gates` /
+  `run_control_gates`) that `receive_and_validate` applies to
+  every message, never re-implemented per handler.
 - **Retiring a wire field** — do it under §3's retirement catalogue;
   the retirement must ship atomically with the broker_proto bump
   (§14.6, `I-WIRE-VERSION-ATOMIC`).
@@ -1241,25 +1245,41 @@ before topology admission, atomic wire cut for the whole chain.
   atomic, high-blast-radius commit is the BRC send + ACK flip (typed bodies +
   `envelope_hash` + `correlation_id`-keyed pending + the
   `I-WIRE-VERSION-ATOMIC` bump, §14.6); no mixed old/new deployment.
-- **Two kinds of handler work — seven simple swaps; REG/CONSUMER a relocation.**
-  `DEREG_REQ`, `CONSUMER_DEREG_REQ`, `ENDPOINT_UPDATE_REQ`,
-  `GET_CHANNEL_AUTH_REQ`, `CHANNEL_AUTH_APPLIED_REQ`, `HEARTBEAT_NOTIFY`,
-  `DISC_REQ` are all already gated in `receive_and_validate` — the four
-  authenticated REG-family messages (`DEREG_REQ`, `CONSUMER_DEREG_REQ`,
+- **Nine handlers, one job — swap JSON extraction for typed accessors (step 5).**
+  Every REG-family handler converts the same way: change its signature to
+  `handle_XXX(const WireEnvelope& env, const XxxReqBody& body, …)` and read each
+  field through a typed accessor instead of `req.value("field")`.  **The handler
+  KEEPS its own logic** — admission, state mutation, reply construction, NOTIFY
+  fan-out.  Phase B does not restructure what a handler *does*; it changes only
+  how a handler *reads its input*.  Gates already ran in `receive_and_validate`
+  — the four authenticated REG-family messages (`DEREG_REQ`, `CONSUMER_DEREG_REQ`,
   `ENDPOINT_UPDATE_REQ`, `CHANNEL_AUTH_APPLIED_REQ`) through
-  `run_authenticated_reg_family_gates`, and the three control-family messages
+  `run_authenticated_reg_family_gates`; the three control-family
   (`HEARTBEAT_NOTIFY`, `GET_CHANNEL_AUTH_REQ`, `DISC_REQ`) through
   `run_control_gates` (identity-if-present + grammar-if-present; empty fields
-  skipped — see §14.7.1).  So each converts by swapping JSON-key extraction for
-  typed `Validated*` / body accessors — a mechanical, behavior-preserving change.  `REG_REQ` +
-  `CONSUMER_REG_REQ` are larger: the typed `BrokerRegHandler` commit path is a
-  **~15% producer / 0% consumer skeleton today** (invoked only from tests), so
-  their conversion RELOCATES the complete handcrafted `handle_reg_req` /
-  `handle_consumer_reg_req` logic (ABI, schema-record, inbox, `ProducerEntry`,
-  `REG_ACK`) into the pipeline's commit callback.  The handcrafted handlers are
-  the tested reference — a relocate-and-retire job, no redesign.  Sequencing:
-  the mechanical swaps land FIRST (establish the pattern on the lowest-risk
-  handler), the REG/CONSUMER relocation LAST as its own focused effort.
+  skipped — §14.7.1); `REG_REQ` / `CONSUMER_REG_REQ` through
+  `run_reg_family_gates` — so a converted handler ALSO deletes the in-handler
+  checks that merely repeat a gate (§14.7).
+- **`REG_REQ` / `CONSUMER_REG_REQ` are the same swap, only larger.**  The
+  handcrafted `handle_reg_req` / `handle_consumer_reg_req` read more fields, so
+  the swap first adds the few still-missing typed accessors to their body classes
+  (§14.3) — `producer_hostname()`, `metadata()` on `ProducerRegReqBody`;
+  `consumer_queue_type()`, `expected_schema_owner()` on `ConsumerRegReqBody` — then
+  swaps the two handlers in place.  No logic moves: the handcrafted bodies stay
+  where they are and simply read typed.  Sequencing: the seven smaller handlers
+  land FIRST (lowest-risk, establish the pattern), `REG_REQ` / `CONSUMER_REG_REQ`
+  LAST as their own focused slice.
+
+  > **Retired drift (2026-07-24).**  An earlier revision of this section framed
+  > `REG_REQ` / `CONSUMER_REG_REQ` as "relocating" their logic into a
+  > `BrokerRegHandler` / `reg_admission_pipeline` "commit callback."  That
+  > contradicted this HEP's purpose: the framework **types and validates the
+  > wire** (§14.2–14.5); it does NOT prescribe restructuring handler logic into a
+  > pipeline object.  The `BrokerRegHandler` / `reg_admission_pipeline` skeleton
+  > was a parallel, test-only re-implementation of the already-live gates, never
+  > wired into production — it is retired.  Gates live in `receive_and_validate`
+  > (`run_reg_family_gates`); each handler is a plain typed-input handler per
+  > §14.4 / §14.7.
 
 The doubly-encoded `inbox_schema_json` (§14.3) collapses to a typed
 `SchemaSpec` sub-structure parsed once at the envelope boundary, so the broker

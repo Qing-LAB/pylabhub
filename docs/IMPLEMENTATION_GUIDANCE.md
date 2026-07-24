@@ -2371,15 +2371,16 @@ Authority: **HEP-CORE-0046 REG Protocol Redesign**.
    Inbound: parse via `WireEnvelope::parse_dealer_recv` /
    `parse_router_recv`, deserialize to the typed body class, use
    named accessors only.
-2. **All REG-family REQ handlers on the broker side run the
-   admission-gate pipeline before mutation** (HEP-CORE-0046
-   §14.5).  Every handler that mutates channel-membership state
-   MUST use `BrokerRegHandler::handle` (for REG_REQ /
-   CONSUMER_REG_REQ) or the shared `AdmissionGateRunner` on the
-   same 7-gate pipeline (envelope hash → broker_proto →
-   identity_match → grammar → known_role binding → key-rotation
-   → nonce-dedup + wall-ts skew).  No handler re-implements a
-   gate.  No handler half-mutates state under a failing gate.
+2. **REG-family REQ messages are gated before the handler runs**
+   (HEP-CORE-0046 §14.5).  `receive_and_validate` applies the
+   shared gate runner — `run_reg_family_gates` for REG_REQ /
+   CONSUMER_REG_REQ, `run_authenticated_reg_family_gates` /
+   `run_control_gates` for the rest — on the 7-gate pipeline
+   (envelope hash → broker_proto → identity_match → grammar →
+   known_role binding → key-rotation → nonce-dedup + wall-ts skew)
+   BEFORE dispatch.  The handler then consumes the already-validated
+   typed body; it does NOT re-run or re-implement a gate, and it
+   never half-mutates state under a failing gate.
 3. **Correlation-id, not msg_type, keys pending requests**
    (HEP-CORE-0046 §14, `I-CORRELATION-STABLE`).  BRC's send/reply
    pairing MUST key on `correlation_id`.  Defensive "did the

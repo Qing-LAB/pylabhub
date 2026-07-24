@@ -115,8 +115,6 @@ set(UTILS_SOURCES
   ipc/admin_service.cpp
   ipc/admin_session.cpp
   ipc/admission_gates.cpp
-  ipc/reg_admission_pipeline.cpp
-  ipc/broker_reg_handler.cpp
 
   # --- hub: transport-agnostic Queue + Processor + Inbox ---
   #     Tx/Rx queue ownership and factory logic moved into RoleAPIBase

@@ -539,38 +539,6 @@ gtest_discover_tests(test_layer1_wire_dispatch_table
 )
 
 # ============================================================================
-# Test: REG-family admission pipeline (Accepted / Rejected / Pended)
-# ============================================================================
-
-add_executable(test_layer1_reg_admission_pipeline
-    test_reg_admission_pipeline.cpp
-)
-
-target_link_libraries(test_layer1_reg_admission_pipeline
-    PRIVATE
-        pylabhub::utils
-        pylabhub::test_framework
-        GTest::gtest
-        GTest::gtest_main
-        libzmq-static
-)
-
-pylabhub_ensure_sanitizer_for_executable(test_layer1_reg_admission_pipeline)
-
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_reg_admission_pipeline
-    SUITE_NAME "Layer1_RegAdmissionPipeline"
-)
-layer1_require_staged_utils(test_layer1_reg_admission_pipeline)
-
-gtest_discover_tests(test_layer1_reg_admission_pipeline
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;admission;pipeline"
-        TIMEOUT 30
-)
-
-# ============================================================================
 # Test: VersionedAdmissionLedger (header-only template) — the primitive
 # that fan-in/fan-out/one-to-one topologies all reduce to (HEP-CORE-0042
 # §5.5.2 INVARIANT-BIND-CONFIRM-1..3).

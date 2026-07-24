@@ -59,11 +59,6 @@ class BrokerService;
 class BrokerServiceImpl; ///< pImpl; grants the impl class friend access too.
 } // namespace pylabhub::broker
 
-namespace pylabhub::admission
-{
-class BrokerRegHandler; ///< Broker-side REG admission adapter.
-}
-
 namespace pylabhub::hub
 {
 
@@ -1866,7 +1861,6 @@ class PYLABHUB_UTILS_EXPORT HubState
     friend class ::pylabhub::broker::BrokerService;
     friend class ::pylabhub::broker::BrokerServiceImpl;
     friend struct ::pylabhub::hub::test::HubStateTestAccess;
-    friend class ::pylabhub::admission::BrokerRegHandler;
 
     // ── Private mutators (friend-only) ──────────────────────────────────
     // Pattern per mutator: acquire unique_lock on state → update map →

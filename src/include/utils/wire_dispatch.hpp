@@ -7,7 +7,6 @@
  *   - `wire_envelope`  — 5-frame parse + envelope_hash validation
  *   - `wire_bodies`    — typed body class construction
  *   - `admission_gates`— identity / grammar / known_roles / rotation / replay
- *   - `reg_admission_pipeline` — state-mutation commit + typed outcome
  *
  * into a single call: `receive_and_validate(raw, ctx)` → `ReceivedMessage`.
  *
@@ -25,13 +24,13 @@
  *
  * ⚠ STATUS (2026-07-16): this receive-side validation IS live in the broker
  *   — gates run on every message.  BUT the broker's `dispatch_received`
- *   currently down-converts the REG-family Validated* arms BACK to raw JSON
- *   (`to_legacy`) and runs the handcrafted `handle_reg_req` /
- *   `handle_consumer_reg_req`, rather than feeding the typed body to the
- *   admission pipeline (BrokerRegHandler).  Completing that swap — so REG
- *   handlers consume the typed body directly and the JSON handlers are
- *   deleted — is task #57 (HEP-0046 Phase B).  The `to_legacy` bridge is the
- *   transition scaffold, not a permanent layer.
+ *   currently down-converts the REG_REQ / CONSUMER_REG_REQ Validated* arms
+ *   BACK to raw JSON (`to_legacy`) and runs the handcrafted `handle_reg_req` /
+ *   `handle_consumer_reg_req`.  Completing that swap — so those two handlers
+ *   consume the typed `ProducerRegReqBody` / `ConsumerRegReqBody` directly (per
+ *   HEP-0046 §14.4, exactly like the seven already-converted handlers) — is the
+ *   last of HEP-0046 Phase B.  The `to_legacy` bridge is the transition
+ *   scaffold, not a permanent layer.
  *
  * ➜ FIRST TYPED PATHWAY (2026-07-19): the admin operator console
  *   (HEP-CORE-0033 §11) is being built natively on this typed envelope from
@@ -204,9 +203,7 @@ using ReceivedMessage = std::variant<
 // Wires the admission callbacks (known_roles lookup, key-rotation check,
 // nonce dedup, wall clock) against real broker state.  BrokerServiceImpl
 // owns one as a member; wire_dispatch's `receive_and_validate` uses the
-// exposed context.  Same bindings are shared with `BrokerRegHandler` so
-// admission logic runs identically whether invoked by the dispatch entry
-// or the legacy REG_REQ pipeline.
+// exposed context to run the shared gate runner on every message.
 //
 // Callbacks are erased into std::function so this header stays free of
 // HubState include dependencies.  BrokerServiceImpl binds them in-line
