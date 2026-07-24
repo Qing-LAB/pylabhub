@@ -2129,6 +2129,45 @@ typed accessor.  §14 is normative — the code implements exactly
 this contract; §2 subsections describe admission semantics that
 reference the typed body classes defined here.
 
+**Module map — how the pieces depend on each other.**  Three layers: wire types
+own frames + fields; the validation layer parses + gates; dispatch routes the
+validated form to a plain typed-input handler.  Data flows down the left; a reply
+flows back up through the same `WireEnvelope`.
+
+```mermaid
+flowchart TD
+    subgraph WIRE["Wire types — wire_envelope.hpp / wire_bodies.hpp"]
+        WE["WireEnvelope<br/>owns the 5-frame layout<br/>build() · parse() · body_as&lt;BodyT&gt;()"]
+        MIX["PLH_WIRE_BODY_CLASS(Name) mix-in<br/>holds json body_ · ctor validates required fields<br/>envelope_hash() · to_json()"]
+        BODIES["33 typed body classes<br/>Producer/ConsumerRegReqBody · DeregReqBody ·<br/>EndpointUpdate · ChannelAuthApplied · Heartbeat ·<br/>Disc · GetChannelAuth · *AckBody · *NotifyBody · Admin*Body<br/>— each exposes ONLY its own fields via named accessors"]
+        DET["detail:: helpers<br/>read_string · read_string_or_empty ·<br/>read_u64(_or_zero) · read_object · require"]
+        MIX -. "expands to" .-> BODIES
+        BODIES -- "accessors delegate to" --> DET
+        WE -- "body_as&lt;T&gt;() constructs" --> BODIES
+    end
+
+    subgraph VALID["Validation — wire_dispatch.cpp + admission_gates.hpp"]
+        RV["receive_and_validate(raw, ctx)<br/>parse envelope → route on msg_type"]
+        VAL["validate_* per tier<br/>producer_reg · consumer_reg · auth_reg_family ·<br/>endpoint_update · control_with_role_uid · disc"]
+        GATES["gate runners (admission_gates.hpp)<br/>run_reg_family_gates(RegFamilyBodyView) ·<br/>run_authenticated_reg_family_gates ·<br/>run_control_gates(ControlBodyView)"]
+        VD["Validated&lt;T&gt; variants (10)<br/>ValidatedRegReq · ValidatedConsumerRegReq ·<br/>ValidatedDeregReq · … · ValidatedHeartbeatNotify"]
+        RV --> VAL
+        VAL -- "constructs typed body<br/>(ctor may throw → BODY_SCHEMA_VIOLATION)" --> BODIES
+        VAL -- "runs" --> GATES
+        VAL -- "all gates pass ⇒" --> VD
+    end
+
+    subgraph DISPATCH["Dispatch + handlers — broker_service.cpp"]
+        DR["dispatch_received()<br/>std::visit over Validated&lt;T&gt;"]
+        H["typed handlers<br/>handle_reg_req(env, ProducerRegReqBody, …) …<br/>read via accessors · own the business logic"]
+        DR --> H
+    end
+
+    WE == "raw frames in" ==> RV
+    VD ==> DR
+    H -- "reply: build XxxAckBody + WireEnvelope::build_router_send" --> WE
+```
+
 ### 14.1 Frame layout
 
 Every message is 5 ZMQ frames:
@@ -2634,3 +2673,103 @@ holds it:
 
 The authoritative operational rule that binds this to the codebase is
 `docs/IMPLEMENTATION_GUIDANCE.md § "REG Protocol Wire Discipline (HEP-CORE-0046)"`.
+
+### 14.8 Extending the framework — adding a new message type
+
+Adding a REG-family message is four small, local edits; the compiler enforces
+the rest.  Worked example: a new `FOO_REQ` that a role sends and the broker
+answers with `FOO_ACK`.
+
+**1. Define the typed body** (`wire_bodies.hpp` + `wire_bodies.cpp`).  The
+`PLH_WIRE_BODY_CLASS` mix-in supplies `body_`, `envelope_hash()`, `to_json()`;
+you add named accessors and validate required fields once, in the constructor.
+
+```cpp
+// wire_bodies.hpp — accessors expose ONLY the fields FOO_REQ carries
+PLH_WIRE_BODY_CLASS(FooReqBody)
+public:
+    [[nodiscard]] std::string role_uid() const {
+        return detail::read_string(body_, "role_uid");          // REQUIRED → throws if absent
+    }
+    [[nodiscard]] std::string channel_name() const {
+        return detail::read_string(body_, "channel_name");      // REQUIRED
+    }
+    [[nodiscard]] std::uint64_t widget_count() const {
+        return detail::read_u64_or_zero(body_, "widget_count");  // OPTIONAL → 0 if absent
+    }
+    // client_nonce() / client_wall_ts() / envelope_hash() come from the mix-in
+};
+
+// wire_bodies.cpp — required-field validation runs once, at construction.
+// A missing/mis-typed required field throws WireBodyError here, which the
+// validation layer maps to BODY_SCHEMA_VIOLATION (never a silent default).
+FooReqBody::FooReqBody(nlohmann::json body) {
+    body_ = std::move(body);
+    d::require(body_, "role_uid",     d::JsonKind::String);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::require_security_triple(body_);   // client_nonce + client_wall_ts (I-REPLAY-BOUND)
+}
+```
+
+**2. Add a `Validated` variant + a `validate_` tier** (`wire_dispatch`).
+Construct the typed body, run the appropriate shared gate runner, and return the
+validated form.  Note the string-lifetime discipline: the gate `*BodyView` holds
+`string_view`s, so own the strings in locals that outlive the gate call.
+
+```cpp
+struct ValidatedFooReq { wire::WireEnvelope env; wire::FooReqBody body; };
+
+ReceivedMessage validate_foo_req(wire::WireEnvelope env, nlohmann::json body_json,
+                                 const AdmissionContext& ctx) {
+    try {
+        wire::FooReqBody typed(std::move(body_json));           // may throw → caught below
+        // FOO carries no zmq_pubkey → authenticated control-family gates:
+        const std::string role_uid = typed.role_uid();          // own the storage —
+        const std::string channel  = typed.channel_name();      // ControlBodyView holds views
+        ControlBodyView v{ .role_uid = role_uid, .channel_name = channel };
+        if (auto r = run_control_gates(env, v, ctx))
+            return rejection_with_envelope(env, *r);
+        return ValidatedFooReq{ std::move(env), std::move(typed) };
+    } catch (const wire::WireBodyError& e) {
+        return rejection_with_envelope(env,
+            RejectDetail{ RejectCode::body_schema_violation, "", e.what() });
+    }
+}
+```
+
+Route it in the `msg_type → tier` switch so `receive_and_validate` calls it.
+
+**3. Handle it — a plain typed-input handler** (`broker_service.cpp`), per §14.4.
+No JSON scatter; the gates already ran; the handler owns its logic and reads
+through typed accessors.
+
+```cpp
+nlohmann::json BrokerServiceImpl::handle_foo_req(const wire::WireEnvelope& env,
+                                                 const wire::FooReqBody&   body) {
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel = body.channel_name();            // typed accessor, not req.value(...)
+    // ... broker logic; mutate HubState only after the (already-run) gates ...
+    nlohmann::json resp;
+    resp["status"] = "success";
+    resp["correlation_id"] = corr_id;
+    return resp;
+}
+```
+
+**4. Dispatch the `Validated` form to the handler** (`dispatch_received`), and
+reply through the typed envelope — never `to_legacy`, never
+`socket.send(json.dump())`.
+
+```cpp
+else if constexpr (std::is_same_v<T, wd::ValidatedFooReq>) {
+    const nlohmann::json resp = handle_foo_req(v.env, v.body);
+    const std::string ack = (resp.value("status", "") == "success") ? "FOO_ACK" : "ERROR";
+    send_reply(socket, id_frame, ack, resp);   // builds the ack body + stamps envelope_hash
+}
+```
+
+That is the whole surface.  What you did **not** write: any `req.value("field")`
+parsing (the body class owns it), any gate (the shared runner owns it), any frame
+handling (`WireEnvelope` owns it).  Adding a required field later is one accessor
++ one `d::require`; a wrong-*typed* read is a compile error, not a silent default
+(§14.3 intent).  The handler must satisfy the §14.7 conformance contract.
