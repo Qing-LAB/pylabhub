@@ -1007,11 +1007,14 @@ entry.  Full frame layout + body class catalog in §14.
 
 **I-WIRE-VERSION-ATOMIC.**  The typed envelope is not additive
 over pre-migration wire.  Every deployed component ships the
-envelope on the same version cut.  `broker_proto` on the REG
-envelope MUST match the current threshold; mismatch →
-`UNSUPPORTED_PROTO` reject at envelope parse.  No runtime
-tolerance for mixed-envelope deployments — mixed old/new breaks
-security invariants for the duration of the mix.
+envelope on the same version cut.  A version-incompatible REG fails
+the handler's `abi_fingerprint` major-version check
+(`abi_major_mismatch`, HEP-CORE-0032 §8); a pre-migration 3-frame
+message fails `WireEnvelope::parse`.  No runtime tolerance for
+mixed-envelope deployments — mixed old/new breaks security
+invariants for the duration of the mix.  (The scalar `broker_proto`
+wire gate + `UNSUPPORTED_PROTO` were retired per audit C3;
+`broker_proto` remains a version-registry axis, not a wire field.)
 
 #### Delivery
 
@@ -2441,8 +2444,8 @@ void handle_reg_req(const WireEnvelope& env, const ProducerRegReqBody& body,
     //   body.zmq_pubkey()     → CURVE identity check
     //   body.schema_*()       → schema invariants
     //   body.client_nonce() / body.client_wall_ts() → I-REPLAY-BOUND
-    //   body.envelope_hash()  → I-ENVELOPE-BODY-BINDING
-    //   body.broker_proto()   → I-WIRE-VERSION-ATOMIC
+    //   body.envelope_hash()   → I-ENVELOPE-BODY-BINDING
+    //   body.abi_fingerprint() → version/ABI compatibility (HEP-CORE-0032 §8)
 }
 ```
 
@@ -2454,12 +2457,13 @@ mutation, in this order:
 1. `WireEnvelope::parse` — envelope↔body hash validated
    (I-ENVELOPE-BODY-BINDING); empty correlation_id rejected
    (I-CORRELATION-STABLE); unknown msg_type dropped.
-2. `body.broker_proto() == kBrokerProtoVersion` else
-   `UNSUPPORTED_PROTO` (I-WIRE-VERSION-ATOMIC).
-3. `env.identity() == body.role_uid()` else `IDENTITY_MISMATCH`
+2. `env.identity() == body.role_uid()` else `IDENTITY_MISMATCH`
    (I-DEALER-IDENTITY).
-4. Grammar validation on role_uid / role_name / channel_name
+3. Grammar validation on role_uid / role_name / channel_name
    (HEP-CORE-0033).
+4. Role-tag policy — the role_uid short-tag must match the message:
+   {prod, proc} for REG_REQ, {cons, proc} for CONSUMER_REG_REQ
+   (HEP-CORE-0033 §G2.2.0b).
 5. `verify_known_role_binding(body.role_uid(), body.zmq_pubkey())`
    else `PUBKEY_MISMATCH` (I-PUBKEY-BINDING).  This same check
    enforces I-KEY-ROTATION-VIA-DEREG: a role's pubkey is immutable
@@ -2469,12 +2473,22 @@ mutation, in this order:
 6. Anti-replay: `HubState::nonce_seen(body.role_uid(),
    body.client_nonce(), body.client_wall_ts())` OR wall-clock skew
    > 30 s → `REPLAY_OR_SKEW` (I-REPLAY-BOUND).
-7. Topology / cardinality / schema / transport gates per §2.1
+7. Version/ABI compatibility — `abi_fingerprint` major-version check
+   → `abi_major_mismatch` (HEP-CORE-0032 §8).
+8. Topology / cardinality / schema / transport gates per §2.1
    admission sequence.
 
-Gates 1-6 are wire-level integrity + identity; gate 7 is protocol
-admission.  Failure at any gate stops processing and replies with
-the named error code before touching HubState.
+Steps 1-6 are the shared wire-level integrity + identity gates:
+step 1 runs at `WireEnvelope::parse`; steps 2-6 are
+`run_reg_family_gates`.  Steps 7-8 are protocol admission run by the
+handler itself.  Failure at any step stops processing and replies
+with the named error code before touching HubState.
+
+> The scalar `broker_proto` wire gate that once sat at step 2 was
+> retired (audit C3); version/ABI compatibility moved to
+> `abi_fingerprint` (step 7).  `broker_proto` remains a
+> version-registry axis (HEP-CORE-0032, `kBrokerProtoMajor`), but is
+> no longer a wire field or a gate — there is no `UNSUPPORTED_PROTO`.
 
 ### 14.6 Backward-incompatible cut
 
@@ -2483,8 +2497,12 @@ The typed envelope is not additive.  Every deployed component
 ships the envelope on the same version cut per I-WIRE-VERSION-
 ATOMIC.  Mixed old/new deployments break I-DEALER-IDENTITY,
 I-CORRELATION-STABLE, I-REPLAY-BOUND, and I-ENVELOPE-BODY-BINDING
-for the duration of the mix.  No runtime tolerance.  Old clients
-after the cut receive `UNSUPPORTED_PROTO` on their first REQ.
+for the duration of the mix.  No runtime tolerance.  A pre-migration
+3-frame client fails `WireEnvelope::parse` (a 5-frame envelope is
+required); a well-framed but version-incompatible client fails the
+handler's `abi_fingerprint` check (`abi_major_mismatch`, HEP-CORE-0032
+§8).  There is no `UNSUPPORTED_PROTO` — the scalar `broker_proto` wire
+gate was retired (audit C3).
 
 ### 14.7 Handler conformance — the enforceable contract
 

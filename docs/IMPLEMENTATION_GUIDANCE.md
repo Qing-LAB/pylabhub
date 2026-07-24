@@ -2375,12 +2375,16 @@ Authority: **HEP-CORE-0046 REG Protocol Redesign**.
    (HEP-CORE-0046 §14.5).  `receive_and_validate` applies the
    shared gate runner — `run_reg_family_gates` for REG_REQ /
    CONSUMER_REG_REQ, `run_authenticated_reg_family_gates` /
-   `run_control_gates` for the rest — on the 7-gate pipeline
-   (envelope hash → broker_proto → identity_match → grammar →
-   known_role binding → key-rotation → nonce-dedup + wall-ts skew)
-   BEFORE dispatch.  The handler then consumes the already-validated
-   typed body; it does NOT re-run or re-implement a gate, and it
-   never half-mutates state under a failing gate.
+   `run_control_gates` for the rest — BEFORE dispatch.  The envelope
+   hash is checked at `WireEnvelope::parse`; the runner then applies
+   identity_match → grammar → role_tag → known_role binding (which
+   also enforces key-rotation-via-DEREG) → nonce-dedup + wall-ts skew.
+   (The scalar `broker_proto` wire gate was retired per audit C3 —
+   version/ABI compatibility is carried by `abi_fingerprint` and
+   checked in the handler, HEP-CORE-0032 §8.)  The handler then
+   consumes the already-validated typed body; it does NOT re-run or
+   re-implement a gate, and it never half-mutates state under a
+   failing gate.
 3. **Correlation-id, not msg_type, keys pending requests**
    (HEP-CORE-0046 §14, `I-CORRELATION-STABLE`).  BRC's send/reply
    pairing MUST key on `correlation_id`.  Defensive "did the

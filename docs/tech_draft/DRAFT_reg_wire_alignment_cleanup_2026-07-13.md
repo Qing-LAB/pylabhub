@@ -2,6 +2,15 @@
 
 **Status:** DRAFT, review pending. Sole source of truth for the REG-wire
 alignment work that follows.
+
+> **Amendment 2026-07-24:** the `reg_admission_pipeline` / `BrokerRegHandler`
+> skeleton this draft references (the "comment sites" list below citing
+> `reg_admission_pipeline.cpp`, and the "wire the admission pipeline into
+> broker_service.cpp" downstream step) was **RETIRED** — it was parallel,
+> test-only dead code that drifted from HEP-0046's purpose (type + validate the
+> wire, not restructure handler logic; HEP-0046 §12).  Those pipeline references
+> are moot: REG_REQ / CONSUMER_REG_REQ are plain typed-input handlers per §14.4,
+> gated by `run_reg_family_gates` in `receive_and_validate`.
 **Purpose:** Consolidate what the authoritative HEP documents actually
 say about REG-family wire, list every place my current in-tree code
 (committed + uncommitted) contradicts them, and record the concrete

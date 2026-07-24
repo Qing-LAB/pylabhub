@@ -93,16 +93,18 @@ Wire discipline binding rule:
 `docs/IMPLEMENTATION_GUIDANCE.md § "REG Protocol Wire Discipline
 (HEP-CORE-0046)"`.
 
-**Landed (islanded — pipeline not yet live):**
+**Landed:**
 - `WireEnvelope` + typed body classes in `wire_envelope.hpp` +
   `wire_bodies.hpp`.  46 L1 tests in `test_wire_envelope.cpp`.
-- `AdmissionGateRunner` + 7-gate pipeline in `admission_gates.hpp`.
-  23 L1 tests.
-- `RegAdmissionPipeline` outcome orchestration in
-  `reg_admission_pipeline.hpp`.  5 L1 tests.
-- `BrokerRegHandler` adapter binding pipeline to HubState +
-  KnownRolesConfig in `broker_reg_handler.hpp`.  14 L2 tests.
-- `HubState::nonce_seen` replay-bound primitive.  6 L2 tests.
+- Shared gate runners (`run_reg_family_gates` /
+  `run_authenticated_reg_family_gates` / `run_control_gates`) in
+  `admission_gates.hpp` — LIVE on every message via
+  `receive_and_validate`.  L1 `test_admission_gates` (`AdmissionGate_*`).
+- `HubState::nonce_seen` replay-bound primitive.  L2
+  `test_hub_state_nonce_dedup`.
+- ~~`RegAdmissionPipeline` / `BrokerRegHandler`~~ **RETIRED 2026-07-24**
+  (parallel test-only skeleton that duplicated the live gates; never
+  wired to production — see the retirement note below).
 
 **Phase B (LOAD-BEARING NEXT — task #57).  Sequenced plan (2026-07-23,
 code-verified).**  Coverage confirmed: every REG-family typed body already
