@@ -97,13 +97,24 @@ Phase B**.
   accessors on the uniform `handle_XXX(const WireEnvelope&, const XxxBody&)`
   signature).  **Two
   kinds of work (verified against code 2026-07-23):**
-  - **Simple swaps — do FIRST.**  `handle_disc_req`, `handle_get_channel_auth_req`,
-    `handle_heartbeat_req`, `handle_dereg_req`, `handle_consumer_dereg_req`,
-    `handle_endpoint_update_req`, `handle_channel_auth_applied_req` are already
-    gated by `run_authenticated_reg_family_gates`; each just swaps
+  - **Simple swaps — do FIRST.**  Seven handlers, all already gated in
+    `receive_and_validate`: the four authenticated REG-family (`handle_dereg_req`,
+    `handle_consumer_dereg_req`, `handle_endpoint_update_req`,
+    `handle_channel_auth_applied_req`) via `run_authenticated_reg_family_gates`;
+    the three control-family (`handle_disc_req`, `handle_get_channel_auth_req`,
+    `handle_heartbeat_req`) via `run_control_gates`.  Each just swaps
     `req.value(...)` for the typed body accessor and builds a typed ack —
-    mechanical, behavior-preserving.  **B.1a = `handle_disc_req`** (read-only,
-    smallest) as the pattern-setter, then the rest of the set.
+    mechanical, behavior-preserving.
+    - ✅ **B.1a `handle_disc_req`** (2026-07-23) — pattern-setter (read-only, smallest).
+    - ✅ **B.1b `handle_get_channel_auth_req`** (2026-07-23).
+    - ✅ **B.1c `handle_heartbeat_req`** (2026-07-24) — fire-and-forget; removed the
+      redundant grammar/tag re-checks (gated by `run_control_gates`) and documented
+      the surviving blank-field check as observability-only (`_on_heartbeat` is the
+      authoritative sink).  Design lesson written up in HEP-0046 §14.7.1 (two
+      authoritative guards → zero handler validation); pinned by L2
+      `HubStateHeartbeat.BlankOrInvalidFieldsAreNoop`.
+    - ⏳ Remaining: `handle_dereg_req`, `handle_consumer_dereg_req`,
+      `handle_endpoint_update_req`, `handle_channel_auth_applied_req`.
   - **REG/CONSUMER relocation — do LAST.**  `BrokerRegHandler` /
     `reg_admission_pipeline` is a **~15% producer / 0% consumer SKELETON today**
     (invoked only from tests; see `broker_reg_handler.hpp:7-24`).  This slice

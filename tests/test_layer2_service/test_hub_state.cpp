@@ -1003,6 +1003,59 @@ TEST(HubStateHeartbeat, HeartbeatOnUnknownPresenceIsNoop)
     EXPECT_EQ(s.counters().msg_type_counts.count("HEARTBEAT_NOTIFY"), 0u);
 }
 
+// HEP-CORE-0019 §4.1 + HEP-CORE-0046 §14.7 — `_on_heartbeat` is the
+// AUTHORITATIVE field guard.  A heartbeat with a blank role_uid/role_type, or a
+// grammatically invalid identifier, never mutates presence regardless of the
+// broker handler.  `handle_heartbeat_req` deliberately does NOT re-validate
+// these (§14.7 rule 3: trust the shared guard, don't re-implement); this test
+// pins the guard so that contract stays safe to rely on.  `HeartbeatOnUnknown-
+// PresenceIsNoop` above pins the unknown-presence arm; this pins the blank +
+// invalid-grammar arms (hub_state.cpp _on_heartbeat lines guarding empty/grammar).
+TEST(HubStateHeartbeat, BlankOrInvalidFieldsAreNoop)
+{
+    HubState s;
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+
+    // Baseline: eager producer-presence exists, no heartbeat seen yet
+    // (HEP-CORE-0023 §2.6).
+    {
+        auto r = s.role("prod.main.test");
+        ASSERT_TRUE(r.has_value());
+        const auto *p = r->find_presence("ch1", "producer");
+        ASSERT_NE(p, nullptr);
+        ASSERT_FALSE(p->first_heartbeat_seen);
+    }
+
+    const auto t = std::chrono::steady_clock::now();
+    auto first_heartbeat_seen = [&]
+    {
+        auto r = s.role("prod.main.test");
+        const auto *p = r->find_presence("ch1", "producer");
+        return p != nullptr && p->first_heartbeat_seen;
+    };
+
+    // Blank role_uid → no-op.
+    HubStateTestAccess::on_heartbeat(s, "ch1", "", "producer", t, std::nullopt);
+    EXPECT_FALSE(first_heartbeat_seen()) << "blank role_uid must not refresh presence";
+
+    // Blank role_type → no-op.
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "", t, std::nullopt);
+    EXPECT_FALSE(first_heartbeat_seen()) << "blank role_type must not refresh presence";
+
+    // Grammatically invalid role_uid → no-op AND the invalid-identifier
+    // counter is bumped (the one blank/invalid arm that leaves an audit trail).
+    HubStateTestAccess::on_heartbeat(s, "ch1", "not a uid!", "producer", t, std::nullopt);
+    EXPECT_FALSE(first_heartbeat_seen()) << "invalid-grammar role_uid must not refresh presence";
+    EXPECT_EQ(s.counters().msg_type_counts.at("sys.invalid_identifier_rejected"), 1u)
+        << "invalid-grammar heartbeat must bump sys.invalid_identifier_rejected exactly once";
+
+    // Contrast (side-effect verification): a well-formed heartbeat for the SAME
+    // presence DOES flip it — proving the drops above were the guard acting,
+    // not an inert/unreachable presence row.
+    HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer", t, std::nullopt);
+    EXPECT_TRUE(first_heartbeat_seen()) << "well-formed heartbeat must refresh presence";
+}
+
 TEST(HubStateHeartbeat, ConsumerHeartbeatDoesNotRefreshProducerPresence)
 {
     // HEP-CORE-0019 §2.3 — per-presence keying.  A consumer heartbeat

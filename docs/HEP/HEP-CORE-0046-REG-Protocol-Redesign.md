@@ -1244,9 +1244,14 @@ before topology admission, atomic wire cut for the whole chain.
 - **Two kinds of handler work — seven simple swaps; REG/CONSUMER a relocation.**
   `DEREG_REQ`, `CONSUMER_DEREG_REQ`, `ENDPOINT_UPDATE_REQ`,
   `GET_CHANNEL_AUTH_REQ`, `CHANNEL_AUTH_APPLIED_REQ`, `HEARTBEAT_NOTIFY`,
-  `DISC_REQ` are already gated (`run_authenticated_reg_family_gates`), so each
-  converts by swapping JSON-key extraction for typed `Validated*` / body
-  accessors — a mechanical, behavior-preserving change.  `REG_REQ` +
+  `DISC_REQ` are all already gated in `receive_and_validate` — the four
+  authenticated REG-family messages (`DEREG_REQ`, `CONSUMER_DEREG_REQ`,
+  `ENDPOINT_UPDATE_REQ`, `CHANNEL_AUTH_APPLIED_REQ`) through
+  `run_authenticated_reg_family_gates`, and the three control-family messages
+  (`HEARTBEAT_NOTIFY`, `GET_CHANNEL_AUTH_REQ`, `DISC_REQ`) through
+  `run_control_gates` (identity-if-present + grammar-if-present; empty fields
+  skipped — see §14.7.1).  So each converts by swapping JSON-key extraction for
+  typed `Validated*` / body accessors — a mechanical, behavior-preserving change.  `REG_REQ` +
   `CONSUMER_REG_REQ` are larger: the typed `BrokerRegHandler` commit path is a
   **~15% producer / 0% consumer skeleton today** (invoked only from tests), so
   their conversion RELOCATES the complete handcrafted `handle_reg_req` /
@@ -2543,6 +2548,51 @@ handler passes iff, scoped to that handler:
 - every reply path routes through `send_reply` / `build_\w+_send`;
 - no `nonce_seen` / `verify_known_role` / `env.identity() ==` re-check inside the
   handler body.
+
+#### 14.7.1 Two authoritative guards, zero handler validation — the heartbeat case
+
+Rule 3 above ("trust the shared admission gate") is often read as "there is one
+gate, upstream."  A fire-and-forget control message like `HEARTBEAT_NOTIFY` shows
+the fuller picture: a field can be validated by **two** authoritative guards, one
+on each side of the handler, and the handler must duplicate **neither**.
+
+1. **Before the handler — `run_control_gates`** (admission_gates.cpp, run inside
+   `receive_and_validate`) rejects any *non-empty-but-invalid* field: identity
+   mismatch, `role_uid` grammar, the side-aware `role_uid`↔tag policy, and
+   `channel_name` grammar.  It deliberately **skips empty fields** (`if
+   (!field.empty())`): for an envelope-only control message an absent optional
+   field is not malformed, so "the gate let an empty field through" is by design,
+   not a hole to re-plug in the handler.
+
+2. **At state-mutation time — `HubState::_on_heartbeat`** (hub_state.cpp) is the
+   authoritative sink: it no-ops on a grammatically invalid channel/`role_uid`
+   (bumping `sys.invalid_identifier_rejected`), on a blank `role_uid`/`role_type`,
+   and on an unknown role or presence.  Nothing blank, invalid, or unknown can
+   mutate state — **independent of what the handler does**.
+
+So the conformant `handle_heartbeat_req` performs **no validation of its own**.
+Between these two guards every malformed or empty field is already handled.  The
+only field checks it may keep are **observability, not gates**: `_on_heartbeat`
+drops a blank mandatory field *silently* (no log), which would make a
+misconfigured client undiagnosable — so the handler may `LOG + return` on a blank
+mandatory field, explicitly marked non-load-bearing (the outcome is identical
+without it).  A blank `channel_name` needs no check at all — it can never match a
+channel key, so it falls through the existing `CHANNEL_NOT_FOUND` path.
+
+The generalizable rule: **do not add a handler check whose rejection is already
+guaranteed by a shared gate OR by the state layer it feeds.**  Before writing any
+field check in a handler, name the downstream guard that would catch the same
+case; if one exists, the check is redundant (delete it) or observability-only
+(keep it, and say so in the comment).
+
+Where each guard is pinned — the invariant is only safe to rely on because a test
+holds it:
+
+| Guard | Rejects | Pinned by |
+|---|---|---|
+| `run_control_gates` | non-empty-invalid identity / grammar / tag | L1 `AdmissionGate_HeartbeatNotify*` (test_admission_gates.cpp) |
+| `HeartbeatNotifyBody` ctor | *missing* mandatory field | L1 `HeartbeatNotifyBodyRejectsMissingChannelName` (test_wire_envelope.cpp) |
+| `HubState::_on_heartbeat` | blank / invalid-grammar / unknown-presence | L2 `HubStateHeartbeat.BlankOrInvalidFieldsAreNoop` + `…HeartbeatOnUnknownPresenceIsNoop` (test_hub_state.cpp) |
 
 The authoritative operational rule that binds this to the codebase is
 `docs/IMPLEMENTATION_GUIDANCE.md § "REG Protocol Wire Discipline (HEP-CORE-0046)"`.

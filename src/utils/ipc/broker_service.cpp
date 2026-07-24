@@ -671,7 +671,9 @@ class BrokerServiceImpl
     nlohmann::json handle_consumer_reg_req(const nlohmann::json &req,
                                            const zmq::message_t &identity, zmq::socket_t &socket);
     nlohmann::json handle_consumer_dereg_req(zmq::socket_t &socket, const nlohmann::json &req);
-    void handle_heartbeat_req(zmq::socket_t &socket, const nlohmann::json &req);
+    void handle_heartbeat_req(const ::pylabhub::wire::WireEnvelope &env,
+                              const ::pylabhub::wire::HeartbeatNotifyBody &body,
+                              zmq::socket_t &socket);
 
     /// `GET_CHANNEL_AUTH_REQ` handler (HEP-CORE-0036 §6.5).  Returns
     /// the channel's currently-admitted pubkey set (sourced from
@@ -1519,7 +1521,17 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             else if constexpr (std::is_same_v<T, wd::ValidatedChannelAuthAppliedReq>)
                 dispatch_legacy(to_legacy(std::move(v), "CHANNEL_AUTH_APPLIED_REQ"));
             else if constexpr (std::is_same_v<T, wd::ValidatedHeartbeatNotify>)
-                dispatch_legacy(to_legacy(std::move(v), "HEARTBEAT_NOTIFY"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1c): HEARTBEAT_NOTIFY runs the typed
+                // handler directly on the validated envelope + body — the
+                // grammar / role_uid↔tag / identity gates already ran in
+                // `receive_and_validate` (run_control_gates), so there is no
+                // `to_legacy` round-trip.  Fire-and-forget (no reply); `socket`
+                // is forwarded so the handler can fan out
+                // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to the binding side on
+                // first-heartbeat detection (HEP-CORE-0007 lines 1819-1822).
+                handle_heartbeat_req(v.env, v.body, socket);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
             {
                 // HEP-CORE-0046 §12 step 5 (B.1b): typed handler on the validated
@@ -1739,16 +1751,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
                 (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
             send_reply(socket, identity, ack, resp);
         }
-        else if (msg_type == "HEARTBEAT_NOTIFY")
-        {
-            // Fire-and-forget from client.  Presence FSM transitions (e.g.
-            // first-heartbeat sub-Live → Live; Pending → Connected recovery)
-            // happen inside hub_state_->_on_heartbeat() called from the handler.
-            // Socket is forwarded so the handler can fire
-            // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to the binding side
-            // on first-heartbeat detection (HEP-CORE-0007 lines 1819-1822).
-            handle_heartbeat_req(socket, payload);
-        }
+        // HEARTBEAT_NOTIFY retired from process_message — it now dispatches typed
+        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1c); it always arrives
+        // as `ValidatedHeartbeatNotify`, so this branch was unreachable.
         else if (msg_type == "CHECKSUM_ERROR_REPORT")
         {
             // Cat 2: producer/consumer reports a slot checksum error.
@@ -4919,20 +4924,39 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(zmq::socket_t &socket,
                  channel_name, phase, role_uid, role_type, fanned, binding_side_total);
 }
 
-void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohmann::json &req)
+// HEP-CORE-0046 §12 step 5 (B.1c): typed handler on the validated envelope +
+// body.  `env` is unused — HEARTBEAT_NOTIFY is fire-and-forget (no reply, no
+// corr_id) — but carried for the uniform §14.4 signature.
+//
+// Design contract — where heartbeat validation lives (§14.7 rule 3: a handler
+// trusts the shared guards and does NOT re-implement them):
+//
+//   1. `run_control_gates` (admission_gates.cpp) runs in `receive_and_validate`
+//      BEFORE this handler and REJECTS any non-empty-but-invalid field:
+//      identity mismatch, role_uid grammar, the side-aware role_uid↔tag policy,
+//      and channel_name grammar.  Pinned by the L1 `AdmissionGate_HeartbeatNotify*`
+//      tests.  It intentionally SKIPS empty fields (`if (!field.empty())`).
+//
+//   2. `HubState::_on_heartbeat` (hub_state.cpp) is the AUTHORITATIVE state
+//      guard: it no-ops on invalid-grammar channel/role_uid (bumping the
+//      invalid-identifier counter), on a blank role_uid/role_type, and on an
+//      unknown role or presence.  NOTHING blank or invalid mutates state,
+//      regardless of what this handler does.
+//
+// So this handler performs NO validation of its own.  The only field checks it
+// keeps are OBSERVABILITY, not gates: `_on_heartbeat` drops a blank mandatory
+// field SILENTLY (no counter, no log), which would make a misconfigured client
+// undiagnosable — so we log+return early on the two mandatory fields.  These are
+// not load-bearing (the outcome is identical without them); they exist only so
+// the drop is visible.  A blank channel_name needs no separate check — it can
+// never match a channel key, so it falls through to the CHANNEL_NOT_FOUND path
+// below.
+void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::wire::WireEnvelope
+                                                 &env,
+                                             const ::pylabhub::wire::HeartbeatNotifyBody &body,
+                                             zmq::socket_t &socket)
 {
-    const std::string channel_name = req.value("channel_name", "");
-    // Audit R3.5b (2026-05-19): channel_name grammar check at the gate
-    // (HEP-CORE-0033 §G2.2.0b).  HEARTBEAT_NOTIFY is fire-and-forget so
-    // we log + drop on failure (no reply path) — matches the existing
-    // pattern for missing uid/role_type further below.
-    if (!pylabhub::hub::is_valid_identifier(channel_name, pylabhub::hub::IdentifierKind::Channel))
-    {
-        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY dropped — invalid "
-                    "channel_name '{}' (HEP-CORE-0033 §G2.2.0b)",
-                    channel_name);
-        return;
-    }
+    const std::string channel_name = body.channel_name();
     // Peek existence + producer-presence state before applying the
     // heartbeat so we can log the Pending->Live channel-observable
     // transition (the actual mutation + counter bump happens inside
@@ -4940,12 +4964,13 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohma
     // channel observable is derived from the producer-presence FSM,
     // so a transition is only "channel-level" when this heartbeat is
     // the producer's; consumer heartbeats refresh their own presence
-    // and never flip the channel observable.
+    // and never flip the channel observable.  A blank or unknown channel
+    // both land here (a blank name is never a channel key).
     const auto snap = hub_state_->snapshot();
     const auto cit = snap.channels.find(channel_name);
     if (cit == snap.channels.end())
     {
-        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for unknown channel '{}'", channel_name);
+        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for unknown/blank channel '{}'", channel_name);
         return;
     }
     // Channel observable is the BEST-of all producer-presences
@@ -4967,56 +4992,22 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohma
             break;
         }
     }
-    // Wire-format enforcement — HEP-CORE-0019 §4.1 (Phase 6).  The
-    // role-side `BrokerRequestComm::send_heartbeat(channel, role_uid,
-    // role_type, metrics)` MUST populate `role_uid` + `role_type` on
-    // the wire; broker_proto 2→3 (audit C4, 2026-05-15) removed the
-    // pre-Phase-6 fallback that derived uid from the channel's first
-    // producer.  broker_proto 4→5 (audit R3.5b, 2026-05-19) renamed
-    // the wire key `uid` → `role_uid` for cross-message consistency.
-    // Missing/empty fields → silent drop with WARN log (HEARTBEAT_NOTIFY
-    // is fire-and-forget so there is no reply path for INVALID_REQUEST).
-    const std::string wire_uid = req.value("role_uid", std::string{});
-    const std::string wire_role_type = req.value("role_type", std::string{});
+    // Blank mandatory-field visibility (NOT validation — see the function-head
+    // contract).  `_on_heartbeat` below already no-ops a blank role_uid/role_type
+    // (hub_state.cpp), so removing this changes no state or wire outcome; it is
+    // kept ONLY so a misconfigured client that omits a mandatory field per
+    // HEP-CORE-0019 §4.1 is diagnosable instead of vanishing into a silent no-op.
+    const std::string wire_uid = body.role_uid();
+    const std::string wire_role_type = body.role_type();
     LOGGER_DEBUG("Broker: HEARTBEAT_NOTIFY channel='{}' role_uid='{}' role_type='{}'", channel_name,
                  wire_uid, wire_role_type);
 
     if (wire_uid.empty() || wire_role_type.empty())
     {
-        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' rejected — missing "
-                    "'role_uid' or 'role_type' (HEP-CORE-0019 §4.1 "
-                    "Phase 6 wire format; broker_proto >=5)",
+        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' dropped — blank "
+                    "'role_uid' or 'role_type' (HEP-CORE-0019 §4.1)",
                     channel_name);
         return;
-    }
-    // Audit R3.5b (2026-05-19): role_uid grammar + side-aware tag
-    // check (HEP-CORE-0033 §G2.2.0b).  Tag must match role_type:
-    // producer → {prod, proc}; consumer → {cons, proc}.  Drop with
-    // WARN log (fire-and-forget; no reply path).
-    if (!pylabhub::hub::is_valid_identifier(wire_uid, pylabhub::hub::IdentifierKind::RoleUid))
-    {
-        LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' dropped — invalid "
-                    "role_uid '{}' (HEP-CORE-0033 §G2.2.0b)",
-                    channel_name, wire_uid);
-        return;
-    }
-    {
-        const auto tag_opt = pylabhub::hub::extract_short_tag(wire_uid);
-        const std::string_view tag = tag_opt.value_or(std::string_view{"?"});
-        bool tag_ok = false;
-        if (wire_role_type == "producer")
-            tag_ok = (tag == "prod" || tag == "proc");
-        else if (wire_role_type == "consumer")
-            tag_ok = (tag == "cons" || tag == "proc");
-        if (!tag_ok)
-        {
-            LOGGER_WARN("Broker: HEARTBEAT_NOTIFY for '{}' dropped — "
-                        "role_uid tag '{}' does not match role_type "
-                        "'{}' (producer expects prod/proc; consumer "
-                        "expects cons/proc — HEP-CORE-0033 §G2.2.0b)",
-                        channel_name, tag, wire_role_type);
-            return;
-        }
     }
 
     // Producer-presence-sub-Live diagnostic: gate on `role_type ==
@@ -5030,7 +5021,8 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohma
                     channel_name);
     }
 
-    if (!req.contains("producer_pid") || req["producer_pid"].get<uint64_t>() == 0)
+    const std::uint64_t producer_pid = body.producer_pid();
+    if (producer_pid == 0)
     {
         // `producer_pid` is retained on the wire from Phase 1 for
         // diagnostic / audit purposes only; the broker no longer uses
@@ -5045,8 +5037,8 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohma
     // per HEP-CORE-0023 §2.5.2 + HEP-CORE-0019 §2.3.  Each heartbeat
     // refreshes ONLY its own presence row.
     std::optional<nlohmann::json> metrics_opt;
-    if (req.contains("metrics") && req["metrics"].is_object())
-        metrics_opt = req["metrics"];
+    if (body.has_metrics())
+        metrics_opt = body.metrics();
 
     const auto eff = hub_state_->_on_heartbeat(channel_name, wire_uid, wire_role_type,
                                                std::chrono::steady_clock::now(), metrics_opt);
@@ -5061,8 +5053,7 @@ void BrokerServiceImpl::handle_heartbeat_req(zmq::socket_t &socket, const nlohma
     {
         LOGGER_INFO("[broker] event=HeartbeatMetricsStored channel='{}' "
                     "role_uid='{}' role_type='{}' producer_pid={} metrics={}",
-                    channel_name, wire_uid, wire_role_type,
-                    req.value("producer_pid", std::uint64_t{0}), metrics_opt->dump());
+                    channel_name, wire_uid, wire_role_type, producer_pid, metrics_opt->dump());
     }
 
     // HEP-CORE-0023 §2.5 telemetry — first-heartbeat observability.
