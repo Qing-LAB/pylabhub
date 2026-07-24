@@ -2238,6 +2238,17 @@ fields its msg_type carries via named accessors; validates required
 fields at construction.  No `body.value("field", ...)` scatter
 anywhere; the class is the schema.
 
+**Required vs optional accessors — pair the ctor with the accessor.**  A
+REQUIRED field uses `d::require(...)` in the ctor + `detail::read_string`
+(throwing) in the accessor: the ctor guarantees presence, so the accessor never
+throws.  An OPTIONAL field uses `d::validate_if_present(...)` in the ctor +
+`detail::read_string_or_empty` (non-throwing, returns `""` when absent) in the
+accessor.  **Never pair an optional field with a throwing `read_string`
+accessor** — it compiles, passes construction, then crashes the handler the
+first time the field is legitimately absent (the `role_name` regression,
+2026-07-24).  Numeric optionals use `read_u64_or_zero`; object optionals guard
+with `has_x()` before `read_object` (which throws when absent).
+
 Every REG-family body (any msg_type that mutates admission state)
 carries the security triple `{client_nonce, client_wall_ts,
 envelope_hash}` per I-REPLAY-BOUND + I-ENVELOPE-BODY-BINDING.
@@ -2308,7 +2319,13 @@ brevity the class catalog below notes "+ security triple" or
   > string (identifier-grammar check runs at gate_grammar
   > downstream, not at wire body class construction).  Implementers
   > use `d::validate_if_present(body_, "role_name", JsonKind::String)`
-  > in the body ctor.
+  > in the body ctor **and `detail::read_string_or_empty` in the
+  > accessor** (see §14.3 "required vs optional accessors").  An
+  > optional field's accessor MUST be non-throwing: pairing a
+  > `validate_if_present` ctor with a throwing `read_string` accessor
+  > is a latent crash — the accessor throws the first time the field is
+  > legitimately absent (surfaced 2026-07-24 when the typed REG handler
+  > first read `role_name()` on a REG that omitted it).
   >
   > `schema_version` on the current catalog is not a separate wire
   > field.  Version rides inside `schema_id` per HEP-CORE-0033

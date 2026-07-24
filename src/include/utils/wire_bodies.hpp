@@ -157,7 +157,7 @@ public:
 }
 [[nodiscard]] std::string role_name() const
 {
-    return detail::read_string(body_, "role_name");
+    return detail::read_string_or_empty(body_, "role_name");
 }
 [[nodiscard]] std::string channel_topology() const
 {
@@ -223,6 +223,23 @@ public:
 {
     return detail::read_u64_or_zero(body_, "producer_pid");
 }
+// Optional producer hostname — diagnostic / record only.
+[[nodiscard]] std::string producer_hostname() const
+{
+    return detail::read_string_or_empty(body_, "producer_hostname");
+}
+// Optional free-form producer metadata object, stored verbatim on the
+// ProducerEntry.  Absent → `has_metadata()` is false; `metadata()` is only
+// valid (does not throw) when `has_metadata()` is true.
+[[nodiscard]] bool has_metadata() const
+{
+    auto it = body_.find("metadata");
+    return it != body_.end() && it->is_object();
+}
+[[nodiscard]] const nlohmann::json &metadata() const
+{
+    return detail::read_object(body_, "metadata");
+}
 // ABI carrier per HEP-CORE-0032 §8.  REQUIRED.
 [[nodiscard]] const nlohmann::json &abi_fingerprint() const
 {
@@ -282,7 +299,7 @@ public:
 }
 [[nodiscard]] std::string role_name() const
 {
-    return detail::read_string(body_, "role_name");
+    return detail::read_string_or_empty(body_, "role_name");
 }
 [[nodiscard]] std::string channel_topology() const
 {
@@ -752,7 +769,7 @@ public:
 }
 [[nodiscard]] std::string role_name() const
 {
-    return detail::read_string(body_, "role_name");
+    return detail::read_string_or_empty(body_, "role_name");
 }
 }
 ;
@@ -769,7 +786,7 @@ public:
 }
 [[nodiscard]] std::string role_name() const
 {
-    return detail::read_string(body_, "role_name");
+    return detail::read_string_or_empty(body_, "role_name");
 }
 }
 ;

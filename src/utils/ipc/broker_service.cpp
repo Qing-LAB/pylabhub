@@ -657,8 +657,9 @@ class BrokerServiceImpl
     void emit_processing_error(const std::string &msg_type, const std::string &error_kind,
                                const std::string &detail, const zmq::message_t *identity);
 
-    nlohmann::json handle_reg_req(const nlohmann::json &req, const zmq::message_t &identity,
-                                  zmq::socket_t &socket);
+    nlohmann::json handle_reg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                  const ::pylabhub::wire::ProducerRegReqBody &body,
+                                  const zmq::message_t &identity, zmq::socket_t &socket);
     /// Always returns a response. The returned JSON's status field indicates
     /// the DISC response variant: "success" (DISC_ACK), "pending" (DISC_PENDING),
     /// or "error" (CHANNEL_NOT_FOUND). See HEP-CORE-0023 §2.2.
@@ -1515,7 +1516,29 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                 process_message(socket, id_frame, msg_type, body, body.dump().size());
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedRegReq>)
-                dispatch_legacy(to_legacy(std::move(v), "REG_REQ"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1h): typed handler on the validated
+                // envelope + body — gates already ran; no to_legacy round-trip.
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_reg_req(v.env, v.body, id_frame, socket);
+                const std::string ack =
+                    (resp.value("status", "") == "success") ? "REG_ACK" : "ERROR";
+                if (ack == "REG_ACK")
+                {
+                    // "REG_ACK sending" marker (Pattern 4 rung 2): channel +
+                    // heartbeat cadence + allowlist distinguish an accepted
+                    // registration from rejections (which log via ERROR/WARN).
+                    int hb_interval_ms = 0;
+                    if (resp.contains("heartbeat") && resp["heartbeat"].is_object())
+                        hb_interval_ms = resp["heartbeat"].value("heartbeat_interval_ms", 0);
+                    LOGGER_INFO("[broker] event=RegAckSending channel='{}' "
+                                "heartbeat_interval_ms={} initial_allowlist={}",
+                                resp.value("channel_name", "?"), hb_interval_ms,
+                                resp.value("initial_allowlist", nlohmann::json::array()).dump());
+                }
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedConsumerRegReq>)
                 dispatch_legacy(to_legacy(std::move(v), "CONSUMER_REG_REQ"));
             else if constexpr (std::is_same_v<T, wd::ValidatedDeregReq>)
@@ -1649,37 +1672,16 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
     try
     {
 
-        if (msg_type == "REG_REQ")
-        {
-            nlohmann::json resp = handle_reg_req(payload, identity, socket);
-            const std::string ack = (resp.value("status", "") == "success") ? "REG_ACK" : "ERROR";
-            if (ack == "REG_ACK")
-            {
-                // "REG_ACK sending" marker (rung 2 of Pattern 4 ladder).
-                // Pin: channel + allowlist payload distinguish a registration ACK
-                // from REG_REQ rejections that already log via existing ERROR/WARN.
-                // `heartbeat_interval_ms` extracted from the REG_ACK heartbeat
-                // block (HEP-CORE-0023 §2.5) so Pattern 4 rung 3 can verify
-                // role honored the hub-authoritative cadence.  Defaults to 0
-                // if the broker shipped without a heartbeat block (legacy).
-                int hb_interval_ms = 0;
-                if (resp.contains("heartbeat") && resp["heartbeat"].is_object())
-                    hb_interval_ms = resp["heartbeat"].value("heartbeat_interval_ms", 0);
-                LOGGER_INFO("[broker] event=RegAckSending channel='{}' "
-                            "heartbeat_interval_ms={} initial_allowlist={}",
-                            resp.value("channel_name", "?"), // HEP-0036 §5b.5
-                            hb_interval_ms,
-                            resp.value("initial_allowlist", nlohmann::json::array()).dump());
-            }
-            send_reply(socket, identity, ack, resp);
-        }
+        // REG_REQ retired from process_message — it now dispatches typed from
+        // `dispatch_received` (HEP-CORE-0046 Phase B, B.1h); it always arrives as
+        // `ValidatedRegReq`, so this branch was unreachable.
         // DISC_REQ retired from process_message — it now dispatches typed from
         // `dispatch_received` (HEP-CORE-0046 Phase B, B.1a).  It always arrives
         // as `ValidatedDiscReq`, so this branch was unreachable.
         // DEREG_REQ retired from process_message — it now dispatches typed from
         // `dispatch_received` (HEP-CORE-0046 Phase B, B.1d); it always arrives as
         // `ValidatedDeregReq`, so this branch was unreachable.
-        else if (msg_type == "CONSUMER_REG_REQ")
+        if (msg_type == "CONSUMER_REG_REQ")
         {
             nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
             const std::string ack =
@@ -1981,78 +1983,47 @@ void BrokerServiceImpl::emit_processing_error(const std::string &msg_type,
 // Handlers
 // ============================================================================
 
-nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
+// HEP-CORE-0046 §12 step 5 (B.1h): typed handler on the validated envelope +
+// body.  Gates (grammar / role_tag / identity / known-role / replay) already
+// ran in receive_and_validate; this handler reads via typed accessors and owns
+// the admission logic.  In-handler checks that merely repeat a gate are dropped
+// (§14.7): grammar/tag, the (role_uid, zmq_pubkey) known-role binding, and the
+// zmq_pubkey presence+length (gate_grammar rejects size!=40) all ran upstream.
+nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                                 const ::pylabhub::wire::ProducerRegReqBody &body,
                                                  const zmq::message_t &identity,
                                                  zmq::socket_t &socket)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
-    const std::string role_name = req.value("role_name", "");
-    const std::string role_uid = req.value("role_uid", "");
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel_name = body.channel_name();
+    const std::string role_name = body.role_name();
+    const std::string role_uid = body.role_uid();
 
-    // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
-    // check.  Empty or malformed channel_name / role_uid are rejected
-    // Grammar + tag policy for channel_name, role_uid, role_name already
-    // ran at the wire_dispatch pipeline (gate_grammar + gate_role_tag_policy
-    // per HEP-CORE-0046 §14.5; REG_REQ tag set {prod, proc} per HEP-CORE-0033
-    // §G2.2.0b.8) before this handler was called.  Legacy
-    // validate_identity_fields retired (2026-07-14 task #46).
-
-    // HEP-CORE-0032 §8 — ABI fingerprint verification.  Runs AFTER
-    // wire-shape validation (a malformed identity is a separate
-    // reject class) but BEFORE any state mutation, so strict-mode
-    // reject short-circuits without leaving broker state dirty.
-    // Slice D (2026-07-03): strict mode gated on `cfg.strict_abi_mismatch`
-    // (default false — rolling-upgrade friendly).
-    if (auto abi = log_peer_abi_fingerprint(req, role_uid, "AbiFingerprintReceived",
-                                            "AbiFingerprintDetail", cfg.strict_abi_mismatch);
-        abi.reject)
+    // HEP-CORE-0032 §8 — ABI fingerprint verification.  Runs BEFORE any state
+    // mutation, so a strict-mode reject short-circuits without leaving broker
+    // state dirty.  Strict mode gated on `cfg.strict_abi_mismatch`.  The shared
+    // helper reads a JSON probe; feed it the typed abi_fingerprint + build_id.
     {
-        return make_error(corr_id, "abi_major_mismatch",
-                          "ABI major-axis mismatch on: " + abi.mismatched_axes);
+        nlohmann::json abi_probe;
+        abi_probe["abi_fingerprint"] = body.abi_fingerprint();
+        if (const std::string bid = body.build_id(); !bid.empty())
+            abi_probe["build_id"] = bid;
+        if (auto abi = log_peer_abi_fingerprint(abi_probe, role_uid, "AbiFingerprintReceived",
+                                                "AbiFingerprintDetail", cfg.strict_abi_mismatch);
+            abi.reject)
+        {
+            return make_error(corr_id, "abi_major_mismatch",
+                              "ABI major-axis mismatch on: " + abi.mismatched_axes);
+        }
     }
 
-    const std::string attempted_schema = req.value("schema_hash", "");
-    const uint64_t attempted_pid = req.value("producer_pid", uint64_t{0});
+    const std::string attempted_schema = body.schema_hash();
+    const uint64_t attempted_pid = body.producer_pid();
 
-    // Role identity is enforced by the CTRL ROUTER's ZAP handler at the
-    // CURVE handshake (HEP-CORE-0035 §4.1): a role whose pubkey is not in
-    // the known_roles allowlist never reaches this handler.  The legacy
-    // self-asserted string gate was deleted per §4.5 / §8 Phase 6.
-
-    // HEP-CORE-0036 §4.1 + §5.1 + §6.4 — producer's CURVE identity
-    // pubkey is REQUIRED on REG_REQ.  Broker stores it on
-    // `ChannelEntry::producers[i].zmq_pubkey` and emits it back via
-    // `CONSUMER_REG_ACK.producers[]` so each consumer has the
-    // producer's `curve_serverkey` for its data-plane PULL socket.
-    // HEP-CORE-0035 §2 makes CURVE unconditional — empty or
-    // wrong-length values are programmer errors and rejected at wire
-    // admission, mirroring the consumer-side CONSUMER_REG_REQ check.
-    const std::string producer_pubkey = req.value("zmq_pubkey", "");
-    if (producer_pubkey.empty())
-    {
-        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-                    "missing required `zmq_pubkey` (HEP-CORE-0036 §4.1 broker_proto>=6).",
-                    channel_name, role_uid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "REG_REQ requires non-empty `zmq_pubkey` "
-                          "(broker_proto>=6 / HEP-CORE-0036 §4.1)");
-    }
-    if (producer_pubkey.size() != 40)
-    {
-        // CURVE pubkeys are Z85-encoded 32-byte blobs = exactly 40
-        // ASCII chars.  Any other length cannot match a real CURVE
-        // handshake; reject at the wire to avoid polluting the
-        // producer entry with a value that consumers would then use
-        // as a broken `curve_serverkey`.
-        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-                    "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
-                    channel_name, role_uid, producer_pubkey.size());
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "REG_REQ `zmq_pubkey` length is " +
-                              std::to_string(producer_pubkey.size()) +
-                              ", expected 40 (Z85-encoded CURVE25519 pubkey)");
-    }
+    // Producer's CURVE identity pubkey (HEP-CORE-0036 §4.1) — presence + Z85
+    // length (==40) already enforced by gate_grammar (§14.5); stored on the
+    // producer entry + echoed to consumers via CONSUMER_REG_ACK.producers[].
+    const std::string producer_pubkey = body.zmq_pubkey();
 
     // HEP-CORE-0036 §6.1 Layer-2 identity verification — the wire-
     // claimed (role_uid, zmq_pubkey) pair MUST match a single
@@ -2072,14 +2043,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // §7.5.3 + `REVIEW_WaveM2.5_2026-05-10.md` F6/F7.
     pylabhub::hub::ProducerEntry primary_producer;
     primary_producer.producer_pid = attempted_pid;
-    primary_producer.producer_hostname = req.value("producer_hostname", "");
+    primary_producer.producer_hostname = body.producer_hostname();
     primary_producer.role_name = role_name;
     primary_producer.role_uid = role_uid;
-    primary_producer.inbox_endpoint = req.value("inbox_endpoint", "");
-    primary_producer.inbox_schema_json = req.value("inbox_schema_json", "");
-    primary_producer.inbox_packing = req.value("inbox_packing", "");
-    primary_producer.inbox_checksum = req.value("inbox_checksum", "");
-    primary_producer.zmq_node_endpoint = req.value("zmq_node_endpoint", "");
+    primary_producer.inbox_endpoint = body.inbox_endpoint();
+    primary_producer.inbox_schema_json = body.inbox_schema_json();
+    primary_producer.inbox_packing = body.inbox_packing();
+    primary_producer.inbox_checksum = body.inbox_checksum();
+    primary_producer.zmq_node_endpoint = body.zmq_node_endpoint();
     primary_producer.zmq_pubkey = producer_pubkey;
     // HEP-CORE-0041 §5.1 (substep 1g #254) — SHM channels carry the
     // producer's L2 capability-transport endpoint on REG_REQ; broker
@@ -2093,7 +2064,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // CONSUMER_REG_ACK, and consumers will fail with a confusing
     // "connect to empty path" error after registration.  Symmetric
     // with the `zmq_pubkey` enforcement above for ZMQ channels.
-    primary_producer.shm_capability_endpoint = req.value("shm_capability_endpoint", "");
+    primary_producer.shm_capability_endpoint = body.shm_capability_endpoint();
 
     // HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — `data_transport` is a
     // REQUIRED string field on REG_REQ, one of {"shm", "zmq"}.  No
@@ -2106,18 +2077,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // at the missing endpoint rather than the actually-missing transport
     // declaration.  Surfacing the malformed REG_REQ explicitly here
     // routes wire bugs to the right diagnostic.
-    if (!req.contains("data_transport") || !req["data_transport"].is_string())
-    {
-        LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
-                    "missing required `data_transport` field "
-                    "(HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — must be string "
-                    "'shm' or 'zmq').",
-                    channel_name, role_uid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "REG_REQ requires `data_transport` field "
-                          "(string, 'shm' or 'zmq')");
-    }
-    const std::string data_transport_req = req["data_transport"].get<std::string>();
+    // `data_transport` is a REQUIRED string on the wire — the ProducerRegReqBody
+    // ctor enforces presence + type (→ BODY_SCHEMA_VIOLATION at parse), so the
+    // handler validates only the VALUE is one of {"shm","zmq"}.
+    const std::string data_transport_req = body.data_transport();
     if (data_transport_req != "shm" && data_transport_req != "zmq")
     {
         LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
@@ -2148,9 +2111,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
                           "REG_REQ data_transport='shm' requires non-empty "
                           "`shm_capability_endpoint` (HEP-CORE-0041 §5.1)");
     }
-    if (req.contains("metadata") && req["metadata"].is_object())
+    if (body.has_metadata())
     {
-        primary_producer.metadata = req["metadata"];
+        primary_producer.metadata = body.metadata();
     }
     // Producer ZMQ identity: captured here for future unsolicited pushes
     // (CHANNEL_CLOSING_NOTIFY / CHANNEL_ERROR_NOTIFY etc.).
@@ -2178,7 +2141,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // prior vs new BLDS for re-registration.  Schema record creation
     // (path B) and adoption (path C) happen in the dedicated
     // HEP-CORE-0034 block further below.
-    const std::string schema_blds_in = req.value("schema_blds", "");
+    const std::string schema_blds_in = body.schema_blds();
 
     // ── Channel-mismatch early gate (audit fix — must precede
     //    schema-record creation so a failed REG_REQ leaves no orphan
@@ -2215,9 +2178,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
         sin.channel_producer_uids.reserve(existing_opt->producers.size());
         for (const auto &p : existing_opt->producers)
             sin.channel_producer_uids.push_back(p.role_uid);
-        sin.cited_id = req.value("schema_id", "");
+        sin.cited_id = body.schema_id();
         // Effective owner: an empty schema_owner means self-registration.
-        const std::string claimed_owner = req.value("schema_owner", "");
+        const std::string claimed_owner = body.schema_owner();
         sin.cited_owner = claimed_owner.empty() ? role_uid : claimed_owner;
         sin.expected_hash = hex_to_fingerprint_array(attempted_schema);
 
@@ -2285,9 +2248,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // annotation above may have populated `entry.schema_id`; that
     // annotation is informational and does not by itself trigger
     // record creation.
-    const std::string req_schema_packing = req.value("schema_packing", "");
-    const std::string req_schema_id_raw = req.value("schema_id", "");
-    const std::string req_schema_owner = req.value("schema_owner", "");
+    const std::string req_schema_packing = body.schema_packing();
+    const std::string req_schema_id_raw = body.schema_id();
+    const std::string req_schema_owner = body.schema_owner();
 
     // Resolved schema_id / schema_owner for the channel invariants; set
     // by the path B/C blocks below, or left empty for anonymous channels.
@@ -2316,8 +2279,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
         // Stage-2 fingerprint check (slot + flexzone) — common to both
         // path B and path C.  HEP-CORE-0034 §6.3 / §10.1 — the canonical
         // form covers BOTH the slot and the flexzone when present.
-        const std::string req_flexzone_blds = req.value("flexzone_blds", "");
-        const std::string req_flexzone_packing = req.value("flexzone_packing", "");
+        const std::string req_flexzone_blds = body.flexzone_blds();
+        const std::string req_flexzone_packing = body.flexzone_packing();
         // Job A — self-consistency: the producer's structure must hash to its
         // claimed schema_hash.  The shared pre-check is the ONE place a handler
         // recomputes the wire fingerprint (HEP-CORE-0034 §2.4 I4); its computed
@@ -2510,7 +2473,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // HEP-CORE-0034 §6.3 two-zone — carry the flexzone content so the channel
     // can return it (SCHEMA_ACK / DISC_ACK).  The flexzone half is already
     // folded into `attempted_schema` (the 128-hex fingerprint).
-    schema_inv.flexzone_blds = req.value("flexzone_blds", "");
+    schema_inv.flexzone_blds = body.flexzone_blds();
 
     pylabhub::hub::ChannelTransportInvariants transport_inv;
     // HEP-CORE-0036 §5b.4: `data_transport` is the only canonical
@@ -2527,7 +2490,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const nlohmann::json &req,
     // non-empty non-parseable value is INVALID_REQUEST — surface here.
     std::optional<pylabhub::hub::ChannelTopology> declared_topology;
     {
-        const std::string wire = req.value("channel_topology", "");
+        const std::string wire = body.channel_topology();
         if (!wire.empty())
         {
             declared_topology = pylabhub::hub::topology::parse(wire);
