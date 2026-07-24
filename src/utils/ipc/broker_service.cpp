@@ -667,10 +667,14 @@ class BrokerServiceImpl
     // the envelope; `channel_name` from the typed `DiscReqBody`.
     nlohmann::json handle_disc_req(const ::pylabhub::wire::WireEnvelope &env,
                                    const ::pylabhub::wire::DiscReqBody &body);
-    nlohmann::json handle_dereg_req(const nlohmann::json &req, zmq::socket_t &socket);
+    nlohmann::json handle_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                    const ::pylabhub::wire::DeregReqBody &body,
+                                    zmq::socket_t &socket);
     nlohmann::json handle_consumer_reg_req(const nlohmann::json &req,
                                            const zmq::message_t &identity, zmq::socket_t &socket);
-    nlohmann::json handle_consumer_dereg_req(zmq::socket_t &socket, const nlohmann::json &req);
+    nlohmann::json handle_consumer_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                             const ::pylabhub::wire::DeregReqBody &body,
+                                             zmq::socket_t &socket);
     void handle_heartbeat_req(const ::pylabhub::wire::WireEnvelope &env,
                               const ::pylabhub::wire::HeartbeatNotifyBody &body,
                               zmq::socket_t &socket);
@@ -1513,9 +1517,28 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             else if constexpr (std::is_same_v<T, wd::ValidatedConsumerRegReq>)
                 dispatch_legacy(to_legacy(std::move(v), "CONSUMER_REG_REQ"));
             else if constexpr (std::is_same_v<T, wd::ValidatedDeregReq>)
-                dispatch_legacy(to_legacy(std::move(v), "DEREG_REQ"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1d): typed handler on the validated
+                // envelope + body — the grammar / tag / identity gates already ran
+                // in receive_and_validate, so there is no to_legacy round-trip.
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_dereg_req(v.env, v.body, socket);
+                const std::string ack =
+                    (resp.value("status", "") == "success") ? "DEREG_ACK" : "ERROR";
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedConsumerDeregReq>)
-                dispatch_legacy(to_legacy(std::move(v), "CONSUMER_DEREG_REQ"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1e): typed handler on the validated
+                // envelope + body (ValidatedConsumerDeregReq carries a DeregReqBody).
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_consumer_dereg_req(v.env, v.body, socket);
+                const std::string ack =
+                    (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedEndpointUpdateReq>)
                 dispatch_legacy(to_legacy(std::move(v), "ENDPOINT_UPDATE_REQ"));
             else if constexpr (std::is_same_v<T, wd::ValidatedChannelAuthAppliedReq>)
@@ -1632,12 +1655,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
         // DISC_REQ retired from process_message — it now dispatches typed from
         // `dispatch_received` (HEP-CORE-0046 Phase B, B.1a).  It always arrives
         // as `ValidatedDiscReq`, so this branch was unreachable.
-        else if (msg_type == "DEREG_REQ")
-        {
-            nlohmann::json resp = handle_dereg_req(payload, socket);
-            const std::string ack = (resp.value("status", "") == "success") ? "DEREG_ACK" : "ERROR";
-            send_reply(socket, identity, ack, resp);
-        }
+        // DEREG_REQ retired from process_message — it now dispatches typed from
+        // `dispatch_received` (HEP-CORE-0046 Phase B, B.1d); it always arrives as
+        // `ValidatedDeregReq`, so this branch was unreachable.
         else if (msg_type == "CONSUMER_REG_REQ")
         {
             nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
@@ -1744,13 +1764,9 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
                 (status == "ready" || status == "not_ready") ? "CHECK_PEER_READY_ACK" : "ERROR";
             send_reply(socket, identity, ack, resp);
         }
-        else if (msg_type == "CONSUMER_DEREG_REQ")
-        {
-            nlohmann::json resp = handle_consumer_dereg_req(socket, payload);
-            const std::string ack =
-                (resp.value("status", "") == "success") ? "CONSUMER_DEREG_ACK" : "ERROR";
-            send_reply(socket, identity, ack, resp);
-        }
+        // CONSUMER_DEREG_REQ retired from process_message — it now dispatches typed
+        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1e); it always arrives
+        // as `ValidatedConsumerDeregReq`, so this branch was unreachable.
         // HEARTBEAT_NOTIFY retired from process_message — it now dispatches typed
         // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1c); it always arrives
         // as `ValidatedHeartbeatNotify`, so this branch was unreachable.
@@ -2933,28 +2949,28 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::WireEn
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json &req, zmq::socket_t &socket)
+// HEP-CORE-0046 §12 step 5 (B.1d): typed handler on the validated envelope +
+// body.  Gates (grammar / tag / identity) already ran in receive_and_validate.
+nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                                   const ::pylabhub::wire::DeregReqBody &body,
+                                                   zmq::socket_t &socket)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel_name = body.channel_name();
     if (channel_name.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const uint64_t producer_pid = req.value("producer_pid", uint64_t{0});
-    const std::string wire_role_uid = req.value("role_uid", "");
+    const std::string wire_role_uid = body.role_uid();
 
     // Target resolution is by `role_uid` ALONE — the authoritative unique
     // producer key (HEP-CORE-0023 §2.1.1 + same-uid-restart-replace: a channel
-    // never holds two producer-presences under one role_uid).  `producer_pid`
-    // is carried + logged for debug/record only and is NEVER validated: a PID
-    // is machine-local and meaningless to a hub on another host, and role_uid
-    // already disambiguates fully — a (pid, role_uid) match would only add a
-    // spurious rejection when a role restarts with a fresh PID.  Grammar + tag
-    // policy (DEREG_REQ tag set {prod, proc} per HEP-CORE-0033 §G2.2.0b.8) and
-    // the identity gate (env.identity() == role_uid) already ran at the
-    // wire_dispatch pipeline, so a role can only present its OWN role_uid.
+    // never holds two producer-presences under one role_uid).  A PID is NOT read
+    // here — it is debug/record only, machine-local, and never a validation
+    // input (HEP-CORE-0023 "A PID is debug/record only").  Grammar + tag policy
+    // and the identity gate (env.identity() == role_uid) already ran in
+    // receive_and_validate, so a role can only present its OWN role_uid.
 
     // HEP-CORE-0023 §2.1.1 atomic-teardown contract: removing one producer
     // leaves the channel alive iff other producers remain; channel teardown
@@ -2975,13 +2991,11 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const nlohmann::json &req, zm
     }
     if (!entry.has_value() || target_role_uid.empty())
     {
-        LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' "
-                    "(pid={} role_uid='{}')",
-                    channel_name, producer_pid, wire_role_uid);
+        LOGGER_WARN("Broker: DEREG_REQ failed for channel '{}' (role_uid='{}')", channel_name,
+                    wire_role_uid);
         return make_error(corr_id, "NOT_REGISTERED",
                           "Channel '" + channel_name +
-                              "' not registered or no producer matches "
-                              "(pid, role_uid)");
+                              "' not registered or no producer matches role_uid");
     }
 
     // Capture the channel state (with the to-be-dropped producer
@@ -3683,26 +3697,27 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socket,
-                                                            const nlohmann::json &req)
+// HEP-CORE-0046 §12 step 5 (B.1e): typed handler on the validated envelope +
+// body (ValidatedConsumerDeregReq carries a DeregReqBody).  Gates already ran.
+nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
+    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::DeregReqBody &body,
+    zmq::socket_t &socket)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel_name = body.channel_name();
     if (channel_name.empty())
     {
         return make_error(corr_id, "INVALID_REQUEST", "Missing or empty 'channel_name'");
     }
 
-    const uint64_t consumer_pid = req.value("consumer_pid", uint64_t{0});
-    const std::string wire_role_uid = req.value("role_uid", "");
+    const std::string wire_role_uid = body.role_uid();
 
     // Target resolution is by `role_uid` ALONE — the authoritative unique
-    // consumer key (HEP-CORE-0023 §2.1.1).  `consumer_pid` is carried + logged
-    // for debug/record only and is NEVER validated (a PID is machine-local and
-    // meaningless to a remote hub; role_uid disambiguates fully).  Grammar + tag
-    // policy (CONSUMER_DEREG_REQ tag set {cons, proc} per HEP-CORE-0033
-    // §G2.2.0b.8) and the identity gate (env.identity() == role_uid) already ran
-    // at the wire_dispatch pipeline, so a role can only present its OWN role_uid.
+    // consumer key (HEP-CORE-0023 §2.1.1).  A PID is NOT read here — it is
+    // debug/record only, machine-local, and never a validation input
+    // (HEP-CORE-0023 "A PID is debug/record only").  Grammar + tag policy and
+    // the identity gate (env.identity() == role_uid) already ran in
+    // receive_and_validate, so a role can only present its OWN role_uid.
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
     pylabhub::hub::ConsumerEntry closing_entry{};
@@ -3725,13 +3740,11 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(zmq::socket_t &socke
 
     if (!have_entry)
     {
-        LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' "
-                    "(pid={} role_uid='{}')",
-                    channel_name, consumer_pid, wire_role_uid);
+        LOGGER_WARN("Broker: CONSUMER_DEREG_REQ failed for channel '{}' (role_uid='{}')",
+                    channel_name, wire_role_uid);
         return make_error(corr_id, "NOT_REGISTERED",
-                          "Consumer (pid=" + std::to_string(consumer_pid) + ", role_uid='" +
-                              wire_role_uid + "') not registered for channel '" + channel_name +
-                              "'");
+                          "Consumer (role_uid='" + wire_role_uid +
+                              "') not registered for channel '" + channel_name + "'");
     }
 
     // Consumer voluntarily left.  `role_uid` was validated non-empty

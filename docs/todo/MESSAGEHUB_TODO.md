@@ -136,8 +136,11 @@ Phase B**.
       authoritative sink).  Design lesson written up in HEP-0046 §14.7.1 (two
       authoritative guards → zero handler validation); pinned by L2
       `HubStateHeartbeat.BlankOrInvalidFieldsAreNoop`.
-    - ⏳ Remaining: `handle_dereg_req`, `handle_consumer_dereg_req`,
-      `handle_endpoint_update_req`, `handle_channel_auth_applied_req`.
+    - ✅ **B.1d `handle_dereg_req`** (2026-07-24) — typed `(env, DeregReqBody, socket)`;
+      resolves by `role_uid` alone (no pid accessor — see the PID entry above).
+    - ✅ **B.1e `handle_consumer_dereg_req`** (2026-07-24) — typed; shares `DeregReqBody`
+      with B.1d; `role_uid`-only resolution.
+    - ⏳ Remaining: `handle_endpoint_update_req`, `handle_channel_auth_applied_req`.
   - **REG/CONSUMER relocation — do LAST.**  `BrokerRegHandler` /
     `reg_admission_pipeline` is a **~15% producer / 0% consumer SKELETON today**
     (invoked only from tests; see `broker_reg_handler.hpp:7-24`).  This slice
