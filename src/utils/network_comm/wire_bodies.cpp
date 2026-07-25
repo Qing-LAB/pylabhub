@@ -1,5 +1,7 @@
 #include "utils/wire_bodies.hpp"
 
+#include "utils/schema_utils.hpp" // hub::parse_schema_json — the ONE inbox-schema parser (HEP-0046 B.2)
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -226,8 +228,26 @@ ProducerRegReqBody::ProducerRegReqBody(nlohmann::json body)
     d::validate_if_present(body_, "build_id", d::JsonKind::String);
     d::validate_if_present(body_, "inbox_endpoint", d::JsonKind::String);
     d::validate_if_present(body_, "inbox_schema_json", d::JsonKind::String);
-    d::validate_if_present(body_, "inbox_packing", d::JsonKind::String);
     d::validate_if_present(body_, "inbox_checksum", d::JsonKind::String);
+    // HEP-0046 B.2 — the doubly-encoded inbox schema is parsed ONCE here
+    // at the envelope boundary via the canonical hub::parse_schema_json
+    // (HEP-0034 §6.2: canonical OBJECT form, in-object `packing`
+    // REQUIRED).  Malformed content — non-JSON, bare array, missing /
+    // invalid packing, bad field defs — is a BODY_SCHEMA_VIOLATION at
+    // parse; no handler or discovery reader ever re-parses the string.
+    if (const std::string inbox_s = d::read_string_or_empty(body_, "inbox_schema_json");
+        !inbox_s.empty())
+    {
+        try
+        {
+            inbox_schema_ = ::pylabhub::hub::parse_schema_json(nlohmann::json::parse(inbox_s));
+        }
+        catch (const std::exception &e)
+        {
+            throw WireBodyError(std::string{"wire body: field 'inbox_schema_json' invalid: "} +
+                                e.what());
+        }
+    }
     d::require_security_triple(body_);
 }
 
@@ -267,8 +287,26 @@ ConsumerRegReqBody::ConsumerRegReqBody(nlohmann::json body)
     d::validate_if_present(body_, "build_id", d::JsonKind::String);
     d::validate_if_present(body_, "inbox_endpoint", d::JsonKind::String);
     d::validate_if_present(body_, "inbox_schema_json", d::JsonKind::String);
-    d::validate_if_present(body_, "inbox_packing", d::JsonKind::String);
     d::validate_if_present(body_, "inbox_checksum", d::JsonKind::String);
+    // HEP-0046 B.2 — the doubly-encoded inbox schema is parsed ONCE here
+    // at the envelope boundary via the canonical hub::parse_schema_json
+    // (HEP-0034 §6.2: canonical OBJECT form, in-object `packing`
+    // REQUIRED).  Malformed content — non-JSON, bare array, missing /
+    // invalid packing, bad field defs — is a BODY_SCHEMA_VIOLATION at
+    // parse; no handler or discovery reader ever re-parses the string.
+    if (const std::string inbox_s = d::read_string_or_empty(body_, "inbox_schema_json");
+        !inbox_s.empty())
+    {
+        try
+        {
+            inbox_schema_ = ::pylabhub::hub::parse_schema_json(nlohmann::json::parse(inbox_s));
+        }
+        catch (const std::exception &e)
+        {
+            throw WireBodyError(std::string{"wire body: field 'inbox_schema_json' invalid: "} +
+                                e.what());
+        }
+    }
     d::require_security_triple(body_);
 }
 

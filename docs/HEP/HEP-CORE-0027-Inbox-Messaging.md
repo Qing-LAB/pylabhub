@@ -262,11 +262,17 @@ channel datablock/flexzone schema (HEP-CORE-0034 §11.4). End-to-end:
    checksum policy) in config, builds a typed `InboxQueue` (ROUTER) bound to its
    inbox endpoint — which validates the schema locally
    (`hub_inbox_queue.cpp::validate_inbox_schema`) — and advertises
-   `inbox_endpoint` / `inbox_schema_json` / `inbox_packing` / `inbox_checksum`
-   on REG_REQ (producer) or CONSUMER_REG_REQ (consumer). The broker stores these
-   on the sender-visible `ProducerEntry` / `ConsumerEntry` and fail-fast
-   validates the advertised JSON (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`).
-   It does **not** create a schema-registry record.
+   `inbox_endpoint` / `inbox_schema_json` / `inbox_checksum` on REG_REQ
+   (producer) or CONSUMER_REG_REQ (consumer).  Packing travels ONCE, inside
+   the §6 canonical schema object (`"packing"` is REQUIRED in-object per
+   HEP-CORE-0034 §6.2); the historical separate `inbox_packing` REG wire
+   field is retired (2026-07-24, HEP-0046 B.2).  The advertised
+   `inbox_schema_json` is parsed + validated ONCE at the typed-body
+   boundary (`hub::parse_schema_json` in the wire body constructor —
+   malformed → `BODY_SCHEMA_VIOLATION`); the broker stores the string
+   verbatim on the sender-visible `ProducerEntry` / `ConsumerEntry` with
+   `inbox_packing` derived from the parsed spec.  It does **not** create a
+   schema-registry record.
 2. **Sender initiation** (§4.2). A role calls `open_inbox(target_uid)`, which
    sends **`ROLE_INFO_REQ`** for the target and reads back **`ROLE_INFO_ACK`**:
    `inbox_endpoint`, `inbox_schema` (JSON object), `inbox_packing`,
@@ -313,8 +319,9 @@ S2 (registration) — FATAL on failure:
      payload:
        - producer presence  → REG_REQ          (ProducerRegInputs)
        - consumer presence  → CONSUMER_REG_REQ (ConsumerRegInputs)
-     Fields per presence: inbox_endpoint, inbox_schema_json,
-     inbox_packing, inbox_checksum.  Same `inbox_endpoint` string is
+     Fields per presence: inbox_endpoint, inbox_schema_json (packing
+     rides in-object — the separate inbox_packing REG field is retired,
+     HEP-0046 B.2), inbox_checksum.  Same `inbox_endpoint` string is
      sent in every presence's payload — there is one InboxQueue per
      role, regardless of how many hubs the role registers with.
   4. Broker stores the metadata once **per producer-presence / per
@@ -710,10 +717,13 @@ elif ack == 255:
 - **HEP-CORE-0034 §11.4**: Inbox message layouts are **NOT** schema-registry
   records. The registry (`HubState.schemas`) holds channel datablock/flexzone
   schemas only. The inbox schema is stored on the sender-visible
-  `ProducerEntry` / `ConsumerEntry` (from `inbox_schema_json` / `inbox_packing`
-  / `inbox_endpoint` / `inbox_checksum` on REG_REQ) and discovered by senders as
-  **JSON via `ROLE_INFO_REQ`** (§4.0, §4.2) — never via `SCHEMA_REQ`. On REG_REQ
-  the broker only fail-fast validates the advertised inbox JSON
-  (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`); it files no record. The
-  per-message drift `schema_tag` (`compute_inbox_schema_tag`) is a data-plane
-  concern of this HEP, not a HEP-0034 registry fingerprint.
+  `ProducerEntry` / `ConsumerEntry` (from `inbox_schema_json` /
+  `inbox_endpoint` / `inbox_checksum` on REG_REQ; the stored `inbox_packing`
+  is derived from the schema object's in-object `packing`) and discovered by
+  senders as **JSON via `ROLE_INFO_REQ`** (§4.0, §4.2) — never via
+  `SCHEMA_REQ`. Validation happens ONCE at the typed-body boundary
+  (HEP-0046 B.2: `hub::parse_schema_json` in the wire body constructor,
+  malformed → `BODY_SCHEMA_VIOLATION`); the broker handler files no record
+  and never re-parses the string. The per-message drift `schema_tag`
+  (`compute_inbox_schema_tag`) is a data-plane concern of this HEP, not a
+  HEP-0034 registry fingerprint.

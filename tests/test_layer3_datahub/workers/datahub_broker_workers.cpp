@@ -1633,16 +1633,17 @@ int broker_sch_inbox_invalid_json()
             const std::string channel = "broker.sch.inbox_bad_json";
             const std::string uid = "prod.broker.ibj.uid00000001";
 
-            // Parse error.
+            // Parse error — rejected at the typed-body boundary (HEP-0046
+            // B.2: hub::parse_schema_json runs in the ctor), so the wire
+            // code is BODY_SCHEMA_VIOLATION, not a handler-level reject.
             auto reg = baseline_reg_req(channel, uid);
             reg["inbox_endpoint"] = "tcp://127.0.0.1:9993";
             reg["inbox_schema_json"] = "not-json";
-            reg["inbox_packing"] = "aligned";
             auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
                              "prod.broker.ibj.uid00000001");
             ASSERT_FALSE(r.is_null());
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
-            EXPECT_EQ(r.value("error_code", std::string{}), "INBOX_SCHEMA_INVALID");
+            EXPECT_EQ(r.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
 
             // Wrong shape (object, not array).  Uses a separate uid +
             // matching wire identity so this REG isn't a UID_CONFLICT
@@ -1653,12 +1654,13 @@ int broker_sch_inbox_invalid_json()
             const std::string uid2 = uid + "1"; // "prod.broker.ibj.uid000000011"
             auto reg2 = baseline_reg_req(channel + ".obj", uid2);
             reg2["inbox_endpoint"] = "tcp://127.0.0.1:9994";
-            reg2["inbox_schema_json"] = R"({"type":"float64"})"; // object, not array
-            reg2["inbox_packing"] = "aligned";
+            // Non-canonical shape (no "fields" array / no in-object
+            // packing) — parse_schema_json rejects at the boundary.
+            reg2["inbox_schema_json"] = R"({"type":"float64"})";
             auto r2 = raw_req(broker.endpoint, "REG_REQ", reg2, 2000, broker.pubkey, uid2);
             ASSERT_FALSE(r2.is_null()) << "REG_REQ (reg2) timed out";
             EXPECT_EQ(r2.value("status", std::string{}), "error") << r2.dump();
-            EXPECT_EQ(r2.value("error_code", std::string{}), "INBOX_SCHEMA_INVALID");
+            EXPECT_EQ(r2.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
 
             broker.stop_and_join();
         },
@@ -1720,14 +1722,18 @@ int broker_sch_inbox_invalid_packing()
 
             auto reg = baseline_reg_req(channel, uid);
             reg["inbox_endpoint"] = "tcp://127.0.0.1:9997";
-            reg["inbox_schema_json"] = R"([{"type":"float64","count":1,"length":0}])";
-            reg["inbox_packing"] = "natural"; // invalid
+            // Packing lives IN-OBJECT (HEP-0046 B.2 / HEP-0034 §6.2 — the
+            // separate `inbox_packing` wire field is retired).  An invalid
+            // packing value is rejected by the canonical parse at the
+            // typed-body boundary.
+            reg["inbox_schema_json"] =
+                R"({"packing":"natural","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
 
             auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
                              "prod.broker.ibp.uid00000001");
             ASSERT_FALSE(r.is_null());
             EXPECT_EQ(r.value("status", std::string{}), "error") << r.dump();
-            EXPECT_EQ(r.value("error_code", std::string{}), "INVALID_INBOX_PACKING");
+            EXPECT_EQ(r.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION");
 
             broker.stop_and_join();
         },
@@ -1809,8 +1815,10 @@ int broker_sch_inbox_discovery_roundtrip()
             // 1. Receiver registers, advertising its inbox.
             auto reg = baseline_reg_req(channel, recv_uid);
             reg["inbox_endpoint"] = inbox_ep;
+            // Packing rides in-object ("packing":"packed" above); the broker
+            // derives the ROLE_INFO `inbox_packing` echo from the parsed spec
+            // (HEP-0046 B.2) — asserted below.
             reg["inbox_schema_json"] = inbox_schema_json;
-            reg["inbox_packing"] = "packed";
             ASSERT_EQ(
                 raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, recv_uid)
                     .value("status", std::string{}),

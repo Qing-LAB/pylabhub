@@ -346,7 +346,7 @@ TEST(WireBodies, ProducerRegReqBodyOptionalFieldsAbsentDefaults)
     EXPECT_EQ(body.build_id(), "");
     EXPECT_EQ(body.inbox_endpoint(), "");
     EXPECT_EQ(body.inbox_schema_json(), "");
-    EXPECT_EQ(body.inbox_packing(), "");
+    EXPECT_FALSE(body.has_inbox_schema());
     EXPECT_EQ(body.inbox_checksum(), "");
 }
 
@@ -367,6 +367,60 @@ TEST(WireBodies, ProducerRegReqBodyRejectsWrongTypedOptional)
     b3["producer_pid"] = "12345"; // string, not unsigned
     EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b3)}, WireBodyError);
 }
+
+// ── inbox_schema_json: parsed ONCE at the boundary (HEP-0046 B.2) ─────
+//
+// The doubly-encoded field (a string whose content is JSON) is parsed
+// at construction via the canonical hub::parse_schema_json; handlers
+// and discovery consume the typed SchemaSpec, never the string.
+
+TEST(WireBodies, ProducerRegReqBodyParsesInboxSchemaOnce)
+{
+    auto b = make_required_only_reg_req_body();
+    b["inbox_schema_json"] =
+        R"({"packing":"packed","fields":[)"
+        R"({"name":"seq","type":"uint64","count":1,"length":0},)"
+        R"({"name":"tag","type":"string","count":1,"length":16}]})";
+    pylabhub::wire::ProducerRegReqBody body(std::move(b));
+    ASSERT_TRUE(body.has_inbox_schema());
+    EXPECT_EQ(body.inbox_schema().packing, "packed");
+    ASSERT_EQ(body.inbox_schema().fields.size(), 2U);
+    EXPECT_EQ(body.inbox_schema().fields[0].name, "seq");
+    EXPECT_EQ(body.inbox_schema().fields[1].type_str, "string");
+    EXPECT_EQ(body.inbox_schema().fields[1].length, 16U);
+    // The raw string stays available verbatim for *Entry storage /
+    // ROLE_INFO re-emit.
+    EXPECT_FALSE(body.inbox_schema_json().empty());
+}
+
+TEST(WireBodies, ProducerRegReqBodyRejectsMalformedInboxSchema)
+{
+    // Non-JSON content.
+    auto b1 = make_required_only_reg_req_body();
+    b1["inbox_schema_json"] = "not-json";
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b1)}, WireBodyError);
+
+    // Bare fields ARRAY — the shape from the 2026-07-17 incident (the
+    // broker's hand-parse and the canonical parser disagreed on it).
+    // Under the single canonical parse it is uniformly rejected:
+    // HEP-0027 §6 canonical form is the OBJECT {packing, fields[]}.
+    auto b2 = make_required_only_reg_req_body();
+    b2["inbox_schema_json"] = R"([{"name":"v","type":"float64","count":1,"length":0}])";
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b2)}, WireBodyError);
+
+    // Object missing in-object packing (HEP-0034 §6.2 — REQUIRED; the
+    // retired separate `inbox_packing` wire field cannot supply it).
+    auto b3 = make_required_only_reg_req_body();
+    b3["inbox_schema_json"] = R"({"fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b3)}, WireBodyError);
+
+    // Invalid packing value.
+    auto b4 = make_required_only_reg_req_body();
+    b4["inbox_schema_json"] =
+        R"({"packing":"natural","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b4)}, WireBodyError);
+}
+
 
 namespace
 {
@@ -434,8 +488,20 @@ TEST(WireBodies, ConsumerRegReqBodyOptionalFieldsAbsentDefaults)
     EXPECT_EQ(body.build_id(), "");
     EXPECT_EQ(body.inbox_endpoint(), "");
     EXPECT_EQ(body.inbox_schema_json(), "");
-    EXPECT_EQ(body.inbox_packing(), "");
+    EXPECT_FALSE(body.has_inbox_schema());
     EXPECT_EQ(body.inbox_checksum(), "");
+}
+
+TEST(WireBodies, ConsumerRegReqBodyParsesInboxSchemaOnce)
+{
+    auto b = make_required_only_consumer_reg_req_body();
+    b["inbox_schema_json"] =
+        R"({"packing":"aligned","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
+    pylabhub::wire::ConsumerRegReqBody body(std::move(b));
+    ASSERT_TRUE(body.has_inbox_schema());
+    EXPECT_EQ(body.inbox_schema().packing, "aligned");
+    ASSERT_EQ(body.inbox_schema().fields.size(), 1U);
+    EXPECT_EQ(body.inbox_schema().fields[0].name, "v");
 }
 
 TEST(WireBodies, HeartbeatNotifyBodyOptionalFieldsAbsentDefaults)

@@ -180,8 +180,8 @@ TEST_F(DatahubBrokerTest, Sch_SchemaReq_OwnerIdRoundTrip)
 
 TEST_F(DatahubBrokerTest, Sch_InboxInvalidJson)
 {
-    // Malformed inbox_schema_json → INBOX_SCHEMA_INVALID before any
-    // state is persisted.
+    // Malformed inbox_schema_json → BODY_SCHEMA_VIOLATION at the typed
+    // body boundary (HEP-0046 B.2) before any state is persisted.
     auto proc = SpawnWorker("broker.broker_sch_inbox_invalid_json", {});
     ExpectWorkerOk(proc);
 }
@@ -195,8 +195,9 @@ TEST_F(DatahubBrokerTest, Sch_SchemaReq_Invalid)
 
 TEST_F(DatahubBrokerTest, Sch_InboxInvalidPacking)
 {
-    // inbox_packing must be "aligned" or "packed" — robustness gap caught
-    // during Phase 3b self-review.
+    // In-object schema packing must be "aligned" or "packed" — rejected
+    // by the canonical parse at the typed-body boundary (HEP-0046 B.2;
+    // the separate `inbox_packing` wire field is retired).
     auto proc = SpawnWorker("broker.broker_sch_inbox_invalid_packing", {});
     ExpectWorkerOk(proc);
 }

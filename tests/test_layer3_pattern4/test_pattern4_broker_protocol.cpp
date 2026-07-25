@@ -589,7 +589,11 @@ TEST_F(Pattern4BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
     const std::string uid = "prod." + channel;
     const std::string querier = "QUERIER-roleinfo" + suffix;
     const std::string inbox_ep = "tcp://127.0.0.1:9987";
-    const std::string schema_json = R"([{"type":"float64","count":1,"length":0}])";
+    // HEP-0027 §6 canonical object form — packing rides IN-OBJECT
+    // (HEP-0046 B.2; the separate `inbox_packing` REG field is retired,
+    // and the typed-body boundary rejects non-canonical shapes).
+    const std::string schema_json =
+        R"({"packing":"aligned","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
     const std::string packing = "aligned";
 
     const fs::path temp_dir = make_test_temp_dir("broker_protocol_info_inbox");
@@ -619,7 +623,6 @@ TEST_F(Pattern4BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
     auto payload = pylabhub::hub::build_producer_reg_payload(in);
     payload["inbox_endpoint"] = inbox_ep;
     payload["inbox_schema_json"] = schema_json;
-    payload["inbox_packing"] = packing;
     auto reg = prod.request("REG_REQ", payload, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(reg.has_value()) << "REG_REQ (with inbox) timed out";
     ASSERT_EQ(reg->value("status", std::string{}), "success")

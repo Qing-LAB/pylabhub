@@ -23,6 +23,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
+#include "utils/schema_types.hpp" // SchemaSpec — typed inbox_schema sub-structure (HEP-0046 B.2)
 
 #include <cstdint>
 #include <memory>
@@ -249,23 +250,44 @@ public:
 {
     return detail::read_string_or_empty(body_, "build_id");
 }
-// Optional inbox companion fields per HEP-CORE-0027 §4.1.
+// Optional inbox companion fields per HEP-CORE-0027 §4.1.  The
+// doubly-encoded `inbox_schema_json` (a string whose content is the
+// HEP-0027 §6 canonical schema object) is parsed ONCE at construction
+// via the canonical `hub::parse_schema_json`; `inbox_schema()` exposes
+// the typed result and malformed content rejects as
+// BODY_SCHEMA_VIOLATION at the wire boundary — no downstream reader
+// ever re-parses the string.  Packing is carried once, INSIDE the
+// schema object (HEP-CORE-0034 §6.2 requires it there); the separate
+// `inbox_packing` wire field is retired.
 [[nodiscard]] std::string inbox_endpoint() const
 {
     return detail::read_string_or_empty(body_, "inbox_endpoint");
 }
+/// Raw advertisement string, stored verbatim on the ProducerEntry /
+/// ConsumerEntry for ROLE_INFO re-emit.  Consumers of the CONTENT use
+/// `inbox_schema()` — never re-parse this string.
 [[nodiscard]] std::string inbox_schema_json() const
 {
     return detail::read_string_or_empty(body_, "inbox_schema_json");
 }
-[[nodiscard]] std::string inbox_packing() const
+[[nodiscard]] bool has_inbox_schema() const noexcept
 {
-    return detail::read_string_or_empty(body_, "inbox_packing");
+    return inbox_schema_.has_schema;
+}
+/// The once-parsed inbox schema (valid iff `has_inbox_schema()`).
+[[nodiscard]] const ::pylabhub::hub::SchemaSpec &inbox_schema() const noexcept
+{
+    return inbox_schema_;
 }
 [[nodiscard]] std::string inbox_checksum() const
 {
     return detail::read_string_or_empty(body_, "inbox_checksum");
 }
+
+private:
+::pylabhub::hub::SchemaSpec inbox_schema_{};
+
+public:
 // Security triple per HEP-CORE-0046 §I-REPLAY-BOUND.
 [[nodiscard]] std::string client_nonce() const
 {
@@ -381,23 +403,44 @@ public:
 {
     return detail::read_string_or_empty(body_, "build_id");
 }
-// Optional inbox companion fields per HEP-CORE-0027 §4.1.
+// Optional inbox companion fields per HEP-CORE-0027 §4.1.  The
+// doubly-encoded `inbox_schema_json` (a string whose content is the
+// HEP-0027 §6 canonical schema object) is parsed ONCE at construction
+// via the canonical `hub::parse_schema_json`; `inbox_schema()` exposes
+// the typed result and malformed content rejects as
+// BODY_SCHEMA_VIOLATION at the wire boundary — no downstream reader
+// ever re-parses the string.  Packing is carried once, INSIDE the
+// schema object (HEP-CORE-0034 §6.2 requires it there); the separate
+// `inbox_packing` wire field is retired.
 [[nodiscard]] std::string inbox_endpoint() const
 {
     return detail::read_string_or_empty(body_, "inbox_endpoint");
 }
+/// Raw advertisement string, stored verbatim on the ProducerEntry /
+/// ConsumerEntry for ROLE_INFO re-emit.  Consumers of the CONTENT use
+/// `inbox_schema()` — never re-parse this string.
 [[nodiscard]] std::string inbox_schema_json() const
 {
     return detail::read_string_or_empty(body_, "inbox_schema_json");
 }
-[[nodiscard]] std::string inbox_packing() const
+[[nodiscard]] bool has_inbox_schema() const noexcept
 {
-    return detail::read_string_or_empty(body_, "inbox_packing");
+    return inbox_schema_.has_schema;
+}
+/// The once-parsed inbox schema (valid iff `has_inbox_schema()`).
+[[nodiscard]] const ::pylabhub::hub::SchemaSpec &inbox_schema() const noexcept
+{
+    return inbox_schema_;
 }
 [[nodiscard]] std::string inbox_checksum() const
 {
     return detail::read_string_or_empty(body_, "inbox_checksum");
 }
+
+private:
+::pylabhub::hub::SchemaSpec inbox_schema_{};
+
+public:
 // Security triple per HEP-CORE-0046 §I-REPLAY-BOUND.
 [[nodiscard]] std::string client_nonce() const
 {

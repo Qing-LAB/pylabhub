@@ -2869,8 +2869,11 @@ void RoleAPIBase::append_inbox_to_reg(nlohmann::json &opts,
     // than emitting an empty string if no queue exists.
     if (pImpl->inbox_queue)
         opts["inbox_endpoint"] = pImpl->inbox_queue->actual_endpoint();
+    // Packing travels ONCE, inside the canonical schema object
+    // (`serialize_inbox_spec_json` always emits it — HEP-0034 §6.2 /
+    // HEP-0046 B.2).  The separate `inbox_packing` wire field is retired;
+    // the broker derives stored packing from the once-parsed schema.
     opts["inbox_schema_json"] = inbox_cfg.schema_fields_json;
-    opts["inbox_packing"] = inbox_cfg.packing;
     opts["inbox_checksum"] = inbox_cfg.checksum;
 }
 

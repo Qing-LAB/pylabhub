@@ -80,7 +80,8 @@ int broker_sch_schema_req_owner_id();
 
 
 /** Malformed `inbox_schema_json` (not JSON, or not an array) → broker
- *  returns INBOX_SCHEMA_INVALID before persisting any state. */
+ *  returns BODY_SCHEMA_VIOLATION at the typed-body boundary (HEP-0046
+ *  B.2 — canonical parse in the ctor) before persisting any state. */
 int broker_sch_inbox_invalid_json();
 
 
@@ -88,8 +89,9 @@ int broker_sch_inbox_invalid_json();
  *  INVALID_REQUEST. */
 int broker_sch_schema_req_invalid();
 
-/** REG_REQ with `inbox_packing` that is neither "aligned" nor "packed"
- *  → INVALID_INBOX_PACKING. */
+/** REG_REQ whose in-object schema `packing` is neither "aligned" nor
+ *  "packed" → BODY_SCHEMA_VIOLATION at the typed-body boundary (the
+ *  separate `inbox_packing` wire field is retired — HEP-0046 B.2). */
 int broker_sch_inbox_invalid_packing();
 
 /** End-to-end inbox schema discovery (HEP-0027 §4.0 / HEP-0034 §11.4): a

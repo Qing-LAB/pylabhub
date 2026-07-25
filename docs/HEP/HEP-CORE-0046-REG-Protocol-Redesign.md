@@ -2297,7 +2297,13 @@ brevity the class catalog below notes "+ security triple" or
   >   HEP-CORE-0017 §3.3.0 topology matrix),
   >   `shm_capability_endpoint` (required when
   >   `data_transport == "shm"`), optional inbox companion fields
-  >   per HEP-CORE-0027 §4.1, `abi_fingerprint`, optional `build_id`
+  >   per HEP-CORE-0027 §4.1 (`inbox_endpoint`, `inbox_schema_json`,
+  >   `inbox_checksum` — the doubly-encoded `inbox_schema_json` is
+  >   parsed ONCE at body construction into a typed `SchemaSpec`
+  >   via the canonical `hub::parse_schema_json`, malformed →
+  >   BODY_SCHEMA_VIOLATION; packing rides in-object per HEP-0034
+  >   §6.2, the separate `inbox_packing` wire field is retired —
+  >   B.2, 2026-07-24), `abi_fingerprint`, optional `build_id`
   >   + security triple.  Note: HEP-CORE-0036 §5b.4's single
   >   `data_transport` string is the transport discriminator;
   >   HEP-CORE-0007 §12.3's older `has_shared_memory` +
@@ -2310,8 +2316,9 @@ brevity the class catalog below notes "+ security triple" or
   >   `expected_schema_blds`, `expected_schema_packing`, optional
   >   `expected_flexzone_blds`, `expected_flexzone_packing`), plus
   >   `consumer_pid`, `consumer_hostname`, optional inbox companion
-  >   fields, `abi_fingerprint`, optional `build_id` + security
-  >   triple.
+  >   fields (same typed `SchemaSpec` boundary-parse + retired
+  >   `inbox_packing` as the producer entry above), `abi_fingerprint`,
+  >   optional `build_id` + security triple.
   >
   > **role_name is OPTIONAL** on both ProducerRegReqBody and
   > ConsumerRegReqBody.  It is a redundant human-friendly label —

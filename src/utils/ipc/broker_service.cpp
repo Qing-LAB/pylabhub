@@ -2008,7 +2008,12 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     primary_producer.role_uid = role_uid;
     primary_producer.inbox_endpoint = body.inbox_endpoint();
     primary_producer.inbox_schema_json = body.inbox_schema_json();
-    primary_producer.inbox_packing = body.inbox_packing();
+    // Packing is carried ONCE, inside the schema object (HEP-0046 B.2 /
+    // HEP-0034 §6.2) — the stored `inbox_packing` is derived from the
+    // once-parsed spec so ROLE_INFO re-emit keeps its shape.  The
+    // separate `inbox_packing` wire field is retired.
+    primary_producer.inbox_packing =
+        body.has_inbox_schema() ? body.inbox_schema().packing : std::string{};
     primary_producer.inbox_checksum = body.inbox_checksum();
     primary_producer.zmq_node_endpoint = body.zmq_node_endpoint();
     primary_producer.zmq_pubkey = producer_pubkey;
@@ -2356,53 +2361,18 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         }
     }
 
-    // ── HEP-CORE-0027 — validate the advertised inbox schema (fail-fast) ──
+    // ── HEP-CORE-0027 inbox advertisement ──────────────────────────────
     //
     // The inbox schema is a role's *mailbox message layout*, NOT a channel
     // datablock/flexzone schema.  It is stored on the ProducerEntry
     // (`inbox_schema_json`) and advertised to senders as JSON via
     // ROLE_INFO_ACK (HEP-CORE-0027 §4) — it is NOT filed in
-    // `HubState.schemas` and is NOT reachable via SCHEMA_REQ.  The receiver
-    // already validates its own inbox schema when it builds its InboxQueue
-    // (`hub_inbox_queue.cpp::validate_inbox_schema`); here we only fail-fast
-    // on a malformed advertisement at the wire trust boundary.
-    const auto &p_inbox = primary_producer;
-    if (!p_inbox.inbox_endpoint.empty() && !p_inbox.inbox_schema_json.empty() &&
-        !p_inbox.inbox_packing.empty() && !role_uid.empty())
-    {
-        // Reject invalid packing strings up-front — mirrors the queue-layer
-        // check in `hub_inbox_queue.cpp::validate_inbox_packing`.
-        if (p_inbox.inbox_packing != "aligned" && p_inbox.inbox_packing != "packed")
-        {
-            LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_packing '{}' "
-                        "must be 'aligned' or 'packed'",
-                        channel_name, p_inbox.inbox_packing);
-            return make_error(corr_id, "INVALID_INBOX_PACKING",
-                              "inbox_packing '" + p_inbox.inbox_packing +
-                                  "' must be 'aligned' or 'packed'");
-        }
-
-        // Validate the JSON shape: an object with a "fields" array, or a bare
-        // fields array (HEP-CORE-0027 §6 — the same shape the role's serializer
-        // emits and ROLE_INFO discovery consumes).
-        try
-        {
-            const auto schema_parsed = nlohmann::json::parse(p_inbox.inbox_schema_json);
-            const nlohmann::json &schema_arr =
-                (schema_parsed.is_object() && schema_parsed.contains("fields"))
-                    ? schema_parsed.at("fields")
-                    : schema_parsed;
-            if (!schema_arr.is_array())
-                throw std::runtime_error("inbox_schema_json has no fields array");
-        }
-        catch (const std::exception &ex)
-        {
-            LOGGER_WARN("Broker: REG_REQ inbox_schema_json invalid for '{}': {}", channel_name,
-                        ex.what());
-            return make_error(corr_id, "INBOX_SCHEMA_INVALID",
-                              std::string("inbox_schema_json parse error: ") + ex.what());
-        }
-    }
+    // `HubState.schemas` and is NOT reachable via SCHEMA_REQ.  Shape +
+    // packing validation happens ONCE, in the ProducerRegReqBody ctor
+    // (HEP-0046 B.2: canonical `hub::parse_schema_json`, malformed →
+    // BODY_SCHEMA_VIOLATION at parse) — this handler never re-parses the
+    // string.  The receiver still validates its own config when it builds
+    // its InboxQueue (`hub_inbox_queue.cpp::validate_inbox_schema`).
 
     // ── Wave M2.5 step 3: controlled-access admission ───────────────
     //
@@ -3364,7 +3334,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     entry.role_uid = role_uid;
     entry.inbox_endpoint = body.inbox_endpoint();
     entry.inbox_schema_json = body.inbox_schema_json();
-    entry.inbox_packing = body.inbox_packing();
+    // Derived from the once-parsed spec (HEP-0046 B.2) — the separate
+    // `inbox_packing` wire field is retired; packing lives in-object.
+    entry.inbox_packing = body.has_inbox_schema() ? body.inbox_schema().packing : std::string{};
     entry.inbox_checksum = body.inbox_checksum();
     // HEP-CORE-0036 §6.5: the consumer's CURVE pubkey is REQUIRED on
     // the wire so the broker can populate the channel-scope
