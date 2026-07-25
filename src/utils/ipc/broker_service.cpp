@@ -671,7 +671,8 @@ class BrokerServiceImpl
     nlohmann::json handle_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
                                     const ::pylabhub::wire::DeregReqBody &body,
                                     zmq::socket_t &socket);
-    nlohmann::json handle_consumer_reg_req(const nlohmann::json &req,
+    nlohmann::json handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                           const ::pylabhub::wire::ConsumerRegReqBody &body,
                                            const zmq::message_t &identity, zmq::socket_t &socket);
     nlohmann::json handle_consumer_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
                                              const ::pylabhub::wire::DeregReqBody &body,
@@ -1418,50 +1419,10 @@ void BrokerServiceImpl::run()
 // Message dispatch
 // ============================================================================
 
-namespace
-{
-/// Convert one Validated<Body> variant into the legacy (msg_type, body_json,
-/// identity_frame) triple the existing handlers expect.  Injects
-/// correlation_id + role_uid into the body so handlers that read them
-/// via `body.value("correlation_id","")` / `body.value("role_uid","")`
-/// keep working unchanged.  This is the adapter that lets the
-/// wire::dispatch entry land WITHOUT rewriting every handler signature
-/// in the same commit.  Handler-signature migration to typed bodies is
-/// per-msg_type follow-on work; the dispatch entry (identity + replay
-/// + known_roles + rotation checks) is already enforced.
-struct LegacyDispatchInputs
-{
-    std::string msg_type;
-    nlohmann::json body_json;
-    std::string identity_str;
-};
-
-template <typename ValidatedT> LegacyDispatchInputs to_legacy(ValidatedT &&v, const char *msg_type)
-{
-    LegacyDispatchInputs out;
-    out.msg_type = msg_type;
-    out.body_json = v.body.to_json();
-    out.identity_str = v.identity();
-    const std::string corr = v.correlation_id();
-    if (!corr.empty())
-        out.body_json["correlation_id"] = corr;
-    return out;
-}
-} // anonymous namespace
-
 void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                                           ::pylabhub::wire::dispatch::ReceivedMessage &&received)
 {
     namespace wd = ::pylabhub::wire::dispatch;
-
-    // Helper to invoke `process_message` with a reconstructed identity
-    // frame; the legacy handlers all take `zmq::message_t` for the
-    // identity because they forward it to ROUTER send.
-    auto dispatch_legacy = [&](LegacyDispatchInputs &&li)
-    {
-        zmq::message_t id_frame(li.identity_str.data(), li.identity_str.size());
-        process_message(socket, id_frame, li.msg_type, li.body_json, li.body_json.dump().size());
-    };
 
     std::visit(
         [&](auto &&v)
@@ -1540,7 +1501,27 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                 send_reply(socket, id_frame, ack, resp);
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedConsumerRegReq>)
-                dispatch_legacy(to_legacy(std::move(v), "CONSUMER_REG_REQ"));
+            {
+                // HEP-CORE-0046 §12 step 5 (B.1i): typed handler on the validated
+                // envelope + body — gates already ran; no to_legacy round-trip.
+                const std::string identity = v.identity();
+                zmq::message_t id_frame(identity.data(), identity.size());
+                const nlohmann::json resp = handle_consumer_reg_req(v.env, v.body, id_frame, socket);
+                const std::string ack =
+                    (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
+                if (ack == "CONSUMER_REG_ACK")
+                {
+                    // Pins the HEP-CORE-0036 §6.4 producers[] payload the consumer
+                    // role-host needs for its rx-queue CURVE allowlist (empty `[]`
+                    // is legal; SHM channels omit the key — HEP-0036 §5.6).
+                    const std::string producers_dump =
+                        resp.contains("producers") ? resp["producers"].dump() : "[]";
+                    LOGGER_INFO("[broker] event=ConsumerRegAckSending channel='{}' "
+                                "producers={}",
+                                resp.value("channel_name", "?"), producers_dump);
+                }
+                send_reply(socket, id_frame, ack, resp);
+            }
             else if constexpr (std::is_same_v<T, wd::ValidatedDeregReq>)
             {
                 // HEP-CORE-0046 §12 step 5 (B.1d): typed handler on the validated
@@ -1681,34 +1662,13 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
         // DEREG_REQ retired from process_message — it now dispatches typed from
         // `dispatch_received` (HEP-CORE-0046 Phase B, B.1d); it always arrives as
         // `ValidatedDeregReq`, so this branch was unreachable.
-        if (msg_type == "CONSUMER_REG_REQ")
-        {
-            nlohmann::json resp = handle_consumer_reg_req(payload, identity, socket);
-            const std::string ack =
-                (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
-            if (ack == "CONSUMER_REG_ACK")
-            {
-                // Parallel to "REG_ACK sending" above.  Pins the
-                // HEP-CORE-0036 §6.4 producers[] payload the consumer
-                // role-host needs for its rx-queue CURVE allowlist.
-                // Empty `[]` is a legal value (no producers attached yet);
-                // ZMQ channels emit a populated list, SHM channels omit
-                // the key entirely (HEP-0036 §5.6).  The "[]" literal
-                // avoids constructing a temporary nlohmann::json::array()
-                // on every accepted REG_REQ; the .dump() cost is intrinsic
-                // to the marker shape (operational diagnostic value).
-                const std::string producers_dump =
-                    resp.contains("producers") ? resp["producers"].dump() : "[]";
-                LOGGER_INFO("[broker] event=ConsumerRegAckSending channel='{}' "
-                            "producers={}",
-                            resp.value("channel_name", "?"), producers_dump);
-            }
-            send_reply(socket, identity, ack, resp);
-        }
+        // CONSUMER_REG_REQ retired from process_message — it now dispatches typed
+        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1i); it always arrives
+        // as `ValidatedConsumerRegReq`, so this branch was unreachable.
         // GET_CHANNEL_AUTH_REQ retired from process_message — it now dispatches
         // typed from `dispatch_received` (HEP-CORE-0046 Phase B, B.1b); it always
         // arrives as `ValidatedGetChannelAuthReq`, so this branch was unreachable.
-        else if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
+        if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
         {
             // HEP-CORE-0041 §9 D4 = HEP-CORE-0042 §6.1 Bindings.SHM.  Producer's
             // pre-attach confirmation for SHM transport.  Special-cased dispatch:
@@ -3043,42 +3003,32 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireE
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &req,
-                                                          const zmq::message_t &identity,
-                                                          zmq::socket_t &socket)
+// HEP-CORE-0046 §12 step 5 (B.1i): typed handler on the validated envelope +
+// body.  Gates (grammar / role_tag {cons,proc} / identity / known-role / replay)
+// already ran in receive_and_validate; reads via typed accessors.
+nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
+    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::ConsumerRegReqBody &body,
+    const zmq::message_t &identity, zmq::socket_t &socket)
 {
-    const std::string corr_id = req.value("correlation_id", "");
-    const std::string channel_name = req.value("channel_name", "");
-    // broker_proto 4→5 (audit R3.5b, 2026-05-19): wire fields unified
-    // across all gates onto `role_uid`/`role_name` (HEP-CORE-0033
-    // §G2.2.0b — role tag is embedded in the uid; consumer-specific
-    // names are redundant).  Old `consumer_uid`/`consumer_name` removed.
-    const std::string role_name = req.value("role_name", "");
-    const std::string role_uid = req.value("role_uid", "");
+    const std::string corr_id = std::string(env.correlation_id());
+    const std::string channel_name = body.channel_name();
+    const std::string role_name = body.role_name();
+    const std::string role_uid = body.role_uid();
 
-    // Audit R3.5b (2026-05-19): wire-boundary grammar + side-aware tag
-    // check before any state-machine entry.  Pre-fix, an empty uid sailed
-    // through unchecked, was stored
-    // on ConsumerEntry, then `_on_consumer_joined` silently skipped
-    // `upsert_role_locked` (gated on `!role_uid.empty()`) — no
-    // role-presence row was created, so subsequent heartbeats / inbox
-    // discovery silently no-op'd.  Tag policy {cons, proc} — `proc.*`
-    // registers on the consumer side for its input channel.
-    // Grammar + tag policy (CONSUMER_REG_REQ tag set {cons, proc} per
-    // HEP-CORE-0033 §G2.2.0b.8) already ran at the wire_dispatch
-    // pipeline.  Legacy validate_identity_fields retired
-    // (2026-07-14 task #46).
-
-    // HEP-CORE-0032 §8 — ABI fingerprint verification.  Same shape as
-    // REG_REQ handler above; strict mode gated on same
-    // `cfg.strict_abi_mismatch` knob for symmetric behavior across
-    // producer + consumer REG_REQ paths.
-    if (auto abi = log_peer_abi_fingerprint(req, role_uid, "AbiFingerprintReceived",
-                                            "AbiFingerprintDetail", cfg.strict_abi_mismatch);
-        abi.reject)
+    // HEP-CORE-0032 §8 — ABI fingerprint verification (same shape as REG_REQ);
+    // the shared helper reads a JSON probe built from the typed accessors.
     {
-        return make_error(corr_id, "abi_major_mismatch",
-                          "ABI major-axis mismatch on: " + abi.mismatched_axes);
+        nlohmann::json abi_probe;
+        abi_probe["abi_fingerprint"] = body.abi_fingerprint();
+        if (const std::string bid = body.build_id(); !bid.empty())
+            abi_probe["build_id"] = bid;
+        if (auto abi = log_peer_abi_fingerprint(abi_probe, role_uid, "AbiFingerprintReceived",
+                                                "AbiFingerprintDetail", cfg.strict_abi_mismatch);
+            abi.reject)
+        {
+            return make_error(corr_id, "abi_major_mismatch",
+                              "ABI major-axis mismatch on: " + abi.mismatched_axes);
+        }
     }
 
     // Topology wire parse (INVALID_REQUEST for garbage input).
@@ -3091,7 +3041,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
     // the writer lock — no TOCTOU window between snapshot and mutation.
     std::optional<pylabhub::hub::ChannelTopology> declared_topology;
     {
-        const std::string wire = req.value("channel_topology", "");
+        const std::string wire = body.channel_topology();
         if (!wire.empty())
         {
             declared_topology = pylabhub::hub::topology::parse(wire);
@@ -3257,7 +3207,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
     // exists.  On the consumer-opens-channel path (fan-in first
     // arrival) `consumer_queue_type` becomes the channel's transport
     // invariant (set inside `_on_consumer_joined`).
-    const std::string consumer_queue_type = req.value("consumer_queue_type", "");
+    const std::string consumer_queue_type = body.consumer_queue_type();
     if (!consumer_will_open_channel && !consumer_queue_type.empty() &&
         consumer_queue_type != channel_entry.data_transport)
     {
@@ -3292,18 +3242,18 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
     //
     //   Empty: all expected_* empty → no validation (consumer signals
     //     "I don't care about schema").
-    const std::string expected_schema_id = req.value("expected_schema_id", "");
-    const std::string expected_hash_hex = req.value("expected_schema_hash", "");
-    const std::string expected_blds = req.value("expected_schema_blds", "");
-    const std::string expected_packing = req.value("expected_schema_packing", "");
+    const std::string expected_schema_id = body.expected_schema_id();
+    const std::string expected_hash_hex = body.expected_schema_hash();
+    const std::string expected_blds = body.expected_schema_blds();
+    const std::string expected_packing = body.expected_schema_packing();
     // HEP-0034 §10.3 — flexzone mirrors the producer-side wire fields
     // (Phase 5a).  When the consumer's structure includes flexzone, the
     // recomputed fingerprint must include it too — otherwise the
     // consumer-recomputed hash (slot+fz) won't match the channel's
     // stored hash (slot+fz from REG_REQ).  Same correctness gap that
     // Phase 4a fixed on the REG_REQ side; mirrored here for symmetry.
-    const std::string expected_fz_blds = req.value("expected_flexzone_blds", "");
-    const std::string expected_fz_packing = req.value("expected_flexzone_packing", "");
+    const std::string expected_fz_blds = body.expected_flexzone_blds();
+    const std::string expected_fz_packing = body.expected_flexzone_packing();
 
     // Validate the consumer's cited schema against the channel through the
     // single validator (HEP-CORE-0034 §9 / §2.4 I4).  When the consumer is
@@ -3392,14 +3342,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
     // deleted per §4.5 / §8 Phase 6.
 
     pylabhub::hub::ConsumerEntry entry;
-    entry.consumer_pid = req.value("consumer_pid", uint64_t{0});
-    entry.consumer_hostname = req.value("consumer_hostname", "");
+    entry.consumer_pid = body.consumer_pid();
+    entry.consumer_hostname = body.consumer_hostname();
     entry.role_name = role_name;
     entry.role_uid = role_uid;
-    entry.inbox_endpoint = req.value("inbox_endpoint", "");
-    entry.inbox_schema_json = req.value("inbox_schema_json", "");
-    entry.inbox_packing = req.value("inbox_packing", "");
-    entry.inbox_checksum = req.value("inbox_checksum", "");
+    entry.inbox_endpoint = body.inbox_endpoint();
+    entry.inbox_schema_json = body.inbox_schema_json();
+    entry.inbox_packing = body.inbox_packing();
+    entry.inbox_checksum = body.inbox_checksum();
     // HEP-CORE-0036 §6.5: the consumer's CURVE pubkey is REQUIRED on
     // the wire so the broker can populate the channel-scope
     // authorized-consumer allowlist via `_on_consumer_authorized` and
@@ -3407,31 +3357,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
     // CURVE unconditional.  Empty or wrong-length values are
     // programmer errors and rejected at wire admission, matching the
     // producer-side REG_REQ check.
-    const std::string consumer_pubkey = req.value("zmq_pubkey", "");
-    if (consumer_pubkey.empty())
-    {
-        LOGGER_WARN("Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
-                    "missing required `zmq_pubkey` (HEP-CORE-0036 §6.5 broker_proto>=6).",
-                    channel_name, role_uid);
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "CONSUMER_REG_REQ requires non-empty `zmq_pubkey` "
-                          "(broker_proto>=6 / HEP-CORE-0036 §6.5)");
-    }
-    if (consumer_pubkey.size() != 40)
-    {
-        // CURVE pubkeys are Z85-encoded 32-byte blobs = exactly 40
-        // ASCII chars.  Any other length cannot match a real CURVE
-        // handshake; reject at the wire to avoid polluting the
-        // channel allowlist with values that would silently deny
-        // every connection attempt.
-        LOGGER_WARN("Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
-                    "`zmq_pubkey` length is {}, expected 40 (Z85-encoded CURVE25519).",
-                    channel_name, role_uid, consumer_pubkey.size());
-        return make_error(corr_id, "INVALID_REQUEST",
-                          "CONSUMER_REG_REQ `zmq_pubkey` length is " +
-                              std::to_string(consumer_pubkey.size()) +
-                              ", expected 40 (Z85-encoded CURVE25519 pubkey)");
-    }
+    // Consumer's CURVE pubkey (HEP-CORE-0036 §6.5) — presence + Z85 length
+    // (==40) already enforced by gate_grammar (§14.5); stored on the consumer
+    // entry for the channel authorized-consumer allowlist.
+    const std::string consumer_pubkey = body.zmq_pubkey();
 
     // HEP-CORE-0036 §6.3 Layer-2 identity verification — symmetric
     // with the producer-side REG_REQ check (§6.1).  Binds the
@@ -3464,7 +3393,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(const nlohmann::json &
         s.schema_id = expected_schema_id;
         s.schema_blds = expected_blds;
         s.flexzone_blds = expected_fz_blds; // two-zone content (fingerprint folds packing)
-        s.schema_owner = req.value("expected_schema_owner", std::string{});
+        s.schema_owner = body.expected_schema_owner();
         open_schema = std::move(s);
 
         pylabhub::hub::ChannelTransportInvariants t;

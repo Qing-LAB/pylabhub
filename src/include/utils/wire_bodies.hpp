@@ -359,6 +359,18 @@ public:
 {
     return detail::read_string_or_empty(body_, "consumer_hostname");
 }
+// Consumer's preferred queue transport ("shm"|"zmq") — OPTIONAL; the broker
+// arbitrates it against the channel's stored `data_transport`.
+[[nodiscard]] std::string consumer_queue_type() const
+{
+    return detail::read_string_or_empty(body_, "consumer_queue_type");
+}
+// Expected schema owner for a named citation — OPTIONAL (consumer twin of the
+// producer's `schema_owner`).
+[[nodiscard]] std::string expected_schema_owner() const
+{
+    return detail::read_string_or_empty(body_, "expected_schema_owner");
+}
 // ABI carrier per HEP-CORE-0032 §8.  REQUIRED.
 [[nodiscard]] const nlohmann::json &abi_fingerprint() const
 {

@@ -2414,6 +2414,15 @@ brevity the class catalog below notes "+ security triple" or
   **DiscAckBody**: `status` + discovery payload + envelope_hash only.
 - **BandJoinNotifyBody / BandLeaveNotifyBody**: `band`, `role_uid`,
   `role_name` + envelope_hash only.
+  > **Inconsistency flagged for #72.**  These two bodies REQUIRE `role_name`,
+  > yet the §14.3 note above establishes it as a REDUNDANT human-friendly label
+  > (`role_uid` embeds the name) — which is exactly why the REG bodies and the
+  > other notifies (`ChannelAuthChangedNotifyBody`, `ConsumerDiedNotifyBody`)
+  > treat it as OPTIONAL or omit it.  A band notify has no principled need for
+  > `role_name` that the others lack, so requiring it here is the odd one out.
+  > Candidate cleanup: make it optional (or drop it) on the band notifies to match
+  > the family — tracked in the HEP↔code reconciliation pass (#72), NOT changed
+  > here (it is a band-family wire contract, out of scope for the REG typed-swap).
 
 #### 14.3.1 Admin console family (HEP-CORE-0033 §11)
 

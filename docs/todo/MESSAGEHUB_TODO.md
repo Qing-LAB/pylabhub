@@ -154,7 +154,8 @@ Phase B**.
       writes a duplicate `producer_role_uid = role_uid` "for pre-amendment brokers"
       (`broker_request_comm.cpp:1219`).  No reader remains (this broker ignores it);
       retire the write in a focused wire-cleanup (it is a wire-shape change → own step).
-  - **REG_REQ / CONSUMER_REG_REQ — the SAME typed-input swap, only larger.**
+  - **✅ REG_REQ / CONSUMER_REG_REQ — DONE (B.1h / B.1i, 2026-07-24).** The SAME
+    typed-input swap, only larger.
     ⚠ **Framing corrected 2026-07-24:** this is NOT a "relocation into a pipeline
     commit callback."  The HEP-0046 framework types + validates the wire (§14.4/
     §14.7); it does not restructure handler logic.  `handle_reg_req` /
@@ -168,6 +169,12 @@ Phase B**.
     The old `BrokerRegHandler` / `reg_admission_pipeline` skeleton (test-only,
     parallel re-implementation of the already-live gates) is **retired**, not a
     target — see the retirement note below.
+    - ✅ **B.1h `handle_reg_req`** + **B.1i `handle_consumer_reg_req`** landed
+      2026-07-24; the four accessors added; a latent `role_name` accessor bug
+      fixed (optional field → `read_string_or_empty`, HEP-0046 §14.3).  **All nine
+      REG-family handlers are now typed.**  With the last two arms swapped, the
+      `to_legacy` / `dispatch_legacy` / `LegacyDispatchInputs` bridge is dead and
+      **REMOVED** — the B.4 legacy-surface retirement, done naturally.
   Each conversion behavior-preserving; existing L2/L3/L4 REG round-trip tests stay
   green.
 
@@ -310,6 +317,21 @@ L1 pin `test_wire_dispatch_table.cpp` updated.
 ---
 
 ## Open broker-specific items
+
+### #72 reconciliation — band notifies require `role_name` (redundant) (filed 2026-07-24)
+
+`BandJoinNotifyBody` + `BandLeaveNotifyBody` (`wire_bodies.cpp` ctors) `d::require`
+`role_name`, but `role_name` is a REDUNDANT human-friendly label (`role_uid`
+embeds the name — HEP-CORE-0046 §14.3) that the REG bodies and the other notifies
+(`ChannelAuthChangedNotifyBody`, `ConsumerDiedNotifyBody`) correctly treat as
+optional / omit.  Requiring it on the band notifies is the odd one out — a likely
+copy-paste inconsistency, no principled need.  **Candidate cleanup:** make
+`role_name` optional (or drop it) on the two band bodies to match the family;
+their accessors are already `read_string_or_empty` (harmless with the current
+`require` ctors).  Surfaced 2026-07-24 during the REG typed-swap (B.1h/B.1i);
+deferred here as it is a band-family wire contract, out of scope for REG.  Doc
+flag lives at HEP-CORE-0046 §14.3 band-body entry.  Fold into the HEP↔code
+reconciliation pass (#72).
 
 ### Federation control-envelope bypass → fold into the federation redesign (filed 2026-07-22)
 
