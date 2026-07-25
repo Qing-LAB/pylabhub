@@ -24,6 +24,50 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### Envelope-framework fresh-eyes review — 3 ratifications + doc corrections (2026-07-24) ✅
+
+Second full review of the typed-envelope framework (2 independent
+verifiers + targeted pass) after Phase B closure.  Core verdict: wire
+behavior sound (frame layout, gate order, §14.7 conformance of all nine
+handlers, adapter triple list all verified consistent).  Three
+ambiguities RATIFIED + drift tail fixed:
+
+- **role_name = display-only, deliberately unvalidated (ratified).**
+  Two HEPs claimed boundary grammar enforcement that existed nowhere
+  (the gate skips it; the "commit callback" it deferred to was the
+  retired skeleton).  No enforcement added — the validated name lives
+  inside `role_uid` by construction; consumers treat role_name as
+  untrusted display text.  HEP-0023 §2.5.4 (now also documents the
+  two-layer grammar model: gate sanity check + HubState full
+  `is_valid_identifier` re-check), HEP-0046 §14.5 step 3 + §14.3 note,
+  gate + ctor comments all reconciled.
+- **STALE_INSTANCE ERROR reply ratified (was "silent drop").**  The
+  doc's no-reply text assumed stale ⇒ dead sender; the live re-REG
+  race (role_api_base handles it by name) needs the error, and
+  correlation keying + unroutable-drop make the reply harmless to dead
+  senders.  HEP-0042 §5.4 (steps reordered to shipped
+  guard→advance→drain→reply, + ratification note), §5.5.2, §12
+  diagram; the broker comment's phantom "Phase 2.4" apology deleted.
+- **ChannelAuthAppliedAckBody aligned to the emitted shape** —
+  `{status, channel_name, applied_version}`; the draft-era
+  `confirmed_version` (never emitted, yet validated by the BRC's live
+  inbound check) retired; reply-value semantics (post-clamp confirmed
+  version) documented in §5.5.2 + §14.3; L1 re-pinned.
+- Drift tail: §7.1 reject-code rows corrected (ctor→BODY_SCHEMA_VIOLATION;
+  gate grammar/pubkey-length→INVALID_REQUEST — fixing a misattribution
+  introduced in the earlier §7.1 edit); §14.2 illustrative API renamed to
+  the shipped build_*_send/parse_*_recv (no `body_as` — typed
+  construction is the dispatch layer's job, stated); §14.4 example
+  rewritten to receive_and_validate + std::visit; §14.3 catalog
+  (producer_hostname/metadata added, spurious ConsumerRegAck
+  correlation_id body field removed, channel_topology marked optional);
+  §14.5 step 5 now names UNKNOWN_ROLE; HEP-0036 §5b.4/§5b.6 retire the
+  separate `inbox_packing` rows (Forbidden tables) + gain
+  abi_fingerprint/build_id/channel_topology rows; §5b.7 gains
+  broker_abi_fingerprint/broker_build_id/known_roles; HEP-0042 §12
+  consumer-attach msg_type fixed (_ZMQ) + §5.5.2 documents the
+  registration/anti-poisoning guard.
+
 ### Wire-field reconciliation — APPLIED_REQ strict contract + consumer transport (2026-07-24) ✅
 
 - **CHANNEL_AUTH_APPLIED_REQ strict wire** (HEP-0042 §5.5.2 amendment

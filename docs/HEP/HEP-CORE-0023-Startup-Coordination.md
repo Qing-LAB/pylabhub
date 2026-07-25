@@ -745,14 +745,24 @@ from the local role's `role_uid` — and is also preserved.
 | `BAND_BROADCAST_SEND_NOTIFY` | `role_uid` | — | tag in `{prod,cons,proc}` (was `sender_uid`) |
 | `CONSUMER_DIED_NOTIFY` (body) | `role_uid` | — | broker → producers fan-out (was `consumer_uid`) |
 
-**Grammar enforcement at every gate.**  Every wire-boundary
-handler runs `is_valid_identifier(...)` (`src/include/utils/
-naming.hpp`) on `channel_name`, `role_uid`, and (when non-empty)
-`role_name` BEFORE entering any HubState op.  HEP-CORE-0033
-§G2.2.0b is the authoritative grammar.  An empty or malformed
-identifier is rejected with `INVALID_REQUEST` + LOGGER_WARN; on
-fire-and-forget messages (HEARTBEAT_NOTIFY, BAND_BROADCAST_SEND_NOTIFY) the
-request is silently dropped with LOGGER_WARN (no reply path).
+**Grammar enforcement at every gate.**  Identifier grammar runs in
+two deliberate layers (ratified 2026-07-24): the wire-boundary
+admission gate (`gate_grammar`, HEP-0046 §14.5) applies a
+charset/length sanity check to `role_uid` and `channel_name` (plus
+the Z85 length check on `zmq_pubkey`), rejecting with
+`INVALID_REQUEST` + LOGGER_WARN; the full HEP-CORE-0033 §G2.2.0b
+grammar (`is_valid_identifier`, `naming.hpp`) runs as the defensive
+re-check inside HubState's atomic admission ops before any state
+mutation.  On fire-and-forget messages (HEARTBEAT_NOTIFY,
+BAND_BROADCAST_SEND_NOTIFY) a failure is silently dropped with
+LOGGER_WARN (no reply path).
+
+`role_name` is deliberately NOT validated at any layer: it is a
+display-only courtesy label, redundant by construction — the
+validated name lives inside `role_uid` (`<tag>.<name>.<unique>`),
+which is what every identity decision keys on.  Consumers MUST
+treat `role_name` as untrusted display text: quote it, never key
+on it, and derive any trustworthy name from `role_uid`.
 
 **Side-aware tag policy.**  In addition to grammar, each gate
 constrains the tag (`prod`/`cons`/`proc`) the role_uid carries:

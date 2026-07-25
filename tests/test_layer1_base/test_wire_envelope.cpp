@@ -898,16 +898,22 @@ TEST(WireBodies, ChannelAuthAppliedReqBodyRejectsMissingRoleType)
     EXPECT_THROW(pylabhub::wire::ChannelAuthAppliedReqBody{std::move(body)}, WireBodyError);
 }
 
-// ── ChannelAuthAppliedAckBody: status, confirmed_version.
+// ── ChannelAuthAppliedAckBody: status, channel_name, applied_version
+//    (HEP-0042 §5.5.2 — the shape the broker actually emits; the
+//    echoed applied_version VALUE is the resulting confirmed version.
+//    The draft-era `confirmed_version` field was never emitted and is
+//    retired — reconciled 2026-07-24).
 TEST(WireBodies, ChannelAuthAppliedAckBodyValidatesAllFields)
 {
     nlohmann::json body;
-    body["status"] = "success";
-    body["confirmed_version"] = 7ULL;
+    body["status"] = "ok";
+    body["channel_name"] = "lab.x";
+    body["applied_version"] = 7ULL;
     body["envelope_hash"] = "deadbeef";
     pylabhub::wire::ChannelAuthAppliedAckBody b(std::move(body));
-    EXPECT_EQ(b.status(), "success");
-    EXPECT_EQ(b.confirmed_version(), 7ULL);
+    EXPECT_EQ(b.status(), "ok");
+    EXPECT_EQ(b.channel_name(), "lab.x");
+    EXPECT_EQ(b.applied_version(), 7ULL);
 }
 
 // ── DeregReqBody: channel_name, role_uid + security triple.

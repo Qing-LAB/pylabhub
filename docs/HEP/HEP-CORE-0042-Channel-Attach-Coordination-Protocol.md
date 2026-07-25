@@ -234,12 +234,33 @@ On CONSUMER_ATTACH_REQ_SHM from consumer C for (K, P):
    b. Fire CHANNEL_AUTH_CHANGED_NOTIFY to P.  Always fire — no debounce.
 
 On CHANNEL_AUTH_APPLIED_REQ from P at applied_version=W, instance_id=I:
-   a. Stale-instance guard: if I ≠ instance[P] → silently drop (message is from a
-      crashed prior instance of P; do not touch broker state).  Done.
-   b. Reply {status="ok", channel_name=K, applied_version=W}.
-   c. confirmed_version[K][P] = max(confirmed_version[K][P], W).
-   d. Walk pending_attach_queue: for entries with target_version ≤ confirmed_version[K][P],
+   a. Stale-instance guard: if I ≠ instance[P] → reply ERROR
+      error_code=STALE_INSTANCE and touch NO broker state.  Done.
+      (The state half is the invariant: a stale confirm must never
+      advance confirmed_version.  The reply is deliberate, not a
+      leak — see the ratification note below.)
+   b. confirmed_version[K][P] = max(confirmed_version[K][P], W).
+   c. Walk pending_attach_queue: for entries with target_version ≤ confirmed_version[K][P],
       reply {status="success"} and remove from queue.
+   d. Reply {status="ok", channel_name=K, applied_version=<the resulting
+      confirmed_version[K][P]>} — the echo carries the POST-clamp value,
+      equal to W except when the ledger absorbed a duplicate/regressing
+      confirm, so the reply always shows true broker state.
+
+> **Ratified 2026-07-24 — ERROR reply on stale instance (was "silent
+> drop").**  The original text assumed a stale APPLIED_REQ implies a
+> dead sender, so no reply was owed.  That assumption is incomplete:
+> a LIVE producer that re-registers (instance N→N+1) while its own
+> APPLIED_REQ carrying N is still in flight receives this rejection —
+> and needs it, or its control path stalls for the full
+> `applied_ack_wait_ms` and then logs an uninformative timeout.  For
+> genuinely dead senders the reply is harmless by construction: an
+> unroutable reply is discarded by the ROUTER, and a reply delivered
+> to the successor instance (same routing_id) carries the dead
+> process's correlation_id, which matches nothing in the successor's
+> correlation-keyed pending map (I-CORRELATION-STABLE) and is counted
+> + dropped.  The BRC public contract, the role-side race handling,
+> and L3 `StaleInstanceGuardOnAppliedReq` all pin the ERROR reply.
 
 On pending-entry timeout (producer_apply_wait_ms elapsed):
    → reply {status="timeout", reason="producer_did_not_confirm_within_budget"}.
@@ -388,7 +409,25 @@ Both branches converge on the same primitive: `HubState::_on_role_confirmed(chan
 { "status": "ok", "channel_name": "...", "applied_version": 42 }
 ```
 
-Silent drop on stale `instance_id` (producer path only) — the caller's local ack timeout handles the missing reply path.
+The echoed `applied_version` VALUE is the broker's RESULTING
+confirmed version (post-clamp `max(current, W)`), not a verbatim
+echo of the request — equal to W in steady state, and deliberately
+showing the true ledger state when a duplicate or regressing confirm
+was absorbed (INVARIANT-BIND-CONFIRM-1 monotonicity).  Typed shape:
+`ChannelAuthAppliedAckBody {status, channel_name, applied_version}`
+(HEP-0046 §14.3; reconciled 2026-07-24 — a draft-era
+`confirmed_version` field was never emitted and is retired).
+
+Stale `instance_id` (producer path only) → reply ERROR
+`error_code=STALE_INSTANCE`, broker state untouched (ratified
+2026-07-24 — see §5.4; the live re-REG race needs the named error,
+and correlation keying makes the reply harmless to dead senders).
+Additionally, BOTH branches run a registration guard BEFORE the
+`role_type` split: unknown channel → `CHANNEL_NOT_FOUND`; a
+`role_uid` not registered on the channel in the claimed `role_type`
+→ `NOT_A_ROLE_OF_CHANNEL` (the §5.5.2.1 anti-poisoning check — the
+wire's role_uid is client-supplied, so an authenticated peer could
+otherwise advance ANOTHER role's confirmed_version).
 
 #### 5.5.2.1 Binding-side confirmation semantics (unified 2026-07-13)
 
@@ -817,7 +856,7 @@ sequenceDiagram
 
     Note over C,P: Prior state: producer P registered<br/>with instance_id=I; confirmed_version[K][P] behind channel_version[K]
 
-    C->>B: CONSUMER_ATTACH_REQ_SHM (K, P, C.pubkey)
+    C->>B: CONSUMER_ATTACH_REQ_ZMQ (K, P, C.pubkey)
     Note over B: Step 2: pubkey ∈ allowlist? ✓<br/>Step 3: P.state == kLive? ✓<br/>Step 4: confirmed < channel_version → wait path
     B->>B: enqueue with target_version=channel_version[K]
 
@@ -828,11 +867,11 @@ sequenceDiagram
     Note over P: set_peer_allowlist(allowlist) OK
 
     P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, role_uid=P,<br/>role_type="producer", instance_id=I, applied_version=W}
-    Note over B: check instance_id=I matches instance[P]; else drop
-    B->>P: {status="ok"}
+    Note over B: check instance_id=I matches instance[P];<br/>else ERROR STALE_INSTANCE (state untouched)
     Note over B: confirmed_version[K][P] = W<br/>drain pending_attach_queue
+    B->>P: {status="ok", applied_version=confirmed}
 
-    B->>C: CONSUMER_ATTACH_ACK_SHM {status="success"}
+    B->>C: CONSUMER_ATTACH_ACK_ZMQ {status="success"}
 
     Note over C: dial producer P (CURVE / crypto_box handshake)<br/>succeeds against caught-up cache
 ```

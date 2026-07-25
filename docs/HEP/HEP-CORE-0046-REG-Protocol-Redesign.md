@@ -617,7 +617,8 @@ observability queries.
 
 | Cause | Error code | Which cell(s) |
 |---|---|---|
-| REG_REQ required field missing / wrong JSON type (`channel_name`, `role_uid`, `role_type`, `zmq_pubkey`, `data_transport`, …), or grammar-invalid `role_uid` / `channel_name` / `zmq_pubkey` length ≠ 40 | `BODY_SCHEMA_VIOLATION` (typed body ctor + §14.5 wire gates, at parse — never reaches the handler) | all |
+| REG_REQ required field missing / wrong JSON type (`channel_name`, `role_uid`, `role_type`, `zmq_pubkey`, `data_transport`, …), or malformed doubly-encoded content (`inbox_schema_json`) | `BODY_SCHEMA_VIOLATION` (typed body ctor, at parse — never reaches the gates or handler) | all |
+| Well-typed body, but grammar-invalid `role_uid` / `channel_name`, or `zmq_pubkey` length ≠ 40 | `INVALID_REQUEST` (`gate_grammar`, §14.5 step 3) | all |
 | Required field present and well-typed but semantically invalid VALUE (`data_transport` ∉ {"shm","zmq"}, SHM REG with empty `shm_capability_endpoint`) | `INVALID_REQUEST` (handler-level value check, §14.7) | all |
 | `channel_topology` is a non-empty non-parseable string | `INVALID_REQUEST` | all |
 | `(fan-in, shm)` | `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` | fan-in SHM |
@@ -1217,7 +1218,7 @@ before topology admission, atomic wire cut for the whole chain.
 
 3. BRC: DEALER `routing_id` set from `Config::role_uid`
    (I-DEALER-IDENTITY); refuse-connect on empty.  Send + receive
-   paths route through `WireEnvelope::build` / `parse`.  ACK
+   paths route through `WireEnvelope::build_dealer_send` / `build_router_send` and `parse_router_recv` / `parse_dealer_recv`.  ACK
    matching keys on `(msg_type, correlation_id)`.  Every REQ
    constructor stamps `client_nonce` + `client_wall_ts`
    (I-REPLAY-BOUND).
@@ -1314,7 +1315,7 @@ inbox-configured producer).
     `ProducerEntry::zmq_identity`, `BandMember::zmq_identity`
     (D1).  Every call site `x.zmq_identity` → `x.role_uid`.
     Every `send_to_identity(x.zmq_identity, ...)` becomes
-    `WireEnvelope::build(x.role_uid, ...)` + ROUTER send.
+    `WireEnvelope::build_router_send(x.role_uid, ...)`.
 11. Rename misnomers: `authorized_consumer_pubkeys` →
     `authorized_peer_pubkeys`, `_on_consumer_authorized` →
     `_on_peer_authorized`.
@@ -2143,13 +2144,13 @@ flows back up through the same `WireEnvelope`.
 ```mermaid
 flowchart TD
     subgraph WIRE["Wire types — wire_envelope.hpp / wire_bodies.hpp"]
-        WE["WireEnvelope<br/>owns the 5-frame layout<br/>build() · parse() · body_as&lt;BodyT&gt;()"]
+        WE["WireEnvelope<br/>owns the 5-frame layout<br/>build_dealer/router_send · parse_router/dealer_recv"]
         MIX["PLH_WIRE_BODY_CLASS(Name) mix-in<br/>holds json body_ · ctor validates required fields<br/>envelope_hash() · to_json()"]
         BODIES["33 typed body classes<br/>Producer/ConsumerRegReqBody · DeregReqBody ·<br/>EndpointUpdate · ChannelAuthApplied · Heartbeat ·<br/>Disc · GetChannelAuth · *AckBody · *NotifyBody · Admin*Body<br/>— each exposes ONLY its own fields via named accessors"]
         DET["detail:: helpers<br/>read_string · read_string_or_empty ·<br/>read_u64(_or_zero) · read_object · require"]
         MIX -. "expands to" .-> BODIES
         BODIES -- "accessors delegate to" --> DET
-        WE -- "body_as&lt;T&gt;() constructs" --> BODIES
+        WE -- "receive_and_validate constructs" --> BODIES
     end
 
     subgraph VALID["Validation — wire_dispatch.cpp + admission_gates.hpp"]
@@ -2209,32 +2210,43 @@ no other code path constructs or consumes wire frames.
 ```cpp
 class WireEnvelope {
 public:
-    // Build the 5-frame envelope.  Sender-side omits Frame 0
-    // (ROUTER prepends identity on receive).  Stamps envelope_hash
-    // on the body per I-ENVELOPE-BODY-BINDING before returning.
-    template <typename BodyT>
-    static zmq::multipart_t build(const std::string& identity,
-                                    const std::string& msg_type,
-                                    const std::string& correlation_id,
-                                    BodyT              body);
+    // Build the envelope, side-specific (shipped names).  DEALER-side
+    // emits 4 frames (libzmq's ROUTER prepends Frame 0 = the DEALER's
+    // routing_id on receive); ROUTER-side emits 5 frames with Frame 0
+    // = the target's routing_id.  Both stamp envelope_hash on the body
+    // per I-ENVELOPE-BODY-BINDING before returning.
+    static zmq::multipart_t build_dealer_send(std::string_view dealer_routing_id,
+                                              std::string_view msg_type,
+                                              std::string_view correlation_id,
+                                              nlohmann::json body);
+    static zmq::multipart_t build_router_send(std::string_view target_identity,
+                                              std::string_view msg_type,
+                                              std::string_view correlation_id,
+                                              nlohmann::json body);
 
-    // Parse a 5-frame inbound envelope.  Validates envelope↔body
-    // hash (I-ENVELOPE-BODY-BINDING); rejects with std::nullopt +
-    // ENVELOPE_TAMPERED WARN on mismatch.  Rejects empty
-    // correlation_id on a REQ (I-CORRELATION-STABLE) with
-    // std::nullopt + INVALID_REQUEST.
-    static std::optional<WireEnvelope> parse(zmq::multipart_t&& msg);
+    // Parse an inbound envelope, side-specific.  Validates the
+    // envelope↔body hash (I-ENVELOPE-BODY-BINDING → ENVELOPE_TAMPERED
+    // on mismatch) and rejects an empty correlation_id on a REQ
+    // (I-CORRELATION-STABLE); failures return std::nullopt with a
+    // ParseError out-param naming the exact violation.
+    static std::optional<WireEnvelope> parse_router_recv(zmq::multipart_t&& msg,
+                                                         ParseError* err);
+    static std::optional<WireEnvelope> parse_dealer_recv(zmq::multipart_t&& msg,
+                                                         std::string_view own_routing_id,
+                                                         ParseError* err);
 
     std::string_view identity()       const;   // Frame 0
     std::string_view msg_type()       const;   // Frame 2
     std::string_view correlation_id() const;   // Frame 3
-
-    // Typed body cast.  Chooses the body class by msg_type;
-    // throws on schema-shape mismatch or missing required fields.
-    template <typename BodyT>
-    BodyT body_as() const;
+    const nlohmann::json& body()      const;   // Frame 4 (raw)
 };
 ```
+
+The envelope deliberately has NO typed-body member function: typed
+construction is the dispatch layer's job — `receive_and_validate`
+(§14.5) selects the body class from the msg_type's dispatch-table row
+and constructs it, so the envelope stays body-agnostic and the table
+remains the single msg_type→class mapping.
 
 ### 14.3 Typed body classes
 
@@ -2288,11 +2300,13 @@ brevity the class catalog below notes "+ security triple" or
   > Pending amended catalog entries (to replace the RegReqBody line
   > above when this HEP is next edited):
   > - **ProducerRegReqBody** (`REG_REQ`): `channel_name`, `role_uid`,
-  >   `role_type`, `channel_topology`, `data_transport`,
+  >   `role_type`, optional `channel_topology`, `data_transport`,
   >   `zmq_pubkey`, plus HEP-0034 §10.1 producer schema fields
   >   (`schema_id`, `schema_hash`, `schema_blds`, `schema_packing`,
   >   `schema_owner`, optional `flexzone_blds`, `flexzone_packing`),
-  >   plus `producer_pid`, `zmq_node_endpoint` (required when
+  >   plus `producer_pid`, optional `producer_hostname` and
+  >   `metadata` object (diagnostics/record only, stored verbatim on
+  >   the ProducerEntry), `zmq_node_endpoint` (required when
   >   `data_transport == "zmq"` AND producer is binding side per
   >   HEP-CORE-0017 §3.3.0 topology matrix),
   >   `shm_capability_endpoint` (required when
@@ -2309,7 +2323,7 @@ brevity the class catalog below notes "+ security triple" or
   >   HEP-CORE-0007 §12.3's older `has_shared_memory` +
   >   `shm_name` shape is superseded.
   > - **ConsumerRegReqBody** (`CONSUMER_REG_REQ`): `channel_name`,
-  >   `role_uid`, `role_type`, `channel_topology`,
+  >   `role_uid`, `role_type`, optional `channel_topology`,
   >   `data_transport`, `zmq_pubkey` (consumer's own identity
   >   pubkey), plus HEP-0034 §10.2 consumer schema fields
   >   (`expected_schema_id`, `expected_schema_hash`,
@@ -2329,8 +2343,10 @@ brevity the class catalog below notes "+ security triple" or
   > is the authoritative required list; wire body classes MUST match
   > it.  Validation follows the "when non-empty" pattern from
   > HEP-CORE-0023 §2.5.4: absent is OK; when present, MUST be a
-  > string (identifier-grammar check runs at gate_grammar
-  > downstream, not at wire body class construction).  Implementers
+  > string.  role_name gets NO grammar validation at any layer — it
+  > is untrusted display text; the validated name is the component
+  > inside `role_uid` (HEP-CORE-0023 §2.5.4, ratified 2026-07-24).
+  > Implementers
   > use `d::validate_if_present(body_, "role_name", JsonKind::String)`
   > in the body ctor **and `detail::read_string_or_empty` in the
   > accessor** (see §14.3 "required vs optional accessors").  An
@@ -2394,8 +2410,9 @@ brevity the class catalog below notes "+ security triple" or
   > - `ConsumerRegAckBody` (`CONSUMER_REG_ACK`): `status`,
   >   `channel_name`, `data_transport`, `heartbeat`, `producers`
   >   (array of `{role_uid, pubkey_z85, endpoint}` per §5b),
-  >   `broker_abi_fingerprint`, `broker_build_id`,
-  >   optional `correlation_id` (echo) + envelope_hash only.
+  >   `broker_abi_fingerprint`, `broker_build_id` + envelope_hash
+  >   only.  (correlation_id is NOT a body field — it rides on the
+  >   envelope skeleton, Frame 3.)
   >   Broker's error path emits msg_type `"ERROR"`, so
   >   `ConsumerRegAckBody` covers only the success shape.
 - **ChannelAuthChangedNotifyBody**: `channel_name`, `role_uid`
@@ -2420,8 +2437,12 @@ brevity the class catalog below notes "+ security triple" or
   `instance_id` (always present: producer echoes the HEP-0042 §5.5.3
   shift number, consumer sends `0` which the broker ignores) +
   security triple.
-- **ChannelAuthAppliedAckBody**: `status`, `confirmed_version`
-  + envelope_hash only.
+- **ChannelAuthAppliedAckBody**: `status`, `channel_name`,
+  `applied_version` + envelope_hash only — the shape the broker emits
+  (HEP-CORE-0042 §5.5.2).  The `applied_version` VALUE is the broker's
+  resulting confirmed version (post-clamp); the draft-era
+  `confirmed_version` field was never emitted and is retired
+  (reconciled 2026-07-24).
 - **HeartbeatNotifyBody**: `channel_name`, `role_uid`, `role_type`
   (presence rows are keyed on `(role_uid, channel, role_type)` per
   HEP-CORE-0023 §2.5.2), plus optional `producer_pid` (debug/record
@@ -2497,23 +2518,24 @@ ACK / ERROR body carry `envelope_hash` only.
 ### 14.4 Handler dispatch pattern
 
 ```cpp
-// Broker ROUTER poll loop:
-auto env = WireEnvelope::parse(std::move(frames));
-if (!env) { LOGGER_WARN(...); continue; }
+// Broker ROUTER poll loop (shipped shape): ONE call parses the
+// envelope, selects the msg_type's tier from the dispatch table,
+// constructs the typed body, and runs the tier's gates —
+auto received = wire::dispatch::receive_and_validate(std::move(frames),
+                                                     admission_ctx);
 
-// Dispatch table maps msg_type string → typed handler:
-switch_on(env.msg_type()) {
-    case "REG_REQ":
-        handle_reg_req(*env, env->body_as<ProducerRegReqBody>()); break;
-    case "CONSUMER_REG_REQ":
-        handle_consumer_reg_req(*env, env->body_as<ConsumerRegReqBody>()); break;
-    case "ENDPOINT_UPDATE_REQ":
-        handle_endpoint_update(*env, env->body_as<EndpointUpdateReqBody>()); break;
-    case "HEARTBEAT_NOTIFY":
-        handle_heartbeat(*env, env->body_as<HeartbeatNotifyBody>()); break;
-    // ... one case per msg_type; no default fallthrough (unknown
-    // msg_types are wire violations, dropped with WARN).
-}
+// — then the broker routes the resulting variant straight to the
+// typed handler (dispatch_received, std::visit):
+std::visit(overloaded{
+    [&](ValidatedRegReq& v)         { handle_reg_req(v.env, v.body, ...); },
+    [&](ValidatedConsumerRegReq& v) { handle_consumer_reg_req(v.env, v.body, ...); },
+    [&](ValidatedEndpointUpdateReq& v) { handle_endpoint_update_req(v.env, v.body); },
+    [&](ValidatedHeartbeatNotify& v){ handle_heartbeat_req(v.env, v.body, ...); },
+    // ... one arm per Validated<Body>; RejectedMessage becomes the
+    // ERROR reply; an unknown msg_type surfaces as ValidatedRawControl
+    // so the UNKNOWN_MSG_TYPE reply keeps its correlation echo.
+    [&](RejectedMessage& r)         { send ERROR(r.code, r.correlation_id); },
+}, std::move(received));
 ```
 
 Every handler is:
@@ -2549,13 +2571,19 @@ mutation, in this order:
    (I-CORRELATION-STABLE); unknown msg_type dropped.
 2. `env.identity() == body.role_uid()` else `IDENTITY_MISMATCH`
    (I-DEALER-IDENTITY).
-3. Grammar validation on role_uid / role_name / channel_name
-   (HEP-CORE-0033).
+3. Grammar validation on role_uid / channel_name (charset + length
+   sanity, HEP-CORE-0033) plus the `zmq_pubkey` Z85-length check
+   (== 40) — all reject `INVALID_REQUEST`.  The full §G2.2.0b
+   grammar re-runs defensively inside HubState's atomic admission
+   ops.  `role_name` is deliberately NOT validated — it is a
+   display-only label; the validated name is the component inside
+   `role_uid` (HEP-CORE-0023 §2.5.4, ratified 2026-07-24).
 4. Role-tag policy — the role_uid short-tag must match the message:
    {prod, proc} for REG_REQ, {cons, proc} for CONSUMER_REG_REQ
    (HEP-CORE-0033 §G2.2.0b).
 5. `gate_known_role_binding(body.role_uid(), body.zmq_pubkey())`
-   else `PUBKEY_MISMATCH` (I-PUBKEY-BINDING).  This same check
+   else `UNKNOWN_ROLE` (uid not in known_roles) or `PUBKEY_MISMATCH`
+   (uid known, key differs) (I-PUBKEY-BINDING).  This same check
    enforces I-KEY-ROTATION-VIA-DEREG: a role's pubkey is immutable
    for the broker's lifetime, so an on-the-fly re-REG with a
    different pubkey fails here.  There is no separate key-rotation

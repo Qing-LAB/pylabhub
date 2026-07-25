@@ -670,15 +670,26 @@ public:
 }
 ;
 
+// **ChannelAuthAppliedAckBody** — the broker's success reply per
+// HEP-CORE-0042 §5.5.2: `{status:"ok", channel_name, applied_version}`.
+// The echoed `applied_version` VALUE is the broker's resulting
+// confirmed version (post-clamp `max(current, W)`) — equal to the
+// request's W except when the ledger absorbed a duplicate/regressing
+// confirm.  (An earlier draft shape named a `confirmed_version` field;
+// the broker never emitted it — reconciled 2026-07-24.)
 PLH_WIRE_BODY_CLASS(ChannelAuthAppliedAckBody)
 public:
 [[nodiscard]] std::string status() const
 {
     return detail::read_string(body_, "status");
 }
-[[nodiscard]] std::uint64_t confirmed_version() const
+[[nodiscard]] std::string channel_name() const
 {
-    return detail::read_u64_or_zero(body_, "confirmed_version");
+    return detail::read_string(body_, "channel_name");
+}
+[[nodiscard]] std::uint64_t applied_version() const
+{
+    return detail::read_u64_or_zero(body_, "applied_version");
 }
 }
 ;

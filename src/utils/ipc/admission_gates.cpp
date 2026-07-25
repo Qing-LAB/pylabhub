@@ -118,20 +118,19 @@ std::optional<RejectDetail> gate_identity_match(const ::pylabhub::wire::WireEnve
 
 std::optional<RejectDetail> gate_grammar(const RegFamilyBodyView &body) noexcept
 {
-    // §14.5 gate 4: HEP-CORE-0033 §G2.2.0b grammar on the universal
-    // identifiers.  role_uid + channel_name run the identifier grammar;
-    // zmq_pubkey is a fixed-length Z85 encoding (charset outside the id
-    // grammar), so only length is checked here.  ZAP handshake proves
-    // pubkey cryptographic validity downstream.
+    // §14.5 step 3: charset/length sanity on the universal identifiers
+    // (the full HEP-CORE-0033 §G2.2.0b grammar re-runs defensively
+    // inside HubState's atomic admission ops).  role_uid + channel_name
+    // run the identifier check; zmq_pubkey is a fixed-length Z85
+    // encoding (charset outside the id grammar), so only length is
+    // checked here.  ZAP handshake proves pubkey cryptographic
+    // validity downstream.
     //
-    // Note on role_name: design §14.5 lists role_name in gate 4, but
-    // role_name only appears on `RegReqBody` (REG_REQ / CONSUMER_REG_REQ);
-    // other REG-family bodies (EndpointUpdateReqBody,
-    // ChannelAuthAppliedReqBody, DeregReqBody, HeartbeatReqBody,
-    // GetChannelAuthReqBody) do not carry it.  This shared gate covers
-    // the universal fields; role_name grammar is validated at the
-    // REG_REQ-specific admission step by the commit callback (which
-    // knows the specific body class).
+    // role_name is deliberately NOT validated at any layer: it is a
+    // display-only courtesy label — the validated name is the
+    // component inside role_uid — and consumers must treat it as
+    // untrusted display text (HEP-CORE-0023 §2.5.4, ratified
+    // 2026-07-24).
     if (!grammar_ok(body.role_uid))
     {
         return make(RejectCode::invalid_request, "role_uid",

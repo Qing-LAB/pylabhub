@@ -121,8 +121,7 @@ void require(const nlohmann::json &body, const char *field, JsonKind kind)
 
 // Validate-if-present: the field is OPTIONAL, but when the caller
 // includes it the type MUST match.  Missing is allowed; wrong-typed
-// is rejected — the "when non-empty" pattern from HEP-CORE-0023
-// §2.5.4 (role_name grammar validation) generalized.
+// is rejected (HEP-0046 §14.3 pairing rule).
 void validate_if_present(const nlohmann::json &body, const char *field, JsonKind kind)
 {
     auto it = body.find(field);
@@ -196,10 +195,10 @@ ProducerRegReqBody::ProducerRegReqBody(nlohmann::json body)
     body_ = std::move(body);
     // Per HEP-CORE-0046 §7.1 required-field table: channel_name,
     // role_uid, role_type, zmq_pubkey, data_transport.  role_name is
-    // OPTIONAL per HEP-CORE-0023 §2.5.4 ("when non-empty" validation
-    // pattern) — role_uid already embeds a name component via
+    // OPTIONAL — role_uid already embeds a name component via
     // HEP-CORE-0033 §G2.2.0b grammar, so role_name is a redundant
-    // display-only label.  Accessor returns empty string when absent.
+    // display-only label (HEP-CORE-0023 §2.5.4).  Accessor returns
+    // empty string when absent.
     d::require(body_, "channel_name", d::JsonKind::String);
     d::require(body_, "role_uid", d::JsonKind::String);
     d::require(body_, "role_type", d::JsonKind::String);
@@ -209,8 +208,10 @@ ProducerRegReqBody::ProducerRegReqBody(nlohmann::json body)
     // Validate-if-present (§14.3 pairing rule): every OPTIONAL field is
     // shape-checked at construction — absent is OK, present-but-wrong-
     // typed is BODY_SCHEMA_VIOLATION at parse, never a mid-handler
-    // throw.  role_name's identifier-grammar check still runs
-    // downstream at gate_grammar, not here.
+    // throw.  role_name gets string-type checking ONLY: it is an
+    // untrusted display-only label with no grammar validation at any
+    // layer — the validated name is the component inside role_uid
+    // (HEP-CORE-0023 §2.5.4, ratified 2026-07-24).
     d::validate_if_present(body_, "role_name", d::JsonKind::String);
     d::validate_if_present(body_, "channel_topology", d::JsonKind::String);
     d::validate_if_present(body_, "schema_id", d::JsonKind::String);
@@ -411,7 +412,8 @@ ChannelAuthAppliedAckBody::ChannelAuthAppliedAckBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "status", d::JsonKind::String);
-    d::validate_if_present(body_, "confirmed_version", d::JsonKind::U64);
+    d::require(body_, "channel_name", d::JsonKind::String);
+    d::validate_if_present(body_, "applied_version", d::JsonKind::U64);
     d::require_envelope_hash(body_);
 }
 

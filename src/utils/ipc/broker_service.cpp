@@ -4323,13 +4323,14 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     }
 
     // §5.4 step (a): stale-instance guard.  If the echoed instance_id
-    // does not match the current instance[P], the message is from a
-    // crashed prior instance — silently drop without advancing
-    // confirmed_version.  Broker returns a shaped "silent_drop" marker
-    // that the dispatcher wraps as ERROR (matching the current wire
-    // conformance — full silent-drop-without-reply support lands with
-    // Phase 2.4 timer wiring which will let us withhold the reply
-    // entirely).
+    // does not match the current instance[P], the message was minted by
+    // a previous registration epoch — reply ERROR STALE_INSTANCE and
+    // touch NO state (ratified 2026-07-24, HEP-0042 §5.4).  The reply
+    // is deliberate: a LIVE producer whose own re-REG raced its
+    // in-flight APPLIED_REQ needs the named error instead of an ack-
+    // timeout stall, while a dead sender's reply is harmless (unroutable
+    // → ROUTER discards; delivered to the successor → its correlation_id
+    // matches nothing and the BRC drops it).
     const std::uint64_t current_instance = hub_state_->producer_instance(role_uid);
     if (incoming_instance != current_instance)
     {

@@ -3058,12 +3058,14 @@ classDiagram
 | `shm_capability_endpoint` | string | YES if `data_transport == "shm"` | `default_shm_capability_endpoint(channel)` | `ProducerEntry.shm_capability_endpoint` | Unix-socket capability endpoint, `"unix:///run/user/<uid>/pylabhub/shmcap-<channel>.sock"` |
 | `schema_blds` | string | OPTIONAL | HEP-0034 wire-schema canonical form | schema-record creation | Slot schema BLDS form |
 | `inbox_endpoint` | string | OPTIONAL | `Impl.inbox_endpoint` | `ProducerEntry.inbox_endpoint` | REP inbox endpoint (resolved, non-port-0) |
-| `inbox_schema_json` | string | OPTIONAL | inbox spec JSON | `ProducerEntry.inbox_schema_json` | Inbox payload schema |
-| `inbox_packing` | string | OPTIONAL | inbox spec | `ProducerEntry.inbox_packing` | Inbox packing |
+| `inbox_schema_json` | string | OPTIONAL | inbox spec JSON (HEP-0027 §6 canonical object; carries `packing` IN-OBJECT) | `ProducerEntry.inbox_schema_json`; stored `inbox_packing` DERIVED from the parsed spec | Inbox payload schema — parsed ONCE at the typed-body boundary (HEP-0046 B.2) |
 | `inbox_checksum` | string | OPTIONAL | inbox spec | `ProducerEntry.inbox_checksum` | Inbox checksum policy |
 | `producer_pid` | uint64 | OPTIONAL | `platform::get_pid()` | `ProducerEntry.producer_pid` | Process ID, diagnostics only |
 | `producer_hostname` | string | OPTIONAL | hostname lookup | `ProducerEntry.producer_hostname` | Hostname, diagnostics only |
 | `metadata` | object | OPTIONAL | role config | `ProducerEntry.metadata` | Arbitrary producer metadata |
+| `abi_fingerprint` | object | YES | `version::to_json_object(current())` | `verify_peer_versions` + `classify_peer_verdict` (HEP-0032 §8) | 7-axis wire/ABI compatibility carrier |
+| `build_id` | string | OPTIONAL (present iff `PYLABHUB_HAVE_BUILD_ID`) | `version::build_id()` | §8.6 verdict logging | Git build id — SIBLING of `abi_fingerprint`, never inside it (HEP-0032 §8.2) |
+| `channel_topology` | string | OPTIONAL | `RoleConfig` topology declaration | topology admission (HEP-0017 §3.3.0) | `fan-in` \| `fan-out` \| `one-to-one`; absent = channel default |
 | `correlation_id` | string (uuid) | OPTIONAL | BRC RPC layer | echoed in REG_ACK | RPC correlation |
 
 **Forbidden / removed wire fields** (current emitters MUST be deleted per §5b.9):
@@ -3092,6 +3094,7 @@ classDiagram
 |---|---|---|
 | `channel_id` | DELETE | Alias of `channel_name`. The bug that triggered §5b: producer REG_ACK emitted `channel_id`, role reader looked for `channel_name`, silently empty, `Registered → Authorized` transition skipped, §8.2 outer guard refused data loop. Zero role-side readers (audit 2026-06-25); pure dead-weight. |
 | `shm_secret` | DELETE | Superseded by HEP-CORE-0041 capability transport (no broker-minted secret). |
+| `inbox_packing` | DELETE (retired 2026-07-24, HEP-0046 B.2) | Packing is carried once, INSIDE the `inbox_schema_json` canonical object (HEP-0034 §6.2 requires it there); the broker derives stored `inbox_packing` from the once-parsed spec. |
 
 ### 5b.6 Canonical wire schema — CONSUMER_REG_REQ (consumer → broker)
 
@@ -3109,7 +3112,10 @@ classDiagram
 | `expected_schema_packing` | string | OPTIONAL | HEP-0034 §10.3 | schema validation | Expected packing |
 | `expected_flexzone_blds` | string | OPTIONAL | HEP-0034 Phase 5a | flexzone schema validation | Expected flexzone structure |
 | `expected_flexzone_packing` | string | OPTIONAL | HEP-0034 Phase 5a | flexzone schema validation | Expected flexzone packing |
-| `inbox_endpoint`, `inbox_schema_json`, `inbox_packing`, `inbox_checksum` | string | OPTIONAL | per `ProducerRegInputs` parity | mirrored to `ConsumerEntry.inbox_*` | Inbox companion fields |
+| `inbox_endpoint`, `inbox_schema_json`, `inbox_checksum` | string | OPTIONAL | per `ProducerRegInputs` parity (packing rides IN-OBJECT in `inbox_schema_json`; the separate `inbox_packing` field is retired — see Forbidden below) | mirrored to `ConsumerEntry.inbox_*`; stored `inbox_packing` derived from the parsed spec | Inbox companion fields |
+| `abi_fingerprint` | object | YES | `version::to_json_object(current())` | `verify_peer_versions` + `classify_peer_verdict` (HEP-0032 §8) | 7-axis wire/ABI compatibility carrier |
+| `build_id` | string | OPTIONAL (present iff `PYLABHUB_HAVE_BUILD_ID`) | `version::build_id()` | §8.6 verdict logging | Git build id — SIBLING of `abi_fingerprint` (HEP-0032 §8.2) |
+| `channel_topology` | string | OPTIONAL | `RoleConfig` topology declaration | topology admission; drives the consumer-opens-channel path under fan-in | `fan-in` \| `fan-out` \| `one-to-one` |
 | `consumer_pid` | uint64 | OPTIONAL | `platform::get_pid()` | `ConsumerEntry.consumer_pid` | Diagnostics |
 | `consumer_hostname` | string | OPTIONAL | hostname | `ConsumerEntry.consumer_hostname` | Diagnostics |
 | `correlation_id` | string | OPTIONAL | BRC RPC layer | echoed | RPC correlation |
@@ -3119,6 +3125,7 @@ classDiagram
 | Wire field | Status | Reason |
 |---|---|---|
 | `consumer_queue_type` | DELETE | Subsumed by `data_transport` (which is now REQUIRED symmetrically with REG_REQ). Deletion landed 2026-07-24: the broker's `handle_consumer_reg_req` no longer reads it and the typed `ConsumerRegReqBody` exposes no accessor for it — arbitration runs on `data_transport` only. |
+| `inbox_packing` | DELETE (retired 2026-07-24, HEP-0046 B.2) | Packing rides IN-OBJECT in `inbox_schema_json` (HEP-0034 §6.2); stored `inbox_packing` is derived from the once-parsed spec. |
 
 **Transport arbitration semantics** (explicit, 2026-07-24 — this is what
 "transport negotiation" in the `data_transport` row above means).  The
@@ -3146,6 +3153,9 @@ by which of the two admission paths the CONSUMER_REG_REQ takes:
 | `producers[].role_uid` | string | YES | `ProducerEntry.role_uid` | per-peer logs / metrics | Producer's role_uid |
 | `producers[].pubkey_z85` | Z85 (40) | YES | `ProducerEntry.zmq_pubkey` | data-plane CURVE `curve_serverkey` (ZMQ) or `crypto_box` peer key (SHM §5.5) | Producer's identity CURVE pubkey |
 | `producers[].endpoint` | string | YES | when transport=zmq: `ProducerEntry.zmq_node_endpoint` (`"tcp://..."`); when transport=shm: `ProducerEntry.shm_capability_endpoint` (`"unix://..."`) | ZmqQueue connect target OR SHM accept-loop dial target | Producer's data-plane endpoint |
+| `broker_abi_fingerprint` | object | YES | `version::to_json_object(current())` | role-side `verify_peer_versions` (HEP-0032 §8) | Broker's 7-axis version/ABI carrier |
+| `broker_build_id` | string | OPTIONAL (present iff `PYLABHUB_HAVE_BUILD_ID`) | `version::build_id()` | §8.6 verdict logging | Broker's git build id (sibling of the fingerprint) |
+| `known_roles` | array | OPTIONAL | hub-wide allowlist projection | inbox-plane ZAP roster seed (§9.3 + HEP-0027 §3.5) | Hub-wide known-role pubkeys for inbox authorization |
 | `correlation_id` | string | echo if REQ had it | broker | BRC RPC layer | Echo of REQ.correlation_id |
 
 **Forbidden / removed wire fields**:
