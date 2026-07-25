@@ -1204,19 +1204,15 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel, const std::s
                                         std::string_view role_type, std::uint64_t applied_version,
                                         std::uint64_t instance_id, int timeout_ms)
 {
-    // HEP-CORE-0042 §5.5.2 wire.  Single wire; broker discriminates
-    // producer vs consumer branch on `role_type` per HEP-CORE-0036
-    // §I9.1.  `role_uid` populates BOTH `role_uid` (amended field)
-    // AND `producer_role_uid` (back-compat field for the producer
-    // branch) — broker's `handle_channel_auth_applied_req` reads
-    // `role_uid` when present and falls back to `producer_role_uid`
-    // otherwise, so writing both keeps a single caller shape and
-    // preserves the ack echo semantics for any older broker that
-    // hasn't taken the §5.5.2 amendment.
+    // HEP-CORE-0042 §5.5.2 strict wire (2026-07-24 amendment): single
+    // shape, no conditional fields.  `role_type` is the REQUIRED
+    // binding-side discriminator; `instance_id` is always present
+    // (producer echoes the §5.5.3 shift number, consumer passes 0 and
+    // the broker ignores it).  The historical `producer_role_uid`
+    // alias is retired — neither written here nor read by the broker.
     nlohmann::json opts;
     opts["channel_name"] = channel;
     opts["role_uid"] = role_uid;
-    opts["producer_role_uid"] = role_uid;
     opts["role_type"] = std::string(role_type);
     opts["applied_version"] = applied_version;
     opts["instance_id"] = instance_id;

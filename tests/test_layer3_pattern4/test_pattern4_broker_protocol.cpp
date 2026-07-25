@@ -940,7 +940,12 @@ TEST_F(Pattern4BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
     broker.signal_quit();
 }
 
-// ─── Transport arbitration (producer transport vs consumer_queue_type) ─────
+// ─── Transport arbitration (producer transport vs consumer data_transport) ─
+//
+// HEP-CORE-0036 §5b.6: `data_transport` is REQUIRED on CONSUMER_REG_REQ and
+// must equal the channel's stored transport or the broker rejects with
+// TRANSPORT_MISMATCH.  (The pre-§5b.6 `consumer_queue_type` field is
+// retired — "Forbidden / removed" — and the broker no longer reads it.)
 
 TEST_F(Pattern4BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fails)
 {
@@ -970,8 +975,9 @@ TEST_F(Pattern4BrokerProtocolTest, TransportMismatch_ShmProducer_ZmqConsumer_Fai
     ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
 
     auto cons = make_wire_client(ctx, setup, cons_uid);
-    auto cbody = consumer_reg_body(setup, channel, cons_uid);
-    cbody["consumer_queue_type"] = "zmq";
+    // SHM channel, consumer DECLARES data_transport="zmq" — §5b.6 mismatch.
+    auto cbody = consumer_reg_body(setup, channel, cons_uid, /*topology=*/{},
+                                   /*data_transport=*/"zmq");
     auto cr = cons.request("CONSUMER_REG_REQ", cbody, "CONSUMER_REG_ACK",
                            milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(cr.has_value()) << "broker should respond with ERROR, not silent timeout";
@@ -1008,8 +1014,9 @@ TEST_F(Pattern4BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succee
     ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
 
     auto cons = make_wire_client(ctx, setup, cons_uid);
-    auto cbody = consumer_reg_body(setup, channel, cons_uid);
-    cbody["consumer_queue_type"] = "shm";
+    // SHM channel, consumer DECLARES data_transport="shm" — §5b.6 match.
+    auto cbody = consumer_reg_body(setup, channel, cons_uid, /*topology=*/{},
+                                   /*data_transport=*/"shm");
     auto cr = cons.request("CONSUMER_REG_REQ", cbody, "CONSUMER_REG_ACK",
                            milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(cr.has_value()) << "CONSUMER_REG_REQ timed out";
@@ -1019,15 +1026,20 @@ TEST_F(Pattern4BrokerProtocolTest, TransportMatch_ShmConsumer_ShmProducer_Succee
     broker.signal_quit();
 }
 
-TEST_F(Pattern4BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
+// §5b.6 has no "no declaration" case — `data_transport` is REQUIRED and the
+// handler validates the VALUE ∈ {"shm","zmq"} before the mismatch check
+// (mirrors the producer-side #281 handling).  This replaces the retired
+// `TransportMatch_NoDriverField_AlwaysSucceeds`, which pinned the abolished
+// "omitted consumer_queue_type → arbitration skipped" behavior.
+TEST_F(Pattern4BrokerProtocolTest, TransportValue_Bogus_RejectedInvalidRequest)
 {
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
-    const std::string channel = "proto.transport.nofield" + suffix;
+    const std::string channel = "proto.transport.badvalue" + suffix;
     const std::string prod_uid = "prod." + channel;
     const std::string cons_uid = "cons." + channel;
 
-    const fs::path temp_dir = make_test_temp_dir("broker_protocol_tx_nofield");
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_tx_badvalue");
     const auto setup = make_pattern4_setup({prod_uid, cons_uid});
     write_pattern4_setup(setup, temp_dir / "setup.json");
 
@@ -1045,12 +1057,13 @@ TEST_F(Pattern4BrokerProtocolTest, TransportMatch_NoDriverField_AlwaysSucceeds)
     ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
 
     auto cons = make_wire_client(ctx, setup, cons_uid);
-    // No consumer_queue_type field — broker skips transport arbitration.
-    auto cr = cons.request("CONSUMER_REG_REQ", consumer_reg_body(setup, channel, cons_uid),
+    auto cr = cons.request("CONSUMER_REG_REQ",
+                           consumer_reg_body(setup, channel, cons_uid, /*topology=*/{},
+                                             /*data_transport=*/"bogus"),
                            "CONSUMER_REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
-    ASSERT_TRUE(cr.has_value()) << "CONSUMER_REG_REQ timed out";
-    EXPECT_EQ(cr->value("status", std::string{}), "success")
-        << "omitted consumer_queue_type must succeed; body=" << cr->dump();
+    ASSERT_TRUE(cr.has_value()) << "broker should respond with ERROR, not silent timeout";
+    EXPECT_EQ(cr->value("status", std::string{}), "error");
+    EXPECT_EQ(cr->value("error_code", std::string{}), "INVALID_REQUEST") << "body=" << cr->dump();
 
     broker.signal_quit();
 }

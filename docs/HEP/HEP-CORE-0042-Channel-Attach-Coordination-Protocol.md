@@ -170,7 +170,7 @@ Broker tracks three counters:
 
 - `channel_version[K]` — monotonic `uint64_t` per channel, bumped on ANY mutation to `ChannelAccessIndex[K]` (add / remove / any consumer pubkey change).  Shared across all producers on channel K.  Width MUST be at least 64 bits: at 1 mutation/ms, wraparound is >584 million years — practically infinite.
 - `confirmed_version[K][P]` — per-(channel, producer) `uint64_t`; the highest allowlist snapshot version producer P's current instance has confirmed applying via `CHANNEL_AUTH_APPLIED_REQ`.  Reset to 0 on producer P disconnect (ROUTER-observed / kDead heartbeat), producer re-registration, or broker restart.
-- `instance[P]` — monotonic `uint64_t` per producer role_uid, incremented on every registration.  Broker returns the current value in `PRODUCER_REG_ACK` (§5.5.3); producer echoes it on every `CHANNEL_AUTH_APPLIED_REQ` (§5.5.2).  Broker rejects any APPLIED_REQ whose `instance_id` doesn't match the current `instance[P]`.
+- `instance[P]` — monotonic `uint64_t` per producer role_uid, incremented on every registration.  Broker returns the current value in `PRODUCER_REG_ACK` (§5.5.3); producer echoes it on every `CHANNEL_AUTH_APPLIED_REQ` (§5.5.2).  Broker rejects any producer-branch APPLIED_REQ whose `instance_id` doesn't match the current `instance[P]` (consumers send `0`; the consumer branch never reads it — §5.5.3 "what instance_id is and is not").
 
 **Total broker state:** `M + M·N + N` integers for M channels × N producers.  The instance guard adds one integer per producer.
 
@@ -331,6 +331,21 @@ Direction: consumer → broker.
 > current-state" bugs entirely — see INVARIANT-BIND-CONFIRM-1..3
 > in §5.5.2.1 below.  Wire is UNCHANGED: `applied_version` is
 > the only per-message state; no field addition.
+>
+> **Amendment 2026-07-24 (migration window closed — strict wire).**
+> The 2026-07-11 amendment kept two lenient clauses so pre-amendment
+> producer emitters stayed wire-compatible during the rollout:
+> `role_type` absent defaulted to `"producer"`, and the historical
+> `producer_role_uid` name was accepted as a `role_uid` alias.  Both
+> emitters were unified on the amended wire in the same arc — every
+> live sender routes through `BrokerRequestComm::channel_auth_applied`,
+> which has always written `role_uid` + `role_type` + `instance_id` —
+> so the lenient clauses described traffic that can no longer occur.
+> They are retired: `role_type` is REQUIRED, `producer_role_uid` is
+> neither written nor read, and `instance_id` is always present
+> (producer echoes the §5.5.3 shift number; consumer sends `0`,
+> broker ignores it on the consumer branch).  One wire shape; no
+> conditional fields; no grace path.
 
 Direction: binding-side role → broker.  Sent after the binding-side role's per-connection auth cache (ZAP allowlist) has successfully applied the pulled allowlist snapshot.  Used by the broker to answer the mirror-side dialing role's `CHECK_PEER_READY_REQ` (HEP-CORE-0036 §6.6.3) — "has the guard's clipboard actually been updated so my handshake will admit?".
 
@@ -345,9 +360,20 @@ Direction: binding-side role → broker.  Sent after the binding-side role's per
 }
 ```
 
-- `role_uid` — the calling role's uid.  Historical field name `producer_role_uid` is accepted for back-compat when `role_type` is absent or `"producer"`.
-- `role_type` — one of `"producer"` or `"consumer"`.  Absent defaults to `"producer"` (back-compat with the pre-amendment wire).
-- `instance_id` — REQUIRED for `role_type="producer"` (producer's shift number per §5.5.3, closes the stale-instance race for producer paths).  MUST be omitted / ignored for `role_type="consumer"` (consumers do not have `instance[C]` state — a consumer's re-registration re-runs the entire notify-then-pull cycle before it can call APPLIED_REQ again, so there is no stale-message race to close).
+- `role_uid` — the calling role's uid.  (The historical `producer_role_uid`
+  field name is retired — see the 2026-07-24 amendment below.  It is neither
+  written by any sender nor read by the broker.)
+- `role_type` — REQUIRED, one of `"producer"` or `"consumer"`: the
+  binding-side discriminator the broker branches on.  The typed
+  `ChannelAuthAppliedReqBody` constructor rejects an absent field as
+  `BODY_SCHEMA_VIOLATION` before the handler runs.
+- `instance_id` — always present (single wire shape, no conditional fields).
+  For `role_type="producer"` it is the REG_ACK shift number (nonzero,
+  §5.5.3) and closes the stale-instance race.  For `role_type="consumer"`
+  it is sent as `0` and the broker ignores it — consumers have no
+  `instance[C]` state, because a consumer's re-registration re-runs the
+  entire notify-then-pull cycle before it can send another APPLIED_REQ, so
+  there is no stale-message race to close on that side.
 - `applied_version` — the `snapshot_version` from the preceding `GET_CHANNEL_AUTH_ACK`.
 
 **Broker handler branch by `role_type`** (unified 2026-07-13):
@@ -396,6 +422,60 @@ Existing wire (HEP-CORE-0036 §6.2).  This HEP adds one integer field:
 Broker assigns per registration (first-time or re-registration).  Producer stores + echoes on every APPLIED_REQ.  Every re-registration increments and returns a NEW `instance_id`.
 
 Zero new round-trips: rides on the existing register handshake.
+
+##### Definition — what `instance_id` is
+
+`instance_id` is a **fencing token**: a broker-owned, per-`role_uid`
+generation counter that stamps WHICH registration epoch ("shift") of a
+producer minted a message.  Plain-language contract:
+
+- **It is NOT identity.**  `role_uid` alone identifies a producer,
+  everywhere in the system.  Two different producers never compare
+  `instance_id`s; the token only ever compares two messages from the
+  SAME `role_uid` — the live incarnation versus a dead predecessor.
+- **It is NOT an index or lookup key.**  Nothing is stored under it,
+  nothing is resolved through it, and it plays no part in fan-in /
+  fan-out topology bookkeeping.  Broker-side it is the VALUE in the
+  `producer_instance[role_uid]` map, consumed by exactly one equality
+  check (§5.5.2 producer branch).
+- **Why `role_uid` alone cannot close the gap:** an APPLIED_REQ minted
+  by the previous, now-dead incarnation carries the same `role_uid` AND
+  the same CURVE identity as the live one (identity keys persist across
+  restarts).  The shift number is the only mark distinguishing the two.
+
+##### Integration — where it lives, hop by hop
+
+| # | Component | Action | Carried in / stored as |
+|---|---|---|---|
+| 1 | Broker (`HubState`) | **Mint**: increments `producer_instance[role_uid]` on EVERY producer registration (first or re-REG) | broker-side map entry |
+| 2 | Broker → producer | **Issue**: current value rides on the registration reply | `REG_ACK.instance_id` (this section's field) |
+| 3 | Producer role host (`RoleAPIBase`) | **Store**: hard-errors if REG_ACK carries missing/zero `instance_id`; keeps the value for the session | in-process atomic |
+| 4 | Producer → broker (`BrokerRequestComm`) | **Echo**: stamps the stored value on every allowlist confirmation | `CHANNEL_AUTH_APPLIED_REQ.instance_id` (§5.5.2) |
+| 5 | Broker (APPLIED_REQ handler, producer branch) | **Check**: echoed value `==` current `producer_instance[role_uid]`, else the message is from a dead shift → silent drop, `confirmed_version` untouched | one equality check |
+
+Consumers never enter this cycle: they have no `instance[C]` state (a
+consumer re-registration re-runs the entire notify-then-pull cycle
+before it can send another APPLIED_REQ), so they stamp `0` at hop 4 and
+the broker's consumer branch skips hop 5 entirely.
+
+The race the token closes:
+
+```mermaid
+sequenceDiagram
+    participant P1 as Producer P — instance 1
+    participant B as Broker
+    participant P2 as Producer P — instance 2 (restart)
+
+    P1->>B: REG_REQ
+    B->>P1: REG_ACK{instance_id=1}
+    P1--)B: APPLIED_REQ{role_uid=P, role_type="producer",<br/>instance_id=1, applied_version=V}
+    Note over P1: crashes — message still in flight
+    P2->>B: REG_REQ (same role_uid, same CURVE keys)
+    Note over B: instance[P] := 2<br/>confirmed_version[K][P] reset — fresh ZAP guard has nothing applied
+    B->>P2: REG_ACK{instance_id=2}
+    Note over B: stale APPLIED_REQ from step 3 arrives:<br/>instance_id 1 ≠ instance[P] 2 → silent drop
+    Note over B: without the guard the broker would record "P applied V"<br/>against an instance whose guard is empty, then answer<br/>CHECK_PEER_READY / drain the attach queue and wave the<br/>dialing peer into a handshake that ZAP-denies
+```
 
 #### 5.5.4 Reused wires from HEP-CORE-0036
 
@@ -747,7 +827,7 @@ sequenceDiagram
 
     Note over P: set_peer_allowlist(allowlist) OK
 
-    P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, instance_id=I, applied_version=W}
+    P->>B: CHANNEL_AUTH_APPLIED_REQ{channel, role_uid=P,<br/>role_type="producer", instance_id=I, applied_version=W}
     Note over B: check instance_id=I matches instance[P]; else drop
     B->>P: {status="ok"}
     Note over B: confirmed_version[K][P] = W<br/>drain pending_attach_queue

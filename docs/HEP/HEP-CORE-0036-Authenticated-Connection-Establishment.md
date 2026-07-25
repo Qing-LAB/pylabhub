@@ -3050,7 +3050,7 @@ classDiagram
 |---|---|---|---|---|---|
 | `channel_name` | string | YES | `Presence.channel` | `ChannelEntry.name` (lookup/create key) | Channel identifier |
 | `role_uid` | string | YES | `Impl.role_uid` | `ProducerEntry.role_uid`, identity verification | Unique role ID, e.g. `"prod.l4shm.uid12345678"` |
-| `role_name` | string | YES | `Impl.role_name` | `ProducerEntry.role_name` | Human display label |
+| `role_name` | string | OPTIONAL | `Impl.role_name` | `ProducerEntry.role_name` | Human display label — redundant with the name component embedded in `role_uid`; optionality rationale owned by HEP-CORE-0046 §14.3 |
 | `role_type` | string | YES | `Impl.role_type` ∈ `{"producer","processor"}` | identity-policy tag check | Classification only — see §5b.10 |
 | `data_transport` | string | YES | `RoleConfig.out_transport` ∈ `{"shm","zmq"}` | `ChannelEntry.data_transport` | Explicit transport (§6.1) |
 | `zmq_pubkey` | Z85 (40 chars) | YES | `KeyStore::pubkey("role_identity")` | `ProducerEntry.zmq_pubkey`, verified against `known_roles[role_uid].pubkey_z85` | Role identity CURVE pubkey |
@@ -3099,7 +3099,7 @@ classDiagram
 |---|---|---|---|---|---|
 | `channel_name` | string | YES | `Presence.channel` | `ChannelEntry.name` lookup | Channel to subscribe to |
 | `role_uid` | string | YES | `Impl.role_uid` | `ConsumerEntry.role_uid`, identity verification | Unique consumer ID |
-| `role_name` | string | YES | `Impl.role_name` | `ConsumerEntry.role_name` | Human display label |
+| `role_name` | string | OPTIONAL | `Impl.role_name` | `ConsumerEntry.role_name` | Human display label — redundant with the name component embedded in `role_uid`; optionality rationale owned by HEP-CORE-0046 §14.3 |
 | `role_type` | string | YES | `Impl.role_type` ∈ `{"consumer","processor"}` | identity-policy tag check | Classification |
 | `data_transport` | string | YES | `RoleConfig.in_transport` ∈ `{"shm","zmq"}` | transport negotiation (must match channel's transport) | Must equal `ChannelEntry.data_transport` or REJECT |
 | `zmq_pubkey` | Z85 (40) | YES | `KeyStore::pubkey("role_identity")` | `ConsumerEntry.zmq_pubkey`, added to `ChannelAccessEntry.authorized_consumer_pubkeys` | Consumer CURVE identity (allowlist key) |
@@ -3118,7 +3118,18 @@ classDiagram
 
 | Wire field | Status | Reason |
 |---|---|---|
-| `consumer_queue_type` | DELETE | Subsumed by `data_transport` (which is now REQUIRED symmetrically with REG_REQ). |
+| `consumer_queue_type` | DELETE | Subsumed by `data_transport` (which is now REQUIRED symmetrically with REG_REQ). Deletion landed 2026-07-24: the broker's `handle_consumer_reg_req` no longer reads it and the typed `ConsumerRegReqBody` exposes no accessor for it — arbitration runs on `data_transport` only. |
+
+**Transport arbitration semantics** (explicit, 2026-07-24 — this is what
+"transport negotiation" in the `data_transport` row above means).  The
+broker validates the VALUE first (`∈ {"shm","zmq"}`, else
+`INVALID_REQUEST` — symmetric with producer-side #281), then arbitrates
+by which of the two admission paths the CONSUMER_REG_REQ takes:
+
+| Path | Condition | Rule |
+|---|---|---|
+| Join existing channel | `ChannelEntry` exists | consumer's `data_transport` MUST equal `ChannelEntry.data_transport`, else `TRANSPORT_MISMATCH`.  Unconditional — there is no "declaration omitted → arbitration skipped" case (that was the retired `consumer_queue_type` behavior). |
+| Consumer opens channel (fan-in first arrival, HEP-CORE-0017 §3.3.0 binding-side rule) | no `ChannelEntry` yet, declared topology `fan-in` | there is nothing to equal yet — the consumer's declared `data_transport` BECOMES `ChannelEntry.data_transport` (stored by the atomic `_on_consumer_joined`), and subsequent producer REG_REQs must match it.  No silent default.  `fan-in × "shm"` is rejected inside the same atomic op (`TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT`), so the open path is `"zmq"` on every admissible input today. |
 
 ### 5b.7 Canonical wire schema — CONSUMER_REG_ACK (broker → consumer)
 

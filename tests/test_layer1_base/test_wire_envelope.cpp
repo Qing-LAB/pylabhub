@@ -622,23 +622,28 @@ TEST(WireBodies, GetChannelAuthAckBodyValidatesAllFields)
     EXPECT_EQ(b.allowlist().size(), 2U);
 }
 
-// ── ChannelAuthAppliedReqBody: channel_name, role_uid, applied_version,
-//    instance_id + security triple.
+// ── ChannelAuthAppliedReqBody: channel_name, role_uid, role_type,
+//    applied_version, instance_id + security triple (HEP-CORE-0042
+//    §5.5.2 strict wire — role_type REQUIRED since the 2026-07-24
+//    amendment closed the migration window; instance_id always
+//    present, consumers send 0).
 TEST(WireBodies, ChannelAuthAppliedReqBodyValidatesAllFields)
 {
     nlohmann::json body;
     body["channel_name"] = "lab.x";
     body["role_uid"] = "cons.uid1";
+    body["role_type"] = "consumer";
     body["applied_version"] = 5ULL;
-    body["instance_id"] = 3ULL;
+    body["instance_id"] = 0ULL; // consumer shape: 0, ignored by broker
     body["client_nonce"] = "n1";
     body["client_wall_ts"] = 1ULL;
     body["envelope_hash"] = "deadbeef";
     pylabhub::wire::ChannelAuthAppliedReqBody b(std::move(body));
     EXPECT_EQ(b.channel_name(), "lab.x");
     EXPECT_EQ(b.role_uid(), "cons.uid1");
+    EXPECT_EQ(b.role_type(), "consumer");
     EXPECT_EQ(b.applied_version(), 5ULL);
-    EXPECT_EQ(b.instance_id(), 3ULL);
+    EXPECT_EQ(b.instance_id(), 0ULL);
     EXPECT_EQ(b.client_nonce(), "n1");
     EXPECT_EQ(b.client_wall_ts(), 1ULL);
 }
@@ -648,11 +653,30 @@ TEST(WireBodies, ChannelAuthAppliedReqBodyRejectsMissingAppliedVersion)
     nlohmann::json body;
     body["channel_name"] = "lab.x";
     body["role_uid"] = "cons.uid1";
+    body["role_type"] = "consumer";
     body["instance_id"] = 3ULL;
     body["client_nonce"] = "n1";
     body["client_wall_ts"] = 1ULL;
     body["envelope_hash"] = "deadbeef";
     // applied_version omitted
+    EXPECT_THROW(pylabhub::wire::ChannelAuthAppliedReqBody{std::move(body)}, WireBodyError);
+}
+
+// Pins the 2026-07-24 HEP-0042 §5.5.2 amendment: the migration-era
+// "absent role_type defaults to producer" clause is retired — an
+// APPLIED_REQ without role_type is a BODY_SCHEMA_VIOLATION at
+// construction, it never reaches the handler.
+TEST(WireBodies, ChannelAuthAppliedReqBodyRejectsMissingRoleType)
+{
+    nlohmann::json body;
+    body["channel_name"] = "lab.x";
+    body["role_uid"] = "prod.uid1";
+    body["applied_version"] = 5ULL;
+    body["instance_id"] = 3ULL;
+    body["client_nonce"] = "n1";
+    body["client_wall_ts"] = 1ULL;
+    body["envelope_hash"] = "deadbeef";
+    // role_type omitted
     EXPECT_THROW(pylabhub::wire::ChannelAuthAppliedReqBody{std::move(body)}, WireBodyError);
 }
 

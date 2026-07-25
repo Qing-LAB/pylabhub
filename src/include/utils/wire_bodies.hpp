@@ -359,14 +359,15 @@ public:
 {
     return detail::read_string_or_empty(body_, "consumer_hostname");
 }
-// Consumer's preferred queue transport ("shm"|"zmq") — OPTIONAL; the broker
-// arbitrates it against the channel's stored `data_transport`.
-[[nodiscard]] std::string consumer_queue_type() const
-{
-    return detail::read_string_or_empty(body_, "consumer_queue_type");
-}
+// (`consumer_queue_type` is NOT exposed: "Forbidden / removed" per
+// HEP-CORE-0036 §5b.6 — subsumed by the REQUIRED `data_transport` above,
+// which the broker arbitrates against the channel's stored transport.)
+//
 // Expected schema owner for a named citation — OPTIONAL (consumer twin of the
-// producer's `schema_owner`).
+// producer's `schema_owner`).  ⚠ Not yet in the HEP-0036 §5b.6 canonical
+// catalog and named differently from HEP-0034's citation flow
+// (`schema_owner`); production consumers do not send it.  Logged for the
+// #72 HEP↔code reconciliation — do not extend its use until resolved.
 [[nodiscard]] std::string expected_schema_owner() const
 {
     return detail::read_string_or_empty(body_, "expected_schema_owner");
@@ -445,9 +446,8 @@ public:
     return detail::read_string(body_, "role_uid");
 }
 // Binding-side role of the applier (HEP-CORE-0042 §5.5.2): "producer" |
-// "consumer" | "processor".  The broker discriminates its branch on this and
-// checks registration by (channel, role_uid, role_type).  Absent → the handler
-// treats it as "producer" (producer-only back-compat wire).
+// "consumer".  REQUIRED — the broker discriminates its branch on this and
+// checks registration by (channel, role_uid, role_type).
 [[nodiscard]] std::string role_type() const
 {
     return detail::read_string(body_, "role_type");

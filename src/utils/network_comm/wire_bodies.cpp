@@ -246,12 +246,21 @@ EndpointUpdateReqBody::EndpointUpdateReqBody(nlohmann::json body)
     d::require_security_triple(body_);
 }
 
+// ChannelAuthAppliedReqBody — HEP-CORE-0042 §5.5.2.  `role_type` is the
+// REQUIRED binding-side discriminator ("producer" | "consumer"); the
+// 2026-07-11 amendment's absent→"producer" default was migration-window
+// text for pre-amendment producer emitters and is retired — every live
+// sender (BRC channel_auth_applied) has always written it.
 ChannelAuthAppliedReqBody::ChannelAuthAppliedReqBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
     d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "role_type", d::JsonKind::String);
     d::require(body_, "applied_version", d::JsonKind::U64);
+    // Always present on the single wire shape: producers echo the
+    // REG_ACK shift number (nonzero, §5.5.3); consumers send 0 and the
+    // broker's consumer branch ignores it (no instance[C] state).
     d::require(body_, "instance_id", d::JsonKind::U64);
     d::require_security_triple(body_);
 }

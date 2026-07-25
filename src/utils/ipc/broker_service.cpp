@@ -3202,20 +3202,34 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
         }
     }
 
-    // ── Transport arbitration (Phase 6) ─────────────────────────────────────
-    // Transport-vs-channel check only meaningful when the channel
-    // exists.  On the consumer-opens-channel path (fan-in first
-    // arrival) `consumer_queue_type` becomes the channel's transport
-    // invariant (set inside `_on_consumer_joined`).
-    const std::string consumer_queue_type = body.consumer_queue_type();
-    if (!consumer_will_open_channel && !consumer_queue_type.empty() &&
-        consumer_queue_type != channel_entry.data_transport)
+    // ── Transport arbitration (HEP-CORE-0036 §5b.6) ─────────────────────────
+    // `data_transport` is the REQUIRED transport declaration on
+    // CONSUMER_REG_REQ, symmetric with REG_REQ (C9 resolution; the ctor
+    // enforces presence + type, the handler validates the VALUE per
+    // §14.7).  The retired `consumer_queue_type` wire field ("Forbidden /
+    // removed" per §5b.6) is no longer read.  Against an existing channel
+    // the declaration must equal the channel's stored transport or the
+    // REG is rejected; on the consumer-opens-channel path (fan-in first
+    // arrival) it becomes the channel's transport invariant (set inside
+    // `_on_consumer_joined`) — no silent default.
+    const std::string consumer_transport = body.data_transport();
+    if (consumer_transport != "shm" && consumer_transport != "zmq")
+    {
+        LOGGER_WARN("Broker: CONSUMER_REG_REQ rejected — channel '{}' role_uid='{}' "
+                    "`data_transport`='{}' is not one of {{\"shm\",\"zmq\"}} "
+                    "(HEP-CORE-0036 §5b.6).",
+                    channel_name, role_uid, consumer_transport);
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_REG_REQ `data_transport`='" + consumer_transport +
+                              "' is invalid; expected 'shm' or 'zmq'");
+    }
+    if (!consumer_will_open_channel && consumer_transport != channel_entry.data_transport)
     {
         LOGGER_WARN("Broker: CONSUMER_REG_REQ transport mismatch on '{}': "
-                    "consumer wants '{}' but channel uses '{}'",
-                    channel_name, consumer_queue_type, channel_entry.data_transport);
+                    "consumer declares '{}' but channel uses '{}'",
+                    channel_name, consumer_transport, channel_entry.data_transport);
         return make_error(corr_id, "TRANSPORT_MISMATCH",
-                          "Consumer queue_type '" + consumer_queue_type +
+                          "Consumer data_transport '" + consumer_transport +
                               "' does not match channel transport '" +
                               channel_entry.data_transport + "'");
     }
@@ -3397,7 +3411,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
         open_schema = std::move(s);
 
         pylabhub::hub::ChannelTransportInvariants t;
-        t.data_transport = consumer_queue_type.empty() ? std::string{"zmq"} : consumer_queue_type;
+        // §5b.6: the consumer's REQUIRED declaration (value-validated
+        // above) is the channel's transport invariant — no silent
+        // default.  A fan-in × "shm" declaration is rejected by the
+        // topology×transport admissibility check inside the atomic
+        // `_on_consumer_joined` (TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT).
+        t.data_transport = consumer_transport;
         open_transport = std::move(t);
     }
     const auto cons_admission =
@@ -4242,14 +4261,11 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     const std::string corr_id = std::string(env.correlation_id());
     const std::string channel_name = body.channel_name();
     // HEP-CORE-0042 §5.5.2: the broker discriminates its producer vs consumer
-    // branch on `role_type`; absent → "producer" (producer-only back-compat
-    // wire).  `role_uid` is the applier's identity; the legacy `producer_role_uid`
-    // wire alias is retired — the current wire always carries `role_uid` (the BRC
-    // still writes a duplicate `producer_role_uid` for pre-amendment brokers,
-    // which this broker ignores).
-    std::string role_type = body.role_type();
-    if (role_type.empty())
-        role_type = "producer";
+    // branch on `role_type` — REQUIRED "producer" | "consumer" (the ctor
+    // enforces presence; the amendment-era absent→"producer" default and the
+    // `producer_role_uid` wire alias are retired).  `role_uid` is the
+    // applier's identity.
+    const std::string role_type = body.role_type();
     const std::string role_uid = body.role_uid();
     const std::uint64_t incoming_instance = body.instance_id();
     const std::uint64_t applied_version = body.applied_version();
@@ -4328,7 +4344,7 @@ nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     {
         return make_error(corr_id, "INVALID_REQUEST",
                           "CHANNEL_AUTH_APPLIED_REQ role_type must be 'producer' "
-                          "or 'consumer' (or absent for producer back-compat)");
+                          "or 'consumer'");
     }
 
     // §5.4 step (a): stale-instance guard.  If the echoed instance_id

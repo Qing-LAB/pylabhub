@@ -86,9 +86,9 @@ class Pattern4WireTest : public pylabhub::tests::IsolatedProcessTest
 
     /// Pure REG_REQ body builder (no wire I/O, no assertions).  Lets
     /// error-path tests inspect the reply and success-path tests add
-    /// extra body fields (schema_hash, consumer_queue_type, …).  Pubkey
-    /// comes from the shared curve setup; `shm=true` selects the SHM
-    /// capability transport, else ZMQ on an unused port.
+    /// extra body fields (schema_hash, …).  Pubkey comes from the
+    /// shared curve setup; `shm=true` selects the SHM capability
+    /// transport, else ZMQ on an unused port.
     nlohmann::json producer_reg_body(const Pattern4Setup &setup, const std::string &channel,
                                      const std::string &uid, bool shm,
                                      const std::string &topology = {})
@@ -114,19 +114,22 @@ class Pattern4WireTest : public pylabhub::tests::IsolatedProcessTest
         return pylabhub::hub::build_producer_reg_payload(in);
     }
 
-    /// Pure CONSUMER_REG_REQ body builder.  data_transport="zmq" mirrors
-    /// the make_cons_opts default; transport arbitration keys off the
-    /// separate `consumer_queue_type` field, which callers add when a
-    /// transport-match test needs it.
+    /// Pure CONSUMER_REG_REQ body builder.  `data_transport` is the
+    /// REQUIRED transport declaration the broker arbitrates against the
+    /// channel's stored transport (HEP-CORE-0036 §5b.6; the retired
+    /// `consumer_queue_type` field is no longer read).  Default "zmq"
+    /// mirrors the make_cons_opts default; transport-arbitration tests
+    /// pass the mismatching / matching value explicitly.
     nlohmann::json consumer_reg_body(const Pattern4Setup &setup, const std::string &channel,
-                                     const std::string &uid, const std::string &topology = {})
+                                     const std::string &uid, const std::string &topology = {},
+                                     const std::string &data_transport = "zmq")
     {
         pylabhub::hub::ConsumerRegInputs in;
         in.channel = channel;
         in.role_uid = uid;
         in.role_name = "test_consumer";
         in.role_type = "consumer";
-        in.data_transport = "zmq";
+        in.data_transport = data_transport;
         in.channel_topology = topology;
         in.zmq_pubkey = setup.curve.role(uid).public_z85;
         return pylabhub::hub::build_consumer_reg_payload(in);

@@ -24,6 +24,40 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### Wire-field reconciliation — APPLIED_REQ strict contract + consumer transport (2026-07-24) ✅
+
+- **CHANNEL_AUTH_APPLIED_REQ strict wire** (HEP-0042 §5.5.2 amendment
+  2026-07-24, migration window closed): `role_type` REQUIRED
+  ("producer"|"consumer" — ctor `require`s it; the dead absent→"producer"
+  handler default deleted), `instance_id` always present (producer echoes the
+  §5.5.3 shift number; consumer sends 0, broker ignores), `producer_role_uid`
+  alias retired (BRC dual-write deleted; broker never read it).  §5.5.3 gained
+  the normative `instance_id` definition (fencing token — NOT identity, NOT an
+  index) + hop-by-hop integration table + crash-restart race diagram.  L1 pins:
+  `ChannelAuthAppliedReqBodyRejectsMissingRoleType` (+ fixture now carries
+  role_type / consumer-shape instance_id=0).
+- **Consumer transport arbitration moved onto `data_transport`** (HEP-0036
+  §5b.6): the handler now value-checks (`∈{shm,zmq}` else INVALID_REQUEST) and
+  arbitrates the REQUIRED `data_transport` (was: DELETE-scheduled
+  `consumer_queue_type`, which production never sent — the §5b.6 reject was
+  unenforced in production).  Fan-in open path stores the declared transport
+  (silent `"zmq"` default removed).  `consumer_queue_type()` accessor deleted.
+  §5b.6 gained the explicit two-path arbitration table.  L3 re-pins:
+  `TransportMismatch_ShmProducer_ZmqConsumer_Fails` +
+  `TransportMatch_ShmConsumer_ShmProducer_Succeeds` now drive
+  `data_transport`; `TransportMatch_NoDriverField_AlwaysSucceeds` (pinned the
+  abolished no-field-skips-arbitration behavior) replaced by
+  `TransportValue_Bogus_RejectedInvalidRequest`.
+- **HEP-0036 §5b.4/§5b.6 `role_name` rows** corrected YES→OPTIONAL (rationale
+  owned by HEP-0046 §14.3); HEP-0046 §14.3 catalog entries for
+  `ChannelAuthAppliedReqBody` (adds role_type) + `HeartbeatNotifyBody` (adds
+  role_type / producer_pid / metrics) reconciled with the shipped ctors.
+- Verified clean in the same field audit (no action): `instance_id` (live
+  HEP-0042 fencing token), `applied_version`, `snapshot_version`,
+  `broker_observer_pubkey_z85`, `producer_hostname`, `metadata`,
+  `consumer_pid`/`consumer_hostname`, `channel_topology`, `flexzone_*`,
+  `inbox_*`.
+
 ### PID is debug/record only — never a validation input (2026-07-24) ✅
 
 - **Design ratified**: a PID is machine-local and meaningless to a hub on
@@ -332,6 +366,19 @@ their accessors are already `read_string_or_empty` (harmless with the current
 deferred here as it is a band-family wire contract, out of scope for REG.  Doc
 flag lives at HEP-CORE-0046 §14.3 band-body entry.  Fold into the HEP↔code
 reconciliation pass (#72).
+
+### #72 reconciliation — `expected_schema_owner` is an uncanonical wire name (filed 2026-07-24)
+
+`ConsumerRegReqBody::expected_schema_owner()` (wire_bodies.hpp) is read by
+`handle_consumer_reg_req` (broker_service.cpp, consumer-opens-channel path:
+`s.schema_owner = body.expected_schema_owner()`), but the field appears in NO
+canonical schema: HEP-CORE-0036 §5b.6's CONSUMER_REG_REQ catalog has no owner
+field, and HEP-CORE-0034's citation flow names the citer's field `schema_owner`
+(no `expected_` prefix).  Production consumers (`build_consumer_reg_payload`)
+send no citation fields at all — only test helpers exercise it.  **Decision
+needed in the #72 pass:** either add an owner-citation field to the §5b.6/§10.2
+canonical tables under a single agreed name, or delete the accessor + broker
+read.  Do not extend its use meanwhile (warning comment sits on the accessor).
 
 ### Federation control-envelope bypass → fold into the federation redesign (filed 2026-07-22)
 

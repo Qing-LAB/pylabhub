@@ -218,7 +218,9 @@ json make_cons_opts(const std::string &channel, const std::string &uid)
         .role_uid = uid,
         .role_name = "L3TestConsumer",
         .role_type = "consumer",
-        .data_transport = "zmq",
+        // Mirrors this file's `make_reg_opts` (has_shm=true → SHM channel);
+        // must equal the channel transport per HEP-CORE-0036 §5b.6.
+        .data_transport = "shm",
         .zmq_pubkey =
             std::string{sec::secure().keys().pubkey(pylabhub::tests::role_keystore_name(uid))},
     });

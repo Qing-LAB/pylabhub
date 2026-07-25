@@ -175,6 +175,12 @@ class Pattern4AttachCoordinationTest : public IsolatedProcessTest
         in.channel = channel;
         in.role_uid = uid;
         in.role_name = uid.substr(uid.rfind('.') + 1);
+        // REQUIRED wire fields (ConsumerRegInputs documents empty as a
+        // caller bug): this suite is the ZMQ fan-out attach flow, and the
+        // broker arbitrates `data_transport` against the channel's stored
+        // transport (HEP-CORE-0036 §5b.6).
+        in.role_type = "consumer";
+        in.data_transport = "zmq";
         in.zmq_pubkey = pubkey;
         auto payload = pylabhub::hub::build_consumer_reg_payload(in);
         auto reply = client.request("CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",

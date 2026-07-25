@@ -253,9 +253,4 @@ make_reg_opts_with_explicit_pubkey(const std::string &channel, const std::string
                                    const std::string &zmq_pubkey,
                                    std::optional<uint64_t> producer_pid = std::nullopt);
 
-[[nodiscard]] nlohmann::json
-make_cons_opts_with_explicit_pubkey(const std::string &channel, const std::string &consumer_uid,
-                                    const std::string &zmq_pubkey,
-                                    std::optional<uint64_t> consumer_pid = std::nullopt);
-
 } // namespace pylabhub::tests

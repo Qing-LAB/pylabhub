@@ -2401,11 +2401,20 @@ brevity the class catalog below notes "+ security triple" or
 - **GetChannelAuthAckBody**: `status`, `allowlist`, `channel_version`
   + envelope_hash only.
 - **ChannelAuthAppliedReqBody**: `channel_name`, `role_uid`,
-  `applied_version`, `instance_id` + security triple.
+  `role_type` (REQUIRED binding-side discriminator, `"producer"` |
+  `"consumer"` — HEP-CORE-0042 §5.5.2, strict since the 2026-07-24
+  amendment closed the migration window), `applied_version`,
+  `instance_id` (always present: producer echoes the HEP-0042 §5.5.3
+  shift number, consumer sends `0` which the broker ignores) +
+  security triple.
 - **ChannelAuthAppliedAckBody**: `status`, `confirmed_version`
   + envelope_hash only.
-- **HeartbeatNotifyBody**: `channel_name`, `role_uid` + envelope_hash
-  only (presence maintenance; no state mutation).
+- **HeartbeatNotifyBody**: `channel_name`, `role_uid`, `role_type`
+  (presence rows are keyed on `(role_uid, channel, role_type)` per
+  HEP-CORE-0023 §2.5.2), plus optional `producer_pid` (debug/record
+  only) and optional `metrics` object (HEP-CORE-0019 §2.3 piggyback;
+  guarded accessor `has_metrics()`) + envelope_hash only (presence
+  maintenance; no admission-state mutation).
 - ~~**HeartbeatAckBody**~~: archaeological reference only — `HEARTBEAT_NOTIFY`
   is fire-and-forget, so there is no heartbeat ACK on the wire (`wire_bodies.hpp`).
 - **DeregReqBody**: `channel_name`, `role_uid` + security triple.

@@ -268,7 +268,12 @@ nlohmann::json make_cons_opts(const std::string &channel, const std::string &con
         .role_uid = consumer_uid,
         .role_name = "test_consumer",
         .role_type = "consumer",
-        .data_transport = "zmq",
+        // Mirrors `make_reg_opts` (has_shm=true → SHM channel): the consumer's
+        // declaration must equal the channel's stored transport or the broker
+        // rejects TRANSPORT_MISMATCH (HEP-CORE-0036 §5b.6 — enforced since
+        // 2026-07-24; the old "zmq" here predated enforcement and mismatched
+        // every make_reg_opts channel silently).
+        .data_transport = "shm",
         // Same §I10 derivation as `make_reg_opts`.
         .zmq_pubkey = std::string{sec::secure().keys().pubkey(
             pylabhub::tests::role_keystore_name(consumer_uid))},
@@ -301,20 +306,8 @@ nlohmann::json make_reg_opts_with_explicit_pubkey(const std::string &channel,
     return opts;
 }
 
-nlohmann::json make_cons_opts_with_explicit_pubkey(const std::string &channel,
-                                                   const std::string &consumer_uid,
-                                                   const std::string &zmq_pubkey,
-                                                   std::optional<uint64_t> consumer_pid)
-{
-    auto opts = pylabhub::hub::build_consumer_reg_payload(pylabhub::hub::ConsumerRegInputs{
-        .channel = channel,
-        .role_uid = consumer_uid,
-        .role_name = "test_consumer",
-        .zmq_pubkey = zmq_pubkey,
-    });
-    opts["consumer_pid"] =
-        consumer_pid.has_value() ? *consumer_pid : static_cast<uint64_t>(::getpid());
-    return opts;
-}
+// (`make_cons_opts_with_explicit_pubkey` deleted 2026-07-24 — zero callers,
+// and it built a half-formed CONSUMER_REG_REQ with empty role_type /
+// data_transport, which the broker now value-rejects per HEP-0036 §5b.6.)
 
 } // namespace pylabhub::tests
