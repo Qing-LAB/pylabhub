@@ -54,9 +54,16 @@ post-reconcile shipped-sprint detail).
 ## Active / next work (open, roughly by leverage)
 
 **Security (top open surface):**
-- **Federation ingress hardening** — broker↔broker peer-DEALER ingress bypasses
-  the sanctioned `receive_and_validate` admission chain (REVIEW_FullSystem, high).
-  Federation is post-MVP (#105) + slated for redesign, so noted, not in-flight.
+- **Federation — design-first, CONSOLIDATED under task #69 (ratified
+  2026-07-24):** a full top-down design (HEP: hub↔hub trust model, peer
+  lifecycle, wire, security) comes BEFORE any protocol work — no piecemeal
+  patches.  #69 now owns every open federation item: the peer-DEALER
+  ingress bypassing `receive_and_validate` (the last unvalidated broker
+  ingress, REVIEW_FullSystem high), the HUB_PEER_HELLO/BYE +
+  HUB_TARGETED/RELAY_MSG control-envelope bypass, H43 role-disconnect
+  propagation, #75 HUB_TARGETED_ACK, and the #105/HEP-0037 post-MVP scope
+  + skipped federation tests.  Detail: MESSAGEHUB_TODO "Federation —
+  CONSOLIDATED".
   *(Admin-plane CURVE — the former #1 surface — ✅ SHIPPED 2026-07-19; residual
   polish only, AUTH_TODO Line E.)*
 - **FullSystem-review remediation (4 open of 56)** — remaining: #69 federation
@@ -102,7 +109,7 @@ post-reconcile shipped-sprint detail).
   ABI-compat broader impl (fingerprint chain shipped); deferred: Python client
   SDK, script-spawned worker threads, `src/` restructure.
 - **MessageHub / broker protocol (`MESSAGEHUB_TODO.md`)** — #92 `_REQ`-frame
-  half-mix audit; H43 federation role-disconnect propagation; Wave-M2 MP4
+  half-mix audit; (H43 federation role-disconnect → folded into #69); Wave-M2 MP4
   residuals; HEP-0039 Hub State Query Layer Phases B+ (Phase A shipped);
   native-engine inbox parity ✅ CLOSED 2026-07-18.
 - **Tests / coverage (`TESTING_TODO.md`)** — Pattern-4 ladder rungs 4/5/6/7/8/9/10/12
@@ -130,11 +137,11 @@ post-reconcile shipped-sprint detail).
   ENDPOINT_UPDATE sync API — incl. port-0 inbox endpoints); #84 NativeEngine
   `build_api_(HubAPI&)` extension; #87 three-engine doc parity; #73 HEP-0033
   Phase 10 doc closure.
-- **P4 long tail:** #66, #75 `HUB_TARGETED_ACK`, #76 script reload (promote
+- **P4 long tail:** #66, (#75 `HUB_TARGETED_ACK` → folded into #69), #76 script reload (promote
   `SCRIPT_RELOAD_DESIGN` → HEP + impl), #77 Tier-2 dynamic callbacks
   (`engine_callback_tiers.md`), #81, #88, #89.
 - **Parallel / post-MVP:** #106 HEP-0038 script-vault keystore (needs #104 +
-  HEP-0040 storage); **#105 Federation / HEP-0037 — explicitly post-MVP**
+  HEP-0040 storage); **#105 Federation / HEP-0037 — explicitly post-MVP, consolidated under #69 (design-first)**
   (federation tests skipped in-suite today).
 
 Deferred follow-ups (tracked, non-blocking): topology **P6** version-tagged
@@ -171,7 +178,7 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
   detail (#67–#72 + schema) in the 07-22 completions index; per-finding evidence
   in the review doc's `✅` blocks.  **29 OPEN, by cluster** (files in review doc):
   - **Federation ingress bypass** (1, high) — peer-DEALER skips the admission
-    gate chain; post-MVP #105 / redesign-bound.
+    gate chain; consolidated under the #69 design-first federation task.
   - **Systemic HEP↔code drift** (7, high) — governing HEPs describe superseded
     models (HEP-0032/0026/0033/0027/0020/0019 + synthesis).
   - **Dead-residue, post-CURVE/vault cutover** (8, med) — broker/inbox/vault/

@@ -19,7 +19,7 @@ the fix is in production code at `native_engine.cpp:289-305`).
 | **Arc A — `plh_hub` renovation** (HEP-0033 §15 Phase 1..10) | Phases 1-9 shipped; Phase 10 doc-amendment ⏳ partial. | HEP-0033 Phase 10 (task #73) |
 | **Arc B — role-host renovation** (Wave-B M0..M9) | M0..M9 shipped (M9 closed 2026-05-26). | — |
 | **HEP-CORE-0035 auth** | 🚧 partial — Phase B + #101 + D1 + D2 + D3 shipped (per `AUTH_TODO.md`).  D4–D7 open.  Critical-path for production readiness. | task #74; detail in `docs/todo/AUTH_TODO.md` |
-| **HUB_TARGETED_ACK wire frame** (HEP-0033 §12.3.6) | ⏸ Deferred — C++ `augment_peer_message` surface in place; wire bit not landed | (task #75) — federation-only |
+| **HUB_TARGETED_ACK wire frame** (HEP-0033 §12.3.6) | ⏸ Deferred — folded into the consolidated federation design task #69 (2026-07-24); never lands standalone | #69 (was #75) — federation-only |
 
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
@@ -487,23 +487,27 @@ needed in the #72 pass:** either add an owner-citation field to the §5b.6/§10.
 canonical tables under a single agreed name, or delete the accessor + broker
 read.  Do not extend its use meanwhile (warning comment sits on the accessor).
 
-### Federation control-envelope bypass → fold into the federation redesign (filed 2026-07-22)
+### Federation — CONSOLIDATED, design-first (task #69) (ratified 2026-07-24)
 
-The broker↔broker federation handshake **bypasses `WireEnvelope`** and hand-rolls
-a **divergent** control frame layout: `HUB_PEER_HELLO` (`broker_service.cpp:1095`)
-and `HUB_PEER_BYE` (`:1338`) send `[kFrameTypeControl, msg_type, body]` (3 frames,
-**no `correlation_id`**) via raw `socket.send`, vs the standard
-`WireEnvelope::build_router_send` layout `['C', msg_type, correlation_id, body]`.
-So federation is a second, drifting copy of the JSON control format. All *other*
-control traffic uses `WireEnvelope`, and the msgpack data plane is already
-centralized in `wire_detail` (`zmq_wire_helpers.hpp`) with no bypass — federation
-is the lone exception (documented in HEP-CORE-0047 §3.0).
-
-**Cleanup (do as part of the federation redesign, not standalone):** route
-`HUB_PEER_HELLO`/`HUB_PEER_BYE`/`HUB_TARGETED_MSG`/`HUB_RELAY_MSG` through
-`WireEnvelope::build_router_send` (+ the parse side through `receive_and_validate`)
-so there is genuinely ONE control-envelope path. Federation is slated for a
-broader redesign anyway (HEP-CORE-0022); this rides along.
+**Ruling: federation gets a full top-down design (HEP-level: hub↔hub
+trust model, peer lifecycle/discovery, wire, security) BEFORE any
+further protocol work — no piecemeal patches to federation paths.**
+Task #69 is the single umbrella; it consolidates: (1) the SECURITY
+ingress bypass — peer-DEALER traffic skips the `receive_and_validate`
+gate chain, the last unvalidated broker ingress; (2) the
+control-envelope bypass — `HUB_PEER_HELLO` (`broker_service.cpp:1095`)
+/ `HUB_PEER_BYE` (`:1338`) hand-roll a divergent 3-frame layout (no
+correlation_id) via raw `socket.send`, and `HUB_TARGETED_MSG` /
+`HUB_RELAY_MSG` are likewise off-envelope (today's lone exception,
+HEP-0047 §3.0) — the redesign routes all of them through
+`WireEnvelope` + the gate chain so there is ONE control path; (3) H43
+role-disconnect propagation (below — design question, not a patch);
+(4) #75 `HUB_TARGETED_ACK` (deferred wire bit — folds into the
+designed wire, never lands standalone); (5) #105 / HEP-0037 post-MVP
+scope + the skipped `BrokerFederationTest.*` suite (the design defines
+the test strategy); (6) the federation input to #95's SCHEMA_REQ /
+METRICS_REQ keep-vs-delete survey.  Design anchors: HEP-0022, HEP-0037,
+HEP-0035 federation-trust, HEP-0033 §12.3, HEP-0047 §3.0.
 
 ### Native engine inbox API parity gap (filed 2026-07-17; RE-SCOPED 2026-07-18)
 
@@ -681,7 +685,7 @@ For each half-mix found:
 Trigger: any half-mix is a latent flake source like the
 ENDPOINT_UPDATE one we just fixed.  Estimated effort M.
 
-### H43 — Federation propagation of role-disconnect
+### H43 — Federation propagation of role-disconnect (folded into #69, 2026-07-24)
 
 Verified open 2026-05-12: `broker_service.cpp` does not call
 `subscribe_role_disconnected`; only `hub_script_runner.cpp:281`
