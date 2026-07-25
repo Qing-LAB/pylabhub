@@ -364,14 +364,16 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // Session + wall-clock-skew verification, shared by commands and the
     // output poll.  Fills `out_facts` and returns nullopt to proceed, or the
     // typed error reply on failure.
+    // `ts` arrives from the typed body's client_wall_ts() accessor —
+    // never read from raw JSON here (HEP-0046 §14.3: no body.value scatter;
+    // the body class is the schema, and its ctor already required the triple).
     const auto session_skew_gate =
-        [&](std::string_view sid,
+        [&](std::string_view sid, std::uint64_t ts,
             AdminSessionFacts &out_facts) -> std::optional<std::pair<std::string, json>>
     {
         auto facts = verify_session_id(sid, peer_address, routing_id);
         if (!facts)
             return err_reply("unauthorized", "invalid or hijacked session");
-        const std::uint64_t ts = body.value("client_wall_ts", std::uint64_t{0});
         const std::uint64_t now = now_ms();
         const std::uint64_t skew = now > ts ? now - ts : ts - now;
         if (skew > kReplaySkewMs)
@@ -384,14 +386,14 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // ReplayGuard prunes against its OWN trusted monotonic clock — no timestamp
     // is passed, so the client `ts` (confined to the skew gate) cannot reach the
     // dedup window (see ReplayGuard header).
-    const auto gate = [&](std::string_view sid, std::string *out_origin = nullptr)
+    const auto gate = [&](std::string_view sid, const std::string &nonce, std::uint64_t ts,
+                          std::string *out_origin = nullptr)
         -> std::optional<std::pair<std::string, json>>
     {
         AdminSessionFacts facts{};
-        if (auto rej = session_skew_gate(sid, facts))
+        if (auto rej = session_skew_gate(sid, ts, facts))
             return rej;
         const std::string origin = origin_uid(facts);
-        const std::string nonce = body.value("client_nonce", std::string{});
         if (!host.nonce_seen(origin, nonce, kReplayWindowMs))
             return err_reply("replay_or_skew", "client_nonce reused (in-session replay)");
         if (out_origin != nullptr)
@@ -402,17 +404,18 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // Read gate: session + skew only, NO replay nonce (§11.1).  A poll is an
     // idempotent read — nonce dedup buys nothing and would forbid safely
     // retrying a dropped poll (same nonce → rejected as a replay).
-    const auto read_gate = [&](std::string_view sid) -> std::optional<std::pair<std::string, json>>
+    const auto read_gate =
+        [&](std::string_view sid, std::uint64_t ts) -> std::optional<std::pair<std::string, json>>
     {
         AdminSessionFacts facts{};
-        return session_skew_gate(sid, facts);
+        return session_skew_gate(sid, ts, facts);
     };
 
     // ── Query methods → AdminResultAck ──
     if (mt == w::kAdminPingReq)
     {
         w::AdminPingReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         return to_reply(w::kAdminPingAck, handle_ping(req), false);
@@ -420,7 +423,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminListChannelsReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         return to_reply(w::kAdminListChannelsAck, handle_list_channels(req), true);
@@ -428,7 +431,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminListRolesReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         return to_reply(w::kAdminListRolesAck, handle_list_roles(req), true);
@@ -436,7 +439,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminListBandsReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         return to_reply(w::kAdminListBandsAck, handle_list_bands(req), true);
@@ -444,7 +447,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminListPeersReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         return to_reply(w::kAdminListPeersAck, handle_list_peers(req), true);
@@ -452,7 +455,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminGetChannelReq)
     {
         w::AdminNamedReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         req["params"]["channel"] = b.name();
@@ -461,7 +464,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminGetRoleReq)
     {
         w::AdminNamedReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         req["params"]["uid"] = b.name();
@@ -470,7 +473,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminQueryMetricsReq)
     {
         w::AdminQueryMetricsReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         req["params"] = b.filter();
@@ -483,7 +486,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminResponseQueryReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = read_gate(b.session_id()))
+        if (auto rej = read_gate(b.session_id(), b.client_wall_ts()))
             return *rej;
         // The drain document ({status, lines[], dropped_count}) IS the result;
         // wrap it as the handler `{status:"ok", result:…}` envelope to_reply
@@ -496,7 +499,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     {
         w::AdminCloseChannelReqBody b(body);
         std::string origin;
-        if (auto rej = gate(b.session_id(), &origin))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts(), &origin))
             return *rej;
         // §11.0.4 queue record: stamp the issuing session's origin_uid + the
         // command's request_id (= correlation_id) so the broker can tag the
@@ -511,7 +514,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     {
         w::AdminBroadcastChannelReqBody b(body);
         std::string origin;
-        if (auto rej = gate(b.session_id(), &origin))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts(), &origin))
             return *rej;
         json req;
         req["params"]["channel"] = b.channel();
@@ -524,7 +527,7 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     if (mt == w::kAdminRequestShutdownReq)
     {
         w::AdminSessionReqBody b(body);
-        if (auto rej = gate(b.session_id()))
+        if (auto rej = gate(b.session_id(), b.client_nonce(), b.client_wall_ts()))
             return *rej;
         json req;
         return to_reply(w::kAdminRequestShutdownAck, handle_request_shutdown(req), false);

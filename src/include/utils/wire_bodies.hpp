@@ -935,6 +935,17 @@ public:
 {
     return detail::read_string(body_, "session_id");
 }
+/// In-session replay pair (§11.0.5) — required by the ctor's
+/// security triple; exposed so the admin gate reads via typed
+/// accessors, never `body.value(...)` (HEP-0046 §14.3).
+[[nodiscard]] std::string client_nonce() const
+{
+    return detail::read_string(body_, "client_nonce");
+}
+[[nodiscard]] std::uint64_t client_wall_ts() const
+{
+    return detail::read_u64(body_, "client_wall_ts");
+}
 }
 ;
 
@@ -961,6 +972,17 @@ public:
 {
     return detail::read_string(body_, "channel");
 }
+/// In-session replay pair (§11.0.5) — required by the ctor's
+/// security triple; exposed so the admin gate reads via typed
+/// accessors, never `body.value(...)` (HEP-0046 §14.3).
+[[nodiscard]] std::string client_nonce() const
+{
+    return detail::read_string(body_, "client_nonce");
+}
+[[nodiscard]] std::uint64_t client_wall_ts() const
+{
+    return detail::read_u64(body_, "client_wall_ts");
+}
 }
 ;
 
@@ -982,6 +1004,17 @@ public:
 {
     return detail::read_string(body_, "session_id");
 }
+/// In-session replay pair (§11.0.5) — required by the ctor's
+/// security triple; exposed so the admin gate reads via typed
+/// accessors, never `body.value(...)` (HEP-0046 §14.3).
+[[nodiscard]] std::string client_nonce() const
+{
+    return detail::read_string(body_, "client_nonce");
+}
+[[nodiscard]] std::uint64_t client_wall_ts() const
+{
+    return detail::read_u64(body_, "client_wall_ts");
+}
 }
 ;
 
@@ -996,6 +1029,17 @@ public:
 [[nodiscard]] std::string name() const
 {
     return detail::read_string(body_, "name");
+}
+/// In-session replay pair (§11.0.5) — required by the ctor's
+/// security triple; exposed so the admin gate reads via typed
+/// accessors, never `body.value(...)` (HEP-0046 §14.3).
+[[nodiscard]] std::string client_nonce() const
+{
+    return detail::read_string(body_, "client_nonce");
+}
+[[nodiscard]] std::uint64_t client_wall_ts() const
+{
+    return detail::read_u64(body_, "client_wall_ts");
 }
 }
 ;
@@ -1020,6 +1064,17 @@ public:
 {
     return detail::read_string_or_empty(body_, "data");
 }
+/// In-session replay pair (§11.0.5) — required by the ctor's
+/// security triple; exposed so the admin gate reads via typed
+/// accessors, never `body.value(...)` (HEP-0046 §14.3).
+[[nodiscard]] std::string client_nonce() const
+{
+    return detail::read_string(body_, "client_nonce");
+}
+[[nodiscard]] std::uint64_t client_wall_ts() const
+{
+    return detail::read_u64(body_, "client_wall_ts");
+}
 }
 ;
 
@@ -1035,6 +1090,17 @@ public:
 [[nodiscard]] const nlohmann::json &filter() const
 {
     return detail::read_object(body_, "filter");
+}
+/// In-session replay pair (§11.0.5) — required by the ctor's
+/// security triple; exposed so the admin gate reads via typed
+/// accessors, never `body.value(...)` (HEP-0046 §14.3).
+[[nodiscard]] std::string client_nonce() const
+{
+    return detail::read_string(body_, "client_nonce");
+}
+[[nodiscard]] std::uint64_t client_wall_ts() const
+{
+    return detail::read_u64(body_, "client_wall_ts");
 }
 }
 ;

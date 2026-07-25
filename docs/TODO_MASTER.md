@@ -41,9 +41,13 @@ post-reconcile shipped-sprint detail).
   retired); B.3 audit found the BRC/ACK flip already landed via the
   envelope/adapter arcs; `receive_and_validate` drift-guard L1 suite
   landed.  Residual REG-adjacent tracks: EnvelopeOnly-tier body classes
-  (per-msg_type follow-ons), #72 reconciliation, #69 federation ingress.
-- **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **27
-  resolved / 29 open** — see "Active code reviews" for the open clusters.
+  (per-msg_type follow-ons; the #72 pass itself COMPLETED 2026-07-24),
+  #69 federation ingress.
+- **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **52
+  resolved / 4 open** after the #72 reconciliation pass (2026-07-24) closed the
+  hep-gap + dead-residue clusters.  Remaining open: federation ingress bypass
+  (= #69) and three test-coverage items (inbox-worker magic/gap pins, hub_vault
+  known_roles L2 round-trip, logger StressLog diagnostic).
 
 ---
 
@@ -55,8 +59,8 @@ post-reconcile shipped-sprint detail).
   Federation is post-MVP (#105) + slated for redesign, so noted, not in-flight.
   *(Admin-plane CURVE — the former #1 surface — ✅ SHIPPED 2026-07-19; residual
   polish only, AUTH_TODO Line E.)*
-- **FullSystem-review remediation (29 open of 56)** — the running work queue below
-  is now the review's open clusters; see "Active code reviews" for the breakdown.
+- **FullSystem-review remediation (4 open of 56)** — remaining: #69 federation
+  ingress + 3 test-coverage items; see "Active code reviews" for the breakdown.
 
 **In-flight arcs:**
 - **#52** HubHostBrokerHandle → Pattern 4 sweep (in progress; ~21 in-process
@@ -162,7 +166,8 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 ## Active code reviews (5 — updated 2026-07-22)
 
 - `code_review/REVIEW_FullSystem_2026-07-20.md` — full-system HEP-vs-code audit
-  (56 findings). 🚧 **27 RESOLVED (07-20→07-22), 29 OPEN.**  Resolved-finding
+  (56 findings). 🚧 **52 RESOLVED (07-20→07-24), 4 OPEN** (#69 + 3
+  test-coverage items — see the summary bullet above).  Resolved-finding
   detail (#67–#72 + schema) in the 07-22 completions index; per-finding evidence
   in the review doc's `✅` blocks.  **29 OPEN, by cluster** (files in review doc):
   - **Federation ingress bypass** (1, high) — peer-DEALER skips the admission
