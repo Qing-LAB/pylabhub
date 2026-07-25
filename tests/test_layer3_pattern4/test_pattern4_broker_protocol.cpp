@@ -1068,6 +1068,42 @@ TEST_F(Pattern4BrokerProtocolTest, TransportValue_Bogus_RejectedInvalidRequest)
     broker.signal_quit();
 }
 
+// ─── Optional-field-absent wire conformance ────────────────────────────────
+
+// End-to-end pin for the §14.3 optional-accessor contract: a REG_REQ that
+// omits `role_name` entirely (it is OPTIONAL — a redundant display label,
+// HEP-0046 §14.3) must register successfully.  Regression guard for the
+// 2026-07-24 incident where the typed handler's throwing `role_name()`
+// accessor crashed the broker on exactly this wire.
+TEST_F(Pattern4BrokerProtocolTest, RegReq_WithoutRoleName_Succeeds)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.optional.norolename" + suffix;
+    const std::string uid = "prod." + channel;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_norolename");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, uid);
+    auto body = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body.erase("role_name");
+    auto reply =
+        prod.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value()) << "REG_REQ timed out";
+    EXPECT_EQ(reply->value("status", std::string{}), "success")
+        << "role_name is OPTIONAL — omitting it must not fail; body=" << reply->dump();
+
+    broker.signal_quit();
+}
+
 // ─── REG_ACK / CONSUMER_REG_ACK heartbeat-negotiation block ────────────────
 
 TEST_F(Pattern4BrokerProtocolTest, RegAck_ContainsHeartbeatBlock_Defaults)

@@ -58,6 +58,38 @@ M1.5 / MD1 / MD1.5 all closed.
   `consumer_pid`/`consumer_hostname`, `channel_topology`, `flexzone_*`,
   `inbox_*`.
 
+### Phase-B drift cleanup — stale refs, pairing-rule completion, optional-absent pins (2026-07-24) ✅
+
+- **Stale-doc/comment sweep**: `wire_dispatch.hpp` header reconciled (typed
+  pathway COMPLETE; correct gate list — no key-rotation gate, role-tag added;
+  RegFamily vs authenticated tier split documented); retired-symbol citations
+  (`validate_identity_fields`, `verify_known_role_binding`) replaced with the
+  live `gate_grammar` / `gate_known_role_binding` references across
+  role_uid.hpp, hub_state.hpp, hub_state.cpp, admission_gates.cpp,
+  broker_service.cpp; dangling "zmq_pubkey enforcement above" comments
+  re-pointed at gate_grammar; all "(B.1x)"/"Phase B" phase labels stripped
+  from broker_service.cpp comments (no-phase-labels rule).
+- **HEP-0046 internal consistency**: §14.7 no longer claims the envelope
+  carries broker_proto; §12 step 6 + §14.7 now cite §14.5 steps 1-6/7-8
+  correctly; §14.5 step 5 names `gate_known_role_binding`; §7.1 rejection
+  table split into BODY_SCHEMA_VIOLATION (missing/wrong-typed/grammar, at
+  parse) vs INVALID_REQUEST (semantic value checks, in handler) — matching
+  the shipped wire + L3 pins.
+- **§14.3 pairing rule fully applied**: every optional field on every wire
+  body now has `validate_if_present` in its ctor (53 call sites) — wrong-typed
+  optionals reject as BODY_SCHEMA_VIOLATION at parse instead of INTERNAL_ERROR
+  mid-handler; wrong-typed `metadata` is now rejected rather than silently
+  ignored.
+- **Optional-absent test pins**: L1 `ProducerRegReqBodyOptionalFieldsAbsentDefaults`
+  + `RejectsWrongTypedOptional` + first-ever `ConsumerRegReqBody` L1
+  construction (`ValidatesRequiredFields` + `OptionalFieldsAbsentDefaults`) +
+  `HeartbeatNotifyBodyOptionalFieldsAbsentDefaults`; L3
+  `RegReq_WithoutRoleName_Succeeds` (end-to-end regression pin for the
+  2026-07-24 role_name accessor crash).
+- Still open (deliberately): direct `receive_and_validate` unit test (B.4
+  residual drift-guard), id_frame/ABI-probe dedup cosmetics, stale 3-frame
+  comments in `broker_wire_client.h`.
+
 ### PID is debug/record only — never a validation input (2026-07-24) ✅
 
 - **Design ratified**: a PID is machine-local and meaningless to a hub on

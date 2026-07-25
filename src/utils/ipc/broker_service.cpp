@@ -663,7 +663,7 @@ class BrokerServiceImpl
     /// Always returns a response. The returned JSON's status field indicates
     /// the DISC response variant: "success" (DISC_ACK), "pending" (DISC_PENDING),
     /// or "error" (CHANNEL_NOT_FOUND). See HEP-CORE-0023 §2.2.
-    // HEP-CORE-0046 §12 step 5 (B.1a): uniform typed handler signature
+    // HEP-CORE-0046 §12 step 5: uniform typed handler signature
     // `handle_XXX(const WireEnvelope&, const XxxBody&)`.  `corr_id` is read from
     // the envelope; `channel_name` from the typed `DiscReqBody`.
     nlohmann::json handle_disc_req(const ::pylabhub::wire::WireEnvelope &env,
@@ -690,7 +690,7 @@ class BrokerServiceImpl
     /// registered producer of the named channel).
     /// Defence-in-depth: never return another channel's allowlist to a
     /// non-producer caller.
-    // HEP-CORE-0046 §12 step 5 (B.1b): uniform typed handler signature.
+    // HEP-CORE-0046 §12 step 5: uniform typed handler signature.
     // `corr_id` from the envelope; `channel_name` / `role_uid` from the body.
     nlohmann::json handle_get_channel_auth_req(
         const ::pylabhub::wire::WireEnvelope &env,
@@ -1478,7 +1478,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedRegReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1h): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body — gates already ran; no to_legacy round-trip.
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
@@ -1502,7 +1502,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedConsumerRegReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1i): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body — gates already ran; no to_legacy round-trip.
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
@@ -1524,7 +1524,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedDeregReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1d): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body — the grammar / tag / identity gates already ran
                 // in receive_and_validate, so there is no to_legacy round-trip.
                 const std::string identity = v.identity();
@@ -1536,7 +1536,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedConsumerDeregReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1e): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body (ValidatedConsumerDeregReq carries a DeregReqBody).
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
@@ -1547,7 +1547,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedEndpointUpdateReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1f): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body — gates already ran; no to_legacy round-trip.
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
@@ -1558,7 +1558,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedChannelAuthAppliedReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1g): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body — gates already ran; no to_legacy round-trip.
                 // NOTE: success status here is "ok" (not "success").
                 const std::string identity = v.identity();
@@ -1570,7 +1570,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedHeartbeatNotify>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1c): HEARTBEAT_NOTIFY runs the typed
+                // HEP-CORE-0046 §12 step 5: HEARTBEAT_NOTIFY runs the typed
                 // handler directly on the validated envelope + body — the
                 // grammar / role_uid↔tag / identity gates already ran in
                 // `receive_and_validate` (run_control_gates), so there is no
@@ -1582,7 +1582,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1b): typed handler on the validated
+                // HEP-CORE-0046 §12 step 5: typed handler on the validated
                 // envelope + body — gates already ran in `receive_and_validate`,
                 // so no `to_legacy` round-trip.  Read-only; the reply already
                 // ships as a typed `WireEnvelope` via `send_reply`.
@@ -1595,7 +1595,7 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedDiscReq>)
             {
-                // HEP-CORE-0046 §12 step 5 (B.1a): DISC_REQ runs the typed
+                // HEP-CORE-0046 §12 step 5: DISC_REQ runs the typed
                 // handler directly on the validated envelope + body — the
                 // admission gates already ran in `receive_and_validate`, so
                 // there is no `to_legacy` round-trip.  Read-only handler
@@ -1654,19 +1654,19 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
     {
 
         // REG_REQ retired from process_message — it now dispatches typed from
-        // `dispatch_received` (HEP-CORE-0046 Phase B, B.1h); it always arrives as
+        // `dispatch_received` (HEP-CORE-0046 §12 step 5); it always arrives as
         // `ValidatedRegReq`, so this branch was unreachable.
         // DISC_REQ retired from process_message — it now dispatches typed from
-        // `dispatch_received` (HEP-CORE-0046 Phase B, B.1a).  It always arrives
+        // `dispatch_received` (HEP-CORE-0046 §12 step 5).  It always arrives
         // as `ValidatedDiscReq`, so this branch was unreachable.
         // DEREG_REQ retired from process_message — it now dispatches typed from
-        // `dispatch_received` (HEP-CORE-0046 Phase B, B.1d); it always arrives as
+        // `dispatch_received` (HEP-CORE-0046 §12 step 5); it always arrives as
         // `ValidatedDeregReq`, so this branch was unreachable.
         // CONSUMER_REG_REQ retired from process_message — it now dispatches typed
-        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1i); it always arrives
+        // from `dispatch_received` (HEP-CORE-0046 §12 step 5); it always arrives
         // as `ValidatedConsumerRegReq`, so this branch was unreachable.
         // GET_CHANNEL_AUTH_REQ retired from process_message — it now dispatches
-        // typed from `dispatch_received` (HEP-CORE-0046 Phase B, B.1b); it always
+        // typed from `dispatch_received` (HEP-CORE-0046 §12 step 5); it always
         // arrives as `ValidatedGetChannelAuthReq`, so this branch was unreachable.
         if (msg_type == "CONSUMER_ATTACH_REQ_SHM")
         {
@@ -1724,7 +1724,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
             }
         }
         // CHANNEL_AUTH_APPLIED_REQ retired from process_message — it now dispatches
-        // typed from `dispatch_received` (HEP-CORE-0046 Phase B, B.1g); it always
+        // typed from `dispatch_received` (HEP-CORE-0046 §12 step 5); it always
         // arrives as `ValidatedChannelAuthAppliedReq`, so this branch was unreachable.
         else if (msg_type == "CHECK_PEER_READY_REQ")
         {
@@ -1740,10 +1740,10 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
             send_reply(socket, identity, ack, resp);
         }
         // CONSUMER_DEREG_REQ retired from process_message — it now dispatches typed
-        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1e); it always arrives
+        // from `dispatch_received` (HEP-CORE-0046 §12 step 5); it always arrives
         // as `ValidatedConsumerDeregReq`, so this branch was unreachable.
         // HEARTBEAT_NOTIFY retired from process_message — it now dispatches typed
-        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1c); it always arrives
+        // from `dispatch_received` (HEP-CORE-0046 §12 step 5); it always arrives
         // as `ValidatedHeartbeatNotify`, so this branch was unreachable.
         else if (msg_type == "CHECKSUM_ERROR_REPORT")
         {
@@ -1815,7 +1815,7 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
             handle_hub_targeted_msg(payload);
         }
         // ENDPOINT_UPDATE_REQ retired from process_message — it now dispatches typed
-        // from `dispatch_received` (HEP-CORE-0046 Phase B, B.1f); it always arrives
+        // from `dispatch_received` (HEP-CORE-0046 §12 step 5); it always arrives
         // as `ValidatedEndpointUpdateReq`, so this branch was unreachable.
         // ── Band pub/sub (HEP-CORE-0030) ───────────────────────────────────
         else if (msg_type == "BAND_JOIN_REQ")
@@ -1943,7 +1943,7 @@ void BrokerServiceImpl::emit_processing_error(const std::string &msg_type,
 // Handlers
 // ============================================================================
 
-// HEP-CORE-0046 §12 step 5 (B.1h): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates (grammar / role_tag / identity / known-role / replay) already
 // ran in receive_and_validate; this handler reads via typed accessors and owns
 // the admission logic.  In-handler checks that merely repeat a gate are dropped
@@ -2023,7 +2023,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // endpoint string, broker can't echo it to consumers in
     // CONSUMER_REG_ACK, and consumers will fail with a confusing
     // "connect to empty path" error after registration.  Symmetric
-    // with the `zmq_pubkey` enforcement above for ZMQ channels.
+    // with the `zmq_pubkey` length enforcement at `gate_grammar`
+    // (HEP-CORE-0046 §14.5).
     primary_producer.shm_capability_endpoint = body.shm_capability_endpoint();
 
     // HEP-CORE-0036 §6.1 + HEP-CORE-0041 §5.1 — `data_transport` is a
@@ -2057,8 +2058,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // authorized consumers in CONSUMER_REG_ACK (§5.3).  Reject SHM
     // REG_REQ with empty endpoint at the wire — without it, consumers
     // would fail with a confusing "connect to empty path" error after
-    // registration.  Symmetric with `zmq_pubkey` enforcement above for
-    // ZMQ channels.
+    // registration.  (`zmq_pubkey` gets the equivalent enforcement at
+    // `gate_grammar`, §14.5.)
     if (data_transport_req == "shm" && primary_producer.shm_capability_endpoint.empty())
     {
         LOGGER_WARN("Broker: REG_REQ rejected — channel '{}' role_uid='{}' "
@@ -2477,9 +2478,10 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // Outcome dispatch (order matches HubState's evaluation order).
     if (admission.invalid_identifier)
     {
-        // Defensive branch — production callers were already gated by
-        // `validate_identity_fields`.  Fires only when a bypass path
-        // (test-access) violates the precondition.
+        // Defensive branch — production wires were already gated by
+        // `gate_grammar` in `receive_and_validate` (HEP-CORE-0046 §14.5).
+        // Fires only when a bypass path (test-access) violates the
+        // precondition.
         LOGGER_WARN("[broker] event=RegReqRejected reason='INVALID_REQUEST' "
                     "role='{}' channel='{}' detail='identifier grammar failure'",
                     role_uid, channel_name);
@@ -2880,7 +2882,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::WireEn
     return resp;
 }
 
-// HEP-CORE-0046 §12 step 5 (B.1d): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates (grammar / tag / identity) already ran in receive_and_validate.
 nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
                                                    const ::pylabhub::wire::DeregReqBody &body,
@@ -3003,7 +3005,7 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireE
     return resp;
 }
 
-// HEP-CORE-0046 §12 step 5 (B.1i): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates (grammar / role_tag {cons,proc} / identity / known-role / replay)
 // already ran in receive_and_validate; reads via typed accessors.
 nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
@@ -3616,7 +3618,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     return resp;
 }
 
-// HEP-CORE-0046 §12 step 5 (B.1e): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body (ValidatedConsumerDeregReq carries a DeregReqBody).  Gates already ran.
 nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
     const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::DeregReqBody &body,
@@ -3667,8 +3669,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
     }
 
     // Consumer voluntarily left.  `role_uid` was validated non-empty
-    // at handler entry (validate_identity_fields), so the role-side
-    // cleanup branch in `_on_consumer_left` always runs.
+    // by `gate_grammar` in `receive_and_validate` (HEP-CORE-0046
+    // §14.5), so the role-side cleanup branch in `_on_consumer_left`
+    // always runs.
     hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
     on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
@@ -4244,7 +4247,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(const nlohmann:
     return resp;
 }
 
-// HEP-CORE-0046 §12 step 5 (B.1g): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates already ran in receive_and_validate.
 nlohmann::json BrokerServiceImpl::handle_channel_auth_applied_req(
     const ::pylabhub::wire::WireEnvelope &env,
@@ -4859,7 +4862,7 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(zmq::socket_t &socket,
                  channel_name, phase, role_uid, role_type, fanned, binding_side_total);
 }
 
-// HEP-CORE-0046 §12 step 5 (B.1c): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  `env` is unused — HEARTBEAT_NOTIFY is fire-and-forget (no reply, no
 // corr_id) — but carried for the uniform §14.4 signature.
 //
@@ -5031,7 +5034,7 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
 // ENDPOINT_UPDATE_REQ handler (HEP-0021 §16)
 // ============================================================================
 
-// HEP-CORE-0046 §12 step 5 (B.1f): typed handler on the validated envelope +
+// HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates already ran in receive_and_validate.
 nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
     const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::EndpointUpdateReqBody &body)

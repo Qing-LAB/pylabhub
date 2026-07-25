@@ -204,11 +204,30 @@ ProducerRegReqBody::ProducerRegReqBody(nlohmann::json body)
     d::require(body_, "data_transport", d::JsonKind::String);
     d::require(body_, "zmq_pubkey", d::JsonKind::String);
     d::require(body_, "abi_fingerprint", d::JsonKind::Object);
-    // Validate-if-present: role_name is OPTIONAL per HEP-CORE-0046
-    // §7.1 required-field table; when present it MUST be a string
-    // per HEP-CORE-0023 §2.5.4 grammar (further identifier-grammar
-    // check runs downstream at gate_grammar, not here).
+    // Validate-if-present (§14.3 pairing rule): every OPTIONAL field is
+    // shape-checked at construction — absent is OK, present-but-wrong-
+    // typed is BODY_SCHEMA_VIOLATION at parse, never a mid-handler
+    // throw.  role_name's identifier-grammar check still runs
+    // downstream at gate_grammar, not here.
     d::validate_if_present(body_, "role_name", d::JsonKind::String);
+    d::validate_if_present(body_, "channel_topology", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_id", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_hash", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_blds", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_packing", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_owner", d::JsonKind::String);
+    d::validate_if_present(body_, "flexzone_blds", d::JsonKind::String);
+    d::validate_if_present(body_, "flexzone_packing", d::JsonKind::String);
+    d::validate_if_present(body_, "zmq_node_endpoint", d::JsonKind::String);
+    d::validate_if_present(body_, "shm_capability_endpoint", d::JsonKind::String);
+    d::validate_if_present(body_, "producer_pid", d::JsonKind::U64);
+    d::validate_if_present(body_, "producer_hostname", d::JsonKind::String);
+    d::validate_if_present(body_, "metadata", d::JsonKind::Object);
+    d::validate_if_present(body_, "build_id", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_endpoint", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_schema_json", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_packing", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_checksum", d::JsonKind::String);
     d::require_security_triple(body_);
 }
 
@@ -231,9 +250,25 @@ ConsumerRegReqBody::ConsumerRegReqBody(nlohmann::json body)
     d::require(body_, "data_transport", d::JsonKind::String);
     d::require(body_, "zmq_pubkey", d::JsonKind::String);
     d::require(body_, "abi_fingerprint", d::JsonKind::Object);
-    // Validate-if-present: role_name is OPTIONAL per HEP-CORE-0046
-    // §7.1 required-field table; parallel to ProducerRegReqBody.
+    // Validate-if-present (§14.3 pairing rule) — parallel to
+    // ProducerRegReqBody: every OPTIONAL field shape-checked at
+    // construction.
     d::validate_if_present(body_, "role_name", d::JsonKind::String);
+    d::validate_if_present(body_, "channel_topology", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_schema_id", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_schema_hash", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_schema_blds", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_schema_packing", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_flexzone_blds", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_flexzone_packing", d::JsonKind::String);
+    d::validate_if_present(body_, "expected_schema_owner", d::JsonKind::String);
+    d::validate_if_present(body_, "consumer_pid", d::JsonKind::U64);
+    d::validate_if_present(body_, "consumer_hostname", d::JsonKind::String);
+    d::validate_if_present(body_, "build_id", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_endpoint", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_schema_json", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_packing", d::JsonKind::String);
+    d::validate_if_present(body_, "inbox_checksum", d::JsonKind::String);
     d::require_security_triple(body_);
 }
 
@@ -281,6 +316,12 @@ RegAckBody::RegAckBody(nlohmann::json body)
     d::require(body_, "heartbeat", d::JsonKind::Object);
     d::require(body_, "initial_allowlist", d::JsonKind::Array);
     d::require(body_, "broker_abi_fingerprint", d::JsonKind::Object);
+    d::validate_if_present(body_, "error_code", d::JsonKind::String);
+    d::validate_if_present(body_, "message", d::JsonKind::String);
+    d::validate_if_present(body_, "instance_id", d::JsonKind::U64);
+    d::validate_if_present(body_, "snapshot_version", d::JsonKind::U64);
+    d::validate_if_present(body_, "broker_build_id", d::JsonKind::String);
+    d::validate_if_present(body_, "broker_observer_pubkey_z85", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
@@ -299,6 +340,7 @@ ConsumerRegAckBody::ConsumerRegAckBody(nlohmann::json body)
     d::require(body_, "heartbeat", d::JsonKind::Object);
     d::require(body_, "producers", d::JsonKind::Array);
     d::require(body_, "broker_abi_fingerprint", d::JsonKind::Object);
+    d::validate_if_present(body_, "broker_build_id", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
@@ -306,6 +348,7 @@ EndpointUpdateAckBody::EndpointUpdateAckBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "status", d::JsonKind::String);
+    d::validate_if_present(body_, "message", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
@@ -322,6 +365,7 @@ GetChannelAuthAckBody::GetChannelAuthAckBody(nlohmann::json body)
     body_ = std::move(body);
     d::require(body_, "status", d::JsonKind::String);
     d::require(body_, "allowlist", d::JsonKind::Array);
+    d::validate_if_present(body_, "channel_version", d::JsonKind::U64);
     d::require_envelope_hash(body_);
 }
 
@@ -329,6 +373,7 @@ ChannelAuthAppliedAckBody::ChannelAuthAppliedAckBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "status", d::JsonKind::String);
+    d::validate_if_present(body_, "confirmed_version", d::JsonKind::U64);
     d::require_envelope_hash(body_);
 }
 
@@ -349,6 +394,8 @@ HeartbeatNotifyBody::HeartbeatNotifyBody(nlohmann::json body)
     d::require(body_, "channel_name", d::JsonKind::String);
     d::require(body_, "role_uid", d::JsonKind::String);
     d::require(body_, "role_type", d::JsonKind::String);
+    d::validate_if_present(body_, "producer_pid", d::JsonKind::U64);
+    d::validate_if_present(body_, "metrics", d::JsonKind::Object);
     d::require_envelope_hash(body_);
 }
 
@@ -373,6 +420,7 @@ ChannelAuthChangedNotifyBody::ChannelAuthChangedNotifyBody(nlohmann::json body)
     d::require(body_, "role_uid", d::JsonKind::String);
     d::require(body_, "role_type", d::JsonKind::String);
     d::require(body_, "phase", d::JsonKind::String);
+    d::validate_if_present(body_, "channel_version", d::JsonKind::U64);
     d::require_envelope_hash(body_);
 }
 
@@ -380,6 +428,7 @@ ChannelClosingNotifyBody::ChannelClosingNotifyBody(nlohmann::json body)
 {
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
+    d::validate_if_present(body_, "reason", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
@@ -388,6 +437,8 @@ ConsumerDiedNotifyBody::ConsumerDiedNotifyBody(nlohmann::json body)
     body_ = std::move(body);
     d::require(body_, "channel_name", d::JsonKind::String);
     d::require(body_, "role_uid", d::JsonKind::String);
+    d::validate_if_present(body_, "reason", d::JsonKind::String);
+    d::validate_if_present(body_, "target_role", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 

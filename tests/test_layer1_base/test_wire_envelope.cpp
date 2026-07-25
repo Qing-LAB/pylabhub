@@ -298,6 +298,158 @@ TEST(WireBodies, RegReqBodyRejectsMissingEnvelopeHash)
     EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(body_json)}, WireBodyError);
 }
 
+// ── Optional-field-absent pins (§14.3 pairing rule) ───────────────────
+//
+// Guards the bug class where an OPTIONAL field's accessor throws on a
+// legitimately absent field (the role_name crash, 2026-07-24): a body
+// built from ONLY the required fields must construct, and every
+// optional accessor must return its documented default ("" / 0 /
+// false) instead of throwing.
+
+namespace
+{
+/// The minimal HEP-0046 §7.1 REG_REQ: required fields + security triple
+/// ONLY — no role_name, no schema fields, no endpoints, no diagnostics.
+nlohmann::json make_required_only_reg_req_body()
+{
+    nlohmann::json b;
+    b["channel_name"] = "lab.test.channel";
+    b["role_uid"] = "prod.test.uid1";
+    b["role_type"] = "producer";
+    b["data_transport"] = "zmq";
+    b["zmq_pubkey"] = "abcdefghij0123456789abcdefghij0123456789";
+    b["abi_fingerprint"] = nlohmann::json::object();
+    b["client_nonce"] = "0123456789abcdef0123456789abcdef";
+    b["client_wall_ts"] = 1234567890000ULL;
+    b["envelope_hash"] = "deadbeef";
+    return b;
+}
+} // namespace
+
+TEST(WireBodies, ProducerRegReqBodyOptionalFieldsAbsentDefaults)
+{
+    pylabhub::wire::ProducerRegReqBody body(make_required_only_reg_req_body());
+    EXPECT_EQ(body.role_name(), "");
+    EXPECT_EQ(body.channel_topology(), "");
+    EXPECT_EQ(body.schema_id(), "");
+    EXPECT_EQ(body.schema_hash(), "");
+    EXPECT_EQ(body.schema_blds(), "");
+    EXPECT_EQ(body.schema_packing(), "");
+    EXPECT_EQ(body.schema_owner(), "");
+    EXPECT_EQ(body.flexzone_blds(), "");
+    EXPECT_EQ(body.flexzone_packing(), "");
+    EXPECT_EQ(body.zmq_node_endpoint(), "");
+    EXPECT_EQ(body.shm_capability_endpoint(), "");
+    EXPECT_EQ(body.producer_pid(), 0ULL);
+    EXPECT_EQ(body.producer_hostname(), "");
+    EXPECT_FALSE(body.has_metadata());
+    EXPECT_EQ(body.build_id(), "");
+    EXPECT_EQ(body.inbox_endpoint(), "");
+    EXPECT_EQ(body.inbox_schema_json(), "");
+    EXPECT_EQ(body.inbox_packing(), "");
+    EXPECT_EQ(body.inbox_checksum(), "");
+}
+
+TEST(WireBodies, ProducerRegReqBodyRejectsWrongTypedOptional)
+{
+    // §14.3: an optional field that IS present but wrong-typed is a
+    // BODY_SCHEMA_VIOLATION at construction (validate_if_present) —
+    // it must never surface as a mid-handler accessor throw.
+    auto b = make_required_only_reg_req_body();
+    b["schema_id"] = 42;
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b)}, WireBodyError);
+
+    auto b2 = make_required_only_reg_req_body();
+    b2["metadata"] = "not-an-object";
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b2)}, WireBodyError);
+
+    auto b3 = make_required_only_reg_req_body();
+    b3["producer_pid"] = "12345"; // string, not unsigned
+    EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b3)}, WireBodyError);
+}
+
+namespace
+{
+/// The minimal CONSUMER_REG_REQ twin (§5b.6 required set + triple).
+nlohmann::json make_required_only_consumer_reg_req_body()
+{
+    nlohmann::json b;
+    b["channel_name"] = "lab.test.channel";
+    b["role_uid"] = "cons.test.uid1";
+    b["role_type"] = "consumer";
+    b["data_transport"] = "zmq";
+    b["zmq_pubkey"] = "abcdefghij0123456789abcdefghij0123456789";
+    b["abi_fingerprint"] = nlohmann::json::object();
+    b["client_nonce"] = "0123456789abcdef0123456789abcdef";
+    b["client_wall_ts"] = 1234567890000ULL;
+    b["envelope_hash"] = "deadbeef";
+    return b;
+}
+} // namespace
+
+TEST(WireBodies, ConsumerRegReqBodyValidatesRequiredFields)
+{
+    // First L1 construction pin for ConsumerRegReqBody — previously the
+    // class had zero L1 coverage.  Full §5b.6 shape with the optional
+    // citation fields populated.
+    auto b = make_required_only_consumer_reg_req_body();
+    b["role_name"] = "cons-1";
+    b["channel_topology"] = "fan-out";
+    b["expected_schema_id"] = "test.schema.v1";
+    b["expected_schema_hash"] = "deadbeef";
+    b["consumer_hostname"] = "hostA";
+    b["consumer_pid"] = 4242ULL;
+
+    pylabhub::wire::ConsumerRegReqBody body(std::move(b));
+    EXPECT_EQ(body.channel_name(), "lab.test.channel");
+    EXPECT_EQ(body.role_uid(), "cons.test.uid1");
+    EXPECT_EQ(body.role_type(), "consumer");
+    EXPECT_EQ(body.role_name(), "cons-1");
+    EXPECT_EQ(body.channel_topology(), "fan-out");
+    EXPECT_EQ(body.data_transport(), "zmq");
+    EXPECT_EQ(body.zmq_pubkey(), "abcdefghij0123456789abcdefghij0123456789");
+    EXPECT_EQ(body.expected_schema_id(), "test.schema.v1");
+    EXPECT_EQ(body.expected_schema_hash(), "deadbeef");
+    EXPECT_EQ(body.consumer_hostname(), "hostA");
+    EXPECT_EQ(body.consumer_pid(), 4242ULL);
+    EXPECT_TRUE(body.abi_fingerprint().is_object());
+    EXPECT_EQ(body.client_nonce(), "0123456789abcdef0123456789abcdef");
+    EXPECT_EQ(body.client_wall_ts(), 1234567890000ULL);
+}
+
+TEST(WireBodies, ConsumerRegReqBodyOptionalFieldsAbsentDefaults)
+{
+    pylabhub::wire::ConsumerRegReqBody body(make_required_only_consumer_reg_req_body());
+    EXPECT_EQ(body.role_name(), "");
+    EXPECT_EQ(body.channel_topology(), "");
+    EXPECT_EQ(body.expected_schema_id(), "");
+    EXPECT_EQ(body.expected_schema_hash(), "");
+    EXPECT_EQ(body.expected_schema_blds(), "");
+    EXPECT_EQ(body.expected_schema_packing(), "");
+    EXPECT_EQ(body.expected_flexzone_blds(), "");
+    EXPECT_EQ(body.expected_flexzone_packing(), "");
+    EXPECT_EQ(body.expected_schema_owner(), "");
+    EXPECT_EQ(body.consumer_pid(), 0ULL);
+    EXPECT_EQ(body.consumer_hostname(), "");
+    EXPECT_EQ(body.build_id(), "");
+    EXPECT_EQ(body.inbox_endpoint(), "");
+    EXPECT_EQ(body.inbox_schema_json(), "");
+    EXPECT_EQ(body.inbox_packing(), "");
+    EXPECT_EQ(body.inbox_checksum(), "");
+}
+
+TEST(WireBodies, HeartbeatNotifyBodyOptionalFieldsAbsentDefaults)
+{
+    nlohmann::json b;
+    b["channel_name"] = "lab.x";
+    b["role_uid"] = "prod.uid1";
+    b["role_type"] = "producer";
+    b["envelope_hash"] = "deadbeef";
+    pylabhub::wire::HeartbeatNotifyBody body(std::move(b));
+    EXPECT_EQ(body.producer_pid(), 0ULL);
+    EXPECT_FALSE(body.has_metrics());
+}
+
 TEST(WireBodies, ChannelAuthChangedNotifyBodyValidates)
 {
     nlohmann::json body;

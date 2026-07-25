@@ -1273,13 +1273,13 @@ HubState::_on_producer_added(const std::string &channel_name, ChannelSchemaInvar
     // `_on_channel_registered`).  Invalid identifiers bump
     // sys.invalid_identifier_rejected and silent-drop; the wire layer
     // returns a typed error.
-    // Grammar failures — defensive branch.  Production callers are
-    // guarded by `BrokerServiceImpl::validate_identity_fields`, which
-    // rejects with `INVALID_REQUEST` before reaching here.  Test-access
-    // callers may bypass; report the failure explicitly so the broker
-    // adapter maps to `INVALID_REQUEST` instead of misclassifying as
-    // SCHEMA_MISMATCH / TRANSPORT_MISMATCH (retired 2026-07-09 per
-    // review Bug #3).
+    // Grammar failures — defensive branch.  Production wires are
+    // guarded by `gate_grammar` in the wire_dispatch admission
+    // pipeline (HEP-CORE-0046 §14.5), which rejects before reaching
+    // here.  Test-access callers may bypass; report the failure
+    // explicitly so the broker adapter maps to `INVALID_REQUEST`
+    // instead of misclassifying as SCHEMA_MISMATCH /
+    // TRANSPORT_MISMATCH (retired 2026-07-09 per review Bug #3).
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
         (!producer.role_uid.empty() &&
          !is_valid_identifier(producer.role_uid, IdentifierKind::RoleUid)) ||

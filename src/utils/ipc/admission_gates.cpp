@@ -8,17 +8,16 @@
 #include <string>
 #include <string_view>
 
-// HEP-CORE-0033 §G2.2.0b role_uid / channel_name grammar validator lives
-// on the broker side today (validate_identity_fields helpers).  Rather
-// than pull those into this TU, gate_grammar delegates to a minimal
-// local check that matches the wire-shape contract:
+// HEP-CORE-0033 §G2.2.0b role_uid / channel_name grammar: gate_grammar
+// applies a minimal wire-shape check in this TU:
 //   - non-empty
 //   - length <= 128
 //   - all characters in [A-Za-z0-9._\-] plus optional tag prefix
-// The broker's richer grammar validator runs downstream as part of
-// protocol admission (topology-side); gate_grammar is the wire-boundary
-// sanity check.  Any handler that needs the fully-qualified grammar
-// still calls validate_identity_fields as it does today.
+// The richer grammar predicate (`is_valid_identifier`, naming.hpp) runs
+// downstream inside HubState's atomic admission ops as a defensive
+// re-check; gate_grammar is the wire-boundary sanity gate.  (The legacy
+// broker-side `validate_identity_fields` helpers this TU once deferred
+// to were retired 2026-07-14, task #46.)
 
 namespace pylabhub::admission
 {

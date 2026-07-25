@@ -17,8 +17,9 @@
  * compile-time string check (the surrounding code is hot only on
  * startup so format/validate per call is cheap).
  *
- * NOT a replacement for the broker-side `validate_identity_fields`
- * gate.  The broker remains the authoritative wire-boundary
+ * NOT a replacement for the broker-side admission gates
+ * (`gate_grammar` in the wire_dispatch pipeline, HEP-CORE-0046
+ * §14.5).  The broker remains the authoritative wire-boundary
  * enforcer; this helper just makes it harder for trusted call sites
  * to construct an invalid uid in the first place.
  */
@@ -81,8 +82,9 @@ enum class RoleUidTag : std::uint8_t
  * Layout: `<tag>.<name>.<unique>`.  Composition is `fmt::format`;
  * validation is `pylabhub::hub::is_valid_identifier(uid,
  * IdentifierKind::RoleUid)` — the SAME predicate the broker calls at
- * the wire boundary via `validate_identity_fields`.  Single source of
- * truth; if the grammar evolves, both call sites pick up the change.
+ * the wire boundary via `gate_grammar` (admission_gates).  Single
+ * source of truth; if the grammar evolves, both call sites pick up
+ * the change.
  *
  * @throws std::invalid_argument if the composed uid fails grammar
  *         validation, with a diagnostic identifying the offending

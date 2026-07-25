@@ -510,9 +510,9 @@ struct ProducerAdmissionResult
 
     /// True when the op-entry identifier-grammar check rejected the
     /// call (invalid `channel_name`, `role_uid`, or `schema_id`).
-    /// In production these are pre-gated by
-    /// `BrokerServiceImpl::validate_identity_fields`, so this branch
-    /// is defensive; test-access callers may bypass the pre-gate.
+    /// In production these are pre-gated by `gate_grammar` in the
+    /// wire_dispatch admission pipeline (HEP-CORE-0046 §14.5), so this
+    /// branch is defensive; test-access callers may bypass the pre-gate.
     /// Broker maps to `INVALID_REQUEST` on the wire.  Checked BEFORE
     /// `topology_error_code`.
     bool invalid_identifier{false};
@@ -551,9 +551,10 @@ struct ConsumerAdmissionResult
 
     /// True when the op-entry identifier-grammar check rejected the
     /// call.  Defensive branch — pre-gated in production by
-    /// `BrokerServiceImpl::validate_identity_fields`.  Broker maps to
-    /// `INVALID_REQUEST` on the wire.  Checked BEFORE
-    /// `topology_error_code`; when `true`, `admitted=false`.
+    /// `gate_grammar` in the wire_dispatch admission pipeline
+    /// (HEP-CORE-0046 §14.5).  Broker maps to `INVALID_REQUEST` on the
+    /// wire.  Checked BEFORE `topology_error_code`; when `true`,
+    /// `admitted=false`.
     bool invalid_identifier{false};
 
     /// True iff this admission opened a fresh channel record.  Only

@@ -617,7 +617,8 @@ observability queries.
 
 | Cause | Error code | Which cell(s) |
 |---|---|---|
-| REG_REQ missing / malformed `channel_name`, `role_uid`, `role_type`, `zmq_pubkey`, `data_transport` | `INVALID_REQUEST` | all |
+| REG_REQ required field missing / wrong JSON type (`channel_name`, `role_uid`, `role_type`, `zmq_pubkey`, `data_transport`, …), or grammar-invalid `role_uid` / `channel_name` / `zmq_pubkey` length ≠ 40 | `BODY_SCHEMA_VIOLATION` (typed body ctor + §14.5 wire gates, at parse — never reaches the handler) | all |
+| Required field present and well-typed but semantically invalid VALUE (`data_transport` ∉ {"shm","zmq"}, SHM REG with empty `shm_capability_endpoint`) | `INVALID_REQUEST` (handler-level value check, §14.7) | all |
 | `channel_topology` is a non-empty non-parseable string | `INVALID_REQUEST` | all |
 | `(fan-in, shm)` | `TOPOLOGY_NOT_SUPPORTED_FOR_TRANSPORT` | fan-in SHM |
 | Non-first-arrival with different `channel_topology` than stored | `TOPOLOGY_MISMATCH` | all (existing channel) |
@@ -1292,9 +1293,14 @@ inbox-configured producer).
 
 **Phase C — Admission-gate ordering (security first).**
 
-6. Broker REG-family handlers: run gates 1-7 per §14.5 BEFORE any
-   state mutation — envelope hash, broker_proto, identity match,
-   grammar, known_roles binding, key-rotation, anti-replay.
+6. Broker REG-family handlers: run the §14.5 sequence BEFORE any
+   state mutation — steps 1-6 shared wire gates (envelope hash,
+   identity match, grammar, role-tag policy, known-role binding,
+   anti-replay), steps 7-8 handler-level protocol gates (ABI
+   fingerprint, topology/schema/transport admission).  The scalar
+   broker_proto gate and the separate key-rotation gate are retired
+   (§14.5 note — ABI rides `abi_fingerprint`; rotation fails
+   known-role binding).
 7. `HubState` API additions: `ChannelEntry::binding_side_uid()`,
    `HubState::is_binding_side_sender()`, `HubState::nonce_seen()`.
 8. §2.3 / §2.5 / §2.6 handlers: replace bespoke sender-validation
@@ -2538,7 +2544,7 @@ mutation, in this order:
 4. Role-tag policy — the role_uid short-tag must match the message:
    {prod, proc} for REG_REQ, {cons, proc} for CONSUMER_REG_REQ
    (HEP-CORE-0033 §G2.2.0b).
-5. `verify_known_role_binding(body.role_uid(), body.zmq_pubkey())`
+5. `gate_known_role_binding(body.role_uid(), body.zmq_pubkey())`
    else `PUBKEY_MISMATCH` (I-PUBKEY-BINDING).  This same check
    enforces I-KEY-ROTATION-VIA-DEREG: a role's pubkey is immutable
    for the broker's lifetime, so an on-the-fly re-REG with a
@@ -2591,15 +2597,15 @@ mechanics:
    every inbox producer, §14.3).
 2. **Its signature is the uniform `handle_XXX(const WireEnvelope& env, const
    XxxBody& body, …)`.**  `env` carries the identity / correlation_id /
-   envelope_hash / broker_proto; the body carries the payload.  A narrower
-   signature (e.g. passing just `corr_id`) cannot reach the other envelope
-   fields and does not scale.
+   envelope_hash; the body carries the payload.  A narrower signature
+   (e.g. passing just `corr_id`) cannot reach the other envelope fields
+   and does not scale.
 3. **It trusts the shared admission gates — it never re-implements one.**  By
    the time a handler runs, `receive_and_validate` (§14.5) has already applied
    gates 1–6 and handed it a `Validated<Body>`.  A per-handler identity /
    replay / known-role check is redundant and WILL drift from the one true
    pipeline.
-4. **It runs any protocol gates (§14.5 gate 7) BEFORE mutating `HubState`.**  No
+4. **It runs any protocol gates (§14.5 steps 7-8) BEFORE mutating `HubState`.**  No
    half-applied state under a later-failing gate.
 5. **It replies only through the typed envelope.**  Build the reply body and
    send via `send_reply` / `WireEnvelope::build_router_send` (which stamps the

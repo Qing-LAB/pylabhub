@@ -6,7 +6,7 @@
  * Composes the four existing building blocks:
  *   - `wire_envelope`  — 5-frame parse + envelope_hash validation
  *   - `wire_bodies`    — typed body class construction
- *   - `admission_gates`— identity / grammar / known_roles / rotation / replay
+ *   - `admission_gates`— identity / grammar / role-tag / known-role / replay
  *
  * into a single call: `receive_and_validate(raw, ctx)` → `ReceivedMessage`.
  *
@@ -22,23 +22,15 @@
  * checks.  They see a validated typed body and go straight to the domain
  * logic (HubState mutation, wire response body construction).
  *
- * ⚠ STATUS (2026-07-16): this receive-side validation IS live in the broker
- *   — gates run on every message.  BUT the broker's `dispatch_received`
- *   currently down-converts the REG_REQ / CONSUMER_REG_REQ Validated* arms
- *   BACK to raw JSON (`to_legacy`) and runs the handcrafted `handle_reg_req` /
- *   `handle_consumer_reg_req`.  Completing that swap — so those two handlers
- *   consume the typed `ProducerRegReqBody` / `ConsumerRegReqBody` directly (per
- *   HEP-0046 §14.4, exactly like the seven already-converted handlers) — is the
- *   last of HEP-0046 Phase B.  The `to_legacy` bridge is the transition
- *   scaffold, not a permanent layer.
- *
- * ➜ FIRST TYPED PATHWAY (2026-07-19): the admin operator console
- *   (HEP-CORE-0033 §11) is being built natively on this typed envelope from
- *   the start — greenfield admin msg_types + `wire_bodies` bodies, no JSON
- *   `{method,token,params}` REP surface, no `to_legacy` bridge.  It is the
- *   reference implementation of an end-to-end typed path that the #57 broker
- *   REG migration follows: admin proves the receive→typed-body→handler flow
- *   with zero down-conversion.  See HEP-CORE-0033 §11.1.
+ * STATUS: the typed pathway is COMPLETE for the REG family (HEP-0046 §12
+ *   step 5, 2026-07-24).  All nine REG-family handlers consume their
+ *   `Validated<Body>` directly — `dispatch_received` routes each variant
+ *   straight to `handle_XXX(const WireEnvelope&, const XxxBody&, …)` with
+ *   no JSON round-trip.  The transitional `to_legacy` down-conversion
+ *   bridge is deleted.  The admin operator console (HEP-CORE-0033 §11)
+ *   was the first end-to-end typed pathway and remains the greenfield
+ *   reference: admin msg_types + `wire_bodies` bodies, no JSON
+ *   `{method,token,params}` REP surface.
  *
  * By construction, no code path can reach a handler without first passing
  * every admission gate the msg_type's tier requires.  Adding a new msg_type
@@ -47,9 +39,16 @@
  * Tier definitions (mapped per msg_type in the dispatch table):
  *
  *   Tier `RegFamily`: envelope + body class + identity + grammar +
- *     known_role + key_rotation + replay.  Applied to msg_types that
- *     mutate admission state (REG_REQ / CONSUMER_REG_REQ / DEREG_REQ /
- *     CONSUMER_DEREG_REQ / ENDPOINT_UPDATE_REQ / CHANNEL_AUTH_APPLIED_REQ).
+ *     role-tag + known-role + replay (`run_reg_family_gates`).  Applied
+ *     to the admission-establishing msg_types (REG_REQ /
+ *     CONSUMER_REG_REQ).  The other mutating msg_types (DEREG_REQ /
+ *     CONSUMER_DEREG_REQ / ENDPOINT_UPDATE_REQ /
+ *     CHANNEL_AUTH_APPLIED_REQ) run the authenticated variant
+ *     (`run_authenticated_reg_family_gates`) — same chain minus the
+ *     known-role binding, which already pinned the role's pubkey at
+ *     REG time.  There is no separate key-rotation gate: a rotated
+ *     pubkey fails known-role binding (rotation = edit known_roles +
+ *     DEREG/re-REG; see admission_gates.hpp).
  *
  *   Tier `Control`: envelope + body class + identity match (only when the
  *     body carries role_uid).  Applied to non-mutating REQs
