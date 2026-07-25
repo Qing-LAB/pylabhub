@@ -1196,25 +1196,125 @@ config and passing them to `hub::Queue::create_reader/writer` per
 §3.3.0.  The queue reads the §3.3.0 matrix row for that pair to pick
 socket type, bind/connect, CURVE role, and endpoint owner.
 
+#### 4.7.0.1 The channel establishment contract (normative)
+
+Every role follows this contract.  It is deliberately simple for the
+script author: who binds, who dials, and when a peer is reachable are
+resolved entirely at the queue + broker tiers (Tier 2/3) and are NEVER
+exposed to the script.  (This supersedes the earlier "R6 pending-gate"
+formulation — see the note at the end of this subsection.)
+
+**C1 — The binding side owns the channel; the hub keeps the book.**
+Each topology has exactly one binding side — the role that binds the
+data-plane socket and thereby owns the channel-queue: fan-in → the
+**consumer**; fan-out / one-to-one → the **producer**.  The hub is the
+*sole bookkeeper*: the `ChannelEntry` lives only in `HubState`; a role
+never holds it — a role *owns the channel* and *receives its view of the
+book* (peer list, allowlist, endpoint) from the hub via `REG_ACK` and
+`CHANNEL_AUTH_CHANGED_NOTIFY`.
+
+**C2 — The book's lifecycle is locked to the owner.**  Because the hub's
+book describes an *owned* channel, the book exists **iff its owner
+exists**:
+- The hub OPENS the `ChannelEntry` when the binding owner registers (the
+  owned channel comes into being).  A dialing role never causes the hub
+  to open a book — there is no owned channel yet.
+- The hub CLOSES it when the owner leaves (heartbeat-timeout, DEREG, or
+  crash).  **Owner death is channel death** — there is no wait for the
+  owner to reconnect; roles restart and re-establish.  A *dialing*
+  peer's departure never closes the channel.
+
+**C3 — Owner-first by necessity; a dialer that races ahead waits,
+concealed.**  A dialing role cannot form a channel — there is nothing to
+dial into until the owner has bound.  Under the orchestrated startup
+contract the owner comes up first, so a dialer's registration normally
+finds its channel immediately.  If a dialer's `REG` arrives before its
+owner's book exists, the broker answers **`awaiting_owner`** (a
+retryable transient), and the dialer's *role host* retries — bounded by
+`init_timeout_ms`, honoring cancellation — entirely at Tier 2.  The
+script sees none of it (its `on_init` has not run).  If the owner never
+appears within the budget, the role fails startup cleanly (fatal
+abort), surfacing a misconfiguration rather than hanging.
+
+**C4 — Dial-safety is a cooperative role-side poll, not a broker pend.**
+Once the owner exists, the dialer receives the owner's endpoint on its
+`REG_ACK` and DEFERS its `socket.connect()`.  Its role host then polls
+the broker's readiness (`CHECK_PEER_READY_REQ`) until the owner has
+admitted the dialer's pubkey — predicate
+`admission_version(dialer_pubkey) ≤ confirmed_version(owner)`
+(HEP-CORE-0042 INVARIANT-BIND-CONFIRM-2) — and only then does the queue
+complete the dial.  This prevents a premature CURVE handshake, which ZAP
+would deny terminally.  **The broker holds no pending registration
+state — it is a pure responder.**  The dial is guaranteed complete
+before the data loop and before `on_init`.
+
+**C5 — Streaming is the script's decision; the framework provides
+visibility, never gates it.**  The framework never forces or suppresses
+data emission based on peer presence.  It exposes accurate visibility —
+`consumer_count`/`producer_count`/`consumers`/`producers` (Live peers)
+plus the `on_allowlist_changed` / `on_consumer_died` push callbacks —
+and the script decides when to emit (§4.7.6).
+
+**C6 — The script is topology-blind.**  A script never learns whether it
+is the binding or dialing side, never sees a socket, and never handles
+"peer not up yet."  It sees only the transport-agnostic verbs
+(`read_acquire` / `write_acquire`), the peer counts, and its callbacks.
+Every clause above is enforced strictly below the script.
+
+**C7 — A processor is two roles in one, resolved per side.**  A
+processor is simultaneously a *consumer* of its input channel and a
+*producer* of its output channel — two presences, two channels, each
+with its own topology declared independently (`in_channel_topology` /
+`out_channel_topology`).  **C1–C6 apply to each side on its own**: on
+each channel the processor is owner or dialer per *that* channel's
+topology, so a processor may be owner on both, dialer on both, or mixed.
+Its role host runs the C4 completion (`finalize_channel_connect`)
+uniformly on *both* channels — a no-op wherever the processor is the
+owner (already bound), a poll-then-dial wherever it is the dialer.  Its
+data callback is a single `on_process(rx, tx, msgs, api)`, and its loop
+starts once *both* queues are Active and its **input** side has ≥1
+admitted peer (§4.7.6).  In a processor pipeline the per-side owner-first
+rule makes establishment follow the ownership graph (each channel's
+owner up before its dialers), which C3's concealed `awaiting_owner`
+retry handles automatically; a *cyclic* ownership assignment would
+deadlock and each role would abort on its init timeout — a
+misconfiguration, not a supported shape.
+
+> **Retired: the "R6 pending-gate" (2026-07-25).**  An earlier draft
+> (tech draft §5.4) had the broker *withhold* a dialer's `REG_ACK` and
+> hold pending registration state until the owner's allowlist was
+> synced.  That is an internet-model gate for arbitrary ordering; under
+> this owner-first *contract* it is unnecessary and was reverted
+> (2026-07-09, it broke legitimate tests).  Dial-safety is C4's
+> role-side `CHECK_PEER_READY` poll; ordering robustness is C3's
+> concealed `awaiting_owner` retry.  The broker never pends.  The
+> walkthroughs below reflect this shipped model.
+
+---
+
 #### 4.7.1 Fan-in ZMQ (N producers → 1 consumer)
 
 **Shape:** several producers, one consumer.  **Who owns the
 address:** the consumer.  **Typical use:** an aggregator or sink —
 sensors come and go, the sink stays put.
 
-**What happens in plain terms.**  The consumer starts first,
-registers with the broker, opens a socket, tells the broker "here's
-where I'm listening," starts sending heartbeats.  Now the channel
-exists and the broker knows the consumer is up.  Later a producer
-starts up.  Its registration asks the broker for the consumer's
-address.  The broker doesn't answer yet — it first has to tell the
-consumer "a new producer wants in, add this pubkey to your
-accept-list," wait for the consumer to say "done," and only then
-reply to the producer with the consumer's address.  The producer
-dials in.  Because the accept-list was updated first, the CURVE
-handshake succeeds on the first try.  Data flows.  The consumer's
-`producer_count()` tick up.  If the producer dies or leaves, the
-consumer sees `producer_count()` go back down.
+**What happens in plain terms.**  The consumer is the owner (C1), so it
+starts first: registers, binds its socket, tells the broker "here's
+where I'm listening," starts heartbeating.  That registration is what
+opens the channel's book at the hub (C2).  Later a producer starts.  Its
+registration gets an **immediate** `REG_ACK` carrying the consumer's
+address — the broker does not pend it (C4).  The producer does NOT dial
+yet: it holds its connect (deferred) and its role host quietly polls the
+broker "has the consumer added my pubkey to its accept-list?"  Meanwhile
+the broker rings the consumer's doorbell (`CHANNEL_AUTH_CHANGED_NOTIFY`),
+the consumer pulls the updated allowlist, installs it, and confirms.
+Now the poll returns "ready," the producer dials in, and because the
+accept-list was already synced the CURVE handshake succeeds on the first
+try.  Data flows.  The consumer's `producer_count()` ticks up (on the
+producer's first heartbeat); if the producer dies or leaves it ticks
+back down.  If a producer happens to start *before* the consumer, its
+registration simply retries `awaiting_owner` until the consumer opens
+the channel — all at the role host, invisible to the script (C3).
 
 **Wire-level sequence (technical):**
 
@@ -1237,24 +1337,30 @@ sequenceDiagram
     B-->>CS: ENDPOINT_UPDATE_ACK (ok)<br/>data_endpoint.has_value() == true
     CS->>B: HEARTBEAT (first) → consumer=Live
 
-    Note over PS,B: Producer arrives (any time after or before consumer Live)
+    Note over PS,B: Producer arrives AFTER the consumer-owner (owner-first, C3).<br/>Had it raced ahead, its REG would retry `awaiting_owner` at Tier 2 until now.
     PS->>B: REG_REQ (topology=fan-in, transport=zmq, pubkey=P1)
-    Note over B: R6 blocks: needs consumer Live<br/>+ endpoint_resolved<br/>+ allowlist confirms P1
+    B-->>PS: REG_ACK (status=ok, data_endpoint, data_pubkey) — IMMEDIATE, no broker pend (C4)
+    PS->>PQ: apply_master_approval(ACK) → Configured;<br/>PUSH connect DEFERRED (dial_pending=true)
+    Note over B: admit P1 to the ledger (admission_version bumps),<br/>then ring the owner's doorbell
     B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=producer, role_uid=P1
     CS->>B: GET_CHANNEL_AUTH_REQ
     B-->>CS: GET_CHANNEL_AUTH_ACK (allowlist=[P1, ...])
-    CS->>CQ: set_peer_allowlist(allowlist)<br/>(ZAP admits P1 on next handshake)
-    CS->>B: CHANNEL_AUTH_APPLIED_REQ (channel_version=N)
-    B-->>CS: CHANNEL_AUTH_APPLIED_ACK (ok)<br/>confirmed_version=N
-    Note over B: R6 wakes for producer REG_REQ
-    B-->>PS: REG_ACK (status=ok, data_endpoint, data_pubkey)
-    PS->>PQ: apply_master_approval(ACK) + start()
-    PQ->>PQ: PUSH connect(data_endpoint)<br/>curve_serverkey=data_pubkey<br/>curve_client
-    PQ-->>CQ: (CURVE handshake — consumer's ZAP admits via allowlist)
+    CS->>CQ: set_peer_allowlist(allowlist)<br/>(ZAP will admit P1)
+    CS->>B: CHANNEL_AUTH_APPLIED_REQ (applied_version=V)
+    B-->>CS: CHANNEL_AUTH_APPLIED_ACK (ok)<br/>confirmed_version[K][C]=V
+    loop role-side readiness poll (C4), at 100ms until Ready
+        PS->>B: CHECK_PEER_READY_REQ (pubkey P1?)
+        B-->>PS: not_ready<br/>(admission_version(P1) > confirmed_version)
+    end
+    PS->>B: CHECK_PEER_READY_REQ (pubkey P1?)
+    B-->>PS: ready<br/>(admission_version(P1) ≤ confirmed_version[K][C])
+    PS->>PQ: finalize_connect → start()<br/>PUSH connect(data_endpoint), curve_client
+    PQ-->>CQ: CURVE handshake — consumer's ZAP admits (allowlist synced) ✓
+    Note over PS: dial COMPLETE before the data loop / on_init (C4)
     PS->>B: HEARTBEAT (first) → broker marks producer=Live
     B->>CS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=live, role_type=producer, role_uid=P1
-    Note over CS: Consumer role host updates live_peers[K]<br/>api.producer_count() now returns count+1
-    Note over PS,CS: Data flows
+    Note over CS: live_peers[K] += P1<br/>api.producer_count() now returns count+1
+    Note over PS,CS: Data loop (on_init Ready → on_produce / on_consume; C5)
     PS->>PQ: write_acquire → write_commit
     PQ->>CQ: (slot bytes over PUSH→PULL)
     CQ->>CS: read_acquire → read_release
@@ -1296,8 +1402,11 @@ const std::string endpoint = reader->actual_endpoint();
 if (auto res = brc.send_endpoint_update(channel, "zmq_node", endpoint);
     !res.ok()) exit(1);
 
-// Start heartbeat.  Broker's R6 unblocks pending producer REG_REQs
-// as their pubkeys enter the allowlist via CHANNEL_AUTH_CHANGED_NOTIFY.
+// Start heartbeat.  As producers register, the broker rings this
+// consumer's doorbell (CHANNEL_AUTH_CHANGED_NOTIFY); the ctrl thread
+// pulls + installs each new pubkey and confirms — which is what turns
+// each producer's CHECK_PEER_READY poll Ready (C4).  The consumer
+// (owner) never waits on producers to bind.
 start_heartbeat_task();
 
 // Data loop — script sees the transport-agnostic reader API.
@@ -1330,20 +1439,28 @@ auto writer = hub::Queue::create_writer(
 // State: Standby until apply_master_approval delivers data_endpoint
 // + data_pubkey.
 
-// S2: REG_REQ.  Broker's R6 may block until consumer's allowlist is
-// synced with this producer's pubkey — brc blocks until REG_ACK
-// arrives (or the broker's REG_REQ budget expires).
-auto ack = brc.register_channel(producer_reg_payload);
+// S2: REG_REQ — the broker replies immediately (no pend, C4).  If the
+// consumer-owner is not up yet, register_channel retries `awaiting_owner`
+// here at the role host until it is (C3), bounded by init_timeout_ms.
+auto ack = brc.register_channel(producer_reg_payload);   // retries internally
 if (!ack.ok()) exit(1);
 
-// S3: activate.  Queue transitions Standby → Configured → Active:
-//   - PUSH sets curve_serverkey = ack.data_pubkey
-//   - PUSH connects ack.data_endpoint
-//   - Consumer's ZAP admits (pubkey already in consumer's allowlist)
+// S3: Configured, dial DEFERRED.  apply_master_approval promotes the
+// consumer's endpoint + pubkey onto the queue but does NOT connect —
+// for the fan-in dialing PUSH it sets dial_pending=true.
 writer->apply_master_approval(ack);
 
-// Start heartbeat + data loop.  No further coordination — CURVE
-// handshake already succeeded because R6 waited for allowlist sync.
+// S3.1: complete the deferred dial.  finalize_channel_connect polls the
+// broker (CHECK_PEER_READY) until admission_version(self) <=
+// confirmed_version(consumer) (C4), THEN runs start() → PUSH connect +
+// CURVE.  Topology-agnostic — the role never asks "am I fan-in?".  On
+// timeout it aborts startup cleanly; it never dials unsafely.
+if (!api.finalize_channel_connect(channel, init_timeout_ms, is_cancelled)) {
+    teardown_infrastructure_();
+    exit(1);
+}
+
+// Now Active + dialed (before on_init).  Start heartbeat + data loop.
 start_heartbeat_task();
 while (running) {
     if (auto slot = writer->write_acquire(period_ms)) {
@@ -1397,7 +1514,7 @@ sequenceDiagram
 
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=zmq, pubkey=C1)
-    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1
+    Note over B: NO pend — consumer got its REG_ACK immediately; it now<br/>polls CHECK_PEER_READY until producer(owner) admitted C1 (C4)
     B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
     PS->>B: GET_CHANNEL_AUTH_REQ
     B-->>PS: GET_CHANNEL_AUTH_ACK (allowlist=[C1, ...])
@@ -1472,9 +1589,11 @@ consumer attaches to.
 **What happens in plain terms.**  The producer creates a shared
 memory segment and opens a Unix socket that consumers will dial to
 "pick up" access to it.  It tells the broker where that socket
-lives.  When a consumer arrives, the broker does the usual
-accept-list dance (tell the producer, wait for confirmation, then
-reply to the consumer with the socket path).  The consumer dials
+lives.  When a consumer arrives, it gets an immediate REG_ACK
+and then, before dialing, its role host polls the broker until the
+producer(owner) has added it to the accept-list (the broker rings the
+producer's doorbell; the producer confirms) — no broker pend (C4).
+Then the consumer dials
 the Unix socket, does a short handshake, and receives a file
 descriptor for the shared memory segment through Unix ancillary
 data (`SCM_RIGHTS`).  It maps the segment and starts reading.  From
@@ -1507,7 +1626,7 @@ sequenceDiagram
 
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=fan-out, transport=shm)
-    Note over B: R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms consumer
+    Note over B: NO pend — consumer polls CHECK_PEER_READY<br/>until producer(owner) admitted it (C4)
     B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer
     PS->>B: GET_CHANNEL_AUTH_REQ → CHANNEL_AUTH_APPLIED_REQ
     B-->>CS: CONSUMER_REG_ACK (data_endpoint=<sock path>, data_pubkey)
@@ -1569,7 +1688,7 @@ sequenceDiagram
 
     Note over CS,B: Consumer arrives
     CS->>B: CONSUMER_REG_REQ (topology=one-to-one, transport=zmq, pubkey=C1)
-    Note over B: Cardinality check FIRST (no other consumer) →<br/>hard reject with ONE_TO_ONE_CARDINALITY_VIOLATED if already 1.<br/>Then R6 blocks: producer Live + endpoint_resolved<br/>+ allowlist confirms C1
+    Note over B: Cardinality check FIRST (no other consumer) →<br/>hard reject with ONE_TO_ONE_CARDINALITY_VIOLATED if already 1.<br/>Then NO pend — consumer polls CHECK_PEER_READY until producer admitted C1 (C4)
     B->>PS: CHANNEL_AUTH_CHANGED_NOTIFY<br/>phase=admitted, role_type=consumer, role_uid=C1
     PS->>B: GET_CHANNEL_AUTH_REQ → APPLIED_REQ
     B-->>CS: CONSUMER_REG_ACK (data_endpoint, data_pubkey)
@@ -1601,6 +1720,53 @@ The one difference is the broker: it rejects any second consumer
 with `ONE_TO_ONE_CARDINALITY_VIOLATED`, which fan-out SHM would
 accept.  Everything else — sequence, pseudocode, wire — matches
 §4.7.3 with the topology enum switched from `FanOut` to `OneToOne`.
+
+#### 4.7.5b Processors — reading one channel, writing another
+
+A processor reads an input channel and writes an output channel, so it
+is a **consumer on input and a producer on output at the same time**
+(two presences, C7).  Each side has its own topology, declared
+independently in config, and each side establishes on its own per C1–C6.
+
+**Establishment — both sides, each per its channel's ownership:**
+
+1. The role host builds **both** queues in Standby: an rx (PULL/SUB or
+   SHM-reader) for the input channel and a tx (PUSH/PUB or SHM-writer)
+   for the output channel — each via `hub::Queue::create_reader` /
+   `create_writer(topology, transport, opts)` with that side's topology.
+2. It registers **both** presences: `CONSUMER_REG_REQ` on the input
+   channel (`in_channel_topology`) and `REG_REQ` on the output channel
+   (`out_channel_topology`).  Each follows C3 — if that side's owner is
+   not up yet, it retries `awaiting_owner` at Tier 2 until it is.
+3. It calls `finalize_channel_connect` on **both** channels (C4): a
+   no-op on any side where the processor is the **owner** (input
+   fan-in, or output fan-out / one-to-one — already bound in
+   `apply_master_approval`), and a poll-then-dial on any side where it
+   is the **dialer** (input fan-out / one-to-one, or output fan-in).
+4. Both queues reach Active.  The loop starts once **both** are Active
+   **and** the input side has ≥1 admitted peer (§4.7.6); output-side
+   peer presence is not gated (producer fire-and-forget, C5).
+
+So the four owner/dialer combinations are all just the two per-side
+resolutions composed — e.g. `(fan-in input, fan-out output)` = owner on
+both; `(one-to-one input, fan-in output)` = dialer on both.
+
+**Data callback — a single `on_process(rx, tx, msgs, api)`**, run each
+cycle only when both sides are Active: read the input slot via `rx`,
+write the output slot via `tx`, return Commit/Discard for the output —
+the same script-controlled emission as a producer.
+
+```python
+def on_process(rx, tx, msgs, api):
+    v = rx.read_field("value")
+    if api.consumer_count("out.stream") == 0:
+        return False                 # Discard — no downstream consumers yet
+    tx.write_field("value", transform(v))
+    return True                      # Commit
+```
+
+The processor never sees which side is owner vs dialer, nor any socket —
+it declares two topologies in config and writes one `on_process`.
 
 #### 4.7.6 Script-facing readiness accessors
 
@@ -1657,6 +1823,129 @@ is to decide when the channel is "ready enough" to push data.  This
 applies symmetrically to fan-in consumers (`api.producer_count()`
 before upstream-triggered work) and 1-to-1 both sides.  There is
 NO framework-level auto-hold, auto-retry, or auto-fallback.
+
+**Callback contract and default behavior.**  A script provides only the
+callbacks it needs; the framework supplies establishment-aware defaults
+for the rest, so a minimal role stays trivial and topology-blind.
+
+| Callback | Required? | If absent (no hook) |
+|---|---|---|
+| `on_produce(tx, msgs, api)` | REQUIRED for a producer role | hard error — the role fails to run ("the role requires this callback") |
+| `on_consume(rx, msgs, api)` | REQUIRED for a consumer role | hard error — the role fails |
+| `on_process(rx, tx, msgs, api)` | REQUIRED for a processor role | hard error — the role fails |
+| `on_init(api) -> Ready \| NotReady` | OPTIONAL | treated as `Ready`; readiness reduces to the framework default below |
+| `on_allowlist_changed`, `on_consumer_died`, `on_role_disconnected`, band callbacks | OPTIONAL | no-op; the framework still updates `live_peers` / allowlist underneath |
+
+**The loop-ready gate.**  Each cycle, before the acquire/emit step, the
+framework computes `init_done = default_ready AND script_ready`:
+- `script_ready` = `on_init(api) == Ready`, or `true` when there is no
+  `on_init` hook.  `on_init` is re-invoked every cycle until it first
+  returns Ready, then never again.
+- `default_ready` is the framework's establishment-aware default,
+  derived by **one per-side rule applied uniformly to every role kind
+  and ANDed over the role's sides** (topology-concealed — "no topology
+  test at this layer"):
+  - each **reader** side (consumer, processor input) contributes
+    `channel_admission_populated` — wait until ≥1 peer is admitted on
+    that channel (no point reading an empty channel);
+  - each **writer** side (producer, processor output) contributes
+    `true` — fire-and-forget; a writer may emit into an empty channel
+    (the queue's Standby→Active lifecycle, not peer presence, is its
+    only gate).
+
+  So the defaults are not three ad-hoc rules but one: **producer** →
+  `true`; **consumer** → reader-admission; **processor** →
+  reader-admission `AND` writer-`true` = reader-admission.  This
+  consistency is structural, not coincidental: `default_ready`
+  (`CycleOps::default_init_ready`) and its `AND script_ready`
+  composition run in a **single shared code path** (`data_loop`),
+  identically for every role — so every current and future role kind
+  gates its loop the same way.
+
+While `init_done` is false the cycle still drains messages and applies
+NOTIFYs (so peer counts advance), it just skips acquire/emit.  If Ready
+never fires within `init_timeout_ms` (default 30 s; 0 = forever) the
+loop stops with `InitTimeout`.
+
+**Minimal role — no `on_init`.**  The common case needs nothing beyond
+the data callback; the framework does the right thing per topology:
+
+```python
+# Producer (fan-out owner OR fan-in dialer) — emits as soon as the
+# channel is Active; no peer logic needed.
+def on_produce(tx, msgs, api):
+    tx.write_field("value", read_sensor())
+    return True            # Commit
+
+# Consumer (fan-in owner OR fan-out dialer) — the framework holds the
+# loop until >=1 producer is admitted, then delivers.
+def on_consume(rx, msgs, api):
+    process(rx.read_field("value"))
+    return True
+```
+
+**Peer-aware role — opt-in via `on_init` and/or `on_produce`.**  A role
+that must not emit before subscribers exist (e.g. fan-out ZMQ PUB, which
+drops pre-subscribe messages) gates on the peer count — still
+topology-blind, using only the count:
+
+```python
+# Hold the loop until at least one consumer is subscribed.
+def on_init(api):
+    return "Ready" if api.consumer_count("data.stream") >= 1 else "NotReady"
+
+# ...and/or skip individual iterations while none are present.
+def on_produce(tx, msgs, api):
+    if api.consumer_count("data.stream") == 0:
+        return False       # Discard — nobody to send to yet
+    tx.write_field("value", read_sensor())
+    return True
+```
+
+The script never sees sockets, topology, the owner/dialer distinction,
+or the establishment handshake — only its callbacks and the peer counts.
+Every establishment clause (C1–C7, §4.7.0.1) is enforced strictly below
+this line.
+
+**Notification callbacks — framework default, script override (the same
+shape as `on_init`).**  Beyond the data callbacks, every framework
+notification follows one deliberate architecture (the notification
+dispatch table): each event carries a **framework default** that runs
+the correct behavior out of the box, AND an optional **script callback**
+that *replaces* that default when the script defines it.  Dispatch is
+uniform — *if the script defined the callback, run it; else run the
+framework default; always consume the event* — so a hookless role is
+always correct, and the script customizes only where it wants.
+
+| Event | Script callback (override) | Framework default (no hook) |
+|---|---|---|
+| Owner tore the channel down | `on_channel_closing` | stop this role's affected side cleanly |
+| A peer died (heartbeat timeout / DEREG) | `on_consumer_died` | drop the dead peer; keep serving the rest |
+| Hub died | `on_hub_dead` | stop the role |
+| Band member joined / left / message / lost | `on_band_member_joined` / `_left` / `on_band_message` / `on_band_lost` | update band membership; no role action |
+| A peer's admission changed (added / revoked) | `on_allowlist_changed` (observe) | apply the new allowlist to the queue's ZAP — admit / revoke automatically |
+
+The framework applies the *mechanics* (admit, revoke, track Live peers,
+tear down on owner death) as the correct default; a script callback
+adjusts the *role's own response* on top.  It never inverts — a script
+cannot veto a hub admission decision at the data plane; admission
+authority stays with the hub (C1).
+
+**Consistency rule (normative).**  Every framework→script callback obeys
+this shape: the framework holds a correct default, and the script
+customizes on top — for `on_init` by AND-composition, for notifications
+by override-else-default.  A new callback MUST supply a framework default
+so that a hookless role stays correct; the script is never *required* to
+hold the system correct.
+
+> **One gap this rule surfaces — channel peer *join* is poll-only.**  A
+> peer becoming Live on a channel updates `producer_count` /
+> `consumer_count` (framework default = track) but has no callback row,
+> so a script reacts only by polling those counts — whereas peer *death*
+> (`on_consumer_died`) and band join/leave both have the default+override
+> callback.  Completing the pattern (an optional channel peer-join
+> callback; framework default = track, unchanged) is tracked as an
+> implementation slice with 3-engine parity.  See TOPOLOGY_TODO.
 
 #### 4.7.7 Why plain PUB (not XPUB) under fan-out ZMQ
 

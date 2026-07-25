@@ -59,11 +59,46 @@ on top of that abstraction.
 | C step 6 | **Role code migration** — `role_api_base.cpp` build_tx/build_rx_queue migrate to `hub::Queue::create_*` | ✅ **COMPLETE** (`3d4fe07a`, 2026-07-10) | Verified in code 2026-07-25: role queues built via `hub::Queue::create_writer/create_reader(topology, transport, opts)` (`role_api_base.cpp:649/716/768`); manual `if (transport=="shm")` dispatch gone.  (Table status previously said "NEXT" — stale by one day.) |
 | **C step 7** | **Test spawn-order migration** — L3 + L4 fan-in tests flip to consumer-first (BINDING side goes first) | ⏳ **NEXT** (unblocked — C step 6 shipped) | Its original purpose (unblock the 3 tests broken in the reverted R6 E1 attempt) is MOOT — those were fixed independently by the fan-in reader-correctness arc (07-11) + admission-ledger unification (07-13), all green.  What remains: align fan-in choreography with the §4.7.1 binding-first walkthrough + keep one producer-first case as the standby→notify catch-up pin.  (T2 of the 2026-07-25 consolidated plan.) |
 | D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — `8655f2fe..ed0456d5` | `phase=admitted/live/left` + `live_peers` + `consumer_count`/`producer_count` (3-engine parity) all live. |
-| **D R6 gate** | **R6 gate symmetrization** — dialing-side REG_REQ pends until binding side Live + endpoint resolved + confirmed_version catches up | ⏳ **OPEN — the substantive residual** | Verified ABSENT in code 2026-07-25: no `role_registration_version`, no pending-REG registry, no wake handler, no `CHANNEL_CLOSED` resolution.  Built once, REVERTED 2026-07-09 (premature enforcement broke 3 tests).  Today a dialing fan-in producer gets an immediate REG_ACK (empty allowlist) + catches up via NOTIFY (Standby→Configured) — functionally correct, but NOT the symmetric "REG_ACK ⇔ dial-safe" contract.  This is the isolation guarantee the higher layers need.  (T3 of the consolidated plan — design review with user BEFORE build.) |
+| ~~**D R6 gate**~~ | ~~R6 gate symmetrization (broker pends dialer REG)~~ | ❌ **RETIRED 2026-07-25 — do NOT build** | Superseded by the establishment contract (HEP-0017 §4.7.0.1, C1–C7).  R6 is an internet-model gate; under the owner-first *contract* the broker never pends — dial-safety is the role-side `CHECK_PEER_READY` poll (already shipped, C4), ordering robustness is the concealed `awaiting_owner` retry (C3).  R6 was reverted 2026-07-09 because it fought the shipped model.  Draft §5.4 marked RETIRED.  See the implementation slices below. |
 | E | Retirements — delete `push_to`/`pull_from`, `zmq_bind`, `producer_peers` vector + Tier-2 `.front()` assembly, `CONSUMER_ATTACH_REQ_ZMQ` pre-attach, `ProducerEntry.zmq_node_endpoint` | ⏳ Blocked on D R6 | R6 replaces the standby-catch-up fallbacks these legacy surfaces exist for.  (T4.) |
 | F | L4 demos + full-topology verification sweep | ⏳ Blocked on E | Fan-in N=2, fan-out slow-joiner (`api.consumer_count()` gate), one-to-one cardinality; validate against §4.7 walkthroughs; retire the migration draft to archive.  (T5.) |
 | H | Full verification sweep | ⏳ Blocked on F | — |
 
+> **Establishment contract PINNED + implementation slices (2026-07-25).**
+> The channel establishment contract (owner-first, hub-books/role-owns,
+> owner-locked `ChannelEntry`, concealed `awaiting_owner` retry, role-side
+> `CHECK_PEER_READY` dial-safety, script-controlled streaming, per-side for
+> processors, framework-default+script-override callbacks) is now normative
+> in **HEP-0017 §4.7.0.1 (C1–C7)** + §4.7.1/§4.7.5b walkthroughs + §4.7.6
+> callback contract (rewrite landed 2026-07-25; R6 removed from all
+> walkthroughs).  The CODE changes that make code match the pinned contract
+> are the real remaining topology work:
+> - **S1 — owner-locked `ChannelEntry`.**  The hub opens the book only for
+>   the binding owner (fan-in consumer / fan-out producer).  A dialer
+>   arriving before its owner gets a retryable `awaiting_owner`, not a
+>   channel-open; the fan-in producer stops opening a book
+>   (`_on_producer_added` fresh-channel path) and the fan-out consumer's
+>   hard-`CHANNEL_NOT_FOUND` becomes the same retryable transient — unified
+>   symmetric handling, all concealed at the role host (Tier 2).
+> - **S2 — owner-death → channel-death (binding-owner-aware teardown).**
+>   Code catch-up to HEP-0023 §2.1.1's own 2026-07-08 amendment + §4.7.0.1
+>   C2: fan-in consumer(owner) death closes the channel; last-producer
+>   death does NOT close a fan-in channel while its consumer-owner lives.
+>   Fix the stale producer-centric teardown + the stale `hub_state.cpp:1874`
+>   citation.
+> - **S3 — dialer fast-fail (falls out of S2).**  Once owner-death closes
+>   the book, `CHECK_PEER_READY` returns `CHANNEL_NOT_FOUND` → the dialer
+>   aborts fast with a clean diagnostic instead of burning `init_timeout`.
+> - **S4 — peer-join callback consistency (framework-default+override).**
+>   Channel peer *join* (phase=live) is poll-only today; every other event
+>   (peer-death, band join/leave, channel-closing) has the
+>   default+override callback (§4.7.6 consistency rule).  Add an optional
+>   channel peer-join callback (framework default = track, unchanged;
+>   3-engine parity) to complete the pattern.  NAMING/shape = open design
+>   point.
+> Each slice lands on the standard envelope + a full sweep; tests derived
+> from the §4.7 contract (spawn-order-independence L4 keystone).
+>
 > **Multi-producer fan-in DATA plane — VERIFIED WORKING (2026-07-25).**  An
 > earlier "single-peer / Stage 1A" limitation was retired: the multi-endpoint
 > PULL connect loop shipped (HEP-0017 §3.3 Pattern B, closed 2026-07-08).

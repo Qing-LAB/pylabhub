@@ -465,6 +465,25 @@ aimed at the right side.
 
 ### 5.4 R6 gate — symmetric
 
+> **RETIRED 2026-07-25 — superseded by the establishment contract
+> (HEP-CORE-0017 §4.7.0.1).**  The broker-side "pending REG_REQ" gate
+> below is NOT the shipped design and will not be built.  It is an
+> internet-model gate (the broker withholds the dialer's `REG_ACK` and
+> holds pending registration state until the owner's allowlist syncs)
+> for arbitrary role ordering.  Under the ratified owner-first
+> *contract* it is unnecessary and was reverted 2026-07-09 (it broke
+> legitimate tests that correctly encode the shipped model).  The
+> shipped model, now normative in HEP-0017 §4.7.0.1 (clauses C1–C7):
+> the binding side owns the channel and the hub's `ChannelEntry` book
+> is owner-locked (opened by the owner, closed on owner death); a
+> dialer that races ahead gets a concealed `awaiting_owner` retry (C3);
+> dial-safety is the role-side `CHECK_PEER_READY` poll (C4), not a
+> broker pend.  The broker never pends a registration.  The pseudocode
+> in this subsection is retained only as the archaeological record of
+> the rejected approach.
+>
+> Original (rejected) text follows.
+
 Today R6 blocks consumer REG_REQ until producer is Live.  Under this
 design, R6 becomes symmetric:
 
