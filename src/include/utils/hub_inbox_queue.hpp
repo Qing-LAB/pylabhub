@@ -109,10 +109,13 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
 {
   public:
     /**
-     * @brief Factory: create an InboxQueue that RECORDS @p endpoint as the future bind target;
-     *        the ROUTER socket is bound by `apply_master_approval` (or `start()` under test
-     *        stubs) at S3 per HEP-CORE-0036 §3.5.1 + HEP-CORE-0027 §4.1.  Behavior fix lands
-     *        under task #103.
+     * @brief Factory: create an InboxQueue that RECORDS @p endpoint as the bind target.
+     *        `start()` performs the bind and arms CURVE with an EMPTY (deny-all) ZAP
+     *        allowlist — called by production role-host setup at S1 (HEP-CORE-0027 §4.1:
+     *        binding early resolves port-0 endpoints before REG_REQ advertises them; the
+     *        deny-all arm admits no peer until the roster arrives).  Only the allowlist
+     *        seed (`set_peer_allowlist` via master approval) happens at S3 —
+     *        `apply_master_approval` never binds.
      *
      * @param endpoint    ZMQ endpoint to bind (e.g. "tcp://0.0.0.0:5592" or "tcp://0.0.0.0:0").
      *                    Port 0 causes the OS to assign a free port; retrieve it via

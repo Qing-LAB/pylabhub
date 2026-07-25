@@ -366,6 +366,16 @@ public:
     /// True if install() has been called and uninstall() has not.
     bool is_installed() const noexcept;
 
+    /// Lifecycle-framework integration — the teardown route binaries
+    /// actually use.  Registers a persistent "SignalHandler" lifecycle
+    /// module whose shutdown thunk (7000 ms budget) auto-calls
+    /// uninstall() during LifecycleGuard teardown, so the main-loop
+    /// exit path does not need an explicit uninstall() call.  One
+    /// instance per process: the module stores a process-global raw
+    /// pointer to `this` (written once, cleared on shutdown), and
+    /// LifecycleManager rejects a duplicate "SignalHandler" name.
+    [[nodiscard]] utils::ModuleDef make_lifecycle_module();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

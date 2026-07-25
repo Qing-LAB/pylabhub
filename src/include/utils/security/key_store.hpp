@@ -38,10 +38,11 @@
  *   callback.  The seckey `std::string_view` handed to the callback
  *   is valid ONLY for callback scope; bytes NEVER leave the mlocked
  *   `LockedKey` region as data.
- * - **Raw HEP-0038 secrets (`lookup_raw`)** — returned as
- *   `std::span<const std::byte>` into LockedKey-owned bytes.
- *   Script bindings must materialize into a script-owned buffer
- *   before returning to the script layer.
+ * - **Raw secrets (`lookup_raw`)** — returned as
+ *   `std::span<const std::byte>` into LockedKey-owned bytes.  Live
+ *   consumer: the admin-session seal key (HEP-CORE-0043 §7).  Future
+ *   script bindings (HEP-0038, deferred #106) must materialize into a
+ *   script-owned buffer before returning to the script layer.
  *
  * # Storage layout
  *
@@ -209,7 +210,11 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     void add_identity_from_z85(std::string_view name, std::string_view pub_z85,
                                std::string_view sec_z85);
 
-    /// Insert raw secret bytes (HEP-0038 script vault_save).
+    /// Insert raw secret bytes.  Live consumer: the per-instance
+    /// admin-session seal key (admin_session.cpp, HEP-CORE-0043 §7 /
+    /// HEP-CORE-0033 §11.0.5).  (The HEP-0038 script `api.vault_save`
+    /// binding this was originally sketched for is NOT implemented —
+    /// deferred with task #106.)
     /// `plaintext` zeroed before return.  Caller-side name validation
     /// enforces reserved-prefix rules; KeyStore stores opaque bytes.
     /// Throws `std::runtime_error` if `name` already present or if
@@ -230,7 +235,7 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// dtor.  Pubkeys are non-secret — fine to pass / log / copy
     /// (HEP-CORE-0036 §I10 + HEP-CORE-0040 §8.5.2).
     /// Throws `std::out_of_range` if `name` is absent or refers to a
-    /// raw entry (use `lookup_raw` for HEP-0038 secrets).
+    /// raw entry (use `lookup_raw` for raw secrets).
     [[nodiscard]] std::string_view pubkey(std::string_view name) const;
 
     /// Invoke `use` with the **RAW 32-byte SECRET key**
@@ -287,10 +292,12 @@ class PYLABHUB_UTILS_EXPORT KeyStore
         std::string_view name,
         std::function<void(std::string_view /*pubkey*/, std::string_view /*seckey*/)> use) const;
 
-    /// HEP-0038 raw-secret access (`api.vault_load`).  Span lifetime
-    /// is until `remove()` or KeyStore dtor; script bindings MUST
-    /// materialize the bytes into a script-owned buffer before
-    /// returning to the script, not pass the span to script code.
+    /// Raw-secret access.  Live consumer: the admin-session seal key
+    /// (admin_session.cpp, HEP-CORE-0043 §7).  (The HEP-0038 script
+    /// `api.vault_load` binding is NOT implemented — deferred, #106;
+    /// when it lands, bindings MUST materialize the bytes into a
+    /// script-owned buffer, never pass the span to script code.)
+    /// Span lifetime is until `remove()` or KeyStore dtor.
     /// Throws `std::out_of_range` if `name` is absent.
     [[nodiscard]] std::span<const std::byte> lookup_raw(std::string_view name) const;
 

@@ -289,14 +289,15 @@ The rest of §4 details each step.
 
 ### 4.1 Receiver Setup (role host startup)
 
-Under HEP-CORE-0036 §3.5.1 ("nothing happens behind the auth door
-before auth"), inbox ROUTER bind and CURVE/ZAP arm are data-plane
-footprint that MUST happen post-REG, inside `apply_*_reg_ack` (S3
-of §3.5.5).  Since the inbox endpoint is config-determined (per
-§3.4 wire fields), the role can put the endpoint into REG_REQ
-without binding first.  The bind itself defers to S3 once the
-broker has accepted the role onto the channel(s) the inbox will
-serve.
+The inbox ROUTER binds — CURVE-armed with an EMPTY, deny-all ZAP
+allowlist — at **S1** (role-host setup), BEFORE registration.  Binding
+early is what resolves a port-0 endpoint so S2 can advertise the real
+port in REG_REQ; the deny-all arm preserves HEP-CORE-0036 §3.5.1's
+"nothing happens behind the auth door before auth" — the socket exists
+but admits NO peer until the roster arrives.  Only the allowlist SEED
+(lifting deny-all via `set_peer_allowlist`) is deferred to S3
+(`apply_*_reg_ack` / master approval), after the broker has accepted
+the role.  The S1/S2/S3 listing below is the normative sequence.
 
 ```
 S1 (setup_infrastructure_) — BIND + CURVE-ARM DENY-ALL:

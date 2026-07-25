@@ -7,7 +7,7 @@
 | **Author**         | pylabhub development team                               |
 | **Status**         | Implemented (revised 2026-04-04; obsolete-term scrub 2026-04-14; engine-construction-on-worker + `PythonInterpreter` lifecycle module added 2026-05-07) |
 | **Created**        | 2026-02-28                                              |
-| **Updated**        | 2026-07-11: `invoke_on_init` return type changed from `void` to `InitStatus { Ready \| NotReady }`; the callback moves from a one-shot pre-broker call at role-host Step 5 into a per-cycle gate at the top of `run_data_loop` (new §"Loop-ready gate").  The framework AND-composes a per-role default predicate (reader requires ≥1 admitted peer for every rx-side channel; writer defaults `true`) with the script's return value.  API availability for `on_init` shifts markedly — handler-dependent APIs (`api.band_join`, `api.open_inbox`, `api.wait_for_role`) become usable inside `on_init` because the BRC is up by the time the gate is evaluated.  **Native C ABI bumped v8 → v9:** adds `plh_init_status_t`; pre-v9 plugins must rebuild against the amended `native_engine_api.h` header (`PLH_NATIVE_API_VERSION 9`), since calling a void-returning `on_init` through a status-returning function pointer is undefined behavior on some target ABIs.  The bump is surfaced explicitly at plugin load: `NativeEngine::load_plugin` compares the plugin's `info->api_version` against `PLH_NATIVE_API_VERSION` and refuses mismatches with an actionable error.  Motivation: fan-in binding-side reader (HEP-CORE-0036 §4.3.2 binding-side consumer bullet) has no peer at REG_ACK time; the pre-amendment one-shot on_init could not gate the loop against a peer set that only populates later via `CHANNEL_AUTH_CHANGED_NOTIFY`. — 2026-05-07: §"Engine Construction Lifecycle" (NEW) ratifies that script engines are constructed on the worker thread, not on `main()`. `PythonInterpreter` becomes a dynamic lifecycle module (`pylabhub::scripting::PythonInterpreter`) loaded lazily on first `PythonEngine` ctor, fixing the pybind11 `inc_ref()`-without-GIL violation that fired during process startup when class-level `py::object{py::none()}` defaults ran on `main` before the interpreter existed. `HostFactory` signature changes: drops the `unique_ptr<ScriptEngine>` parameter; the host's `worker_main_` constructs the engine via `make_engine_from_script_config`. — 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
+| **Updated**        | 2026-07-11: `invoke_on_init` return type changed from `void` to `InitStatus { Ready \| NotReady }`; the callback moves from a one-shot pre-broker call at role-host Step 5 into a per-cycle gate at the top of `run_data_loop` (new §"Loop-ready gate").  The framework AND-composes a per-role default predicate (reader requires ≥1 admitted peer for every rx-side channel; writer defaults `true`) with the script's return value.  API availability for `on_init` shifts markedly — handler-dependent APIs (`api.band_join`, `api.open_inbox`, `api.wait_for_role`) become usable inside `on_init` because the BRC is up by the time the gate is evaluated.  **Native C ABI bumped v8 → v9:** adds `plh_init_status_t`; pre-v9 plugins must rebuild against the amended `native_engine_api.h` header (`PLH_NATIVE_API_VERSION 9`), since calling a void-returning `on_init` through a status-returning function pointer is undefined behavior on some target ABIs.  The bump is surfaced explicitly at plugin load: `NativeEngine::load_plugin` compares the plugin's `info->api_version` against `PLH_NATIVE_API_VERSION` and refuses mismatches with an actionable error.  Motivation: fan-in binding-side reader (HEP-CORE-0036 §4.3.2 binding-side consumer bullet) has no peer at REG_ACK time; the pre-amendment one-shot on_init could not gate the loop against a peer set that only populates later via `CHANNEL_AUTH_CHANGED_NOTIFY`. — 2026-05-07: §"Engine Construction Lifecycle" (NEW) ratifies that script engines are constructed on the worker thread, not on `main()`. `PythonInterpreter` becomes a dynamic lifecycle module (`pylabhub::scripting::PythonInterpreter`) loaded lazily on first `PythonEngine` ctor, fixing the pybind11 `inc_ref()`-without-GIL violation that fired during process startup when class-level `py::object{py::none()}` defaults ran on `main` before the interpreter existed. `HostFactory` signature changes: drops the `unique_ptr<ScriptEngine>` parameter; the host's `worker_main_` constructs the engine via `create_engine`. — 2026-05-06 (post-HEP-0024 alignment: role-host unification has shipped; `hub::Producer`/`hub::Consumer` references scrubbed — those classes were eliminated in L3.γ A6.3 (2026-03-01) and the data plane is now reached via `RoleAPIBase`'s internally-owned Tx/Rx queue handles; threading-model deferral note retired since unification has landed); 2026-04-14 (Messenger -> BrokerRequestComm; ctrl thread is now in RoleAPIBase per HEP-CORE-0023 §2.5) |
 | **Supersedes**     | `HEP-CORE-0005` (Script Interface Abstraction Framework)|
 | **Related**        | `HEP-CORE-0024` (Role Directory Service — `plh_role` unified binary; supersedes the per-role binaries originally in HEP-CORE-0018), `HEP-CORE-0023` (Startup Coordination & Role Liveness), `HEP-CORE-0019` §2.3 (per-presence heartbeat protocol — Phase 6) |
 
@@ -65,7 +65,7 @@ ProducerRoleHost / ConsumerRoleHost / ProcessorRoleHost
   |-- owns --> resolved schema specs (in_slot, out_slot, in_fz, out_fz, inbox)
   |
   |-- implements --> worker_main_():
-  |     |-- Step 0:  make_engine_from_script_config(config_.script())
+  |     |-- Step 0:  create_engine(config_.script())
   |     |             |-- (PythonEngine path) ensure_python_interpreter_loaded()
   |     |             |     → first ctor: PythonInterpreter module registered + loaded
   |     |             |       on THIS worker thread → py::scoped_interpreter on worker
@@ -1157,7 +1157,7 @@ simultaneously:
    **worker thread** the host spawns inside `EngineHost::startup_()`.
 
 Pre-2026-05-07 code constructed the engine on `main()` (via
-`make_engine_from_script_config(...)` called before `host_factory(...)`).
+`create_engine(...)` called before `host_factory(...)`).
 At that point neither invariant held: the interpreter wasn't initialized
 (it was created later, inside `PythonEngine::initialize()` on the
 worker), and the worker thread didn't exist yet.  The class-level
@@ -1221,7 +1221,7 @@ graph TD
     A -->|host_factory(config, shutdown)| C["ProducerRoleHost"]
     A -->|host->startup_()| D["EngineHost::startup_()"]
     D -->|spawns worker thread| E["worker_main_()"]
-    E -->|"Step 0"| F["make_engine_from_script_config(config.script())"]
+    E -->|"Step 0"| F["create_engine(config.script())"]
     F -->|"sc.type == python"| G["new PythonEngine"]
     G -->|ctor calls| H["ensure_python_interpreter_loaded()"]
     H -->|first call: register + load| I["PythonInterpreter module startup"]
@@ -1289,7 +1289,7 @@ drops it.
 ### Engine factory contract
 
 ```cpp
-// pylabhub::scripting::make_engine_from_script_config
+// pylabhub::scripting::create_engine
 //
 // Called from worker_main_() on the worker thread.  Dispatches on
 // sc.type and returns the constructed engine.  Engine-type-specific
@@ -1297,8 +1297,14 @@ drops it.
 // PythonEngine) are handled by the engine ctor itself, not by this
 // factory.
 unique_ptr<ScriptEngine>
-make_engine_from_script_config(const config::ScriptConfig &sc);
+create_engine(const config::ScriptConfig &sc);
 ```
+
+Shipped as `create_engine` in `script_engine_factory.hpp` (the
+utils-side dispatcher), backed by the scripting-side
+`create_engine_impl` registered through `register_engine_factory` —
+the registration indirection is what lets the utils library dispatch
+without linking the engine implementations.
 
 The factory is the only place that dispatches on `sc.type`.  Mains
 never see engine-type-specific lifecycle.
@@ -1471,7 +1477,7 @@ socket and does **not** run the data loop (Step 8) or the normal Step 9
 
 ```
 Step 0   — Construct the script engine ON THE WORKER THREAD
-           - engine = make_engine_from_script_config(config_.script())
+           - engine = create_engine(config_.script())
            - PythonEngine ctor calls ensure_python_interpreter_loaded()
              (lazy: first call registers + loads the PythonInterpreter
              dynamic module; py::scoped_interpreter ctor runs here; the

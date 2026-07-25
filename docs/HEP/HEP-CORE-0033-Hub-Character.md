@@ -144,9 +144,12 @@ namespace pylabhub::hub_host {
 class PYLABHUB_UTILS_EXPORT HubHost
 {
 public:
-    explicit HubHost(config::HubConfig cfg,
-                     std::unique_ptr<scripting::ScriptEngine> engine,  // optional
-                     std::atomic<bool> *shutdown_flag);
+    // Single-argument constructor.  The script engine is NOT injected —
+    // it is constructed inside HubScriptRunner::worker_main_ per the
+    // HEP-CORE-0011 Engine Construction Lifecycle (engines live and die
+    // on the thread that uses them).  Shutdown is driven by the
+    // lifecycle framework, not a caller-owned flag.
+    explicit HubHost(config::HubConfig cfg);
     ~HubHost();
 
     void startup_();
@@ -217,21 +220,23 @@ constructing a new `HubHost`.
 1. **Read config.**  `HubConfig::load_from_directory(dir)` (caller-side,
    before HubHost ctor).
 2. **Vault unlock** (mandatory, no exceptions).
-   `cfg.load_keypair(password)` populates `cfg.auth().client_pubkey/seckey`.
+   `cfg.load_keypair(password)` decrypts the hub vault and seeds the
+   process **KeyStore** under `kHubIdentityName` ("hub_identity") via
+   `secure().keys().add_identity_from_z85(...)` — secret bytes never
+   land on config fields (HEP-CORE-0040 §171-172: `AuthConfig` carries
+   only `keyfile`; there are no `client_pubkey`/`client_seckey` members).
    Caller-side, BEFORE constructing HubHost — this is the **deliberate
    deviation from the §4 mermaid which shows HubVault as a peer
    subsystem**.  Rationale: vault unlock is a config-time concern
-   (interactive password prompt, env-var fallback) and the resulting
-   keypair is part of HubConfig once unlocked.  Subsystem-level
-   HubVault wiring is required only for admin token validation and
-   key rotation (HEP-CORE-0035); until those land, HubHost reads
-   the unlocked keypair from `cfg.auth()`.  Per HEP-CORE-0035 §2 +
-   §4.6.5, `HubHost::startup()` MUST reject an empty
-   `auth().client_pubkey` — there is no in-memory CURVE mode and no
-   production path that constructs `BrokerService` without CURVE +
-   admission.  Tests that want a non-CURVE broker go through
-   HEP-CORE-0035 §4.6.5 (separate factory on `BrokerService`), not
-   through HubHost.
+   (interactive password prompt, env-var fallback); once unlocked, the
+   identity lives in the KeyStore for the CURVE-arming code to consume
+   in place.  Per HEP-CORE-0035 §2, `HubHost::startup()` MUST reject a
+   missing KeyStore identity — the precondition it enforces is
+   `secure().keys().has(kHubIdentityName)` — there is no in-memory
+   CURVE mode and no production path that constructs `BrokerService`
+   without CURVE + admission.  Tests that want a non-CURVE broker go
+   through HEP-CORE-0035 §4.6.5 (separate factory on `BrokerService`),
+   not through HubHost.
 3. **Construct HubHost.**  `HubHost host(std::move(cfg))` — no
    threads, no sockets yet.  Allocates `Impl` with the value-owned
    `HubState`.

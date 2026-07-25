@@ -617,9 +617,9 @@ Each group except `role` and `custom` has an X-macro that defines its canonical 
 
 | Macro | Header | Struct |
 |-------|--------|--------|
-| `PYLABHUB_QUEUE_METRICS_FIELDS` | `hub_queue.hpp` | `QueueMetrics` (13 fields) |
-| `PYLABHUB_LOOP_METRICS_FIELDS` | `role_host_core.hpp` | `LoopMetricsSnapshot` (3 fields) |
-| `PYLABHUB_INBOX_METRICS_FIELDS` | `hub_inbox_queue.hpp` | `InboxMetricsSnapshot` (3 fields) |
+| `PYLABHUB_QUEUE_METRICS_FIELDS` | `hub_queue.hpp` | `QueueMetrics` |
+| `PYLABHUB_LOOP_METRICS_FIELDS` | `role_host_core.hpp` | `LoopMetricsSnapshot` |
+| `PYLABHUB_INBOX_METRICS_FIELDS` | `hub_inbox_queue.hpp` | `InboxMetricsSnapshot` |
 
 Each output format provides adapter functions that expand the macros:
 

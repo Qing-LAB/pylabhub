@@ -85,10 +85,11 @@ struct Pattern4Setup
     /// Shared log file.  Subprocesses redirect their Logger sink here
     /// via `set_shared_log(shared_log_path)` immediately after the
     /// LifecycleGuard brings up Logger; the parent reads the merged
-    /// stream via `expect_log_sequence` to pin cross-process ordering
-    /// without timestamp parsing (file-position IS time-order under
-    /// `O_APPEND`).  Empty string disables shared-log mode (smoke test
-    /// stays on the per-subprocess stderr path).
+    /// stream via `expect_log_sequence`, which orders lines by their
+    /// embedded microsecond timestamps (async sink flushes make raw
+    /// append order unreliable — see `expect_log_sequence` doc).
+    /// Empty string disables shared-log mode (smoke test stays on the
+    /// per-subprocess stderr path).
     std::string shared_log_path;
 };
 
@@ -159,10 +160,16 @@ void expect_log(const pylabhub::tests::helper::WorkerProcess &proc, std::string_
 void set_shared_log(const std::filesystem::path &shared_log_path);
 
 /// **Parent-side** — pin a sequence of log markers in `shared_log` IN
-/// ORDER.  Each step is searched starting at the byte offset where the
-/// previous step's match ended; the file's natural append-order under
-/// `O_APPEND` *is* time-order, so this enforces cross-process ordering
-/// without parsing timestamps.
+/// ORDER.  Ordering is enforced by PARSING the bracketed microsecond
+/// timestamp out of every LOGGER line and stable-sorting the lines by
+/// it before the in-order substring search (see
+/// `sort_log_by_timestamp` in the .cpp).  Raw `O_APPEND` file position
+/// was deliberately REJECTED as the order source: per-process Logger
+/// sinks flush asynchronously, so a late-arriving line with an earlier
+/// timestamp can land after already-matched content — a byte-offset
+/// cursor would mis-order exactly the cross-process interleavings this
+/// helper exists to pin.  (Cost note: this is an O(N·M) re-sort per
+/// poll, not a cheap file-position walk.)
 ///
 /// For each step:
 ///   - Polls the file every 25 ms until the marker is found at or

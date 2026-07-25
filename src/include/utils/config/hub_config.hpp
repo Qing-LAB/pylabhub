@@ -67,10 +67,14 @@ class PYLABHUB_UTILS_EXPORT HubConfig
 
     // ── Vault operations ────────────────────────────────────────────
 
-    /// Decrypt the vault file and load keypair into auth config.
-    /// Uses identity().uid as the KDF domain separator.
-    /// @return true if keys were loaded; false if no keyfile configured.
-    /// @throws std::runtime_error if vault exists but decryption fails.
+    /// Decrypt the vault file and seed the process KeyStore under
+    /// `kHubIdentityName` ("hub_identity") — secret bytes never land on
+    /// config fields.  Uses identity().uid as the KDF domain separator.
+    /// @return Always true on return — a missing/empty keyfile cannot
+    ///   reach this call (parse_auth_config hard-throws on it at config
+    ///   load, HEP-CORE-0033 §7.1: no in-memory CURVE mode), and every
+    ///   failure path throws.
+    /// @throws std::runtime_error on decryption or vault failure.
     bool load_keypair(const std::string &password);
 
     /// Create a new vault file with a generated keypair.

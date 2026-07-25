@@ -120,41 +120,27 @@ struct HubHostBrokerHandle
 
 /// Start a HubHost broker with a freshly-initialized hub directory.
 ///
-/// CALLER CONTRACT (HEP-CORE-0040 §172): the caller MUST have a
-/// `pylabhub::tests::seed_curve_identities` in scope BEFORE calling.
-/// That fixture seeds the process KeyStore with `"hub_identity"`
-/// from `setup.hub` and one `"role.<uid>"` entry per role uid in
-/// `setup.role_keys`.  This helper only READS the KeyStore; it
-/// never mutates it.  Same contract as `start_direct_broker`.
+/// CALLER CONTRACT (HEP-CORE-0040 §172 + HEP-CORE-0035 §4.8): the
+/// caller seeds ONLY the per-role identities — a
+/// `pylabhub::tests::seed_role_identities(setup)` (one `"role.<uid>"`
+/// KeyStore entry per role in the bundle).  Callers MUST NOT call
+/// `seed_curve_identities`: this helper OWNS `"hub_identity"` — it
+/// provisions a REAL encrypted hub vault (`provision_hub_vault`,
+/// Argon2id) and loads it through the PRODUCTION
+/// `HubConfig::load_keypair` path (`load_hub_keypair_fresh`), so a
+/// caller-side hub seed would double-seed and throw at the KeyStore.
 ///
-/// BYPASS PATTERN (HEP-CORE-0035 §4.6.5 sanction):
-///   - SKIPPED: the on-disk vault round-trip — production goes
-///     `vault file → HubConfig::load_keypair (Argon2id decrypt) →
-///     secure().keys().add_identity_from_z85()`.  The fixture goes
-///     `setup.hub → secure().keys().add_identity_from_z85()` directly.
-///   - WHY: Argon2id adds ~200ms per scenario; multiplied by 50+
-///     L3 scenarios that's measurable wall-clock waste in a test
-///     suite where the vault layer is not the subject under test.
-///   - STILL EXERCISED: HubHost::startup → BrokerService ctor's
-///     `secure().keys().has("hub_identity")` check, the full broker
-///     bind ROUTER + CURVE + ZAP install, BRC connect path, every
-///     wire-relevant code path that depends on the KeyStore state.
-///     Tests pass through identical production code from this
-///     point onward.
-///   - VAULT LAYER COVERED ELSEWHERE: L2 `test_hub_config` /
-///     `test_role_config` exercise vault encrypt/decrypt + ACL
-///     discipline; L4 `plh_hub_test` / `plh_role_test` exercise
-///     the full `--keygen` + `run` flow end-to-end with a real
-///     password.
+/// ALLOWLIST: `setup.role_keys` is written INTO the encrypted vault's
+/// `known_roles` document (HEP-CORE-0035 §4.8) during provisioning so
+/// the broker's Layer-1 ZAP gate admits every role in the bundle.
+/// There is NO plaintext `known_roles.json` sidecar — per §4.8.7 the
+/// hub REFUSES to start while one exists.
 ///
 /// PARAMETERS:
 ///   - `j_overrides` is merged on top of the default `hub.json`
 ///     template emitted by `HubDirectory::init_directory` (for
 ///     tests that want non-default timeouts, admin disabled, etc.).
 ///     Pass an empty json for defaults.
-///   - `setup.role_keys` is written to `vault/known_roles.json` via
-///     the production `KnownRolesStore::save_to_file` so the
-///     broker's Layer-1 ZAP gate admits every role in the bundle.
 ///   - `hub_name` is passed to `HubDirectory::init_directory`
 ///     (operator-visible hub label); the uid is auto-derived.
 [[nodiscard]] HubHostBrokerHandle

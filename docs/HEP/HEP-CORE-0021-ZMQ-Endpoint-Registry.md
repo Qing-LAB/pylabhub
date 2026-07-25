@@ -196,7 +196,7 @@ Factories return `unique_ptr<QueueReader>` (consumer side) or `unique_ptr<QueueW
 | **Schema validation** | Enforced at framework level | Not enforced (raw bytes) |
 | **Broker awareness** | Full (name + secret in DISC_ACK) | Full (endpoint in DISC_ACK) — this HEP |
 | **Flexzone support** | Yes (variable-length tail) | No (future: second ZMQ frame) |
-| **Checksum support** | Yes (`BLAKE2b-256` of slot) | Deferred (HEP-CORE-0023) |
+| **Checksum support** | Yes (`BLAKE2b-256` of slot) | Yes — `BLAKE2b-256` element in the §13 5-tuple frame, `ChecksumPolicy` Enforced by default (shared codec `wire_detail::pack_frame`) |
 | **start() cost** | None (no-op) | Socket creation + thread spawn |
 | **Reader model** | Single-consumer ring (latest or sequential) | Any-consumer (fire-and-forget) |
 | **Multiple consumers** | Yes, each consumer has own read pointer | Yes (multiple PULL endpoints per PUSH) |
@@ -880,27 +880,20 @@ Code sites that read this section's contract:
 | `hub_state.hpp:651` (`set_producer_zmq_node_endpoint`) | Per-producer mutator used by `handle_endpoint_update_req`. |
 | `broker_service.cpp:4451` (`handle_endpoint_update_req`) | Per-producer scoping via identity-based sender resolution. |
 
-### 16.4 Producer endpoint state on `ProducerEntry`
+### 16.4 Producer endpoint resolvedness (derived state)
 
-Add one flag to `ProducerEntry`:
+Resolvedness is a DERIVED property of the stored endpoint, not a
+separate struct field: an endpoint is **resolved** iff the stored
+string is non-empty and does not carry port 0.  (An earlier revision
+of this section prescribed a `bool zmq_node_endpoint_resolved` member
+on `ProducerEntry`; that field was never shipped and is retired from
+the design — a boolean that must be kept in lock-step with the string
+it summarizes is a drift risk, and the port-0 test is unambiguous.)
+The broker derives it where needed by validating the stored endpoint
+(`validate_tcp_endpoint(...).port == 0` → unresolved / awaiting).
 
-```cpp
-struct ProducerEntry {
-    // ... existing fields ...
-    std::string zmq_node_endpoint;   ///< §16.3 per-producer endpoint
-
-    /// §16.4 explicit "endpoint has been resolved by the producer
-    /// and confirmed to the broker" state.  Set to false when the
-    /// entry is created by handle_reg_req; set to true when
-    /// handle_endpoint_update_req accepts an update for this
-    /// producer (either unset → resolved, or resolved(X) →
-    /// resolved(X) idempotent).  Cleared to false on re-registration
-    /// (new instance_id — see §5.5.2).  Consumer admission is gated
-    /// on `Live AND (transport==SHM OR zmq_node_endpoint_resolved)`
-    /// per §16.7.
-    bool zmq_node_endpoint_resolved{false};
-};
-```
+The state SEMANTICS below are unchanged and are what the shipped
+handlers implement (per-producer, per registration instance):
 
 Two-state machine (per producer, per registration instance):
 
@@ -1074,11 +1067,17 @@ Live.  This section extends the gate:
 when the channel has at least one producer satisfying **both**:
 
 - `presence == Live` (first heartbeat received), AND
-- `transport == SHM  OR  zmq_node_endpoint_resolved == true`.
+- `transport == SHM  OR  endpoint resolved` (derived per §16.4: stored
+  endpoint non-empty with port ≠ 0).
 
-SHM producers do not use `zmq_node_endpoint`; the flag is
+SHM producers do not use `zmq_node_endpoint`; resolvedness is
 irrelevant for them.  ZMQ producers must have completed the
-endpoint-update round-trip.
+endpoint-update round-trip.  The broker checks the BINDING producer's
+endpoint — under the §16.3 topology model the producer endpoint is
+load-bearing only for fan-out / one-to-one, which are single-producer
+by cardinality, so "the channel's producer" is exact (under fan-in the
+consumer binds and producers dial; their `zmq_node_endpoint` is not
+the channel data endpoint).
 
 **What the consumer sees.**  A consumer whose REG_REQ arrives
 before any admissible producer exists is held pending by the

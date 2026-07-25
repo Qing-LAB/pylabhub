@@ -1137,7 +1137,7 @@ re-encrypt the vault in place (`HubVault::set_known_roles` +
 
 | Command | Action |
 |---|---|
-| `plh_hub --config <hub.json> --add-known-role <name> <uid> <role> <pubkey_z85>` | Add — or, for an existing `uid`, rotate the pubkey of — an allowlist entry.  `<role>` ∈ {producer, consumer, processor, any}, enum-validated at the input boundary.  `<pubkey_z85>` is the role's 40-char Z85 CURVE pubkey (the operator obtains it from the role's distributed `.pub`, or `plh_role --print-pubkey`). |
+| `plh_hub --config <hub.json> --add-known-role <name> <uid> <role> <pubkey_z85>` | Add — or, for an existing `uid`, rotate the pubkey of — an allowlist entry.  `<role>` ∈ {producer, consumer, processor, any}, enum-validated at the input boundary.  `<pubkey_z85>` is the role's 40-char Z85 CURVE pubkey; the operator obtains it from the `plh_role --keygen` output, which prints the public key to stdout at vault creation (the sole shipped source — there is no `--print-pubkey` flag and roles publish no `.pub` file). |
 | `plh_hub --config <hub.json> --revoke-known-role <uid>` | Remove the entry by `uid`.  Exit 0 even if absent; on a no-op the vault is left untouched (not re-encrypted), preserving its audit mtime. |
 | `plh_hub --config <hub.json> --list-known-roles` | Print the allowlist (`uid`, `name`, `role`, `pubkey`) to stdout.  Pubkeys are not secret (§4.8.1), so the raw Z85 is shown. |
 | `plh_hub --config <hub.json> --migrate-known-roles` | One-shot hard-cutover import (§4.8.7): read a legacy plaintext `<hub_dir>/vault/known_roles.json`, write it into the vault, and delete the file.  Refuses if the vault already holds entries (the operator reconciles manually). |
@@ -1151,11 +1151,16 @@ re-encrypt the vault in place (`HubVault::set_known_roles` +
 - Operator runs `--add-known-role` for each authorized role before
   the role binary attempts to connect.
 - The role-side workflow is unchanged: each role still has its own
-  vault holding its CURVE keypair; the operator distributes the
-  role's `.pub` (extracted via `plh_role --keygen` output or the
-  `<role_dir>/vault/<role_uid>.pub` file the role writes alongside its
-  vault on first keygen) to the hub operator via the operator's
-  existing channel (manual, signed messaging, etc.).
+  vault holding its CURVE keypair; the operator captures the pubkey
+  from the `plh_role --keygen` stdout output (the command prints the
+  Z85 public key at vault creation) and conveys it to the hub operator
+  via the operator's existing channel (manual, signed messaging, etc.).
+  Unlike `plh_hub --keygen` (which publishes `<hub_dir>/hub.pubkey`,
+  §4.6.1), roles publish NO `.pub` sidecar and there is no
+  `--print-pubkey` flag — stdout capture at keygen time is the shipped
+  path.  (A role-side `--print-pubkey` / `.pub` publish, mirroring the
+  hub's `publish_public_key`, is a candidate convenience if the
+  stdout-only flow proves operationally brittle.)
 
 ### 4.8.5 Hot reload (running hub) — DEFERRED
 

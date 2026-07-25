@@ -6,13 +6,18 @@
  *        ROUTER ZAP handler (Phase C+) and the per-channel
  *        ChannelAccessIndex computations (Phase D).
  *
- * **Storage.** Persisted at `<hub_dir>/vault/known_roles.json`,
- * file mode 0600 (operator-tamper-resistant), parent dir 0700
- * (enforced by HEP-CORE-0035 §4.6 / #101 utility).  Per design doc
- * §8 S5 decision (b): pubkeys are NOT secret material, so encryption
- * adds no value vs. the file-ACL floor — but integrity matters
- * absolutely (an attacker who modifies this file controls who can
- * connect).
+ * **Storage.** The authoritative allowlist lives INSIDE the encrypted
+ * hub vault (`known_roles` document, HEP-CORE-0035 §4.8) — pubkeys are
+ * not secret, but INTEGRITY is absolute (whoever edits the list
+ * controls who can connect), and a plaintext file's ACL floor does not
+ * defend against a local write-capable attacker; the vault's
+ * authenticated encryption does.  Production reads/writes go through
+ * `from_json`/`to_json` against the decrypted vault payload
+ * (`HubVault::known_roles`/`set_known_roles`).  The plaintext
+ * `<hub_dir>/vault/known_roles.json` codec (`load_from_file` /
+ * `save_to_file`) exists ONLY for the one-shot
+ * `--migrate-known-roles` import and tests — the hub REFUSES to start
+ * while that file exists (§4.8.7).
  *
  * **File format.**
  * ```json

@@ -415,20 +415,20 @@ L1 pin `test_wire_dispatch_table.cpp` updated.
 
 ## Open broker-specific items
 
-### #72 reconciliation — band notifies require `role_name` (redundant) (filed 2026-07-24)
+### ✅ CLOSED (no wire change) — band notifies' `role_name` (2026-07-24)
 
-`BandJoinNotifyBody` + `BandLeaveNotifyBody` (`wire_bodies.cpp` ctors) `d::require`
-`role_name`, but `role_name` is a REDUNDANT human-friendly label (`role_uid`
-embeds the name — HEP-CORE-0046 §14.3) that the REG bodies and the other notifies
-(`ChannelAuthChangedNotifyBody`, `ConsumerDiedNotifyBody`) correctly treat as
-optional / omit.  Requiring it on the band notifies is the odd one out — a likely
-copy-paste inconsistency, no principled need.  **Candidate cleanup:** make
-`role_name` optional (or drop it) on the two band bodies to match the family;
-their accessors are already `read_string_or_empty` (harmless with the current
-`require` ctors).  Surfaced 2026-07-24 during the REG typed-swap (B.1h/B.1i);
-deferred here as it is a band-family wire contract, out of scope for REG.  Doc
-flag lives at HEP-CORE-0046 §14.3 band-body entry.  Fold into the HEP↔code
-reconciliation pass (#72).
+Re-evaluated against the clarified framework goals and closed without a
+code change.  The load-bearing half was already fixed the same day: all
+four `role_name()` accessors (REG ×2 + band ×2) are lenient
+(`read_string_or_empty`), so the throwing-accessor crash class is dead.
+The residual ctor-side `require` on the two band bodies is deliberately
+KEPT: the broker is the sole sender and always populates the label, so
+the `require` pins the broker's actual output shape at the role-side
+parse; nothing branches on the value, and loosening it would be
+symmetry-only churn on a non-load-bearing field (per the
+minimal-honest-fix rule).  Rationale recorded at HEP-CORE-0046 §14.3
+band-body entry.  Revisit only under a dedicated band-family wire
+design pass.
 
 ### #72 reconciliation — `expected_schema_owner` is an uncanonical wire name (filed 2026-07-24)
 

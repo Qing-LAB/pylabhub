@@ -386,23 +386,36 @@ strict enforcement.
 
 ### 8.2 Wire envelope
 
-Wire field name: `abi_fingerprint`.  Shape mirrors
-`pylabhub::version::version_info_json()` — the canonical JSON form
-already exposed via the C-linkage symbol `pylabhub_abi_info_json()`:
+Wire field name: `abi_fingerprint`.  The shape is exactly what the wire
+serializer `pylabhub::version::to_json_object()` produces and the parser
+`from_json_object()` accepts — every axis as separate integer fields, no
+composite strings:
 
 ```
 "abi_fingerprint": {
-  "release":              "<PEP 440 string>",
-  "library":              "<major>.<minor>.<rolling>",
+  "library_major":        <uint16>,  "library_minor":        <uint16>,
+  "library_rolling":      <uint16>,
   "shm_major":            <uint16>,  "shm_minor":            <uint16>,
   "broker_proto_major":   <uint16>,  "broker_proto_minor":   <uint16>,
   "zmq_frame_major":      <uint16>,  "zmq_frame_minor":      <uint16>,
   "script_api_major":     <uint16>,  "script_api_minor":     <uint16>,
   "script_engine_major":  <uint16>,  "script_engine_minor":  <uint16>,
-  "config_major":         <uint16>,  "config_minor":         <uint16>,
-  "build_id":             "<opt string, present iff PYLABHUB_HAVE_BUILD_ID>"
+  "config_major":         <uint16>,  "config_minor":         <uint16>
 }
 ```
+
+There is NO `release` field, NO dotted `"library"` string, and NO
+`build_id` INSIDE the envelope.  `build_id` travels as a SIBLING field
+on the parent message (`"build_id": "<opt string, present iff
+PYLABHUB_HAVE_BUILD_ID>"` next to `"abi_fingerprint"`), which is how
+§8.3.3 and the `to_json_object` header docstring already describe it and
+how the broker reads it.  `from_json_object()` REQUIRES
+`library_major` / `library_minor` / `library_rolling` (a peer omitting
+them — e.g. one coded to a `release`/dotted-`library` shape — fails
+parse and is classified `INVALID_ENVELOPE`).
+`pylabhub::version::version_info_json()` (the human-facing form exposed
+via `pylabhub_abi_info_json()`, with `release` and the dotted `library`)
+is a DIFFERENT, display-only shape — it is not the wire.
 
 Carried on:
 - **REG_REQ** (both producer and consumer variants).

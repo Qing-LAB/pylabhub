@@ -506,10 +506,14 @@ api.run_dir()       # → str: role_dir + "/run"  (empty if role_dir is empty)
 # Logging
 api.log(level, msg)   # level: "debug"/"info"/"warn"/"error"
 
-# Messaging (Messenger — same semantics as ProcessorAPI)
-api.send(target, data)       # send to specific UID
-api.broadcast(data)          # send to all connected peers
-api.notify_channel(target, event, data="")  # signal relay to target channel's producer
+# Messaging — the P2C/Messenger relay was removed 2026-04-11 (§15).
+# Role↔role messaging is the Inbox plane (HEP-CORE-0027); channel-group
+# messaging is the Band plane (HEP-CORE-0030):
+api.open_inbox(target_uid)           # → InboxHandle; handle.send(...) for P2P
+api.wait_for_role(uid, timeout_ms=5000)  # presence gate before open_inbox
+api.band_join(channel)               # join the channel's band
+api.band_broadcast(channel, body)    # broadcast a dict to band members
+api.band_members(channel)            # → member list
 
 # Counters
 api.out_slots_written()      # → int (producer only)

@@ -1218,13 +1218,13 @@ BrokerRequestComm::channel_auth_applied(const std::string &channel, const std::s
     opts["instance_id"] = instance_id;
     auto reply =
         pImpl->do_request("CHANNEL_AUTH_APPLIED_REQ", "CHANNEL_AUTH_APPLIED_ACK", opts, timeout_ms);
-    // HEP-CORE-0042 Phase 3 review-B fix (2026-07-02) — DEFENSIVE
-    // reply-content verification (see consumer_attach_zmq for full
-    // rationale).  If the broker's `CHANNEL_AUTH_APPLIED_ACK` echoes
-    // a channel_name that doesn't match our request, treat as timeout
-    // — likely a cross-wire from a concurrent APPLIED_REQ for a
-    // different channel that got serialized through the same BRC
-    // pending_requests slot.
+    // DEFENSIVE reply-content verification (see consumer_attach_zmq
+    // for the full rationale).  Cross-wire is structurally impossible
+    // (`pending_requests` keys on a fresh per-request correlation_id),
+    // so a channel_name echo mismatch on a correctly-correlated ACK
+    // can only be a broker echo bug — treat as timeout so the caller
+    // re-drives via the next NOTIFY instead of consuming a wrong-
+    // channel confirmation.
     if (reply.has_value())
     {
         const auto echoed_channel = reply->value("channel_name", std::string{});
@@ -1286,20 +1286,17 @@ std::optional<nlohmann::json> BrokerRequestComm::consumer_attach_zmq(
     opts["producer_role_uid"] = producer_role_uid;
     auto reply =
         pImpl->do_request("CONSUMER_ATTACH_REQ_ZMQ", "CONSUMER_ATTACH_ACK_ZMQ", opts, timeout_ms);
-    // HEP-CORE-0042 Phase 3 review-B fix (2026-07-02) — DEFENSIVE
-    // reply-content verification.  BRC's `pending_requests` map keys
-    // by msg_type only; under fan-in (§7.1 loop calls this method
-    // serially for N producers), if iter N times out client-side and
-    // a delayed CONSUMER_ATTACH_ACK_ZMQ for producer N arrives after
-    // iter N+1 has registered a new request under the same ack type,
-    // the delayed reply cross-wires into iter N+1's waiter.  The
-    // `abandoned` flag on RequestCmd protects a narrow window before
-    // the map overwrite; this check catches the post-overwrite case.
-    // If the reply's `producer_role_uid` echo doesn't match what we
-    // asked about, treat as timeout (log WARN + return nullopt) so
-    // the §7.1 loop synthesizes the standard timeout reason.  Proper
-    // BRC-level fix (per-request correlation_id keying) is tracked
-    // as follow-up.
+    // DEFENSIVE reply-content verification.  Cross-wire between
+    // requests is structurally impossible today: `pending_requests`
+    // is keyed by a fresh per-request `correlation_id`
+    // (I-CORRELATION-STABLE), so a late reply for iteration N can
+    // only match iteration N (then be dropped as abandoned) — never
+    // iteration N+1.  This echo check therefore guards a DIFFERENT,
+    // narrower failure: a correctly-correlated reply whose broker
+    // built the wrong body content (a broker echo bug).  Mismatch →
+    // treat as timeout (WARN + nullopt) so the §7.1 loop synthesizes
+    // the standard timeout reason instead of consuming wrong-target
+    // attach state.
     if (reply.has_value())
     {
         const auto echoed_uid = reply->value("producer_role_uid", std::string{});

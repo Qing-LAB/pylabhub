@@ -160,7 +160,7 @@ inline void print_hub_usage(const char *prog, std::ostream &os = std::cout)
        << "                     Add a role to the vault allowlist; exit 0.\n"
        << "                     <role> ∈ {producer, consumer, processor, any}.\n"
        << "                     <pubkey_z85> is the 40-char Z85-encoded CURVE pubkey\n"
-       << "                     (obtain via `plh_role --print-pubkey`).\n"
+       << "                     (printed to stdout by `plh_role --keygen`).\n"
        << "                     Re-add with same <uid> rotates the pubkey (no error).\n"
        << "  --revoke-known-role <uid>\n"
        << "                     Remove the entry matching <uid>; exit 0 even if absent.\n"
