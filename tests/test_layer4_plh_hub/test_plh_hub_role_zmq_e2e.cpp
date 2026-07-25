@@ -953,18 +953,13 @@ TEST_F(PlhHubCliTest, ZmqE2E_ConsumerSchemaMismatch_AbortsAndTearsDown)
 //
 // What THIS test does NOT pin (out of scope for #246; tracked
 // under HEP-CORE-0017 §3.3):
-//   - Data from ALL admitted producers actually arriving at the
-//     consumer.  `ZmqQueue::apply_master_approval` (see
-//     `hub_zmq_queue.cpp:991` block comment) explicitly documents:
-//     "Stage 1A scope: single-peer; multi-producer fan-in is
-//     HEP-CORE-0017 §3.3 future work."  The PULL socket connects
-//     only to peer[0]'s endpoint even though `producer_peers_`
-//     holds all N.  A future test asserting distinguisher-value
-//     coverage across all N producers lands when HEP-0017 §3.3
-//     multi-endpoint PULL ships; the surrounding scaffold in this
-//     file (`write_zmq_producer_script_with_offset` +
-//     `write_zmq_multi_producer_consumer_script`) is preserved for
-//     that follow-up.
+//   (Historical note: an earlier revision of this header excluded
+//   "data from ALL producers" citing a since-retired single-peer
+//   limitation in apply_master_approval.  That limitation is gone —
+//   the multi-peer path shipped (HEP-0017 §3.3 Pattern B, closed
+//   2026-07-08) — and the consumer script below REQUIRES slots from
+//   BOTH producers' offset windows before emitting `cons_test:
+//   complete`, so all-N data arrival IS load-bearing in this test.)
 //
 // L3 coverage note: individual denial reasons
 // (consumer_not_in_channel_allowlist / producer_not_live /

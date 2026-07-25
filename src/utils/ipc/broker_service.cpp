@@ -2417,7 +2417,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // Topology wire parse.  Empty means "no wire declaration" —
     // HubState's atomic admission op treats this as "inherit stored"
     // for an existing channel, or "default to OneToOne" for a fresh
-    // channel per HEP-CORE-0018 §5 + tech draft §5.1 rule 4.  A
+    // channel per HEP-CORE-0018 §5 + HEP-CORE-0017 §4.7.  A
     // non-empty non-parseable value is INVALID_REQUEST — surface here.
     std::optional<pylabhub::hub::ChannelTopology> declared_topology;
     {
@@ -3093,10 +3093,15 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     // during the gap.  Mirrors DISC_REQ's presence scan.
     //
     // Fan-in EXEMPT: under fan-in the consumer is the binding side
-    // per HEP-CORE-0017 §3.3.0.  It arrives first and opens the
-    // channel; producers arrive later and dial in.  The R6-gate
-    // symmetric R6' path (producers pend until consumer is Live) is
-    // enforced from the producer-REG_REQ side, not here.
+    // per HEP-CORE-0017 §3.3.0 — it opens the channel; producers dial
+    // in.  NOTE: the symmetric R6' gate (dialing producers PEND until
+    // the binding consumer is Live + endpoint resolved) is DESIGNED
+    // (HEP-0017 §4.7.1; draft §5.4) but NOT YET IMPLEMENTED — the
+    // 2026-07-09 attempt was reverted.  Today a fan-in producer gets
+    // an immediate REG_ACK (empty initial_allowlist when the consumer
+    // hasn't published) and catches up via
+    // CHANNEL_AUTH_CHANGED_NOTIFY (Standby → Configured).  Tracked:
+    // TOPOLOGY_TODO Phase D R6.
     //
     // Four outcomes, matching the §6.6 reason catalog:
     //   - at least one kLive producer    → admit

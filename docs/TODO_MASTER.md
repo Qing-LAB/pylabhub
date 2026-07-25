@@ -31,9 +31,13 @@ post-reconcile shipped-sprint detail).
 **Open lines:**
 - **Line 3 — Broker SHM observer (HEP-0045):** 🚧 Phases A/B + D1/D2 + C.2.a/b
   shipped; **C.2.c–C.5 open** (below).
-- **Topology migration:** static layer ✅; **C step 7, D R6 gate, Phases E–H
-  open.**  Design LOCKED (`DRAFT_topology_singular_side_2026-07.md`); tracker
-  `TOPOLOGY_TODO.md`.
+- **Topology migration:** STATIC layer ✅ + live (topology factories, role-code
+  migration C step 6 shipped `3d4fe07a`, multi-producer fan-in DATA plane
+  proven green at L4 — code-verified 2026-07-25).  DYNAMIC residual: **D R6
+  symmetric gate is unbuilt** (reverted once, the substantive open work),
+  C step 7 unblocked, Phases E/F open.  Consolidated plan T1-T5 in
+  `TOPOLOGY_TODO.md`; permanent design = HEP-CORE-0017 §4.7 (draft retires
+  with Phase F).
 - **REG protocol redesign (HEP-0046):** ✅ **Phase B COMPLETE 2026-07-24**
   (task #57): all nine REG-family handlers typed; `to_legacy` bridge +
   `BrokerRegHandler` skeleton retired; `inbox_schema_json` → typed
@@ -74,9 +78,13 @@ post-reconcile shipped-sprint detail).
   co-host workers across ~6 files remain; Round 1 recipe proven).
 - **#57** HEP-0046 Phase B — ✅ COMPLETE 2026-07-24 (see "REG protocol
   redesign" above; full record in `MESSAGEHUB_TODO.md`).
-- **Topology C step 7 + D R6 gate symmetrization + Phases E–H** (E retires
-  HEP-0017 §3.3 multi-endpoint PULL + HEP-0042 §5/§7.1 pre-attach; G lands the
-  fan-out ZMQ role-host + slow-joiner L4 test).  Detail: `TOPOLOGY_TODO.md`.
+- **Topology dynamic residual (consolidated plan T2-T5)** — T2 C step 7
+  (consumer-first fan-in choreography, unblocked); **T3 D R6 symmetric gate
+  (the real work — unbuilt, reverted once; design review with user before
+  build)**; T4 Phase E retirements (pre-attach `CONSUMER_ATTACH_REQ_ZMQ`,
+  `producer_peers` vector + Tier-2 leak, `ProducerEntry.zmq_node_endpoint`);
+  T5 Phase F demos + draft retirement.  Detail + the "REG_ACK ⇔ dial-safe"
+  isolation rationale: `TOPOLOGY_TODO.md`.
 - **Line 3 observer remaining** (HEP-0045 §10): C.2.c `PeerDeathWatcher`
   (epoll) → C.2.d broker dial worker + fd cache → D5 opt-out → C.3
   `collect_shm_info` → C.4 L4 tests → C.5 pointer refresh.

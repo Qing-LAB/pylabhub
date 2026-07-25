@@ -257,7 +257,7 @@ void RoleConfig::Impl::load_common(const nlohmann::json &j)
     out_channel = j.value("out_channel", std::string{});
     // 2026-07-08 topology migration — OPTIONAL; empty means "inherit
     // channel's stored topology or default to one-to-one" per broker
-    // overwrite semantics (tech draft §5.1 rule 4).
+    // overwrite semantics (HEP-CORE-0017 §4.7 + HEP-CORE-0018 §5).
     //
     // Allow-list validation at parse time per HEP-CORE-0018 §5.3:
     // non-empty values MUST be one of {"fan-in", "fan-out",

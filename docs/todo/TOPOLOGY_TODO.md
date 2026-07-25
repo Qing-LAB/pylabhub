@@ -20,6 +20,19 @@ admission.
 
 ---
 
+## Status snapshot (code-verified 2026-07-25)
+
+> **True-up 2026-07-25 (T1 of the consolidated topology plan).**  The status
+> table below was last snapshotted 2026-07-09 and had drifted: **C step 6
+> shipped 2026-07-10** (`3d4fe07a`) — the table said "NEXT".  Re-verified
+> against code today: the STATIC layer (topology enum, §3.3.0 factory dispatch,
+> role-code migration, `FanIn+shm` refusal) is COMPLETE and live; the
+> multi-producer fan-in DATA plane WORKS (§3.3 Pattern B, pinned green at L4 —
+> see the note under the table).  The genuine residual is DYNAMIC: **Phase D R6
+> symmetric gate is unbuilt** (reverted once), C step 7 is unblocked, E/F remain.
+> Consolidated remediation plan T1-T5 maps: T1 = this true-up; T2 = C step 7;
+> T3 = D R6 (design review first); T4 = Phase E; T5 = Phase F/H.
+
 ## Status snapshot (2026-07-09) — REORDERED
 
 **Priority principle (2026-07-09 correction):** the abstraction layer is
@@ -43,13 +56,21 @@ on top of that abstraction.
 | C step 3 | `ShmQueue::create_reader/writer(topology, opts)` — SHM half of the concrete transport factories | ✅ **COMPLETE** (`fbf5df68`) | Wraps existing `create_writer_standby` + `create_reader_standby` behind the topology-parametric shape.  Fan-in refused per §3.3.0 gate 1 (SHM host-local single-producer).  7 new L2 pin tests. |
 | C step 4 | `hub::Queue::create_reader/writer(topology, transport, opts)` unified factory (`hub_queue_factory.hpp`) | ✅ **COMPLETE** (`830f8383`, folded with step 5) | Static-methods-only class per HEP-0017 §3.3.0.  Two-level dispatch: §3.3.0 gate 1 (`FanIn+Shm` refused) then translate opts + delegate to `ZmqQueue::create_*` / `ShmQueue::create_*`.  Zero new state, zero new mechanisms. |
 | C step 5 | Transport-agnostic `RxOptions` / `TxOptions` structs per HEP-0017 §3.3.0 | ✅ **COMPLETE** (`830f8383`) | Landed with C step 4 — factory + option types shipped in one commit (factory without option types isn't independently useful).  Flat struct: common + zmq-specific + shm-specific side-by-side; factory reads only fields matching requested transport.  14 new L2 pin tests (dispatch + gate + parser + side-legality). |
-| **C step 6** | **Role code migration** — `role_api_base.cpp::build_tx_queue / build_rx_queue` migrate to `hub::Queue::create_*` | ⏳ **NEXT** | Deletes the manual `if (transport == "shm") ... else ...` dispatch.  Deletes `zmq_bind` propagation from `role_config_translation.cpp`.  Reads `channel_topology` from role config into the new options struct. |
-| **C step 7** | **Test spawn-order migration** — L3 + L4 fan-in tests flip to consumer-first (BINDING side goes first) | ⏳ **BLOCKED on C step 6** | Fixes the 3 tests that broke in the reverted R6 slice E1 attempt (`ZmqE2E_MultiProducer_TwoAuthorized`, `FanIn_TwoProducers_MetricsDoNotOverwrite`, `WaitPathDrainOnProducerDisconnect`). |
-| D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — `8655f2fe..ed0456d5` | Landed early (before role migration); wire is correct but sits on legacy role until C step 6.  No rework needed post-C step 6 — the wire payload matches the spec independent of role code shape. |
-| **D R6 gate** | **R6 gate symmetrization** — dialing-side REG_REQ pends until binding side is Live + endpoint resolved + confirmed_version catches up | ⏳ **BLOCKED on C step 7** | Reverted 2026-07-09 (broke 3 tests due to premature enforcement); reinstates cleanly after Phase C completion, since C step 7 flips test spawn order to match R6 semantics. |
-| E | Retirements — delete `push_to`/`pull_from`, `zmq_bind`, `producer_peers` vector, multi-endpoint PULL loop, `CONSUMER_ATTACH_REQ_ZMQ` handler | ⏳ Blocked on D R6 | Phase E plan below. |
-| F | L4 demos + full-topology verification sweep | ⏳ Blocked on E | Fan-in, fan-out, one-to-one demos; validates each against the reference sequence flows (tech draft §7). |
+| C step 6 | **Role code migration** — `role_api_base.cpp` build_tx/build_rx_queue migrate to `hub::Queue::create_*` | ✅ **COMPLETE** (`3d4fe07a`, 2026-07-10) | Verified in code 2026-07-25: role queues built via `hub::Queue::create_writer/create_reader(topology, transport, opts)` (`role_api_base.cpp:649/716/768`); manual `if (transport=="shm")` dispatch gone.  (Table status previously said "NEXT" — stale by one day.) |
+| **C step 7** | **Test spawn-order migration** — L3 + L4 fan-in tests flip to consumer-first (BINDING side goes first) | ⏳ **NEXT** (unblocked — C step 6 shipped) | Its original purpose (unblock the 3 tests broken in the reverted R6 E1 attempt) is MOOT — those were fixed independently by the fan-in reader-correctness arc (07-11) + admission-ledger unification (07-13), all green.  What remains: align fan-in choreography with the §4.7.1 binding-first walkthrough + keep one producer-first case as the standby→notify catch-up pin.  (T2 of the 2026-07-25 consolidated plan.) |
+| D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — `8655f2fe..ed0456d5` | `phase=admitted/live/left` + `live_peers` + `consumer_count`/`producer_count` (3-engine parity) all live. |
+| **D R6 gate** | **R6 gate symmetrization** — dialing-side REG_REQ pends until binding side Live + endpoint resolved + confirmed_version catches up | ⏳ **OPEN — the substantive residual** | Verified ABSENT in code 2026-07-25: no `role_registration_version`, no pending-REG registry, no wake handler, no `CHANNEL_CLOSED` resolution.  Built once, REVERTED 2026-07-09 (premature enforcement broke 3 tests).  Today a dialing fan-in producer gets an immediate REG_ACK (empty allowlist) + catches up via NOTIFY (Standby→Configured) — functionally correct, but NOT the symmetric "REG_ACK ⇔ dial-safe" contract.  This is the isolation guarantee the higher layers need.  (T3 of the consolidated plan — design review with user BEFORE build.) |
+| E | Retirements — delete `push_to`/`pull_from`, `zmq_bind`, `producer_peers` vector + Tier-2 `.front()` assembly, `CONSUMER_ATTACH_REQ_ZMQ` pre-attach, `ProducerEntry.zmq_node_endpoint` | ⏳ Blocked on D R6 | R6 replaces the standby-catch-up fallbacks these legacy surfaces exist for.  (T4.) |
+| F | L4 demos + full-topology verification sweep | ⏳ Blocked on E | Fan-in N=2, fan-out slow-joiner (`api.consumer_count()` gate), one-to-one cardinality; validate against §4.7 walkthroughs; retire the migration draft to archive.  (T5.) |
 | H | Full verification sweep | ⏳ Blocked on F | — |
+
+> **Multi-producer fan-in DATA plane — VERIFIED WORKING (2026-07-25).**  An
+> earlier "single-peer / Stage 1A" limitation was retired: the multi-endpoint
+> PULL connect loop shipped (HEP-0017 §3.3 Pattern B, closed 2026-07-08).
+> `test_plh_hub_role_zmq_e2e` Scenario C's consumer script requires slots from
+> BOTH producers' offset windows before `cons_test: complete`, and it is green
+> — so all-N data arrival is load-bearing, not deferred.  Stale comments to the
+> contrary (queue block comment + L4 test header) corrected in T1.
 
 **Retired phase labels (for traceability):**
 - Phase C step 2 rev 2 A+B, rev 2.3 — folded into "C step 2" above (shipped complete).

@@ -105,7 +105,7 @@ const char *to_string(ChannelObservable o) noexcept
 // ChannelTopology policy surface — grouped under `topology` namespace
 // per finding #23.  Canonical wire strings per HEP-CORE-0007 §12.3;
 // decision matrix per HEP-CORE-0017 §3.3.0; overwrite + cardinality
-// semantics per tech draft §5.1.
+// semantics per HEP-CORE-0017 §4.7.
 namespace topology
 {
 

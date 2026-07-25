@@ -119,9 +119,11 @@ enum class ChannelObservable
 PYLABHUB_UTILS_EXPORT const char *to_string(ChannelObservable o) noexcept;
 
 /// Channel topology — HEP-CORE-0017 §3.3 topology-parametric model.
-/// Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-/// §2 (scope) + `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
-/// §3.3.0 (decision matrix).
+/// Design authority: `docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md`
+/// §3.3.0 (decision matrix) + §4.7 (end-to-end walkthroughs; the
+/// promoted permanent design, 2026-07-09).  The migration tech draft
+/// (`DRAFT_topology_singular_side_2026-07.md`) tracks in-flight state
+/// only and retires with topology Phase F/H.
 ///
 /// Every channel has exactly one topology, immutable at creation.
 /// Wire declaration on `REG_REQ.channel_topology` /
@@ -164,7 +166,7 @@ PYLABHUB_UTILS_EXPORT const char *to_string(ChannelTopology t) noexcept;
 /// Parse a wire `channel_topology` string.  Returns `std::nullopt`
 /// if the input is not one of the three canonical wire values.
 /// Callers (broker REG_REQ handlers) translate an empty optional
-/// into the `INVALID_REQUEST` error code per tech draft §5.1.
+/// into the `INVALID_REQUEST` error code per HEP-CORE-0017 §4.7.0 tier discipline.
 PYLABHUB_UTILS_EXPORT std::optional<ChannelTopology> parse(std::string_view s) noexcept;
 
 /// True iff `t` is valid for `data_transport` per HEP-CORE-0017
@@ -176,7 +178,7 @@ PYLABHUB_UTILS_EXPORT bool transport_compatible(ChannelTopology t,
                                                 std::string_view data_transport) noexcept;
 
 /// Cardinality gate for the broker's REG_REQ / CONSUMER_REG_REQ
-/// admission.  Called BEFORE any state mutation per tech draft
+/// admission.  Called BEFORE any state mutation per HEP-CORE-0017 §4.7
 /// §5.1 rule 3.  Inputs describe the STATE BEFORE the incoming
 /// role is added (existing counts, 0/0 for a fresh channel).
 ///
@@ -631,7 +633,7 @@ struct ChannelEntry
     // ── Topology-migration state fields (2026-07-08) ─────────────────
     //
     // Design authority:
-    //   docs/tech_draft/DRAFT_topology_singular_side_2026-07.md §4.1
+    //   HEP-CORE-0017 §3.3.0 + §4.7 (promoted design); migration draft §4.1
     //   docs/HEP/HEP-CORE-0033-Hub-Character.md §8 (ChannelEntry row)
     //   docs/HEP/HEP-CORE-0017-Pipeline-Architecture.md §3.3
 
@@ -1997,7 +1999,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///   admission was rejected by the topology gate and neither
     ///   `invariant_result` nor `producer_result` is meaningful.
     ///
-    /// Design authority: tech draft §5.1 rules 1-4 (topology admission)
+    /// Design authority: HEP-CORE-0017 §4.7 (topology admission; promoted design)
     /// + HEP-CORE-0007 §12.3/§12.4a (wire schema + error codes).
     ProducerAdmissionResult _on_producer_added(const std::string &channel_name,
                                                ChannelSchemaInvariants schema,
