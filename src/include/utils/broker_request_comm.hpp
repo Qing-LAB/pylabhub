@@ -4,8 +4,14 @@
  * @brief BrokerRequestComm — role-to-broker ZMQ DEALER protocol.
  *
  * Clean replacement for the broker protocol portion of Messenger.
- * One DEALER socket connected to the broker's ROUTER. All messages are
- * JSON over a 3-frame wire format: ['C'] [msg_type] [json_body].
+ * One DEALER socket connected to the broker's ROUTER.  All messages ride
+ * the HEP-CORE-0046 §14 typed envelope: DEALER-side 4 frames
+ * ['C'] [msg_type] [correlation_id] [json_body], with the DEALER's
+ * ZMQ_ROUTING_ID set to the owning role's role_uid (I-DEALER-IDENTITY)
+ * so the broker's ROUTER sees the 5-frame form.  Sends go through
+ * `wire::adapter::encode_dealer_send` (stamps envelope_hash + the
+ * security triple per msg_type); receives through
+ * `WireEnvelope::parse_dealer_recv`.
  *
  * Thread model: owns one dedicated thread (managed by RoleAPIBase's
  * thread manager) that polls the DEALER socket, drains the command queue,

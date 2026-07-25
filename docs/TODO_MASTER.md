@@ -34,9 +34,14 @@ post-reconcile shipped-sprint detail).
 - **Topology migration:** static layer ✅; **C step 7, D R6 gate, Phases E–H
   open.**  Design LOCKED (`DRAFT_topology_singular_side_2026-07.md`); tracker
   `TOPOLOGY_TODO.md`.
-- **REG protocol redesign (HEP-0046):** Phase A + islanded Phase C shipped;
-  **Phase B (typed-envelope commit rewire) = task #57**, tech-debt not a
-  functional gap (envelope + gates + BRC already live on broker_proto 7).
+- **REG protocol redesign (HEP-0046):** ✅ **Phase B COMPLETE 2026-07-24**
+  (task #57): all nine REG-family handlers typed; `to_legacy` bridge +
+  `BrokerRegHandler` skeleton retired; `inbox_schema_json` → typed
+  `SchemaSpec` boundary-parse (separate `inbox_packing` wire field
+  retired); B.3 audit found the BRC/ACK flip already landed via the
+  envelope/adapter arcs; `receive_and_validate` drift-guard L1 suite
+  landed.  Residual REG-adjacent tracks: EnvelopeOnly-tier body classes
+  (per-msg_type follow-ons), #72 reconciliation, #69 federation ingress.
 - **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **27
   resolved / 29 open** — see "Active code reviews" for the open clusters.
 
@@ -56,8 +61,8 @@ post-reconcile shipped-sprint detail).
 **In-flight arcs:**
 - **#52** HubHostBrokerHandle → Pattern 4 sweep (in progress; ~21 in-process
   co-host workers across ~6 files remain; Round 1 recipe proven).
-- **#57** HEP-0046 Phase B — migrate REG handlers to the typed WireEnvelope
-  commit path (relocate-into-typed-form refactor; parity list on the task).
+- **#57** HEP-0046 Phase B — ✅ COMPLETE 2026-07-24 (see "REG protocol
+  redesign" above; full record in `MESSAGEHUB_TODO.md`).
 - **Topology C step 7 + D R6 gate symmetrization + Phases E–H** (E retires
   HEP-0017 §3.3 multi-endpoint PULL + HEP-0042 §5/§7.1 pre-attach; G lands the
   fan-out ZMQ role-host + slow-joiner L4 test).  Detail: `TOPOLOGY_TODO.md`.

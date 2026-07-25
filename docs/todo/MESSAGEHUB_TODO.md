@@ -256,19 +256,50 @@ Phase B**.
   `test_admission_gates` (`AdmissionGate_*`), L2 `test_hub_state_nonce_dedup`, L3
   `test_datahub_broker` (`Gate_RegReq_*`/`Gate_ConsumerReg_*`).  HEP-0046 §12 +
   IMPLEMENTATION_GUIDANCE "REG Wire Discipline" rule 2 corrected to match.
-- **B.2 — `inbox_schema_json` → typed `SchemaSpec` sub-structure.**  The
-  doubly-encoded field; see the design requirement + critical-path trace below.
-- **B.3 — BRC + ACK flip (the one atomic commit).**  BRC: `ZMQ_ROUTING_ID =
-  role_uid`; every REG-family send builds a typed body + `envelope_hash` +
-  `build_dealer_send`; poll thread `parse_dealer_recv`; `pending_requests`
-  re-keyed `msg_type → correlation_id`.  Broker: ack build → typed bodies.
-  `I-WIRE-VERSION-ATOMIC` version bump (§14.6) — send + ack flip together, no
-  mixed old/new deployment.  Highest blast radius (every registration) →
-  verify at L3/L4 + full sweep.
-- **B.4 — drift guard + retire legacy surface.**  Land the deferred
-  `process_message` embedded-JSON drift-guard test (its correct anchor, below).
-  Delete the dead JSON `handle_*_req` bodies + `to_legacy` / `dispatch_legacy`.
-  Full L2/L3/L4 sweep as the atomic close.
+- **✅ B.2 — `inbox_schema_json` → typed `SchemaSpec` sub-structure (2026-07-24).**
+  The doubly-encoded field is parsed ONCE at body construction: both REG ctors
+  run `hub::parse_schema_json(json::parse(s))` (the canonical parser discovery
+  already used) and expose `has_inbox_schema()` / `inbox_schema()`; malformed
+  content (non-JSON, bare array, missing/invalid in-object packing) →
+  BODY_SCHEMA_VIOLATION at the boundary.  The broker's hand-parse block
+  (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING` handler rejects) is deleted;
+  stored `ProducerEntry`/`ConsumerEntry.inbox_packing` derives from the parsed
+  spec (ROLE_INFO_ACK shape unchanged — engine parity untouched).  **Packing is
+  carried once, in-object** (HEP-0034 §6.2): the separate `inbox_packing` REG
+  wire field is retired (sender line dropped, accessor deleted).  Docs:
+  HEP-0027 §3/§4.1/§11.4 + HEP-0046 §14.3 catalog.  Pins: L1
+  `*RegReqBodyParsesInboxSchemaOnce` + `ProducerRegReqBodyRejectsMalformedInboxSchema`
+  (incl. the array-vs-object incident shape); L3 workers re-pinned to
+  BODY_SCHEMA_VIOLATION + in-object packing.
+- **✅ B.3 — RECONCILED AS ALREADY LANDED (2026-07-24 audit).**  Every item in
+  the 2026-07-12 plan text shipped during the envelope/adapter arcs that ran
+  between drafting and Phase B: BRC DEALER sets `ZMQ_ROUTING_ID = role_uid`
+  (broker_request_comm.cpp `start()`, hard-error if empty); sends go through
+  `wire::adapter::encode_dealer_send` (envelope_hash + security triple per
+  msg_type); the poll thread parses via `WireEnvelope::parse_dealer_recv`;
+  `pending_requests` is keyed on `correlation_id`; broker replies build the
+  typed envelope via `send_reply → build_router_send`.  The §14.6
+  I-WIRE-VERSION-ATOMIC cut was the envelope migration itself (a 3-frame
+  client fails `WireEnvelope::parse`; version compatibility rides
+  `abi_fingerprint` — no scalar bump exists).  The plan's residual "ack build
+  → typed bodies" is NOT a design requirement: §14.4/§14.7 define handler
+  output as wire response body construction through the typed envelope
+  (`send_reply`), which is satisfied; ACK body classes exist for the parse
+  side.  No atomic flip remained to perform.
+- **✅ B.4 — drift guard landed; legacy surface already retired (2026-07-24).**
+  The embedded-JSON drift-guard test landed at its correct anchor — the single
+  ingress: L1 `ReceiveAndValidate.*` (test_wire_dispatch_table.cpp) drives real
+  5-frame envelopes through `receive_and_validate` and pins the happy-path
+  typed variant, BODY_SCHEMA_VIOLATION for missing required fields AND for
+  malformed doubly-encoded `inbox_schema_json` content, identity-mismatch,
+  nonce replay, and unknown-msg_type → `ValidatedRawControl` (previously this
+  function had zero direct unit coverage).  The `to_legacy` /
+  `dispatch_legacy` / JSON-handler surface was deleted with B.1i.
+
+**➡ HEP-0046 Phase B is COMPLETE** (B.1a–B.1i, B.2, B.3-reconciled, B.4).
+Remaining REG-adjacent work lives in its own tracks: EnvelopeOnly-tier body
+classes (per-msg_type follow-ons, independent commits), #72 reconciliation
+(expected_schema_owner, band role_name), federation ingress bypass (#69).
 
 **Phase B design requirement — guard embedded-JSON shape drift:**
 The typed-envelope work MUST cover *doubly-encoded* fields (a wire

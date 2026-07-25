@@ -8,10 +8,11 @@
  * against a broker subprocess.  That harness is too heavy for tests whose
  * intent is to verify the BROKER'S wire behaviour in isolation (e.g. the
  * HEP-0042 attach-coordination handlers).  BrokerWireClient is the light
- * substitute: a raw DEALER socket that speaks the 3-frame wire directly
- * (`[C, msg_type, body]`), lets tests inject arbitrary REG_REQ /
- * CONSUMER_ATTACH_REQ_ZMQ / CHANNEL_AUTH_APPLIED_REQ traffic, and observe
- * the broker's replies + unsolicited NOTIFY frames.
+ * substitute: a raw DEALER socket that speaks the HEP-CORE-0046 §14
+ * typed envelope directly (DEALER-side `[C, msg_type, correlation_id,
+ * body]` via `wire::adapter::encode_dealer_send`), lets tests inject
+ * arbitrary REG_REQ / CONSUMER_ATTACH_REQ_ZMQ / CHANNEL_AUTH_APPLIED_REQ
+ * traffic, and observe the broker's replies + unsolicited NOTIFY frames.
  *
  * Design constraints:
  *
@@ -126,7 +127,9 @@ class BrokerWireClient
     BrokerWireClient(const BrokerWireClient &) = delete;
     BrokerWireClient &operator=(const BrokerWireClient &) = delete;
 
-    /// Send the 3-frame wire `[C, msg_type, body]` on the DEALER socket.
+    /// Send a typed-envelope frame set `[C, msg_type, correlation_id,
+    /// body]` on the DEALER socket (envelope_hash + security triple
+    /// stamped by `wire::adapter::encode_dealer_send`).
     /// Semantics: `zmq::send_multipart` with default blocking flags,
     /// bounded by `Config::sndtimeo_ms` (default 500 ms).  On a normally-
     /// connected socket this returns in microseconds; under HWM
@@ -142,9 +145,10 @@ class BrokerWireClient
     /// - Returns `nullopt` on timeout (`timeout` <= 0 is treated as 0
     ///   — non-blocking check — to avoid the negative-value hang in
     ///   `zmq_poll`).
-    /// - Throws `std::runtime_error` on protocol violation (frame
-    ///   count != 3, missing 'C' control byte, or JSON parse failure
-    ///   on the body).  The msg_type frame is passed through as bytes
+    /// - Throws `std::runtime_error` on protocol violation (envelope
+    ///   parse failure per `WireEnvelope::parse_dealer_recv` — wrong
+    ///   frame count, missing 'C' marker, hash mismatch, or JSON parse
+    ///   failure on the body).  The msg_type frame is passed through as bytes
     ///   without a "is-string" validation — the wire is octet-typed
     ///   and downstream comparison catches malformed types via a
     ///   mismatch.
