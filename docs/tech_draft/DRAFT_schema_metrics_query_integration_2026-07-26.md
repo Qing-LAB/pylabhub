@@ -56,21 +56,35 @@ Startup walk-through against the owner-first machine:
 1. Config declares channel name, transport, topology (topology stays a
    config fact — a generic archiver on fan-in *is* the owner and must
    declare; on fan-out/1:1 it is a dialer and may omit).  ✅
-2. Register as consumer with **absent citation** (legal today —
-   citation modes are named / anonymous / absent).  Early arrival is
-   handled by the `AWAITING_OWNER` retry; no schema knowledge needed
-   yet.  ✅ — and note the pleasing consequence: **registration-first
-   ordering makes the owner-first machine do the waiting**, so a
-   schema pull placed *after* REG_ACK can never race a missing channel.
+2. Register as consumer with **absent citation** (VERIFIED legal in
+   code, fresh-eyes pass 2026-07-26: the citation block's explicit
+   third mode — "Empty: all expected_* empty → no validation (consumer
+   signals 'I don't care about schema')", broker_service.cpp
+   `handle_consumer_reg_req` citation step).  Early arrival is handled
+   by the `AWAITING_OWNER` retry; no schema knowledge needed yet.  ✅ —
+   and note the pleasing consequence: **registration-first ordering
+   makes the owner-first machine do the waiting**, so a schema pull
+   placed *after* REG_ACK can never race a missing channel.
 3. Pull the schema: `api`-level `get_channel_schema(channel)` →
    `SCHEMA_REQ(channel_name)` → full BLDS.  Channel exists (we are
    registered on it), so the query answers from Open state.  ✅ (needs
    the client plumbing — the point of this draft.)
 4. **Build the slot interpreter from the pulled BLDS.**  ❌ **G1 + G4 —
    the two real structural gaps, below.**  The rx queue is built at
-   role-host step S1 *from config* `SchemaSpec`, BEFORE the BRC exists;
-   and the script engines' slot proxies are compiled from the config
-   spec, not from a runtime BLDS.
+   role-host step S1 *from config* `SchemaSpec`, BEFORE the BRC exists
+   (both transports: the ZMQ factories reject an empty schema at
+   build, and SHM attach needs the layout); and the script engines'
+   slot proxies are compiled from the config spec, not from a runtime
+   BLDS.
+
+   SHM refinement (fresh-eyes 2026-07-26): the `DataBlock` header
+   carries the two 32-byte schema HASHES but not the structure — so a
+   generic SHM consumer genuinely cannot self-describe from the block,
+   AND the pulled BLDS gets a free end-to-end integrity anchor:
+   recompute the fingerprint from the pulled structure and compare it
+   against the block header's `datablock_schema_hash` /
+   `flexzone_schema_hash` before mapping.  Registry answer and
+   physical block cross-verify each other.  (Fold into G5's doc rules.)
 
 ### S-B  Pre-flight citation (config-light but verifying consumer)
 
@@ -150,7 +164,7 @@ requirement.
 | **G4** | **Script engines compile slot proxies from config `SchemaSpec`; no engine can build slot accessors from a runtime-pulled BLDS.**  Without this, "schema-driven" stops at the C++/native tier. | Structural (largest work item) | (a) Engine support: build the slot proxy from a runtime `schema::SchemaInfo` (the C++ BLDS interpreter exists; the binding layer needs to accept it post-config).  (b) v1 punt: generic roles are native-engine only; Lua/Python get raw-bytes + a BLDS-describe API. | **(a) as its own slice**, after the plumbing slice; 3-engine parity is the project rule, and (b) would create a two-tier script ecosystem.  Sequence it last — everything else is useful without it (S-B, S-E work today with plumbing only). ⚖ |
 | **G2** | No control-plane-only (observer) role kind for S-F. | Deferred | Fold into #292 role-binary unification as a named requirement ("a role kind with BRC + heartbeat + no data channel"). | Defer to #292; record there. |
 | **G3** | **Neither handler checks the caller.**  `SCHEMA_REQ`/`METRICS_REQ` answer any CURVE-authenticated known role about any channel.  Compare: `GET_CHANNEL_AUTH` is binding-side-gated, `GET_CHANNEL_PRODUCERS` was consumer-gated — the project's blast-radius discipline gates reads. | Design decision | (a) Member-gate both channel-form queries (caller must hold a presence on the channel — `is_role_registered_on_channel` exists); all-channels METRICS form becomes hub-script/admin-only (wire form requires `channel_name`).  (b) Leave open to all known roles (metrics/schemas are observability/structure, not secrets — hostnames/pids/SHM names are the only mild recon surface). | **(a)** — matches least-privilege precedent, and every v1 scenario (S-A…S-E) pulls only channels the caller is registered on.  The (owner,id) SCHEMA form stays known-role-open (the registry is shared infrastructure, and hub-globals have no channel to be member of).  Loosening later for an observer role is a deliberate #292-era grant, not a default. ⚖ |
-| **G5** | Freshness/lifetime semantics are implicit. | Doc | Write into the integration: metrics freshness = heartbeat cadence; schema validity = channel lifetime (S-D); pull-at-establishment pattern; fan-in dual-lifetime rule (channel form for consumers, owner/id form for tooling). | Fold into HEP-0034 §10.3 + HEP-0019 when the slice lands. |
+| **G5** | Freshness/lifetime semantics are implicit. | Doc | Write into the integration: metrics freshness = heartbeat cadence; schema validity = channel lifetime (S-D); pull-at-establishment pattern; fan-in dual-lifetime rule (channel form for consumers, owner/id form for tooling); SHM cross-verification rule (pulled BLDS fingerprint MUST match the DataBlock header hashes before mapping — S-A refinement). | Fold into HEP-0034 §10.3 + HEP-0019 when the slice lands. |
 | **G6** | No typed bodies for either message (JSON handlers). | Tracked | Already on the HEP-0046 EnvelopeOnly follow-on list; add `SchemaReqBody`/`MetricsReqBody` when giving them clients (the natural moment). | Do with slice 1. |
 
 **Conflicts detected: none against the lifecycle machine.**  Two
@@ -169,12 +183,19 @@ state this in HEP-0007 §12.3 so they don't drift toward duplication.
 **Slice 1 — client plumbing + gating + pins (small, self-contained).**
 BRC: `get_schema(owner, id)` / `get_channel_schema(channel)` /
 `get_channel_metrics(channel)` beside `list_channels`.  RoleAPIBase
-pass-throughs (Class-C routing).  G3(a) member-gating in both handlers +
-`MetricsReqBody`/`SchemaReqBody` typed bodies + dispatch-tier rows for
-the two messages (they have none today — closes their legacy-path
-bypass).  HEP-0007 §12.2.1 note flips from "no production caller" to the
-contract; L2 handler pins (both forms, gating, error paths) + one L3
-wire round-trip.  Unlocks S-B and S-E immediately.
+pass-throughs (Class-C routing).  G3(a) member-gating — which has a
+prerequisite the first draft of this document missed (fresh-eyes
+2026-07-26): **both handlers today take only `(const nlohmann::json &)`
+and cannot see the caller**, so gating requires migrating them to the
+identity-aware handler shape first (as `handle_check_peer_ready_req`
+already is).  Correction to the first draft: both messages ALREADY have
+admission-tier rows (`Tier::EnvelopeOnly` in the wire_dispatch table) —
+there is no tier bypass to close; the upgrade is
+`SchemaReqBody`/`MetricsReqBody` typed bodies (moving them up from
+EnvelopeOnly) + the identity-aware signatures.  HEP-0007 §12.2.1 note
+flips from "no production caller" to the contract; L2 handler pins
+(both forms, gating, error paths) + one L3 wire round-trip.  Unlocks
+S-B and S-E immediately.
 
 **Slice 2 — engine bindings (3-engine parity).**  `api.get_schema` /
 `api.get_channel_schema` / `api.get_channel_metrics` in Lua + Python +
