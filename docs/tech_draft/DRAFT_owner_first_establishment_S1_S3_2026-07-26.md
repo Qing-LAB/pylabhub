@@ -55,19 +55,34 @@ role host.
 > (`handle_consumer_reg_req` `CHANNEL_NOT_FOUND`).
 
 ### The change
-1. **Broker — gate as a PRE-CHECK, before `_on_producer_added`.** `handle_reg_req`
-   already parses `declared_topology` (`:2440`) and can query
-   `hub_state_->channel(name)` *before* the admission op (`:2462`) — verified.
-   Insert the gate there:
-   `role_is_owner = Queue::{writer,reader}_is_binding_side(topology, this_role)`.
-   - **Dialer REG + no book → reply `awaiting_owner`** immediately, *before*
-     `_on_producer_added` — so NO producer record and NO book are created (this
-     dissolves the orphan-record / "split `_on_producer_added`" problem). Replaces
-     (a) the fan-in producer's book-open and (b) the fan-out/1-to-1 consumer's
-     `CHANNEL_NOT_FOUND`.
-   - Owner REG (+ no book) → `_on_producer_added` + open, as today.
-   - Dialer REG + book exists → `_on_producer_added` admits into the owner's book,
-     as today.
+1. **Broker — gate at the TOP of each handler, before ANY state mutation.**
+   **CRITICAL REVIEW FINDING (2026-07-26, code+doc): gating "before
+   `_on_producer_added`" is TOO LATE.** `handle_reg_req` FILES A SCHEMA into
+   `HubState.schemas` (Path A adoption / Path B self-registration, `~:2330-2400`)
+   *before* `_on_producer_added` (`:2462`) — and a later reject "CAN leave an
+   orphan schema record" (existing code comment). So a gated (`AWAITING_OWNER`)
+   fan-in producer would leave an orphan schema for a not-yet-existent channel and
+   pre-file a schema the consumer-owner never chose — a real consistency bug.
+   Contract C2 ("a dialer never causes the hub to open a book") ⇒ the dialer must
+   **mutate NO hub state**.
+   - **Producer (`handle_reg_req`)** — gate at the TOP, right after the ABI-check
+     block (`~:1996`, which the code marks "BEFORE any state mutation"), before
+     the schema-filing step. All fields are available there (`channel_name:1976`,
+     `body.channel_topology()`, `hub_state_->channel(name)`). If
+     `parse(topology)==FanIn && !hub_state_->channel(name).has_value()` (the fan-in
+     producer is the dialer, owner absent) → `make_error(corr_id,"AWAITING_OWNER",
+     …)`; mutates nothing (mirrors the ABI-check reject pattern).
+   - **Consumer (`handle_consumer_reg_req`)** — the existing `CHANNEL_NOT_FOUND`
+     site (`:3069`) is ALREADY before any mutation (the `:3055` snapshot is
+     read-only; `_on_consumer_joined` mutates only after). So just change that
+     `CHANNEL_NOT_FOUND` → `AWAITING_OWNER` (fan-out / one-to-one consumer dialer).
+   - Owner REG (+ no book) and dialer REG (+ book exists) → unchanged (fall
+     through to `_on_producer_added` / `_on_consumer_joined` and validate as today).
+
+   > The producer gate must NOT rely on `declared_topology` parsed at `:2440`
+   > (that is after the schema step) — read `body.channel_topology()` directly at
+   > the top. Empty-topology hazard still applies (defaults `OneToOne` ⇒ producer
+   > treated as owner); pin with the L2 test below.
 2. **Wire — `AWAITING_OWNER` is an ERROR `error_code`, NOT a new status tier**
    (verified 2026-07-26). The broker dispatch maps any non-`success` status to an
    `ERROR` frame (`:1505` / `:1529`), and `do_request` surfaces that ERROR
@@ -112,9 +127,12 @@ role host.
   role config declares each side's channel topology). Pin this in the gate + an
   L2 test: a fan-in producer REG with empty topology must NOT silently become a
   `OneToOne` owner.
-- **Gate BEFORE `_on_producer_added`** (change #1) sidesteps the record-vs-open
-  split: no producer record is created for a dialer-before-owner, so there is no
-  orphan to clean up.
+- **Gate at the TOP, before schema filing** (change #1): the producer gate sits
+  before `HubState.schemas` is touched (`~:2330`), so a dialer-before-owner leaves
+  ZERO broker state — no schema record, no producer record, no book. Gating merely
+  before `_on_producer_added` is INSUFFICIENT (schema filing precedes it → orphan
+  schema). L2 pin: after a fan-in producer's `AWAITING_OWNER`, `HubState` has no
+  channel AND no orphan schema record for it.
 - **HEP-0042 admission ledger**: gating book-open to the owner does not touch
   ledger seeding (INVARIANT-BIND-CONFIRM-1..3) — the dialer admits into the
   owner's *existing* ledger, unchanged.
