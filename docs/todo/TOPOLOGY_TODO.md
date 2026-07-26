@@ -79,7 +79,16 @@ on top of that abstraction.
 > callback contract (rewrite landed 2026-07-25; R6 removed from all
 > walkthroughs).  The CODE catch-up **SHIPPED 2026-07-26 as one coherent
 > S1+S2+S3 unit** (design + code-time deltas recorded in
-> `docs/tech_draft/DRAFT_owner_first_establishment_S1_S3_2026-07-26.md`):
+> `docs/tech_draft/DRAFT_owner_first_establishment_S1_S3_2026-07-26.md`),
+> **followed same-day by the decision-layer consolidation**: the contract
+> is now pinned as an explicit state machine (HEP-0017 §4.7.0.3 — one
+> ownership truth table + six-row transition table) and executed through
+> `topology::binding_side / is_owner / classify_arrival /
+> classify_departure`; all inline `== FanIn` ownership decisions across
+> broker + HubState route through the table, the queue factory's
+> binding predicates delegate to it, and the role side runs ONE
+> data-driven `retry_registration` engine.  Three L2 pins hold the
+> table + view agreement.
 > - **S1 — owner-locked `ChannelEntry`.  ✅ SHIPPED 2026-07-26.**  Two-layer
 >   gate: side-effect-free `AWAITING_OWNER` at the TOP of `handle_reg_req`
 >   (before schema filing — a later reject orphans a schema record) +
