@@ -107,9 +107,8 @@ update the destination task's description, then delete the test.
   marker + order only within a single thread's stream. **Deferred:** an L2
   broker unit test for `compute_channel_live_counts` (live vs registered) +
   `CHANNEL_COUNT_NOTIFY` fan-out — the L4 e2e covers the behavior end-to-end,
-  but a focused L2 pin is cheaper for regressions. Design:
-  `docs/tech_draft/DRAFT_objective_peer_counts_2026-07-26.md` (SHIPPED; ready to
-  archive per DOC_STRUCTURE §2.2 now that it is folded into the HEPs).
+  but a focused L2 pin is cheaper for regressions. Design (archived 2026-07-26, folded into HEP-0028/0007/0017/0036):
+  `docs/archive/transient-2026-07-26/tech_drafts/DRAFT_objective_peer_counts_2026-07-26.md`.
 
 - **2026-07-21 — #70 resource-leak sub-issues: BRC pending-request reaper + Lua eval stack-clear.**
   Closed the two non-hub/role leak findings from the FullSystem review.

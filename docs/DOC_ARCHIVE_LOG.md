@@ -6,6 +6,19 @@
 
 ## Archive batches
 
+### 2026-07-26 (#74 objective peer counts — merged into HEP-0028/0007/0017/0036)
+
+Design draft `DRAFT_objective_peer_counts_2026-07-26.md` (SHIPPED) merged into
+canonical HEPs and moved to `docs/archive/transient-2026-07-26/tech_drafts/`.
+
+| Document | Merged into | Shipped-code evidence |
+|----------|-------------|------------------------|
+| `DRAFT_objective_peer_counts_2026-07-26.md` | HEP-CORE-0028 §6a.2/§6a.3 (objective, `CHANNEL_COUNT_NOTIFY` source), HEP-CORE-0007 (wire catalog), HEP-CORE-0017 §3.3.2 (dialing-side count), HEP-CORE-0036 §I11 (count fan-out vs binding-only identity stream) | `BrokerServiceImpl::compute_channel_live_counts` + `fire_channel_count_notify` (`broker_service.cpp`); `NotificationId::ChannelCount` (`role_host_core.hpp`); `channel_counts` + count accessors (`role_api_base.cpp`); L4 e2e `ZmqE2E_MultiProducer_TwoAuthorized` asserts every role reads `producers=2 consumers=1` (commit `904318cb`). |
+
+Residual (NOT lost): a focused L2 unit test for `compute_channel_live_counts` +
+`CHANNEL_COUNT_NOTIFY` fan-out is deferred and tracked in `TESTING_TODO.md`
+Recent Completions — the L4 e2e covers the behavior end-to-end.
+
 ### 2026-07-22 (admin console output-buffer design — merged into HEP-CORE-0033 §11)
 
 Design note `DRAFT_admin_console_output_buffer_2026-07-22.md` merged into
