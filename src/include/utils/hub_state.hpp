@@ -196,6 +196,71 @@ PYLABHUB_UTILS_EXPORT const char *check_cardinality(ChannelTopology t, Admission
                                                     std::size_t existing_producers,
                                                     std::size_t existing_consumers) noexcept;
 
+// ── Channel-lifecycle machine — decision layer (HEP-CORE-0017 §4.7.0.3) ──
+//
+// The §3.3.0 binding matrix is the SINGLE ownership truth table; the
+// functions below are its only sanctioned readers.  Every decision
+// site — wire handler and atomic HubState op alike — consults these
+// instead of comparing the topology enum inline (§4.7.0.3 rule 1:
+// inline re-derivation is a defect class).  The queue factory's
+// `Queue::reader_is_binding_side` / `writer_is_binding_side` are
+// views of the same table (they delegate here).
+
+/// The §3.3.0 binding column: which side binds — and therefore OWNS —
+/// a channel of topology `t` (HEP-CORE-0017 §4.7.0.1 C1).
+[[nodiscard]] constexpr AdmissionSide binding_side(ChannelTopology t) noexcept
+{
+    return t == ChannelTopology::FanIn ? AdmissionSide::Consumer : AdmissionSide::Producer;
+}
+
+/// True iff `side` is the binding OWNER of a channel of topology `t`;
+/// false means `side` is the DIALING side.
+[[nodiscard]] constexpr bool is_owner(ChannelTopology t, AdmissionSide side) noexcept
+{
+    return binding_side(t) == side;
+}
+
+/// Arrival rows of the §4.7.0.3 transition table (state × event-side).
+enum class ArrivalClass
+{
+    OwnerOpens,   ///< Absent × arrival(owner): create the book, admit the owner.
+    JoinExisting, ///< Open × arrival(either): validate against the book, then admit.
+    AwaitOwner,   ///< Absent × arrival(dialer): immediate retryable AWAITING_OWNER,
+                  ///< ZERO state written.  The broker never pends.
+};
+
+/// Departure rows of the §4.7.0.3 transition table.
+enum class DepartureClass
+{
+    CloseChannel, ///< departure(owner): owner death is channel death — atomic
+                  ///< close cascade (HEP-CORE-0017 §4.7.0.2 T2).
+    EraseSlot,    ///< departure(dialer): erase the slot; the channel survives.
+};
+
+/// Classify an arrival.  Pure function of (topology, side, book
+/// existence) — the wire handler consults it for the side-effect-free
+/// early reply and the atomic admission op re-consults it under the
+/// writer lock, so both layers always agree (§4.7.0.3 rule 2).
+[[nodiscard]] constexpr ArrivalClass classify_arrival(ChannelTopology t, AdmissionSide side,
+                                                      bool book_exists) noexcept
+{
+    if (book_exists)
+        return ArrivalClass::JoinExisting;
+    return is_owner(t, side) ? ArrivalClass::OwnerOpens : ArrivalClass::AwaitOwner;
+}
+
+/// Classify a departure (voluntary DEREG or presence-FSM death — the
+/// presence machine supplies the events, §4.7.0.3 rule 5).  For an
+/// owning-producer topology the caller additionally applies the
+/// "last producer" qualifier (HEP-CORE-0023 §2.1: multiple producer
+/// slots can only exist under fan-in, where they are dialers anyway,
+/// but defensive callers keep the count check).
+[[nodiscard]] constexpr DepartureClass classify_departure(ChannelTopology t,
+                                                          AdmissionSide side) noexcept
+{
+    return is_owner(t, side) ? DepartureClass::CloseChannel : DepartureClass::EraseSlot;
+}
+
 } // namespace topology
 
 // Convenience overload — `to_string(ChannelTopology)` at hub-namespace

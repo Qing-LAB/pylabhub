@@ -651,22 +651,25 @@ HubState::_add_consumer(const std::string &channel, ConsumerEntry entry,
 
         if (it == pImpl->channels.end())
         {
-            // Channel doesn't exist.  Under HEP-CORE-0017 §3.3.0 the
-            // consumer opens the channel iff (a) the declared topology
-            // makes the consumer the binding side (only fan-in
-            // qualifies) AND (b) the caller supplied open invariants.
-            // Otherwise silent-skip (matches pre-topology behavior:
-            // "the wire hasn't reached a state where this consumer can
-            // be admitted").
-            const bool consumer_is_opener = declared_topology.has_value() &&
-                                            *declared_topology == ChannelTopology::FanIn &&
-                                            open_schema.has_value() && open_transport.has_value();
+            // Channel doesn't exist.  §4.7.0.3 arrival classification:
+            // the consumer opens the channel iff (a) it is the binding
+            // OWNER under the declared topology (owner-opens row) AND
+            // (b) the caller supplied open invariants.  Otherwise
+            // silent-skip (matches pre-topology behavior: "the wire
+            // hasn't reached a state where this consumer can be
+            // admitted").
+            const bool consumer_is_opener =
+                declared_topology.has_value() &&
+                topology::classify_arrival(*declared_topology, topology::AdmissionSide::Consumer,
+                                           /*book_exists=*/false) ==
+                    topology::ArrivalClass::OwnerOpens &&
+                open_schema.has_value() && open_transport.has_value();
             if (!consumer_is_opener)
                 return result;
 
             const char *open_err = nullptr;
             ChannelEntry *new_entry = _open_channel_locked(channel, *open_schema, *open_transport,
-                                                           ChannelTopology::FanIn, open_err);
+                                                           *declared_topology, open_err);
             if (!new_entry)
             {
                 result.topology_error_code = open_err;
@@ -1316,16 +1319,16 @@ HubState::_on_producer_added(const std::string &channel_name, ChannelSchemaInvar
             // fresh channel (0 producers, 0 consumers).
             const ChannelTopology effective_topology =
                 declared_topology.value_or(ChannelTopology::OneToOne);
-            // HEP-CORE-0017 §4.7.0.1 C2 — under fan-in the consumer is
-            // the binding owner; a producer (dialing side) must never
-            // open the book.  Reject with the retryable AWAITING_OWNER
-            // code.  Checked HERE, under the writer lock, so the
-            // broker handler's side-effect-free fast-path gate cannot
-            // race an owner teardown between its snapshot and this
-            // admission.  (Mirror of `_add_consumer`'s
-            // consumer_is_opener rule, which already restricts the
-            // consumer-side open to fan-in.)
-            if (effective_topology == ChannelTopology::FanIn)
+            // §4.7.0.3 arrival classification, re-consulted under the
+            // writer lock (rule 2): a dialing-side producer must never
+            // open the book — reject with the retryable AWAITING_OWNER
+            // code (await-owner row).  The broker handler's
+            // side-effect-free fast-path gate ran the SAME
+            // classification; this atomic re-check closes the
+            // snapshot-to-admission race.
+            if (topology::classify_arrival(effective_topology, topology::AdmissionSide::Producer,
+                                           /*book_exists=*/false) ==
+                topology::ArrivalClass::AwaitOwner)
             {
                 result.topology_error_code = "AWAITING_OWNER";
                 return result;
@@ -1526,7 +1529,12 @@ RemoveProducerResult HubState::_on_producer_dropped(const std::string &channel_n
         //    below.
         if (it->second.find_producer(role_uid) == nullptr)
             return result;
-        const bool producer_is_owner = (it->second.topology != ChannelTopology::FanIn);
+        // §4.7.0.3 departure classification + the last-producer
+        // qualifier for the owning side.
+        const bool producer_is_owner =
+            topology::classify_departure(it->second.topology,
+                                         topology::AdmissionSide::Producer) ==
+            topology::DepartureClass::CloseChannel;
         is_last_producer = producer_is_owner && (it->second.producer_count() == 1);
         if (!is_last_producer)
         {
@@ -1726,7 +1734,10 @@ RemoveProducerResult HubState::_on_consumer_left(const std::string &channel,
         std::shared_lock rlk(pImpl->mu);
         auto it = pImpl->channels.find(channel);
         owner_teardown =
-            it != pImpl->channels.end() && it->second.topology == ChannelTopology::FanIn &&
+            it != pImpl->channels.end() &&
+            topology::classify_departure(it->second.topology,
+                                         topology::AdmissionSide::Consumer) ==
+                topology::DepartureClass::CloseChannel &&
             std::any_of(it->second.consumers.begin(), it->second.consumers.end(),
                         [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
     }
@@ -1953,12 +1964,15 @@ RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
             ++pImpl->counters.pending_to_deregistered_total;
             eligible = true;
 
-            // Owner probe: fan-in + this uid actually holds a consumer
-            // slot on the book.  (A consumer-presence without a slot —
-            // presence created without an accompanying
-            // CONSUMER_REG_REQ — is never the owner.)
+            // Owner probe (§4.7.0.3 departure classification) + this
+            // uid actually holds a consumer slot on the book.  (A
+            // consumer-presence without a slot — presence created
+            // without an accompanying CONSUMER_REG_REQ — is never the
+            // owner.)
             owner_teardown =
-                (it->second.topology == ChannelTopology::FanIn) &&
+                topology::classify_departure(it->second.topology,
+                                             topology::AdmissionSide::Consumer) ==
+                    topology::DepartureClass::CloseChannel &&
                 std::any_of(it->second.consumers.begin(), it->second.consumers.end(),
                             [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
             if (!owner_teardown)
@@ -2037,8 +2051,11 @@ RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
         // Owner-bound teardown (HEP-CORE-0017 §4.7.0.2 T2) — same rule
         // as `_on_producer_dropped`: only an owning producer's last
         // drop closes the channel; fan-in producers are dialers and
-        // always take the slot-erase path.
-        const bool producer_is_owner = (it->second.topology != ChannelTopology::FanIn);
+        // always take the slot-erase path (§4.7.0.3 departure rows).
+        const bool producer_is_owner =
+            topology::classify_departure(it->second.topology,
+                                         topology::AdmissionSide::Producer) ==
+            topology::DepartureClass::CloseChannel;
         is_last_producer = producer_is_owner && (it->second.producer_count() == 1);
         if (!is_last_producer)
         {

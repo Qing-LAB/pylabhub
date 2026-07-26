@@ -1998,8 +1998,8 @@ def on_inbox(msg, api):
 
 def on_channel_closing(channel, reason, api):
     """Called when a channel this role registered for has been
-    destroyed by the broker (last producer-presence reached
-    Disconnected, broker fanned out CHANNEL_CLOSING_NOTIFY).
+    destroyed by the broker (its binding OWNER left — HEP-CORE-0017
+    §4.7.0.2 T2 — and the broker fanned out CHANNEL_CLOSING_NOTIFY).
 
     Optional override (audit D1, 2026-05-18).  When defined, this
     REPLACES the framework's default action; the framework will

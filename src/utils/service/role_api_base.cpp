@@ -2956,6 +2956,94 @@ RoleAPIBase::extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexc
 // Broker protocol helpers (require ctrl thread running)
 // ============================================================================
 
+namespace
+{
+
+/// HEP-CORE-0036 §6.6 transient CHANNEL_NOT_READY reasons — the
+/// retryable set as data.  Match on the STRUCTURED `reason` field, NOT
+/// the message text, so a new transient reason added on the broker
+/// side can't silently fall out of the retry set (the prior
+/// message-substring gate had exactly that bug — it missed
+/// `awaiting_endpoint`).  A message-substring check remains as a
+/// fallback for a pre-structured-reason broker.
+constexpr std::string_view kTransientNotReadyReasons[] = {"awaiting_first_heartbeat",
+                                                          "heartbeat_stalled",
+                                                          "awaiting_endpoint"};
+
+bool is_transient_not_ready(const nlohmann::json &r)
+{
+    const auto reason = r.value("reason", std::string{});
+    for (const auto &rr : kTransientNotReadyReasons)
+        if (reason == rr)
+            return true;
+    const auto msg = r.value("message", std::string{});
+    for (const auto &rr : kTransientNotReadyReasons)
+        if (msg.find(rr) != std::string_view::npos)
+            return true;
+    return false;
+}
+
+/// The role's registration retry engine — the client half of the
+/// channel-lifecycle machine (HEP-CORE-0017 §4.7.0.3 rule 4): the role
+/// reacts to the ACK's `error_code` as wire DATA, never to broker
+/// internals.  One engine for every registration verb; what differs
+/// per verb is only the data — the `is_retryable` predicate and the
+/// `send` closure.
+///
+/// `timeout_ms` is the TOTAL budget.  Three stop conditions bound the
+/// loop (no dead-loop is possible): the time cap (owner never came up
+/// → the caller fails role startup with the standard fatal REG
+/// diagnostic), the `is_cancelled` predicate (shutdown during startup
+/// breaks out on the next 100 ms tick), and a dropped broker link.
+/// NOTE: CHANNEL_CLOSING_NOTIFY does not gate this loop — while
+/// awaiting the owner no channel exists yet, so there is nothing to
+/// close; time + cancellation are the bounds.
+std::optional<nlohmann::json>
+retry_registration(pylabhub::hub::BrokerRequestComm &bc, const std::string &short_tag,
+                   const char *verb, const std::string &channel, int timeout_ms,
+                   const std::function<bool()> &is_cancelled,
+                   const std::function<bool(const nlohmann::json &)> &is_retryable,
+                   const std::function<std::optional<nlohmann::json>(int)> &send)
+{
+    auto result = send(timeout_ms);
+    const auto retry_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
+    while (result.has_value() && result->value("status", std::string{}) == "error" &&
+           is_retryable(*result))
+    {
+        if (std::chrono::steady_clock::now() >= retry_deadline)
+        {
+            LOGGER_WARN("[{}] {} for '{}' budget ({} ms) exhausted while waiting for the "
+                        "channel to become registrable (last broker reply: '{}')",
+                        short_tag, verb, channel, timeout_ms,
+                        result->value("message", std::string{}));
+            break;
+        }
+        if (is_cancelled && is_cancelled())
+        {
+            LOGGER_INFO("[{}] {} retry for '{}' cancelled (shutdown observed)", short_tag, verb,
+                        channel);
+            break;
+        }
+        if (!bc.is_connected())
+        {
+            LOGGER_ERROR("[{}] {} retry for '{}' aborted — broker link lost", short_tag, verb,
+                         channel);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      retry_deadline - std::chrono::steady_clock::now())
+                                      .count();
+        if (remaining_ms <= 0)
+            break;
+        result = send(static_cast<int>(remaining_ms));
+    }
+    return result;
+}
+
+} // namespace
+
 std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(
     const nlohmann::json &opts, int timeout_ms, const std::function<bool()> &is_cancelled)
 {
@@ -2984,59 +3072,14 @@ std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(
                     pImpl->short_tag, ch);
     }
 
-    auto result = bc->register_channel(opts, timeout_ms);
-
-    // HEP-CORE-0017 §4.7.0.1 C3 — owner-first retry.  A fan-in
-    // producer is the DIALING side; the broker replies AWAITING_OWNER
-    // (immediate, never pends) while the consumer-owner has not opened
-    // the book yet.  Retry within the caller's total budget
-    // `timeout_ms`; three stop conditions bound the loop (no dead-loop
-    // is possible): the time cap, the `is_cancelled` predicate
-    // (shutdown / critical-error during startup breaks out on the next
-    // 100 ms tick), and a dropped broker link.  On exhaustion the last
-    // AWAITING_OWNER reply surfaces to the caller, which fails role
-    // startup with the standard fatal REG diagnostic — the
-    // misconfiguration case ("owner never comes") cannot hang.
-    // NOTE: CHANNEL_CLOSING_NOTIFY does not gate this loop — while
-    // awaiting the owner no channel exists yet, so there is nothing to
-    // close; time + cancellation are the bounds.
-    const auto is_awaiting_owner = [](const std::optional<nlohmann::json> &r)
-    {
-        return r.has_value() && r->value("status", std::string{}) == "error" &&
-               r->value("error_code", std::string{}) == "AWAITING_OWNER";
-    };
-    const auto retry_deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
-    while (is_awaiting_owner(result))
-    {
-        if (std::chrono::steady_clock::now() >= retry_deadline)
-        {
-            LOGGER_WARN("[{}] REG_REQ for '{}' budget ({} ms) exhausted while awaiting "
-                        "the channel owner — giving up (is the fan-in consumer-owner "
-                        "configured to start?)",
-                        pImpl->short_tag, ch, timeout_ms);
-            break;
-        }
-        if (is_cancelled && is_cancelled())
-        {
-            LOGGER_INFO("[{}] REG_REQ owner-wait for '{}' cancelled (shutdown observed)",
-                        pImpl->short_tag, ch);
-            break;
-        }
-        if (!bc->is_connected())
-        {
-            LOGGER_ERROR("[{}] REG_REQ owner-wait for '{}' aborted — broker link lost",
-                         pImpl->short_tag, ch);
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                      retry_deadline - std::chrono::steady_clock::now())
-                                      .count();
-        if (remaining_ms <= 0)
-            break;
-        result = bc->register_channel(opts, static_cast<int>(remaining_ms));
-    }
+    // Owner-first retry (HEP-CORE-0017 §4.7.0.1 C3): the producer is
+    // the DIALING side wherever it is not the owner; AWAITING_OWNER is
+    // the only retryable REG_REQ reply.
+    const auto is_retryable = [](const nlohmann::json &r)
+    { return r.value("error_code", std::string{}) == "AWAITING_OWNER"; };
+    auto result =
+        retry_registration(*bc, pImpl->short_tag, "REG_REQ", ch, timeout_ms, is_cancelled,
+                           is_retryable, [&](int t) { return bc->register_channel(opts, t); });
 
     // Per HEP-CORE-0007 §12.3, a request-reply method's optional<json>
     // now carries the broker's response body (success OR error).  nullopt
@@ -3160,89 +3203,29 @@ std::optional<nlohmann::json> RoleAPIBase::register_consumer(
                     pImpl->short_tag, ch);
     }
 
-    auto result = bc->register_consumer(opts, timeout_ms);
-
-    // HEP-CORE-0036 §5.2 R6 + §6.6 reason catalog: the broker rejects
-    // CONSUMER_REG_REQ with `CHANNEL_NOT_READY` while the channel exists
-    // but is not yet admissible, carrying a structured `reason` field.
-    // The transient reasons worth retrying — each resolves on its own —
-    // are:
-    //   - `awaiting_first_heartbeat` — producer registered, no first
-    //     heartbeat yet (kRegistering);
-    //   - `heartbeat_stalled`        — producer in the heartbeat-timeout
-    //     window (kStalled; HEP-CORE-0023 §2.6);
-    //   - `awaiting_endpoint`        — producer's ZMQ endpoint still has
-    //     an unresolved port 0 (pre-ENDPOINT_UPDATE).
-    // Terminal failures (channel does not exist, or producer presences
-    // all Disconnected) come back as `CHANNEL_NOT_FOUND` and drop out of
-    // this loop on the error_code check.  A 100 ms cadence covers a
-    // typical 1 s heartbeat tick with ~10 retries; the broker's rejection
-    // is a cheap synchronous reply, so the budget covers many retries.
-    //
-    // Match on the STRUCTURED `reason` field, NOT the message text, so a
-    // new transient reason added on the broker side can't silently fall
-    // out of the retry set (the prior message-substring gate had exactly
-    // that bug — it missed `awaiting_endpoint`).  A message-substring
-    // check remains as a fallback for a pre-structured-reason broker.
-    const auto is_retryable_reason = [](const nlohmann::json &r) -> bool
+    // The consumer's retryable set (data, not control flow):
+    //   - AWAITING_OWNER (HEP-CORE-0017 §4.7.0.1 C3) — the consumer is
+    //     the DIALING side and the producer-owner has not opened the
+    //     channel yet; retryable by definition, no `reason` involved.
+    //   - CHANNEL_NOT_READY with a transient §6.6 `reason` (HEP-0036
+    //     §5.2 R6): the channel exists but is not yet admissible —
+    //     `awaiting_first_heartbeat` / `heartbeat_stalled` /
+    //     `awaiting_endpoint` each resolve on their own.
+    // Terminal failures (e.g. CHANNEL_NOT_FOUND for an existing channel
+    // whose producer presences are all Disconnected) drop out of the
+    // retry on the error_code check.  A 100 ms cadence covers a typical
+    // 1 s heartbeat tick with ~10 retries; the broker's rejection is a
+    // cheap synchronous reply, so the budget covers many retries.
+    const auto is_retryable = [](const nlohmann::json &r) -> bool
     {
-        static constexpr std::string_view kRetryable[] = {"awaiting_first_heartbeat",
-                                                          "heartbeat_stalled", "awaiting_endpoint"};
-        const auto reason = r.value("reason", std::string{});
-        for (const auto &rr : kRetryable)
-            if (reason == rr)
-                return true;
-        const auto msg = r.value("message", std::string{});
-        for (const auto &rr : kRetryable)
-            if (msg.find(rr) != std::string_view::npos)
-                return true;
-        return false;
-    };
-    // AWAITING_OWNER (HEP-CORE-0017 §4.7.0.1 C3) joins the retryable
-    // set: under fan-out / one-to-one the consumer is the DIALING side
-    // and the producer-owner may simply not have opened the channel
-    // yet.  Retryable by definition — no `reason` field involved.
-    const auto is_retryable_error = [&](const nlohmann::json &r) -> bool
-    {
-        if (r.value("status", std::string{}) != "error")
-            return false;
         const auto code = r.value("error_code", std::string{});
         if (code == "AWAITING_OWNER")
             return true;
-        return code == "CHANNEL_NOT_READY" && is_retryable_reason(r);
+        return code == "CHANNEL_NOT_READY" && is_transient_not_ready(r);
     };
-    const auto retry_deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
-    while (result.has_value() && is_retryable_error(*result))
-    {
-        if (std::chrono::steady_clock::now() >= retry_deadline)
-        {
-            LOGGER_WARN("[{}] CONSUMER_REG_REQ for '{}' deadline exceeded while "
-                        "waiting for channel to become ready (last broker "
-                        "reason: '{}')",
-                        pImpl->short_tag, ch, result->value("message", std::string{}));
-            break;
-        }
-        if (is_cancelled && is_cancelled())
-        {
-            LOGGER_INFO("[{}] CONSUMER_REG_REQ retry for '{}' cancelled (shutdown observed)",
-                        pImpl->short_tag, ch);
-            break;
-        }
-        if (!bc->is_connected())
-        {
-            LOGGER_ERROR("[{}] CONSUMER_REG_REQ retry for '{}' aborted — broker link lost",
-                         pImpl->short_tag, ch);
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                      retry_deadline - std::chrono::steady_clock::now())
-                                      .count();
-        if (remaining_ms <= 0)
-            break;
-        result = bc->register_consumer(opts, static_cast<int>(remaining_ms));
-    }
+    auto result = retry_registration(*bc, pImpl->short_tag, "CONSUMER_REG_REQ", ch, timeout_ms,
+                                     is_cancelled, is_retryable,
+                                     [&](int t) { return bc->register_consumer(opts, t); });
 
     bool registered = result.has_value() && result->value("status", std::string{}) == "success";
 

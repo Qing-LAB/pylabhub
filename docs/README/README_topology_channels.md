@@ -314,22 +314,12 @@ heartbeat AFTER the peer has finished setting up its data-plane
 socket (bind or connect + subscribe).  So "live" ≈ "data is ready
 to flow."
 
-**Count includes yourself (by design).**  Conceptually the count is
-objective — `consumer_count()` reflects every live consumer on the
-channel, including you if you're one, the same answer whoever asks.
-
-> **Current limitation (code catching up).**  Today the counts are
-> maintained only on the channel's *owner* (binding) side, and only
-> for the *dialing* peers it observes.  So right now a role's
-> *own-side* count reads **0, not 1** — a fan-in consumer's
-> `consumer_count()` and a fan-out producer's `producer_count()` both
-> return 0 — and a *dialing* role reads 0 for everything.  The
-> **peer-facing** directions already work correctly: a fan-out
-> producer's `consumer_count()` and a fan-in consumer's
-> `producer_count()` count their peers as expected.  Until the
-> objective-for-everyone behavior is finished, only rely on the
-> peer-facing direction — your consumers if you're a producer, your
-> producers if you're a consumer.
+**Count includes yourself (by design).**  The count is objective —
+`consumer_count()` reflects every live consumer on the channel,
+including you if you're one, and every role on the channel reads the
+same numbers whoever asks (owner or dialer alike).  The broker keeps
+everyone in sync by broadcasting the channel's live counts to all
+members whenever they change (HEP-CORE-0028 §6a.2).
 
 ### 5.1 The fan-out ZMQ slow-joiner rule
 
@@ -386,11 +376,15 @@ stateDiagram-v2
 
 **Coming up.**  One side "owns the address" (§1) and binds; the
 other side asks the broker for it and dials in.  You write none of
-this — the framework brings the owner up first, admits the dialers,
-and holds your data loop until the channel is actually ready.  If it
-can't get ready in time (a peer never shows up), your role aborts
-with a clear timeout instead of hanging forever.  The full rules are
-the **establishment contract**, HEP-CORE-0017 §4.7.0.1.
+this — and you may start your roles **in any order**.  The channel
+only comes into being when its owner registers; a dialing role that
+starts earlier isn't an error — its registration is answered "owner
+isn't up yet, try again" and its role host quietly retries until the
+owner appears, all before your script's `on_init` ever runs.  If the
+owner never shows up within the init budget, the role aborts with a
+clear timeout instead of hanging forever.  The full rules are the
+**establishment contract**, HEP-CORE-0017 §4.7.0.1 (and the
+state-machine view behind it, §4.7.0.3).
 
 **Running.**  Your `on_produce` / `on_consume` / `on_process` fires
 each cycle.  Peers may join or leave while you run; the framework

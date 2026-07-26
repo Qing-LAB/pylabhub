@@ -13,6 +13,7 @@
 
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
+#include "utils/hub_queue_factory.hpp" // Queue::reader/writer_is_binding_side (truth-table views)
 #include "utils/schema_utils.hpp" // make_schema_record (HEP-CORE-0034 §6.3)
 #include "utils/logger.hpp"
 #include "utils/security/key_store.hpp"
@@ -4801,6 +4802,83 @@ TEST(HubStateHep0042, ProducerConfirmed_NoOpOnMissingChannel)
 
 // 2026-07-08 topology migration — unit tests for the
 // admission-path helpers.  Tech draft §5.1 rule 4 + HEP-CORE-0017 §3.3.0.
+
+TEST(ChannelTopology, BindingSideTruthTable)
+{
+    // HEP-CORE-0017 §3.3.0 binding column — THE single ownership truth
+    // table (§4.7.0.3 rule 1).  Pins the table itself AND that the
+    // queue factory's predicates are views of the same table (the
+    // drift the rule exists to prevent).
+    using pylabhub::hub::topology::AdmissionSide;
+    using pylabhub::hub::topology::binding_side;
+    using pylabhub::hub::topology::is_owner;
+
+    EXPECT_EQ(binding_side(ChannelTopology::FanIn), AdmissionSide::Consumer);
+    EXPECT_EQ(binding_side(ChannelTopology::FanOut), AdmissionSide::Producer);
+    EXPECT_EQ(binding_side(ChannelTopology::OneToOne), AdmissionSide::Producer);
+
+    for (auto t : {ChannelTopology::FanIn, ChannelTopology::FanOut, ChannelTopology::OneToOne})
+    {
+        // Exactly one owner per topology.
+        EXPECT_NE(is_owner(t, AdmissionSide::Producer), is_owner(t, AdmissionSide::Consumer));
+        // Queue-tier views agree with the hub-tier table.
+        EXPECT_EQ(is_owner(t, AdmissionSide::Consumer),
+                  pylabhub::hub::Queue::reader_is_binding_side(t));
+        EXPECT_EQ(is_owner(t, AdmissionSide::Producer),
+                  pylabhub::hub::Queue::writer_is_binding_side(t));
+    }
+}
+
+TEST(ChannelTopology, ClassifyArrival_TransitionTable)
+{
+    // HEP-CORE-0017 §4.7.0.3 arrival rows: Open × arrival → join for
+    // every (topology, side); Absent × arrival → owner-opens for the
+    // binding owner, await-owner for the dialer.
+    using pylabhub::hub::topology::AdmissionSide;
+    using pylabhub::hub::topology::ArrivalClass;
+    using pylabhub::hub::topology::classify_arrival;
+    using pylabhub::hub::topology::is_owner;
+
+    for (auto t : {ChannelTopology::FanIn, ChannelTopology::FanOut, ChannelTopology::OneToOne})
+    {
+        for (auto side : {AdmissionSide::Producer, AdmissionSide::Consumer})
+        {
+            EXPECT_EQ(classify_arrival(t, side, /*book_exists=*/true),
+                      ArrivalClass::JoinExisting);
+            EXPECT_EQ(classify_arrival(t, side, /*book_exists=*/false),
+                      is_owner(t, side) ? ArrivalClass::OwnerOpens : ArrivalClass::AwaitOwner);
+        }
+    }
+    // Spot-pin the two rows the owner-first contract turns on.
+    EXPECT_EQ(classify_arrival(ChannelTopology::FanIn, AdmissionSide::Producer, false),
+              ArrivalClass::AwaitOwner);
+    EXPECT_EQ(classify_arrival(ChannelTopology::FanIn, AdmissionSide::Consumer, false),
+              ArrivalClass::OwnerOpens);
+}
+
+TEST(ChannelTopology, ClassifyDeparture_TransitionTable)
+{
+    // HEP-CORE-0017 §4.7.0.3 departure rows: owner departure is
+    // channel death; a dialer departure erases only its slot.
+    using pylabhub::hub::topology::AdmissionSide;
+    using pylabhub::hub::topology::classify_departure;
+    using pylabhub::hub::topology::DepartureClass;
+    using pylabhub::hub::topology::is_owner;
+
+    for (auto t : {ChannelTopology::FanIn, ChannelTopology::FanOut, ChannelTopology::OneToOne})
+    {
+        for (auto side : {AdmissionSide::Producer, AdmissionSide::Consumer})
+        {
+            EXPECT_EQ(classify_departure(t, side), is_owner(t, side)
+                                                       ? DepartureClass::CloseChannel
+                                                       : DepartureClass::EraseSlot);
+        }
+    }
+    EXPECT_EQ(classify_departure(ChannelTopology::FanIn, AdmissionSide::Producer),
+              DepartureClass::EraseSlot);
+    EXPECT_EQ(classify_departure(ChannelTopology::FanIn, AdmissionSide::Consumer),
+              DepartureClass::CloseChannel);
+}
 
 TEST(ChannelTopology, ParseWireValues)
 {

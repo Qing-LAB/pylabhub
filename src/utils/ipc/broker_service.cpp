@@ -2023,24 +2023,28 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         }
     }
 
-    // HEP-CORE-0017 §4.7.0.1 C2/C3 — owner-first establishment gate.
-    // Under fan-in the producer is the DIALING side; arriving before
-    // the consumer-owner has opened the book is NOT an error — reply
-    // the retryable AWAITING_OWNER (immediate; the broker never
-    // pends) and the role host's REG retry loop re-attempts within
-    // its init budget.  This gate MUST sit here, before the schema
-    // Path A/B filing below: a later reject would leave an orphan
-    // schema record for a channel that was never opened AND pre-file
-    // a schema the consumer-owner never chose.  The same invariant is
-    // re-checked atomically inside `_on_producer_added` (writer lock)
-    // to close the snapshot-to-admission race; THIS check keeps the
-    // common-case reject side-effect-free.
-    if (declared_topology.has_value() &&
-        *declared_topology == pylabhub::hub::ChannelTopology::FanIn &&
-        !hub_state_->channel(channel_name).has_value())
+    // §4.7.0.3 arrival classification — owner-first establishment gate
+    // (contract C2/C3).  A dialing-side producer arriving before its
+    // owner has opened the book is NOT an error — reply the retryable
+    // AWAITING_OWNER (immediate; the broker never pends) and the role
+    // host's REG retry loop re-attempts within its init budget.  This
+    // gate MUST sit here, before the schema Path A/B filing below: a
+    // later reject would leave an orphan schema record for a channel
+    // that was never opened AND pre-file a schema the owner never
+    // chose.  The atomic admission op re-consults the SAME
+    // classification under the writer lock (rule 2), closing the
+    // snapshot-to-admission race; THIS check keeps the common-case
+    // reject side-effect-free.  An absent wire declaration defaults to
+    // OneToOne for classification, matching the admission op's
+    // fresh-channel default (HEP-CORE-0018 §5).
+    if (pylabhub::hub::topology::classify_arrival(
+            declared_topology.value_or(pylabhub::hub::ChannelTopology::OneToOne),
+            pylabhub::hub::topology::AdmissionSide::Producer,
+            hub_state_->channel(channel_name).has_value()) ==
+        pylabhub::hub::topology::ArrivalClass::AwaitOwner)
     {
         LOGGER_INFO("[broker] event=RegReqAwaitingOwner role='{}' channel='{}' "
-                    "(fan-in producer dialed before consumer-owner; retryable)",
+                    "(dialing producer arrived before its owner; retryable)",
                     role_uid, channel_name);
         return make_error(corr_id, "AWAITING_OWNER",
                           "channel '" + channel_name +
@@ -2633,7 +2637,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     std::uint64_t snapshot_version = 0;
     auto ch_snapshot = hub_state_->channel(channel_name);
     const bool producer_is_dialing =
-        ch_snapshot.has_value() && ch_snapshot->topology == pylabhub::hub::ChannelTopology::FanIn;
+        ch_snapshot.has_value() &&
+        !pylabhub::hub::topology::is_owner(ch_snapshot->topology,
+                                           pylabhub::hub::topology::AdmissionSide::Producer);
     if (producer_is_dialing)
     {
         if (!ch_snapshot->consumers.empty() && !ch_snapshot->consumers.front().zmq_pubkey.empty() &&
@@ -2731,7 +2737,8 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // initial_allowlist.  The consumer-side NOTIFY (line 3485)
     // handles admission on those topologies.
     if (auto ch = hub_state_->channel(channel_name);
-        ch.has_value() && ch->topology == pylabhub::hub::ChannelTopology::FanIn)
+        ch.has_value() && !pylabhub::hub::topology::is_owner(
+                              ch->topology, pylabhub::hub::topology::AdmissionSide::Producer))
     {
         // Admit producer's pubkey into the channel's unified ledger
         // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  The
@@ -3088,29 +3095,34 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     const auto snap = hub_state_->snapshot();
     const auto cit = snap.channels.find(channel_name);
 
-    // Under fan-in the consumer opens the channel; a missing entry
-    // routes to the open-path in `_on_consumer_joined` (which
-    // atomically creates the ChannelEntry with the consumer as the
-    // binding side + first admitted role).  Under fan-out / one-to-one
-    // the producer is the binding side and must have opened the
-    // channel first — a missing entry there is a genuine
-    // CHANNEL_NOT_FOUND.
+    // §4.7.0.3 arrival classification for the consumer side (same
+    // table as `handle_reg_req` — the two handlers encode NOTHING
+    // locally).  Owner-opens routes to the open-path in
+    // `_on_consumer_joined` (which atomically creates the
+    // ChannelEntry with the consumer as the binding owner + first
+    // admitted role); await-owner replies the retryable
+    // AWAITING_OWNER.  An absent wire declaration cannot classify the
+    // consumer as an opener — a fresh channel needs the owner's
+    // declared topology — so empty + missing-book lands on
+    // await-owner, the safe default for a dialer.
+    const auto consumer_arrival = pylabhub::hub::topology::classify_arrival(
+        declared_topology.value_or(pylabhub::hub::ChannelTopology::OneToOne),
+        pylabhub::hub::topology::AdmissionSide::Consumer,
+        /*book_exists=*/cit != snap.channels.end());
     const bool consumer_will_open_channel =
-        cit == snap.channels.end() && declared_topology.has_value() &&
-        *declared_topology == pylabhub::hub::ChannelTopology::FanIn;
+        declared_topology.has_value() &&
+        consumer_arrival == pylabhub::hub::topology::ArrivalClass::OwnerOpens;
 
     if (cit == snap.channels.end() && !consumer_will_open_channel)
     {
-        // HEP-CORE-0017 §4.7.0.1 C2/C3 — owner-first establishment
-        // gate.  Under fan-out / one-to-one the consumer is the
-        // DIALING side; arriving before the producer-owner has opened
-        // the book is NOT a caller error — reply the retryable
-        // AWAITING_OWNER (immediate; the broker never pends) and the
-        // role host's REG retry loop re-attempts within its init
-        // budget.  Accepted C3 trade-off: a genuinely wrong channel
-        // name also lands here and fails only after the dialer's
-        // retry budget — at REG time "not yet" and "never" are
-        // indistinguishable.
+        // §4.7.0.3 await-owner row (contract C2/C3): the DIALING
+        // consumer arrived before the producer-owner opened the book —
+        // NOT a caller error.  Reply the retryable AWAITING_OWNER
+        // (immediate; the broker never pends); the role host's REG
+        // retry loop re-attempts within its init budget.  Accepted C3
+        // trade-off: a genuinely wrong channel name also lands here
+        // and fails only after the dialer's retry budget — at REG
+        // time "not yet" and "never" are indistinguishable.
         LOGGER_INFO("[broker] event=ConsumerRegReqAwaitingOwner role='{}' channel='{}' "
                     "(dialing consumer arrived before owner; retryable)",
                     role_uid, channel_name);
@@ -3180,7 +3192,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     //                                      retry indefinitely)
     if (!consumer_will_open_channel &&
         !(declared_topology.has_value() &&
-          *declared_topology == pylabhub::hub::ChannelTopology::FanIn))
+          pylabhub::hub::topology::is_owner(*declared_topology,
+                                            pylabhub::hub::topology::AdmissionSide::Consumer)))
     {
         bool any_live = false;
         bool any_kRegistering = false; // Connected, !first_heartbeat
@@ -4161,8 +4174,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_attach_req_zmq(const nlohmann:
     auto ch = hub_state_->channel(channel_name);
     if (!ch.has_value())
         return make_denied("producer_not_live");
-    const bool is_fan_in = (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
-    if (!is_fan_in && !access->ledger.admission_version_of(consumer_pubkey).has_value())
+    // Under a consumer-owned topology the attaching consumer IS the
+    // binding owner — its own pubkey is not in its admission ledger
+    // (the ledger holds the DIALING side's keys), so the allowlist
+    // check applies only where the consumer dials.
+    const bool consumer_is_owner = pylabhub::hub::topology::is_owner(
+        ch->topology, pylabhub::hub::topology::AdmissionSide::Consumer);
+    if (!consumer_is_owner && !access->ledger.admission_version_of(consumer_pubkey).has_value())
     {
         return make_denied("consumer_not_in_channel_allowlist");
     }
@@ -4902,7 +4920,8 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(zmq::socket_t &socket,
         ++fanned;
     };
     std::size_t binding_side_total = 0;
-    if (ch->topology == pylabhub::hub::ChannelTopology::FanIn)
+    if (pylabhub::hub::topology::binding_side(ch->topology) ==
+        pylabhub::hub::topology::AdmissionSide::Consumer)
     {
         binding_side_total = ch->consumers.size();
         for (const auto &cons : ch->consumers)
@@ -5147,15 +5166,17 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
                     "channel='{}' role_type='{}'",
                     wire_uid, channel_name, wire_role_type);
 
-        // Topology-role → is this the dialing side?  Fan-in producers
-        // dial; fan-out / one-to-one consumers dial.  (Symmetric with
-        // fan-out target dispatch in fire_channel_auth_changed_notify.)
+        // Topology-role → is this the dialing side?  §4.7.0.3 truth
+        // table: the dialing side is whoever is NOT the binding owner.
+        // (Symmetric with the binding-side target dispatch in
+        // fire_channel_auth_changed_notify.)
         auto ch = hub_state_->channel(channel_name);
         if (ch.has_value())
         {
-            const bool is_fan_in = (ch->topology == pylabhub::hub::ChannelTopology::FanIn);
-            const bool is_dialing_side = (is_fan_in && wire_role_type == "producer") ||
-                                         (!is_fan_in && wire_role_type == "consumer");
+            const auto side = wire_role_type == "producer"
+                                  ? pylabhub::hub::topology::AdmissionSide::Producer
+                                  : pylabhub::hub::topology::AdmissionSide::Consumer;
+            const bool is_dialing_side = !pylabhub::hub::topology::is_owner(ch->topology, side);
             if (is_dialing_side)
             {
                 fire_channel_auth_changed_notify(socket, channel_name,
@@ -5229,7 +5250,9 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
             break;
         }
     }
-    if (sender_role_uid.empty() && entry->topology == pylabhub::hub::ChannelTopology::FanIn)
+    if (sender_role_uid.empty() &&
+        pylabhub::hub::topology::is_owner(entry->topology,
+                                          pylabhub::hub::topology::AdmissionSide::Consumer))
     {
         for (const auto &cons : entry->consumers)
         {

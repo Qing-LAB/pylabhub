@@ -110,6 +110,15 @@ stateDiagram-v2
     Pending --> [*] : DEREG_REQ accepted (same path)
 ```
 
+This presence machine composes with the hub's per-channel
+**channel-lifecycle machine** (HEP-CORE-0017 §4.7.0.3): every
+transition to Disconnected below is a *departure event* fed into that
+machine, which classifies the leaving presence as the channel's
+binding OWNER (→ atomic channel close) or a dialer (→ slot erase)
+from the HEP-0017 §3.3.0 topology table.  The presence machine owns
+liveness (timers, heartbeats); the channel machine owns the book —
+they compose and do not overlap.
+
 Precise transitions (all keyed on `(uid, role_type)`, i.e. one FSM
 per **presence** — a processor with `(uid, "producer")` and
 `(uid, "consumer")` runs two FSMs):
@@ -121,7 +130,7 @@ per **presence** — a processor with `(uid, "producer")` and
 | Matching `HEARTBEAT_NOTIFY` received | Pending | Connected | refresh `RoleEntry.last_heartbeat`, reset `state_since`, bump `pending_to_connected_total` |
 | Missed heartbeats for `effective_ready_timeout` | Connected | Pending | set `state_since`, bump `connected_to_pending_total` |
 | Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if the leaving presence is the channel's binding OWNER** (fan-out / one-to-one producer; fan-in consumer — §2.1.1 + HEP-CORE-0017 §4.7.0.2 T2): fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) **to all remaining channel members** and remove `ChannelEntry` atomically.  A dialing presence's drop (fan-in producer — even the last one; fan-out / one-to-one consumer) only erases its slot.  For an owning producer the teardown fires **only when no other producer-presence remains alive**; remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
-| `DEREG_REQ` / `CONSUMER_DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; same OWNER-bound teardown rule as the row above with reason=`voluntary_close` (producer path) / `consumer_deregistered` (fan-in owner path); remove presence |
+| `DEREG_REQ` / `CONSUMER_DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; same OWNER-bound teardown rule as the row above with reason=`producer_deregistered` (owning-producer path) / `consumer_deregistered` (fan-in owner path); remove presence |
 
 **Wave M3 transition primitives (2026-05-11).** The transitions in
 the table above are implemented on `RoleEntry` as the controlled-

@@ -1692,7 +1692,7 @@ same change.
 | `MISSING_ROLE_UID` | REG_REQ / CONSUMER_REG_REQ without a `role_uid` field when the broker's connection-policy requires one. | Generate or supply a `role_uid` per HEP-CORE-0033 §G2.2.0a. |
 | `NOT_IN_KNOWN_ROLES` | REG_REQ from a `role_uid` not on the broker's `known_roles` allowlist (closed connection-policy mode). | Cannot recover from client side; broker-admin must add the role. |
 | `CHANNEL_NOT_FOUND` | DISC_REQ / DEREG_REQ / CONSUMER_DEREG_REQ / CHECK_PEER_READY_REQ for a channel that is not registered, OR CONSUMER_REG_REQ on an *existing* channel whose producer-presences are all absent/Disconnected (rare race per HEP-CORE-0023 §2.1).  A *registration* on a missing channel no longer lands here — the dialing side gets `AWAITING_OWNER` instead (owner-first establishment, HEP-CORE-0017 §4.7.0.1). | For DISC: retry within the client's discover budget.  For CHECK_PEER_READY: terminal — the channel book is gone (owner died, HEP-CORE-0017 §4.7.0.2 T2); abort establishment fast instead of burning the poll budget. |
-| `AWAITING_OWNER` | REG_REQ from a fan-in producer, or CONSUMER_REG_REQ from a fan-out / one-to-one consumer, arriving before the channel's binding OWNER has opened the book (HEP-CORE-0017 §4.7.0.1 C2/C3 owner-first establishment).  The broker replies immediately — it never pends a registration (pure responder).  Emitted before ANY state mutation (no schema record, no producer/consumer record, no book).  Also covers the raced variant where the channel vanished between snapshot and admission.  **New 2026-07-26 (owner-first / T3).** | Retryable by definition: the role host's REG retry loop re-attempts on a 100 ms cadence within its `init_timeout_ms` budget, honoring shutdown cancellation.  On budget exhaustion role startup fails with a misconfiguration diagnostic (the owner never came up).  A genuinely wrong channel name also lands here and fails only after the budget — at REG time "not yet" and "never" are indistinguishable (accepted C3 trade-off). |
+| `AWAITING_OWNER` | REG_REQ from a fan-in producer, or CONSUMER_REG_REQ from a fan-out / one-to-one consumer, arriving before the channel's binding OWNER has opened the book — the `Absent × arrival(dialer)` row of the channel-lifecycle machine (HEP-CORE-0017 §4.7.0.3; contract §4.7.0.1 C2/C3).  The broker replies immediately — it never pends a registration (pure responder).  Emitted before ANY state mutation (no schema record, no producer/consumer record, no book).  Also covers the raced variant where the channel vanished between snapshot and admission — the reply is a pure function of machine state.  **New 2026-07-26 (owner-first establishment).** | Retryable by definition: the role host's REG retry loop re-attempts on a 100 ms cadence within its `init_timeout_ms` budget, honoring shutdown cancellation.  On budget exhaustion role startup fails with a misconfiguration diagnostic (the owner never came up).  A genuinely wrong channel name also lands here and fails only after the budget — at REG time "not yet" and "never" are indistinguishable (accepted C3 trade-off). |
 | `CHANNEL_NOT_READY` | CONSUMER_REG_REQ for a channel that isn't admissible right now.  `reason` field: `awaiting_first_heartbeat` \| `heartbeat_stalled` per HEP-CORE-0036 §6.6.  Endpoint-resolution waiting (HEP-CORE-0021 §16.7 R6 extension for port-0 producers) does NOT surface as a distinct `reason` — the REG_REQ is held pending on R6 the same way it waits for `awaiting_first_heartbeat`; the `awaiting_endpoint` reason string retired 2026-06-12 stays retired even after §16 adoption 2026-07-08. | Wait briefly and retry; producer presence is still warming up (first heartbeat or endpoint publish) or stalled. |
 | `TRANSPORT_MISMATCH` | CONSUMER_REG_REQ where the consumer's declared transport (`shm`/`zmq`) doesn't match the producer's. | Programming error or misconfiguration; reconcile the channel's transport setting. |
 | `NOT_REGISTERED` | DEREG_REQ / CONSUMER_DEREG_REQ where `role_uid` doesn't match any admitted producer / consumer.  Resolution is by `role_uid` alone — `producer_pid`/`consumer_pid` is debug/record only and never validated.  Missing role_uid is INVALID_REQUEST instead. | Verify the calling process actually registered first and is sending its own role_uid (not someone else's).  No retry — the request itself is logically wrong. |
@@ -1752,21 +1752,24 @@ Direction:  Broker → All channel participants
               (every ProducerEntry on `ChannelEntry.producers`,
                every ConsumerEntry on `ChannelEntry.consumers`,
                and federated peers relaying the channel)
-Trigger:    request_close_channel(); DEREG_REQ from the LAST live
-            producer-role (multi-producer channels stay open until
-            the last producer drops); producer-presence transition
-            to Disconnected from heartbeat-timeout reap of the LAST
-            live producer (HEP-CORE-0023 §2.1, §2.1.1).
+Trigger:    the channel-lifecycle machine's owner-departure row
+            (HEP-CORE-0017 §4.7.0.3 / §4.7.0.2 T2): the binding
+            OWNER leaves — voluntary DEREG_REQ / CONSUMER_DEREG_REQ
+            or heartbeat-timeout reap (HEP-CORE-0023 §2.1, §2.1.1).
+            Owner per topology: the LAST live producer under
+            fan-out / one-to-one; the consumer under fan-in.  Also
+            emitted by request_close_channel() (admin/script close).
 Effect:     Channel is removed from the broker's registry atomically
             with the fan-out.  Recipients receive the event in their
             message queue (FIFO); script is expected to call
             `api.stop()` after cleanup.
 
-Multi-producer note: when a non-last producer drops (DEREG_REQ or
-heartbeat timeout), CHANNEL_CLOSING_NOTIFY is NOT emitted — the
-channel remains open with the surviving producers.  Per-producer
-disconnect events are observable via role_disconnected /
-ROLE_DEREGISTERED_NOTIFY but do not cascade to a channel close.
+Dialer-departure note: when a DIALING-side role drops (a fan-in
+producer — even the last one — or a fan-out / one-to-one consumer),
+CHANNEL_CLOSING_NOTIFY is NOT emitted — the channel remains open
+under its owner.  Per-role disconnect events are observable via
+role_disconnected / ROLE_DEREGISTERED_NOTIFY / CONSUMER_DIED_NOTIFY
+but do not cascade to a channel close (HEP-CORE-0017 §4.7.0.2 T5).
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CHANNEL_CLOSING_NOTIFY"; role host queues an
             `IncomingMessage{event="channel_closing", ...}` for the script.
@@ -1777,10 +1780,12 @@ Payload:
                                  on_channel_closing(channel, reason) callback and
                                  the logs; NO framework code branches on it (unlike
                                  the attach-retry reasons, which are). A short word
-                                 for why the channel is closing, e.g.
-                                 "producer_deregistered", "heartbeat_timeout",
-                                 "pending_timeout", "script_requested" (a hub script
-                                 asked), "admin_requested" (an operator asked).
+                                 for why the channel is closing:
+                                 "producer_deregistered" (owning producer's DEREG),
+                                 "consumer_deregistered" (fan-in owner's DEREG),
+                                 "pending_timeout" (owner reaped by heartbeat sweep),
+                                 "script_requested" (a hub script asked),
+                                 "admin_requested" (an operator asked).
 
 Script host behavior: Queued as IncomingMessage{event="channel_closing"}.
   Delivered in FIFO order alongside other messages (broadcasts, data, etc.).

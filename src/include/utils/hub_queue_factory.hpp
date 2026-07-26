@@ -184,7 +184,9 @@ class PYLABHUB_UTILS_EXPORT Queue
     /// callers for symmetric decisions.
     [[nodiscard]] static constexpr bool reader_is_binding_side(ChannelTopology t) noexcept
     {
-        return t == ChannelTopology::FanIn;
+        // View of the single §3.3.0 ownership truth table
+        // (HEP-CORE-0017 §4.7.0.3 rule 1).
+        return topology::is_owner(t, topology::AdmissionSide::Consumer);
     }
 
     /// Writer-side legality per §3.3.0 matrix:
@@ -193,7 +195,9 @@ class PYLABHUB_UTILS_EXPORT Queue
     /// - One-to-one → binding
     [[nodiscard]] static constexpr bool writer_is_binding_side(ChannelTopology t) noexcept
     {
-        return t != ChannelTopology::FanIn;
+        // View of the single §3.3.0 ownership truth table
+        // (HEP-CORE-0017 §4.7.0.3 rule 1).
+        return topology::is_owner(t, topology::AdmissionSide::Producer);
     }
 };
 

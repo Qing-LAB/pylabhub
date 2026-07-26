@@ -168,8 +168,10 @@ producer.
 ### 3.3.0 Topology-parameterized model (2026-07-08 amendment)
 
 The framework declares three topologies, each with an explicit
-BINDING side and DIALING side (`docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-§2):
+BINDING side and DIALING side.  This table is the SINGLE source of
+truth for side assignment — the queue factory's binding predicates,
+the hub's owner/dialer classification (§4.7.0.3), and every
+walkthrough below are views of it:
 
 | Topology | Wire value | Transports | Binding side | Socket pair |
 |---|---|---|---|---|
@@ -1422,6 +1424,107 @@ stateDiagram-v2
         leaving stays Running
     end note
 ```
+
+---
+
+#### 4.7.0.3 The channel-lifecycle machine (normative decision layer)
+
+The establishment (§4.7.0.1) and teardown (§4.7.0.2) contracts are not a
+collection of special cases — together they define **one small state
+machine that the hub runs per channel**, and the whole REG/ACK flow is
+that machine executing.  This subsection pins the machine explicitly so
+that every decision site — on the broker and in every role — derives its
+behavior from the same table instead of re-encoding it locally.
+
+**Three machines, three tiers, one truth table.**  The pipeline runs
+three coordinated state machines, one per tier, all keyed by the same
+§3.3.0 binding matrix:
+
+| Tier | Machine | State lives in | Specified in |
+|---|---|---|---|
+| Queue (Tier 2, per role side) | Standby → Configured → Active | the role's `QueueReader` / `QueueWriter` | HEP-CORE-0036 §3.5 + §6.7; socket shape from the §3.3.0 matrix |
+| Presence (Tier 3, per `(uid, role_type, channel)`) | Connected ↔ Pending → Disconnected | `RoleEntry` presence rows in `HubState` | HEP-CORE-0023 §2.1 |
+| Channel book (Tier 3, per channel) | **Absent ↔ Open** | *existence* of the `ChannelEntry` in `HubState` | **this subsection** |
+
+**The machine, in plain terms.**  A channel's book has exactly two
+states — it does not exist, or it exists with its owner in it.  Two
+kinds of event move it: a role *arrives* (its `REG_REQ` /
+`CONSUMER_REG_REQ` reaches admission — arrival is the event, not the
+acceptance; the table decides the answer) or a role *departs*
+(voluntary `DEREG`, or its presence FSM reaches Disconnected).  Every event carries a **side** — producer or consumer —
+determined by the message type or presence row, never guessed.  The
+topology (declared on the wire for a fresh channel, stored on the book
+for an existing one) plus the side yields one derived fact through the
+§3.3.0 binding column: **is this role the channel's owner or a
+dialer?**  State × event × that one fact selects exactly one transition:
+
+| Book state | Event | Classification | Transition and action | Contract |
+|---|---|---|---|---|
+| Absent | arrival, owner side | **owner-opens** | → Open.  Book created with the arriving role admitted as owner; channel-access record opened. | C1, C2 |
+| Absent | arrival, dialing side | **await-owner** | stays Absent.  Immediate retryable `AWAITING_OWNER` reply (HEP-CORE-0007 §12.4a); the hub writes **zero** state — no book, no member record, no schema record.  The broker never pends. | C2, C3, C4 |
+| Open | arrival, either side | **join** | stays Open.  Validate against the book (topology equality + §3.3.0 cardinality; schema per HEP-CORE-0034 §2.4; transport per HEP-CORE-0036 §5b) and admit with an immediate ACK, or reject with the matching error code — in either case the book's state is untouched by a reject. | C4 |
+| Open | departure, dialing side | **erase-slot** | stays Open.  The dialer's slot and per-role ledger entries are removed; the owner keeps serving the rest.  Never fans a channel-wide notification. | T2, T5 |
+| Open | departure, owner side | **close** | → Absent.  Atomic close cascade: every presence on the channel goes terminal, `CHANNEL_CLOSING_NOTIFY` fans to all parties, the channel-access record (ledger included) is erased, pending attaches drain denied. | T2 |
+| Absent | departure, any side | no-op | idempotent — races between concurrent departure paths resolve to nothing. | — |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Absent
+    Absent --> Open : arrival(owner)<br/>book created, owner admitted,<br/>access record opened (C1/C2)
+    Absent --> Absent : arrival(dialer)<br/>reply AWAITING_OWNER —<br/>zero hub state written (C3)
+    Open --> Open : arrival(either)<br/>validate + admit — invariants,<br/>topology equality, cardinality (C4)
+    Open --> Open : departure(dialer)<br/>slot erased, owner keeps serving (T5)
+    Open --> Absent : departure(owner)<br/>atomic close cascade — presences terminal,<br/>CHANNEL_CLOSING_NOTIFY, access record erased,<br/>pending attaches drained (T2)
+```
+
+**Rules the implementation MUST follow (this is the framework, not a
+style preference):**
+
+1. **One truth table.**  Owner-vs-dialer is computed ONLY through the
+   canonical §3.3.0 binding predicates.  Re-deriving it inline at a
+   decision site (e.g. comparing the topology enum against a specific
+   value) is a defect: it compiles the table into the site and lets the
+   sites drift apart.  The queue tier's factory predicates and the hub
+   tier's classification are *views of the same table*.
+2. **Classification is a pure function; sites execute, they don't
+   decide.**  The transition is selected by (state, event-side,
+   topology) alone.  The wire handler consults the classification for
+   its side-effect-free early reply; the atomic HubState operation
+   re-consults the *same* function under the writer lock, so the race
+   window between the handler's snapshot and the mutation can change the
+   *inputs* but never the *logic* — both layers always agree on what any
+   given state demands.
+3. **Existence is the state.**  The book carries no stored lifecycle
+   enum; Absent/Open is the presence of the `ChannelEntry` itself, and
+   channel observability remains a derived view (HEP-CORE-0023 §2.1
+   derived-state principle).  Adding a stored state field would create a
+   second source of truth.
+4. **The reply is data; the role reacts to data.**  The role side never
+   learns broker internals — it branches on the ACK's `error_code`
+   exactly as wire data (`AWAITING_OWNER` → bounded retry;
+   `CHANNEL_NOT_FOUND` on a readiness poll → fast-fail; terminal codes →
+   fatal).  The role's registration loop is the client half of this
+   machine: `AWAITING_OWNER` *means* "the machine is in Absent and you
+   are not its owner" — so the role's only correct move is to try again
+   within its init budget, and the hub's only correct move was to answer
+   immediately.
+5. **Departure events come from the presence FSM.**  The channel machine
+   has no timers and no liveness logic of its own: HEP-CORE-0023 §2.1's
+   presence machine detects death (Pending → Disconnected) and voluntary
+   leave (DEREG), and those transitions are the departure events fed
+   into the table above.  The two machines compose; they do not overlap.
+
+**Consistency notes.**  The historical "the LAST producer's leave tears
+the channel down" formulation is this table's owner-departure row
+specialized to the producer-owned topologies (fan-out / one-to-one,
+where §3.3.0 cardinality caps producers at one).  Under fan-in every
+producer is a dialer, so no producer departure — including the last —
+ever closes the book.  Symmetrically, `AWAITING_OWNER` replaces the
+former hard `CHANNEL_NOT_FOUND` for a *registration* on a missing
+channel: registration against Absent is a timing question (C3), not a
+caller error, and the wire reply is a pure function of the machine's
+state — never of which side of an internal lock a concurrent teardown
+landed on.
 
 ---
 
