@@ -19,11 +19,11 @@ Status: ✅ = enforced today, verified in code 2026-07-26; 🔨 = to build
 | ID | Invariant | Enforcement site (code) | Status |
 |---|---|---|---|
 | **SI-1** | A channel's format is established EXACTLY ONCE, by its OWNER at channel-open (fan-out/1:1 → the producer; fan-in → the consumer — user ruling, Option B), and is immutable for the channel's lifetime. | Immutability: front-door channel-match (`handle_reg_req` early gate; consumer citation step) + admission invariant compare.  Owner-declares: role-host config validation (`from-channel` rejected on owning sides) + broker fan-in open requires schema material. | Immutability ✅.  Owner-must-declare 🔨 slice 1 (G7 ruling). |
-| **SI-2** | **The open row validates the contract it installs**: any registration that OPENS a channel and carries schema material must be self-consistent — structure present ⇒ hash present AND equal to the recomputed fingerprint (`verify_request_fingerprint`) — checked BEFORE the book opens.  Partial material (structure without hash, hash without structure at open) is rejected. | Named producer path ✅ (`MISSING_HASH`/`FINGERPRINT_INCONSISTENT` in the §10.1 block).  Anonymous-producer open 🔨 (G8b: block skipped, `schema_inv` filled from wire unchecked).  Fan-in consumer-owner open 🔨 (G8: block guarded by `!consumer_will_open_channel`). | Partially ✅; 🔨 slice 1 closes G8+G8b. |
+| **SI-2** | **The open row validates the contract it installs**: any registration that OPENS a channel and carries schema material must be self-consistent — structure present ⇒ hash present AND equal to the recomputed fingerprint (`verify_request_fingerprint`) — checked BEFORE the book opens.  Structure without hash is rejected.  (Hash WITHOUT structure stays legal — that is the named-citation mode; there is nothing to recompute.) | Named producer path ✅ (`MISSING_HASH`/`FINGERPRINT_INCONSISTENT` in the §10.1 block).  Anonymous-producer open 🔨 (G8b: block skipped, `schema_inv` filled from wire unchecked).  Fan-in consumer-owner open 🔨 (G8: block guarded by `!consumer_will_open_channel`). | Partially ✅; 🔨 slice 1 closes G8+G8b. |
 | **SI-3** | Every JOIN against an existing channel is checked against the stored contract by EXACT equality on every declared axis: fingerprint always; name exactly (empty matches only empty); owner where claimed.  No adopt, no partial match, no direction exempt. | `_validate_schema_citation` steps (a)/(b)/(c); producer front-door early gate; consumer citation block. | ✅ verified (both directions, incl. blank/cited mixed cases rejecting). |
 | **SI-4** | **Writers must match; readers may opt out.**  A producer joining a format-carrying channel MUST present the matching format (an empty-schema producer is rejected by SI-3's fingerprint axis).  A consumer may join with NO schema material at all (absent mode: "all expected_* empty → no validation") — it reads under the channel's existing integrity machinery regardless. | Producer: SI-3 sites.  Consumer: explicit third mode in the citation block. | ✅ verified both halves. |
 | **SI-5** | Schema/metrics content leaves the broker ONLY to authenticated, validated, admitted parties: the BLDS rides the success ACK (§2b) or an identity-checked pull; the metrics snapshot answers only channel members.  No structure or telemetry to unauthenticated, unknown, or rejected callers. | ACK: `CONSUMER_REG_ACK` built only on admission success.  Pull gating: `handle_schema_req`/`handle_metrics_req` — currently identity-BLIND (signatures take body only). | ACK-side ✅ by construction; pull gating 🔨 slice 1 (G3 + signature migration). |
-| **SI-6** | **The fingerprint chain must close before data flows on a runtime-resolved format**: config pin (when present) == delivered BLDS's recomputed fingerprint == (SHM) the segment header's stamped hashes.  Any link mismatch is a startup abort naming the pair. | Role-side activation (slice 3): pin check + SHM header cross-check before mapping. | 🔨 slice 3 (config-schema deployments already close an equivalent chain today via citation ✅). |
+| **SI-6** | **The fingerprint chain must close before data flows on a runtime-resolved format**: config pin (when present) == delivered BLDS's recomputed fingerprint == (SHM) the segment header's stamped hashes.  Any link mismatch — and equally a channel that turns out to carry NO established format — is a clean startup abort naming the cause; a `from-channel` role never proceeds on an empty format. | Role-side activation (slice 3): pin check + SHM header cross-check before mapping; empty-format abort. | 🔨 slice 3 (config-schema deployments already close an equivalent chain today via citation ✅). |
 | **SI-7** | `from-channel` (runtime-resolved format) is legal ONLY on DIALING sides.  An owning side declaring `from-channel` is a CONFIG ERROR caught at role startup — the owner cannot ask the channel for what only the owner can establish. | Role-host config validation at startup; broker backstop = SI-1/SI-2 rejections. | 🔨 slice 1 (falls out of Option B). |
 | **SI-8** | Queries answer from machine state and never wait: `SCHEMA_REQ`/`METRICS_REQ` against Absent → terminal `CHANNEL_NOT_FOUND` (never `AWAITING_OWNER`, never a pend).  All establishment waiting lives in the registration retry (HEP-0017 §4.7.0.3 rule 4). | Both handlers return CHANNEL_NOT_FOUND on missing channel. | ✅ (by the lifecycle machine; keep pinned when handlers gain gating). |
 | **MI-1** | Metrics are push-in (heartbeat), pull-out (member-gated `METRICS_REQ`); freshness = heartbeat cadence; the wire form REQUIRES `channel_name` (hub-wide aggregation stays hub-script/admin-plane, until an observer role kind exists — #292). | `handle_metrics_req` (drop the all-channels wire branch; require channel + membership). | 🔨 slice 1. |
@@ -82,8 +82,10 @@ runtime.  No per-channel schema in its config.
 Startup walk-through against the owner-first machine:
 
 1. Config declares channel name, transport, topology (topology stays a
-   config fact — a generic archiver on fan-in *is* the owner and must
-   declare; on fan-out/1:1 it is a dialer and may omit).  ✅
+   config fact).  Scope note per Option B/SI-7: a generic archiver
+   attaches only where it is the DIALING side — fan-out / one-to-one.
+   Under fan-in the sole consumer IS the owner and owners always
+   declare, so a fan-in attachment point cannot be generic.  ✅
 2. Register as consumer with **absent citation** (VERIFIED legal in
    code, fresh-eyes pass 2026-07-26: the citation block's explicit
    third mode — "Empty: all expected_* empty → no validation (consumer
@@ -152,19 +154,19 @@ different and the flow must be stated:**
   start reading.  This is semantically sound by construction: no
   producer ⇒ no data ⇒ no format needed yet.  (Fan-out/1:1 dialing
   consumers keep the simpler pull-right-after-own-REG flow of S-A.)
-- *CORRECTED after code verification (2026-07-26): this flow does NOT
-  work today — the first draft overstated it.*  The schema validator
-  enforces EXACT equality on every axis and **empty matches only
-  empty** (`_validate_schema_citation`: fingerprint always; id
-  "anonymous matches only anonymous").  A fan-in channel opened blank
-  therefore REJECTS every schema-carrying producer with
-  SCHEMA_MISMATCH — there is no adopt-onto-blank path anywhere.  This
-  is deliberate strictness, not a bug: today's production fan-in
-  consumers always cite from config, so blank-open never occurs in
-  practice.  Consequence: **S-A2 is NOT viable without new, designed
-  adopt semantics (G7, hardened) — or it is cut from scope and
-  generic roles under fan-in require the owner to cite.**  ⚖ user
-  decision.
+- *CORRECTED after code verification, then RESOLVED by user ruling
+  (both 2026-07-26).*  The first draft overstated this flow: the
+  schema validator enforces EXACT equality on every axis and **empty
+  matches only empty**, so a blank-opened fan-in channel rejects every
+  schema-carrying producer — no adopt-onto-blank path exists, and that
+  strictness is deliberate.  **Ruling: Option B (G7) — the fan-in
+  owner MUST declare its schema; S-A2 is cut.**  Net rule for fan-in:
+  the owner declares (its citation validated per SI-2/G8 fix);
+  config-schema producers join and are matched exactly (SI-3); generic
+  (`from-channel`) roles do not exist under fan-in in v1 — the
+  consumer side is the owner (SI-7 forbids from-channel there) and
+  generic dialing producers are deferred (the pull they would need
+  conflicts with SI-5 member-gating; recorded, not built).
 
 ### S-B  Pre-flight citation (config-light but verifying consumer)
 
@@ -299,8 +301,9 @@ cross-check against the segment-header fingerprints, §2 S-A) →
 activation applies schema + endpoints + allowlist together
 (`apply_master_approval`, the existing S3 step) → script's `on_init`
 runs with the format available (G4 slice 4 for script-side field
-access).  Fan-in generic OWNER variant: the ACK precedes any schema —
-late-bind at first-producer-join via the pull (S-A2).
+access).  Under fan-in there is no generic-role variant in v1: the
+consumer IS the owner and must declare (SI-1, Option B); generic
+dialing producers are deferred (S-A2).
 
 ---
 
@@ -345,11 +348,11 @@ canonical string; the ACK remains a control-plane reply, not a bulk
 payload.  Producer REG_ACK is unchanged (producers supply schemas;
 they don't need them back).
 
-**What the pull (`SCHEMA_REQ`) still exists for** — the cases no ACK
-can serve: the fan-in generic OWNER (S-A2: its ACK precedes any
-producer, so the schema arrives later — pull at first-producer-join);
-registry tooling reads by `(owner, schema_id)`; re-verification on
-demand.  Same division of labor as allowlist-seed vs. auth-pull.
+**What the pull (`SCHEMA_REQ`) still exists for** — with S-A2 cut
+(Option B), establishment is fully served by the ACK; the pull remains
+for registry tooling reads by `(owner, schema_id)` and on-demand
+re-verification by members.  Same division of labor as allowlist-seed
+vs. auth-pull refresh.
 
 **Who knows what, when (trust sequence — ratified in review
 2026-07-26).**  The BLDS is delivered ONLY inside a success ACK, which
@@ -419,9 +422,9 @@ scripts on all engines.
 `ConsumerRegAckBody` gains the optional schema fields; the broker fills
 them from the channel record; the queue accepts schema at Configured
 (relaxing the build-time empty-schema reject); `apply_master_approval`
-applies it alongside endpoints/allowlist.  The fan-in generic OWNER
-path late-binds via the pull at first-producer-join.  Unlocks S-A/S-A2/
-S-C for the native tier.
+applies it alongside endpoints/allowlist; the SI-6 chain (pin →
+delivered → SHM header) closes at activation, with a clean abort on an
+empty format.  Unlocks S-A/S-C for the native tier.
 
 **Slice 4 — runtime BLDS slot proxies (G4).**  Engine-side; the last
 mile to fully generic script roles.
@@ -436,10 +439,12 @@ mile to fully generic script roles.
    schema is established during REG/ACK (§2b); the queue's
    schema-pending Configured stage carries it in with the rest of the
    ACK state.  No startup reordering.
-2. **G3 gating** — member-gated channel queries + known-role-open
-   `(owner,id)` registry reads (recommended) vs. all-open?
-3. **Slice order** — 1→2→3→4 as above, or pull slice 3 earlier if
-   generic native roles are wanted sooner?
+2. **G3 gating** — PROCEEDING on the recommended option (member-gated
+   channel queries; known-role-open `(owner,id)` registry reads),
+   baked into SI-5/MI-1 per the "continue" direction 2026-07-26.
+   Flag any objection before slice 1 lands.
+3. **Slice order** — PROCEEDING 1→2→3→4 per the "continue" direction
+   2026-07-26.
 4. **RESOLVED 2026-07-26 (clarified by user).**  The question this
    decision originally answered — "store the BLDS text INSIDE the
    shared-memory segment?" — was the reviewer's own framing, not the
