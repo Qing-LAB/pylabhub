@@ -28,10 +28,15 @@ admission.
 > against code today: the STATIC layer (topology enum, §3.3.0 factory dispatch,
 > role-code migration, `FanIn+shm` refusal) is COMPLETE and live; the
 > multi-producer fan-in DATA plane WORKS (§3.3 Pattern B, pinned green at L4 —
-> see the note under the table).  The genuine residual is DYNAMIC: **Phase D R6
-> symmetric gate is unbuilt** (reverted once), C step 7 is unblocked, E/F remain.
-> Consolidated remediation plan T1-T5 maps: T1 = this true-up; T2 = C step 7;
-> T3 = D R6 (design review first); T4 = Phase E; T5 = Phase F/H.
+> see the note under the table).  The genuine residual is DYNAMIC: the CODE
+> catch-up to the pinned owner-first establishment contract (HEP-0017 §4.7.0.1
+> C1–C7) — **S1 owner-locked `ChannelEntry`, S2 owner-death teardown, S3 dialer
+> fast-fail** (S4 peer-join callbacks shipped 2026-07-25).  **The R6 broker-pends
+> gate is RETIRED — do NOT build** (it fought the owner-first model; rationale in
+> the table + establishment-contract block below).  C step 7 (test spawn order)
+> is unblocked; E retirements + F demos follow S1–S3.  Consolidated plan: T2 = C
+> step 7; **T3 = S1–S3 (the real work, design detail below)**; T4 = Phase E;
+> T5 = Phase F/H.
 
 ## Status snapshot (2026-07-09) — REORDERED
 
