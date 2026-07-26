@@ -108,6 +108,11 @@ post-reconcile shipped-sprint detail).
   rides on largely landed — CycleOps already unified into
   `src/utils/service/cycle_ops.hpp`, RoleAPIBase is Messenger-free — but the
   host collapse itself is NOT done.)  Design anchor: `raii_layer_redesign.md §2`.
+  **New requirement (2026-07-26, from the schema/metrics-query design):** the
+  unified host must admit an OBSERVER role kind — control-plane-only (BRC +
+  heartbeat, no data channel) — so monitoring/exporter roles can pull metrics
+  on the role plane; today every host fatals without channel establishment.
+  See `DRAFT_schema_metrics_query_integration_2026-07-26.md` G2/S-F.
 - **#55** — re-home the 4 `role_api_base_*` L3 tests during that unification
   (deferred, `TESTING_TODO` Group B; all 4 confirmed still-valid 2026-07-16).
 - **Phase 2b** — Template RAII Phases 2/4/5 (`TypedInboxClient<MsgT>`,

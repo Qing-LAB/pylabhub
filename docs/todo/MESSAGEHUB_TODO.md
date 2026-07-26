@@ -24,6 +24,36 @@ the fix is in production code at `native_engine.cpp:289-305`).
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /
 M1.5 / MD1 / MD1.5 all closed.
 
+### Schema/metrics query integration (task #95 resolved: KEEP + INTEGRATE, 2026-07-26) 🚧 DESIGN DRAFTED
+
+The 2026-07-26 wire-inventory audit found `SCHEMA_REQ`/`SCHEMA_ACK` and
+`METRICS_REQ`/`METRICS_ACK` are complete broker-side mechanisms with NO
+client half (no BRC method, no role-API accessor, no engine binding) —
+the only two HEP-0033 Class-C queries whose client plumbing was never
+built.  User ruling: these are built mechanisms for schema communication
+and metrics reporting — integrate them for a schema-driven role
+ecosystem rather than delete.
+
+Design draft (scenario-driven, gap register G1–G6, 4 slices, 3 ⚖
+decisions pending user ruling):
+`docs/tech_draft/DRAFT_schema_metrics_query_integration_2026-07-26.md`
+
+- [ ] ⚖ Decisions 1–3 (G1 late-bind vs reorder; G3 member-gating;
+      slice order) — awaiting user.
+- [ ] Slice 1: BRC `get_schema`/`get_channel_schema`/
+      `get_channel_metrics` + RoleAPI pass-throughs + G3 gating +
+      typed bodies + dispatch-tier rows + L2/L3 pins.
+- [ ] Slice 2: 3-engine `api.` bindings + HEP-0028/README docs.
+- [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
+      native roles.
+- [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully
+      generic script roles.
+- [ ] G5 doc folds (HEP-0034 §10.3 lifetime rules incl. fan-in
+      dual-lifetime "consumers pull by channel"; HEP-0019 freshness;
+      HEP-0007 §12.3 SCHEMA-vs-DISC complementarity note).
+- [ ] G2 → #292: observer (control-plane-only) role kind named as a
+      unification requirement.
+
 ### Envelope-framework fresh-eyes review — 3 ratifications + doc corrections (2026-07-24) ✅
 
 Second full review of the typed-envelope framework (2 independent
