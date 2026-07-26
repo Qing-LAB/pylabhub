@@ -93,6 +93,24 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-07-26 — #74 objective peer counts (L4 e2e + regression re-pin).**
+  Extended `ZmqE2E_MultiProducer_TwoAuthorized` (fan-in 3P→1C) to assert every
+  role — the consumer AND both DIALING producers — reads `producer_count=2
+  consumer_count=1` via the broker's new `CHANNEL_COUNT_NOTIFY`; the dialing
+  producers seeing their sibling is the #74 win. Re-pinned
+  `BrokerRequestCommTest.NotificationDispatch` to match on the
+  `CHANNEL_CLOSING_NOTIFY` type (the broker now also fans `CHANNEL_COUNT_NOTIFY`,
+  so "the notification received" is no longer uniquely the close notify) —
+  test-pins-reality handoff. Also fixed a pre-existing flake:
+  `test_plh_hub_runmode` `RunMode_LogShowsCorrectStartupAndShutdownOrdering`
+  asserted cross-thread log-file order (a race); now asserts presence of every
+  marker + order only within a single thread's stream. **Deferred:** an L2
+  broker unit test for `compute_channel_live_counts` (live vs registered) +
+  `CHANNEL_COUNT_NOTIFY` fan-out — the L4 e2e covers the behavior end-to-end,
+  but a focused L2 pin is cheaper for regressions. Design:
+  `docs/tech_draft/DRAFT_objective_peer_counts_2026-07-26.md` (SHIPPED; ready to
+  archive per DOC_STRUCTURE §2.2 now that it is folded into the HEPs).
+
 - **2026-07-21 — #70 resource-leak sub-issues: BRC pending-request reaper + Lua eval stack-clear.**
   Closed the two non-hub/role leak findings from the FullSystem review.
   (1) **BRC** — a never-answered request leaked forever in `pending_requests`;
