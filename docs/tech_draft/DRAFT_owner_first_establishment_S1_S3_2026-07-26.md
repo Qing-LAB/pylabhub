@@ -55,37 +55,51 @@ role host.
 > (`handle_consumer_reg_req` `CHANNEL_NOT_FOUND`).
 
 ### The change
-1. **Broker — topology-gate the book-open.** In the REG handlers, compute
+1. **Broker — gate as a PRE-CHECK, before `_on_producer_added`.** `handle_reg_req`
+   already parses `declared_topology` (`:2440`) and can query
+   `hub_state_->channel(name)` *before* the admission op (`:2462`) — verified.
+   Insert the gate there:
    `role_is_owner = Queue::{writer,reader}_is_binding_side(topology, this_role)`.
-   - Owner REG + no book → open the `ChannelEntry` (as today).
-   - **Dialer REG + no book → reply `awaiting_owner`** (retryable transient); do
-     NOT call `_on_channel_access_opened`. This replaces (a) the fan-in
-     producer's book-open and (b) the fan-out consumer's `CHANNEL_NOT_FOUND`.
-   - Dialer REG + book exists → proceed as today (admit into the owner's book).
+   - **Dialer REG + no book → reply `awaiting_owner`** immediately, *before*
+     `_on_producer_added` — so NO producer record and NO book are created (this
+     dissolves the orphan-record / "split `_on_producer_added`" problem). Replaces
+     (a) the fan-in producer's book-open and (b) the fan-out/1-to-1 consumer's
+     `CHANNEL_NOT_FOUND`.
+   - Owner REG (+ no book) → `_on_producer_added` + open, as today.
+   - Dialer REG + book exists → `_on_producer_added` admits into the owner's book,
+     as today.
 2. **Wire — new status `awaiting_owner`** on `REG_ACK`/`CONSUMER_REG_ACK`
    (HEP-CORE-0007 catalog). Distinct from `CHANNEL_NOT_FOUND` (caller error) and
-   `success`. Add to the typed body / status enum used by
-   `receive_and_validate`.
-3. **Role host — Tier-2 retry (C3).** On `awaiting_owner`, the dialing role
-   host re-sends REG after a bounded backoff, capped by `init_timeout_ms`,
-   honoring cancellation; on budget-exhaustion it fails startup cleanly (fatal
-   abort, misconfiguration diagnostic). The script never sees it (`on_init` has
-   not run). Reuses the existing backoff/`is_cancelled` machinery already in the
-   role host's establishment path (same place `finalize_channel_connect` polls).
+   `success`. Add to the typed ACK body / status enum the role-side parser reads.
+   (REG_ACK is a *reply*, so it does not pass through `receive_and_validate` —
+   the role's `apply_*_reg_ack` parser branches on the status.)
+3. **Role host — Tier-2 retry loop (C3), NEW.** `BrokerRequestComm::register_channel`
+   is a one-shot `do_request("REG_REQ","REG_ACK",…)` — **verified: no existing
+   REG-level retry** (the `finalize_channel_connect` poll is a *different*,
+   post-REG_ACK loop). So S1 adds a retry loop **at the role host's REG call
+   site** (the `build_tx`/`build_rx` establishment path): on a REG_ACK with
+   `status=awaiting_owner`, re-call `register_channel` after a bounded backoff,
+   capped by `init_timeout_ms`, honoring `is_cancelled`; on budget exhaustion,
+   fail startup cleanly (fatal abort, misconfiguration diagnostic). The script
+   never sees it (`on_init` has not run). May reuse the backoff constants /
+   cancellation token the finalize-connect poll uses, but it is a distinct loop.
 
 ### Conflicts / risks to verify at code time
-- **HEP-0042 admission ledger**: the owner's book carries the
-  `VersionedAdmissionLedger`; opening it only for the owner must not disturb the
-  ledger seeding (INVARIANT-BIND-CONFIRM-1..3). The dialer is admitted into the
-  owner's existing ledger — unchanged.
-- **`_on_producer_added` double-duty**: it both creates the record and
-  (via `_on_channel_access_opened`) opens the book. Split: record-append still
-  happens for a fan-out producer-owner; for a fan-in producer (dialer) it must
-  admit-into-existing-book, never open. Check the `_on_producer_added` fresh-
-  channel path does not implicitly create.
-- **Processor (C7)**: per-side ownership — the gate is per channel, so a
-  processor that is owner on one side and dialer on the other is handled by the
-  same per-REG gate. No special case.
+- **The dialer MUST declare `channel_topology` on a fresh channel.** Empty wire
+  topology defaults to `OneToOne` for a fresh channel (`:2436`), which would
+  mis-classify a fan-in producer as the *owner* and open a book. The gate is only
+  correct if the dialer's REG carries `channel_topology=fan-in` (it should — the
+  role config declares each side's channel topology). Pin this in the gate + an
+  L2 test: a fan-in producer REG with empty topology must NOT silently become a
+  `OneToOne` owner.
+- **Gate BEFORE `_on_producer_added`** (change #1) sidesteps the record-vs-open
+  split: no producer record is created for a dialer-before-owner, so there is no
+  orphan to clean up.
+- **HEP-0042 admission ledger**: gating book-open to the owner does not touch
+  ledger seeding (INVARIANT-BIND-CONFIRM-1..3) — the dialer admits into the
+  owner's *existing* ledger, unchanged.
+- **Processor (C7)**: the gate is per channel / per REG, so an
+  owner-on-one-side / dialer-on-the-other processor needs no special case.
 
 ---
 
