@@ -8,6 +8,34 @@
 
 ---
 
+## 0. Invariants and required checks (normative — the code-checkable contract)
+
+Everything this design asserts, in one place.  Each invariant is a
+falsifiable statement with its enforcement site; the scenarios and gap
+register below are INSTANCES of these rules, never additional rules.
+Status: ✅ = enforced today, verified in code 2026-07-26; 🔨 = to build
+(slice noted); each 🔨 row names the gap it closes.
+
+| ID | Invariant | Enforcement site (code) | Status |
+|---|---|---|---|
+| **SI-1** | A channel's format is established EXACTLY ONCE, by its OWNER at channel-open (fan-out/1:1 → the producer; fan-in → the consumer — user ruling, Option B), and is immutable for the channel's lifetime. | Immutability: front-door channel-match (`handle_reg_req` early gate; consumer citation step) + admission invariant compare.  Owner-declares: role-host config validation (`from-channel` rejected on owning sides) + broker fan-in open requires schema material. | Immutability ✅.  Owner-must-declare 🔨 slice 1 (G7 ruling). |
+| **SI-2** | **The open row validates the contract it installs**: any registration that OPENS a channel and carries schema material must be self-consistent — structure present ⇒ hash present AND equal to the recomputed fingerprint (`verify_request_fingerprint`) — checked BEFORE the book opens.  Partial material (structure without hash, hash without structure at open) is rejected. | Named producer path ✅ (`MISSING_HASH`/`FINGERPRINT_INCONSISTENT` in the §10.1 block).  Anonymous-producer open 🔨 (G8b: block skipped, `schema_inv` filled from wire unchecked).  Fan-in consumer-owner open 🔨 (G8: block guarded by `!consumer_will_open_channel`). | Partially ✅; 🔨 slice 1 closes G8+G8b. |
+| **SI-3** | Every JOIN against an existing channel is checked against the stored contract by EXACT equality on every declared axis: fingerprint always; name exactly (empty matches only empty); owner where claimed.  No adopt, no partial match, no direction exempt. | `_validate_schema_citation` steps (a)/(b)/(c); producer front-door early gate; consumer citation block. | ✅ verified (both directions, incl. blank/cited mixed cases rejecting). |
+| **SI-4** | **Writers must match; readers may opt out.**  A producer joining a format-carrying channel MUST present the matching format (an empty-schema producer is rejected by SI-3's fingerprint axis).  A consumer may join with NO schema material at all (absent mode: "all expected_* empty → no validation") — it reads under the channel's existing integrity machinery regardless. | Producer: SI-3 sites.  Consumer: explicit third mode in the citation block. | ✅ verified both halves. |
+| **SI-5** | Schema/metrics content leaves the broker ONLY to authenticated, validated, admitted parties: the BLDS rides the success ACK (§2b) or an identity-checked pull; the metrics snapshot answers only channel members.  No structure or telemetry to unauthenticated, unknown, or rejected callers. | ACK: `CONSUMER_REG_ACK` built only on admission success.  Pull gating: `handle_schema_req`/`handle_metrics_req` — currently identity-BLIND (signatures take body only). | ACK-side ✅ by construction; pull gating 🔨 slice 1 (G3 + signature migration). |
+| **SI-6** | **The fingerprint chain must close before data flows on a runtime-resolved format**: config pin (when present) == delivered BLDS's recomputed fingerprint == (SHM) the segment header's stamped hashes.  Any link mismatch is a startup abort naming the pair. | Role-side activation (slice 3): pin check + SHM header cross-check before mapping. | 🔨 slice 3 (config-schema deployments already close an equivalent chain today via citation ✅). |
+| **SI-7** | `from-channel` (runtime-resolved format) is legal ONLY on DIALING sides.  An owning side declaring `from-channel` is a CONFIG ERROR caught at role startup — the owner cannot ask the channel for what only the owner can establish. | Role-host config validation at startup; broker backstop = SI-1/SI-2 rejections. | 🔨 slice 1 (falls out of Option B). |
+| **SI-8** | Queries answer from machine state and never wait: `SCHEMA_REQ`/`METRICS_REQ` against Absent → terminal `CHANNEL_NOT_FOUND` (never `AWAITING_OWNER`, never a pend).  All establishment waiting lives in the registration retry (HEP-0017 §4.7.0.3 rule 4). | Both handlers return CHANNEL_NOT_FOUND on missing channel. | ✅ (by the lifecycle machine; keep pinned when handlers gain gating). |
+| **MI-1** | Metrics are push-in (heartbeat), pull-out (member-gated `METRICS_REQ`); freshness = heartbeat cadence; the wire form REQUIRES `channel_name` (hub-wide aggregation stays hub-script/admin-plane, until an observer role kind exists — #292). | `handle_metrics_req` (drop the all-channels wire branch; require channel + membership). | 🔨 slice 1. |
+
+Cross-check protocol for this table: every ✅ row cites the exact
+mechanism a reviewer can grep; every 🔨 row must flip to ✅ with a code
+site + an L2/L3 pin before its slice is called done.  A future reviewer
+finding ANY schema/metrics decision in code that does not trace to one
+of these rows has found either a new invariant to add here or a defect.
+
+---
+
 ## 1. What exists today (verified in code 2026-07-26)
 
 **The schema registry has three of its four paths.**  Write: producers
