@@ -40,6 +40,35 @@ the `plh::Context` C++ wrapper).
 
 Pairs with `docs/README/README_NativePlugins.md` (task #86).
 
+### CMake test-staging: no wrapper binds register + discover (deferred 2026-07-25)
+
+Every test target must call **both** `pylabhub_register_test_for_staging(TARGET x)`
+and `gtest_discover_tests(x ...)` by hand (~40 call-site pairs).  Forget the
+first and the binary silently never stages into the ctest run — a real
+drift/fragility risk with no compile-time guard.  Add a single
+`pylabhub_add_gtest(...)` wrapper in `cmake/StageHelpers.cmake` that performs
+register + discover together, then migrate the call sites.  Deferred as its
+own pass (broad-but-cosmetic churn); the three functional cmake fixes shipped
+in commit `21b8696f`.
+
+---
+
+## Recent Completions
+
+- **2026-07-25 — CMake audit fixes (commit `21b8696f`).** (1) `PYLABHUB_MAX_LOOP_RATE_HZ`
+  was a no-op — declared and range-validated in `ToplevelOptions.cmake` but never
+  turned into a `-D`, so a configure-time override was silently ignored and
+  `loop_timing_policy.hpp` always used its `#ifndef` 10000 default; now propagated
+  via `add_compile_definitions` (verified present in generated `flags.make`).
+  (2) Version-floor lie — root and 11 subdir CMakeLists advertised 3.28 while
+  `StageHelpers.cmake` (always included) requires 3.29, so 3.28 could never
+  configure; raised root to 3.29 and deleted the redundant subdir
+  `cmake_minimum_required` lines (IgorXOP keeps its own — standalone subproject).
+  (3) hubshell→plh_hub/plh_role naming drift in the build summary, a hub.json
+  comment, and README. Dropped on re-verification (not bugs): "XOP double-wired"
+  (SKBUILD force-off + `AND TARGET` guard are correct) and "dead options" plural
+  (only MAX_LOOP_RATE was unwired).
+
 ---
 
 ## Backlog
