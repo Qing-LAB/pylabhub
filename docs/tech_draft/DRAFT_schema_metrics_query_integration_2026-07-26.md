@@ -256,13 +256,59 @@ channel name (today it would be ten configs each carrying a full copy
 of the format, drifting independently).  The role binary and script
 are identical across all of them.
 
-**Startup walk (ties the pieces):** build queue schema-pending (G1
-slice 3) → register uncited, `AWAITING_OWNER` retry absorbs any wait →
-REG_ACK → pull format from the channel record → if a fingerprint pin
+**Startup walk (ties the pieces):** build queue schema-pending →
+register uncited, `AWAITING_OWNER` retry absorbs any wait → **REG_ACK
+arrives carrying the channel's schema (§2b)** → if a fingerprint pin
 is configured, verify and abort on mismatch → (SHM: additionally
 cross-check against the segment-header fingerprints, §2 S-A) →
-activate queue → script's `on_init` runs with the format available
-(G4 slice 4 for script-side field access).
+activation applies schema + endpoints + allowlist together
+(`apply_master_approval`, the existing S3 step) → script's `on_init`
+runs with the format available (G4 slice 4 for script-side field
+access).  Fan-in generic OWNER variant: the ACK precedes any schema —
+late-bind at first-producer-join via the pull (S-A2).
+
+---
+
+## 2b. Delivery at establishment — the schema rides the REG/ACK (user direction 2026-07-26)
+
+Review correction: the first draft framed schema delivery as pull-only
+(`SCHEMA_REQ` after registration).  User direction: the BLDS should be
+**established during REG/ACK** — and this is the better design, for
+reasons the contract itself states:
+
+- **C1 says the ACK is "your view of the book."**  A dialing consumer's
+  `CONSUMER_REG_ACK` already delivers the establishment payload — the
+  owner's endpoint, its key, and (SHM) `shm_capability_endpoint`.  The
+  channel's schema is part of that view; delivering it in the same
+  reply is the contract-aligned shape, not an optimization.
+- **Exact precedent already in the design:** the allowlist is seeded in
+  the ACK (`initial_allowlist`) AND has a pull message
+  (`GET_CHANNEL_AUTH_REQ`) for later refresh.  Schema gets the same
+  two-part shape: **seeded in the ACK at establishment; `SCHEMA_REQ`
+  remains the pull** for the cases the ACK cannot serve (below).
+- **SHM becomes fully natural:** the same ACK that says WHERE to attach
+  says WHAT the memory contains; the consumer verifies the delivered
+  BLDS's fingerprint against the segment-header hashes before mapping
+  (§2 S-A cross-check).  No extra round trip, no timing question.
+- **G1 largely dissolves for dialing consumers:** the queue already
+  late-binds ACK-derived state (endpoints, allowlist) at activation via
+  `apply_consumer_reg_ack` → `apply_master_approval`.  Schema arriving
+  in the ACK rides that EXISTING path — the "schema-pending build"
+  relaxation remains, but no new delivery plumbing and no startup
+  reordering.
+
+Wire shape: additive optional fields on the typed `ConsumerRegAckBody`
+(schema_id, schema_owner, blds, flexzone_blds, packing, schema_hash —
+the same field set the channel record stores).  BLDS is a compact
+canonical string; the ACK remains a control-plane reply, not a bulk
+payload.  Producer REG_ACK is unchanged (producers supply schemas;
+they don't need them back).
+
+**What the pull (`SCHEMA_REQ`) still exists for** — the cases no ACK
+can serve: the fan-in generic OWNER (S-A2: its ACK precedes any
+producer, so the schema arrives later — pull at first-producer-join);
+registry tooling reads by `(owner, schema_id)`; re-verification on
+demand.  Same division of labor as allowlist-seed vs. auth-pull.
 
 ---
 
@@ -270,7 +316,7 @@ activate queue → script's `on_init` runs with the format available
 
 | # | Gap / conflict | Severity | Resolution options | Recommendation |
 |---|---|---|---|---|
-| **G1** | **Startup sequencing: queues are built (S1) from config `SchemaSpec` BEFORE the BRC exists; a registry-driven schema is only pullable after control-plane connect.**  Affects S-A/S-C. | Structural | (a) Reorder role-host startup for registry-driven roles: BRC first → REG (AWAITING_OWNER retry does the waiting) → pull schema → build queues → activate.  (b) Late-bind: build queue in schema-pending Standby at S1, supply schema at S3 activation (`apply_master_approval` already applies ACK-derived state there).  (c) Carry full BLDS on `CONSUMER_REG_ACK` (wire change; makes REG_ACK heavy for every consumer to serve the generic few). | **(b)** — it extends the queue's existing Standby→Configured→Active machine (schema becomes part of "Configured", symmetric with endpoints/allowlist which are ALREADY late-bound from the ACK), needs no wire change and no reordering.  (a) is the fallback if queue internals resist late schema binding.  Reject (c): pays on every registration for a niche need, and REG_ACK is already the heaviest reply. ⚖ |
+| **G1** | **Startup sequencing: queues are built (S1) from config `SchemaSpec` BEFORE the BRC exists; a runtime-resolved schema is only available after control-plane connect.**  Affects S-A/S-C. | Structural — **largely RESOLVED by §2b** (user direction: the schema rides the REG/ACK) | The ACK-delivery design (§2b) collapses the earlier options: for dialing consumers the schema arrives on `CONSUMER_REG_ACK` and rides the EXISTING S3 activation (`apply_master_approval`), exactly like endpoints and allowlist — no reordering, no extra round trip.  Residual work: (i) the queue's schema-pending Standby state (build without schema, accept it at Configured — the ZMQ factories' empty-schema hard-reject relaxes into a staged check), and (ii) the fan-in OWNER, whose ACK precedes any schema — late-binds at first-producer-join via the `SCHEMA_REQ` pull (S-A2). | Adopted per user direction 2026-07-26.  The first draft's rejection of "schema in the ACK" is WITHDRAWN — the "heavy ACK" concern was wrong (BLDS is a compact canonical string) and contract C1 makes the ACK the aligned carrier ("your view of the book"). |
 | **G4** | **Script engines compile slot proxies from config `SchemaSpec`; no engine can build slot accessors from a runtime-pulled BLDS.**  Without this, "schema-driven" stops at the C++/native tier. | Structural (largest work item) | (a) Engine support: build the slot proxy from a runtime `schema::SchemaInfo` (the C++ BLDS interpreter exists; the binding layer needs to accept it post-config).  (b) v1 punt: generic roles are native-engine only; Lua/Python get raw-bytes + a BLDS-describe API. | **(a) as its own slice**, after the plumbing slice; 3-engine parity is the project rule, and (b) would create a two-tier script ecosystem.  Sequence it last — everything else is useful without it (S-B, S-E work today with plumbing only). ⚖ |
 | **G2** | No control-plane-only (observer) role kind for S-F. | Deferred | Fold into #292 role-binary unification as a named requirement ("a role kind with BRC + heartbeat + no data channel"). | Defer to #292; record there. |
 | **G3** | **Neither handler checks the caller.**  `SCHEMA_REQ`/`METRICS_REQ` answer any CURVE-authenticated known role about any channel.  Compare: `GET_CHANNEL_AUTH` is binding-side-gated, `GET_CHANNEL_PRODUCERS` was consumer-gated — the project's blast-radius discipline gates reads. | Design decision | (a) Member-gate both channel-form queries (caller must hold a presence on the channel — `is_role_registered_on_channel` exists); all-channels METRICS form becomes hub-script/admin-only (wire form requires `channel_name`).  (b) Leave open to all known roles (metrics/schemas are observability/structure, not secrets — hostnames/pids/SHM names are the only mild recon surface). | **(a)** — matches least-privilege precedent, and every v1 scenario (S-A…S-E) pulls only channels the caller is registered on.  The (owner,id) SCHEMA form stays known-role-open (the registry is shared infrastructure, and hub-globals have no channel to be member of).  Loosening later for an observer role is a deliberate #292-era grant, not a default. ⚖ |
@@ -314,10 +360,13 @@ S-B and S-E immediately.
 Native; HEP-0028 + README_topology_channels docs.  Unlocks S-E for
 scripts on all engines.
 
-**Slice 3 — schema-pending queue activation (G1, option b).**  Queue
-accepts schema at Configured; role host resolves "schema = registry"
-config value via pull between REG_ACK and activation.  Unlocks S-A/S-C
-for the native tier.
+**Slice 3 — schema-at-establishment (§2b) + schema-pending queues.**
+`ConsumerRegAckBody` gains the optional schema fields; the broker fills
+them from the channel record; the queue accepts schema at Configured
+(relaxing the build-time empty-schema reject); `apply_master_approval`
+applies it alongside endpoints/allowlist.  The fan-in generic OWNER
+path late-binds via the pull at first-producer-join.  Unlocks S-A/S-A2/
+S-C for the native tier.
 
 **Slice 4 — runtime BLDS slot proxies (G4).**  Engine-side; the last
 mile to fully generic script roles.
@@ -328,16 +377,21 @@ mile to fully generic script roles.
 
 ## 5. Decisions requested (⚖)
 
-1. **G1 resolution** — late-bind schema into the queue's Configured
-   stage (recommended) vs. reorder startup?
+1. **G1 resolution** — RESOLVED by user direction 2026-07-26: the
+   schema is established during REG/ACK (§2b); the queue's
+   schema-pending Configured stage carries it in with the rest of the
+   ACK state.  No startup reordering.
 2. **G3 gating** — member-gated channel queries + known-role-open
    `(owner,id)` registry reads (recommended) vs. all-open?
 3. **Slice order** — 1→2→3→4 as above, or pull slice 3 earlier if
    generic native roles are wanted sooner?
-4. **Should the shared-memory segment ALSO store the BLDS text
-   (self-describing memory), on top of the fetch mechanism?**
-   Recommendation: **no, keep fingerprints-only** — with the door
-   explicitly noted.  Reasoning:
+4. **RESOLVED 2026-07-26 (clarified by user).**  The question this
+   decision originally answered — "store the BLDS text INSIDE the
+   shared-memory segment?" — was the reviewer's own framing, not the
+   user's proposal.  The user's actual direction: **establish the BLDS
+   during REG/ACK** — adopted as the primary delivery path, §2b.  The
+   in-segment sub-question is settled **no, fingerprints-only**, for
+   the record:
    - Every sanctioned SHM attach is broker-mediated by design
      (HEP-0041 capability-fd handshake: the consumer receives the
      memory descriptor FROM the broker flow) — a reader that can
