@@ -33,12 +33,15 @@ post-reconcile shipped-sprint detail).
   shipped; **C.2.c–C.5 open** (below).
 - **Topology migration:** STATIC layer ✅ + live (topology factories, role-code
   migration C step 6 shipped `3d4fe07a`, multi-producer fan-in DATA plane
-  proven green at L4 — code-verified 2026-07-25).  DYNAMIC residual: **code
-  catch-up to the owner-first establishment contract (HEP-0017 §4.7.0.1 C1–C7)
-  — S1 owner-locked `ChannelEntry`, S2 owner-death teardown, S3 dialer fast-fail**
-  (S4 peer-join callbacks shipped 2026-07-25).  **The R6 broker-pends gate is
-  RETIRED 2026-07-25 — do NOT build** (superseded by the owner-first contract).
-  C step 7 unblocked; Phases E/F follow S1–S3.  Consolidated plan T2-T5 in
+  proven green at L4 — code-verified 2026-07-25).  **DYNAMIC layer ✅
+  CODE-COMPLETE 2026-07-26 (T3): S1 owner-locked `ChannelEntry` +
+  `AWAITING_OWNER` role-host retry, S2 owner-death teardown, S3 dialer
+  fast-fail shipped as one unit** (S4 peer-join callbacks 2026-07-25; S5
+  objective counts = task #74).  L3 fan-in wire tests flipped
+  consumer-first (C step 7 L3 half).  **The R6 broker-pends gate is
+  RETIRED 2026-07-25 — do NOT build** (superseded by the owner-first
+  contract).  Remaining: Phase E retirements (T4, unblocked) + Phase F
+  demos incl. the L4 producer-first-spawn keystone (T5).  Detail:
   `TOPOLOGY_TODO.md`; permanent design = HEP-CORE-0017 §4.7 (draft retires
   with Phase F).
 - **REG protocol redesign (HEP-0046):** ✅ **Phase B COMPLETE 2026-07-24**
@@ -81,14 +84,14 @@ post-reconcile shipped-sprint detail).
   co-host workers across ~6 files remain; Round 1 recipe proven).
 - **#57** HEP-0046 Phase B — ✅ COMPLETE 2026-07-24 (see "REG protocol
   redesign" above; full record in `MESSAGEHUB_TODO.md`).
-- **Topology dynamic residual (consolidated plan T2-T5)** — T2 C step 7
-  (consumer-first fan-in choreography, unblocked); **T3 = S1–S3 owner-first
-  contract code catch-up** (owner-locked `ChannelEntry` + owner-death teardown +
-  dialer fast-fail — the real work).  **The R6 broker-pends gate is RETIRED
-  2026-07-25 (superseded by the owner-first contract; do NOT build)**; T4 Phase
-  E retirements (pre-attach `CONSUMER_ATTACH_REQ_ZMQ`, `producer_peers` vector +
-  Tier-2 leak, `ProducerEntry.zmq_node_endpoint`); T5 Phase F demos + draft
-  retirement.  Detail: `TOPOLOGY_TODO.md`.
+- **Topology dynamic residual (consolidated plan T2-T5)** — **T3 = S1–S3
+  owner-first contract code catch-up ✅ SHIPPED 2026-07-26** (with the T2/C
+  step 7 L3 test flips folded in).  **The R6 broker-pends gate is RETIRED
+  2026-07-25 (superseded by the owner-first contract; do NOT build)**; open:
+  T4 Phase E retirements (pre-attach `CONSUMER_ATTACH_REQ_ZMQ`,
+  `producer_peers` vector + Tier-2 leak, `ProducerEntry.zmq_node_endpoint` —
+  now unblocked) and T5 Phase F demos incl. the L4 producer-first-spawn
+  keystone + draft retirement.  Detail: `TOPOLOGY_TODO.md`.
 - **Line 3 observer remaining** (HEP-0045 §10): C.2.c `PeerDeathWatcher`
   (epoll) → C.2.d broker dial worker + fd cache → D5 opt-out → C.3
   `collect_shm_info` → C.4 L4 tests → C.5 pointer refresh.

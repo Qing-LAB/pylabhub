@@ -125,8 +125,15 @@ class Pattern4BrokerConsumerTest : public pylabhub::tests::pattern4::Pattern4Wir
 
 // ─── CONSUMER_REG / DEREG / DISC ───────────────────────────────────────────
 
-TEST_F(Pattern4BrokerConsumerTest, ConsumerReg_ChannelNotFound)
+TEST_F(Pattern4BrokerConsumerTest, ConsumerReg_NoOwnerYet_AwaitingOwner)
 {
+    // HEP-CORE-0017 §4.7.0.1 C2/C3 (owner-first establishment,
+    // 2026-07-26; re-pinned from the retired CHANNEL_NOT_FOUND
+    // contract): a consumer REG on a channel whose owner has not
+    // registered is a DIALING-side early arrival — the broker replies
+    // the retryable AWAITING_OWNER immediately (pure responder, no
+    // pend), and the role host's retry loop re-attempts within its
+    // init budget.
     using namespace std::chrono;
     const std::string suffix = ".pid" + std::to_string(::getpid());
     const std::string uid = "cons.unknown" + suffix;
@@ -145,7 +152,7 @@ TEST_F(Pattern4BrokerConsumerTest, ConsumerReg_ChannelNotFound)
                              "CONSUMER_REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(resp.has_value()) << "CONSUMER_REG_REQ timed out";
     EXPECT_EQ(resp->value("status", std::string{}), "error");
-    EXPECT_EQ(resp->value("error_code", std::string{}), "CHANNEL_NOT_FOUND")
+    EXPECT_EQ(resp->value("error_code", std::string{}), "AWAITING_OWNER")
         << "body=" << resp->dump();
 
     broker.signal_quit();

@@ -1903,7 +1903,11 @@ class PYLABHUB_UTILS_EXPORT HubState
                   std::optional<ChannelTopology> declared_topology,
                   std::optional<ChannelSchemaInvariants> open_schema = std::nullopt,
                   std::optional<ChannelTransportInvariants> open_transport = std::nullopt);
-    void _remove_consumer(const std::string &channel, const std::string &role_uid);
+    /// Erase `role_uid`'s consumer slot from the channel (slot-erase
+    /// only — never tears the channel down; owner-aware teardown is
+    /// `_on_consumer_left` / `_on_pending_timeout`'s job).  Returns
+    /// whether a slot was actually erased.
+    bool _remove_consumer(const std::string &channel, const std::string &role_uid);
     void _set_role_registered(RoleEntry entry);
     void _set_role_disconnected(const std::string &uid);
     void _set_band_joined(const std::string &band, BandMember member);
@@ -2011,8 +2015,12 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// entry point.  Replaces `_on_channel_closed`-as-DEREG-handler:
     /// removes the matching `ProducerEntry` from
     /// `ChannelEntry.producers[]` and fires `_on_channel_closed`
-    /// ONLY when the last producer leaves (HEP-CORE-0023 §2.1.1
-    /// atomic teardown).
+    /// ONLY when the last producer leaves AND the producer side is
+    /// the binding owner — fan-out / one-to-one (HEP-CORE-0023
+    /// §2.1.1 atomic teardown + HEP-CORE-0017 §4.7.0.2 T2).  Under
+    /// fan-in producers are the dialing side: every producer drop,
+    /// including the last, is a slot-erase and the consumer-owner
+    /// keeps the book open (`channel_now_empty == false`).
     ///
     /// Returns the typed `RemoveProducerResult` so the caller can:
     /// - `removed == false` → producer not found; surface
@@ -2061,7 +2069,20 @@ class PYLABHUB_UTILS_EXPORT HubState
                         std::optional<ChannelTopology> declared_topology,
                         std::optional<ChannelSchemaInvariants> open_schema = std::nullopt,
                         std::optional<ChannelTransportInvariants> open_transport = std::nullopt);
-    void _on_consumer_left(const std::string &channel, const std::string &role_uid);
+    /// Consumer voluntary leave (CONSUMER_DEREG_REQ).  Teardown is
+    /// OWNER-bound per HEP-CORE-0017 §4.7.0.2 T2:
+    /// - fan-out / one-to-one (consumer = dialing side): erase the
+    ///   slot; the channel survives.  `channel_now_empty == false`.
+    /// - fan-in (consumer = binding owner): owner leave is channel
+    ///   death — fires `_on_channel_closed(VoluntaryDereg)` and
+    ///   returns `channel_now_empty == true` so the broker runs the
+    ///   same close-out fan-out as the last-owning-producer DEREG
+    ///   path (CHANNEL_CLOSING_NOTIFY / access close / attach drain).
+    /// Shares `RemoveProducerResult` with the producer-side drop ops —
+    /// it is the generic presence-drop outcome {removed,
+    /// channel_now_empty}.
+    RemoveProducerResult _on_consumer_left(const std::string &channel,
+                                           const std::string &role_uid);
     /// Refresh the presence row matching `(channel, role_uid, role_type)`.
     /// Per HEP-CORE-0019 §2.3 + HEP-CORE-0023 §2.5.2: each heartbeat refreshes
     /// ONLY its own `(uid, role_type)` presence row; no heartbeat ever touches
@@ -2091,21 +2112,28 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// role_type)` presence (HEP-CORE-0023 §2.1 + §2.1.1).  Bumps
     /// `pending_to_deregistered_total`.  Behavior by role_type:
     ///
+    /// Teardown is OWNER-bound in both branches (HEP-CORE-0017
+    /// §4.7.0.2 T2):
+    ///
     /// - `"producer"`: drops the matching `ProducerEntry` from
     ///   `ChannelEntry.producers[]`.  Fires `_on_channel_closed`
-    ///   (atomic teardown) ONLY when this was the LAST producer; the
-    ///   caller inspects the returned `RemoveProducerResult` to decide
-    ///   whether to fan out CHANNEL_CLOSING_NOTIFY.  Multi-producer
-    ///   path: producer dropped, channel survives, role-disconnect
-    ///   cascade dispatched if the role's last presence anywhere just
-    ///   went Disconnected.
-    /// - `"consumer"`: removes the matching `ConsumerEntry` from
+    ///   (atomic teardown) ONLY when this was the LAST producer AND
+    ///   the producer side is the binding owner (fan-out /
+    ///   one-to-one); the caller inspects the returned
+    ///   `RemoveProducerResult` to decide whether to fan out
+    ///   CHANNEL_CLOSING_NOTIFY.  Fan-in producers are dialers and
+    ///   always take the slot-erase path (channel survives,
+    ///   role-disconnect cascade dispatched if the role's last
+    ///   presence anywhere just went Disconnected).
+    /// - `"consumer"`: under fan-out / one-to-one (consumer =
+    ///   dialer), removes the matching `ConsumerEntry` from
     ///   `ChannelEntry.consumers[]` and runs `drop_channel_if_orphaned`
-    ///   + `_dispatch_role_disconnected_if_dead`.  Consumer presence
-    ///   never tears down channels (HEP-CORE-0023 §2.1.1) — the
-    ///   returned `RemoveProducerResult.channel_now_empty` is always
-    ///   `false` on this path.  `removed` reflects whether a consumer
-    ///   slot was actually erased.
+    ///   + `_dispatch_role_disconnected_if_dead`; `channel_now_empty`
+    ///   is `false` and `removed` reflects whether a consumer slot
+    ///   was actually erased.  Under fan-in the consumer is the
+    ///   binding OWNER: its timeout fires `_on_channel_closed`
+    ///   (atomic teardown) and returns `channel_now_empty == true` so
+    ///   the caller runs the channel close-out fan-out.
     ///
     /// Idempotent in all role_type branches: if the presence is already
     /// Disconnected or the matching channel/role row is gone, returns

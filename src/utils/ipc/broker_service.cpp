@@ -1995,6 +1995,58 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         }
     }
 
+    // Topology wire parse (INVALID_REQUEST for garbage input).  Parsed
+    // FIRST — before the schema Path A/B filing and the admission op —
+    // because it drives the owner-first gate directly below, and that
+    // gate must run BEFORE any state mutation (same parse-first shape
+    // as `handle_consumer_reg_req`).  Empty means "no wire
+    // declaration" — HubState's atomic admission op treats this as
+    // "inherit stored" for an existing channel, or "default to
+    // OneToOne" for a fresh channel per HEP-CORE-0018 §5 +
+    // HEP-CORE-0017 §4.7.
+    std::optional<pylabhub::hub::ChannelTopology> declared_topology;
+    {
+        const std::string wire = body.channel_topology();
+        if (!wire.empty())
+        {
+            declared_topology = pylabhub::hub::topology::parse(wire);
+            if (!declared_topology)
+            {
+                LOGGER_WARN("[broker] event=RegReqRejected reason='INVALID_REQUEST' "
+                            "role='{}' channel='{}' wire_topology='{}' "
+                            "detail='not one of fan-in|fan-out|one-to-one'",
+                            role_uid, channel_name, wire);
+                return make_error(corr_id, "INVALID_REQUEST",
+                                  "REG_REQ channel_topology='" + wire +
+                                      "' must be 'fan-in', 'fan-out', or 'one-to-one'");
+            }
+        }
+    }
+
+    // HEP-CORE-0017 §4.7.0.1 C2/C3 — owner-first establishment gate.
+    // Under fan-in the producer is the DIALING side; arriving before
+    // the consumer-owner has opened the book is NOT an error — reply
+    // the retryable AWAITING_OWNER (immediate; the broker never
+    // pends) and the role host's REG retry loop re-attempts within
+    // its init budget.  This gate MUST sit here, before the schema
+    // Path A/B filing below: a later reject would leave an orphan
+    // schema record for a channel that was never opened AND pre-file
+    // a schema the consumer-owner never chose.  The same invariant is
+    // re-checked atomically inside `_on_producer_added` (writer lock)
+    // to close the snapshot-to-admission race; THIS check keeps the
+    // common-case reject side-effect-free.
+    if (declared_topology.has_value() &&
+        *declared_topology == pylabhub::hub::ChannelTopology::FanIn &&
+        !hub_state_->channel(channel_name).has_value())
+    {
+        LOGGER_INFO("[broker] event=RegReqAwaitingOwner role='{}' channel='{}' "
+                    "(fan-in producer dialed before consumer-owner; retryable)",
+                    role_uid, channel_name);
+        return make_error(corr_id, "AWAITING_OWNER",
+                          "channel '" + channel_name +
+                              "' owner (fan-in consumer) not registered yet; retry");
+    }
+
     const std::string attempted_schema = body.schema_hash();
     const uint64_t attempted_pid = body.producer_pid();
 
@@ -2432,29 +2484,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // value the §5.1 endpoint check accepted.
     transport_inv.data_transport = data_transport_req;
 
-    // Topology wire parse.  Empty means "no wire declaration" —
-    // HubState's atomic admission op treats this as "inherit stored"
-    // for an existing channel, or "default to OneToOne" for a fresh
-    // channel per HEP-CORE-0018 §5 + HEP-CORE-0017 §4.7.  A
-    // non-empty non-parseable value is INVALID_REQUEST — surface here.
-    std::optional<pylabhub::hub::ChannelTopology> declared_topology;
-    {
-        const std::string wire = body.channel_topology();
-        if (!wire.empty())
-        {
-            declared_topology = pylabhub::hub::topology::parse(wire);
-            if (!declared_topology)
-            {
-                LOGGER_WARN("[broker] event=RegReqRejected reason='INVALID_REQUEST' "
-                            "role='{}' channel='{}' wire_topology='{}' "
-                            "detail='not one of fan-in|fan-out|one-to-one'",
-                            role_uid, channel_name, wire);
-                return make_error(corr_id, "INVALID_REQUEST",
-                                  "REG_REQ channel_topology='" + wire +
-                                      "' must be 'fan-in', 'fan-out', or 'one-to-one'");
-            }
-        }
-    }
+    // `declared_topology` was parsed + validated at the top of this
+    // handler (before the schema filing), where it also fed the
+    // owner-first AWAITING_OWNER gate.
 
     // Atomic producer-side admission.  All checks (schema, transport,
     // topology, cardinality, uid conflict) happen under the same
@@ -2893,10 +2925,11 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireE
     // and the identity gate (env.identity() == role_uid) already ran in
     // receive_and_validate, so a role can only present its OWN role_uid.
 
-    // HEP-CORE-0023 §2.1.1 atomic-teardown contract: removing one producer
-    // leaves the channel alive iff other producers remain; channel teardown
-    // fires only when the LAST producer leaves.  `_on_producer_dropped`
-    // encapsulates this.
+    // HEP-CORE-0023 §2.1.1 atomic-teardown contract, owner-bound per
+    // HEP-CORE-0017 §4.7.0.2 T2: channel teardown fires only when the LAST
+    // producer leaves AND the producer side is the binding owner (fan-out /
+    // one-to-one).  Fan-in producers are dialers — their leave never tears
+    // down.  `_on_producer_dropped` encapsulates this.
     auto entry = hub_state_->channel(channel_name);
     std::string target_role_uid;
     if (entry.has_value())
@@ -3068,9 +3101,21 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
 
     if (cit == snap.channels.end() && !consumer_will_open_channel)
     {
-        LOGGER_WARN("Broker: CONSUMER_REG_REQ channel '{}' not found", channel_name);
-        return make_error(corr_id, "CHANNEL_NOT_FOUND",
-                          "Channel '" + channel_name + "' is not registered");
+        // HEP-CORE-0017 §4.7.0.1 C2/C3 — owner-first establishment
+        // gate.  Under fan-out / one-to-one the consumer is the
+        // DIALING side; arriving before the producer-owner has opened
+        // the book is NOT a caller error — reply the retryable
+        // AWAITING_OWNER (immediate; the broker never pends) and the
+        // role host's REG retry loop re-attempts within its init
+        // budget.  Accepted C3 trade-off: a genuinely wrong channel
+        // name also lands here and fails only after the dialer's
+        // retry budget — at REG time "not yet" and "never" are
+        // indistinguishable.
+        LOGGER_INFO("[broker] event=ConsumerRegReqAwaitingOwner role='{}' channel='{}' "
+                    "(dialing consumer arrived before owner; retryable)",
+                    role_uid, channel_name);
+        return make_error(corr_id, "AWAITING_OWNER",
+                          "channel '" + channel_name + "' owner not registered yet; retry");
     }
 
     // channel_entry references the existing entry when present; on the
@@ -3437,20 +3482,25 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
                               cons_admission.topology_error_code + "'");
     }
     // `admitted=false` with no `topology_error_code` = the atomic op's
-    // silent-skip contract (channel vanished between the pre-check
-    // above and the writer-lock acquisition inside `_add_consumer`,
-    // OR the defensive identifier-validation branch fired).  Both are
-    // production-latent: the broker already gates on CHANNEL_NOT_FOUND
-    // + identifier grammar at handler entry, so this only fires under
-    // race with concurrent `_on_channel_closed`.  Surface as
-    // CHANNEL_NOT_FOUND so the client doesn't believe it registered.
+    // silent-skip contract: the channel vanished between the pre-check
+    // above and the writer-lock acquisition inside `_add_consumer`
+    // (race with a concurrent `_on_channel_closed`; the identifier-
+    // validation branch surfaces separately as `invalid_identifier`).
+    // Surface as AWAITING_OWNER — the observable state is identical to
+    // the handler-entry gate's (dialing consumer, no channel), and the
+    // wire reply must be a pure function of state, not of which side
+    // of the writer lock the teardown landed on (HEP-CORE-0017
+    // §4.7.0.1 C3).  The role's retry loop re-attempts within its
+    // budget; a fan-in consumer-owner that raced its own channel's
+    // teardown re-enters on retry via the consumer-opens path.
     if (!cons_admission.admitted)
     {
-        LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='CHANNEL_NOT_FOUND' "
-                    "role='{}' channel='{}' detail='race with channel teardown'",
+        LOGGER_WARN("[broker] event=ConsumerRegReqAwaitingOwner role='{}' channel='{}' "
+                    "detail='channel vanished during admission; retryable'",
                     role_uid, channel_name);
-        return make_error(corr_id, "CHANNEL_NOT_FOUND",
-                          "Channel '" + channel_name + "' vanished during admission");
+        return make_error(corr_id, "AWAITING_OWNER",
+                          "channel '" + channel_name +
+                              "' vanished during admission (owner gone); retry");
     }
 
     // HEP-CORE-0036 §6.5 + §I11.1 + §6.6.2 — every channel admission
@@ -3635,8 +3685,14 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
     // the identity gate (env.identity() == role_uid) already ran in
     // receive_and_validate, so a role can only present its OWN role_uid.
 
-    // Fetch consumer entry BEFORE removal so the cleanup hook can read role_uid.
+    // Fetch consumer entry BEFORE removal so the cleanup hook can read
+    // role_uid — and the whole pre-drop ChannelEntry, because under
+    // fan-in this consumer is the binding OWNER and its leave tears
+    // the channel down (HEP-CORE-0017 §4.7.0.2 T2): the close-out
+    // fan-out below needs the party list of a record that will be
+    // gone from HubState by then.
     pylabhub::hub::ConsumerEntry closing_entry{};
+    pylabhub::hub::ChannelEntry pre_drop_channel{};
     bool have_entry = false;
     {
         auto ch = hub_state_->channel(channel_name);
@@ -3647,6 +3703,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
                 if (c.role_uid == wire_role_uid)
                 {
                     closing_entry = c;
+                    pre_drop_channel = *ch;
                     have_entry = true;
                     break;
                 }
@@ -3667,9 +3724,26 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
     // by `gate_grammar` in `receive_and_validate` (HEP-CORE-0046
     // §14.5), so the role-side cleanup branch in `_on_consumer_left`
     // always runs.
-    hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
+    const auto drop = hub_state_->_on_consumer_left(channel_name, closing_entry.role_uid);
     on_consumer_closed(socket, channel_name, closing_entry, "voluntary_close");
 
+    if (drop.channel_now_empty)
+    {
+        // HEP-CORE-0017 §4.7.0.2 T2 — the leaving consumer was the
+        // fan-in binding OWNER: owner leave is channel death.  Same
+        // close-out sequence as the last-owning-producer DEREG path
+        // in `handle_dereg_req`: CHANNEL_CLOSING_NOTIFY to every
+        // party from the pre-drop snapshot, federation relay,
+        // channel-access record close (whole ChannelAccessEntry —
+        // ledger included — goes; a per-key revoke would be redundant
+        // and is skipped), and the pending-ATTACH drain.
+        send_closing_notify(socket, channel_name, pre_drop_channel, "consumer_deregistered");
+        on_channel_closed(socket, channel_name, pre_drop_channel, "consumer_deregistered");
+        hub_state_->_on_channel_access_closed(channel_name);
+        drain_pending_attach_queue_for_channel_denied_(socket, channel_name, "channel_closing");
+        LOGGER_INFO("Broker: channel '{}' torn down (fan-in consumer-owner deregistered)",
+                    channel_name);
+    }
     // HEP-CORE-0036 §6.5: revoke this consumer's pubkey from the
     // channel-scope allowlist + notify producers.  CONSUMER_REG_REQ
     // hard-rejects empty / non-40-char `zmq_pubkey` at the wire
@@ -3678,7 +3752,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
     // fails that invariant indicates HubState corruption — log
     // loudly and skip the revoke (passing a malformed pubkey to
     // `_on_consumer_revoked` would be a no-op anyway).
-    if (closing_entry.zmq_pubkey.size() != 40)
+    else if (closing_entry.zmq_pubkey.size() != 40)
     {
         LOGGER_ERROR("Broker: ConsumerEntry on channel='{}' role_uid='{}' has "
                      "invalid zmq_pubkey (length {}, expected 40 Z85 chars).  "
@@ -5734,6 +5808,28 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t &socket)
             auto drop = hub_state_->_on_pending_timeout(d.channel, d.role_uid, "consumer");
             if (!drop.removed)
                 continue;
+
+            if (drop.channel_now_empty)
+            {
+                // HEP-CORE-0017 §4.7.0.2 T2 — the reaped consumer was
+                // the fan-in binding OWNER: owner death is channel
+                // death.  Same close-out sequence as the last-owning-
+                // producer branch above (pre-drop snapshot for the
+                // fan-out; access record + attach drain).  The
+                // per-consumer DIED notify / key revoke below are
+                // superseded by the channel-wide close: producers get
+                // CHANNEL_CLOSING_NOTIFY, and the whole
+                // ChannelAccessEntry (ledger included) is erased.
+                send_closing_notify(socket, d.channel, d.pre_drop_channel, "pending_timeout");
+                on_channel_closed(socket, d.channel, d.pre_drop_channel, "pending_timeout");
+                hub_state_->_on_channel_access_closed(d.channel);
+                drain_pending_attach_queue_for_channel_denied_(socket, d.channel,
+                                                               "channel_closing");
+                LOGGER_INFO("Broker: channel '{}' torn down (fan-in "
+                            "consumer-owner presence-timeout)",
+                            d.channel);
+                continue;
+            }
 
             // Fan out CONSUMER_DIED_NOTIFY with reason="heartbeat_timeout"
             // to every producer on the channel.  Producers consume the

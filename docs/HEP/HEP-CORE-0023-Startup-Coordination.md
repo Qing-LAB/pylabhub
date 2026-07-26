@@ -105,8 +105,8 @@ stateDiagram-v2
     Connected --> Connected : HEARTBEAT_NOTIFY<br/>(refresh last_heartbeat, update metrics)
     Connected --> Pending : ready_timeout<br/>(missed heartbeats)
     Pending --> Connected : HEARTBEAT_NOTIFY (recovery)<br/>bump pending_to_ready_total
-    Pending --> [*] : pending_timeout<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer AND<br/>last live producer (§2.1.1)
-    Connected --> [*] : DEREG_REQ accepted<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff role_type=producer AND<br/>last live producer (§2.1.1)
+    Pending --> [*] : pending_timeout<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff the leaving presence is the<br/>channel's binding OWNER (§2.1.1)
+    Connected --> [*] : DEREG_REQ accepted<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff the leaving presence is the<br/>channel's binding OWNER (§2.1.1)
     Pending --> [*] : DEREG_REQ accepted (same path)
 ```
 
@@ -120,8 +120,8 @@ per **presence** — a processor with `(uid, "producer")` and
 | Matching `HEARTBEAT_NOTIFY` received | Connected | Connected | refresh `RoleEntry.last_heartbeat`, write metrics |
 | Matching `HEARTBEAT_NOTIFY` received | Pending | Connected | refresh `RoleEntry.last_heartbeat`, reset `state_since`, bump `pending_to_connected_total` |
 | Missed heartbeats for `effective_ready_timeout` | Connected | Pending | set `state_since`, bump `connected_to_pending_total` |
-| Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) **to all remaining channel members** and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
-| `DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; **if `role_type == producer`**: fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`voluntary_close`) and remove `ChannelEntry` **if no other producer-presence remains alive on this channel** (§2.1.1); remove presence |
+| Missed heartbeats for `effective_pending_timeout` | Pending | Disconnected | bump `pending_to_disconnected_total`; **if the leaving presence is the channel's binding OWNER** (fan-out / one-to-one producer; fan-in consumer — §2.1.1 + HEP-CORE-0017 §4.7.0.2 T2): fan-out `CHANNEL_CLOSING_NOTIFY`(reason=`pending_timeout`) **to all remaining channel members** and remove `ChannelEntry` atomically.  A dialing presence's drop (fan-in producer — even the last one; fan-out / one-to-one consumer) only erases its slot.  For an owning producer the teardown fires **only when no other producer-presence remains alive**; remove presence from `RoleEntry` (or whole `RoleEntry` if last presence) |
+| `DEREG_REQ` / `CONSUMER_DEREG_REQ` accepted | Connected/Pending | Disconnected | bump `voluntary_disconnect_total`; same OWNER-bound teardown rule as the row above with reason=`voluntary_close` (producer path) / `consumer_deregistered` (fan-in owner path); remove presence |
 
 **Wave M3 transition primitives (2026-05-11).** The transitions in
 the table above are implemented on `RoleEntry` as the controlled-
@@ -145,11 +145,13 @@ already gone by the time the handler runs (do not attempt
 `HubState::role(uid)` from inside the handler).
 
 **No channel-side grace or FORCE_SHUTDOWN.**  The role's
-`pending_miss_heartbeats` window IS the grace.  Once the **last**
-producer-role-presence on a channel reaches `Disconnected`, the
-channel is removed atomically; consumers learn via
+`pending_miss_heartbeats` window IS the grace.  Once the channel's
+binding OWNER reaches `Disconnected` (the last owning
+producer-presence under fan-out / one-to-one; the consumer-owner
+under fan-in — §2.1.1 + HEP-CORE-0017 §4.7.0.2), the channel is
+removed atomically; the surviving dialers learn via
 `CHANNEL_CLOSING_NOTIFY` (best-effort) and any future `DISC_REQ`
-returns `CHANNEL_NOT_FOUND` (consumers treat either signal as
+returns `CHANNEL_NOT_FOUND` (roles treat either signal as
 "channel gone, stop"; see §2.2).
 
 #### 2.1.1 Multi-producer channels (transport-agnostic)
@@ -162,8 +164,8 @@ returns `CHANNEL_NOT_FOUND` (consumers treat either signal as
 > its death tears the channel down and fans `CHANNEL_CLOSING_NOTIFY`
 > out to all producers.  Under fan-out and one-to-one the binding
 > side is the PRODUCER (matches the pre-migration rule with N=1
-> producer).  See tech draft §4.2 + §5.11 for the generalized
-> teardown rule.  Cardinality guards (fan-out / one-to-one
+> producer).  The generalized owner-bound teardown rule is normative
+> in HEP-CORE-0017 §4.7.0.2 (T1–T7).  Cardinality guards (fan-out / one-to-one
 > single-producer-only; fan-in single-consumer-only) prevent
 > mixed-topology admission — see HEP-CORE-0007 §12.4a for the
 > `FAN_IN_IS_SINGLE_CONSUMER` / `FAN_OUT_IS_SINGLE_PRODUCER` /

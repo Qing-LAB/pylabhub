@@ -342,12 +342,28 @@ void ConsumerRoleHost::worker_main_()
         // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
         api_ref.append_inbox_to_reg(reg_opts, inbox_cfg_);
 
+        // Shutdown predicate shared by the establishment steps below
+        // (CONSUMER_REG retry + finalize_channel_connect): a shutdown /
+        // critical-error during startup must break the bounded waits
+        // immediately.
+        auto is_cancelled = [&core_]() -> bool
+        {
+            return core_.is_shutdown_requested() || core_.is_critical_error() ||
+                   core_.is_process_exit_requested();
+        };
+
         // 6d — CONSUMER_REG_REQ + heartbeat install.  register_consumer
         // transitions the matching Presence's `registration_state`
         // through RegRequestPending → Registered on success (audit
         // S1+O4, 2026-05-17 — replaces the pre-S1
-        // `shared.consumer_channel` string).
-        auto reg_result = api_ref.register_consumer(reg_opts);
+        // `shared.consumer_channel` string).  `init_timeout_ms` is the
+        // TOTAL budget: under fan-out / one-to-one this consumer is the
+        // dialing side and the broker's AWAITING_OWNER reply is retried
+        // inside until the producer-owner opens the channel
+        // (HEP-CORE-0017 §4.7.0.1 C3), on top of the pre-existing
+        // transient CHANNEL_NOT_READY retry.
+        auto reg_result = api_ref.register_consumer(
+            reg_opts, static_cast<int>(config_.timing().init_timeout_ms), is_cancelled);
         if (!reg_result.has_value() || reg_result->value("status", std::string{}) != "success")
         {
             // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL.  Under
@@ -388,11 +404,6 @@ void ConsumerRoleHost::worker_main_()
         // that puts a deferred connect on the consumer side (e.g. a
         // new fan-in-mirror variant) needs no role-host change.  The
         // queue decides.
-        auto is_cancelled = [&core_]() -> bool
-        {
-            return core_.is_shutdown_requested() || core_.is_critical_error() ||
-                   core_.is_process_exit_requested();
-        };
         if (!api_ref.finalize_channel_connect(config_.in_channel(),
                                               config_.timing().init_timeout_ms, is_cancelled))
         {

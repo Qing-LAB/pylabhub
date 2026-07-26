@@ -643,8 +643,14 @@ TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndErasesRoleEntry)
     // routes through `on_dereg` (Disconnected) then dispatches
     // `_set_role_disconnected`, which erases the entry.  Pre-M3
     // behavior left the role with a stale Disconnected presence row.
+    //
+    // Fan-out: the consumer is the DIALING side (HEP-CORE-0017
+    // §4.7.0.2 T2) so its leave erases only its slot — the channel
+    // survives.  The fan-in owner-leave (channel death) counterpart is
+    // pinned by `HubStateProducerDrop.ChannelClose_FiresOncePerCloseEvent`.
     HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::on_channel_registered(s,
+                                              make_channel("ch1", ChannelTopology::FanOut));
     HubStateTestAccess::on_consumer_joined(s, "ch1", make_consumer("cons.A.test"));
     HubStateTestAccess::on_consumer_left(s, "ch1", "cons.A.test");
 
@@ -739,8 +745,13 @@ TEST(HubStateOps, HeartbeatTimeout_AlreadyPending_NoDoubleCounter)
 
 TEST(HubStateOps, PendingTimeout_AtomicallyTearsDownChannel)
 {
+    // One-to-one: the producer is the binding OWNER (HEP-CORE-0017
+    // §4.7.0.2 T2) so its pending-timeout is owner death = channel
+    // death.  (Under fan-in the producer is a dialer and the same
+    // timeout only erases its slot — pinned separately.)
     HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
+    HubStateTestAccess::on_channel_registered(s,
+                                              make_channel("ch1", ChannelTopology::OneToOne));
     // Force producer-presence to Pending via heartbeat timeout.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
     {
@@ -2005,6 +2016,22 @@ ChannelTransportInvariants make_shm_transport()
     t.data_transport = "shm";
     return t;
 }
+
+/// Owner-first (HEP-CORE-0017 §4.7.0.1 C1/C2): every fan-in channel is
+/// opened by its consumer-OWNER; producers are dialers and can only
+/// join the existing book.  Tests below call this before admitting
+/// producers — it mirrors the production CONSUMER_REG_REQ
+/// consumer-opens path.  Returns the owner uid for tests that pin the
+/// role_reg fan-out order.
+std::string open_fanin(HubState &s, const std::string &channel)
+{
+    const std::string owner_uid = "cons.owner.uid00000099";
+    auto r = HubStateTestAccess::open_fanin_channel(s, channel, make_consumer(owner_uid),
+                                                    make_schema_invariants(), make_zmq_transport());
+    EXPECT_TRUE(r.admitted) << "fan-in owner open failed for '" << channel << "'";
+    EXPECT_TRUE(r.channel_opened);
+    return owner_uid;
+}
 } // namespace
 
 TEST(HubStateProducerAdmission, FirstProducer_FreshChannel_OpensAndFires)
@@ -2041,6 +2068,10 @@ TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
     s.subscribe_channel_opened([&](const ChannelEntry &) { ++opened_count; });
     s.subscribe_role_registered([&](const RoleEntry &r) { role_reg.push_back(r.uid); });
 
+    // Owner-first: the consumer-owner opens the book; both producers
+    // join as dialers (HEP-CORE-0017 §4.7.0.1).
+    const std::string owner_uid = open_fanin(s, "ch.fanin.append");
+
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.append", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
@@ -2057,11 +2088,12 @@ TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
     EXPECT_FALSE(r.channel_opened);
     EXPECT_TRUE(r.mismatched_invariant.empty());
 
-    // ch_opened fired exactly once (only on the first admission).
+    // ch_opened fired exactly once — on the consumer-owner's open;
+    // producer admissions join the existing book and never re-fire it.
     EXPECT_EQ(opened_count, 1);
-    // role_reg fired twice (once per producer).
-    EXPECT_EQ(role_reg,
-              (std::vector<std::string>{"prod.camA.uid00000001", "prod.camB.uid00000002"}));
+    // role_reg fired once per role: owner first, then each producer.
+    EXPECT_EQ(role_reg, (std::vector<std::string>{owner_uid, "prod.camA.uid00000001",
+                                                  "prod.camB.uid00000002"}));
 
     auto ch = s.channel("ch.fanin.append");
     ASSERT_TRUE(ch.has_value());
@@ -2083,9 +2115,47 @@ TEST(HubStateProducerAdmission, SecondDistinctUid_MatchingInvariants_Appends)
 // SecondDistinctUid_MatchingInvariants_Appends for the matching-invariant
 // append path.)
 
+TEST(HubStateProducerAdmission, FanInProducer_FreshChannel_RefusedAwaitingOwner)
+{
+    // HEP-CORE-0017 §4.7.0.1 C2 — under fan-in the producer is the
+    // DIALING side and must never open the book.  The atomic admission
+    // op refuses with the retryable AWAITING_OWNER code and mutates
+    // NOTHING: no channel, no handler fire, no role entry.  (The
+    // broker's handler-entry gate rejects the same case before the
+    // schema filing; this pins the in-op race-closer.)
+    HubState s;
+    int opened_count = 0;
+    std::vector<std::string> role_reg;
+    s.subscribe_channel_opened([&](const ChannelEntry &) { ++opened_count; });
+    s.subscribe_role_registered([&](const RoleEntry &r) { role_reg.push_back(r.uid); });
+
+    auto r = HubStateTestAccess::on_producer_added_fanin(
+        s, "ch.fanin.early-dialer", make_schema_invariants(), make_zmq_transport(),
+        make_producer("prod.early.uid00000001", 1001));
+    ASSERT_NE(r.topology_error_code, nullptr);
+    EXPECT_STREQ(r.topology_error_code, "AWAITING_OWNER");
+    EXPECT_FALSE(r.channel_opened);
+
+    EXPECT_EQ(opened_count, 0);
+    EXPECT_TRUE(role_reg.empty());
+    EXPECT_FALSE(s.channel("ch.fanin.early-dialer").has_value())
+        << "C2: a refused dialer must leave ZERO broker state";
+    EXPECT_FALSE(s.role("prod.early.uid00000001").has_value());
+
+    // Once the owner opens, the SAME producer registration succeeds —
+    // the C3 retry path's happy ending.
+    open_fanin(s, "ch.fanin.early-dialer");
+    auto r2 = HubStateTestAccess::on_producer_added_fanin(
+        s, "ch.fanin.early-dialer", make_schema_invariants(), make_zmq_transport(),
+        make_producer("prod.early.uid00000001", 1001));
+    EXPECT_EQ(r2.producer_result, AddProducerResult::Created);
+    EXPECT_FALSE(r2.channel_opened);
+}
+
 TEST(HubStateProducerAdmission, SameUidRedo_Rejected_UidConflict)
 {
     HubState s;
+    open_fanin(s, "ch.fanin.uid-redo");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.uid-redo", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
@@ -2147,12 +2217,13 @@ TEST(HubStateProducerDrop, NonLastProducer_DropLeavesChannelAlive_NoCloseFired)
 {
     // Two producers on a Fan-In channel; drop A.  Channel must
     // survive (channel_now_empty=false) AND the ch_closed handler
-    // must NOT fire (atomic teardown is reserved for last-producer-
-    // leave per HEP-CORE-0023 §2.1.1).
+    // must NOT fire — fan-in producers are the dialing side and a
+    // dialer's leave closes nothing (HEP-CORE-0017 §4.7.0.2 T2).
     HubState s;
     int closed_count = 0;
     s.subscribe_channel_closed([&](const std::string &) { ++closed_count; });
 
+    open_fanin(s, "ch.fanin.drop-keep");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.drop-keep", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
@@ -2204,13 +2275,16 @@ TEST(HubStateProducerDrop, LastProducer_DropTearsChannelDown_FiresClose)
 
 TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
 {
-    // Two-producer setup, drop A then B.  ch_closed must fire EXACTLY
-    // ONCE (on the second drop — the last producer's leave).  No
-    // partial fire on the first drop, no double-fire after the close.
+    // Owner-first close sequence on fan-in (HEP-CORE-0017 §4.7.0.2
+    // T2): drop producer A, then producer B (the LAST producer) —
+    // ch_closed must NOT fire for either, because fan-in producers
+    // are dialers and only the consumer-OWNER's leave is channel
+    // death.  The owner's leave then fires ch_closed EXACTLY ONCE.
     HubState s;
     std::vector<std::string> closed;
     s.subscribe_channel_closed([&](const std::string &name) { closed.push_back(name); });
 
+    const std::string owner_uid = open_fanin(s, "ch.fanin.drop-sequence");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.drop-sequence", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
@@ -2228,11 +2302,27 @@ TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
     EXPECT_FALSE(r1.channel_now_empty);
     EXPECT_EQ(closed.size(), 0u);
 
+    // LAST producer leaves — still a dialer: the channel must survive
+    // with zero producers, owned by the consumer.
     auto r2 = HubStateTestAccess::on_producer_dropped(
         s, "ch.fanin.drop-sequence", "prod.camB.uid00000002", ChannelCloseReason::VoluntaryDereg);
     EXPECT_TRUE(r2.removed);
-    EXPECT_TRUE(r2.channel_now_empty);
+    EXPECT_FALSE(r2.channel_now_empty)
+        << "T2: last fan-in producer's leave must NOT close the owner's channel";
+    EXPECT_EQ(closed.size(), 0u);
+    {
+        auto ch = s.channel("ch.fanin.drop-sequence");
+        ASSERT_TRUE(ch.has_value());
+        EXPECT_EQ(ch->producer_count(), 0u);
+        EXPECT_EQ(ch->consumer_count(), 1u);
+    }
+
+    // Owner leaves — channel death, close fires exactly once.
+    auto r3 = HubStateTestAccess::on_consumer_left(s, "ch.fanin.drop-sequence", owner_uid);
+    EXPECT_TRUE(r3.removed);
+    EXPECT_TRUE(r3.channel_now_empty);
     EXPECT_EQ(closed, (std::vector<std::string>{"ch.fanin.drop-sequence"}));
+    EXPECT_FALSE(s.channel("ch.fanin.drop-sequence").has_value());
 }
 
 // ─── Wave M2.5 step 5 — _set_producer_zmq_node_endpoint HubState op ──────
@@ -2244,6 +2334,7 @@ TEST(HubStateProducerDrop, ChannelClose_FiresOncePerCloseEvent)
 TEST(HubStateProducerEndpointUpdate, KnownChannelKnownUid_UpdatesOnlyTarget)
 {
     HubState s;
+    open_fanin(s, "ch.fanin.ep-update");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.ep-update", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
@@ -2310,7 +2401,8 @@ TEST(HubStateProducerPendingTimeout, NonLastProducer_DropsOnlyOne_ChannelSurvive
     int closed_count = 0;
     s.subscribe_channel_closed([&](const std::string &) { ++closed_count; });
 
-    // Register two producers via the controlled API — fan-in topology.
+    // Owner opens, then two producers join via the controlled API.
+    open_fanin(s, "ch.fanin.pending-survive");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.fanin.pending-survive", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.camA.uid00000001", 1001))
@@ -2381,6 +2473,7 @@ TEST(HubStateProducerDropped, MultiProducer_VoluntaryDereg_TransitionsPresenceAn
     // the role shows a ghost-Connected producer-presence on a channel
     // where it no longer holds a slot.
     HubState s;
+    open_fanin(s, "ch.h9.fanin");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, "ch.h9.fanin", make_schema_invariants(), make_zmq_transport(),
                   make_producer("prod.fanA.uid00000001", 1001))
@@ -2981,7 +3074,9 @@ TEST(HubStateChannelMetricsSnapshot, MultiProducer_PerUidNoOverwrite)
 {
     HubState s;
     // Multi-producer requires explicit fan-in declaration under the
-    // topology migration (default topology is OneToOne).
+    // topology migration (default topology is OneToOne); the
+    // consumer-owner opens the book first.
+    open_fanin(s, "ch.fanin");
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(s, "ch.fanin", make_schema_invariants(),
                                                           make_zmq_transport(),
                                                           make_producer("prod.A.uid00000001", 1001))
@@ -3632,8 +3727,13 @@ TEST(HubStateConsumerHeartbeatTimeout, TransitionsConsumerPresenceToPending)
 
 TEST(HubStateConsumerPendingTimeout, TransitionsToDisconnected_ChannelSurvives)
 {
+    // Fan-out: the consumer is the DIALING side (HEP-CORE-0017
+    // §4.7.0.2 T2) — its timeout erases only its slot.  The fan-in
+    // owner counterpart (timeout = channel death) is pinned by
+    // `FanInOwner_PendingTimeout_ClosesChannel` below.
     HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch.cons.pt"));
+    HubStateTestAccess::on_channel_registered(
+        s, make_channel("ch.cons.pt", ChannelTopology::FanOut));
     HubStateTestAccess::on_consumer_joined(s, "ch.cons.pt", make_consumer("cons.B.uid00000002"));
 
     // Drive Connected→Pending first; pending-timeout is a no-op on
@@ -3647,8 +3747,8 @@ TEST(HubStateConsumerPendingTimeout, TransitionsToDisconnected_ChannelSurvives)
 
     EXPECT_TRUE(pt.removed) << "ChannelEntry.consumers[] slot erased for cons.B";
     EXPECT_FALSE(pt.channel_now_empty)
-        << "Consumer-presence disconnect MUST NOT mark the channel empty — "
-           "producer side owns channel teardown (HEP-CORE-0023 §2.1.1).";
+        << "A dialing consumer's disconnect MUST NOT mark the channel empty — "
+           "the fan-out producer-owner controls teardown (HEP-CORE-0017 §4.7.0.2 T2).";
 
     // Channel still exists with producer-presence intact and the
     // consumer slot gone.
@@ -3676,7 +3776,8 @@ TEST(HubStateConsumerPendingTimeout, LastPresence_TriggersRoleDisconnected)
     // (Wave M3 step 5b).  Verifies via observable role-disappearance:
     // post-timeout, `s.role(uid)` returns nullopt.
     HubState s;
-    HubStateTestAccess::on_channel_registered(s, make_channel("ch.cons.lp"));
+    HubStateTestAccess::on_channel_registered(
+        s, make_channel("ch.cons.lp", ChannelTopology::FanOut));
     HubStateTestAccess::on_consumer_joined(s, "ch.cons.lp", make_consumer("cons.B.uid00000002"));
 
     ASSERT_TRUE(s.role("cons.B.uid00000002").has_value());
@@ -3697,6 +3798,43 @@ TEST(HubStateConsumerPendingTimeout, LastPresence_TriggersRoleDisconnected)
 
     // Channel still alive (producer remains).
     EXPECT_TRUE(s.channel("ch.cons.lp").has_value());
+}
+
+TEST(HubStateConsumerPendingTimeout, FanInOwner_PendingTimeout_ClosesChannel)
+{
+    // HEP-CORE-0017 §4.7.0.2 T2 — under fan-in the consumer is the
+    // binding OWNER: its heartbeat death is channel death.  The
+    // producers (dialers) on the channel are terminated by the same
+    // atomic teardown, and the close handler fires exactly once.
+    HubState s;
+    std::vector<std::string> closed;
+    s.subscribe_channel_closed([&](const std::string &name) { closed.push_back(name); });
+
+    const std::string owner_uid = open_fanin(s, "ch.cons.owner-pt");
+    ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
+                  s, "ch.cons.owner-pt", make_schema_invariants(), make_zmq_transport(),
+                  make_producer("prod.camA.uid00000001", 1001))
+                  .producer_result,
+              AddProducerResult::Created);
+
+    // Drive the owner Connected → Pending → Disconnected via the
+    // heartbeat FSM (pending-timeout is a no-op on a Connected
+    // presence).
+    HubStateTestAccess::on_heartbeat(s, "ch.cons.owner-pt", owner_uid, "consumer",
+                                     std::chrono::steady_clock::now(), std::nullopt);
+    HubStateTestAccess::on_heartbeat_timeout(s, "ch.cons.owner-pt", owner_uid, "consumer");
+    auto pt = HubStateTestAccess::on_pending_timeout(s, "ch.cons.owner-pt", owner_uid, "consumer");
+
+    EXPECT_TRUE(pt.removed);
+    EXPECT_TRUE(pt.channel_now_empty)
+        << "T2: the fan-in owner's pending-timeout must report channel death "
+           "so the broker runs the channel close-out fan-out";
+    EXPECT_EQ(closed, (std::vector<std::string>{"ch.cons.owner-pt"}));
+    EXPECT_FALSE(s.channel("ch.cons.owner-pt").has_value());
+    // Terminal cleanup cascaded to every party on the channel.
+    EXPECT_FALSE(s.role(owner_uid).has_value());
+    EXPECT_FALSE(s.role("prod.camA.uid00000001").has_value());
+    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
 }
 
 // ─── HEP-CORE-0036 §4.1 channel-access index — D1 ────────────────────────────
@@ -3971,9 +4109,10 @@ TEST(HubStateChannelAccess, IsRoleRegistered_FindsConsumer)
 TEST(HubStateChannelAccess, IsRoleRegistered_FindsProducer)
 {
     // Producers register via `_on_producer_added_fanin` — use its
-    // helper.  Add one producer and verify lookup.
+    // helper.  Owner opens first; add one producer and verify lookup.
     HubState s;
     const std::string ch = "ch.reg.prod";
+    open_fanin(s, ch);
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(s, ch, make_schema_invariants(),
                                                           make_zmq_transport(),
                                                           make_producer("prod.a.uid", 6001))
@@ -4331,8 +4470,9 @@ TEST(HubStateHep0042, ProducerInstance_BumpsOnCrashRestartSameChannel)
     const std::string ch = "ch.hep42.crash";
 
     HubState s;
-    // Fan-in channel — multi-producer requires explicit topology
-    // declaration under the topology-migration model.
+    // Fan-in channel — owner opens, then multi-producer admission via
+    // explicit topology declaration.
+    open_fanin(s, ch);
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(), make_producer(uid, 3001))
                   .producer_result,
@@ -4384,7 +4524,8 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnReRegistration)
     }
 
     // Register + advance confirmed to 42.  Fan-in for the multi-producer
-    // sibling scenario below.
+    // sibling scenario below — owner opens the book first.
+    open_fanin(s, ch);
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(), make_producer(uid, 4001))
                   .producer_result,
@@ -4494,7 +4635,8 @@ TEST(HubStateHep0042, ConfirmedVersion_ResetOnHeartbeatTimeout)
     {
         HubStateTestAccess::on_consumer_authorized(s, ch, "PUB-" + std::to_string(i));
     }
-    // Fan-in — two producers on one channel per the topology-migration model.
+    // Fan-in — owner opens, then two producers join.
+    open_fanin(s, ch);
     ASSERT_EQ(HubStateTestAccess::on_producer_added_fanin(
                   s, ch, make_schema_invariants(), make_zmq_transport(), make_producer(uid_a, 5001))
                   .producer_result,

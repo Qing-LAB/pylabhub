@@ -2956,8 +2956,8 @@ RoleAPIBase::extract_hub_heartbeat_max(const nlohmann::json &reg_ack_body) noexc
 // Broker protocol helpers (require ctrl thread running)
 // ============================================================================
 
-std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(const nlohmann::json &opts,
-                                                                     int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(
+    const nlohmann::json &opts, int timeout_ms, const std::function<bool()> &is_cancelled)
 {
     // Class A (channel-bound) — route via handler's channel_index_.
     const std::string ch = opts.value("channel_name", std::string{});
@@ -2985,6 +2985,59 @@ std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(const nlohm
     }
 
     auto result = bc->register_channel(opts, timeout_ms);
+
+    // HEP-CORE-0017 §4.7.0.1 C3 — owner-first retry.  A fan-in
+    // producer is the DIALING side; the broker replies AWAITING_OWNER
+    // (immediate, never pends) while the consumer-owner has not opened
+    // the book yet.  Retry within the caller's total budget
+    // `timeout_ms`; three stop conditions bound the loop (no dead-loop
+    // is possible): the time cap, the `is_cancelled` predicate
+    // (shutdown / critical-error during startup breaks out on the next
+    // 100 ms tick), and a dropped broker link.  On exhaustion the last
+    // AWAITING_OWNER reply surfaces to the caller, which fails role
+    // startup with the standard fatal REG diagnostic — the
+    // misconfiguration case ("owner never comes") cannot hang.
+    // NOTE: CHANNEL_CLOSING_NOTIFY does not gate this loop — while
+    // awaiting the owner no channel exists yet, so there is nothing to
+    // close; time + cancellation are the bounds.
+    const auto is_awaiting_owner = [](const std::optional<nlohmann::json> &r)
+    {
+        return r.has_value() && r->value("status", std::string{}) == "error" &&
+               r->value("error_code", std::string{}) == "AWAITING_OWNER";
+    };
+    const auto retry_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
+    while (is_awaiting_owner(result))
+    {
+        if (std::chrono::steady_clock::now() >= retry_deadline)
+        {
+            LOGGER_WARN("[{}] REG_REQ for '{}' budget ({} ms) exhausted while awaiting "
+                        "the channel owner — giving up (is the fan-in consumer-owner "
+                        "configured to start?)",
+                        pImpl->short_tag, ch, timeout_ms);
+            break;
+        }
+        if (is_cancelled && is_cancelled())
+        {
+            LOGGER_INFO("[{}] REG_REQ owner-wait for '{}' cancelled (shutdown observed)",
+                        pImpl->short_tag, ch);
+            break;
+        }
+        if (!bc->is_connected())
+        {
+            LOGGER_ERROR("[{}] REG_REQ owner-wait for '{}' aborted — broker link lost",
+                         pImpl->short_tag, ch);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      retry_deadline - std::chrono::steady_clock::now())
+                                      .count();
+        if (remaining_ms <= 0)
+            break;
+        result = bc->register_channel(opts, static_cast<int>(remaining_ms));
+    }
+
     // Per HEP-CORE-0007 §12.3, a request-reply method's optional<json>
     // now carries the broker's response body (success OR error).  nullopt
     // means no response (timeout/disconnect).  Status field discriminates
@@ -3082,8 +3135,8 @@ std::optional<nlohmann::json> RoleAPIBase::discover_channel(const std::string &c
     return result;
 }
 
-std::optional<nlohmann::json> RoleAPIBase::register_consumer(const nlohmann::json &opts,
-                                                             int timeout_ms)
+std::optional<nlohmann::json> RoleAPIBase::register_consumer(
+    const nlohmann::json &opts, int timeout_ms, const std::function<bool()> &is_cancelled)
 {
     // Class A — route via handler when active.
     const std::string ch = opts.value("channel_name", std::string{});
@@ -3145,11 +3198,22 @@ std::optional<nlohmann::json> RoleAPIBase::register_consumer(const nlohmann::jso
                 return true;
         return false;
     };
+    // AWAITING_OWNER (HEP-CORE-0017 §4.7.0.1 C3) joins the retryable
+    // set: under fan-out / one-to-one the consumer is the DIALING side
+    // and the producer-owner may simply not have opened the channel
+    // yet.  Retryable by definition — no `reason` field involved.
+    const auto is_retryable_error = [&](const nlohmann::json &r) -> bool
+    {
+        if (r.value("status", std::string{}) != "error")
+            return false;
+        const auto code = r.value("error_code", std::string{});
+        if (code == "AWAITING_OWNER")
+            return true;
+        return code == "CHANNEL_NOT_READY" && is_retryable_reason(r);
+    };
     const auto retry_deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
-    while (result.has_value() && result->value("status", std::string{}) == "error" &&
-           result->value("error_code", std::string{}) == "CHANNEL_NOT_READY" &&
-           is_retryable_reason(*result))
+    while (result.has_value() && is_retryable_error(*result))
     {
         if (std::chrono::steady_clock::now() >= retry_deadline)
         {
@@ -3157,6 +3221,18 @@ std::optional<nlohmann::json> RoleAPIBase::register_consumer(const nlohmann::jso
                         "waiting for channel to become ready (last broker "
                         "reason: '{}')",
                         pImpl->short_tag, ch, result->value("message", std::string{}));
+            break;
+        }
+        if (is_cancelled && is_cancelled())
+        {
+            LOGGER_INFO("[{}] CONSUMER_REG_REQ retry for '{}' cancelled (shutdown observed)",
+                        pImpl->short_tag, ch);
+            break;
+        }
+        if (!bc->is_connected())
+        {
+            LOGGER_ERROR("[{}] CONSUMER_REG_REQ retry for '{}' aborted — broker link lost",
+                         pImpl->short_tag, ch);
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});

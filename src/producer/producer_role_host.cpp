@@ -386,14 +386,28 @@ void ProducerRoleHost::worker_main_()
         // Inbox metadata (HEP-CORE-0034 §10.2; no-op if no inbox).
         api_ref.append_inbox_to_reg(reg_opts, inbox_cfg_);
 
+        // Shutdown predicate shared by the establishment steps below
+        // (REG owner-wait retry + finalize_channel_connect): a
+        // shutdown / critical-error during startup must break the
+        // bounded waits immediately.
+        auto is_cancelled = [&core_]() -> bool
+        {
+            return core_.is_shutdown_requested() || core_.is_critical_error() ||
+                   core_.is_process_exit_requested();
+        };
+
         // 6d — REG_REQ + heartbeat install (the post-spawn block legacy
         // start_ctrl_thread ran internally; explicit at this layer in
         // handler-mode).  register_producer_channel transitions the
         // matching Presence's `registration_state` through
         // RegRequestPending → Registered on success (audit S1+O4,
         // 2026-05-17 — replaces the pre-S1 `shared.producer_channel`
-        // string).
-        auto reg_result = api_ref.register_producer_channel(reg_opts);
+        // string).  `init_timeout_ms` is the TOTAL budget: under
+        // fan-in this producer is the dialing side and the broker's
+        // AWAITING_OWNER reply is retried inside until the
+        // consumer-owner opens the channel (HEP-CORE-0017 §4.7.0.1 C3).
+        auto reg_result = api_ref.register_producer_channel(
+            reg_opts, static_cast<int>(config_.timing().init_timeout_ms), is_cancelled);
         if (!reg_result.has_value() || reg_result->value("status", std::string{}) != "success")
         {
             // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL — there
@@ -431,11 +445,6 @@ void ProducerRoleHost::worker_main_()
         // (every other topology / transport combination).  Role host
         // sees a uniform verb; no `topology == FanIn` branching, no
         // SMS penetration for the pubkey, no wait/dial pairing.
-        auto is_cancelled = [&core_]() -> bool
-        {
-            return core_.is_shutdown_requested() || core_.is_critical_error() ||
-                   core_.is_process_exit_requested();
-        };
         if (!api_ref.finalize_channel_connect(config_.out_channel(),
                                               config_.timing().init_timeout_ms, is_cancelled))
         {

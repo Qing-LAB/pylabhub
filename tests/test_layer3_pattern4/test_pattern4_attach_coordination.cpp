@@ -29,8 +29,11 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 namespace fs = std::filesystem;
 using pylabhub::tests::IsolatedProcessTest;
@@ -167,7 +170,7 @@ class Pattern4AttachCoordinationTest : public IsolatedProcessTest
     /// fires a fan-out CHANNEL_AUTH_CHANGED_NOTIFY to every producer
     /// of K (per HEP-CORE-0036 §6.5).
     void consumer_reg(BrokerWireClient &client, const std::string &channel, const std::string &uid,
-                      const std::string &pubkey)
+                      const std::string &pubkey, const std::string &topology = {})
     {
         using pylabhub::kLongTimeoutMs;
 
@@ -182,12 +185,43 @@ class Pattern4AttachCoordinationTest : public IsolatedProcessTest
         in.role_type = "consumer";
         in.data_transport = "zmq";
         in.zmq_pubkey = pubkey;
+        // Non-empty on the fan-in owner-open path (HEP-CORE-0017
+        // §4.7.0.1: the consumer-owner declares "fan-in" and opens the
+        // channel; producers dial in afterwards).
+        in.channel_topology = topology;
         auto payload = pylabhub::hub::build_consumer_reg_payload(in);
         auto reply = client.request("CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
                                     std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "consumer REG_REQ: no reply";
         ASSERT_EQ(reply->value("status", ""), "success")
             << "consumer REG_REQ failed: " << reply->dump();
+    }
+
+    /// Drain unsolicited frames from `client` until one of msg_type
+    /// `want` arrives (returns its body+type) or the budget elapses
+    /// (returns nullopt).  Non-matching frames are discarded — under
+    /// owner-first ordering the consumer registers FIRST, so its
+    /// DEALER also receives the CHANNEL_AUTH_CHANGED_NOTIFY fan-outs
+    /// for each later-arriving producer; a bare receive() would grab
+    /// one of those instead of the awaited reply.  (Mirror of
+    /// `Pattern4WireTest::drain_for` in pattern4_wire_test_base.h.)
+    std::optional<std::pair<std::string, nlohmann::json>>
+    drain_for(BrokerWireClient &client, std::string_view want, std::chrono::milliseconds budget)
+    {
+        using clock = std::chrono::steady_clock;
+        const auto deadline = clock::now() + budget;
+        while (true)
+        {
+            const auto now = clock::now();
+            if (now >= deadline)
+                return std::nullopt;
+            auto frame = client.receive(
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now));
+            if (!frame)
+                return std::nullopt;
+            if (frame->first == want)
+                return frame;
+        }
     }
 
     /// Log-barrier — blocks until the broker logs the §5.4 step 5
@@ -644,17 +678,19 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
     auto p2_client = make_wire_client(ctx, setup, p2_kp, producer2_uid);
     auto cons_client = make_wire_client(ctx, setup, cons_kp, consumer_uid);
 
-    // Fan-in — two producers on one channel per the topology-migration
-    // model.  Default topology (one-to-one) would trip
-    // ONE_TO_ONE_CARDINALITY_VIOLATED on producer2.
+    // Fan-in, owner-first (HEP-CORE-0017 §4.7.0.1): the consumer-owner
+    // opens the channel, then both producers dial in.  (A producer
+    // arriving first would get the retryable AWAITING_OWNER; default
+    // one-to-one topology would trip ONE_TO_ONE_CARDINALITY_VIOLATED
+    // on producer2.)
+    ASSERT_NO_FATAL_FAILURE(consumer_reg(cons_client, channel_name, consumer_uid,
+                                         cons_kp.public_z85, /*topology=*/"fan-in"));
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         p1_client, channel_name, producer1_uid, p1_kp.public_z85, producer1_data_port,
         /*out_instance_id=*/nullptr, /*channel_topology=*/"fan-in"));
     ASSERT_NO_FATAL_FAILURE(producer_reg_and_heartbeat(
         p2_client, channel_name, producer2_uid, p2_kp.public_z85, producer2_data_port,
         /*out_instance_id=*/nullptr, /*channel_topology=*/"fan-in"));
-    ASSERT_NO_FATAL_FAILURE(
-        consumer_reg(cons_client, channel_name, consumer_uid, cons_kp.public_z85));
 
     // Wait-path: consumer targets P1.  Fast-path misses because
     // neither producer has sent APPLIED_REQ.
@@ -687,9 +723,13 @@ TEST_F(Pattern4AttachCoordinationTest, WaitPathDrainOnProducerDisconnect)
         ASSERT_EQ(reply->value("status", ""), "success") << reply->dump();
     }
 
-    // Consumer receives the drain-denied reply.
+    // Consumer receives the drain-denied reply.  drain_for: with the
+    // consumer registered FIRST (owner-first), its DEALER also holds
+    // the CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted) frames for P1/P2
+    // — skip those to reach the deferred ATTACH reply.
     {
-        auto reply = cons_client.receive(std::chrono::milliseconds{kLongTimeoutMs});
+        auto reply = drain_for(cons_client, "CONSUMER_ATTACH_ACK_ZMQ",
+                               std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "consumer did not receive drain-denied reply — "
                                           "producer-disconnect drain (§5.4 producer_not_live) "
                                           "likely broken.";

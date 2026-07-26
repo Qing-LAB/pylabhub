@@ -438,11 +438,27 @@ void ProcessorRoleHost::worker_main_()
         // first; same precedence here).
         std::optional<int> hub_max;
 
+        // Shutdown predicate shared by the establishment steps below
+        // (REG owner-wait retries + finalize_channel_connect): a
+        // shutdown / critical-error during startup must break the
+        // bounded waits immediately.
+        auto is_cancelled = [&core_]() -> bool
+        {
+            return core_.is_shutdown_requested() || core_.is_critical_error() ||
+                   core_.is_process_exit_requested();
+        };
+
         // Per HEP-CORE-0036 §3.5.1 registration failure is FATAL on BOTH
         // the in-side (consumer registration) and out-side (producer
         // registration).  Either DEREG side cleans up via
-        // do_role_teardown presence-walk.
-        auto prod_result = api_ref.register_producer_channel(prod_reg);
+        // do_role_teardown presence-walk.  `init_timeout_ms` is each
+        // REG's TOTAL budget: on whichever side this processor is the
+        // dialing role (fan-in OUT producer / fan-out-or-1:1 IN
+        // consumer), the broker's AWAITING_OWNER reply is retried
+        // inside until the owner opens the channel (HEP-CORE-0017
+        // §4.7.0.1 C3).
+        auto prod_result = api_ref.register_producer_channel(
+            prod_reg, static_cast<int>(config_.timing().init_timeout_ms), is_cancelled);
         if (!prod_result.has_value() || prod_result->value("status", std::string{}) != "success")
         {
             LOGGER_ERROR("[proc] Output producer registration failed — "
@@ -469,7 +485,8 @@ void ProcessorRoleHost::worker_main_()
                 hub_max = m;
         }
 
-        auto cons_result = api_ref.register_consumer(cons_reg);
+        auto cons_result = api_ref.register_consumer(
+            cons_reg, static_cast<int>(config_.timing().init_timeout_ms), is_cancelled);
         if (!cons_result.has_value() || cons_result->value("status", std::string{}) != "success")
         {
             LOGGER_ERROR("[proc] Input consumer registration failed — "
@@ -506,11 +523,6 @@ void ProcessorRoleHost::worker_main_()
         // which surfaces on the processor's OUT side when the
         // processor's output channel is fan-in.  Uniform call per
         // channel; the queue decides no-op vs poll.
-        auto is_cancelled = [&core_]() -> bool
-        {
-            return core_.is_shutdown_requested() || core_.is_critical_error() ||
-                   core_.is_process_exit_requested();
-        };
         if (!api_ref.finalize_channel_connect(config_.in_channel(),
                                               config_.timing().init_timeout_ms, is_cancelled))
         {

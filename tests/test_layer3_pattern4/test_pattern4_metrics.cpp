@@ -187,15 +187,21 @@ TEST_F(Pattern4MetricsTest, FanInTwoProducersMetricsDoNotOverwrite)
     const std::string channel = "metrics.fanin" + suffix;
     const std::string uid_a = "prod.a." + channel;
     const std::string uid_b = "prod.b." + channel;
+    const std::string cons_uid = "cons.owner." + channel;
 
     const fs::path temp_dir = make_test_temp_dir("metrics_fanin");
-    const auto setup = make_pattern4_setup({uid_a, uid_b});
+    const auto setup = make_pattern4_setup({uid_a, uid_b, cons_uid});
     write_pattern4_setup(setup, temp_dir / "setup.json");
     auto broker = SPAWN_BROKER(temp_dir);
     expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
                milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
+    // Owner-first (HEP-CORE-0017 §4.7.0.1): the fan-in consumer-owner
+    // opens the channel; producers dial in afterwards (a producer
+    // arriving first would get the retryable AWAITING_OWNER).
+    auto owner = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(owner, setup, channel, cons_uid, nullptr, "fan-in"));
     auto a = make_wire_client(ctx, setup, uid_a);
     ASSERT_NO_FATAL_FAILURE(register_producer(a, setup, channel, uid_a, nullptr, "fan-in"));
     auto b = make_wire_client(ctx, setup, uid_b);

@@ -114,6 +114,12 @@ struct HubStateTestAccess
     /// under the topology-migration model (implicit multi-producer via
     /// the pre-topology model is no longer supported — default topology
     /// is `OneToOne`).
+    ///
+    /// Owner-first (HEP-CORE-0017 §4.7.0.1 C2): a fan-in producer is
+    /// the DIALING side and can only JOIN an existing channel — a
+    /// fresh-channel call is refused with
+    /// `topology_error_code == "AWAITING_OWNER"`.  Open the channel
+    /// via `open_fanin_channel` (the consumer-owner) first.
     static ProducerAdmissionResult on_producer_added_fanin(HubState &s,
                                                            const std::string &channel_name,
                                                            ChannelSchemaInvariants schema,
@@ -122,6 +128,18 @@ struct HubStateTestAccess
     {
         return s._on_producer_added(channel_name, std::move(schema), std::move(transport),
                                     ChannelTopology::FanIn, std::move(producer));
+    }
+    /// Owner-first fan-in channel open (HEP-CORE-0017 §4.7.0.1 C1/C2):
+    /// the consumer-OWNER opens the book with the channel invariants,
+    /// exactly as the production CONSUMER_REG_REQ consumer-opens path
+    /// does.  Fan-in tests call this BEFORE admitting producers.
+    static ConsumerAdmissionResult open_fanin_channel(HubState &s, const std::string &channel,
+                                                      ConsumerEntry owner,
+                                                      ChannelSchemaInvariants schema,
+                                                      ChannelTransportInvariants transport)
+    {
+        return s._on_consumer_joined(channel, std::move(owner), ChannelTopology::FanIn,
+                                     std::move(schema), std::move(transport));
     }
     /// Wave M2.5 step 4 — additive DEREG_REQ / producer-drop entry
     /// point.  Tests drive multi-producer drop scenarios through this
@@ -149,9 +167,14 @@ struct HubStateTestAccess
     {
         return s._on_consumer_joined(ch, std::move(c), declared_topology);
     }
-    static void on_consumer_left(HubState &s, const std::string &ch, const std::string &uid)
+    /// Owner-aware (HEP-CORE-0017 §4.7.0.2 T2): under fan-in the
+    /// consumer is the binding owner — its leave closes the channel
+    /// (`channel_now_empty == true`); under fan-out / one-to-one it is
+    /// a dialer and only its slot is erased.
+    static RemoveProducerResult on_consumer_left(HubState &s, const std::string &ch,
+                                                 const std::string &uid)
     {
-        s._on_consumer_left(ch, uid);
+        return s._on_consumer_left(ch, uid);
     }
     static void on_heartbeat(HubState &s, const std::string &ch, const std::string &uid,
                              const std::string &role_type,
@@ -175,9 +198,11 @@ struct HubStateTestAccess
     /// Wave M2.5 step 6 + Wave-B M2 (2/3): per-presence Pending →
     /// Disconnected forwarder.  2-arg overload defaults to producer for
     /// backward-compat; consumer tests use the 3-arg form.  Returns
-    /// the typed RemoveProducerResult — for the consumer path,
-    /// `removed` reflects ChannelEntry.consumers[] erase and
-    /// `channel_now_empty` is always false (consumer never tears down).
+    /// the typed RemoveProducerResult.  Teardown is OWNER-bound
+    /// (HEP-CORE-0017 §4.7.0.2 T2): the consumer path erases the slot
+    /// under fan-out / one-to-one but CLOSES the channel under fan-in
+    /// (consumer = owner); the producer path closes only under
+    /// fan-out / one-to-one (producer = owner).
     static RemoveProducerResult on_pending_timeout(HubState &s, const std::string &ch,
                                                    const std::string &uid)
     {

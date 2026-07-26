@@ -1022,16 +1022,33 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     // ── Broker protocol helpers (require ctrl thread running) ────────────
 
     /// Register a producer channel (REG_REQ → REG_ACK).
+    ///
+    /// `timeout_ms` is the TOTAL registration budget: a broker
+    /// `AWAITING_OWNER` reply (HEP-CORE-0017 §4.7.0.1 C3 — this role
+    /// is the dialing side and the binding owner has not opened the
+    /// channel yet) is retried on a bounded cadence until the budget
+    /// is exhausted, `is_cancelled` fires (shutdown during startup),
+    /// or the broker link drops.  Same signature shape as
+    /// `finalize_channel_connect` — role hosts pass their
+    /// `init_timeout_ms` + shutdown predicate.
     [[nodiscard]] std::optional<nlohmann::json>
-    register_producer_channel(const nlohmann::json &opts, int timeout_ms = 5000);
+    register_producer_channel(const nlohmann::json &opts, int timeout_ms = 5000,
+                              const std::function<bool()> &is_cancelled = {});
 
     /// Discover a channel (DISC_REQ → DISC_ACK).
     [[nodiscard]] std::optional<nlohmann::json> discover_channel(const std::string &channel,
                                                                  int timeout_ms = 10000);
 
     /// Register as consumer (CONSUMER_REG_REQ → CONSUMER_REG_ACK).
-    [[nodiscard]] std::optional<nlohmann::json> register_consumer(const nlohmann::json &opts,
-                                                                  int timeout_ms = 5000);
+    ///
+    /// `timeout_ms` is the TOTAL registration budget: transient
+    /// `CHANNEL_NOT_READY` reasons AND the owner-first
+    /// `AWAITING_OWNER` reply (HEP-CORE-0017 §4.7.0.1 C3) are retried
+    /// on a bounded cadence until the budget is exhausted,
+    /// `is_cancelled` fires, or the broker link drops.
+    [[nodiscard]] std::optional<nlohmann::json>
+    register_consumer(const nlohmann::json &opts, int timeout_ms = 5000,
+                      const std::function<bool()> &is_cancelled = {});
 
     /// Deregister a producer channel (DEREG_REQ → DEREG_ACK or ERROR).
     /// Returns the broker's response body (success or error per HEP-CORE-0007

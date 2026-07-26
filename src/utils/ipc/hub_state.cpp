@@ -737,14 +737,14 @@ HubState::_add_consumer(const std::string &channel, ConsumerEntry entry,
     return result;
 }
 
-void HubState::_remove_consumer(const std::string &channel, const std::string &role_uid)
+bool HubState::_remove_consumer(const std::string &channel, const std::string &role_uid)
 {
     bool removed = false;
     {
         std::unique_lock lk(pImpl->mu);
         auto it = pImpl->channels.find(channel);
         if (it == pImpl->channels.end())
-            return;
+            return false;
         auto &cons = it->second.consumers;
         auto old = cons.size();
         cons.erase(std::remove_if(cons.begin(), cons.end(),
@@ -773,9 +773,10 @@ void HubState::_remove_consumer(const std::string &channel, const std::string &r
         }
     }
     if (!removed)
-        return;
+        return false;
     for (auto &h : snapshot_handlers(pImpl->handlers_mu, pImpl->cons_removed))
         h(channel, role_uid);
+    return true;
 }
 
 void HubState::_set_role_registered(RoleEntry entry)
@@ -1315,6 +1316,20 @@ HubState::_on_producer_added(const std::string &channel_name, ChannelSchemaInvar
             // fresh channel (0 producers, 0 consumers).
             const ChannelTopology effective_topology =
                 declared_topology.value_or(ChannelTopology::OneToOne);
+            // HEP-CORE-0017 §4.7.0.1 C2 — under fan-in the consumer is
+            // the binding owner; a producer (dialing side) must never
+            // open the book.  Reject with the retryable AWAITING_OWNER
+            // code.  Checked HERE, under the writer lock, so the
+            // broker handler's side-effect-free fast-path gate cannot
+            // race an owner teardown between its snapshot and this
+            // admission.  (Mirror of `_add_consumer`'s
+            // consumer_is_opener rule, which already restricts the
+            // consumer-side open to fan-in.)
+            if (effective_topology == ChannelTopology::FanIn)
+            {
+                result.topology_error_code = "AWAITING_OWNER";
+                return result;
+            }
             const char *open_err = nullptr;
             ChannelEntry *new_entry =
                 _open_channel_locked(channel_name, schema, transport, effective_topology, open_err);
@@ -1490,21 +1505,29 @@ RemoveProducerResult HubState::_on_producer_dropped(const std::string &channel_n
         if (it == pImpl->channels.end())
             return result; // removed=false
 
-        // Probe before mutating: is the uid registered, and is it the
-        // LAST producer on this channel?
+        // Probe before mutating: is the uid registered, and does its
+        // drop tear the channel down?  Teardown is OWNER-bound per
+        // HEP-CORE-0017 §4.7.0.2 T2: under fan-out / one-to-one the
+        // producer is the binding owner, so the LAST producer's drop
+        // closes the channel; under fan-in producers are the dialing
+        // side — a producer drop, even the last one, only erases its
+        // slot and the consumer-owner keeps the book open.
         //
-        //  - Non-last (>=2 producers remain): remove now; channel
-        //    survives.  Wave M3 step 5c (2026-05-11) — also transition
-        //    the role's producer-presence Disconnected via on_dereg,
-        //    maintain the `channels` cache invariant, and dispatch
-        //    terminal cleanup after lock release.  Schema eviction
-        //    is owner-lifetime (HEP-CORE-0034 §7.2) — handled by
-        //    dispatch iff the role has no other alive presence.
-        //  - Last (this drop empties the channel): leave the producer
-        //    in the list and call `_on_channel_closed` below.
+        //  - Slot-erase path (non-last owner-side, or ANY fan-in
+        //    producer): remove now; channel survives.  Wave M3 step 5c
+        //    (2026-05-11) — also transition the role's producer-
+        //    presence Disconnected via on_dereg, maintain the
+        //    `channels` cache invariant, and dispatch terminal cleanup
+        //    after lock release.  Schema eviction is owner-lifetime
+        //    (HEP-CORE-0034 §7.2) — handled by dispatch iff the role
+        //    has no other alive presence.
+        //  - Teardown path (last producer AND producer owns): leave
+        //    the producer in the list and call `_on_channel_closed`
+        //    below.
         if (it->second.find_producer(role_uid) == nullptr)
             return result;
-        is_last_producer = (it->second.producer_count() == 1);
+        const bool producer_is_owner = (it->second.topology != ChannelTopology::FanIn);
+        is_last_producer = producer_is_owner && (it->second.producer_count() == 1);
         if (!is_last_producer)
         {
             auto rm = it->second.remove_producer(role_uid);
@@ -1680,15 +1703,45 @@ HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer
     return result;
 }
 
-void HubState::_on_consumer_left(const std::string &channel, const std::string &role_uid)
+RemoveProducerResult HubState::_on_consumer_left(const std::string &channel,
+                                                 const std::string &role_uid)
 {
+    RemoveProducerResult result{false, false};
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
     {
         bump_invalid_identifier(*pImpl);
-        return;
+        return result;
     }
-    _remove_consumer(channel, role_uid);
+
+    // Owner probe (HEP-CORE-0017 §4.7.0.2 T2): under fan-in the
+    // consumer is the binding owner — its voluntary leave closes the
+    // channel.  The slot is left in consumers[] so
+    // `_on_channel_closed`'s uid snapshot includes this uid and
+    // terminal cleanup dispatches for it (same ordering discipline as
+    // the last-producer DEREG path in `_on_producer_dropped`).
+    bool owner_teardown = false;
+    if (!role_uid.empty())
+    {
+        std::shared_lock rlk(pImpl->mu);
+        auto it = pImpl->channels.find(channel);
+        owner_teardown =
+            it != pImpl->channels.end() && it->second.topology == ChannelTopology::FanIn &&
+            std::any_of(it->second.consumers.begin(), it->second.consumers.end(),
+                        [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
+    }
+    if (owner_teardown)
+    {
+        _on_channel_closed(channel, ChannelCloseReason::VoluntaryDereg);
+        result.removed = true;
+        result.channel_now_empty = true;
+        return result;
+    }
+
+    // Dialing-side (fan-out / one-to-one) or slot-less leave: erase
+    // the slot; the channel survives (T2 — a dialer leaving closes
+    // nothing).
+    result.removed = _remove_consumer(channel, role_uid);
     // Route the consumer-presence termination through the M3
     // controlled-access API (`on_dereg`).  Do NOT mark the whole role
     // disconnected here — the role may still be producing on other
@@ -1698,16 +1751,17 @@ void HubState::_on_consumer_left(const std::string &channel, const std::string &
     // (entry erase) is decided after lock release by
     // `_dispatch_role_disconnected_if_dead`.
     if (role_uid.empty())
-        return;
+        return result;
     {
         std::unique_lock lk(pImpl->mu);
         auto it = pImpl->roles.find(role_uid);
         if (it == pImpl->roles.end())
-            return;
+            return result;
         (void)it->second.on_dereg(channel, "consumer");
         (void)it->second.drop_channel_if_orphaned(channel);
     }
     _dispatch_role_disconnected_if_dead(role_uid);
+    return result;
 }
 
 HeartbeatEffect HubState::_on_heartbeat(const std::string &channel, const std::string &role_uid,
@@ -1870,16 +1924,19 @@ RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
         return result;
 
     // ── Consumer-presence path ─────────────────────────────────────
-    // HEP-CORE-0023 §2.1 + §2.1.1: consumer-presence Pending →
-    // Disconnected does NOT tear down the channel — only the
-    // producer side controls channel observability + teardown.  Erase
-    // the consumer slot from `ChannelEntry.consumers[]`, run the
-    // role's `drop_channel_if_orphaned` cache cleanup, and dispatch
-    // the role-disconnect cascade in case this was the role's last
-    // alive presence anywhere.
+    // Teardown is OWNER-bound (HEP-CORE-0017 §4.7.0.2 T2).  Under
+    // fan-out / one-to-one the consumer is the dialing side: its
+    // Pending → Disconnected only erases the consumer slot from
+    // `ChannelEntry.consumers[]`, runs the role's
+    // `drop_channel_if_orphaned` cache cleanup, and dispatches the
+    // role-disconnect cascade in case this was the role's last alive
+    // presence anywhere.  Under fan-in the consumer IS the binding
+    // owner: its death closes the channel (atomic teardown, same
+    // sequence as the owning-producer path below).
     if (role_type == "consumer")
     {
         bool eligible = false;
+        bool owner_teardown = false;
         {
             std::unique_lock lk(pImpl->mu);
             auto it = pImpl->channels.find(channel);
@@ -1896,24 +1953,49 @@ RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
             ++pImpl->counters.pending_to_deregistered_total;
             eligible = true;
 
-            // `remove_consumer` is best-effort: a consumer slot may
-            // not exist on `ChannelEntry.consumers[]` for every
-            // consumer-presence (e.g., presence created without an
-            // accompanying CONSUMER_REG_REQ).  Reflect the actual
-            // mutation in `result.removed`.
-            result.removed = it->second.remove_consumer(role_uid);
-            result.channel_now_empty = false;
-            (void)rit->second.drop_channel_if_orphaned(channel);
+            // Owner probe: fan-in + this uid actually holds a consumer
+            // slot on the book.  (A consumer-presence without a slot —
+            // presence created without an accompanying
+            // CONSUMER_REG_REQ — is never the owner.)
+            owner_teardown =
+                (it->second.topology == ChannelTopology::FanIn) &&
+                std::any_of(it->second.consumers.begin(), it->second.consumers.end(),
+                            [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
+            if (!owner_teardown)
+            {
+                // `remove_consumer` is best-effort: a consumer slot may
+                // not exist on `ChannelEntry.consumers[]` for every
+                // consumer-presence (e.g., presence created without an
+                // accompanying CONSUMER_REG_REQ).  Reflect the actual
+                // mutation in `result.removed`.
+                result.removed = it->second.remove_consumer(role_uid);
+                result.channel_now_empty = false;
+                (void)rit->second.drop_channel_if_orphaned(channel);
+            }
+            // Owner path: leave the consumer slot in consumers[] so
+            // `_on_channel_closed`'s uid snapshot includes this uid →
+            // terminal cleanup dispatches for it (same ordering
+            // discipline as the last-producer path below).
         }
-        if (eligible)
+        if (owner_teardown)
+        {
+            _on_channel_closed(channel, ChannelCloseReason::HeartbeatTimeout);
+            result.removed = true;
+            result.channel_now_empty = true;
+        }
+        else if (eligible)
+        {
             _dispatch_role_disconnected_if_dead(role_uid);
+        }
         return result;
     }
 
-    // ── Producer-presence path (existing behavior) ─────────────────
+    // ── Producer-presence path ─────────────────────────────────────
     // HEP-CORE-0023 §2.1 + §2.1.1: producer-presence Pending →
     // Disconnected; atomic channel teardown fires ONLY on the LAST
-    // producer's transition.  No grace window, no Closing state.
+    // producer's transition AND only when the producer side is the
+    // binding owner (fan-out / one-to-one — HEP-CORE-0017 §4.7.0.2
+    // T2).  No grace window, no Closing state.
     //
     // The producer-presence's `Pending` state is the single-shot gate
     // — a concurrent timer fire that loses the writer-lock race
@@ -1952,10 +2034,15 @@ RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
             return result;
         ++pImpl->counters.pending_to_deregistered_total;
         eligible = true;
-        is_last_producer = (it->second.producer_count() == 1);
+        // Owner-bound teardown (HEP-CORE-0017 §4.7.0.2 T2) — same rule
+        // as `_on_producer_dropped`: only an owning producer's last
+        // drop closes the channel; fan-in producers are dialers and
+        // always take the slot-erase path.
+        const bool producer_is_owner = (it->second.topology != ChannelTopology::FanIn);
+        is_last_producer = producer_is_owner && (it->second.producer_count() == 1);
         if (!is_last_producer)
         {
-            // Multi-producer channel — drop just this one; channel
+            // Slot-erase path — drop just this one; channel
             // survives.  Producer-presence FSM already transitioned
             // Disconnected above via on_pending_timeout; maintain the
             // `channels` cache invariant (Wave M3 step 5d).

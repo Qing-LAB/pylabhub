@@ -28,15 +28,16 @@ admission.
 > against code today: the STATIC layer (topology enum, §3.3.0 factory dispatch,
 > role-code migration, `FanIn+shm` refusal) is COMPLETE and live; the
 > multi-producer fan-in DATA plane WORKS (§3.3 Pattern B, pinned green at L4 —
-> see the note under the table).  The genuine residual is DYNAMIC: the CODE
-> catch-up to the pinned owner-first establishment contract (HEP-0017 §4.7.0.1
-> C1–C7) — **S1 owner-locked `ChannelEntry`, S2 owner-death teardown, S3 dialer
-> fast-fail** (S4 peer-join callbacks shipped 2026-07-25).  **The R6 broker-pends
-> gate is RETIRED — do NOT build** (it fought the owner-first model; rationale in
-> the table + establishment-contract block below).  C step 7 (test spawn order)
-> is unblocked; E retirements + F demos follow S1–S3.  Consolidated plan: T2 = C
-> step 7; **T3 = S1–S3 (the real work, design detail below)**; T4 = Phase E;
-> T5 = Phase F/H.
+> see the note under the table).  **The DYNAMIC layer is now CODE-COMPLETE
+> (2026-07-26): S1 owner-locked `ChannelEntry` + `AWAITING_OWNER` retry, S2
+> owner-death teardown, S3 dialer fast-fail all SHIPPED as one unit** (T3;
+> S4 peer-join callbacks shipped 2026-07-25; S5 objective counts shipped as
+> task #74).  **The R6 broker-pends gate is RETIRED — do NOT build** (it
+> fought the owner-first model; rationale in the table + establishment-
+> contract block below).  C step 7's L3 half landed with T3 (fan-in wire
+> tests flipped consumer-first).  Remaining topology work: Phase E
+> retirements (T4, now unblocked) + F demos / L4 producer-first-spawn
+> keystone (T5).
 
 ## Status snapshot (2026-07-09) — REORDERED
 
@@ -62,11 +63,11 @@ on top of that abstraction.
 | C step 4 | `hub::Queue::create_reader/writer(topology, transport, opts)` unified factory (`hub_queue_factory.hpp`) | ✅ **COMPLETE** (`830f8383`, folded with step 5) | Static-methods-only class per HEP-0017 §3.3.0.  Two-level dispatch: §3.3.0 gate 1 (`FanIn+Shm` refused) then translate opts + delegate to `ZmqQueue::create_*` / `ShmQueue::create_*`.  Zero new state, zero new mechanisms. |
 | C step 5 | Transport-agnostic `RxOptions` / `TxOptions` structs per HEP-0017 §3.3.0 | ✅ **COMPLETE** (`830f8383`) | Landed with C step 4 — factory + option types shipped in one commit (factory without option types isn't independently useful).  Flat struct: common + zmq-specific + shm-specific side-by-side; factory reads only fields matching requested transport.  14 new L2 pin tests (dispatch + gate + parser + side-legality). |
 | C step 6 | **Role code migration** — `role_api_base.cpp` build_tx/build_rx_queue migrate to `hub::Queue::create_*` | ✅ **COMPLETE** (`3d4fe07a`, 2026-07-10) | Verified in code 2026-07-25: role queues built via `hub::Queue::create_writer/create_reader(topology, transport, opts)` (`role_api_base.cpp:649/716/768`); manual `if (transport=="shm")` dispatch gone.  (Table status previously said "NEXT" — stale by one day.) |
-| **C step 7** | **Test spawn-order migration** — L3 + L4 fan-in tests flip to consumer-first (BINDING side goes first) | ⏳ **NEXT** (unblocked — C step 6 shipped) | Its original purpose (unblock the 3 tests broken in the reverted R6 E1 attempt) is MOOT — those were fixed independently by the fan-in reader-correctness arc (07-11) + admission-ledger unification (07-13), all green.  What remains: align fan-in choreography with the §4.7.1 binding-first walkthrough + keep one producer-first case as the standby→notify catch-up pin.  (T2 of the 2026-07-25 consolidated plan.) |
+| **C step 7** | **Test spawn-order migration** — L3 + L4 fan-in tests flip to consumer-first (BINDING side goes first) | ✅ **L3 half COMPLETE (2026-07-26, landed with T3)** | L3 fan-in wire tests flipped consumer-first (`Pattern4Metrics.FanInTwoProducersMetricsDoNotOverwrite`, `Pattern4AttachCoordination.WaitPathDrainOnProducerDisconnect`); L2 hub_state fan-in suites migrated to the owner-opens helper; `ConsumerReg_ChannelNotFound` re-pinned to `AWAITING_OWNER`.  L4 fan-in Scenario C was already consumer-first.  Residual (T5): an L4 producer-FIRST spawn keystone that pins the concealed `awaiting_owner` retry end-to-end (dialer races ahead → retries → consumer opens → data flows). |
 | D phase field | CHANNEL_AUTH_CHANGED_NOTIFY phase field + engine bindings | ✅ **COMPLETE** — `8655f2fe..ed0456d5` | `phase=admitted/live/left` + `live_peers` + `consumer_count`/`producer_count` (3-engine parity) all live. |
 | ~~**D R6 gate**~~ | ~~R6 gate symmetrization (broker pends dialer REG)~~ | ❌ **RETIRED 2026-07-25 — do NOT build** | Superseded by the establishment contract (HEP-0017 §4.7.0.1, C1–C7).  R6 is an internet-model gate; under the owner-first *contract* the broker never pends — dial-safety is the role-side `CHECK_PEER_READY` poll (already shipped, C4), ordering robustness is the concealed `awaiting_owner` retry (C3).  R6 was reverted 2026-07-09 because it fought the shipped model.  Draft §5.4 marked RETIRED.  See the implementation slices below. |
-| E | Retirements — delete `push_to`/`pull_from`, `zmq_bind`, `producer_peers` vector + Tier-2 `.front()` assembly, `CONSUMER_ATTACH_REQ_ZMQ` pre-attach, `ProducerEntry.zmq_node_endpoint` | ⏳ Blocked on D R6 | R6 replaces the standby-catch-up fallbacks these legacy surfaces exist for.  (T4.) |
-| F | L4 demos + full-topology verification sweep | ⏳ Blocked on E | Fan-in N=2, fan-out slow-joiner (`api.consumer_count()` gate), one-to-one cardinality; validate against §4.7 walkthroughs; retire the migration draft to archive.  (T5.) |
+| E | Retirements — delete `push_to`/`pull_from`, `zmq_bind`, `producer_peers` vector + Tier-2 `.front()` assembly, `CONSUMER_ATTACH_REQ_ZMQ` pre-attach, `ProducerEntry.zmq_node_endpoint` | ⏳ **UNBLOCKED (2026-07-26)** — S1–S3 shipped | The owner-first contract (S1–S3) replaces the standby-catch-up fallbacks these legacy surfaces exist for.  (T4.) |
+| F | L4 demos + full-topology verification sweep | ⏳ Blocked on E | Fan-in N=2, fan-out slow-joiner (`api.consumer_count()` gate), one-to-one cardinality; validate against §4.7 walkthroughs; **plus the owner-first L4 keystones from the S1–S3 design**: producer-FIRST spawn (dialer retries `awaiting_owner` → establishes), fan-in consumer-owner kill (producers get CHANNEL_CLOSING + fast-fail on re-poll), fan-in producer kill (channel lives, consumer keeps serving).  Retire the migration draft + `DRAFT_owner_first_establishment_S1_S3_2026-07-26.md` to archive.  (T5.) |
 | H | Full verification sweep | ⏳ Blocked on F | — |
 
 > **Establishment contract PINNED + implementation slices (2026-07-25).**
@@ -76,24 +77,34 @@ on top of that abstraction.
 > processors, framework-default+script-override callbacks) is now normative
 > in **HEP-0017 §4.7.0.1 (C1–C7)** + §4.7.1/§4.7.5b walkthroughs + §4.7.6
 > callback contract (rewrite landed 2026-07-25; R6 removed from all
-> walkthroughs).  The CODE changes that make code match the pinned contract
-> are the real remaining topology work:
-> - **S1 — owner-locked `ChannelEntry`.**  The hub opens the book only for
->   the binding owner (fan-in consumer / fan-out producer).  A dialer
->   arriving before its owner gets a retryable `awaiting_owner`, not a
->   channel-open; the fan-in producer stops opening a book
->   (`_on_producer_added` fresh-channel path) and the fan-out consumer's
->   hard-`CHANNEL_NOT_FOUND` becomes the same retryable transient — unified
->   symmetric handling, all concealed at the role host (Tier 2).
-> - **S2 — owner-death → channel-death (binding-owner-aware teardown).**
->   Code catch-up to HEP-0023 §2.1.1's own 2026-07-08 amendment + §4.7.0.1
->   C2: fan-in consumer(owner) death closes the channel; last-producer
->   death does NOT close a fan-in channel while its consumer-owner lives.
->   Fix the stale producer-centric teardown + the stale `hub_state.cpp:1874`
->   citation.
-> - **S3 — dialer fast-fail (falls out of S2).**  Once owner-death closes
->   the book, `CHECK_PEER_READY` returns `CHANNEL_NOT_FOUND` → the dialer
->   aborts fast with a clean diagnostic instead of burning `init_timeout`.
+> walkthroughs).  The CODE catch-up **SHIPPED 2026-07-26 as one coherent
+> S1+S2+S3 unit** (design + code-time deltas recorded in
+> `docs/tech_draft/DRAFT_owner_first_establishment_S1_S3_2026-07-26.md`):
+> - **S1 — owner-locked `ChannelEntry`.  ✅ SHIPPED 2026-07-26.**  Two-layer
+>   gate: side-effect-free `AWAITING_OWNER` at the TOP of `handle_reg_req`
+>   (before schema filing — a later reject orphans a schema record) +
+>   atomic refusal inside `_on_producer_added`'s fresh-channel path under
+>   the writer lock (race-closer).  Fan-out/one-to-one consumer's
+>   hard-`CHANNEL_NOT_FOUND` (missing channel + vanished-during-admission
+>   race) → the same retryable `AWAITING_OWNER`.  Role-host retry loops in
+>   `RoleAPIBase::register_producer_channel` / `register_consumer`
+>   (extend the CHANNEL_NOT_READY loop): budget = `init_timeout_ms`,
+>   100 ms cadence, `is_cancelled` + broker-link-loss stops; all four
+>   role-host call sites pass the budget + shutdown predicate.  Wire code
+>   documented in HEP-0007 §12.4a.
+> - **S2 — owner-death → channel-death.  ✅ SHIPPED 2026-07-26.**
+>   Owner-bound teardown in `_on_producer_dropped` + `_on_pending_timeout`
+>   (fan-in producer drop — even the last — never closes) and fan-in
+>   consumer-owner death/leave closes via `_on_channel_closed`
+>   (`_on_consumer_left` now returns the drop result).  Broker close-out
+>   fan-out (CHANNEL_CLOSING_NOTIFY + access close + attach drain) wired at
+>   `handle_consumer_dereg_req` + the heartbeat reconciler's consumer
+>   branch.  HEP-0023 §2.1 FSM table reconciled to owner-aware.
+> - **S3 — dialer fast-fail.  ✅ VERIFIED ALREADY CORRECT (2026-07-26).**
+>   `BrcOracle::poll` maps any broker ERROR (incl. `CHANNEL_NOT_FOUND` from
+>   a dead book) to `PollResult::PermanentError` and
+>   `ZmqQueue::finalize_connect` aborts immediately — no code change was
+>   needed; S2 makes the book actually disappear on owner death.
 > - **S4 — peer-join callback consistency (unconditional tracking + additive callback).**
 >   Channel peer *join* (phase=live) is poll-only today; every other event
 >   (peer-death, band join/leave, channel-closing) has a script callback
@@ -417,8 +428,8 @@ scope.  Each requires infrastructure from the phase noted.
 | Finding | Phase | Why not Phase B rev 1 |
 |---|---|---|
 | **#11 `CHANNEL_CLOSED` unreachable** — HEP-0007 §12.4a catalogs but no emission site. | D | Depends on #12 pending REG_REQ mechanism. |
-| **#12 No REG_REQ pending / `role_registration_version` capture** — tech draft §5.4 R6 gate not built. | D | Substantial new infrastructure (correlation IDs, wake events, timeout).  Phase D's whole scope. |
-| **#13 Consumer-first-create for fan-in** — `handle_consumer_reg_req` returns `CHANNEL_NOT_FOUND` if channel doesn't exist, but under fan-in consumer is BINDING side and should be able to create. | D | Part of the R6 symmetrization work.  Current producer-first ordering works for L4 fan-in test. |
+| ~~**#12 No REG_REQ pending / `role_registration_version` capture**~~ | ❌ RETIRED with D-R6 (2026-07-25) | The broker never pends (HEP-0017 §4.7.0.1 C4); ordering robustness is the S1 `AWAITING_OWNER` role-host retry, shipped 2026-07-26. |
+| ~~**#13 Consumer-first-create for fan-in**~~ | ✅ RESOLVED | Consumer-opens path shipped 2026-07-11 (HEP-0036 §6.6.1); the remaining dialing-side hard-`CHANNEL_NOT_FOUND` became the retryable `AWAITING_OWNER` with S1 (2026-07-26). |
 | ✅ **#14 `CONSUMER_REG_ACK` still emits legacy `producers[]` array** | C step 2 rev 2.3 | Shipped `b71dd9ec` — unified peer-list wire shape (array of `{role_uid, endpoint, pubkey_z85}` objects); dialing-side ACK carries scalar `data_endpoint`/`data_pubkey` per HEP-CORE-0007 §12.3. |
 | ✅ **#15 `CHANNEL_AUTH_CHANGED_NOTIFY` missing `phase` field** | D phase field | Shipped `8655f2fe..ed0456d5` — phase-field emission + first-heartbeat detection + live_peers cache + `consumer_count`/`producer_count`/`consumers`/`producers` accessors + engine bindings. |
 | **#16 Duplicate `channel_version` / `confirmed_version` state** — new scalar coexists with old `[K][P]` map (`ChannelAccessEntry.channel_version` + `confirmed_version_per_producer` map). | E | Retirement phase — needs all callers migrated first. |
