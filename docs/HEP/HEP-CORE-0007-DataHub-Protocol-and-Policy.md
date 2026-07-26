@@ -778,7 +778,14 @@ Messages are grouped into four categories based on their flow pattern:
 |----------|---------|---------|
 | **Request/Response** | Client → Broker → Client | REG_REQ/ACK, DISC_REQ/ACK, CHANNEL_LIST_REQ/ACK, METRICS_REQ/ACK, ROLE_PRESENCE_REQ/ACK, ROLE_INFO_REQ/ACK, GET_CHANNEL_AUTH_REQ/ACK, ~~GET_CHANNEL_PRODUCERS_REQ/ACK~~ (**RETIRED 2026-07-08** per topology migration — REG_REQ path subsumes; see the amendment banner at §12), ENDPOINT_UPDATE_REQ/ACK (post-bind endpoint publish — see HEP-CORE-0021 §16.5) |
 | **Fire-and-Forget** | Client → Broker (no reply) | HEARTBEAT_NOTIFY, CHECKSUM_ERROR_REPORT, BAND_BROADCAST_SEND_NOTIFY |
-| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_DELIVER_NOTIFY, _(planned, not yet implemented:)_ ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
+| **Unsolicited Push** | Broker → Client (async) | CHANNEL_CLOSING_NOTIFY, CONSUMER_DIED_NOTIFY, CHANNEL_COUNT_NOTIFY, BAND_JOIN_NOTIFY, BAND_LEAVE_NOTIFY, BAND_BROADCAST_DELIVER_NOTIFY, _(planned, not yet implemented:)_ ROLE_REGISTERED_NOTIFY, ROLE_DEREGISTERED_NOTIFY |
+
+`CHANNEL_COUNT_NOTIFY` (#74) — broker → every member of a channel (both
+sides), fire-and-forget, body `{channel_name, producer_count, consumer_count}`.
+Carries the channel's objective LIVE counts (channel-level status, a number —
+NOT the per-peer identity stream `CHANNEL_AUTH_CHANGED_NOTIFY`, which stays
+binding-side only).  Backs `producer_count()`/`consumer_count()` identically on
+every role (HEP-CORE-0028 §6a).
 | **Band Pub/Sub** | Role → Broker → Members (HEP-CORE-0030) | BAND_JOIN_REQ/ACK, BAND_LEAVE_REQ/ACK, BAND_BROADCAST_SEND_NOTIFY, BAND_MEMBERS_REQ/ACK |
 
 ### 12.2.1 REQ shape contract — Sync vs Fire-and-Forget (added 2026-05-21)

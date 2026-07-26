@@ -233,6 +233,12 @@ void write_zmq_producer_script_with_offset(const fs::path &script_dir, int n_slo
          "    api.log('info', 'prod_test: init offset=' + str(_OFFSET))\n"
          "\n"
          "def on_produce(tx, msgs, api):\n"
+         // #74 objective peer counts: a DIALING producer must see the true
+         // channel total (both producers + the consumer), not 0.  Delivered
+         // by the broker's CHANNEL_COUNT_NOTIFY to every member.
+         "    _ch = api.channel()\n"
+         "    api.log('info', 'prod_test: counts producers=' + str(api.producer_count(_ch)) +\n"
+         "            ' consumers=' + str(api.consumer_count(_ch)))\n"
          "    if tx.slot is None:\n"
          "        return False\n"
          "    n = _iter[0] % _N_SLOTS\n"
@@ -285,6 +291,11 @@ void write_zmq_multi_producer_consumer_script(const fs::path &script_dir, int ex
          "    api.log('info', 'cons_test: producer_joined uid=' + producer_uid)\n"
          "\n"
          "def on_consume(rx, msgs, api):\n"
+         // #74 objective peer counts on the binding (fan-in) consumer: the
+         // true channel total — 2 producers, 1 consumer (self-inclusive).
+         "    _ch = api.channel()\n"
+         "    api.log('info', 'cons_test: counts producers=' + str(api.producer_count(_ch)) +\n"
+         "                    ' consumers=' + str(api.consumer_count(_ch)))\n"
          "    if rx.slot is None:\n"
          "        return True\n"
          "    _received[0] += 1\n"
@@ -1244,6 +1255,22 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
                                      "cons_test: producer_joined uid=" + prod_b_uid, seconds(5)))
         << dump_full("on_producer_joined for producer B");
+
+    // ── #74 objective peer counts (DRAFT_objective_peer_counts_2026-07-26) ─
+    // Every role reports the SAME objective total: 2 live producers, 1 live
+    // consumer.  Delivered by the broker's CHANNEL_COUNT_NOTIFY to ALL members
+    // (channel-level status, a number — NOT the per-peer identity stream, which
+    // stays binding-side only).  Each DIALING producer seeing producer_count=2
+    // (its sibling included) is the #74 win — pre-#74 a dialing role read 0.
+    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
+                                     "cons_test: counts producers=2 consumers=1", seconds(10)))
+        << dump_full("#74 consumer objective count (producers=2 consumers=1, self-inclusive)");
+    EXPECT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
+                                     "prod_test: counts producers=2 consumers=1", seconds(10)))
+        << dump_full("#74 producer A objective count — DIALING side sees its sibling (producers=2)");
+    EXPECT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
+                                     "prod_test: counts producers=2 consumers=1", seconds(10)))
+        << dump_full("#74 producer B objective count — DIALING side sees its sibling (producers=2)");
 
     // ── Shutdown ──────────────────────────────────────────────────────
     cons.send_signal(SIGTERM);

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | DESIGN LOCKED — 2026-07-26. Implement strictly against this; do not re-derive. |
+| **Status** | SHIPPED — 2026-07-26. Implemented (role + broker + `CHANNEL_COUNT_NOTIFY` wire + L4 e2e fan-in). Folded into HEP-CORE-0028 §6a.2/§6a.3, HEP-CORE-0007 (catalog), HEP-CORE-0017 §3.3.2, HEP-CORE-0036 §I11. Ready to archive per DOC_STRUCTURE §2.2. |
 | **Task** | #74 — "Complete objective peer-count accessors (currently binding-side-only)". |
 | **Folds into** | HEP-CORE-0028 §6a (accessor semantics), HEP-CORE-0007 (wire catalog), HEP-CORE-0036 §I11 (notification fan-out), HEP-CORE-0017 §3.3.2 (dialing side). Merge on completion, then archive. |
 

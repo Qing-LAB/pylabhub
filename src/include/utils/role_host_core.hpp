@@ -122,6 +122,12 @@ enum class NotificationId : std::uint8_t
                             ///< role_type="consumer".  Writer/binding side
                             ///< (fan-out / one-to-one producer / processor
                             ///< output) → on_consumer_joined.  NOT a wire type.
+    ChannelCount = 11,      ///< CHANNEL_COUNT_NOTIFY (#74).  INFRASTRUCTURE-ONLY:
+                            ///< carries the channel's objective live
+                            ///< {producer_count, consumer_count}.  The worker
+                            ///< thread stores it (RoleAPIBase::channel_counts)
+                            ///< to back producer_count()/consumer_count() on
+                            ///< EVERY role, both sides.  No script callback.
     Count                   ///< sentinel — must be last
 };
 
@@ -136,6 +142,8 @@ enum class NotificationId : std::uint8_t
 {
     if (type == "CHANNEL_CLOSING_NOTIFY")
         return NotificationId::ChannelClosing;
+    if (type == "CHANNEL_COUNT_NOTIFY")
+        return NotificationId::ChannelCount;
     if (type == "CONSUMER_DIED_NOTIFY")
         return NotificationId::ConsumerDied;
     if (type == "HUB_DEAD")

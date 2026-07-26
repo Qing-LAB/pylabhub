@@ -1111,12 +1111,16 @@ target.  Consumers dial in; broker fires
 consumer to the producer.  `api.consumer_count(channel)` /
 `api.consumers(channel)` accessors expose the live consumer set.
 
-**Dialing side (across all topologies):** no runtime peer-set
-tracking needed.  The dialing side has exactly one peer (the
-binding side), addressed by `data_endpoint` + `data_pubkey` from
-the REG_ACK.  If the binding side dies, the whole channel dies
-(dialing side receives `CHANNEL_CLOSING_NOTIFY` — see §4.6 channel-
-life rule).
+**Dialing side (across all topologies):** no runtime peer-*set*
+tracking needed for its data connection — the dialing side dials
+exactly one peer (the binding side), addressed by `data_endpoint` +
+`data_pubkey` from the REG_ACK.  If the binding side dies, the whole
+channel dies (dialing side receives `CHANNEL_CLOSING_NOTIFY` — see §4.6
+channel-life rule).  For the objective peer **count**, the dialing side
+is fed the channel's live `{producer_count, consumer_count}` via
+`CHANNEL_COUNT_NOTIFY` (#74) — a channel-level number (not per-peer
+identities), so `producer_count()` / `consumer_count()` read the true
+total, identical on every role, never 0.
 
 This three-tier separation is required and load-bearing:
 

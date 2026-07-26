@@ -1556,35 +1556,40 @@ count includes self if self is a consumer/producer of the channel:
 - 1-to-1 channel: both return 0 or 1.
 - Otherwise: reflects the true count of Live peers of that type.
 
-> **Current limitation (code incomplete).**  The backing `live_peers`
-> map is populated in exactly one place — the `phase=live` notify,
-> which the broker sends to the channel's *binding* side only, about
-> the *dialing* peers.  So today: (1) a role's **own-side** count is
-> not self-inclusive — a fan-in consumer's `consumer_count()` and a
-> fan-out producer's `producer_count()` return **0, not 1**; and (2) a
-> **dialing** role is never fed the Live set, so all its counts read 0.
-> The **peer-facing** directions (a fan-out producer's
-> `consumer_count()`, a fan-in consumer's `producer_count()`) are
-> correct and load-bearing.  Making the count objective for every role
-> — self-insert on the binding side plus propagating the Live set to
-> dialing roles — is a pending completion (broker + role change).
-> Until then, scripts must consult only the peer-facing direction.
+> **Objective on every role (#74).**  The count is the broker's
+> authoritative LIVE total for the channel, delivered to EVERY member
+> via `CHANNEL_COUNT_NOTIFY` (a channel-level number, fanned to both
+> sides whenever the live set changes).  It is identical for every role,
+> self-inclusive, and correct in every direction: a fan-in consumer
+> reads `consumer_count()==1` (itself) and `producer_count()==N`, and
+> each dialing producer reads the SAME `producer_count()==N` and
+> `consumer_count()==1`.  The count source is `CHANNEL_COUNT_NOTIFY`,
+> NOT `live_peers` — which now backs only the identity lists
+> `producers()`/`consumers()` (§6a.5; binding-side / other-side only, so
+> `producers().size()` need not equal `producer_count()`).  The per-peer
+> `CHANNEL_AUTH_CHANGED_NOTIFY` identity stream stays binding-side only:
+> the dialing side receives only channel-level status (ready / closing /
+> count), never per-peer identities.
 
 ### 6a.3 How the framework knows
 
-The binding side's role host receives
-`CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` (HEP-CORE-0007 §12.5) each
-time a dialing-side peer transitions to Live at the broker.  Role
-host maintains `live_peers[channel]` as a set of role_uids +
-role_types; the accessors read from this set filtered by role_type.
-On `phase=left` NOTIFY, the peer is removed.
+The **count** is broker-authoritative.  The broker computes each
+channel's LIVE `{producer_count, consumer_count}` (a role is Live once
+its first heartbeat is seen — HEP-CORE-0036 §3.5.2) and fans
+`CHANNEL_COUNT_NOTIFY` with the two numbers to EVERY member of the
+channel, both sides, whenever the live set changes: immediately on a
+member's first heartbeat (join), and on the periodic heartbeat-timeout
+reconciler for leaves (DISC / dereg / death).  Each role stores the
+number per channel; `producer_count()` / `consumer_count()` return it —
+the same objective total on every role.
 
-Under fan-out / 1-to-1, the producer's role host owns the map (feeds
-`consumer_count` / `consumers`).  Under fan-in, the consumer's role
-host owns it (feeds `producer_count` / `producers`).  Dialing-side
-roles' accessors read from a symmetric — but usually trivial — local
-tracking, because the dialing side has at most one peer (the binding
-side).
+The **identity lists** `producers()` / `consumers()` are a separate,
+binding-side-only surface, still backed by `live_peers[channel]`
+(populated by the per-peer `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)`
+stream that only the binding side receives).  Under fan-out / 1-to-1
+the producer is binding; under fan-in the consumer is binding.  A
+dialing role has no identity list (it receives the count number, not
+per-peer identities) — so `producers().size()` is not the count.
 
 ### 6a.4 Script usage pattern
 

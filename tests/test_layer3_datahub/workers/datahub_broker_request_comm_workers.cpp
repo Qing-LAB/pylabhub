@@ -322,13 +322,16 @@ int notification_dispatch()
     cfg.role_uid = uid;
     EXPECT_TRUE(ch.connect(cfg));
 
-    std::atomic<int> notify_count{0};
-    std::string last_notify_type;
+    // #74 — the broker also fans CHANNEL_COUNT_NOTIFY (objective peer counts)
+    // to channel members, so "the notification received" is no longer uniquely
+    // CHANNEL_CLOSING_NOTIFY.  This test targets the close notify, so match on
+    // its type rather than on "any / the last notification".
+    std::atomic<bool> got_closing{false};
     ch.on_notification(
         [&](const std::string &type, const nlohmann::json &)
         {
-            last_notify_type = type;
-            notify_count.fetch_add(1);
+            if (type == "CHANNEL_CLOSING_NOTIFY")
+                got_closing.store(true);
         });
 
     std::atomic<bool> running{true};
@@ -355,13 +358,9 @@ int notification_dispatch()
     // Request broker to close the channel → should trigger CHANNEL_CLOSING_NOTIFY.
     broker.service().request_close_channel("notify_ch");
 
-    bool got = pylabhub::tests::helper::poll_until([&] { return notify_count.load() > 0; },
+    bool got = pylabhub::tests::helper::poll_until([&] { return got_closing.load(); },
                                                    std::chrono::seconds{3});
     EXPECT_TRUE(got) << "CHANNEL_CLOSING_NOTIFY never received";
-    if (got)
-    {
-        EXPECT_EQ(last_notify_type, "CHANNEL_CLOSING_NOTIFY");
-    }
 
     running.store(false);
     ch.stop();

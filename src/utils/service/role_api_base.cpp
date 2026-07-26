@@ -314,6 +314,16 @@ struct RoleAPIBase::Impl
                        std::unordered_map<std::string, std::unordered_set<std::string>>>
         live_peers;
 
+    // #74 — objective peer counts.  The channel's authoritative live
+    // {producer_count, consumer_count}, pushed by the broker via
+    // CHANNEL_COUNT_NOTIFY and stored here on EVERY role (both sides).  This
+    // is the single source for producer_count()/consumer_count() — distinct
+    // from `live_peers` above, which backs only the identity lists
+    // producers()/consumers() (binding-side, other-side only).
+    mutable std::mutex channel_counts_mu;
+    std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>>
+        channel_counts; // channel_name → {producers, consumers}
+
     // ── Thread-local / set-once-before-spawn state ─────────────────────
     //
     // Every field below this banner is either:
@@ -2166,12 +2176,20 @@ std::vector<std::string> live_peer_uids(
 
 std::size_t RoleAPIBase::consumer_count(const std::string &channel) const
 {
-    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers, channel, "consumer").size();
+    // #74 — the OBJECTIVE count: the broker's authoritative live consumer total
+    // for the channel, delivered via CHANNEL_COUNT_NOTIFY and identical on every
+    // role.  NOT live_peers.size() (which is the binding side's other-side
+    // identity view and reads 0 on the dialing side / own side).
+    std::lock_guard<std::mutex> lk(pImpl->channel_counts_mu);
+    auto it = pImpl->channel_counts.find(channel);
+    return it != pImpl->channel_counts.end() ? it->second.second : 0;
 }
 
 std::size_t RoleAPIBase::producer_count(const std::string &channel) const
 {
-    return live_peer_uids(pImpl->live_peers_mu, pImpl->live_peers, channel, "producer").size();
+    std::lock_guard<std::mutex> lk(pImpl->channel_counts_mu);
+    auto it = pImpl->channel_counts.find(channel);
+    return it != pImpl->channel_counts.end() ? it->second.first : 0;
 }
 
 std::vector<std::string> RoleAPIBase::producers(const std::string &channel) const
@@ -2225,6 +2243,26 @@ void RoleAPIBase::handle_channel_auth_notifies(
     auto it = msgs.begin();
     while (it != msgs.end())
     {
+        // #74 CHANNEL_COUNT_NOTIFY — infrastructure-only: store the channel's
+        // objective live {producer_count, consumer_count}; no script callback.
+        // Every role (both sides) receives this; it is the single source that
+        // backs producer_count()/consumer_count().  Consume the message.
+        if (it->notification_id == NotificationId::ChannelCount)
+        {
+            const std::string channel = it->details.value("channel_name", std::string{});
+            if (!channel.empty())
+            {
+                const auto pc = it->details.value("producer_count", std::uint32_t{0});
+                const auto cc = it->details.value("consumer_count", std::uint32_t{0});
+                std::lock_guard<std::mutex> lk(pImpl->channel_counts_mu);
+                pImpl->channel_counts[channel] = {pc, cc};
+                LOGGER_DEBUG("[{}/{}] event=ChannelCount channel='{}' producers={} "
+                             "consumers={} (#74 CHANNEL_COUNT_NOTIFY)",
+                             pImpl->short_tag, pImpl->uid, channel, pc, cc);
+            }
+            it = msgs.erase(it);
+            continue;
+        }
         if (it->notification_id != NotificationId::ChannelAuthChanged)
         {
             ++it;

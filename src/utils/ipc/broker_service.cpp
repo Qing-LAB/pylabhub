@@ -410,6 +410,12 @@ class BrokerServiceImpl
     pylabhub::hub::HubState *hub_state_{nullptr};
     std::atomic<bool> stop_requested{false};
 
+    // #74 — last CHANNEL_COUNT_NOTIFY value broadcast per channel, so the
+    // periodic reconciler in check_heartbeat_timeouts re-fans only when the
+    // objective live count actually changed.  Router-thread-only (no lock).
+    std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>>
+        last_channel_counts_;
+
     /// HEP-CORE-0046 §14 unified receive+validate binder.  Owns the
     /// admission callbacks (known_roles lookup, key-rotation check,
     /// nonce dedup, wall clock) bound against `cfg.known_roles` +
@@ -814,6 +820,18 @@ class BrokerServiceImpl
     void fire_channel_auth_changed_notify(zmq::socket_t &socket, const std::string &channel_name,
                                           const std::string &phase, const std::string &role_uid,
                                           const std::string &role_type);
+
+    /// #74 — objective peer counts.  The channel's LIVE
+    /// {producer_count, consumer_count} (RoleState kLive = Connected +
+    /// first_heartbeat_seen), distinct from the registered ChannelEntry sizes.
+    std::pair<std::uint32_t, std::uint32_t>
+    compute_channel_live_counts(const std::string &channel) const;
+
+    /// #74 — fan CHANNEL_COUNT_NOTIFY {producer_count, consumer_count} to ALL
+    /// members of the channel (both sides) with a captured zmq_identity.  This
+    /// is the single count source behind producer_count()/consumer_count() on
+    /// every role; the per-peer identity stream stays binding-side only.
+    void fire_channel_count_notify(zmq::socket_t &socket, const std::string &channel);
 
     /// HEP-CORE-0023 §2.5 — heartbeat negotiation block carried in
     /// REG_ACK / CONSUMER_REG_ACK.  Communicates the hub's tolerated
@@ -4840,6 +4858,73 @@ void BrokerServiceImpl::fire_channel_auth_changed_notify(zmq::socket_t &socket,
                  channel_name, phase, role_uid, role_type, fanned, binding_side_total);
 }
 
+// #74 — objective peer counts (DRAFT_objective_peer_counts_2026-07-26).
+// LIVE means Connected + first_heartbeat_seen (HEP-CORE-0036 §3.5.2) — the wire
+// is ready to deliver.  This is NOT ChannelEntry's registered .size().
+std::pair<std::uint32_t, std::uint32_t>
+BrokerServiceImpl::compute_channel_live_counts(const std::string &channel) const
+{
+    const auto snap = hub_state_->snapshot();
+    const auto cit = snap.channels.find(channel);
+    if (cit == snap.channels.end())
+        return {0u, 0u};
+    std::uint32_t live_p = 0, live_c = 0;
+    for (const auto &p : cit->second.producers)
+    {
+        auto rit = snap.roles.find(p.role_uid);
+        if (rit == snap.roles.end())
+            continue;
+        const auto *pp = rit->second.find_presence(channel, "producer");
+        if (pp != nullptr && pp->state == pylabhub::hub::RoleState::Connected &&
+            pp->first_heartbeat_seen)
+            ++live_p;
+    }
+    for (const auto &c : cit->second.consumers)
+    {
+        auto rit = snap.roles.find(c.role_uid);
+        if (rit == snap.roles.end())
+            continue;
+        const auto *pp = rit->second.find_presence(channel, "consumer");
+        if (pp != nullptr && pp->state == pylabhub::hub::RoleState::Connected &&
+            pp->first_heartbeat_seen)
+            ++live_c;
+    }
+    return {live_p, live_c};
+}
+
+// #74 — fan the objective count to EVERY member of the channel (both sides).
+// Channel-level status (a number, no per-peer identity): the dialing side
+// receives only this, never the CHANNEL_AUTH_CHANGED_NOTIFY identity stream.
+void BrokerServiceImpl::fire_channel_count_notify(zmq::socket_t &socket,
+                                                  const std::string &channel)
+{
+    auto ch = hub_state_->channel(channel);
+    if (!ch.has_value())
+        return;
+    const auto [pc, cc] = compute_channel_live_counts(channel);
+    nlohmann::json body;
+    body["channel_name"] = channel;
+    body["producer_count"] = pc;
+    body["consumer_count"] = cc;
+    std::size_t fanned = 0;
+    for (const auto &p : ch->producers)
+        if (!p.zmq_identity.empty())
+        {
+            send_to_identity(socket, p.zmq_identity, "CHANNEL_COUNT_NOTIFY", body);
+            ++fanned;
+        }
+    for (const auto &c : ch->consumers)
+        if (!c.zmq_identity.empty())
+        {
+            send_to_identity(socket, c.zmq_identity, "CHANNEL_COUNT_NOTIFY", body);
+            ++fanned;
+        }
+    last_channel_counts_[channel] = {pc, cc};
+    LOGGER_DEBUG("Broker: CHANNEL_COUNT_NOTIFY channel='{}' producers={} consumers={} "
+                 "fanned to {} member(s) (#74)",
+                 channel, pc, cc, fanned);
+}
+
 // HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  `env` is unused — HEARTBEAT_NOTIFY is fire-and-forget (no reply, no
 // corr_id) — but carried for the uniform §14.4 signature.
@@ -5004,6 +5089,11 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
                                                  /*role_uid=*/wire_uid,
                                                  /*role_type=*/wire_role_type);
             }
+            // #74 — a member just became live: refresh the objective count on
+            // ALL members (both sides), any role_type.  Immediate here for low
+            // join latency; the reconciler in check_heartbeat_timeouts catches
+            // leaves.
+            fire_channel_count_notify(socket, channel_name);
         }
     }
 }
@@ -5738,6 +5828,28 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t &socket, const std::st
             LOGGER_WARN("Broker: failed to notify producer {} for '{}': {}", prod.role_uid,
                         channel_name, e.what());
         }
+    }
+
+    // #74 — periodic objective-count reconciliation.  Any leave (DISC, dereg,
+    // death) or missed join is caught here: recompute each live channel's
+    // {producer_count, consumer_count} and re-fan CHANNEL_COUNT_NOTIFY only
+    // when it changed since the last broadcast.  Router-thread-only; bounded by
+    // channel x member count, and silent when nothing moved.
+    {
+        const auto count_snap = hub_state_->snapshot();
+        for (const auto &kv : count_snap.channels)
+        {
+            const auto &chan = kv.first;
+            const auto counts = compute_channel_live_counts(chan);
+            auto lit = last_channel_counts_.find(chan);
+            if (lit != last_channel_counts_.end() && lit->second == counts)
+                continue;
+            fire_channel_count_notify(socket, chan);
+        }
+        for (auto cit2 = last_channel_counts_.begin(); cit2 != last_channel_counts_.end();)
+            cit2 = (count_snap.channels.count(cit2->first) == 0)
+                       ? last_channel_counts_.erase(cit2)
+                       : std::next(cit2);
     }
 }
 
