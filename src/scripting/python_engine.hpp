@@ -144,6 +144,10 @@ class PythonEngine : public ScriptEngine
     void invoke_on_channel_closing(const std::string &channel, const std::string &reason) override;
     void invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
                                  const std::string &reason) override;
+    void invoke_on_producer_joined(const std::string &channel,
+                                   const std::string &producer_uid) override;
+    void invoke_on_consumer_joined(const std::string &channel,
+                                   const std::string &consumer_uid) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
     void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name) override;
@@ -231,6 +235,9 @@ class PythonEngine : public ScriptEngine
     py::object py_on_stop_{py::none()};
     py::object py_on_channel_closing_{py::none()};
     py::object py_on_consumer_died_{py::none()};
+    // HEP-CORE-0011 §"Notification dispatch" (2026-07-25) — peer-join callbacks.
+    py::object py_on_producer_joined_{py::none()};
+    py::object py_on_consumer_joined_{py::none()};
     py::object py_on_hub_dead_{py::none()};
     // S4 expansion 2026-05-19 — typed band callbacks (HEP-CORE-0030 §5.3).
     py::object py_on_band_member_joined_{py::none()};

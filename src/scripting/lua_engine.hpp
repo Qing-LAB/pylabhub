@@ -111,6 +111,10 @@ class LuaEngine : public ScriptEngine
     void invoke_on_channel_closing(const std::string &channel, const std::string &reason) override;
     void invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
                                  const std::string &reason) override;
+    void invoke_on_producer_joined(const std::string &channel,
+                                   const std::string &producer_uid) override;
+    void invoke_on_consumer_joined(const std::string &channel,
+                                   const std::string &consumer_uid) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
     void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name) override;
@@ -164,6 +168,9 @@ class LuaEngine : public ScriptEngine
     int ref_on_stop_{LUA_NOREF};
     int ref_on_channel_closing_{LUA_NOREF};
     int ref_on_consumer_died_{LUA_NOREF};
+    // HEP-CORE-0011 §"Notification dispatch" (2026-07-25) — peer-join callbacks.
+    int ref_on_producer_joined_{LUA_NOREF};
+    int ref_on_consumer_joined_{LUA_NOREF};
     int ref_on_hub_dead_{LUA_NOREF};
     // S4 expansion 2026-05-19 — typed band callbacks (HEP-CORE-0030 §5.3).
     int ref_on_band_member_joined_{LUA_NOREF};

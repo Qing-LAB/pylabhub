@@ -5729,6 +5729,101 @@ int dispatch_notifications_real_lua_engine_records_args(const std::string &dir)
         });
 }
 
+// Real-engine end-to-end for the PEER-JOIN callbacks (HEP-CORE-0011
+// §"Notification dispatch"; HEP-CORE-0017 §4.7.6).  Sibling of the
+// on_channel_closing test above — same real-LuaEngine dispatch path, but
+// pins the joins' specific wiring: extract_callback_ref_ +
+// set_standard_callback_present + LuaEngine::invoke_on_producer_joined /
+// invoke_on_consumer_joined push the right 3 args (channel, uid, api).  This
+// is an ENGINE-dispatch unit test — it defines both join callbacks and drives
+// both ids directly; the role-semantics side (only the binding side ever
+// receives these) is validated in L4 (test_plh_hub_role_zmq_e2e fan-in).
+int dispatch_notifications_real_lua_engine_peer_joined_records_args(const std::string &dir)
+{
+    return script_worker(
+        dir, "lua_engine::dispatch_notifications_real_lua_engine_peer_joined_records_args",
+        RoleKind::Consumer,
+        R"LUA(
+            function on_producer_joined(channel, producer_uid, api)
+                api.set_shared_data("pj_channel", channel)
+                api.set_shared_data("pj_uid", producer_uid)
+            end
+            function on_consumer_joined(channel, consumer_uid, api)
+                api.set_shared_data("cj_channel", channel)
+                api.set_shared_data("cj_uid", consumer_uid)
+            end
+            -- Required by the consumer role's data-loop contract (not
+            -- exercised here — we drive dispatch directly).
+            function on_consume(rx, msgs, api)
+                return false
+            end
+        )LUA",
+        [](LuaEngine &engine, RoleHostCore &core)
+        {
+            EXPECT_TRUE(engine.has_callback("on_producer_joined"))
+                << "load_script must register on_producer_joined via "
+                   "set_standard_callback_present (lua_engine.cpp).";
+            EXPECT_TRUE(engine.has_callback("on_consumer_joined"));
+
+            // Synthetic ids: handle_channel_auth_notifies re-tags phase=live
+            // BEFORE dispatch, so set notification_id directly (parse_ won't
+            // map these — they are not distinct wire types).
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+            {
+                pylabhub::scripting::IncomingMessage m;
+                m.event = "CHANNEL_AUTH_CHANGED_NOTIFY";
+                m.notification_id = pylabhub::scripting::NotificationId::ProducerJoined;
+                m.details = nlohmann::json::object();
+                m.details["channel_name"] = "sensors.raw";
+                m.details["role_uid"] = "sensor_a";
+                msgs.push_back(std::move(m));
+            }
+            {
+                pylabhub::scripting::IncomingMessage m;
+                m.event = "CHANNEL_AUTH_CHANGED_NOTIFY";
+                m.notification_id = pylabhub::scripting::NotificationId::ConsumerJoined;
+                m.details = nlohmann::json::object();
+                m.details["channel_name"] = "data.out";
+                m.details["role_uid"] = "archive";
+                msgs.push_back(std::move(m));
+            }
+
+            pylabhub::scripting::dispatch_notifications(engine, msgs,
+                                                        pylabhub::scripting::StopRequestor{core});
+
+            EXPECT_TRUE(msgs.empty()) << "both peer-join notifies must be consumed (single "
+                                         "delivery).";
+            EXPECT_FALSE(core.is_shutdown_requested())
+                << "a peer joining is never a reason to stop the role.";
+
+            // on_producer_joined(channel, producer_uid, api) — args recorded.
+            auto pjc = core.get_shared_data("pj_channel");
+            ASSERT_TRUE(pjc.has_value())
+                << "on_producer_joined did not fire through the real Lua engine — the "
+                   "dispatcher, adapter, or LuaEngine::invoke_on_producer_joined wiring is "
+                   "wrong (despite has_callback true).";
+            ASSERT_TRUE(std::holds_alternative<std::string>(*pjc));
+            EXPECT_EQ(std::get<std::string>(*pjc), std::string("sensors.raw"));
+            auto pju = core.get_shared_data("pj_uid");
+            ASSERT_TRUE(pju.has_value());
+            ASSERT_TRUE(std::holds_alternative<std::string>(*pju));
+            EXPECT_EQ(std::get<std::string>(*pju), std::string("sensor_a"))
+                << "producer_uid arg mismatch — invoke_user_producer_joined read the wrong "
+                   "details key or LuaEngine pushed the args in the wrong order/count.";
+
+            // on_consumer_joined(channel, consumer_uid, api) — args recorded.
+            auto cjc = core.get_shared_data("cj_channel");
+            ASSERT_TRUE(cjc.has_value())
+                << "on_consumer_joined did not fire through the real Lua engine.";
+            ASSERT_TRUE(std::holds_alternative<std::string>(*cjc));
+            EXPECT_EQ(std::get<std::string>(*cjc), std::string("data.out"));
+            auto cju = core.get_shared_data("cj_uid");
+            ASSERT_TRUE(cju.has_value());
+            ASSERT_TRUE(std::holds_alternative<std::string>(*cju));
+            EXPECT_EQ(std::get<std::string>(*cju), std::string("archive"));
+        });
+}
+
 } // namespace lua_engine
 } // namespace pylabhub::tests::worker
 
@@ -6028,6 +6123,8 @@ struct LuaEngineWorkerRegistrar
                     return full_startup_processor_multifield(dir);
                 if (sc == "dispatch_notifications_real_lua_engine_records_args")
                     return dispatch_notifications_real_lua_engine_records_args(dir);
+                if (sc == "dispatch_notifications_real_lua_engine_peer_joined_records_args")
+                    return dispatch_notifications_real_lua_engine_peer_joined_records_args(dir);
 
                 fmt::print(stderr, "[lua_engine] ERROR: unknown scenario '{}'\n", sc);
                 return 1;

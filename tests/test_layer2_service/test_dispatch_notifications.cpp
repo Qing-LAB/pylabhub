@@ -169,6 +169,9 @@ class RecordingEngine : public ScriptEngine
     bool has_on_band_member_left{false};
     bool has_on_band_message{false};
     bool has_on_band_lost{false};
+    // Peer-join (HEP-CORE-0011 §"Notification dispatch", 2026-07-25).
+    bool has_on_producer_joined{false};
+    bool has_on_consumer_joined{false};
 
     /// Recorded on_channel_closing (channel, reason) pairs.
     std::vector<std::pair<std::string, std::string>> calls;
@@ -184,6 +187,10 @@ class RecordingEngine : public ScriptEngine
     std::vector<std::tuple<std::string, std::string, std::string>> band_member_left_calls;
     std::vector<std::tuple<std::string, std::string, nlohmann::json>> band_message_calls;
     std::vector<std::pair<std::string, std::string>> band_lost_calls;
+
+    /// Recorded on_producer_joined / on_consumer_joined (channel, uid) pairs.
+    std::vector<std::pair<std::string, std::string>> producer_joined_calls;
+    std::vector<std::pair<std::string, std::string>> consumer_joined_calls;
 
     [[nodiscard]] bool has_callback(const std::string &name) const noexcept override
     {
@@ -201,6 +208,10 @@ class RecordingEngine : public ScriptEngine
             return has_on_band_message;
         if (name == "on_band_lost")
             return has_on_band_lost;
+        if (name == "on_producer_joined")
+            return has_on_producer_joined;
+        if (name == "on_consumer_joined")
+            return has_on_consumer_joined;
         return false;
     }
 
@@ -238,6 +249,16 @@ class RecordingEngine : public ScriptEngine
     void invoke_on_band_lost(const std::string &band, const std::string &reason) override
     {
         band_lost_calls.emplace_back(band, reason);
+    }
+    void invoke_on_producer_joined(const std::string &channel,
+                                   const std::string &producer_uid) override
+    {
+        producer_joined_calls.emplace_back(channel, producer_uid);
+    }
+    void invoke_on_consumer_joined(const std::string &channel,
+                                   const std::string &consumer_uid) override
+    {
+        consumer_joined_calls.emplace_back(channel, consumer_uid);
     }
     void invoke_on_allowlist_changed(const std::string &,
                                      const std::vector<pylabhub::scripting::AllowedPeer> &,
@@ -601,6 +622,33 @@ IncomingMessage make_consumer_died(const std::string &channel, const std::string
     m.details["channel_name"] = channel;
     m.details["role_uid"] = consumer_uid;
     m.details["reason"] = reason;
+    return m;
+}
+
+// Peer-join messages.  `RoleAPIBase::handle_channel_auth_notifies` re-tags
+// a CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to ProducerJoined / ConsumerJoined
+// by the joining peer's role_type BEFORE dispatch, so the wire `event` stays
+// CHANNEL_AUTH_CHANGED_NOTIFY but the `notification_id` is set directly (these
+// are synthetic ids, not produced by parse_notification_id).
+IncomingMessage make_producer_joined(const std::string &channel, const std::string &producer_uid)
+{
+    IncomingMessage m;
+    m.event = "CHANNEL_AUTH_CHANGED_NOTIFY";
+    m.notification_id = NotificationId::ProducerJoined;
+    m.details = nlohmann::json::object();
+    m.details["channel_name"] = channel;
+    m.details["role_uid"] = producer_uid;
+    return m;
+}
+
+IncomingMessage make_consumer_joined(const std::string &channel, const std::string &consumer_uid)
+{
+    IncomingMessage m;
+    m.event = "CHANNEL_AUTH_CHANGED_NOTIFY";
+    m.notification_id = NotificationId::ConsumerJoined;
+    m.details = nlohmann::json::object();
+    m.details["channel_name"] = channel;
+    m.details["role_uid"] = consumer_uid;
     return m;
 }
 
@@ -1119,4 +1167,95 @@ TEST_F(DispatchBandTest, Lost_Callback_DispatchesWithBandAndReason)
     EXPECT_EQ(eng.band_lost_calls[0].second, "hub_dead");
     EXPECT_EQ(eng.band_lost_calls[1].first, "!ctrl_b");
     EXPECT_TRUE(msgs.empty());
+}
+
+// ── Peer-join (ProducerJoined / ConsumerJoined) ─────────────────────────────
+// HEP-CORE-0011 §"Notification dispatch"; HEP-CORE-0017 §4.7.6.  These are the
+// "unconditional-plus-additive" shape: the live_peers insert is done by
+// `handle_channel_auth_notifies` BEFORE dispatch, so the dispatcher's default
+// is a NO-OP (not "track") and the callback is a pure add-on.  The joining
+// peer's role_type already picked the id, so the dispatcher just routes each
+// id to its own callback.
+class DispatchPeerJoinedTest : public ::testing::Test
+{
+};
+
+// Contract 1: no callback → default is a no-op, but the notify is STILL
+// consumed, and NO stop fires (a peer joining is never a reason to stop).
+TEST_F(DispatchPeerJoinedTest, NoCallback_DefaultNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_producer_joined = false;
+    eng.has_on_consumer_joined = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_producer_joined("ch.in", "prod-1"));
+    msgs.push_back(make_other("NON_NOTIFY_MSG"));
+    msgs.push_back(make_consumer_joined("ch.out", "cons-1"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+                                                pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.producer_joined_calls.empty())
+        << "no callback ⇒ default no-op; engine override must not fire";
+    EXPECT_TRUE(eng.consumer_joined_calls.empty());
+    ASSERT_EQ(msgs.size(), 1u) << "peer-join notifies must be consumed by the "
+                                  "default-no-op path";
+    EXPECT_EQ(msgs[0].event, "NON_NOTIFY_MSG");
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "a peer joining is never a reason to stop; default MUST be a no-op";
+    EXPECT_EQ(core.stop_reason_string(), "normal");
+}
+
+// Contract 2: callbacks present → each id routes to its OWN callback with the
+// (channel, uid) pulled from details; all consumed (single delivery).  This
+// pins "role_type picked the id, the dispatcher routes it to the right side."
+TEST_F(DispatchPeerJoinedTest, Callback_RoutesByIdAndConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_producer_joined = true;
+    eng.has_on_consumer_joined = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_producer_joined("sensors.raw", "sensor_a"));
+    msgs.push_back(make_consumer_joined("data.stream", "archive"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+                                                pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.producer_joined_calls.size(), 1u);
+    EXPECT_EQ(eng.producer_joined_calls[0].first, "sensors.raw");
+    EXPECT_EQ(eng.producer_joined_calls[0].second, "sensor_a");
+    ASSERT_EQ(eng.consumer_joined_calls.size(), 1u);
+    EXPECT_EQ(eng.consumer_joined_calls[0].first, "data.stream");
+    EXPECT_EQ(eng.consumer_joined_calls[0].second, "archive");
+    EXPECT_TRUE(msgs.empty()) << "peer-join notifies must be removed (single delivery)";
+}
+
+// Contract 3: a producer-join callback defined but consumer-join not — only
+// the producer side fires; the consumer-join still consumes via its no-op
+// default.  (Mirrors the real asymmetry: a role only ever defines the side it
+// binds; the other-side id, if it ever arrived, must not surface in msgs.)
+TEST_F(DispatchPeerJoinedTest, OneSideCallback_OtherSideDefaultsNoOp)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_producer_joined = true;
+    eng.has_on_consumer_joined = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_producer_joined("ch.in", "prod-1"));
+    msgs.push_back(make_consumer_joined("ch.out", "cons-1"));
+    msgs.push_back(make_other("OTHER"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+                                                pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.producer_joined_calls.size(), 1u);
+    EXPECT_EQ(eng.producer_joined_calls[0].second, "prod-1");
+    EXPECT_TRUE(eng.consumer_joined_calls.empty());
+    ASSERT_EQ(msgs.size(), 1u) << "both peer-join ids consumed; only the non-notify remains";
+    EXPECT_EQ(msgs[0].event, "OTHER");
 }

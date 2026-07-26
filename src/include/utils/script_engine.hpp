@@ -594,6 +594,34 @@ class ScriptEngine
                                          const std::string &reason) = 0;
 
     /**
+     * @brief Invoke `on_producer_joined(channel, producer_uid, api)` if
+     *        the script defines it.
+     *
+     * Fired on the binding (reader) side — a fan-in consumer, or a
+     * processor's fan-in input — when a producer becomes Live on the
+     * channel (HEP-CORE-0011 §"Notification dispatch"; HEP-CORE-0017
+     * §4.7.6).  ADDITIVE: `RoleAPIBase::handle_channel_auth_notifies`
+     * has already inserted the peer into `live_peers` unconditionally
+     * before dispatch, so this callback only lets the script react; its
+     * dispatch default (`default_producer_joined`) is a no-op.  Same
+     * threading contract as `invoke_on_channel_closing` (worker thread;
+     * exceptions logged + suppressed).
+     */
+    virtual void invoke_on_producer_joined(const std::string &channel,
+                                           const std::string &producer_uid) = 0;
+
+    /**
+     * @brief Invoke `on_consumer_joined(channel, consumer_uid, api)` if
+     *        the script defines it.
+     *
+     * Fired on the binding (writer) side — a fan-out / one-to-one
+     * producer, or a processor's output — when a consumer becomes Live.
+     * ADDITIVE / no-op default, exactly as `invoke_on_producer_joined`.
+     */
+    virtual void invoke_on_consumer_joined(const std::string &channel,
+                                           const std::string &consumer_uid) = 0;
+
+    /**
      * @brief Invoke `on_hub_dead(source_hub_uid, api)` if the script
      *        defines it.
      *

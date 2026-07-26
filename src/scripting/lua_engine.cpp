@@ -227,6 +227,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir, const std::
     ref_on_stop_ = extract_callback_ref_("on_stop");
     ref_on_channel_closing_ = extract_callback_ref_("on_channel_closing");
     ref_on_consumer_died_ = extract_callback_ref_("on_consumer_died");
+    ref_on_producer_joined_ = extract_callback_ref_("on_producer_joined");
+    ref_on_consumer_joined_ = extract_callback_ref_("on_consumer_joined");
     ref_on_hub_dead_ = extract_callback_ref_("on_hub_dead");
     // S4 expansion 2026-05-19 — typed band callbacks.
     ref_on_band_member_joined_ = extract_callback_ref_("on_band_member_joined");
@@ -254,6 +256,10 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir, const std::
                                   state_.is_ref_callable(ref_on_channel_closing_));
     set_standard_callback_present("on_consumer_died",
                                   state_.is_ref_callable(ref_on_consumer_died_));
+    set_standard_callback_present("on_producer_joined",
+                                  state_.is_ref_callable(ref_on_producer_joined_));
+    set_standard_callback_present("on_consumer_joined",
+                                  state_.is_ref_callable(ref_on_consumer_joined_));
     set_standard_callback_present("on_hub_dead", state_.is_ref_callable(ref_on_hub_dead_));
     set_standard_callback_present("on_band_member_joined",
                                   state_.is_ref_callable(ref_on_band_member_joined_));
@@ -1184,6 +1190,44 @@ void LuaEngine::invoke_on_consumer_died(const std::string &channel, const std::s
     }
 }
 
+// invoke_on_producer_joined — on_producer_joined(channel, producer_uid, api)
+void LuaEngine::invoke_on_producer_joined(const std::string &channel,
+                                          const std::string &producer_uid)
+{
+    if (!state_.is_ref_callable(ref_on_producer_joined_))
+        return;
+
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_producer_joined_);
+    lua_pushlstring(L, channel.data(), channel.size());
+    lua_pushlstring(L, producer_uid.data(), producer_uid.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+
+    if (!state_.pcall(3, 0, "on_producer_joined"))
+    {
+        on_pcall_error_("on_producer_joined");
+    }
+}
+
+// invoke_on_consumer_joined — on_consumer_joined(channel, consumer_uid, api)
+void LuaEngine::invoke_on_consumer_joined(const std::string &channel,
+                                          const std::string &consumer_uid)
+{
+    if (!state_.is_ref_callable(ref_on_consumer_joined_))
+        return;
+
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_consumer_joined_);
+    lua_pushlstring(L, channel.data(), channel.size());
+    lua_pushlstring(L, consumer_uid.data(), consumer_uid.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+
+    if (!state_.pcall(3, 0, "on_consumer_joined"))
+    {
+        on_pcall_error_("on_consumer_joined");
+    }
+}
+
 // ============================================================================
 // invoke_on_hub_dead — on_hub_dead(source_hub_uid, api)
 // ============================================================================
@@ -1643,6 +1687,10 @@ void LuaEngine::clear_refs_()
     ref_on_channel_closing_ = LUA_NOREF;
     state_.unref(ref_on_consumer_died_);
     ref_on_consumer_died_ = LUA_NOREF;
+    state_.unref(ref_on_producer_joined_);
+    ref_on_producer_joined_ = LUA_NOREF;
+    state_.unref(ref_on_consumer_joined_);
+    ref_on_consumer_joined_ = LUA_NOREF;
     state_.unref(ref_on_hub_dead_);
     ref_on_hub_dead_ = LUA_NOREF;
     state_.unref(ref_on_band_member_joined_);

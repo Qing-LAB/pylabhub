@@ -1547,8 +1547,8 @@ the heartbeat is emitted AFTER the peer's data-plane socket setup
 completes (bind or connect+subscribe issued).  So Live ≈ "wire is
 ready to deliver."
 
-**Objective, not role-relative.**  The count includes self if self
-is a consumer/producer of the channel:
+**Objective, not role-relative (design target).**  Conceptually the
+count includes self if self is a consumer/producer of the channel:
 
 - Fan-in channel: `consumer_count("X")` returns 1 (the singular
   consumer, self-inclusive) regardless of who's asking.
@@ -1556,10 +1556,19 @@ is a consumer/producer of the channel:
 - 1-to-1 channel: both return 0 or 1.
 - Otherwise: reflects the true count of Live peers of that type.
 
-Scripts know their own role, so trivial self-count cases (e.g.,
-consumer script calling `consumer_count` under fan-in) return an
-honest value without creating confusion — the script just doesn't
-consult that accessor for its own decisions.
+> **Current limitation (code incomplete).**  The backing `live_peers`
+> map is populated in exactly one place — the `phase=live` notify,
+> which the broker sends to the channel's *binding* side only, about
+> the *dialing* peers.  So today: (1) a role's **own-side** count is
+> not self-inclusive — a fan-in consumer's `consumer_count()` and a
+> fan-out producer's `producer_count()` return **0, not 1**; and (2) a
+> **dialing** role is never fed the Live set, so all its counts read 0.
+> The **peer-facing** directions (a fan-out producer's
+> `consumer_count()`, a fan-in consumer's `producer_count()`) are
+> correct and load-bearing.  Making the count objective for every role
+> — self-insert on the binding side plus propagating the Live set to
+> dialing roles — is a pending completion (broker + role change).
+> Until then, scripts must consult only the peer-facing direction.
 
 ### 6a.3 How the framework knows
 

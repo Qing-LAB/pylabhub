@@ -94,6 +94,28 @@ typedef struct
     const char *reason;       /**< "heartbeat_timeout". */
 } plh_consumer_died_args_t;
 
+/** on_producer_joined args (HEP-CORE-0011 §"Notification dispatch";
+ *  HEP-CORE-0017 §4.7.6).  Fired on the binding (reader) side of a
+ *  channel — a fan-in consumer, or a processor's fan-in input — when a
+ *  producer becomes Live.  Additive notification: the framework has
+ *  already tracked the peer in `live_peers`; the callback default is a
+ *  no-op.  ABI v12. */
+typedef struct
+{
+    const char *channel;      /**< Channel the producer joined. */
+    const char *producer_uid; /**< UID of the producer presence now Live. */
+} plh_producer_joined_args_t;
+
+/** on_consumer_joined args (HEP-CORE-0011 §"Notification dispatch";
+ *  HEP-CORE-0017 §4.7.6).  Fired on the binding (writer) side — a
+ *  fan-out / one-to-one producer, or a processor's output — when a
+ *  consumer becomes Live.  Additive; default no-op.  ABI v12. */
+typedef struct
+{
+    const char *channel;      /**< Channel the consumer joined. */
+    const char *consumer_uid; /**< UID of the consumer presence now Live. */
+} plh_consumer_joined_args_t;
+
 /** on_hub_dead args (audit D1/D2, 2026-05-18; HEP-CORE-0011;
  *  HEP-CORE-0023 §2.5; HEP-CORE-0033 §19).
  *  Fired when ZMTP declares a broker connection dead (master OR peer

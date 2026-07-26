@@ -75,6 +75,10 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     void invoke_on_channel_closing(const std::string &channel, const std::string &reason) override;
     void invoke_on_consumer_died(const std::string &channel, const std::string &consumer_uid,
                                  const std::string &reason) override;
+    void invoke_on_producer_joined(const std::string &channel,
+                                   const std::string &producer_uid) override;
+    void invoke_on_consumer_joined(const std::string &channel,
+                                   const std::string &consumer_uid) override;
     void invoke_on_hub_dead(const std::string &source_hub_uid) override;
     void invoke_on_band_member_joined(const std::string &band, const std::string &role_uid,
                                       const std::string &role_name) override;
@@ -154,6 +158,8 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     using FnVoid = void (*)(const char *args_json);
     using FnOnChannelClosing = void (*)(const plh_channel_closing_args_t *);
     using FnOnConsumerDied = void (*)(const plh_consumer_died_args_t *);
+    using FnOnProducerJoined = void (*)(const plh_producer_joined_args_t *);
+    using FnOnConsumerJoined = void (*)(const plh_consumer_joined_args_t *);
     using FnOnHubDead = void (*)(const plh_hub_dead_args_t *);
     using FnOnBandMemberJoined = void (*)(const plh_band_member_joined_args_t *);
     using FnOnBandMemberLeft = void (*)(const plh_band_member_left_args_t *);
@@ -175,6 +181,10 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     FnVoidNoArgs fn_on_stop_{nullptr};
     FnOnChannelClosing fn_on_channel_closing_{nullptr};
     FnOnConsumerDied fn_on_consumer_died_{nullptr};
+    // HEP-CORE-0011 §"Notification dispatch" (2026-07-25, ABI v12) — peer-join
+    // callbacks.  Additive; default no-op (live_peers tracked unconditionally).
+    FnOnProducerJoined fn_on_producer_joined_{nullptr};
+    FnOnConsumerJoined fn_on_consumer_joined_{nullptr};
     FnOnHubDead fn_on_hub_dead_{nullptr};
     // S4 expansion 2026-05-19 — typed band callbacks.
     FnOnBandMemberJoined fn_on_band_member_joined_{nullptr};

@@ -1722,6 +1722,11 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     fn_on_channel_closing_ =
         reinterpret_cast<FnOnChannelClosing>(resolve_sym_("on_channel_closing"));
     fn_on_consumer_died_ = reinterpret_cast<FnOnConsumerDied>(resolve_sym_("on_consumer_died"));
+    // HEP-CORE-0011 §"Notification dispatch" (ABI v12) — peer-join callbacks.
+    fn_on_producer_joined_ =
+        reinterpret_cast<FnOnProducerJoined>(resolve_sym_("on_producer_joined"));
+    fn_on_consumer_joined_ =
+        reinterpret_cast<FnOnConsumerJoined>(resolve_sym_("on_consumer_joined"));
     fn_on_hub_dead_ = reinterpret_cast<FnOnHubDead>(resolve_sym_("on_hub_dead"));
     // S4 expansion 2026-05-19 — typed band callbacks.
     fn_on_band_member_joined_ =
@@ -1902,6 +1907,8 @@ void NativeEngine::finalize_engine_()
     fn_on_stop_ = nullptr;
     fn_on_channel_closing_ = nullptr;
     fn_on_consumer_died_ = nullptr;
+    fn_on_producer_joined_ = nullptr;
+    fn_on_consumer_joined_ = nullptr;
     fn_on_hub_dead_ = nullptr;
     fn_on_band_member_joined_ = nullptr;
     fn_on_band_member_left_ = nullptr;
@@ -1939,6 +1946,10 @@ bool NativeEngine::has_callback(const std::string &name) const noexcept
         return fn_on_channel_closing_ != nullptr;
     if (name == "on_consumer_died")
         return fn_on_consumer_died_ != nullptr;
+    if (name == "on_producer_joined")
+        return fn_on_producer_joined_ != nullptr;
+    if (name == "on_consumer_joined")
+        return fn_on_consumer_joined_ != nullptr;
     if (name == "on_hub_dead")
         return fn_on_hub_dead_ != nullptr;
     if (name == "on_band_member_joined")
@@ -2106,6 +2117,26 @@ void NativeEngine::invoke_on_consumer_died(const std::string &channel,
     // only for this call; plugin MUST NOT retain pointers.
     const plh_consumer_died_args_t args{channel.c_str(), consumer_uid.c_str(), reason.c_str()};
     fn_on_consumer_died_(&args);
+}
+
+void NativeEngine::invoke_on_producer_joined(const std::string &channel,
+                                             const std::string &producer_uid)
+{
+    if (!fn_on_producer_joined_)
+        return;
+    // Lifetime contract (see native_invoke_types.h): args valid only for
+    // this call; plugin MUST NOT retain pointers.
+    const plh_producer_joined_args_t args{channel.c_str(), producer_uid.c_str()};
+    fn_on_producer_joined_(&args);
+}
+
+void NativeEngine::invoke_on_consumer_joined(const std::string &channel,
+                                             const std::string &consumer_uid)
+{
+    if (!fn_on_consumer_joined_)
+        return;
+    const plh_consumer_joined_args_t args{channel.c_str(), consumer_uid.c_str()};
+    fn_on_consumer_joined_(&args);
 }
 
 void NativeEngine::invoke_on_hub_dead(const std::string &source_hub_uid)

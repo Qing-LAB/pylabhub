@@ -1341,6 +1341,18 @@ TEST_F(LuaEngineIsolatedTest, Dispatcher_RealLuaEngine_RecordsArgs)
     ExpectWorkerOk(w);
 }
 
+// Peer-join callbacks through the real Lua engine (HEP-CORE-0011
+// §"Notification dispatch"; HEP-CORE-0017 §4.7.6).  Pins the joins' specific
+// wiring — extract + set_standard_callback_present + invoke_on_{producer,
+// consumer}_joined pushing the right (channel, uid, api) args.
+TEST_F(LuaEngineIsolatedTest, Dispatcher_RealLuaEngine_PeerJoined_RecordsArgs)
+{
+    auto w =
+        SpawnWorker("lua_engine.dispatch_notifications_real_lua_engine_peer_joined_records_args",
+                    {unique_dir("dispatcher_peer_joined")});
+    ExpectWorkerOk(w);
+}
+
 // ============================================================================
 // 8. Error handling
 // ============================================================================

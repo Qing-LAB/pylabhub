@@ -13,7 +13,7 @@
  * ctx with the 16 `hub_*` fn ptrs wired through).  See `is_hub()` predicate
  * in the C++ wrapper and §4.9 in HEP-CORE-0028.
  *
- * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v11 (2026-07-23)
+ * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v12 (2026-07-25)
  * is the latest; earlier history is in the version log at the `#define`.
  *
  * ## Minimal Producer Native engine (C)
@@ -701,7 +701,14 @@ extern "C"
  * the opaque `_core`/`_api` tail (offsets for prior callbacks unchanged);
  * exact-match api_version gate still requires a rebuild.  Native-plugin-ABI
  * bump only; the inter-process ComponentVersions registry is unchanged. */
-#define PLH_NATIVE_API_VERSION 11
+/* v12 (2026-07-25): ADDITIVE — peer-join callbacks `on_producer_joined`
+ * (plh_producer_joined_args_t) and `on_consumer_joined`
+ * (plh_consumer_joined_args_t) resolved by the host (HEP-CORE-0011
+ * §"Notification dispatch"; HEP-CORE-0017 §4.7.6).  Optional callbacks —
+ * a plugin that does not export them is unaffected; offsets for prior
+ * callbacks unchanged.  Exact-match api_version gate still requires a
+ * rebuild.  Native-plugin-ABI bump only; ComponentVersions unchanged. */
+#define PLH_NATIVE_API_VERSION 12
 
     /* =========================================================================
      * C-visible pylabhub ComponentVersions constants

@@ -1,15 +1,19 @@
 # Topology channels — a plain-language guide
 
 **Who this is for.**  You're writing a role config, or a script, or
-touching queue/broker code, and you want to know how the three
-channel shapes work — what they mean, when to use which, what shows
-up in your JSON, and what your script can ask about the running
-channel.
+touching queue/broker code, and you want the whole picture in one
+place: how the three channel shapes work (§1–§4), what your script
+can ask about the running channel (§5), the life of a channel from
+startup to shutdown (§6), the callbacks you can define (§7), and how
+to shut down cleanly (§8).
 
-**Where the design lives.**  The permanent design and full sequence
-diagrams live in `HEP-CORE-0017 §3.3.0` (the factory) and `§4.7`
-(the walkthroughs).  This guide summarizes them in plain language
-for day-to-day use.
+**Where the design lives.**  This guide is the day-to-day *user
+reference*; the precise, per-aspect design lives in the HEPs it
+cites.  The big ones: `HEP-CORE-0017 §3.3.0` (the factory) and `§4.7`
+(the walkthroughs + the establishment/teardown contracts);
+`HEP-CORE-0011 § "Notification dispatch"` (the callback table).  Each
+section below points at the exact HEP for the mechanics — see §10 for
+the full map.
 
 ---
 
@@ -310,12 +314,22 @@ heartbeat AFTER the peer has finished setting up its data-plane
 socket (bind or connect + subscribe).  So "live" ≈ "data is ready
 to flow."
 
-**Count includes yourself.**  If you ARE the consumer of the
-channel, `consumer_count()` counts you too.  Under fan-in that
-means it's always 1 (there's only one consumer, and if you're
-asking, that's you).  Under fan-out the producer isn't a consumer
-of its own channel, so `consumer_count()` on the producer counts
-only the *other* processes.
+**Count includes yourself (by design).**  Conceptually the count is
+objective — `consumer_count()` reflects every live consumer on the
+channel, including you if you're one, the same answer whoever asks.
+
+> **Current limitation (code catching up).**  Today the counts are
+> maintained only on the channel's *owner* (binding) side, and only
+> for the *dialing* peers it observes.  So right now a role's
+> *own-side* count reads **0, not 1** — a fan-in consumer's
+> `consumer_count()` and a fan-out producer's `producer_count()` both
+> return 0 — and a *dialing* role reads 0 for everything.  The
+> **peer-facing** directions already work correctly: a fan-out
+> producer's `consumer_count()` and a fan-in consumer's
+> `producer_count()` count their peers as expected.  Until the
+> objective-for-everyone behavior is finished, only rely on the
+> peer-facing direction — your consumers if you're a producer, your
+> producers if you're a consumer.
 
 ### 5.1 The fan-out ZMQ slow-joiner rule
 
@@ -356,7 +370,242 @@ def on_produce(tx, msgs, api):
 
 ---
 
-## 6. Common mistakes
+## 6. The life of a channel
+
+A channel has three phases, and your script only ever touches the
+middle one directly.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Coming_up
+    Coming_up --> Running : owner bound,<br/>dialers connected
+    Running --> Running : peers come and go
+    Running --> Shutting_down : someone closes it
+    Shutting_down --> [*] : cleanup, queue freed
+```
+
+**Coming up.**  One side "owns the address" (§1) and binds; the
+other side asks the broker for it and dials in.  You write none of
+this — the framework brings the owner up first, admits the dialers,
+and holds your data loop until the channel is actually ready.  If it
+can't get ready in time (a peer never shows up), your role aborts
+with a clear timeout instead of hanging forever.  The full rules are
+the **establishment contract**, HEP-CORE-0017 §4.7.0.1.
+
+**Running.**  Your `on_produce` / `on_consume` / `on_process` fires
+each cycle.  Peers may join or leave while you run; the framework
+keeps the counts accurate and — if you ask — calls you when they
+change (§7).  This is the only phase your script really lives in.
+
+**Shutting down.**  Something ends the channel — you call
+`api.stop()`, the owner leaves, or the hub dies.  Whatever the cause,
+the framework runs *one* cleanup path: it tells the broker you're
+leaving, calls your `on_stop` so you can flush and release your own
+things, then frees the queue.  You never free the queue yourself.
+The rules are the **teardown contract**, HEP-CORE-0017 §4.7.0.2.
+
+**One rule worth remembering: the owner's exit is the channel's
+exit.**  The side that owns the address (fan-in consumer, fan-out /
+one-to-one producer) is load-bearing — if it leaves, the whole
+channel closes and everyone else is told.  A dialing side leaving
+just drops that one peer; the channel and everyone else keep going.
+
+---
+
+## 7. Your script's callbacks
+
+You write only the callbacks you need.  Everything you don't define
+has a sensible framework default, so a minimal role stays tiny.
+
+### 7.1 The one you must define
+
+Each role kind requires exactly one data callback.  Leave it out and
+the role refuses to start ("the role requires this callback").
+
+| Role      | Required callback                    |
+|-----------|--------------------------------------|
+| producer  | `on_produce(tx, msgs, api)`          |
+| consumer  | `on_consume(rx, msgs, api)`          |
+| processor | `on_process(rx, tx, msgs, api)`      |
+
+### 7.2 Optional — gate your own startup with `on_init`
+
+If you define `on_init(api)`, the framework calls it every cycle
+until it says it's ready, then never again — your data loop doesn't
+start streaming until then.  **Return a truthy value for ready, falsy
+for not-ready** (a missing `on_init`, or returning `None` / `nil`,
+counts as ready).  Don't return the *strings* `"Ready"` / `"NotReady"`
+— a non-empty string is truthy, so `"NotReady"` would read as ready.
+(Under the hood the framework ANDs your answer with its own readiness
+default — e.g. a consumer waits for at least one admitted producer
+regardless.  HEP-CORE-0011 § "Loop-ready gate".)
+
+```python
+def on_init(api):
+    # don't start until at least one consumer is subscribed
+    return api.consumer_count("data.stream") >= 1
+```
+
+### 7.3 Optional — react when peers come and go
+
+The framework always tracks who's live (that's what powers
+`consumer_count()` / `producer_count()`).  If you want to be *told*
+instead of polling, define the matching callback:
+
+| You're a...                          | Peer joins                                  | Peer leaves                                        |
+|--------------------------------------|---------------------------------------------|----------------------------------------------------|
+| consumer / processor-input (you read)| `on_producer_joined(channel, producer_uid, api)` | *(poll `producer_count` — see note)*          |
+| producer / processor-output (you write)| `on_consumer_joined(channel, consumer_uid, api)` | `on_consumer_died(channel, consumer_uid, reason, api)` |
+
+You only ever get the side you can see: a consumer hears about
+producers, a producer hears about consumers.  A processor, having
+both sides, may define both.  **The count updates either way** — the
+framework tracks live peers itself, before it ever looks at your
+script.  Defining `on_producer_joined` / `on_consumer_joined` just
+lets you *react* on top; leaving it undefined does nothing extra (the
+count still moves).  It's not a "default behavior you're replacing" —
+it's a pure add-on.
+
+**These fire on the side that *owns* the channel** — the same side
+whose peer count is meaningful (§5).  That's the fan-in consumer
+(`on_producer_joined`) and the fan-out / one-to-one producer
+(`on_consumer_joined`).  A *dialing* side (a fan-out consumer, a
+fan-in producer) gets no join callback — the callback fires only on the
+owner (§I11 binding-side rule).  (Its live-peer counts currently read 0
+as well — the same known limitation noted in §5, being completed.)  If
+you're not sure which you are: you own the channel if you set the
+endpoint in your config (§1).
+
+```python
+# A producer that logs subscribers as they arrive, and stops
+# streaming once its last consumer is gone.
+def on_consumer_joined(channel, consumer_uid, api):
+    api.log_info(f"{consumer_uid} joined {channel}; now {api.consumer_count(channel)}")
+
+def on_consumer_died(channel, consumer_uid, reason, api):
+    if api.consumer_count(channel) == 0:
+        api.log_warn("last consumer gone")
+        api.stop()          # our decision — see §8
+```
+
+> **Note on "peer leaves" for a reader.**  A consumer losing a
+> producer today shows up only as a drop in `producer_count()` (poll
+> it) — there is no reader-side *leave callback* yet, only the count.
+> The writer side has the richer `on_consumer_died`.  This asymmetry
+> is deliberate and documented in HEP-CORE-0017 §4.7.6.
+
+### 7.4 Optional — the shutdown callbacks
+
+| Callback                                  | When it fires                                  | Default if you don't define it |
+|-------------------------------------------|------------------------------------------------|--------------------------------|
+| `on_channel_closing(channel, reason, api)`| the hub tells you a channel is being torn down | stop this role cleanly         |
+| `on_stop(api)`                            | your role is shutting down, for any reason     | nothing — teardown proceeds    |
+
+`on_channel_closing` is your chance to *react* to the channel going
+away; its default is simply to stop.  `on_stop` is your universal
+cleanup hook — it runs on **every** shutdown, whatever caused it,
+while you can still do final I/O (flush metrics, send a goodbye,
+close your own files).  Neither one frees the queue; the framework
+does that after `on_stop`.
+
+### 7.5 The mental model
+
+**A role with no optional callbacks at all is still correct** — the
+framework already does the right thing.  You add a callback only to
+customize, and there are two flavors of "customize":
+
+- **Replace a decision.**  For something like "the channel is
+  closing," the framework's default is to stop; your
+  `on_channel_closing` *replaces* that decision with your own.
+- **Add on to bookkeeping.**  For something like a peer joining or
+  leaving, the framework updates its own state (the live-peer counts)
+  no matter what — your `on_producer_joined` / `on_consumer_died` just
+  runs *in addition*.  There's nothing to replace; if you don't define
+  it, the counts still move, you just don't get told.
+
+You never have to define a callback to keep the system healthy — only
+to do something extra.
+
+Here's where each callback fires across the channel's life:
+
+```mermaid
+sequenceDiagram
+    participant F as Framework
+    participant Y as Your script
+    F->>Y: on_init(api)  — repeats until Ready
+    loop each cycle while Running
+        F->>Y: on_produce / on_consume / on_process
+        F-->>Y: on_producer_joined / on_consumer_joined  (a peer went live)
+        F-->>Y: on_consumer_died  (a consumer left — writer side)
+        F-->>Y: on_channel_closing  (the hub closed the channel)
+    end
+    F->>Y: on_stop(api)  — once, at teardown
+    Note over F: framework frees the queue after on_stop
+```
+
+---
+
+## 8. Shutting a channel down cleanly
+
+Two things can end a channel, and they behave differently.
+
+**The owner leaves → the whole channel closes.**  The side that owns
+the address is load-bearing.  When it deregisters, times out, or
+crashes, the hub closes the channel and sends everyone else
+`CHANNEL_CLOSING_NOTIFY` (which fires their `on_channel_closing`,
+whose default is to stop).  Nobody waits for the owner to come back —
+roles restart and re-establish.
+
+**A dialing peer leaves → just that peer drops.**  The channel and
+everyone else keep running; the owner's peer count ticks down and the
+relevant leave signal fires.
+
+**You never free the queue — you ask to stop, and the framework frees
+it.**  When your script decides to shut down (say, in
+`on_consumer_died` because your last consumer left), you don't tear
+anything down by hand.  You call `api.stop()`.  That makes your data
+loop exit, and the framework runs the cleanup path:
+
+```
+your api.stop()   (or the owner left, or the hub died)
+        │
+        ▼
+   data loop exits
+        │
+        ▼
+   deregister from the broker
+        │
+        ▼
+   on_stop(api)      ← your final cleanup runs here
+        │
+        ▼
+   framework closes the queue + sockets
+        │
+        ▼
+   role process ends
+```
+
+So the division of labor is: **you decide *whether* and *when* to
+stop (policy); the framework decides *how* to release everything
+(mechanism).**  A peer leaving never auto-closes your channel — that
+decision is always yours, inside your callback.  The exact sequence
+and guarantees are the teardown contract (HEP-CORE-0017 §4.7.0.2);
+the broker-side owner-death rule is HEP-CORE-0023 §2.1.1.
+
+```python
+# Full pattern: react to a peer leaving, decide to close, clean up.
+def on_consumer_died(channel, consumer_uid, reason, api):
+    if api.consumer_count(channel) == 0:
+        api.stop()                      # decide to shut down
+
+def on_stop(api):
+    flush_local_buffers()               # your cleanup; queue freed after this
+    api.log_info("producer stopped cleanly")
+```
+
+---
+
+## 9. Common mistakes
 
 1. **Setting `out_zmq_endpoint` on a fan-in producer, or
    `in_zmq_endpoint` on a fan-out / one-to-one consumer.**  Those
@@ -400,12 +649,16 @@ def on_produce(tx, msgs, api):
 
 ---
 
-## 7. Where to look next
+## 10. Where to look next
 
 | I want to understand... | Read this |
 |---|---|
 | The factory function and full decision table | HEP-CORE-0017 §3.3.0 + §3.3.0.1 |
 | The exact wire messages for each topology, step by step | HEP-CORE-0017 §4.7 |
+| The rules for how a channel comes up (who binds, who dials, when a peer is reachable) | HEP-CORE-0017 §4.7.0.1 (establishment contract) |
+| The rules for how a channel is torn down (who frees the queue, `on_stop`, owner-death) | HEP-CORE-0017 §4.7.0.2 (teardown contract) |
+| What each callback does, defaults vs. overrides, the dispatch table | HEP-CORE-0011 § "Notification dispatch"; HEP-CORE-0017 §4.7.6 |
+| The broker's owner-death / channel-teardown rule | HEP-CORE-0023 §2.1.1, §2.5 |
 | The wire schema (what REG_REQ, REG_ACK, and the NOTIFY messages carry) | HEP-CORE-0007 §12.3 + §12.5 |
 | How the broker keeps track of channels, peers, and lifetime | HEP-CORE-0036 §3.5, §6.4, §6.5, §6.7 |
 | How the SHM handshake actually works (fd-passing) | HEP-CORE-0041 §5.5, HEP-CORE-0044 |

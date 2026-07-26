@@ -97,6 +97,23 @@ inline void invoke_user_consumer_died(ScriptEngine &engine, const IncomingMessag
                                    msg.details.value("reason", std::string{}));
 }
 
+// Peer-join adapters (HEP-CORE-0011 §"Notification dispatch"; HEP-CORE-0017
+// §4.7.6).  The message is a CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) that
+// `RoleAPIBase::handle_channel_auth_notifies` re-tagged to ProducerJoined /
+// ConsumerJoined by the joining peer's `role_type`; it still carries
+// `channel_name` + `role_uid`.
+inline void invoke_user_producer_joined(ScriptEngine &engine, const IncomingMessage &msg)
+{
+    engine.invoke_on_producer_joined(msg.details.value("channel_name", std::string{}),
+                                     msg.details.value("role_uid", std::string{}));
+}
+
+inline void invoke_user_consumer_joined(ScriptEngine &engine, const IncomingMessage &msg)
+{
+    engine.invoke_on_consumer_joined(msg.details.value("channel_name", std::string{}),
+                                     msg.details.value("role_uid", std::string{}));
+}
+
 inline void invoke_user_hub_dead(ScriptEngine &engine, const IncomingMessage &msg)
 {
     engine.invoke_on_hub_dead(msg.source_hub_uid);
@@ -154,6 +171,27 @@ inline void default_channel_closing(const IncomingMessage & /*msg*/, const StopR
 inline void default_consumer_died(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/)
 {
     // Intentionally empty.
+}
+
+/// Producer / consumer joined and the (binding-side) script has no
+/// `on_producer_joined` / `on_consumer_joined` — no-op.  The framework
+/// ALREADY inserted the peer into `live_peers` unconditionally in
+/// `RoleAPIBase::handle_channel_auth_notifies` BEFORE this dispatch, so
+/// the `producer_count`/`consumer_count` accessors are already advanced;
+/// the default has nothing left to do.  The peer-join callback is purely
+/// additive (HEP-CORE-0011 §"Notification dispatch" — the
+/// unconditional-plus-additive shape; NOT override-else-default).  Tracking
+/// is unconditional bookkeeping, not the callback's default.
+inline void default_producer_joined(const IncomingMessage & /*msg*/,
+                                    const StopRequestor & /*stop*/)
+{
+    // Intentionally empty — tracking is unconditional, not the default.
+}
+
+inline void default_consumer_joined(const IncomingMessage & /*msg*/,
+                                    const StopRequestor & /*stop*/)
+{
+    // Intentionally empty — see default_producer_joined.
 }
 
 /// One of the role's broker connections died and the script has no
@@ -229,6 +267,14 @@ inline constexpr NotificationEntry kNotificationTable[static_cast<std::size_t>(
     // handlers should never fire.  Entry kept here for table indexing
     // correctness — Count is the array size and must equal enum max.
     /* ChannelAuthChanged */ {nullptr, nullptr, nullptr},
+    // Peer-join (HEP-CORE-0011 §"Notification dispatch"; HEP-CORE-0017 §4.7.6).
+    // Synthesized by re-tagging CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) in
+    // `handle_channel_auth_notifies`; the default is a NO-OP because the
+    // live_peers insert is unconditional and already ran before dispatch.
+    /* ProducerJoined     */
+    {"on_producer_joined", &invoke_user_producer_joined, &default_producer_joined},
+    /* ConsumerJoined     */
+    {"on_consumer_joined", &invoke_user_consumer_joined, &default_consumer_joined},
 };
 
 /// Single-pass dispatcher.  For each known msg: fire the user

@@ -846,10 +846,15 @@ layer:
 - `RoleAPIBase` may expose script-facing accessors that mirror
   queue state for observability — `allowed_peers(channel)`,
   `admitted_peers_count(channel)`, `producers(channel)`,
-  `consumers(channel)`.  These are read-only; they are the same
-  shape on every side and every transport; they may return
-  empty / zero as the "not applicable on this side" sentinel
-  per HEP-CORE-0011 §"Cross-Engine Surface Parity."
+  `consumers(channel)`.  These are read-only and the same shape on
+  every side and every transport.  `allowed_peers` /
+  `admitted_peers_count` may return empty / zero as the "not
+  applicable on this side" sentinel (HEP-CORE-0011 §"Cross-Engine
+  Surface Parity").  The LIVE-peer surfaces (`producers` /
+  `consumers` and their counts) are **objective** and exempt from
+  that sentinel — they report the true count for every role; a
+  dialing role's current `0` is a code gap (HEP-CORE-0028 §6a.2),
+  not a sentinel.
 
 **Enforcement.**  Reviewers apply this at HEP amendment review
 and at code review.  A build-time regression guard registered
@@ -926,7 +931,7 @@ and keeps the higher tiers linear.
 3. **Binding-side allowlist update is atomic** (§6.5 binding-side handler flow below): `ZmqQueue::set_peer_allowlist` mutates the ZAP cache under the queue's internal mutex.  The ZAP handler reads under the same mutex.  A handshake either sees the pre-update set or the post-update set in full — never a torn intermediate.  The binding side is the role that runs ZAP as server for the channel; on fan-out channels this is the producer, on fan-in channels this is the consumer, on one-to-one channels this is whichever side binds.
 4. **Observable + event-driven script surface (engine-parity)**.  Two read-only surfaces, identical across the Lua / Python / Native engines:
    - **Polling — allowlist snapshot**: `api.allowed_peers(channel)` (role-local `allowlist_cache` populated via `CHANNEL_AUTH_CHANGED_NOTIFY(phase=admitted)` on the binding side, or via `REG_ACK.producers[]` / `REG_ACK.initial_allowlist` on the dialing side) returns a list of `{role_uid, pubkey}` entries — the current authoritative allowlist snapshot.  Cheap.  Suitable for per-cycle "who is authorized" checks and for the framework's default loop-ready gate (§4.3.4).
-   - **Polling — live-peer snapshot** (added 2026-07-08 topology migration; HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a): `api.producers(channel)` / `api.consumers(channel)` return `list[str]` of role_uids that have completed first-heartbeat (BINDING side observation), backed by the binding-side `live_peers[channel]` map populated via `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)`.  Companion count variants `api.producer_count(channel)` / `api.consumer_count(channel)` return `int` (per HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a.5 native ABI: non-negative on success; -1 on error).  These are DIFFERENT from `allowed_peers` (which surfaces the ADMITTED-to-allowlist set, not the LIVE set): a peer may be admitted but not yet live.  **Side note (read with HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only observation surface principle):** all surfaces are callable from every role via every engine; on a role whose cache is never populated for that surface, the empty list / zero count is the documented "not applicable on this side" sentinel.  The pre-migration `producers()` semantic (backed by `producer_peer_cache` / `CONSUMER_REG_ACK.producers[]`) retires per HEP-CORE-0017 §3.3-retired.
+   - **Polling — live-peer snapshot** (added 2026-07-08 topology migration; HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a): `api.producers(channel)` / `api.consumers(channel)` return `list[str]` of role_uids that have completed first-heartbeat (BINDING side observation), backed by the binding-side `live_peers[channel]` map populated via `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)`.  Companion count variants `api.producer_count(channel)` / `api.consumer_count(channel)` return `int` (per HEP-CORE-0017 §3.3.2 + HEP-CORE-0028 §6a.5 native ABI: non-negative on success; -1 on error).  These are DIFFERENT from `allowed_peers` (which surfaces the ADMITTED-to-allowlist set, not the LIVE set): a peer may be admitted but not yet live.  **Side note (read with HEP-CORE-0011 §"Cross-Engine Surface Parity" Read-only observation surface principle):** all surfaces are callable from every role via every engine.  These LIVE-peer counts are **objective** — the true count of that role kind on the channel, the same for every role — and are exempt from the wrong-side sentinel; their current own-side / dialing-side `0` is a code gap (HEP-CORE-0028 §6a.2), not a sentinel.  (The sentinel still governs genuinely one-sided reads such as `allowed_peers`.)  The pre-migration `producers()` semantic (backed by `producer_peer_cache` / `CONSUMER_REG_ACK.producers[]`) retires per HEP-CORE-0017 §3.3-retired.
    - **Callback**: scripts may optionally define `on_allowlist_changed(channel, allowlist, reason)` (any binding-side role — producer on fan-out, consumer on fan-in, either side on one-to-one binding) to react immediately when the framework applies a new list.  The framework invokes the callback **after** `set_peer_allowlist` has succeeded, so the script observation is consistent with what the ZAP cache will admit on the next handshake.  `reason` is the wire string from the triggering NOTIFY per §6.5.0.
    Both surfaces return the SAME data shape and have the SAME safety property: the script cannot mutate the framework's state.  Engines bind the same `(channel, allowlist, reason)` signature, with allowlist as a list of records the host language exposes naturally (Lua table-of-tables, Python list-of-dicts, Native struct array).
 
@@ -3573,7 +3578,18 @@ survives.  See §14.1 for the HEP-0021 update list.
 >     map locally (no wire round-trip).  Does NOT bump
 >     `channel_version`; does NOT wake R6.  Backs
 >     `api.consumer_count()` / `api.producer_count()` accessors
->     (HEP-CORE-0028).
+>     (HEP-CORE-0028).  **Script-visible (peer-join).**  Unlike
+>     `phase=admitted`/`left` — which are pure infrastructure (the
+>     binding side pulls the allowlist; §I11) and are stripped before
+>     script dispatch — `phase=live` is *promoted* to a peer-join
+>     callback: `on_producer_joined` when `role_type="producer"`,
+>     `on_consumer_joined` when `role_type="consumer"` (HEP-CORE-0011
+>     § "Notification dispatch").  The `live_peers` insert above stays
+>     **unconditional** — it happens before dispatch whether or not a
+>     script defines the callback, so the accessor semantics are
+>     unchanged.  The callback is additive (its dispatch default is a
+>     no-op); it merely lets a script react to a peer becoming Live
+>     instead of only polling the counts.
 >   - `phase=left` — dialing-side role DEREG / heartbeat-timeout
 >     / revocation.  Binding side updates both `zap_allowlist`
 >     and `live_peers` maps.  Bumps `channel_version`; may wake

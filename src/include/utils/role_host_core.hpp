@@ -103,14 +103,25 @@ enum class NotificationId : std::uint8_t
                             ///< react to losing band membership without
                             ///< exiting the role (peer-hub failure case).
     ChannelAuthChanged = 8, ///< CHANNEL_AUTH_CHANGED_NOTIFY (HEP-CORE-0036
-                            ///< §6.5 notify-then-pull).  INFRASTRUCTURE-ONLY
-                            ///< — not a script-visible event.  Producer-side
-                            ///< only; worker thread pulls fresh allowlist
-                            ///< via GET_CHANNEL_AUTH_REQ and applies via
-                            ///< ZmqQueue::set_peer_allowlist.  Per HEP-0036
-                            ///< §I11, scripts observe the resulting list via
-                            ///< api.allowed_peers but do not receive this
-                            ///< notify directly.
+                            ///< §6.5 notify-then-pull).  `phase=admitted` /
+                            ///< `phase=left` are INFRASTRUCTURE-ONLY: the
+                            ///< binding side's worker thread pulls the fresh
+                            ///< allowlist via GET_CHANNEL_AUTH_REQ and applies
+                            ///< it (ZmqQueue::set_peer_allowlist); scripts
+                            ///< observe the result via api.allowed_peers and
+                            ///< do NOT receive these directly.  `phase=live`
+                            ///< is the exception — `handle_channel_auth_notifies`
+                            ///< re-tags it to ProducerJoined / ConsumerJoined
+                            ///< (below) so it reaches the peer-join callbacks.
+    ProducerJoined = 9,     ///< Synthetic: `handle_channel_auth_notifies`
+                            ///< re-tags CHANNEL_AUTH_CHANGED_NOTIFY(phase=live,
+                            ///< role_type="producer") to this.  Reader/binding
+                            ///< side (fan-in consumer / processor fan-in input)
+                            ///< → on_producer_joined.  NOT a distinct wire type.
+    ConsumerJoined = 10,    ///< Synthetic: re-tagged from phase=live with
+                            ///< role_type="consumer".  Writer/binding side
+                            ///< (fan-out / one-to-one producer / processor
+                            ///< output) → on_consumer_joined.  NOT a wire type.
     Count                   ///< sentinel — must be last
 };
 

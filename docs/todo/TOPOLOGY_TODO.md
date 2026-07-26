@@ -89,13 +89,72 @@ on top of that abstraction.
 > - **S3 — dialer fast-fail (falls out of S2).**  Once owner-death closes
 >   the book, `CHECK_PEER_READY` returns `CHANNEL_NOT_FOUND` → the dialer
 >   aborts fast with a clean diagnostic instead of burning `init_timeout`.
-> - **S4 — peer-join callback consistency (framework-default+override).**
+> - **S4 — peer-join callback consistency (unconditional tracking + additive callback).**
 >   Channel peer *join* (phase=live) is poll-only today; every other event
->   (peer-death, band join/leave, channel-closing) has the
->   default+override callback (§4.7.6 consistency rule).  Add an optional
->   channel peer-join callback (framework default = track, unchanged;
->   3-engine parity) to complete the pattern.  NAMING/shape = open design
->   point.
+>   (peer-death, band join/leave, channel-closing) has a script callback
+>   (§4.7.6 consistency rule).  Add an optional channel peer-join callback
+>   (unconditional-plus-additive shape: `live_peers` tracking stays
+>   unconditional, callback is additive with a no-op default; 3-engine
+>   parity) to complete the pattern.
+>   - **CODE LANDED + TESTED (2026-07-25).**  All 12 src files + 2 test fakes;
+>     native ABI v11→v12 (additive).  Test strategy (layered, agreed with user):
+>     L2 engine-invoke + L4 notification-flow.
+>       - L2 `test_layer2_dispatch_notifications` 56/56 (3 new `DispatchPeerJoinedTest`:
+>         no-op default+consume, id-routes-to-correct-side, one-side-callback).
+>       - L2 `test_layer2_lua_engine` 5/5 incl. new `Dispatcher_RealLuaEngine_PeerJoined_RecordsArgs`
+>         (real Lua engine invokes on_producer/consumer_joined with correct args).
+>       - L2 `PythonEngineIsolatedTest` 107/107 (regression).
+>       - L4 `ZmqE2E_MultiProducer_TwoAuthorized` green — fan-in Python consumer's
+>         on_producer_joined fires for BOTH producers via the real broker phase=live
+>         flow (validates the re-tag branch end-to-end).
+>     Native real-engine notification coverage remains a pre-existing gap (no
+>     notification callback is tested per-engine for native — see #74-adjacent
+>     note); the joins match the on_consumer_died/band bar there.
+>     **VTABLE GOTCHA (fixed):** the 2 new pure virtuals were inserted mid-class
+>     in ScriptEngine → incremental builds left stale objects calling wrong vtable
+>     slots (build_api threw uniformly).  A clean rebuild of pylabhub-utils +
+>     pylabhub-scripting fixed it.  Any future virtual-add needs a consistent
+>     full rebuild.  **Still pending before commit: full ctest sweep (lib change).**
+>   - **DESIGN DOCUMENTED (2026-07-25).**  Role-specific
+>     names resolved: `on_producer_joined` (reader side) /
+>     `on_consumer_joined` (writer side); the peer's `role_type` picks the
+>     id, so a processor gets `on_producer_joined` on input +
+>     `on_consumer_joined` on output with no special-casing; exposure
+>     enforced by which side the event reaches (no per-role whitelist).
+>     Documented in HEP-CORE-0017 §4.7.6, HEP-CORE-0011 § "Notification
+>     dispatch" (dispatch-table rows + `phase=live` promotion), HEP-CORE-0036
+>     §I11 phase note, and `README_topology_channels.md` §7 (user reference).
+>   - **Code slice (pending):** `NotificationId::ProducerJoined/ConsumerJoined`
+>     (role_host_core.hpp); `kNotificationTable` rows + `invoke_user_*`
+>     adapters + **no-op** `default_producer_joined`/`default_consumer_joined`
+>     (cycle_ops.hpp — the `live_peers` insert does NOT move into the
+>     default; it stays where it is).  In `handle_channel_auth_notifies`
+>     (role_api_base.cpp): keep the unconditional `live_peers` insert on
+>     `phase=live`, then RE-TAG the message to `ProducerJoined`/`ConsumerJoined`
+>     by `role_type` and leave it in `msgs` for `dispatch_notifications`
+>     (today it erases it).  Dispatch can't fire the callback from
+>     `handle_channel_auth_notifies` itself — that method has no engine
+>     handle; only `dispatch_notifications` (cycle_ops) does — hence the
+>     re-tag-and-forward.  3-engine extract + `set_standard_callback_present`
+>     + `invoke_` (lua/python/native).  Uses the `required_callback`
+>     framework — no per-role patching.
+>   - **Deferred (honest asymmetry):** reader-side *leave* callback
+>     (`on_producer_died`/`_left`).  Writer side already has
+>     `on_consumer_died`; reader-side departure rides the thinner
+>     `phase=left` count-drop and gets a first-class callback only once a
+>     dedicated producer-departure notify carries a reason.  See
+>     HEP-CORE-0017 §4.7.6.
+> - **S5 — objective peer counts (code gap, surfaced 2026-07-25).**  Docs
+>   (HEP-CORE-0028 §6a.2, HEP-CORE-0017 §4.7.6, README §5) specify
+>   `consumer_count`/`producer_count` as OBJECTIVE (self-inclusive, same
+>   for whoever asks); code populates `live_peers` only on the binding
+>   side about dialing peers (role_api_base.cpp:2262).  So own-side count
+>   returns 0 not 1, and dialing roles read 0 everywhere.  Peer-facing
+>   direction works + is load-bearing.  Completion: self-insert on binding
+>   side + propagate Live set to dialing roles (broker + role change).
+>   Docs carry "Current limitation" notes pointing at HEP-0028 §6a.2 —
+>   remove them when this lands.  Non-load-bearing today; lower priority
+>   than S1-S4.
 > Each slice lands on the standard envelope + a full sweep; tests derived
 > from the §4.7 contract (spawn-order-independence L4 keystone).
 >

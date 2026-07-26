@@ -314,6 +314,7 @@ int full_startup_processor_multifield(const std::string &dir);
 /// `test_dispatch_notifications.cpp` — see that file's
 /// "CONSTRAINED EXCEPTION" doc-block.
 int dispatch_notifications_real_lua_engine_records_args(const std::string &dir);
+int dispatch_notifications_real_lua_engine_peer_joined_records_args(const std::string &dir);
 
 // ── invoke_process (chunk 4) ────────────────────────────────────────────────
 //

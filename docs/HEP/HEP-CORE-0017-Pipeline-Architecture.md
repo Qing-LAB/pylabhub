@@ -450,20 +450,27 @@ api.consumers(channel_name: str)      -> list[str]  # role_uids
 api.producers(channel_name: str)      -> list[str]  # role_uids
 ```
 
-The binding side of the channel populates the underlying `live_peers`
-map (the binding-side role host receives the `phase=live` NOTIFYs);
-dialing-side callers on the same channel see empty lists / zero
-counts — the documented "not applicable on this side" sentinel per
-HEP-CORE-0011.  Callers do NOT need to switch APIs based on role
-kind — a fan-in producer script calling `api.consumer_count(K)` on a
-channel where it is the dialing side just gets 0.
+**Objective, not role-relative.**  Each accessor reports the true Live
+set of that role kind on the channel — the same value regardless of
+which role asks, consistent with the declared topology.  A count is
+truth: topology (fan-in / fan-out / one-to-one) is already carried by
+config, so the count never encodes "which side am I."  There is no
+"wrong side" for these — they are objective, NOT the wrong-side-sentinel
+surfaces of HEP-CORE-0011 (which govern genuinely one-sided reads like
+`allowed_peers`).
 
-Objective counts (self-inclusive when applicable).  Feed from the
-binding-side `live_peers` map maintained by `phase=live` NOTIFY
-events.  Script decides when to produce/consume based on peer
-readiness (framework provides mechanisms, script decides policy —
-see tech draft §7.6).  HEP-CORE-0028 amendment ships the accessor
-bindings for Lua + Python + Native engines.
+> **Current limitation.**  Today the accessors are backed only by the
+> BINDING side's `live_peers` map (populated by `phase=live` NOTIFYs),
+> so a role's own-side count reads 0 (not self-inclusive) and a dialing
+> role reads 0 everywhere.  That 0 is a known gap — self-insert on the
+> binding side plus propagating the Live set to dialing roles are
+> pending (authority: HEP-CORE-0028 §6a.2) — **not** an intended
+> sentinel.  The peer-facing direction (fan-out producer's
+> `consumer_count()`, fan-in consumer's `producer_count()`) works today.
+
+The script decides when to produce/consume based on peer readiness
+(framework provides mechanisms, script decides policy).  HEP-CORE-0028
+§6a ships the accessor bindings for Lua + Python + Native.
 
 ---
 
@@ -1292,6 +1299,128 @@ misconfiguration, not a supported shape.
 
 ---
 
+#### 4.7.0.2 The channel teardown contract (normative)
+
+Establishment (§4.7.0.1) has a symmetric counterpart: how a channel
+comes *down*.  The same discipline holds — the mechanics live below the
+script, and the script sees only its callbacks.  The teardown mechanics
+themselves are owned elsewhere (the role-host epilogue in HEP-CORE-0011
+§ "Role Host worker_main_() Steps"; the shutdown coordination and
+owner-death rule in HEP-CORE-0023 §2.1.1 and §2.5); this contract states
+the guarantees a script author can rely on.
+
+**T1 — One teardown, reached by four doors.**  A role's data loop runs
+while it is registered, un-erroed, and has at least one Authorized
+presence (HEP-CORE-0036 §8.2).  Four things end it, and all four
+converge on the *same* epilogue — there is no alternate path:
+- the script calls `api.stop()`;
+- a notification default stops it (e.g. `on_channel_closing`'s default →
+  `StopReason::ChannelClosed`);
+- the last Authorized presence drops — voluntary DEREG or hub death (the
+  §8.2 outer guard flips false);
+- a critical error or process exit.
+
+**T2 — Owner teardown is channel teardown (the mirror of C2).**  When
+the *binding owner* leaves — voluntary DEREG, heartbeat-timeout, or crash
+— the hub closes the `ChannelEntry` and fans `CHANNEL_CLOSING_NOTIFY` out
+to the dialing peers (HEP-CORE-0023 §2.1.1).  **The channel does not
+outlive its owner**; there is no wait for the owner to return, roles
+restart and re-establish.  A *dialing* peer leaving closes nothing — it
+drops from the owner's book, and the owner keeps serving the rest.
+
+**T3 — The script requests stop; the framework releases the queue.**  A
+script never destroys a queue and never closes a socket.  It signals
+intent — `api.stop()`, or letting a default stop it — and the loop
+exits.  The queue is released *downstream of the loop*, in the teardown
+epilogue, in this fixed order: deregister each presence from the broker →
+`on_stop` (final script cleanup) → finalize the engine → thread-quiescence
+barrier → close the queues and infrastructure.  So queue release is a
+*consequence* of the loop exiting, never an action a callback takes.
+(Step sequence: HEP-CORE-0011 § "Role Host worker_main_() Steps", Step 9
+`do_role_teardown`; thread contract:
+HEP-CORE-0031 §4.1.)
+
+**T4 — Two shutdown callbacks, distinct jobs.**
+- `on_channel_closing(channel, reason, api)` — *cause-specific, in-loop.*
+  The hub has told this role a channel is no longer maintained.  The
+  script may react; the framework default is a clean stop
+  (`StopReason::ChannelClosed`).  Optional; if absent, the default stops
+  the affected side.
+- `on_stop(api)` — *universal, terminal.*  Runs exactly once, inside
+  teardown, on **every** shutdown no matter which door (T1) opened it,
+  with the control plane still alive so the script can flush metrics,
+  send notifications, and release *its own* resources.  Optional; if
+  absent, teardown proceeds.
+
+  Neither callback releases the queue (T3).
+
+**T5 — Reacting to a peer leaving is the script's decision, never an
+automatic close.**  A non-owner peer leaving is surfaced to the script —
+the writer side via `on_consumer_died`, the reader side via a falling
+`producer_count` (§4.7.6).  The framework's own bookkeeping drops the
+departed peer and keeps serving the rest **unconditionally** — regardless
+of whether any callback is defined — and it **never** couples "a peer
+left" to "close the channel."  The callback is purely how the script
+*learns* of the departure (its dispatch default is a no-op); it changes
+no framework state.  If the script decides the channel is pointless
+without that peer, it invokes the close path itself (T3).  This is the
+mechanism-not-policy rule applied to teardown: the framework keeps its
+own state correct unconditionally; the *decision* to tear down is the
+script's.
+
+**T6 — A processor tears down per side, cleans up once.**  A processor is
+two presences (C7).  `api.stop()` ends its single loop and tears down
+*both* channels; on any channel where it is the owner, that channel dies
+and its dialers receive `CHANNEL_CLOSING_NOTIFY` (T2); on any channel
+where it is a dialer, it simply drops from that owner's book.  There is
+one `on_stop` for the whole role, not one per side.
+
+**T7 — Teardown is topology-blind (the mirror of C6).**  The script sees
+`on_channel_closing`, `on_stop`, and the peer callbacks — never DEREG,
+never a socket close, never the presence guard, never the queue
+destruction.  Every clause above is enforced strictly below the script.
+
+**The teardown epilogue, as a sequence.**  Whichever door opens, this is
+the single path from loop-exit to queue release:
+
+```mermaid
+sequenceDiagram
+    participant S as Script
+    participant L as Data loop
+    participant H as Role host (epilogue)
+    participant B as Broker / Hub
+    Note over S,L: a door opens — api.stop() / notify default /<br/>presence-guard flips / critical error
+    L->>L: outer condition flips → loop exits
+    L-->>H: run_data_loop returns
+    H->>B: DEREG each presence
+    Note over B: if this role was the OWNER →<br/>close ChannelEntry, fan out<br/>CHANNEL_CLOSING_NOTIFY to dialers
+    H->>S: on_stop(api) — final cleanup<br/>(flush, notify, release own resources)
+    H->>H: finalize engine
+    H->>H: thread-quiescence barrier (HEP-CORE-0031 §4.1)
+    H->>H: close queues + infrastructure  ← queue released HERE
+    Note over H: worker returns; main thread joins
+```
+
+The whole of a channel's life — establishment (§4.7.0.1), streaming
+(§4.7.6), and teardown — as one state view:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Establishing
+    Establishing --> Running : owner bound, dialers admitted,<br/>loop-ready gate passed
+    Establishing --> [*] : init timeout (misconfig) — fatal abort
+    Running --> Running : peers join / leave;<br/>framework tracks counts, script may react
+    Running --> Draining : a door opens (T1)
+    Draining --> [*] : DEREG → on_stop → queue closed
+    note right of Running
+        owner leaving here → whole channel
+        goes to Draining (T2); a dialer
+        leaving stays Running
+    end note
+```
+
+---
+
 #### 4.7.1 Fan-in ZMQ (N producers → 1 consumer)
 
 **Shape:** several producers, one consumer.  **Who owns the
@@ -1789,22 +1918,30 @@ broker has received the peer's first heartbeat; per HEP-CORE-0036
 socket is set up (bind or connect+subscribe issued).  So Live ≈
 "wire is ready to deliver."
 
-**Objective, not role-relative.**  The count includes self if self
-is a consumer/producer of the channel.  Fan-in `consumer_count()`
-returns 1 (the singular consumer) regardless of who's asking;
-fan-out `producer_count()` returns 1 similarly; 1-to-1 both return
-0 or 1.  The script knows its own role, so trivial self-count cases
-don't create confusion.
+**Objective, not role-relative (design target).**  Conceptually the
+count is objective — it reflects the true Live set of that role kind
+on the channel, self-inclusive, the same regardless of who asks
+(fan-in `consumer_count()` = 1, fan-out `producer_count()` = 1, 1-to-1
+= 0 or 1).
+
+> **Current limitation.**  `live_peers` is populated only on the
+> *binding* side, only from `phase=live` about *dialing* peers, so
+> today a role's own-side count reads **0, not 1** (a fan-in consumer's
+> `consumer_count()`, a fan-out producer's `producer_count()`) and a
+> dialing role reads 0 everywhere.  The peer-facing directions (fan-out
+> producer's `consumer_count()`, fan-in consumer's `producer_count()`)
+> work.  Making the count objective for every role is a pending code
+> completion; the accessor's authority is HEP-CORE-0028 §6a.2.
 
 **How the framework knows.**  The binding side's role host receives
 `CHANNEL_AUTH_CHANGED_NOTIFY` with `phase=live` (HEP-CORE-0007 §12.5)
 each time a dialing-side peer transitions to Live at the broker; it
 updates `live_peers[channel]` locally.  On `phase=left` it removes.
 Under fan-out/1-to-1 the producer role is binding; under fan-in the
-consumer role is binding.  Dialing-side roles get the same signal
-via their own role host if useful, but for fan-in producer /
-fan-out consumer / 1-to-1 dialing side, the "peer count" is
-trivially 0 or 1 anyway.
+consumer role is binding.  The broker sends `phase=live` to the
+*binding* side only, so today the dialing side is not fed the Live
+set and its counts read 0 (the limitation noted above); extending the
+Live-set visibility to dialing roles is the pending completion.
 
 **Framework mechanism, not policy.**  Under fan-out ZMQ
 specifically (PUB drops messages sent before SUB subscribes), the
@@ -1833,8 +1970,8 @@ for the rest, so a minimal role stays trivial and topology-blind.
 | `on_produce(tx, msgs, api)` | REQUIRED for a producer role | hard error — the role fails to run ("the role requires this callback") |
 | `on_consume(rx, msgs, api)` | REQUIRED for a consumer role | hard error — the role fails |
 | `on_process(rx, tx, msgs, api)` | REQUIRED for a processor role | hard error — the role fails |
-| `on_init(api) -> Ready \| NotReady` | OPTIONAL | treated as `Ready`; readiness reduces to the framework default below |
-| `on_allowlist_changed`, `on_consumer_died`, `on_role_disconnected`, band callbacks | OPTIONAL | no-op; the framework still updates `live_peers` / allowlist underneath |
+| `on_init(api)` (return truthy = Ready, falsy = NotReady; missing / `None` / `nil` = Ready) | OPTIONAL | treated as `Ready`; readiness reduces to the framework default below |
+| `on_allowlist_changed`, `on_consumer_died`, `on_producer_joined` / `on_consumer_joined`, band callbacks | OPTIONAL | no-op — the framework already updates `live_peers` / allowlist unconditionally; the callback is additive |
 
 **The loop-ready gate.**  Each cycle, before the acquire/emit step, the
 framework computes `init_done = default_ready AND script_ready`:
@@ -1892,7 +2029,7 @@ topology-blind, using only the count:
 ```python
 # Hold the loop until at least one consumer is subscribed.
 def on_init(api):
-    return "Ready" if api.consumer_count("data.stream") >= 1 else "NotReady"
+    return api.consumer_count("data.stream") >= 1   # truthy = Ready, falsy = NotReady
 
 # ...and/or skip individual iterations while none are present.
 def on_produce(tx, msgs, api):
@@ -1907,45 +2044,87 @@ or the establishment handshake — only its callbacks and the peer counts.
 Every establishment clause (C1–C7, §4.7.0.1) is enforced strictly below
 this line.
 
-**Notification callbacks — framework default, script override (the same
-shape as `on_init`).**  Beyond the data callbacks, every framework
-notification follows one deliberate architecture (the notification
-dispatch table): each event carries a **framework default** that runs
-the correct behavior out of the box, AND an optional **script callback**
-that *replaces* that default when the script defines it.  Dispatch is
-uniform — *if the script defined the callback, run it; else run the
-framework default; always consume the event* — so a hookless role is
-always correct, and the script customizes only where it wants.
+**Notification callbacks — framework-correct by default, script
+customizes on top.**  Beyond the data callbacks, every framework
+notification runs through one dispatch table.  Mechanically the dispatch
+is uniform — *if the script defined the callback, run it; else run the
+native default; always consume the event* — so a hookless role is always
+correct.  What the "native default" *is* depends on the event's shape
+(see the Consistency rule below): for a decision event
+(`on_channel_closing`, `on_hub_dead`) the default *acts* and the callback
+*replaces* it; for a bookkeeping event (`on_consumer_died`, the peer-join
+callbacks, band events) the framework already updated its state
+unconditionally, so the default is a **no-op** and the callback is a pure
+add-on.
 
 | Event | Script callback (override) | Framework default (no hook) |
 |---|---|---|
-| Owner tore the channel down | `on_channel_closing` | stop this role's affected side cleanly |
-| A peer died (heartbeat timeout / DEREG) | `on_consumer_died` | drop the dead peer; keep serving the rest |
+| A channel peer became Live (joined) | `on_producer_joined` (binding reader) / `on_consumer_joined` (binding writer) | no-op — the framework already advanced the count; the callback is additive |
+| A peer died — writer side (a consumer left / timed out) | `on_consumer_died` | no-op — the framework already dropped the peer; the producer keeps serving the rest |
+| Owner tore the channel down | `on_channel_closing` | stop this role's affected side cleanly (`StopReason::ChannelClosed`) |
+| The role is shutting down (any cause) | `on_stop` | proceed with teardown (§4.7.0.2 T4) |
 | Hub died | `on_hub_dead` | stop the role |
 | Band member joined / left / message / lost | `on_band_member_joined` / `_left` / `on_band_message` / `on_band_lost` | update band membership; no role action |
 | A peer's admission changed (added / revoked) | `on_allowlist_changed` (observe) | apply the new allowlist to the queue's ZAP — admit / revoke automatically |
 
+The peer-join callback name is chosen by *who joined*, resolved from the
+notify's `role_type`: a producer becoming Live delivers `on_producer_joined`,
+a consumer becoming Live delivers `on_consumer_joined`.  Two facts bound who
+actually receives them, and together they remove any need for a per-role
+whitelist:
+- **Direction.**  A producer never sees `on_producer_joined`; a consumer
+  never sees `on_consumer_joined` — you only hear the *opposite* side join.
+- **Binding-side only.**  `live_peers` is populated only on the channel's
+  binding (owner) side — the broker sends `phase=live` there alone
+  (HEP-CORE-0036 §I11).  So `on_producer_joined` reaches the fan-in consumer
+  and `on_consumer_joined` reaches the fan-out / one-to-one producer; a
+  *dialing* side, whose sole peer is the owner (already present when it is
+  admitted), receives no join callback.
+
+A processor may define both — each fires for whichever of its channels it
+binds.  The callback vocabulary and dispatch table that carry these are
+owned by HEP-CORE-0011 § "Notification dispatch."
+
 The framework applies the *mechanics* (admit, revoke, track Live peers,
-tear down on owner death) as the correct default; a script callback
-adjusts the *role's own response* on top.  It never inverts — a script
-cannot veto a hub admission decision at the data plane; admission
-authority stays with the hub (C1).
+tear down on owner death) **unconditionally**; a script callback adjusts
+the *role's own response* on top.  It never inverts — a script cannot
+veto a hub admission decision at the data plane; admission authority
+stays with the hub (C1).
 
-**Consistency rule (normative).**  Every framework→script callback obeys
-this shape: the framework holds a correct default, and the script
-customizes on top — for `on_init` by AND-composition, for notifications
-by override-else-default.  A new callback MUST supply a framework default
-so that a hookless role stays correct; the script is never *required* to
-hold the system correct.
+**Consistency rule (normative).**  Every framework→script callback keeps
+a hookless role correct without the script's help; the script customizes
+on top.  Three shapes realize this — a new callback MUST fit one:
+- **AND-composition** (`on_init`) — the framework's readiness default is
+  ANDed with the script's return.
+- **Override-else-default** — the default *acts*, and a script callback
+  *replaces* it; exactly one runs, never both.  Used where the default
+  is a real decision: `on_channel_closing` → stop, `on_hub_dead` →
+  stop-if-master.
+- **Unconditional-plus-additive** — the callback's default is a **no-op**
+  and the callback is a pure add-on, for one of two reasons: either the
+  framework already updated its own state *before* dispatch so nothing is
+  left to do (`live_peers` for the peer callbacks — join and
+  `on_consumer_died`), or the event is pure script-domain with no
+  framework state to keep (the band events).  This is why the peer-join
+  "default" is a no-op, **not** "track the peer": tracking is
+  unconditional bookkeeping done ahead of dispatch, not the callback's
+  default — so counts stay correct whether or not the callback is defined.
 
-> **One gap this rule surfaces — channel peer *join* is poll-only.**  A
-> peer becoming Live on a channel updates `producer_count` /
-> `consumer_count` (framework default = track) but has no callback row,
-> so a script reacts only by polling those counts — whereas peer *death*
-> (`on_consumer_died`) and band join/leave both have the default+override
-> callback.  Completing the pattern (an optional channel peer-join
-> callback; framework default = track, unchanged) is tracked as an
-> implementation slice with 3-engine parity.  See TOPOLOGY_TODO.
+The script is never *required* to hold the system correct.
+
+> **Peer-lifecycle symmetry — where it is complete, and where it is
+> thin.**  *Join* now follows the rule on both sides:
+> `on_producer_joined` / `on_consumer_joined` (unconditional-plus-additive
+> — the framework tracks the join, the callback is an optional add-on with
+> a no-op default, above).  *Departure* is complete on the **writer**
+> side — a consumer leaving delivers `on_consumer_died` with a reason.  On
+> the **reader** side a producer leaving is currently *thin*: the framework
+> drops it from `live_peers` (so `producer_count` falls) but it rides the
+> lighter `CHANNEL_AUTH_CHANGED phase=left` signal rather than a dedicated
+> departure notify, so a script observes it by polling the count.  A
+> symmetric reader-side departure callback is a natural follow-up on the
+> same dispatch mechanism; it is deliberately deferred until a dedicated
+> producer-departure notify carries a first-class reason.
 
 #### 4.7.7 Why plain PUB (not XPUB) under fan-out ZMQ
 

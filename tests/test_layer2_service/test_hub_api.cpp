@@ -446,6 +446,8 @@ class MockEngine : public pylabhub::scripting::ScriptEngine
                                  const std::string &) override
     {
     }
+    void invoke_on_producer_joined(const std::string &, const std::string &) override {}
+    void invoke_on_consumer_joined(const std::string &, const std::string &) override {}
     void invoke_on_hub_dead(const std::string &) override {}
     void invoke_on_band_member_joined(const std::string &, const std::string &,
                                       const std::string &) override

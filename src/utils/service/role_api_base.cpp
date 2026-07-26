@@ -2265,6 +2265,31 @@ void RoleAPIBase::handle_channel_auth_notifies(
                             "AUTH_CHANGED_NOTIFY phase=live)",
                             pImpl->short_tag, pImpl->uid, channel, role_uid, role_type);
             }
+            // Promote phase=live to a script-visible peer-join notification
+            // (HEP-CORE-0011 §"Notification dispatch"; HEP-CORE-0017 §4.7.6).
+            // The `live_peers` insert above is UNCONDITIONAL bookkeeping (it
+            // backs producer_count/consumer_count regardless of any callback);
+            // the peer-join callback is purely additive with a no-op default.
+            // The joining peer's `role_type` picks the id — a producer going
+            // Live reaches on_producer_joined (the binding reader), a consumer
+            // reaches on_consumer_joined (the binding writer).  Re-tag and
+            // forward to `dispatch_notifications` instead of erasing.  This
+            // method has no engine handle, so the callback can only fire from
+            // the dispatcher; hence re-tag-and-forward.
+            if (!role_uid.empty() && role_type == "producer")
+            {
+                it->notification_id = NotificationId::ProducerJoined;
+                ++it;
+                continue;
+            }
+            if (!role_uid.empty() && role_type == "consumer")
+            {
+                it->notification_id = NotificationId::ConsumerJoined;
+                ++it;
+                continue;
+            }
+            // Missing role_uid / unrecognized role_type — nothing to report;
+            // infrastructure-only, drop as before.
             it = msgs.erase(it);
             continue;
         }

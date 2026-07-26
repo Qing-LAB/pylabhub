@@ -276,6 +276,14 @@ void write_zmq_multi_producer_consumer_script(const fs::path &script_dir, int ex
          "    api.log('info', 'cons_test: init required_offsets=' +\n"
          "                    ','.join(str(x) for x in sorted(_REQUIRED)))\n"
          "\n"
+         // Peer-join callback (HEP-CORE-0011 §"Notification dispatch";
+         // HEP-CORE-0017 §4.7.6).  Fires on the binding (fan-in) consumer
+         // when each producer goes Live — exercises the real end-to-end
+         // path: broker phase=live NOTIFY → handle_channel_auth_notifies
+         // re-tag → dispatch → PythonEngine::invoke_on_producer_joined.
+         "def on_producer_joined(channel, producer_uid, api):\n"
+         "    api.log('info', 'cons_test: producer_joined uid=' + producer_uid)\n"
+         "\n"
          "def on_consume(rx, msgs, api):\n"
          "    if rx.slot is None:\n"
          "        return True\n"
@@ -1216,6 +1224,26 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
                "one producer's data never reached the consumer.  Full log:\n"
             << cons_log;
     }
+
+    // ── Peer-join callback (HEP-CORE-0011 §"Notification dispatch";
+    //    HEP-CORE-0017 §4.7.6) ────────────────────────────────────────
+    // End-to-end proof of the phase=live promotion.  The fan-in consumer
+    // is the BINDING side, so the broker fires
+    // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live, role_type=producer) for each
+    // producer as it goes Live.  `handle_channel_auth_notifies` re-tags
+    // each to ProducerJoined (instead of stripping it), and the dispatcher
+    // invokes the script's `on_producer_joined` through the REAL Python
+    // engine.  Both producers went Live before data completed, so both
+    // markers are already present.  A regression that reverts the re-tag
+    // (strips phase=live) or mis-wires PythonEngine::invoke_on_producer_joined
+    // fails here even though data flow (above) still passes.
+    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
+                                     "cons_test: producer_joined uid=" + prod_a_uid, seconds(5)))
+        << dump_full("on_producer_joined for producer A — phase=live re-tag + dispatch to "
+                     "on_producer_joined did not reach the script");
+    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
+                                     "cons_test: producer_joined uid=" + prod_b_uid, seconds(5)))
+        << dump_full("on_producer_joined for producer B");
 
     // ── Shutdown ──────────────────────────────────────────────────────
     cons.send_signal(SIGTERM);

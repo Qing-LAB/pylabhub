@@ -274,6 +274,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         py_on_stop_ = py::getattr(module_, "on_stop", py::none());
         py_on_channel_closing_ = py::getattr(module_, "on_channel_closing", py::none());
         py_on_consumer_died_ = py::getattr(module_, "on_consumer_died", py::none());
+        py_on_producer_joined_ = py::getattr(module_, "on_producer_joined", py::none());
+        py_on_consumer_joined_ = py::getattr(module_, "on_consumer_joined", py::none());
         py_on_hub_dead_ = py::getattr(module_, "on_hub_dead", py::none());
         // S4 expansion 2026-05-19 — typed band callbacks.
         py_on_band_member_joined_ = py::getattr(module_, "on_band_member_joined", py::none());
@@ -298,6 +300,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         set_standard_callback_present("on_stop", is_callable(py_on_stop_));
         set_standard_callback_present("on_channel_closing", is_callable(py_on_channel_closing_));
         set_standard_callback_present("on_consumer_died", is_callable(py_on_consumer_died_));
+        set_standard_callback_present("on_producer_joined", is_callable(py_on_producer_joined_));
+        set_standard_callback_present("on_consumer_joined", is_callable(py_on_consumer_joined_));
         set_standard_callback_present("on_hub_dead", is_callable(py_on_hub_dead_));
         set_standard_callback_present("on_band_member_joined",
                                       is_callable(py_on_band_member_joined_));
@@ -1163,6 +1167,42 @@ void PythonEngine::invoke_on_consumer_died(const std::string &channel,
     }
 }
 
+// invoke_on_producer_joined — on_producer_joined(channel, producer_uid, api)
+void PythonEngine::invoke_on_producer_joined(const std::string &channel,
+                                             const std::string &producer_uid)
+{
+    if (!is_callable(py_on_producer_joined_))
+        return;
+
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_producer_joined_(channel, producer_uid, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_producer_joined", e);
+    }
+}
+
+// invoke_on_consumer_joined — on_consumer_joined(channel, consumer_uid, api)
+void PythonEngine::invoke_on_consumer_joined(const std::string &channel,
+                                             const std::string &consumer_uid)
+{
+    if (!is_callable(py_on_consumer_joined_))
+        return;
+
+    py::gil_scoped_acquire g;
+    try
+    {
+        py_on_consumer_joined_(channel, consumer_uid, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_consumer_joined", e);
+    }
+}
+
 // ============================================================================
 // invoke_on_hub_dead — on_hub_dead(source_hub_uid, api)
 // ============================================================================
@@ -1660,6 +1700,8 @@ void PythonEngine::clear_pyobjects_()
     release_to_none(py_on_stop_);
     release_to_none(py_on_channel_closing_);
     release_to_none(py_on_consumer_died_);
+    release_to_none(py_on_producer_joined_);
+    release_to_none(py_on_consumer_joined_);
     release_to_none(py_on_hub_dead_);
     // S4 expansion 2026-05-19 — typed band callbacks.
     release_to_none(py_on_band_member_joined_);

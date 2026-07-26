@@ -264,6 +264,8 @@ Unloaded --> Initialized --> ScriptLoaded --> ApiBuilt --> Finalized
 | `invoke_on_inbox(msg)` | worker | Call `on_inbox(msg, api)` |
 | `invoke_on_channel_closing(channel, reason)` | worker | Adapter — pulls `(channel_name, reason)` from the notify and calls `on_channel_closing(channel, reason, api)`.  Invoked by the dispatcher ONLY when the script has defined the override (`has_callback("on_channel_closing") == true`).  When the override is absent, the dispatcher calls the framework's native default (`default_channel_closing` — graceful stop with `StopReason::ChannelClosed`) instead.  Either way, the notify is consumed from `msgs`.  Per design call 2026-05-15T03:29: "this is really just a callback that replaces the default straightforward stop()". |
 | `invoke_on_consumer_died(channel, consumer_uid, reason)` | worker | Adapter for the producer-side `on_consumer_died(channel, consumer_uid, reason, api)` override.  Dispatched under the unified model: override invoked iff the script defines it; otherwise the native default (`default_consumer_died` — no-op, producer survives) runs.  Notify is consumed from `msgs` either way.  `reason` is `"heartbeat_timeout"` (consumer-presence Pending → Disconnected; HEP-CORE-0023 §2.1). |
+| `invoke_on_producer_joined(channel, producer_uid)` | worker | Adapter for the `on_producer_joined(channel, producer_uid, api)` override — fired when a producer becomes Live on a channel this role binds (fan-in consumer / processor fan-in input).  Override invoked iff defined; otherwise the no-op native default (`default_producer_joined`) runs — the `live_peers` insert has already happened unconditionally (promotion note below), so the default has nothing left to do.  Consumed from `msgs` either way.  Source: `CHANNEL_AUTH_CHANGED phase=live` with `role_type="producer"`. |
+| `invoke_on_consumer_joined(channel, consumer_uid)` | worker | Adapter for the `on_consumer_joined(channel, consumer_uid, api)` override — fired when a consumer becomes Live on a channel this role binds (fan-out / one-to-one producer / processor output).  Override invoked iff defined; otherwise the no-op native default (`default_consumer_joined`) runs — see the producer row.  Consumed from `msgs` either way.  Source: `CHANNEL_AUTH_CHANGED phase=live` with `role_type="consumer"`. |
 | `invoke_on_hub_dead(source_hub_uid)` | worker | Adapter for the `on_hub_dead(source_hub_uid, api)` override.  Dispatched under the unified model: override invoked iff defined; otherwise the native default (`default_hub_dead`) runs — graceful stop with `StopReason::HubDead` if the dead connection was master, no-op if peer (role keeps running on master per HEP-CORE-0023 §2.5).  Audit D1/D2 (2026-05-18).  Synthetic notification: not a wire frame; enqueued by the role-side ctrl-thread `on_hub_dead` lambda (`role_api_base.cpp` Phase 2) when ZMTP declares a broker connection dead.  **Fires at most ONCE per (role lifetime, connection) pair** — pylabhub policy: disconnect is terminal (HEP-CORE-0023 §2.5.3), `ZMQ_RECONNECT_IVL=-1` on every BRC DEALER socket so a dead connection cannot be silently re-established by libzmq.  If the role wants to talk to a broker again after a disconnect it must do so explicitly at the lifecycle layer (tear down `RoleHandler` / build a fresh one) — not by waiting for the same socket to come back.  Script can check `api.is_connection_alive(i)` / `api.connections_alive_count()` to disambiguate master vs peer if needed, then call `api.stop()` or keep the role alive while it drives an explicit role-restart from outside. |
 | `invoke_on_stop()` | worker | Call `on_stop(api)` |
 | `invoke(name, args)` | any | Generic invocation (e.g., admin shell) |
@@ -343,6 +345,32 @@ Current rows (post-D1/D2 + S4 expansion 2026-05-19):
 | `BandMessage`      | `on_band_message`       | `default_band_message` → no-op |
 | `BandLost`         | `on_band_lost`          | `default_band_lost` → no-op (synthetic event from hub-dead; the role can lose band routing without exiting — by-default scripts proceed on whichever connections remain alive.  Scripts wanting to exit on band loss override and call `api.stop()`.) |
 | `ChannelReady`     | `on_channel_ready`      | `default_channel_ready` → no-op (consumer-role callback fired once when `apply_consumer_reg_ack` attach loop completes per HEP-CORE-0042 §7.1.  Script inspects per-producer admission via `api.producer_attach_status(channel, uid)` + `api.producer_attach_reason(channel, uid)` and decides whether the admitted subset is acceptable.  Default is no-op because the framework has already dialed the admitted producers via `set_producer_peers()`; scripts that require all-N producers override and call `api.channel_stop(channel)` on partial admission.) |
+| `ProducerJoined`   | `on_producer_joined`    | `default_producer_joined` → **no-op**.  The `live_peers` insert that advances the counts runs unconditionally in `handle_channel_auth_notifies` *before* dispatch, so a hookless role still tracks the peer; the callback is purely additive.  Emitted to the binding side (fan-in consumer / processor fan-in input) when a producer becomes Live. |
+| `ConsumerJoined`   | `on_consumer_joined`    | `default_consumer_joined` → **no-op** (same as above — tracking is unconditional; callback additive).  Emitted to the binding side (fan-out / one-to-one producer / processor output) when a consumer becomes Live. |
+
+> **`phase=live` promotion (peer-join dispatch).**  A channel peer
+> becoming Live arrives as `CHANNEL_AUTH_CHANGED_NOTIFY` with
+> `phase=live` and the joining peer's `role_type`.  `RoleAPIBase::
+> handle_channel_auth_notifies` (which strips `phase=admitted`/`left`
+> as pure infrastructure — allowlist pull, HEP-CORE-0036 §I11) does
+> NOT strip `phase=live`: it re-tags the message with `ProducerJoined`
+> (`role_type="producer"`) or `ConsumerJoined` (`role_type="consumer"`)
+> and lets it flow to `dispatch_notifications`.  The peer's `role_type`
+> — not the local role — chooses the id, so a consumer only ever sees
+> `ProducerJoined` and a producer only ever sees `ConsumerJoined`; a
+> processor sees `ProducerJoined` on a bound input channel and
+> `ConsumerJoined` on a bound output channel.  Only the binding side is
+> notified at all: `phase=live` is emitted to the channel owner, so a
+> dialing role receives no join dispatch (its sole peer is the owner,
+> already present).  Crucially, `handle_channel_auth_notifies` still
+> performs the `live_peers` insert **unconditionally** — exactly as the
+> pre-promotion code did — *before* the message reaches
+> `dispatch_notifications`.  So the count accessors advance whether or
+> not a script defines the callback; the insert is framework
+> bookkeeping, not a "default."  `default_*_joined` is therefore a
+> **no-op** (like `default_consumer_died`), and the join callback is
+> purely additive: a hookless role is behaviourally unchanged, and a
+> role that defines the callback still gets correct counts.
 
 Band-callback signatures (defined in `ScriptEngine`):
 
@@ -350,9 +378,13 @@ Band-callback signatures (defined in `ScriptEngine`):
 - `on_band_member_left(band: str, role_uid: str, reason: str, api)` — peer left.  `reason` ∈ `{voluntary, heartbeat_timeout}` per HEP-CORE-0023 §2.1 reason vocabulary.
 - `on_band_message(band: str, sender_role_uid: str, body: dict/table, api)` — broadcast received from another band member.  Broker enforces sender-must-be-member (HEP-CORE-0030 §5.2), so `sender_role_uid` is guaranteed to be a band member at emission time.
 - `on_band_lost(band: str, reason: str, api)` — synthetic, fired when role-side band routing is invalidated.  Currently `reason="hub_dead"` only (the role's broker connection died, so the BRC for this band is no longer reachable).  NOT a wire frame.
+- `on_producer_joined(channel: str, producer_uid: str, api)` — a producer became Live on a channel this role **binds** (the fan-in consumer, or a processor whose input channel is fan-in).  Additive: the framework has already tracked the peer in `live_peers` (see below); the callback's default is a no-op.
+- `on_consumer_joined(channel: str, consumer_uid: str, api)` — a consumer became Live on a channel this role **binds** (the fan-out / one-to-one producer, or a processor whose output channel is fan-out / one-to-one).  Same shape.  A processor may define both — each fires for whichever of its channels it binds.
+
+  Both are **binding-side observations**: the broker sends `phase=live` only to the channel's binding side (HEP-CORE-0036 §I11), so a dialing role — whose sole peer is the owner, already present when it is admitted — never receives a join callback and sees a trivially-0-or-1 count.  The `live_peers` update that backs the counts is unconditional framework bookkeeping done before dispatch — **not** the callback's default (which is a no-op) — so the counts stay correct whether or not the script defines the callback.
 - `on_channel_ready(channel: str, api)` — consumer-role callback fired once per channel when the pre-attach loop (HEP-CORE-0042 §7.1) completes.  Script queries `api.producers_declared(channel)`, `api.producers_connected(channel)`, `api.producer_attach_status(channel, uid)`, `api.producer_attach_reason(channel, uid)` (HEP-CORE-0042 §8) to inspect per-producer admission and decide policy.  Framework encodes no policy — scripts that require all-N producers must check and decide.  NOT a wire frame; synthesized by the consumer's role host from the attach-loop result.
 
-Native C ABI mirror: each callback has a matching `plh_band_*_args_t` struct in `native_invoke_types.h` carrying the same fields (plus `body_json` for `on_band_message` — the C ABI doesn't ship a JSON parser so plugins receive the body as a JSON string).
+Native C ABI mirror: each **band** callback has a matching `plh_band_*_args_t` struct in `native_invoke_types.h` carrying the same fields (plus `body_json` for `on_band_message` — the C ABI doesn't ship a JSON parser so plugins receive the body as a JSON string).
 
 Adding a notification:
 
@@ -840,12 +872,29 @@ C++ frame keeps the `allowlist_cache` on the producer side; only the
 "correct side" populates its own cache on its own data path.
 
 The LIVE-peer surfaces (`producers`, `consumers`, `producer_count`,
-`consumer_count`) added by the 2026-07-08 topology migration use
-a DIFFERENT backing store: the BINDING side's `live_peers[channel]`
-map, populated by `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)` events
-(HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY lines 1834-1838 +
-HEP-CORE-0028 §6a).  The pre-migration `producer_peer_cache` (fed
-by `CONSUMER_REG_ACK.producers[]`) retires from the script surface
+`consumer_count`) added by the 2026-07-08 topology migration are
+**objective, NOT wrong-side-sentinel surfaces.**  Each reports the
+true Live set of that role kind on the channel — the same value
+regardless of which role asks, consistent with the channel's declared
+topology.  A count is truth: the topology (fan-in / fan-out /
+one-to-one) is already carried by config, so the count never encodes
+"which side am I," and there is no "wrong side" for it to sentinel-out.
+This is a deliberate **exception** to the wrong-side sentinel below —
+the sentinel governs genuinely one-sided reads (`allowed_peers`,
+`band_members`), not these counts.
+
+> **Current limitation (code incomplete).**  Today these surfaces are
+> backed only by the BINDING side's `live_peers[channel]` map
+> (populated by `CHANNEL_AUTH_CHANGED_NOTIFY(phase=live)`), so a role's
+> own-side count is not self-inclusive and a dialing role reads 0
+> everywhere.  That 0 is a KNOWN GAP — self-insert on the binding side
+> plus propagating the Live set to dialing roles are pending
+> (authority: HEP-CORE-0028 §6a.2) — **not** the intended sentinel.
+> The peer-facing direction (fan-out producer's `consumer_count()`,
+> fan-in consumer's `producer_count()`) works today.
+
+The pre-migration `producer_peer_cache` (fed by
+`CONSUMER_REG_ACK.producers[]`) retires from the script surface
 per HEP-CORE-0017 §3.3-retired; it remains only as an internal
 convenience cache used by the legacy `apply_consumer_reg_ack`
 during the migration window.
@@ -860,7 +909,9 @@ surface from the "wrong side" returns the same shape's empty value
    kinds doesn't break on language-binding `AttributeError` /
    `KeyError`.  The author's role-kind knowledge tells them which
    surface yields data on their side; the framework doesn't enforce
-   that knowledge at the engine boundary.
+   that knowledge at the engine boundary.  (The objective LIVE-peer
+   counts are exempt from the "wrong side returns empty" rule — they
+   yield the same value on every side; see the exemption note above.)
 2. *Engine-author uniformity.* Binding code follows one rule ("bind
    every read-only observation surface on every role") instead of a
    per-role binding table that the three engines could drift on.
@@ -878,6 +929,14 @@ populated for that surface.  The same shape is also the legitimate
 not-yet-populated return on the *correct* side — these are
 observationally identical, by design (see "scope" below for why
 that's acceptable).
+
+> **Exempt: the objective LIVE-peer counts.**  `producer_count` /
+> `consumer_count` / `producers` / `consumers` are objective (above) —
+> they return the true count for *every* role, so they have no
+> wrong-side sentinel.  The `int (count)` / collection rows below apply
+> to genuinely one-sided surfaces, not to these.  (Their current
+> dialing-side `0` is a code gap, not a sentinel — see the limitation
+> note above.)
 
 | Return type | Wrong-side sentinel | Native C ABI counterpart |
 |---|---|---|
