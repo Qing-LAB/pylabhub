@@ -102,6 +102,35 @@ Startup walk-through against the owner-first machine:
    values before mapping.  The broker's answer and the physical memory
    then cross-verify each other.  (Fold into G5's doc rules.)
 
+### S-A2  Generic consumer under FAN-IN (the consumer OWNS the channel)
+
+Asked directly in review 2026-07-26: does the generic pattern extend to
+fan-in, where the consumer is the binding owner and OPENS the channel?
+**Yes — verified allowed in code — but the timing is fundamentally
+different and the flow must be stated:**
+
+- *The uncited owner CAN open its channel.*  Verified: on the
+  consumer-opens path the handler builds the channel's schema
+  invariants from the `expected_*` fields UNCONDITIONALLY — with
+  absent citation they are empty strings, so the channel opens with
+  EMPTY schema invariants (the same state as a legacy channel).  No
+  deadlock, no special case.
+- *The format does not exist yet at the owner's startup.*  Under
+  owner-first the consumer comes up FIRST; the schema arrives only
+  when the first producer registers and files it.  So the fan-in
+  generic owner cannot pull at its own REG time — it late-binds **at
+  first-producer-join** (the `on_producer_joined` /
+  `phase=live` signal): pull → verify pin → build interpreter →
+  start reading.  This is semantically sound by construction: no
+  producer ⇒ no data ⇒ no format needed yet.  (Fan-out/1:1 dialing
+  consumers keep the simpler pull-right-after-own-REG flow of S-A.)
+- *One adopt-path verification required (G7):* the producer's schema
+  filing must land on the CHANNEL record (not only the schema
+  registry) when the channel's stored invariants are empty, so the
+  channel-form pull serves fan-in channels opened schema-less.  The
+  legacy-adopt path suggests it does; pin it with an L2 test in
+  slice 1.
+
 ### S-B  Pre-flight citation (config-light but verifying consumer)
 
 A consumer that wants named-citation safety without duplicating the
@@ -247,6 +276,7 @@ activate queue → script's `on_init` runs with the format available
 | **G3** | **Neither handler checks the caller.**  `SCHEMA_REQ`/`METRICS_REQ` answer any CURVE-authenticated known role about any channel.  Compare: `GET_CHANNEL_AUTH` is binding-side-gated, `GET_CHANNEL_PRODUCERS` was consumer-gated — the project's blast-radius discipline gates reads. | Design decision | (a) Member-gate both channel-form queries (caller must hold a presence on the channel — `is_role_registered_on_channel` exists); all-channels METRICS form becomes hub-script/admin-only (wire form requires `channel_name`).  (b) Leave open to all known roles (metrics/schemas are observability/structure, not secrets — hostnames/pids/SHM names are the only mild recon surface). | **(a)** — matches least-privilege precedent, and every v1 scenario (S-A…S-E) pulls only channels the caller is registered on.  The (owner,id) SCHEMA form stays known-role-open (the registry is shared infrastructure, and hub-globals have no channel to be member of).  Loosening later for an observer role is a deliberate #292-era grant, not a default. ⚖ |
 | **G5** | Freshness/lifetime semantics are implicit. | Doc | Write into the integration: metrics freshness = heartbeat cadence; schema validity = channel lifetime (S-D); pull-at-establishment pattern; fan-in dual-lifetime rule (channel form for consumers, owner/id form for tooling); SHM cross-verification rule (pulled BLDS fingerprint MUST match the DataBlock header hashes before mapping — S-A refinement). | Fold into HEP-0034 §10.3 + HEP-0019 when the slice lands. |
 | **G6** | No typed bodies for either message (JSON handlers). | Tracked | Already on the HEP-0046 EnvelopeOnly follow-on list; add `SchemaReqBody`/`MetricsReqBody` when giving them clients (the natural moment). | Do with slice 1. |
+| **G7** | Fan-in schema-less open: confirm the first producer's schema ADOPTS onto the empty channel record (not only into the registry), so the channel-form pull serves S-A2. | Verify + pin | L2 test: open fan-in channel uncited → producer joins with schema → `SCHEMA_REQ(channel)` returns the producer's BLDS. | Pin in slice 1. |
 
 **Conflicts detected: none against the lifecycle machine.**  Two
 near-conflicts resolve cleanly and should be documented as patterns:
@@ -303,3 +333,28 @@ mile to fully generic script roles.
    `(owner,id)` registry reads (recommended) vs. all-open?
 3. **Slice order** — 1→2→3→4 as above, or pull slice 3 earlier if
    generic native roles are wanted sooner?
+4. **Should the shared-memory segment ALSO store the BLDS text
+   (self-describing memory), on top of the fetch mechanism?**
+   Recommendation: **no, keep fingerprints-only** — with the door
+   explicitly noted.  Reasoning:
+   - Every sanctioned SHM attach is broker-mediated by design
+     (HEP-0041 capability-fd handshake: the consumer receives the
+     memory descriptor FROM the broker flow) — a reader that can
+     reach the segment can always reach the fetch path, so a second
+     in-segment copy serves no sanctioned reader.
+   - A second copy of the structure is a drift surface; the
+     fingerprints already bind segment ↔ broker record
+     cryptographically without duplication (one source of truth).
+   - `SharedMemoryHeader` is frozen ABI under the Core Structure
+     Change Protocol, and BLDS text is variable-length — it cannot go
+     in the fixed header; it would need a new versioned region and an
+     offset remap (full mandatory-review ceremony) for the marginal
+     value above.
+   - The one scenario that would justify self-description —
+     broker-less post-mortem forensics — does not exist today:
+     verified, the recovery tooling (`data_block_recovery.cpp`)
+     operates purely structurally and never interprets payload
+     fields.  If field-level forensics ever becomes a requirement,
+     the right shape is a dedicated versioned self-description
+     region appended at creation — recorded here as the future
+     option, deliberately not built now.
