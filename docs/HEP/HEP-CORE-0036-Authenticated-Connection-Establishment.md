@@ -5447,7 +5447,7 @@ in response to channel-event broadcasts (HEP-CORE-0033 §12).
 **Existing code status**: `ChannelEntry::add_producer`
 (hub_state.hpp:459) already accepts 1..N producers for ZMQ; only
 SHM rejects multi-producer (physical constraint).  But today's
-DISC_REQ_ACK still returns only the FIRST producer's endpoint +
+DISC_ACK still returns only the FIRST producer's endpoint +
 pubkey (`broker_service.cpp:1745-1794`, transitional shape).
 HEP-0036's CONSUMER_REG_ACK `producers[]` array (T1, 2026-05-28)
 completed the registration-path per-producer migration.  The

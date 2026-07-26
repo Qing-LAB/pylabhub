@@ -144,9 +144,9 @@ struct HubStateTestAccess
     /// Wave M2.5 step 4 — additive DEREG_REQ / producer-drop entry
     /// point.  Tests drive multi-producer drop scenarios through this
     /// forwarder; the production DEREG_REQ handler routes the same way.
-    static RemoveProducerResult on_producer_dropped(HubState &s, const std::string &channel_name,
-                                                    const std::string &role_uid,
-                                                    ChannelCloseReason reason)
+    static PresenceDropResult on_producer_dropped(HubState &s, const std::string &channel_name,
+                                                  const std::string &role_uid,
+                                                  ChannelCloseReason reason)
     {
         return s._on_producer_dropped(channel_name, role_uid, reason);
     }
@@ -171,8 +171,8 @@ struct HubStateTestAccess
     /// consumer is the binding owner — its leave closes the channel
     /// (`channel_now_empty == true`); under fan-out / one-to-one it is
     /// a dialer and only its slot is erased.
-    static RemoveProducerResult on_consumer_left(HubState &s, const std::string &ch,
-                                                 const std::string &uid)
+    static PresenceDropResult on_consumer_left(HubState &s, const std::string &ch,
+                                               const std::string &uid)
     {
         return s._on_consumer_left(ch, uid);
     }
@@ -198,19 +198,19 @@ struct HubStateTestAccess
     /// Wave M2.5 step 6 + Wave-B M2 (2/3): per-presence Pending →
     /// Disconnected forwarder.  2-arg overload defaults to producer for
     /// backward-compat; consumer tests use the 3-arg form.  Returns
-    /// the typed RemoveProducerResult.  Teardown is OWNER-bound
+    /// the typed PresenceDropResult.  Teardown is OWNER-bound
     /// (HEP-CORE-0017 §4.7.0.2 T2): the consumer path erases the slot
     /// under fan-out / one-to-one but CLOSES the channel under fan-in
     /// (consumer = owner); the producer path closes only under
     /// fan-out / one-to-one (producer = owner).
-    static RemoveProducerResult on_pending_timeout(HubState &s, const std::string &ch,
-                                                   const std::string &uid)
+    static PresenceDropResult on_pending_timeout(HubState &s, const std::string &ch,
+                                                 const std::string &uid)
     {
         return s._on_pending_timeout(ch, uid, "producer");
     }
-    static RemoveProducerResult on_pending_timeout(HubState &s, const std::string &ch,
-                                                   const std::string &uid,
-                                                   const std::string &role_type)
+    static PresenceDropResult on_pending_timeout(HubState &s, const std::string &ch,
+                                                 const std::string &uid,
+                                                 const std::string &role_type)
     {
         return s._on_pending_timeout(ch, uid, role_type);
     }

@@ -25,7 +25,7 @@
 #include "utils/hub_state.hpp"
 
 #include "utils/console_output_buffer.hpp" // operator console pull output buffer (§11.0.4)
-#include "utils/format_tools.hpp"           // bytes_to_hex — normalized schema diagnostics
+#include "utils/format_tools.hpp"          // bytes_to_hex — normalized schema diagnostics
 #include "utils/naming.hpp"
 #include "utils/replay_guard.hpp" // shared sliding-window nonce dedup
 #include "utils/schema_utils.hpp" // schema_records_equivalent (HEP-CORE-0034 §9)
@@ -1486,11 +1486,11 @@ HubState::_on_producer_added(const std::string &channel_name, ChannelSchemaInvar
 // Wave M2.5 step 4 — additive producer-drop op.  See
 // `docs/tech_draft/controlled_access_api_design.md` §7 step 4 +
 // HEP-CORE-0023 §2.1.1 atomic teardown rule.
-RemoveProducerResult HubState::_on_producer_dropped(const std::string &channel_name,
-                                                    const std::string &role_uid,
-                                                    ChannelCloseReason reason)
+PresenceDropResult HubState::_on_producer_dropped(const std::string &channel_name,
+                                                  const std::string &role_uid,
+                                                  ChannelCloseReason reason)
 {
-    RemoveProducerResult result{false, false};
+    PresenceDropResult result{false, false};
 
     // Identifier validation at the op-entry boundary.
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) ||
@@ -1532,8 +1532,7 @@ RemoveProducerResult HubState::_on_producer_dropped(const std::string &channel_n
         // §4.7.0.3 departure classification + the last-producer
         // qualifier for the owning side.
         const bool producer_is_owner =
-            topology::classify_departure(it->second.topology,
-                                         topology::AdmissionSide::Producer) ==
+            topology::classify_departure(it->second.topology, topology::AdmissionSide::Producer) ==
             topology::DepartureClass::CloseChannel;
         is_last_producer = producer_is_owner && (it->second.producer_count() == 1);
         if (!is_last_producer)
@@ -1711,10 +1710,10 @@ HubState::_on_consumer_joined(const std::string &channel, ConsumerEntry consumer
     return result;
 }
 
-RemoveProducerResult HubState::_on_consumer_left(const std::string &channel,
-                                                 const std::string &role_uid)
+PresenceDropResult HubState::_on_consumer_left(const std::string &channel,
+                                               const std::string &role_uid)
 {
-    RemoveProducerResult result{false, false};
+    PresenceDropResult result{false, false};
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         (!role_uid.empty() && !is_valid_identifier(role_uid, IdentifierKind::RoleUid)))
     {
@@ -1735,8 +1734,7 @@ RemoveProducerResult HubState::_on_consumer_left(const std::string &channel,
         auto it = pImpl->channels.find(channel);
         owner_teardown =
             it != pImpl->channels.end() &&
-            topology::classify_departure(it->second.topology,
-                                         topology::AdmissionSide::Consumer) ==
+            topology::classify_departure(it->second.topology, topology::AdmissionSide::Consumer) ==
                 topology::DepartureClass::CloseChannel &&
             std::any_of(it->second.consumers.begin(), it->second.consumers.end(),
                         [&](const ConsumerEntry &c) { return c.role_uid == role_uid; });
@@ -1919,11 +1917,11 @@ void HubState::_on_heartbeat_timeout(const std::string &channel, const std::stri
     }
 }
 
-RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
-                                                   const std::string &role_uid,
-                                                   const std::string &role_type)
+PresenceDropResult HubState::_on_pending_timeout(const std::string &channel,
+                                                 const std::string &role_uid,
+                                                 const std::string &role_type)
 {
-    RemoveProducerResult result{false, false};
+    PresenceDropResult result{false, false};
 
     if (!is_valid_identifier(channel, IdentifierKind::Channel) ||
         !is_valid_identifier(role_uid, IdentifierKind::RoleUid))
@@ -2053,8 +2051,7 @@ RemoveProducerResult HubState::_on_pending_timeout(const std::string &channel,
         // drop closes the channel; fan-in producers are dialers and
         // always take the slot-erase path (§4.7.0.3 departure rows).
         const bool producer_is_owner =
-            topology::classify_departure(it->second.topology,
-                                         topology::AdmissionSide::Producer) ==
+            topology::classify_departure(it->second.topology, topology::AdmissionSide::Producer) ==
             topology::DepartureClass::CloseChannel;
         is_last_producer = producer_is_owner && (it->second.producer_count() == 1);
         if (!is_last_producer)
@@ -2507,8 +2504,8 @@ schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitation
         out.reason = R::kFingerprintMismatch;
         out.detail = "schema fingerprint mismatch (" +
                      mismatch_zone(in.channel_hash, in.expected_hash) +
-                     " zone): channel hash=" + short_hash(in.channel_hash) + "… cited hash=" +
-                     short_hash(in.expected_hash) + "…";
+                     " zone): channel hash=" + short_hash(in.channel_hash) +
+                     "… cited hash=" + short_hash(in.expected_hash) + "…";
     }
     // (b) schema_id must be EXACTLY equal.  This enforces the named/anonymous
     //     symmetry: a named citation against an anonymous channel, an anonymous
@@ -2565,12 +2562,12 @@ schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitation
             else if (it->second.hash != in.channel_hash)
             {
                 out.reason = R::kFingerprintMismatch;
-                out.detail =
-                    "schema fingerprint mismatch (" +
-                    mismatch_zone(it->second.hash, in.channel_hash) +
-                    " zone): registry record (owner=" + show_owner(owner) + ", id=" +
-                    show_id(in.channel_id) + ") hash=" + short_hash(it->second.hash) +
-                    "… differs from channel hash=" + short_hash(in.channel_hash) + "…";
+                out.detail = "schema fingerprint mismatch (" +
+                             mismatch_zone(it->second.hash, in.channel_hash) +
+                             " zone): registry record (owner=" + show_owner(owner) +
+                             ", id=" + show_id(in.channel_id) +
+                             ") hash=" + short_hash(it->second.hash) +
+                             "… differs from channel hash=" + short_hash(in.channel_hash) + "…";
             }
         }
     }

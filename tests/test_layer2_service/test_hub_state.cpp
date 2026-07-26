@@ -14,7 +14,7 @@
 #include "utils/broker_service.hpp"
 #include "utils/hub_state.hpp"
 #include "utils/hub_queue_factory.hpp" // Queue::reader/writer_is_binding_side (truth-table views)
-#include "utils/schema_utils.hpp" // make_schema_record (HEP-CORE-0034 §6.3)
+#include "utils/schema_utils.hpp"      // make_schema_record (HEP-CORE-0034 §6.3)
 #include "utils/logger.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
@@ -650,8 +650,7 @@ TEST(HubStateOps, ConsumerLeft_RemovesFromChannelAndErasesRoleEntry)
     // survives.  The fan-in owner-leave (channel death) counterpart is
     // pinned by `HubStateProducerDrop.ChannelClose_FiresOncePerCloseEvent`.
     HubState s;
-    HubStateTestAccess::on_channel_registered(s,
-                                              make_channel("ch1", ChannelTopology::FanOut));
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1", ChannelTopology::FanOut));
     HubStateTestAccess::on_consumer_joined(s, "ch1", make_consumer("cons.A.test"));
     HubStateTestAccess::on_consumer_left(s, "ch1", "cons.A.test");
 
@@ -751,8 +750,7 @@ TEST(HubStateOps, PendingTimeout_AtomicallyTearsDownChannel)
     // death.  (Under fan-in the producer is a dialer and the same
     // timeout only erases its slot — pinned separately.)
     HubState s;
-    HubStateTestAccess::on_channel_registered(s,
-                                              make_channel("ch1", ChannelTopology::OneToOne));
+    HubStateTestAccess::on_channel_registered(s, make_channel("ch1", ChannelTopology::OneToOne));
     // Force producer-presence to Pending via heartbeat timeout.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
     {
@@ -1584,7 +1582,7 @@ namespace
 {
 using pylabhub::hub::AddConsumerResult;
 using pylabhub::hub::AddProducerResult;
-using pylabhub::hub::RemoveProducerResult;
+using pylabhub::hub::PresenceDropResult;
 
 ProducerEntry make_producer(const std::string &uid, uint64_t pid)
 {
@@ -3733,8 +3731,8 @@ TEST(HubStateConsumerPendingTimeout, TransitionsToDisconnected_ChannelSurvives)
     // owner counterpart (timeout = channel death) is pinned by
     // `FanInOwner_PendingTimeout_ClosesChannel` below.
     HubState s;
-    HubStateTestAccess::on_channel_registered(
-        s, make_channel("ch.cons.pt", ChannelTopology::FanOut));
+    HubStateTestAccess::on_channel_registered(s,
+                                              make_channel("ch.cons.pt", ChannelTopology::FanOut));
     HubStateTestAccess::on_consumer_joined(s, "ch.cons.pt", make_consumer("cons.B.uid00000002"));
 
     // Drive Connected→Pending first; pending-timeout is a no-op on
@@ -3777,8 +3775,8 @@ TEST(HubStateConsumerPendingTimeout, LastPresence_TriggersRoleDisconnected)
     // (Wave M3 step 5b).  Verifies via observable role-disappearance:
     // post-timeout, `s.role(uid)` returns nullopt.
     HubState s;
-    HubStateTestAccess::on_channel_registered(
-        s, make_channel("ch.cons.lp", ChannelTopology::FanOut));
+    HubStateTestAccess::on_channel_registered(s,
+                                              make_channel("ch.cons.lp", ChannelTopology::FanOut));
     HubStateTestAccess::on_consumer_joined(s, "ch.cons.lp", make_consumer("cons.B.uid00000002"));
 
     ASSERT_TRUE(s.role("cons.B.uid00000002").has_value());
@@ -4843,8 +4841,7 @@ TEST(ChannelTopology, ClassifyArrival_TransitionTable)
     {
         for (auto side : {AdmissionSide::Producer, AdmissionSide::Consumer})
         {
-            EXPECT_EQ(classify_arrival(t, side, /*book_exists=*/true),
-                      ArrivalClass::JoinExisting);
+            EXPECT_EQ(classify_arrival(t, side, /*book_exists=*/true), ArrivalClass::JoinExisting);
             EXPECT_EQ(classify_arrival(t, side, /*book_exists=*/false),
                       is_owner(t, side) ? ArrivalClass::OwnerOpens : ArrivalClass::AwaitOwner);
         }
@@ -4869,9 +4866,8 @@ TEST(ChannelTopology, ClassifyDeparture_TransitionTable)
     {
         for (auto side : {AdmissionSide::Producer, AdmissionSide::Consumer})
         {
-            EXPECT_EQ(classify_departure(t, side), is_owner(t, side)
-                                                       ? DepartureClass::CloseChannel
-                                                       : DepartureClass::EraseSlot);
+            EXPECT_EQ(classify_departure(t, side),
+                      is_owner(t, side) ? DepartureClass::CloseChannel : DepartureClass::EraseSlot);
         }
     }
     EXPECT_EQ(classify_departure(ChannelTopology::FanIn, AdmissionSide::Producer),

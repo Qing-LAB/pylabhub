@@ -51,8 +51,12 @@ post-reconcile shipped-sprint detail).
   retired); B.3 audit found the BRC/ACK flip already landed via the
   envelope/adapter arcs; `receive_and_validate` drift-guard L1 suite
   landed.  Residual REG-adjacent tracks: EnvelopeOnly-tier body classes
-  (per-msg_type follow-ons; the #72 pass itself COMPLETED 2026-07-24),
-  #69 federation ingress.
+  (per-msg_type follow-ons; the #72 pass itself COMPLETED 2026-07-24 —
+  wire-inventory audit 2026-07-26 names the uncovered inbound-notify
+  bodies: CHANNEL_COUNT_NOTIFY, CHANNEL_EVENT_NOTIFY,
+  CHANNEL_ERROR_NOTIFY, CHANNEL_BROADCAST_DELIVER_NOTIFY,
+  BAND_BROADCAST_DELIVER_NOTIFY — each needs a wire_bodies class + a
+  BRC shape-table arm), #69 federation ingress.
 - **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **52
   resolved / 4 open** after the #72 reconciliation pass (2026-07-24) closed the
   hep-gap + dead-residue clusters.  Remaining open: federation ingress bypass

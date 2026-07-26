@@ -1077,7 +1077,7 @@ Payload:
                                  key (Z85, 40 chars).  HEP-CORE-0021 §5.2
                                  specifies this is per-producer; Wave M2.5
                                  stores it on `ProducerEntry.zmq_pubkey`.
-                                 This DISC_REQ_ACK field returns the FIRST
+                                 This DISC_ACK field returns the FIRST
                                  admitted producer's pubkey for the legacy
                                  single-producer shape; consumers needing
                                  every producer's pubkey should read the
@@ -1767,9 +1767,11 @@ Effect:     Channel is removed from the broker's registry atomically
 Dialer-departure note: when a DIALING-side role drops (a fan-in
 producer — even the last one — or a fan-out / one-to-one consumer),
 CHANNEL_CLOSING_NOTIFY is NOT emitted — the channel remains open
-under its owner.  Per-role disconnect events are observable via
-role_disconnected / ROLE_DEREGISTERED_NOTIFY / CONSUMER_DIED_NOTIFY
-but do not cascade to a channel close (HEP-CORE-0017 §4.7.0.2 T5).
+under its owner.  The departure is observable via the live signals:
+CHANNEL_AUTH_CHANGED_NOTIFY (phase=left, to the binding owner),
+CHANNEL_COUNT_NOTIFY (falling count, to all members), and — for a
+consumer departure — CONSUMER_DIED_NOTIFY to the producers.  None
+of these cascade to a channel close (HEP-CORE-0017 §4.7.0.2 T5).
 Dispatch:   `on_notification(cb)` callback receives msg_type
             "CHANNEL_CLOSING_NOTIFY"; role host queues an
             `IncomingMessage{event="channel_closing", ...}` for the script.

@@ -423,7 +423,7 @@ struct ChannelSchemaInvariants
     // `schema_hash`.  Use `pylabhub::hub::parse_schema_id(schema_id)`
     // if the version integer is needed structurally.
     std::string schema_id;
-    std::string schema_blds;   ///< datablock canonical BLDS ("" = absent)
+    std::string schema_blds; ///< datablock canonical BLDS ("" = absent)
     std::string schema_owner;
     std::string flexzone_blds; ///< flexzone canonical BLDS ("" = absent).
                                ///< Packing is not stored separately — it folds
@@ -518,7 +518,7 @@ enum class AddConsumerResult
     RejectedUidConflict, ///< Existing ConsumerEntry with this role_uid.
 };
 
-struct RemoveProducerResult
+struct PresenceDropResult
 {
     bool removed;           ///< True iff a producer with the given uid
                             ///< was present and has been erased.
@@ -862,7 +862,7 @@ struct ChannelEntry
     /// Remove the producer entry whose role_uid matches.  Reports
     /// whether the channel is now empty (no remaining producers) so
     /// callers can trigger atomic teardown per HEP-CORE-0023 §2.1.1.
-    RemoveProducerResult remove_producer(std::string_view role_uid) noexcept
+    PresenceDropResult remove_producer(std::string_view role_uid) noexcept
     {
         for (auto it = producers.begin(); it != producers.end(); ++it)
         {
@@ -2087,7 +2087,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// including the last, is a slot-erase and the consumer-owner
     /// keeps the book open (`channel_now_empty == false`).
     ///
-    /// Returns the typed `RemoveProducerResult` so the caller can:
+    /// Returns the typed `PresenceDropResult` so the caller can:
     /// - `removed == false` → producer not found; surface
     ///   `NOT_REGISTERED` wire error (no state mutation).
     /// - `removed == true && !channel_now_empty` → producer dropped,
@@ -2103,9 +2103,8 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///
     /// Pre-conditions: writer lock taken internally.  Channel-mismatch
     /// validation done by the op-entry boundary; `reason` is logged.
-    RemoveProducerResult _on_producer_dropped(const std::string &channel_name,
-                                              const std::string &role_uid,
-                                              ChannelCloseReason reason);
+    PresenceDropResult _on_producer_dropped(const std::string &channel_name,
+                                            const std::string &role_uid, ChannelCloseReason reason);
 
     void _on_channel_closed(const std::string &name, ChannelCloseReason why);
 
@@ -2143,11 +2142,10 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///   returns `channel_now_empty == true` so the broker runs the
     ///   same close-out fan-out as the last-owning-producer DEREG
     ///   path (CHANNEL_CLOSING_NOTIFY / access close / attach drain).
-    /// Shares `RemoveProducerResult` with the producer-side drop ops —
+    /// Shares `PresenceDropResult` with the producer-side drop ops —
     /// it is the generic presence-drop outcome {removed,
     /// channel_now_empty}.
-    RemoveProducerResult _on_consumer_left(const std::string &channel,
-                                           const std::string &role_uid);
+    PresenceDropResult _on_consumer_left(const std::string &channel, const std::string &role_uid);
     /// Refresh the presence row matching `(channel, role_uid, role_type)`.
     /// Per HEP-CORE-0019 §2.3 + HEP-CORE-0023 §2.5.2: each heartbeat refreshes
     /// ONLY its own `(uid, role_type)` presence row; no heartbeat ever touches
@@ -2185,7 +2183,7 @@ class PYLABHUB_UTILS_EXPORT HubState
     ///   (atomic teardown) ONLY when this was the LAST producer AND
     ///   the producer side is the binding owner (fan-out /
     ///   one-to-one); the caller inspects the returned
-    ///   `RemoveProducerResult` to decide whether to fan out
+    ///   `PresenceDropResult` to decide whether to fan out
     ///   CHANNEL_CLOSING_NOTIFY.  Fan-in producers are dialers and
     ///   always take the slot-erase path (channel survives,
     ///   role-disconnect cascade dispatched if the role's last
@@ -2203,9 +2201,8 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// Idempotent in all role_type branches: if the presence is already
     /// Disconnected or the matching channel/role row is gone, returns
     /// `{removed=false, channel_now_empty=false}` without state mutation.
-    RemoveProducerResult _on_pending_timeout(const std::string &channel,
-                                             const std::string &role_uid,
-                                             const std::string &role_type);
+    PresenceDropResult _on_pending_timeout(const std::string &channel, const std::string &role_uid,
+                                           const std::string &role_type);
 
     /// Wave M3 step 5b (2026-05-11): production trigger for the
     /// terminal cleanup defined at `_set_role_disconnected`.  Atomic
