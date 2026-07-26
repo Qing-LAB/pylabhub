@@ -68,11 +68,17 @@ role host.
    - Owner REG (+ no book) → `_on_producer_added` + open, as today.
    - Dialer REG + book exists → `_on_producer_added` admits into the owner's book,
      as today.
-2. **Wire — new status `awaiting_owner`** on `REG_ACK`/`CONSUMER_REG_ACK`
-   (HEP-CORE-0007 catalog). Distinct from `CHANNEL_NOT_FOUND` (caller error) and
-   `success`. Add to the typed ACK body / status enum the role-side parser reads.
-   (REG_ACK is a *reply*, so it does not pass through `receive_and_validate` —
-   the role's `apply_*_reg_ack` parser branches on the status.)
+2. **Wire — `AWAITING_OWNER` is an ERROR `error_code`, NOT a new status tier**
+   (verified 2026-07-26). The broker dispatch maps any non-`success` status to an
+   `ERROR` frame (`:1505` / `:1529`), and `do_request` surfaces that ERROR
+   reply's json (with `error_code`) to the caller — the same path
+   `CHANNEL_NOT_FOUND` already rides to reach the role. So emit
+   `make_error(corr_id, "AWAITING_OWNER", …)`; **no dispatch / `do_request` /
+   new-status change**. The role branches on `error_code == "AWAITING_OWNER"`
+   (retry) vs other codes (fatal), exactly as it already distinguishes
+   `CHANNEL_NOT_FOUND`. Trade-off (acceptable per C3): a genuinely wrong channel
+   name now fails after `init_timeout` (retries) rather than instantly — the
+   dialer cannot distinguish "owner not up yet" from "never" at REG time.
 3. **Role host — Tier-2 retry loop (C3), NEW.** `BrokerRequestComm::register_channel`
    is a one-shot `do_request("REG_REQ","REG_ACK",…)` — **verified: no existing
    REG-level retry** (the `finalize_channel_connect` poll is a *different*,
@@ -181,10 +187,28 @@ role host.
 
 ## Slice order + tests
 
-1. **S1** first (establishment) — it introduces `awaiting_owner` + the retry;
-   the highest-leverage, most-tested piece.
-2. **S2** (teardown) — owner-aware close.
-3. **S3** (fast-fail) — small, falls out of S2.
+> **Integration-order finding (2026-07-26, verified by building S1's gate).**
+> The gate alone reds ≥3 fan-in L3 wire tests that register a producer FIRST with
+> no consumer-owner (`Pattern4BrokerConsumer.ConsumerReg_ChannelNotFound`,
+> `Pattern4Metrics.FanInTwoProducersMetricsDoNotOverwrite`,
+> `Pattern4AttachCoordination.WaitPathDrainOnProducerDisconnect`). These are the
+> **integration point** and MUST be migrated *after* S1–S3, not during S1:
+> - `ConsumerReg_ChannelNotFound` → re-pin to `AWAITING_OWNER` (pure S1).
+> - The two fan-in tests need consumer-first ordering (S1's gate) **and** the
+>   owner-aware teardown behavior — `WaitPathDrainOnProducerDisconnect` tests
+>   *producer-disconnect on a fan-in channel*, which is **exactly what S2
+>   changes** (dialer-drop must not close). Migrating it before S2 would pin the
+>   superseded producer-centric teardown.
+>
+> **Therefore: land S1 (gate + retry) + S2 (teardown) + S3 as one coherent unit,
+> THEN migrate the fan-in tests, THEN one green commit. Do NOT commit the gate
+> standalone.**
+
+1. **S1** — gate (`AWAITING_OWNER`) + role-host retry.
+2. **S2** — owner-aware teardown (`hub_state.cpp:1507/1540/1875`).
+3. **S3** — role-side fast-fail (broker half already done).
+4. **Test migration (last):** consumer-first ordering + owner-aware-teardown
+   expectations on the fan-in L3 tests, plus the new L2/L4 pins below.
 
 **Tests (L2 broker + L4 e2e):**
 - L2: REG owner-vs-dialer gate (dialer-before-owner → `awaiting_owner`, not book-open / not `CHANNEL_NOT_FOUND`); owner-death closes book, dialer-death does not; `CHECK_PEER_READY` on missing book → `CHANNEL_NOT_FOUND`.
