@@ -174,9 +174,62 @@ graph LR
 
 At construction, ThreadManager registers a dynamic lifecycle module with:
 - Name: `"ThreadManager:" + composed_identity`
-- Dependency: `"pylabhub::utils::Logger"`
+- Dependency: `"pylabhub::utils::Logger"` (always) **plus any owner-supplied
+  dependencies** (see §3.1)
 - Startup thunk: no-op (threads spawn lazily via `spawn()`)
 - Shutdown thunk: **intentional no-op** (see §5)
+
+### 3.1 Owner-supplied module dependencies — resource-owning threads MUST outlive their resource
+
+**The mechanism.**  The ctor takes an optional
+`std::vector<std::string> module_dependencies` (a "dynamic-module parameter",
+alongside `aggregate_shutdown_timeout`).  Each name is added to the module's
+`ModuleDef` via `add_dependency()`, in addition to the always-present `Logger`.
+The owner declares its dependencies at the **construction/factory call**; the
+generic ThreadManager just forwards them into the `ModuleDef`.  There is no
+API to add a dependency after registration — deps must be set on the
+`ModuleDef` before `register_dynamic_module`, i.e. at construction.
+
+**Why it matters — the invariant.**  The LifecycleManager tears modules down
+in **reverse-topological order** (HEP-CORE-0001): a module is shut down
+*before* the modules it depends on.  So a declared dependency is guaranteed to
+**outlive** this ThreadManager's teardown (its `drain()` + the destruction of
+whatever its threads were using).
+
+> **RULE.**  A ThreadManager whose threads operate a resource owned by another
+> lifecycle module **MUST name that module in `module_dependencies`.**
+
+**The canonical case — ZMQ.**  Any ThreadManager whose threads drive a ZMQ
+socket must pass `{"ZMQContext"}`.  A ZMQ socket is only valid while its
+`zmq::context` (the `ZMQContext` module) is alive.  Without the dependency the
+graph has **no ordering** between the manager and `ZMQContext`, so at process
+shutdown the async lifecycle shutdown thread can destroy the ZMQ context while
+a managed send/recv thread still holds a socket → the socket is then closed
+from that thread against a dead context → **foreign-thread close → SIGSEGV**.
+
+**Failure mode this prevents (concrete).**  Under `-j2` contention, an L4
+producer segfaulted (exit 139) on shutdown: its `ThreadManager:ZmqQueue:…:tx`
+`send` thread was still live when the process-level "Dynamic shutdown thread"
+reached the ZMQ context — the two collided on the socket.  In isolation the
+owner-thread teardown always won the race, so it only surfaced under load.
+Declaring `ZMQContext` as a dependency makes the ordering explicit and
+deterministic, independent of scheduling.  (`ZmqQueue` passes `{"ZMQContext"}`
+at `hub_zmq_queue.cpp`.)
+
+**Caveat — only name registered modules.**  A dependency on a module that is
+not registered in this process is a **fatal** lifecycle error (by design — it
+surfaces a real ordering mistake at configure time).  So declare `ZMQContext`
+only from ThreadManagers that (a) actually drive ZMQ sockets and (b) live in a
+process where `ZMQContext` is loaded.  A ZmqQueue satisfies both by
+construction (it cannot exist without a ZMQ context).  Do **not** blanket-add
+`ZMQContext` to a generic role/hub ThreadManager whose threads may not touch
+ZMQ, or which may be constructed in a unit-test process that never loaded the
+ZMQ context.
+
+**What to watch for.**  When you add a ThreadManager (or give an existing one
+threads that acquire a new kind of shared resource), ask: *do these threads
+hold anything owned by another lifecycle module?*  If yes, that module belongs
+in `module_dependencies` — otherwise its teardown can race yours.
 
 ---
 

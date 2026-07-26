@@ -230,9 +230,24 @@ class PYLABHUB_UTILS_EXPORT ThreadManager
     /// Composed identity: `owner_tag + ":" + owner_id`.
     /// Lifecycle module name: `"ThreadManager:" + owner_tag + ":" + owner_id`.
     ///
+    /// @param module_dependencies  Extra lifecycle modules this ThreadManager's
+    ///     dynamic module depends on, in ADDITION to the always-present
+    ///     `Logger`.  The LifecycleManager starts each before this manager and,
+    ///     crucially, tears it down AFTER (reverse-topological order) — so a
+    ///     dependency is guaranteed to OUTLIVE this manager's thread + resource
+    ///     teardown.  **A ThreadManager whose threads drive a resource owned by
+    ///     another module MUST name that module here.**  The canonical case is
+    ///     ZMQ: any manager whose threads operate a ZMQ socket must pass
+    ///     `{"ZMQContext"}`, or process-shutdown can destroy the ZMQ context
+    ///     while a managed thread still holds a socket → foreign-thread close
+    ///     → SIGSEGV (HEP-CORE-0031 §3.1).  Only name modules that are
+    ///     actually registered in this process — a dependency on an
+    ///     unregistered module is a fatal lifecycle error.  Defaults to none.
+    ///
     /// Throws std::invalid_argument if either string is empty — forgetting
     /// to provide identity is caught at construction, not runtime access.
     ThreadManager(std::string owner_tag, std::string owner_id,
+                  std::vector<std::string> module_dependencies = {},
                   std::chrono::milliseconds aggregate_shutdown_timeout = std::chrono::milliseconds{
                       2 * pylabhub::kMidTimeoutMs});
 

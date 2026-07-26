@@ -2002,7 +2002,14 @@ bool ZmqQueue::start()
         owner_id = pImpl->queue_name;
         owner_id += addr_buf;
     }
-    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>("ZmqQueue", owner_id);
+    // Depend on ZMQContext: this manager's send/recv threads operate ZMQ
+    // sockets, and reverse-topological teardown must destroy the context
+    // AFTER these threads are drained — otherwise process shutdown can close
+    // the ZMQ context while a send/recv thread still holds a socket, giving a
+    // foreign-thread close → SIGSEGV (HEP-CORE-0031 §3.1).  Safe here because
+    // a ZmqQueue only exists in a process that has already loaded ZMQContext.
+    pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
+        "ZmqQueue", owner_id, std::vector<std::string>{"ZMQContext"});
 
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {

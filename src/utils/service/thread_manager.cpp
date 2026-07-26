@@ -286,6 +286,7 @@ void tm_shutdown(const char * /*arg*/, void *userdata)
 // ============================================================================
 
 ThreadManager::ThreadManager(std::string owner_tag, std::string owner_id,
+                             std::vector<std::string> module_dependencies,
                              std::chrono::milliseconds aggregate_shutdown_timeout)
     : pImpl(std::make_unique<Impl>())
 {
@@ -310,6 +311,14 @@ ThreadManager::ThreadManager(std::string owner_tag, std::string owner_id,
     {
         ModuleDef mod(pImpl->module_name.c_str(), pImpl.get(), tm_impl_validate);
         mod.add_dependency("pylabhub::utils::Logger");
+        // Owner-supplied dependencies (HEP-CORE-0031 §3.1).  Reverse-
+        // topological teardown means each named module is torn down AFTER this
+        // manager, so a resource this manager's threads use (e.g. the ZMQ
+        // context) outlives their teardown.  Missing/empty names are ignored
+        // by add_dependency; naming an unregistered module is fatal (by design
+        // — surfaces a real ordering mistake at configure time).
+        for (const auto &dep : module_dependencies)
+            mod.add_dependency(dep);
         mod.set_startup(tm_startup);
         mod.set_shutdown(tm_shutdown, aggregate_shutdown_timeout);
         // Opt in to owner-managed teardown (HEP-CORE-0001 §"Owner-managed
