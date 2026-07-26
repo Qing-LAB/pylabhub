@@ -273,31 +273,44 @@ TEST_F(PlhHubCliTest, RunMode_LogShowsCorrectStartupAndShutdownOrdering)
     //     "Broker: stopped."            — BrokerServiceImpl::run exits
     //     "[HubHost:<uid>] shutdown complete"
 
-    // Startup: the broker's listening line MUST come AFTER the
-    // ThreadManager spawned it and BEFORE startup-complete.
+    // The configured sink is one FIFO written by BOTH the main (HubHost)
+    // thread and the broker thread.  Only lines from the SAME thread have a
+    // guaranteed file order (program order); the position of a main-thread
+    // line relative to a broker-thread line is a RACE — e.g. the broker can
+    // bind and log "listening on" before the parent's "spawned thread
+    // 'broker'" line lands.  So we assert PRESENCE of every marker (the
+    // startup+shutdown chain is complete) and ORDER only within one thread's
+    // stream.  Marker → emitting thread:
+    //   main:   "spawned thread 'broker'" → "startup complete" →
+    //           "main loop woke for shutdown" → "shutdown initiated" →
+    //           "shutdown complete"
+    //   broker: "Broker: listening on" → "Broker: stopped"
     const auto pos_spawn = log.find("spawned thread 'broker'");
     const auto pos_broker_up = log.find("Broker: listening on");
     const auto pos_startup_ok = log.find("startup complete (broker on");
-    ASSERT_NE(pos_spawn, std::string::npos) << log;
-    ASSERT_NE(pos_broker_up, std::string::npos) << log;
-    ASSERT_NE(pos_startup_ok, std::string::npos) << log;
-    EXPECT_LT(pos_spawn, pos_broker_up);
-    EXPECT_LT(pos_broker_up, pos_startup_ok);
-
-    // Shutdown: HEP-0033 §4.2 step ordering — main loop wakes,
-    // shutdown initiated, broker stops, shutdown complete.
     const auto pos_wake = log.find("main loop woke for shutdown");
     const auto pos_init = log.find("] shutdown initiated");
     const auto pos_stopped = log.find("Broker: stopped");
     const auto pos_complete = log.find("] shutdown complete");
+
+    // Presence — the full startup + shutdown chain reached the log.
+    ASSERT_NE(pos_spawn, std::string::npos) << log;
+    ASSERT_NE(pos_broker_up, std::string::npos) << log;
+    ASSERT_NE(pos_startup_ok, std::string::npos) << log;
     ASSERT_NE(pos_wake, std::string::npos) << log;
     ASSERT_NE(pos_init, std::string::npos) << log;
     ASSERT_NE(pos_stopped, std::string::npos) << log;
     ASSERT_NE(pos_complete, std::string::npos) << log;
+
+    // Order — main-thread stream only (race-free program order): spawn the
+    // broker, finish startup, run, wake, initiate + complete shutdown.
+    EXPECT_LT(pos_spawn, pos_startup_ok);
     EXPECT_LT(pos_startup_ok, pos_wake) << "shutdown signaled BEFORE startup completed — race.";
     EXPECT_LT(pos_wake, pos_init);
-    EXPECT_LT(pos_init, pos_stopped);
-    EXPECT_LT(pos_stopped, pos_complete);
+    EXPECT_LT(pos_init, pos_complete);
+
+    // Order — broker-thread stream only: it listens before it stops.
+    EXPECT_LT(pos_broker_up, pos_stopped);
 }
 
 /// Two SIGTERMs in quick succession must NOT cause a double-shutdown
