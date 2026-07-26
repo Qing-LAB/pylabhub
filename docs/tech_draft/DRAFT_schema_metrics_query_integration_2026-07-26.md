@@ -77,14 +77,30 @@ Startup walk-through against the owner-first machine:
    slot proxies are compiled from the config spec, not from a runtime
    BLDS.
 
-   SHM refinement (fresh-eyes 2026-07-26): the `DataBlock` header
-   carries the two 32-byte schema HASHES but not the structure — so a
-   generic SHM consumer genuinely cannot self-describe from the block,
-   AND the pulled BLDS gets a free end-to-end integrity anchor:
-   recompute the fingerprint from the pulled structure and compare it
-   against the block header's `datablock_schema_hash` /
-   `flexzone_schema_hash` before mapping.  Registry answer and
-   physical block cross-verify each other.  (Fold into G5's doc rules.)
+   SHM refinement (fresh-eyes 2026-07-26; storage locations verified
+   in code and stated precisely, because "where does the schema live"
+   was ambiguous in the first draft):
+
+   The full BLDS structure is ALWAYS stored — the question is WHERE.
+   It lives in three places today: (a) the **broker's channel record**
+   (`ChannelEntry` schema invariants, filed by the producer's
+   registration), (b) the **broker's schema registry**
+   (`SchemaRecord.blds`), and (c) each role's **own config**.  What
+   the first draft meant — now verified: the **shared-memory segment
+   itself** is NOT one of those places.  `SharedMemoryHeader` stores
+   exactly two 32-byte fingerprints (`datablock_schema_hash`,
+   `flexzone_schema_hash`, `data_block.hpp`); `data_block.cpp` never
+   writes BLDS text into the mapped segment; producer and consumer
+   each pass a `SchemaInfo` into create/attach as a runtime ARGUMENT,
+   built today from source (c), their config.
+
+   Consequences for the generic consumer: it must obtain the structure
+   from source (a) — the broker pull this draft integrates — because
+   the segment alone cannot describe itself.  And the segment's
+   fingerprints give a free end-to-end integrity check: recompute the
+   fingerprint from the pulled BLDS and require it to equal the header
+   values before mapping.  The broker's answer and the physical memory
+   then cross-verify each other.  (Fold into G5's doc rules.)
 
 ### S-B  Pre-flight citation (config-light but verifying consumer)
 
@@ -153,6 +169,71 @@ this draft should not pretend S-F works.  v1 scope: metrics pull serves
 **participant roles** (S-E); hub script + admin plane keep serving
 global monitoring; the observer role kind is named as a #292
 requirement.
+
+---
+
+## 2a. How a schema-less (generic) role is allowed, configured, and deployed
+
+Written out end-to-end because "a role without a schema" sounds like a
+rule violation — it isn't, and the deployment story is simple.
+
+**Why the broker permits it.**  Two independent facts, both already in
+the design:
+
+1. *Registration does not require a schema opinion.*  The consumer
+   citation rule has three modes — named, anonymous, and **empty**
+   ("all expected_* empty → no validation; the consumer signals 'I
+   don't care about schema'", `handle_consumer_reg_req`).  An
+   uncited consumer is admitted like any other; citation is a
+   verification service for consumers that already know the format,
+   never an entry requirement.
+2. *The channel always knows its format anyway.*  The full BLDS is
+   filed on the broker's channel record the moment the producer
+   registers (or, fan-in, when the first producer joins the owner's
+   channel).  Schema integrity on the DATA path is enforced by the
+   channel invariants + per-slot checksums regardless of whether any
+   consumer cited anything.  So an uncited consumer weakens nothing —
+   it only skips a pre-flight check on its OWN copy, and a generic
+   role has no own copy to check.
+
+**Config setup.**  Today a consumer config supplies the format in
+`in_slot_schema_json` — either inline BLDS JSON or a schema-file
+reference resolved from `schema_dirs` (HEP-0018 authority).  This
+design adds a third, explicit form:
+
+```jsonc
+// generic archiver attachment — no format knowledge in the config
+"in_channel":           "lab.raw",
+"in_channel_topology":  "fan-out",      // deployment fact, stays declared
+"in_transport":         "zmq",
+"in_slot_schema":       "from-channel", // ⇐ NEW explicit sentinel:
+                                        //   resolve at runtime from the
+                                        //   broker's channel record
+"in_schema_fingerprint": "ab34…"        // OPTIONAL 128-hex pin: verify the
+                                        //   pulled format against this and
+                                        //   abort on mismatch.  Integrity
+                                        //   without structure duplication.
+```
+
+An explicit sentinel, NOT empty-string magic — an absent/empty schema
+field stays an error exactly as today (no silent fallback; a config
+that says nothing is a broken config, a config that says
+`from-channel` is a decision).
+
+**Deployment.**  Nothing new: the generic role is provisioned like any
+role — keypair, `known_roles` entry, one small config per attachment
+point.  Ten channels to archive = ten tiny configs that differ only in
+channel name (today it would be ten configs each carrying a full copy
+of the format, drifting independently).  The role binary and script
+are identical across all of them.
+
+**Startup walk (ties the pieces):** build queue schema-pending (G1
+slice 3) → register uncited, `AWAITING_OWNER` retry absorbs any wait →
+REG_ACK → pull format from the channel record → if a fingerprint pin
+is configured, verify and abort on mismatch → (SHM: additionally
+cross-check against the segment-header fingerprints, §2 S-A) →
+activate queue → script's `on_init` runs with the format available
+(G4 slice 4 for script-side field access).
 
 ---
 
