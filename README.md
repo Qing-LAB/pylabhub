@@ -24,7 +24,7 @@ The framework is built on a **C++ core** (C++20, CMake 3.29+) with **Python scri
 pip install pylabhub
 ```
 
-This installs prebuilt binaries, the shared library, and public headers. After installation the four executables (`pylabhub-hubshell`, `-producer`, `-consumer`, `-processor`) and the `plh_pyenv` tool are available on PATH.
+This installs prebuilt binaries, the shared library, and public headers. After installation the two executables (`plh_hub` and `plh_role`, the latter run as `--role producer|consumer|processor`) and the `plh_pyenv` tool are available on PATH.
 
 **Download the Python 3.14 runtime** (required, not included in the wheel to keep it under PyPI size limits):
 
@@ -87,24 +87,24 @@ bash share/py-demo-single-processor-shm/run_demo.sh   # hub + producer + process
                                                         # Ctrl-C to stop all four
 ```
 
-## The Four Binaries
+## The Binaries
 
-pyLabHub ships four standalone executables. Each loads a Python script at startup and calls user-defined callbacks in a tight loop.
+pyLabHub ships two standalone executables: the broker (`plh_hub`) and the unified role host (`plh_role`), which runs as a producer, consumer, or processor selected by `--role`. Each loads a Python script at startup and calls user-defined callbacks in a tight loop.
 
 | Binary | Config | Purpose |
 |--------|--------|---------|
-| `pylabhub-hubshell` | `hub.json` | Broker service + Python admin shell |
-| `pylabhub-producer` | `producer.json` | Writes slots to one channel on a timer |
-| `pylabhub-consumer` | `consumer.json` | Reads slots from one channel on demand |
-| `pylabhub-processor` | `processor.json` | Reads from channel A, transforms, writes to channel B |
+| `plh_hub` | `hub.json` | Broker service + Python admin shell |
+| `plh_role --role producer` | `producer.json` | Writes slots to one channel on a timer |
+| `plh_role --role consumer` | `consumer.json` | Reads slots from one channel on demand |
+| `plh_role --role processor` | `processor.json` | Reads from channel A, transforms, writes to channel B |
 
 ### CLI (shared across producer, consumer, processor)
 
 ```
-pylabhub-producer --init [<dir>] [--name <name>]   # Scaffold config + vault + script
-pylabhub-producer <dir>                            # Run from directory
-pylabhub-producer --config <path.json> --validate  # Validate config + script; exit 0/1
-pylabhub-producer --version                        # Print version
+plh_role --role producer --init [<dir>] [--name <name>]   # Scaffold config + vault + script
+plh_role --role producer <dir>                            # Run from directory
+plh_role --role producer --config <path.json> --validate  # Validate config + script; exit 0/1
+plh_role --role producer --version                        # Print version
 ```
 
 ### Python callbacks

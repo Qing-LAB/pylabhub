@@ -164,6 +164,11 @@ set(PYLABHUB_MAX_LOOP_RATE_HZ 10000 CACHE STRING
 if(PYLABHUB_MAX_LOOP_RATE_HZ LESS 100 OR PYLABHUB_MAX_LOOP_RATE_HZ GREATER 1000000)
     message(FATAL_ERROR "PYLABHUB_MAX_LOOP_RATE_HZ must be between 100 and 1000000, got ${PYLABHUB_MAX_LOOP_RATE_HZ}")
 endif()
+# Propagate the configured value to the compiler.  Without this the cache
+# variable above never reaches a translation unit: loop_timing_policy.hpp
+# guards its use with `#ifndef PYLABHUB_MAX_LOOP_RATE_HZ` and would silently
+# fall back to its built-in 10000 default, making the setting a no-op.
+add_compile_definitions(PYLABHUB_MAX_LOOP_RATE_HZ=${PYLABHUB_MAX_LOOP_RATE_HZ})
 
 # Option to build the C++ example templates.
 # Demonstrates direct use of pylabhub-utils without Python scripting.

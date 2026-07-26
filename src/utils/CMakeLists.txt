@@ -3,7 +3,6 @@
 # Configures the pylabhub-utils shared library.
 # This library contains all common utilities for the project.
 #
-cmake_minimum_required(VERSION 3.28)
 
 include(MsvcHelper)
 include(SanitizerHelper)

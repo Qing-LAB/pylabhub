@@ -17,7 +17,6 @@
 #   - Exposes per-role include dirs so the main can include the three
 #     register_*_init.hpp declarations without subdirectory prefixes.
 # ------------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.28)
 
 add_executable(plh_role
     plh_role_main.cpp

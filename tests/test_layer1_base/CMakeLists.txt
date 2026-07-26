@@ -8,8 +8,6 @@
 # - Debug info
 # - Module definitions
 
-cmake_minimum_required(VERSION 3.28)
-
 message(STATUS "Configuring Layer 1 (Base) tests...")
 
 macro(layer1_require_staged_utils target)

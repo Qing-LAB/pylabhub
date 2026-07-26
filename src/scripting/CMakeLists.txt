@@ -16,7 +16,6 @@
 #   - pylabhub::third_party::pybind11_embed — pybind11/embed.h + libpython
 #   - pylabhub::third_party::luajit — LuaJIT for LuaEngine
 # ------------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.28)
 
 add_library(pylabhub-scripting STATIC
     # engine_module_params.cpp → pylabhub-utils (service/engine_module_params.cpp)

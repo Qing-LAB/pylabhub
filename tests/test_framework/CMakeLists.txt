@@ -6,7 +6,6 @@
 #
 # Because this framework provides a main() function, executables that link
 # against it should NOT link against gtest_main.
-cmake_minimum_required(VERSION 3.28)
 
 include(MsvcHelper)
 

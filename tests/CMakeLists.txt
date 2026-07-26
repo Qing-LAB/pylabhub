@@ -5,7 +5,6 @@
 # for staging test executables, and configures various test sub-projects.
 # It relies on the BUILD_TESTS option to enable or disable the test build.
 #
-cmake_minimum_required(VERSION 3.28)
 
 # Validate PYLABHUB_STAGING_DIR. This is crucial as all staging relies on it.
 if(NOT DEFINED PYLABHUB_STAGING_DIR OR "${PYLABHUB_STAGING_DIR}" STREQUAL "")

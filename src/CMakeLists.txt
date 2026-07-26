@@ -26,7 +26,6 @@
 #     under src/{producer,consumer,processor}/ are compiled into
 #     pylabhub-utils + pylabhub-scripting (see those subdirs' CMakeLists).
 # ------------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.28)
 
 # Add the utils subdirectory, which defines the pylabhub::utils library.
 # This must be done before defining any targets that depend on it.

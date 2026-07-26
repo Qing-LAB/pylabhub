@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.29)
 
 # ===========================================================================
 # PHASE 1: Pre-Project Toolchain Configuration
@@ -262,7 +262,7 @@ else()
 endif()
 add_dependencies(stage_pyenv_tools create_staging_dirs)
 
-# Hub config files (hub.json) are created by `pylabhub-hubshell --init <hub_dir>`.
+# Hub config files (hub.json) are created by `plh_hub --init [<hub_dir>]`.
 # They live in user-chosen hub instance directories, not in the staging tree.
 # No staging step required — the build system does not manage hub.json files.
 
@@ -440,7 +440,8 @@ message(STATUS "----------------------------------------------")
 message(STATUS "  Install Prefix:      ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "  Build Type:          ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Utility Library:     pylabhub-utils (SHARED)")
-message(STATUS "  Hubshell:            pylabhub-hubshell")
+message(STATUS "  Hub binary:          plh_hub")
+message(STATUS "  Role binary:         plh_role (--role producer|consumer|processor)")
 message(STATUS "  Build Tests:         ${BUILD_TESTS}")
 message(STATUS "  Build IgorXOP:       ${BUILD_XOP}")
 message(STATUS "  3rd-Party Staging:   ${THIRD_PARTY_INSTALL}")

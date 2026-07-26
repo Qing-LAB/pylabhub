@@ -9,8 +9,6 @@
 # Each test executable links only the worker file(s) it uses.
 # Each worker .cpp self-registers its dispatcher via a static initializer.
 
-cmake_minimum_required(VERSION 3.28)
-
 message(STATUS "Configuring Layer 2 (Service) tests...")
 
 # Ensure pylabhub-utils is staged (soname symlink in stage-debug/lib/) before

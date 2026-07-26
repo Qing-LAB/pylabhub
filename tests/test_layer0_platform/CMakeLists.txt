@@ -9,8 +9,6 @@
 # - Debug utilities
 # - Sanitizer detection
 
-cmake_minimum_required(VERSION 3.28)
-
 message(STATUS "Configuring Layer 0 (Platform) tests...")
 
 # Ensure pylabhub-utils is staged before test discovery tries to load it.

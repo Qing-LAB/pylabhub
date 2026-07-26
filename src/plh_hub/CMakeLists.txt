@@ -12,7 +12,6 @@
 #     (engine_factory + concrete engines for script-enabled runs).
 #   - Stages to bin/ alongside plh_role.
 # ------------------------------------------------------------------------------
-cmake_minimum_required(VERSION 3.28)
 
 add_executable(plh_hub
     plh_hub_main.cpp

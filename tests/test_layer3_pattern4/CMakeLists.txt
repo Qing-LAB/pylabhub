@@ -15,8 +15,6 @@
 # in-process HubHostBrokerHandle co-host pattern (HEP-CORE-0036 §7.4
 # antipattern).
 
-cmake_minimum_required(VERSION 3.28)
-
 include(MsvcHelper)
 
 message(STATUS "** Configuring Layer 3 Pattern-4 reference tests...")
