@@ -78,11 +78,25 @@ role host.
    REG-level retry** (the `finalize_channel_connect` poll is a *different*,
    post-REG_ACK loop). So S1 adds a retry loop **at the role host's REG call
    site** (the `build_tx`/`build_rx` establishment path): on a REG_ACK with
-   `status=awaiting_owner`, re-call `register_channel` after a bounded backoff,
-   capped by `init_timeout_ms`, honoring `is_cancelled`; on budget exhaustion,
-   fail startup cleanly (fatal abort, misconfiguration diagnostic). The script
-   never sees it (`on_init` has not run). May reuse the backoff constants /
-   cancellation token the finalize-connect poll uses, but it is a distinct loop.
+   `status=awaiting_owner`, re-call `register_channel`. The script never sees it
+   (`on_init` has not run). **The loop MUST be hard-bounded — three stop
+   conditions (no dead-loop is possible):**
+   - **Time cap** — total elapsed ≤ `init_timeout_ms` (the establishment budget).
+     On exhaustion → **fatal-abort** with a misconfiguration diagnostic; the role
+     never hangs. (Contract C3.)
+   - **Backoff interval** — a bounded wait between attempts so it never
+     tight-spins / hammers the broker (reuse the finalize-connect poll cadence).
+   - **Cancellation / hub-dead** — honors the `is_cancelled` token (shutdown /
+     SIGTERM during startup breaks it *immediately*) and aborts if the broker
+     connection is lost (hub-dead).
+
+   Note: `CHANNEL_CLOSING_NOTIFY` does NOT gate this loop — during `awaiting_owner`
+   no channel exists yet (the owner has not bound), so there is nothing to close;
+   the bound is time + cancellation, consistent with the broker being a pure
+   responder that never pushes "give up". (Once established, `CHANNEL_CLOSING_NOTIFY`
+   is the stop signal — the S2/T2 post-establishment path.)  Owner-comes-then-dies
+   mid-retry churns `awaiting_owner` until the time cap → clean abort (bounded,
+   not instant; acceptable failure path).
 
 ### Conflicts / risks to verify at code time
 - **The dialer MUST declare `channel_topology` on a fresh channel.** Empty wire
@@ -141,18 +155,20 @@ role host.
 
 ## S3 — dialer fast-fail on owner death  (C4)
 
-### Current code (the gap)
-- `handle_check_peer_ready_req` (`broker_service.cpp:4399`) answers
-  `ready` / `not_ready`. Verify its behavior when the channel/book is **gone**
-  (owner died): today it may return `not_ready` (dialer keeps polling until
-  `init_timeout`) rather than a terminal `CHANNEL_NOT_FOUND`.
+### Current code (verified 2026-07-26 — broker side is ALREADY correct)
+- `handle_check_peer_ready_req` (`:4399`) **already returns `CHANNEL_NOT_FOUND`
+  when `!ch.has_value()`** (`:4416`) — the owner-died / book-gone case. The
+  `not_ready` reply (`:4480`) is the *channel-exists-but-no-owner-present-yet*
+  case (correct). **So the broker half of S3 is DONE.**
+- The remaining gap is ROLE-SIDE: does the dialer's `finalize_channel_connect` /
+  CHECK_PEER_READY poll treat a `CHANNEL_NOT_FOUND` reply as a **terminal
+  fast-fail** (abort establishment) vs keep polling until `init_timeout`?
 
 ### The change
-- When `CHECK_PEER_READY_REQ` finds **no book** for the channel, return a
-  terminal `CHANNEL_NOT_FOUND` (not `not_ready`). The dialer's role host treats
-  it as fatal-fast: abort establishment with a clean diagnostic instead of
-  burning the full `init_timeout` budget. This *falls out of* S2 (S2 makes the
-  book disappear on owner death; S3 is the reader-side reaction).
+- Role-side only: on a `CHECK_PEER_READY_ACK` / ERROR carrying `CHANNEL_NOT_FOUND`,
+  the poll aborts establishment fast with a clean diagnostic instead of burning
+  the `init_timeout` budget. No broker change. S3 is a small role-side reaction
+  that falls out of S2 (S2 makes the book disappear on owner death).
 
 ### Conflicts / risks
 - Distinguish the two "no book" causes at the poll: **owner-not-yet-up**
