@@ -405,6 +405,68 @@ function(pylabhub_register_test_for_staging)
   set_property(GLOBAL APPEND PROPERTY PYLABHUB_TEST_EXECUTABLES_TO_STAGE ${ARG_TARGET})
 endfunction()
 
+# --- pylabhub_add_gtest ---
+#
+# Single entry point for a pyLabHub gtest executable.  Binds the three steps
+# that were previously three separate hand-written calls per target -- and
+# that silently break the run if any one is forgotten:
+#   1. stage the executable into <stage>/tests   (register_test_for_staging)
+#   2. discover its cases into ctest             (gtest_discover_tests)
+#   3. gate it behind FIXTURES_REQUIRED Guardrails so the evidence/isolation
+#      guardrails run before ANY test, under every -L / -R / --rerun-failed
+#      selection.
+#
+# Forget step 1 and the binary never stages into the ctest run; forget step 3
+# and a `-L <label>` sweep silently skips the guardrails.  The wrapper makes
+# both impossible, and rejects unknown arguments (so a mistyped/obsolete
+# option can no longer be silently ignored).
+#
+# Usage:
+#   pylabhub_add_gtest(TARGET <t> LABELS "<a;b;c>"
+#                      [TIMEOUT <seconds>] [DISCOVERY_TIMEOUT <seconds>])
+#
+function(pylabhub_add_gtest)
+  # LABELS is multi-value: its ';'-list value flattens when it passes through
+  # ${ARGN}, so it must be collected as a list (until the next keyword) rather
+  # than a single value -- otherwise only the first label binds and the rest
+  # spill into unparsed args.
+  cmake_parse_arguments(ARG "" "TARGET;TIMEOUT;DISCOVERY_TIMEOUT" "LABELS" ${ARGN})
+
+  if(NOT ARG_TARGET)
+    message(FATAL_ERROR "pylabhub_add_gtest requires a TARGET argument.")
+  endif()
+  if(NOT ARG_LABELS)
+    message(FATAL_ERROR "pylabhub_add_gtest(${ARG_TARGET}): LABELS is required.")
+  endif()
+  if(ARG_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "pylabhub_add_gtest(${ARG_TARGET}): unexpected argument(s): ${ARG_UNPARSED_ARGUMENTS}")
+  endif()
+
+  # 1. Stage the executable into <stage>/tests.
+  pylabhub_register_test_for_staging(TARGET ${ARG_TARGET})
+
+  # 2. + 3. Discover cases with the mandatory guardrail fixture and labels.
+  #    Optional per-test TIMEOUT is appended to the property list; LABELS is
+  #    written inline so its ';'-list value is not flattened into that list.
+  #    DISCOVERY_TIMEOUT is a discovery-time option, not a per-test property,
+  #    so it sits outside PROPERTIES.
+  set(_extra_props "")
+  if(DEFINED ARG_TIMEOUT)
+    list(APPEND _extra_props TIMEOUT ${ARG_TIMEOUT})
+  endif()
+  set(_discovery_args "")
+  if(DEFINED ARG_DISCOVERY_TIMEOUT)
+    set(_discovery_args DISCOVERY_TIMEOUT ${ARG_DISCOVERY_TIMEOUT})
+  endif()
+
+  gtest_discover_tests(${ARG_TARGET}
+    PROPERTIES
+      FIXTURES_REQUIRED Guardrails
+      LABELS "${ARG_LABELS}"
+      ${_extra_props}
+    ${_discovery_args})
+endfunction()
+
 # --- pylabhub_attach_library_staging_commands ---
 #
 # Attaches custom commands to a given target to stage a library's artifacts.

@@ -57,14 +57,9 @@ if(TARGET stage_pylabhub_utils)
     add_dependencies(test_layer4_plh_hub stage_pylabhub_utils)
 endif()
 
-pylabhub_register_test_for_staging(TARGET test_layer4_plh_hub)
-
-gtest_discover_tests(test_layer4_plh_hub
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer4;plh_hub"
-        TIMEOUT 60
-    DISCOVERY_TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer4_plh_hub
+    LABELS "layer4;plh_hub"
+    TIMEOUT 60
+    DISCOVERY_TIMEOUT 60)
 
 message(STATUS "** Layer 4 (plh_hub) tests configured.")

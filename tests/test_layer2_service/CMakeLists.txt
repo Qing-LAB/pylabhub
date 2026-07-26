@@ -42,18 +42,11 @@ target_link_libraries(test_layer2_framework_selftest
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_framework_selftest)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_framework_selftest
-    SUITE_NAME "Layer2_FrameworkSelftest"
-)
 layer2_require_staged_utils(test_layer2_framework_selftest)
 
-gtest_discover_tests(test_layer2_framework_selftest
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;framework;selftest;critical"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_framework_selftest
+    LABELS "layer2;framework;selftest;critical"
+    TIMEOUT 60)
 
 # ── StartupConfig parser (task #327) ────────────────────────────────────────
 
@@ -70,18 +63,11 @@ target_link_libraries(test_layer2_startup_config
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_startup_config)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_startup_config
-    SUITE_NAME "Layer2_StartupConfig"
-)
 layer2_require_staged_utils(test_layer2_startup_config)
 
-gtest_discover_tests(test_layer2_startup_config
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;config;startup"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_startup_config
+    LABELS "layer2;config;startup"
+    TIMEOUT 30)
 
 # ── Net Address Validation ──────────────────────────────────────────────────
 
@@ -99,18 +85,11 @@ target_link_libraries(test_layer2_net_address
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_net_address)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_net_address
-    SUITE_NAME "Layer2_NetAddress"
-)
 layer2_require_staged_utils(test_layer2_net_address)
 
-gtest_discover_tests(test_layer2_net_address
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;net"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_net_address
+    LABELS "layer2;service;net"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ZapRouter (PeerAdmission Phase C, caller-pumped)
@@ -142,18 +121,11 @@ target_link_libraries(test_layer2_zap_router
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_zap_router)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_zap_router
-    SUITE_NAME "Layer2_ZapRouter"
-)
 layer2_require_staged_utils(test_layer2_zap_router)
 
-gtest_discover_tests(test_layer2_zap_router
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;zap_router"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_zap_router
+    LABELS "layer2;service;security;zap_router"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: KeyStore + LockedKey + SecureBuffer (HEP-CORE-0040 §170)
@@ -182,18 +154,11 @@ target_link_libraries(test_layer2_key_store
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_key_store)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_key_store
-    SUITE_NAME "Layer2_KeyStore"
-)
 layer2_require_staged_utils(test_layer2_key_store)
 
-gtest_discover_tests(test_layer2_key_store
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;key_store"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_key_store
+    LABELS "layer2;service;security;key_store"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: seed_curve_identities protocol-validation (HEP-CORE-0040 §172 +
@@ -219,18 +184,11 @@ target_link_libraries(test_layer2_curve_test_fixtures
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_curve_test_fixtures)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_curve_test_fixtures
-    SUITE_NAME "Layer2_CurveTestFixtures"
-)
 layer2_require_staged_utils(test_layer2_curve_test_fixtures)
 
-gtest_discover_tests(test_layer2_curve_test_fixtures
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;test_fixture;curve_test_setup"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_curve_test_fixtures
+    LABELS "layer2;service;security;test_fixture;curve_test_setup"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: ZmqQueue CURVE+ZAP auth (PeerAdmission Phase C, ZmqQueue side)
@@ -256,18 +214,11 @@ target_link_libraries(test_layer2_zmq_queue_auth
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_queue_auth)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_zmq_queue_auth
-    SUITE_NAME "Layer2_ZmqQueueAuth"
-)
 layer2_require_staged_utils(test_layer2_zmq_queue_auth)
 
-gtest_discover_tests(test_layer2_zmq_queue_auth
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;zmq_queue;peer_admission"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_zmq_queue_auth
+    LABELS "layer2;service;security;zmq_queue;peer_admission"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: KnownRolesStore (PeerAdmission Phase B)
@@ -299,18 +250,11 @@ target_link_libraries(test_layer2_known_roles
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_known_roles)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_known_roles
-    SUITE_NAME "Layer2_KnownRoles"
-)
 layer2_require_staged_utils(test_layer2_known_roles)
 
-gtest_discover_tests(test_layer2_known_roles
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;known_roles"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_known_roles
+    LABELS "layer2;service;security;known_roles"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: build-flag invariants for test/debug backdoor gates (#205, 2026-06-11)
@@ -332,18 +276,11 @@ target_link_libraries(test_layer2_build_flag_invariants
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_build_flag_invariants)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_build_flag_invariants
-    SUITE_NAME "Layer2_BuildFlagInvariants"
-)
 layer2_require_staged_utils(test_layer2_build_flag_invariants)
 
-gtest_discover_tests(test_layer2_build_flag_invariants
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;build_flags"
-        TIMEOUT 10
-)
+pylabhub_add_gtest(TARGET test_layer2_build_flag_invariants
+    LABELS "layer2;service;security;build_flags"
+    TIMEOUT 10)
 
 # ============================================================================
 # Test: Z85PublicKey strong type (HEP-CORE-0040 §8.4 + AUTH_TODO §C2, #158)
@@ -370,10 +307,6 @@ target_link_libraries(test_layer2_curve_keypair
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_curve_keypair)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_curve_keypair
-    SUITE_NAME "Layer2_CurveKeypair"
-)
 layer2_require_staged_utils(test_layer2_curve_keypair)
 
 # ============================================================================
@@ -394,25 +327,15 @@ target_link_libraries(test_layer2_role_reg_payload
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_reg_payload)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_reg_payload
-    SUITE_NAME "Layer2_RoleRegPayload"
-)
 layer2_require_staged_utils(test_layer2_role_reg_payload)
 
-gtest_discover_tests(test_layer2_role_reg_payload
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;role_reg_payload"
-        TIMEOUT 10
-)
+pylabhub_add_gtest(TARGET test_layer2_role_reg_payload
+    LABELS "layer2;service;role_reg_payload"
+    TIMEOUT 10)
 
-gtest_discover_tests(test_layer2_curve_keypair
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;curve_keypair"
-        TIMEOUT 10
-)
+pylabhub_add_gtest(TARGET test_layer2_curve_keypair
+    LABELS "layer2;service;security;curve_keypair"
+    TIMEOUT 10)
 
 # role_identity_policy enum↔string helpers test deleted 2026-07-20 with the
 # RoleIdentityPolicy placeholder (HEP-CORE-0035 §4.5 / §8 Phase 6 — the
@@ -442,18 +365,11 @@ target_link_libraries(test_layer2_shm_capability_channel
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_shm_capability_channel)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_shm_capability_channel
-    SUITE_NAME "Layer2_ShmCapabilityChannel"
-)
 layer2_require_staged_utils(test_layer2_shm_capability_channel)
 
-gtest_discover_tests(test_layer2_shm_capability_channel
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;shm_capability"
-        TIMEOUT 10
-)
+pylabhub_add_gtest(TARGET test_layer2_shm_capability_channel
+    LABELS "layer2;service;security;shm_capability"
+    TIMEOUT 10)
 
 # ============================================================================
 # Test: AttachProtocol (HEP-CORE-0041 §9 D4 challenge-response, substep 1c)
@@ -480,18 +396,11 @@ target_link_libraries(test_layer2_attach_protocol
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_attach_protocol)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_attach_protocol
-    SUITE_NAME "Layer2_AttachProtocol"
-)
 layer2_require_staged_utils(test_layer2_attach_protocol)
 
-gtest_discover_tests(test_layer2_attach_protocol
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;attach_protocol"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_attach_protocol
+    LABELS "layer2;service;security;attach_protocol"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ShmAttachOrchestrator (HEP-CORE-0041 §9 D4 steps 6-7, substep 1e)
@@ -522,18 +431,11 @@ target_link_libraries(test_layer2_shm_attach_orchestrator
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_shm_attach_orchestrator)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_shm_attach_orchestrator
-    SUITE_NAME "Layer2_ShmAttachOrchestrator"
-)
 layer2_require_staged_utils(test_layer2_shm_attach_orchestrator)
 
-gtest_discover_tests(test_layer2_shm_attach_orchestrator
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;shm_attach_orchestrator"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_shm_attach_orchestrator
+    LABELS "layer2;service;security;shm_attach_orchestrator"
+    TIMEOUT 30)
 # ============================================================================
 # Test: DataBlock fd-source ctors + factories (HEP-CORE-0041 substep 1f, #253)
 # Pattern 1+ — binary-wide LifecycleGuard for Logger + SecureSubsystem +
@@ -562,18 +464,11 @@ target_link_libraries(test_layer2_data_block_fd_based
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_data_block_fd_based)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_data_block_fd_based
-    SUITE_NAME "Layer2_DataBlockFdBased"
-)
 layer2_require_staged_utils(test_layer2_data_block_fd_based)
 
-gtest_discover_tests(test_layer2_data_block_fd_based
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;shm;data_block;hep0041"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_data_block_fd_based
+    LABELS "layer2;service;shm;data_block;hep0041"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ShmQueue capability-fd path (HEP-CORE-0041 substep 1i-mig-1)
@@ -610,18 +505,11 @@ target_link_libraries(test_layer2_hub_queue_factory
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_queue_factory)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_queue_factory
-    SUITE_NAME "Layer2_HubQueueFactory"
-)
 layer2_require_staged_utils(test_layer2_hub_queue_factory)
 
-gtest_discover_tests(test_layer2_hub_queue_factory
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hep0017"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_queue_factory
+    LABELS "layer2;service;hep0017"
+    TIMEOUT 30)
 
 target_link_libraries(test_layer2_hub_shm_queue_capability
     PRIVATE
@@ -633,18 +521,11 @@ target_link_libraries(test_layer2_hub_shm_queue_capability
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_shm_queue_capability)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_shm_queue_capability
-    SUITE_NAME "Layer2_HubShmQueueCapability"
-)
 layer2_require_staged_utils(test_layer2_hub_shm_queue_capability)
 
-gtest_discover_tests(test_layer2_hub_shm_queue_capability
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;shm;hep0041"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_shm_queue_capability
+    LABELS "layer2;service;shm;hep0041"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ShmQueue contract L2 revival post-S3c retirement (task #323)
@@ -674,18 +555,11 @@ target_link_libraries(test_layer2_hub_shm_queue_contract
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_shm_queue_contract)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_shm_queue_contract
-    SUITE_NAME "Layer2_HubShmQueueContract"
-)
 layer2_require_staged_utils(test_layer2_hub_shm_queue_contract)
 
-gtest_discover_tests(test_layer2_hub_shm_queue_contract
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;shm;hep0041"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_shm_queue_contract
+    LABELS "layer2;service;shm;hep0041"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: PeerAdmission abstraction (HEP-CORE-0035 §4.5 / HEP-CORE-0036 §I1)
@@ -711,18 +585,11 @@ target_link_libraries(test_layer2_peer_admission
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_peer_admission)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_peer_admission
-    SUITE_NAME "Layer2_PeerAdmission"
-)
 layer2_require_staged_utils(test_layer2_peer_admission)
 
-gtest_discover_tests(test_layer2_peer_admission
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;peer_admission"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_peer_admission
+    LABELS "layer2;service;security;peer_admission"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Key-file ACL utility (HEP-CORE-0035 §4.6)
@@ -746,18 +613,11 @@ target_link_libraries(test_layer2_key_file_acl
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_key_file_acl)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_key_file_acl
-    SUITE_NAME "Layer2_KeyFileAcl"
-)
 layer2_require_staged_utils(test_layer2_key_file_acl)
 
-gtest_discover_tests(test_layer2_key_file_acl
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;security;key_file_acl"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_key_file_acl
+    LABELS "layer2;service;security;key_file_acl"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Naming validator (HEP-CORE-0033 §G2.2.0b)
@@ -778,18 +638,11 @@ target_link_libraries(test_layer2_naming
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_naming)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_naming
-    SUITE_NAME "Layer2_Naming"
-)
 layer2_require_staged_utils(test_layer2_naming)
 
-gtest_discover_tests(test_layer2_naming
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;naming"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_naming
+    LABELS "layer2;service;naming"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubState skeleton (HEP-CORE-0033 §G2.1)
@@ -811,18 +664,11 @@ target_link_libraries(test_layer2_hub_state
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_state)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_state
-    SUITE_NAME "Layer2_HubState"
-)
 layer2_require_staged_utils(test_layer2_hub_state)
 
-gtest_discover_tests(test_layer2_hub_state
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hubstate"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_state
+    LABELS "layer2;service;hubstate"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubState anti-replay nonce dedup (I-REPLAY-BOUND)
@@ -842,18 +688,11 @@ target_link_libraries(test_layer2_hub_state_nonce_dedup
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_state_nonce_dedup)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_state_nonce_dedup
-    SUITE_NAME "Layer2_HubStateNonceDedup"
-)
 layer2_require_staged_utils(test_layer2_hub_state_nonce_dedup)
 
-gtest_discover_tests(test_layer2_hub_state_nonce_dedup
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hubstate;replay"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_state_nonce_dedup
+    LABELS "layer2;service;hubstate;replay"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Wire adapter round-trip (HEP-CORE-0046 Phase B Tier 1) — proves
@@ -876,18 +715,11 @@ target_link_libraries(test_layer2_wire_adapter_roundtrip
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_wire_adapter_roundtrip)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_wire_adapter_roundtrip
-    SUITE_NAME "Layer2_WireAdapterRoundtrip"
-)
 layer2_require_staged_utils(test_layer2_wire_adapter_roundtrip)
 
-gtest_discover_tests(test_layer2_wire_adapter_roundtrip
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;wire;adapter;hep0046"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_wire_adapter_roundtrip
+    LABELS "layer2;service;wire;adapter;hep0046"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubState query helpers (HEP-CORE-0039 Phase A)
@@ -912,18 +744,11 @@ target_link_libraries(test_layer2_hub_state_queries
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_state_queries)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_state_queries
-    SUITE_NAME "Layer2_HubStateQueries"
-)
 layer2_require_staged_utils(test_layer2_hub_state_queries)
 
-gtest_discover_tests(test_layer2_hub_state_queries
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hubstate;query_layer"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_state_queries
+    LABELS "layer2;service;hubstate;query_layer"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: RoleHandler — Wave-B M3 skeleton (Presence dedup + index lookup)
@@ -946,18 +771,11 @@ target_link_libraries(test_layer2_role_handler
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_handler)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_handler
-    SUITE_NAME "Layer2_RoleHandler"
-)
 layer2_require_staged_utils(test_layer2_role_handler)
 
-gtest_discover_tests(test_layer2_role_handler
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;rolehandler"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_role_handler
+    LABELS "layer2;service;rolehandler"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: SharedSpinLock (foundational for DataBlock; Part 0 of test plan)
@@ -980,18 +798,11 @@ target_link_libraries(test_layer2_shared_memory_spinlock
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_shared_memory_spinlock)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_shared_memory_spinlock
-    SUITE_NAME "Layer2_SharedMemorySpinlock"
-)
 layer2_require_staged_utils(test_layer2_shared_memory_spinlock)
 
-gtest_discover_tests(test_layer2_shared_memory_spinlock
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;spinlock"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_shared_memory_spinlock
+    LABELS "layer2;service;spinlock"
+    TIMEOUT 30)
 
 # ============================================================================
 # CRITICAL Test: SMS Category 1 primitives (blocks schema validation)
@@ -1019,18 +830,11 @@ target_link_libraries(test_layer2_sms_primitives
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_sms_primitives)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_sms_primitives
-    SUITE_NAME "Layer2_SecureSubsystem"
-)
 layer2_require_staged_utils(test_layer2_sms_primitives)
 
-gtest_discover_tests(test_layer2_sms_primitives
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;crypto;critical"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_sms_primitives
+    LABELS "layer2;service;crypto;critical"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: ThreadManager::join_named (HEP-CORE-0033 §4.2 step 2)
@@ -1055,18 +859,11 @@ target_link_libraries(test_layer2_thread_manager_join_named
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_thread_manager_join_named)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_thread_manager_join_named
-    SUITE_NAME "Layer2_ThreadManagerJoinNamed"
-)
 layer2_require_staged_utils(test_layer2_thread_manager_join_named)
 
-gtest_discover_tests(test_layer2_thread_manager_join_named
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;thread_manager"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_thread_manager_join_named
+    LABELS "layer2;service;thread_manager"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ThreadManager active_loop_exited primitive (HEP-CORE-0031 §4.1)
@@ -1091,18 +888,11 @@ target_link_libraries(test_layer2_thread_manager_active_loop
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_thread_manager_active_loop)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_thread_manager_active_loop
-    SUITE_NAME "Layer2_ThreadManagerActiveLoop"
-)
 layer2_require_staged_utils(test_layer2_thread_manager_active_loop)
 
-gtest_discover_tests(test_layer2_thread_manager_active_loop
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;thread_manager"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_thread_manager_active_loop
+    LABELS "layer2;service;thread_manager"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Lifecycle (static modules)
@@ -1123,18 +913,11 @@ target_link_libraries(test_layer2_lifecycle
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_lifecycle)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_lifecycle
-    SUITE_NAME "Layer2_Lifecycle"
-)
 layer2_require_staged_utils(test_layer2_lifecycle)
 
-gtest_discover_tests(test_layer2_lifecycle
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;lifecycle"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_lifecycle
+    LABELS "layer2;service;lifecycle"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: Lifecycle (dynamic modules)
@@ -1155,18 +938,11 @@ target_link_libraries(test_layer2_lifecycle_dynamic
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_lifecycle_dynamic)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_lifecycle_dynamic
-    SUITE_NAME "Layer2_LifecycleDynamic"
-)
 layer2_require_staged_utils(test_layer2_lifecycle_dynamic)
 
-gtest_discover_tests(test_layer2_lifecycle_dynamic
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;lifecycle;dynamic"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_lifecycle_dynamic
+    LABELS "layer2;service;lifecycle;dynamic"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: FileLock (Multi-Process)
@@ -1187,18 +963,11 @@ target_link_libraries(test_layer2_filelock
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_filelock)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_filelock
-    SUITE_NAME "Layer2_FileLock"
-)
 layer2_require_staged_utils(test_layer2_filelock)
 
-gtest_discover_tests(test_layer2_filelock
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;filelock;multiprocess"
-        TIMEOUT 120
-)
+pylabhub_add_gtest(TARGET test_layer2_filelock
+    LABELS "layer2;service;filelock;multiprocess"
+    TIMEOUT 120)
 
 # ============================================================================
 # Test: FileLock Single-Process (pure API, no worker dispatcher)
@@ -1220,18 +989,11 @@ target_link_libraries(test_layer2_filelock_singleprocess
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_filelock_singleprocess)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_filelock_singleprocess
-    SUITE_NAME "Layer2_FileLockSingleProcess"
-)
 layer2_require_staged_utils(test_layer2_filelock_singleprocess)
 
-gtest_discover_tests(test_layer2_filelock_singleprocess
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;filelock;singleprocess"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_filelock_singleprocess
+    LABELS "layer2;service;filelock;singleprocess"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: Logger
@@ -1252,18 +1014,11 @@ target_link_libraries(test_layer2_logger
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_logger)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_logger
-    SUITE_NAME "Layer2_Logger"
-)
 layer2_require_staged_utils(test_layer2_logger)
 
-gtest_discover_tests(test_layer2_logger
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;logger"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_logger
+    LABELS "layer2;service;logger"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: JsonConfig
@@ -1286,18 +1041,11 @@ target_link_libraries(test_layer2_jsonconfig
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_jsonconfig)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_jsonconfig
-    SUITE_NAME "Layer2_JsonConfig"
-)
 layer2_require_staged_utils(test_layer2_jsonconfig)
 
-gtest_discover_tests(test_layer2_jsonconfig
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;jsonconfig"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_jsonconfig
+    LABELS "layer2;service;jsonconfig"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: HubVault (pure API — no lifecycle, no worker dispatcher)
@@ -1317,18 +1065,11 @@ target_link_libraries(test_layer2_hub_vault
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_vault)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_vault
-    SUITE_NAME "Layer2_HubVault"
-)
 layer2_require_staged_utils(test_layer2_hub_vault)
 
-gtest_discover_tests(test_layer2_hub_vault
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;vault;security"
-        TIMEOUT 120
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_vault
+    LABELS "layer2;service;vault;security"
+    TIMEOUT 120)
 
 # Legacy test_layer2_script_host removed — ScriptHost replaced by ScriptEngine.
 
@@ -1350,18 +1091,11 @@ target_link_libraries(test_layer2_role_vault
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_vault)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_vault
-    SUITE_NAME "Layer2_RoleVault"
-)
 layer2_require_staged_utils(test_layer2_role_vault)
 
-gtest_discover_tests(test_layer2_role_vault
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;vault;security"
-        TIMEOUT 120
-)
+pylabhub_add_gtest(TARGET test_layer2_role_vault
+    LABELS "layer2;service;vault;security"
+    TIMEOUT 120)
 
 # ============================================================================
 # Test: ZmqContext lifecycle (Pattern 3 — workers own LifecycleGuard)
@@ -1385,18 +1119,11 @@ target_compile_definitions(test_layer2_zmq_context PRIVATE LOGGER_COMPILE_LEVEL=
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_context)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_zmq_context
-    SUITE_NAME "Layer2_ZmqContext"
-)
 layer2_require_staged_utils(test_layer2_zmq_context)
 
-gtest_discover_tests(test_layer2_zmq_context
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;zmq"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_zmq_context
+    LABELS "layer2;service;zmq"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: UID Utils (pure API — no lifecycle, no worker dispatcher)
@@ -1415,18 +1142,11 @@ target_link_libraries(test_layer2_uid_utils
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_uid_utils)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_uid_utils
-    SUITE_NAME "Layer2_UidUtils"
-)
 layer2_require_staged_utils(test_layer2_uid_utils)
 
-gtest_discover_tests(test_layer2_uid_utils
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;uid"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_uid_utils
+    LABELS "layer2;service;uid"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: InteractiveSignalHandler lifecycle (pure API — no signal injection)
@@ -1448,18 +1168,11 @@ target_link_libraries(test_layer2_interactive_signal_handler
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_interactive_signal_handler)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_interactive_signal_handler
-    SUITE_NAME "Layer2_InteractiveSignalHandler"
-)
 layer2_require_staged_utils(test_layer2_interactive_signal_handler)
 
-gtest_discover_tests(test_layer2_interactive_signal_handler
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;signal"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_interactive_signal_handler
+    LABELS "layer2;service;signal"
+    TIMEOUT 30)
 
 # set(PYLABHUB_SKIP_ENGINE_TESTS TRUE)  # Phase 3/4/5: test migration in progress
 
@@ -1486,18 +1199,11 @@ target_link_libraries(test_layer2_slot_view_helpers
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_slot_view_helpers)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_slot_view_helpers
-    SUITE_NAME "Layer2_SlotViewHelpers"
-)
 layer2_require_staged_utils(test_layer2_slot_view_helpers)
 
-gtest_discover_tests(test_layer2_slot_view_helpers
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;scripting;slotview"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_slot_view_helpers
+    LABELS "layer2;service;scripting;slotview"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: RoleDirectory + role_cli (pure filesystem API — no lifecycle)
@@ -1516,18 +1222,11 @@ target_link_libraries(test_layer2_role_directory
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_directory)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_directory
-    SUITE_NAME "Layer2_RoleDirectory"
-)
 layer2_require_staged_utils(test_layer2_role_directory)
 
-gtest_discover_tests(test_layer2_role_directory
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;role_directory"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_role_directory
+    LABELS "layer2;service;role_directory"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubDirectory (pure filesystem API — no lifecycle)
@@ -1547,18 +1246,11 @@ target_link_libraries(test_layer2_hub_directory
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_directory)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_directory
-    SUITE_NAME "Layer2_HubDirectory"
-)
 layer2_require_staged_utils(test_layer2_hub_directory)
 
-gtest_discover_tests(test_layer2_hub_directory
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hub_directory"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_directory
+    LABELS "layer2;service;hub_directory"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubHost (lifecycle owner — Pattern 2, in-process LifecycleGuard)
@@ -1587,18 +1279,11 @@ target_link_libraries(test_layer2_hub_host
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_host)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_host
-    SUITE_NAME "Layer2_HubHost"
-)
 layer2_require_staged_utils(test_layer2_hub_host)
 
-gtest_discover_tests(test_layer2_hub_host
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hub_host"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_host
+    LABELS "layer2;service;hub_host"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: AdminService (HEP-CORE-0033 §11 — CURVE-secured admin plane)
@@ -1626,18 +1311,11 @@ target_link_libraries(test_layer2_admin_service
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_admin_service)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_admin_service
-    SUITE_NAME "Layer2_AdminService"
-)
 layer2_require_staged_utils(test_layer2_admin_service)
 
-gtest_discover_tests(test_layer2_admin_service
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;admin"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_admin_service
+    LABELS "layer2;service;admin"
+    TIMEOUT 30)
 
 # ---- Admin console session identity (HEP-CORE-0033 §11.0.5) ----------------
 add_executable(test_layer2_admin_session
@@ -1654,18 +1332,11 @@ target_link_libraries(test_layer2_admin_session
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_admin_session)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_admin_session
-    SUITE_NAME "Layer2_AdminSession"
-)
 layer2_require_staged_utils(test_layer2_admin_session)
 
-gtest_discover_tests(test_layer2_admin_session
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;admin"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_admin_session
+    LABELS "layer2;service;admin"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: role_cli::parse_role_args + ParseResult (in-process, no std::exit)
@@ -1675,11 +1346,10 @@ add_executable(test_layer2_role_cli test_role_cli.cpp)
 target_link_libraries(test_layer2_role_cli PRIVATE
     pylabhub::utils GTest::gtest GTest::gtest_main)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_cli)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_cli SUITE_NAME "Layer2_RoleCli")
 layer2_require_staged_utils(test_layer2_role_cli)
-gtest_discover_tests(test_layer2_role_cli
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_cli" TIMEOUT 30)
+pylabhub_add_gtest(TARGET test_layer2_role_cli
+    LABELS "layer2;service;role_cli"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: hub_cli::parse_hub_args + ParseResult (HEP-CORE-0033 §15 Phase 2)
@@ -1689,11 +1359,10 @@ add_executable(test_layer2_hub_cli test_hub_cli.cpp)
 target_link_libraries(test_layer2_hub_cli PRIVATE
     pylabhub::utils GTest::gtest GTest::gtest_main)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_cli)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_cli SUITE_NAME "Layer2_HubCli")
 layer2_require_staged_utils(test_layer2_hub_cli)
-gtest_discover_tests(test_layer2_hub_cli
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;hub_cli" TIMEOUT 30)
+pylabhub_add_gtest(TARGET test_layer2_hub_cli
+    LABELS "layer2;service;hub_cli"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: RoleRegistry + RuntimeBuilder
@@ -1703,11 +1372,10 @@ add_executable(test_layer2_role_registry test_role_registry.cpp)
 target_link_libraries(test_layer2_role_registry PRIVATE
     pylabhub::utils GTest::gtest GTest::gtest_main)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_registry)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_registry SUITE_NAME "Layer2_RoleRegistry")
 layer2_require_staged_utils(test_layer2_role_registry)
-gtest_discover_tests(test_layer2_role_registry
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_registry" TIMEOUT 30)
+pylabhub_add_gtest(TARGET test_layer2_role_registry
+    LABELS "layer2;service;role_registry"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: make_engine_from_script_config (scripting layer helper)
@@ -1726,11 +1394,10 @@ target_link_libraries(test_layer2_engine_factory PRIVATE
     pylabhub::third_party::pybind11_embed
     GTest::gtest)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_engine_factory)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_engine_factory SUITE_NAME "Layer2_EngineFactory")
 layer2_require_staged_utils(test_layer2_engine_factory)
-gtest_discover_tests(test_layer2_engine_factory
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;engine_factory" TIMEOUT 30)
+pylabhub_add_gtest(TARGET test_layer2_engine_factory
+    LABELS "layer2;service;engine_factory"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: RoleDirectory::init_directory with LogInitOverrides across 3 roles
@@ -1744,12 +1411,10 @@ target_include_directories(test_layer2_role_init_directory PRIVATE
 target_link_libraries(test_layer2_role_init_directory PRIVATE
     pylabhub::utils GTest::gtest GTest::gtest_main)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_init_directory)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_init_directory
-    SUITE_NAME "Layer2_RoleInitDirectory")
 layer2_require_staged_utils(test_layer2_role_init_directory)
-gtest_discover_tests(test_layer2_role_init_directory
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_init_directory" TIMEOUT 60)
+pylabhub_add_gtest(TARGET test_layer2_role_init_directory
+    LABELS "layer2;service;role_init_directory"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: config→opts translation round-trip (closes TODO #83 / N1)
@@ -1772,13 +1437,10 @@ target_link_libraries(test_layer2_setup_infrastructure_translation PRIVATE
     pylabhub::utils pylabhub::test_framework GTest::gtest GTest::gtest_main)
 pylabhub_ensure_sanitizer_for_executable(
     test_layer2_setup_infrastructure_translation)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_setup_infrastructure_translation
-    SUITE_NAME "Layer2_SetupInfrastructureTranslation")
 layer2_require_staged_utils(test_layer2_setup_infrastructure_translation)
-gtest_discover_tests(test_layer2_setup_infrastructure_translation
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;setup_infrastructure_translation"
-               TIMEOUT 60)
+pylabhub_add_gtest(TARGET test_layer2_setup_infrastructure_translation
+    LABELS "layer2;service;setup_infrastructure_translation"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: CLI log flags → JSON → LoggingConfig round-trip (all 3 roles)
@@ -1802,12 +1464,10 @@ target_link_libraries(test_layer2_role_logging_roundtrip PRIVATE
     pylabhub::test_framework
     GTest::gtest)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_logging_roundtrip)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_logging_roundtrip
-    SUITE_NAME "Layer2_RoleLoggingRoundtrip")
 layer2_require_staged_utils(test_layer2_role_logging_roundtrip)
-gtest_discover_tests(test_layer2_role_logging_roundtrip
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_logging_roundtrip" TIMEOUT 60)
+pylabhub_add_gtest(TARGET test_layer2_role_logging_roundtrip
+    LABELS "layer2;service;role_logging_roundtrip"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: configure_logger_from_config — auto-path, rotation params, errors
@@ -1828,12 +1488,10 @@ target_link_libraries(test_layer2_configure_logger PRIVATE
     pylabhub::test_framework
     GTest::gtest)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_configure_logger)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_configure_logger
-    SUITE_NAME "Layer2_ConfigureLogger")
 layer2_require_staged_utils(test_layer2_configure_logger)
-gtest_discover_tests(test_layer2_configure_logger
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;configure_logger" TIMEOUT 60)
+pylabhub_add_gtest(TARGET test_layer2_configure_logger
+    LABELS "layer2;service;configure_logger"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: RoleHostBase lifecycle (Pattern 3 — spawned workers + panic/abort)
@@ -1855,12 +1513,10 @@ target_link_libraries(test_layer2_role_host_base PRIVATE
     GTest::gtest
     GTest::gmock)
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_host_base)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_host_base
-    SUITE_NAME "Layer2_RoleHostBase")
 layer2_require_staged_utils(test_layer2_role_host_base)
-gtest_discover_tests(test_layer2_role_host_base
-    PROPERTIES FIXTURES_REQUIRED Guardrails LABELS "layer2;service;role_host_base" TIMEOUT 60)
+pylabhub_add_gtest(TARGET test_layer2_role_host_base
+    LABELS "layer2;service;role_host_base"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: LoopTimingPolicy (pure header-only API)
@@ -1879,18 +1535,11 @@ target_link_libraries(test_layer2_loop_timing_policy
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_loop_timing_policy)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_loop_timing_policy
-    SUITE_NAME "Layer2_LoopTimingPolicy"
-)
 layer2_require_staged_utils(test_layer2_loop_timing_policy)
 
-gtest_discover_tests(test_layer2_loop_timing_policy
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;loop_timing"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_loop_timing_policy
+    LABELS "layer2;service;loop_timing"
+    TIMEOUT 30)
 
 # --- LuaEngine unit tests ---
 add_executable(test_layer2_lua_engine
@@ -1917,18 +1566,11 @@ target_compile_definitions(test_layer2_lua_engine PRIVATE LOGGER_COMPILE_LEVEL=0
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_lua_engine)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_lua_engine
-    SUITE_NAME "Layer2_LuaEngine"
-)
 layer2_require_staged_utils(test_layer2_lua_engine)
 
-gtest_discover_tests(test_layer2_lua_engine
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;scripting;lua;engine"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_lua_engine
+    LABELS "layer2;service;scripting;lua;engine"
+    TIMEOUT 30)
 
 # --- PythonEngine unit tests ---
 add_executable(test_layer2_python_engine
@@ -1955,18 +1597,11 @@ target_compile_definitions(test_layer2_python_engine PRIVATE LOGGER_COMPILE_LEVE
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_python_engine)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_python_engine
-    SUITE_NAME "Layer2_PythonEngine"
-)
 layer2_require_staged_utils(test_layer2_python_engine)
 
-gtest_discover_tests(test_layer2_python_engine
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;scripting;python;engine"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_python_engine
+    LABELS "layer2;service;scripting;python;engine"
+    TIMEOUT 60)
 
 # ── NativeEngine test modules (.so) ──────────────────────────────────────
 add_library(test_good_producer_plugin SHARED
@@ -2031,17 +1666,10 @@ add_dependencies(test_layer2_scriptengine_native_dylib test_good_producer_plugin
 # No -rdynamic needed: plugin API goes through PlhPluginContext function pointers,
 # not host-exported symbols.
 pylabhub_ensure_sanitizer_for_executable(test_layer2_scriptengine_native_dylib)
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_scriptengine_native_dylib
-    SUITE_NAME "Layer2_NativeEngine"
-)
 layer2_require_staged_utils(test_layer2_scriptengine_native_dylib)
-gtest_discover_tests(test_layer2_scriptengine_native_dylib
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;scripting;native;engine"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_scriptengine_native_dylib
+    LABELS "layer2;service;scripting;native;engine"
+    TIMEOUT 60)
 
 message(STATUS "Layer 2 (Service) tests configured successfully")
 message(STATUS "  - test_layer2_framework_selftest (CRITICAL - framework self-verification)")
@@ -2072,18 +1700,11 @@ target_link_libraries(test_layer2_slot_rw_coordinator
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_slot_rw_coordinator)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_slot_rw_coordinator
-    SUITE_NAME "Layer2_SlotRWCoordinator"
-)
 layer2_require_staged_utils(test_layer2_slot_rw_coordinator)
 
-gtest_discover_tests(test_layer2_slot_rw_coordinator
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;slotrw"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_slot_rw_coordinator
+    LABELS "layer2;service;slotrw"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: RoleHostCore — shared state container for role hosts
@@ -2103,18 +1724,11 @@ target_link_libraries(test_layer2_role_host_core
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_host_core)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_host_core
-    SUITE_NAME "Layer2_RoleHostCore"
-)
 layer2_require_staged_utils(test_layer2_role_host_core)
 
-gtest_discover_tests(test_layer2_role_host_core
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;scripting"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_role_host_core
+    LABELS "layer2;service;scripting"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubAPI script-visible surface (HEP-CORE-0033 §12.3 Phase 7 Commit D1)
@@ -2134,18 +1748,11 @@ target_link_libraries(test_layer2_hub_api
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_api)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_api
-    SUITE_NAME "Layer2_HubAPI"
-)
 layer2_require_staged_utils(test_layer2_hub_api)
 
-gtest_discover_tests(test_layer2_hub_api
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;hub_api"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_api
+    LABELS "layer2;service;hub_api"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: LogCaptureFixture itself (test framework — Phase 7 Commit D1.5)
@@ -2166,18 +1773,11 @@ target_link_libraries(test_layer2_log_capture_fixture
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_log_capture_fixture)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_log_capture_fixture
-    SUITE_NAME "Layer2_LogCaptureFixture"
-)
 layer2_require_staged_utils(test_layer2_log_capture_fixture)
 
-gtest_discover_tests(test_layer2_log_capture_fixture
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;test_framework;log_capture"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_log_capture_fixture
+    LABELS "layer2;test_framework;log_capture"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: scripting::PeriodicTask + scripting::ZmqPollLoop utility classes
@@ -2208,18 +1808,11 @@ target_link_libraries(test_layer2_zmq_poll_loop
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_zmq_poll_loop)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_zmq_poll_loop
-    SUITE_NAME "Layer2_ZmqPollLoop"
-)
 layer2_require_staged_utils(test_layer2_zmq_poll_loop)
 
-gtest_discover_tests(test_layer2_zmq_poll_loop
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;scripting;zmq_poll_loop"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_zmq_poll_loop
+    LABELS "layer2;scripting;zmq_poll_loop"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: RoleConfig — unified config class
@@ -2242,18 +1835,11 @@ target_link_libraries(test_layer2_role_config
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_config)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_config
-    SUITE_NAME "Layer2_RoleConfig"
-)
 layer2_require_staged_utils(test_layer2_role_config)
 
-gtest_discover_tests(test_layer2_role_config
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;config"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_role_config
+    LABELS "layer2;service;config"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: HubConfig — composite hub-side config (HEP-CORE-0033 §6.1)
@@ -2276,18 +1862,11 @@ target_link_libraries(test_layer2_hub_config
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_config)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_config
-    SUITE_NAME "Layer2_HubConfig"
-)
 layer2_require_staged_utils(test_layer2_hub_config)
 
-gtest_discover_tests(test_layer2_hub_config
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;config"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_config
+    LABELS "layer2;service;config"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: SchemaValidation — parse_schema_json, compute_schema_size, to_field_descs
@@ -2306,18 +1885,11 @@ target_link_libraries(test_layer2_schema_validation
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_schema_validation)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_schema_validation
-    SUITE_NAME "Layer2_SchemaValidation"
-)
 layer2_require_staged_utils(test_layer2_schema_validation)
 
-gtest_discover_tests(test_layer2_schema_validation
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;schema"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_schema_validation
+    LABELS "layer2;service;schema"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: EngineModuleParams — validate_fz_info_cache() negative-path coverage
@@ -2336,18 +1908,11 @@ target_link_libraries(test_layer2_engine_module_params
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_engine_module_params)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_engine_module_params
-    SUITE_NAME "Layer2_EngineModuleParams"
-)
 layer2_require_staged_utils(test_layer2_engine_module_params)
 
-gtest_discover_tests(test_layer2_engine_module_params
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;engine_module_params"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_engine_module_params
+    LABELS "layer2;service;engine_module_params"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: MetricsAPI — hierarchical metrics serialization (JSON + py::dict)
@@ -2381,19 +1946,12 @@ target_compile_definitions(test_layer2_metrics_api PRIVATE LOGGER_COMPILE_LEVEL=
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_metrics_api)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_metrics_api
-    SUITE_NAME "Layer2_MetricsAPI"
-)
 layer2_require_staged_utils(test_layer2_metrics_api)
 
-gtest_discover_tests(test_layer2_metrics_api
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;metrics"
-        TIMEOUT 60
-    DISCOVERY_TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_metrics_api
+    LABELS "layer2;service;metrics"
+    TIMEOUT 60
+    DISCOVERY_TIMEOUT 60)
 
 # ============================================================================
 # Test: RoleDataLoop — retry_acquire, run_data_loop, thread manager
@@ -2418,18 +1976,11 @@ target_link_libraries(test_layer2_role_data_loop
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_role_data_loop)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_role_data_loop
-    SUITE_NAME "Layer2_RoleDataLoop"
-)
 layer2_require_staged_utils(test_layer2_role_data_loop)
 
-gtest_discover_tests(test_layer2_role_data_loop
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;dataloop"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_role_data_loop
+    LABELS "layer2;service;dataloop"
+    TIMEOUT 30)
 endif() # PYLABHUB_SKIP_ENGINE_TESTS
 
 # ============================================================================
@@ -2456,18 +2007,11 @@ target_link_libraries(test_layer2_hub_zmq_queue
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_hub_zmq_queue)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_hub_zmq_queue
-    SUITE_NAME "Layer2_HubZmqQueue"
-)
 layer2_require_staged_utils(test_layer2_hub_zmq_queue)
 
-gtest_discover_tests(test_layer2_hub_zmq_queue
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;zmq_queue"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer2_hub_zmq_queue
+    LABELS "layer2;service;zmq_queue"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: dispatch_notifications (HEP-CORE-0011 callback table).
@@ -2498,15 +2042,8 @@ target_link_libraries(test_layer2_dispatch_notifications
 
 pylabhub_ensure_sanitizer_for_executable(test_layer2_dispatch_notifications)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer2_dispatch_notifications
-    SUITE_NAME "Layer2_DispatchNotifications"
-)
 layer2_require_staged_utils(test_layer2_dispatch_notifications)
 
-gtest_discover_tests(test_layer2_dispatch_notifications
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer2;service;notifications"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer2_dispatch_notifications
+    LABELS "layer2;service;notifications"
+    TIMEOUT 30)

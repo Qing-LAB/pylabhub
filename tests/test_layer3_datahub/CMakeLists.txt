@@ -328,14 +328,9 @@ if(TARGET test_native_multifield_module)
     add_dependencies(test_layer3_datahub test_native_multifield_module)
 endif()
 
-pylabhub_register_test_for_staging(TARGET test_layer3_datahub)
-
-gtest_discover_tests(test_layer3_datahub
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer3;datahub"
-    DISCOVERY_TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer3_datahub
+    LABELS "layer3;datahub"
+    DISCOVERY_TIMEOUT 60)
 
 message(STATUS "** Layer 3 (DataHub) tests configured.")
 message(STATUS "  - test_layer3_datahub: facility, c_api, primitive, raii, integration, broker_consumer, e2e")

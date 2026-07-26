@@ -34,18 +34,11 @@ target_link_libraries(test_layer1_spinlock
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_spinlock)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_spinlock
-    SUITE_NAME "Layer1_Spinlock"
-)
 layer1_require_staged_utils(test_layer1_spinlock)
 
-gtest_discover_tests(test_layer1_spinlock
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;guard;spinlock"
-        TIMEOUT 120
-)
+pylabhub_add_gtest(TARGET test_layer1_spinlock
+    LABELS "layer1;base;guard;spinlock"
+    TIMEOUT 120)
 
 # ============================================================================
 # Test: RecursionGuard
@@ -65,18 +58,11 @@ target_link_libraries(test_layer1_recursion_guard
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_recursion_guard)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_recursion_guard
-    SUITE_NAME "Layer1_RecursionGuard"
-)
 layer1_require_staged_utils(test_layer1_recursion_guard)
 
-gtest_discover_tests(test_layer1_recursion_guard
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;guard;recursion"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_recursion_guard
+    LABELS "layer1;base;guard;recursion"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ScopeGuard
@@ -96,18 +82,11 @@ target_link_libraries(test_layer1_scope_guard
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_scope_guard)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_scope_guard
-    SUITE_NAME "Layer1_ScopeGuard"
-)
 layer1_require_staged_utils(test_layer1_scope_guard)
 
-gtest_discover_tests(test_layer1_scope_guard
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;guard;scope"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_scope_guard
+    LABELS "layer1;base;guard;scope"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Format Tools
@@ -127,18 +106,11 @@ target_link_libraries(test_layer1_format_tools
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_format_tools)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_format_tools
-    SUITE_NAME "Layer1_FormatTools"
-)
 layer1_require_staged_utils(test_layer1_format_tools)
 
-gtest_discover_tests(test_layer1_format_tools
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;format"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_format_tools
+    LABELS "layer1;base;format"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Result<T,E>
@@ -162,18 +134,11 @@ target_compile_features(test_layer1_result PRIVATE cxx_std_20)
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_result)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_result
-    SUITE_NAME "Layer1_Result"
-)
 layer1_require_staged_utils(test_layer1_result)
 
-gtest_discover_tests(test_layer1_result
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;result"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_result
+    LABELS "layer1;base;result"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Backoff Strategy (header-only, pure API)
@@ -193,18 +158,11 @@ target_link_libraries(test_layer1_backoff_strategy
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_backoff_strategy)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_backoff_strategy
-    SUITE_NAME "Layer1_BackoffStrategy"
-)
 layer1_require_staged_utils(test_layer1_backoff_strategy)
 
-gtest_discover_tests(test_layer1_backoff_strategy
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;backoff"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_backoff_strategy
+    LABELS "layer1;base;backoff"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: PortableAtomicSharedPtr
@@ -229,18 +187,11 @@ target_link_libraries(test_layer1_portable_atomic_shared_ptr
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_portable_atomic_shared_ptr)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_portable_atomic_shared_ptr
-    SUITE_NAME "Layer1_PortableAtomicSharedPtr"
-)
 layer1_require_staged_utils(test_layer1_portable_atomic_shared_ptr)
 
-gtest_discover_tests(test_layer1_portable_atomic_shared_ptr
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;atomic;shared_ptr"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_portable_atomic_shared_ptr
+    LABELS "layer1;base;atomic;shared_ptr"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ModuleDef builder API (Pimpl, links pylabhub::utils)
@@ -260,18 +211,11 @@ target_link_libraries(test_layer1_module_def
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_module_def)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_module_def
-    SUITE_NAME "Layer1_ModuleDef"
-)
 layer1_require_staged_utils(test_layer1_module_def)
 
-gtest_discover_tests(test_layer1_module_def
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;module"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_module_def
+    LABELS "layer1;base;module"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Debug Info (stack trace, panic, debug messaging)
@@ -291,18 +235,11 @@ target_link_libraries(test_layer1_debug_info
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_debug_info)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_debug_info
-    SUITE_NAME "Layer1_DebugInfo"
-)
 layer1_require_staged_utils(test_layer1_debug_info)
 
-gtest_discover_tests(test_layer1_debug_info
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;debug"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_debug_info
+    LABELS "layer1;base;debug"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: scripting::PeriodicTask (utility class, function-level logic)
@@ -328,18 +265,11 @@ target_link_libraries(test_layer1_periodic_task
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_periodic_task)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_periodic_task
-    SUITE_NAME "Layer1_PeriodicTask"
-)
 layer1_require_staged_utils(test_layer1_periodic_task)
 
-gtest_discover_tests(test_layer1_periodic_task
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;base;periodic_task"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_periodic_task
+    LABELS "layer1;base;periodic_task"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: WireEnvelope + typed body classes
@@ -360,18 +290,11 @@ target_link_libraries(test_layer1_wire_envelope
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_wire_envelope)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_wire_envelope
-    SUITE_NAME "Layer1_WireEnvelope"
-)
 layer1_require_staged_utils(test_layer1_wire_envelope)
 
-gtest_discover_tests(test_layer1_wire_envelope
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;wire;envelope"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_wire_envelope
+    LABELS "layer1;wire;envelope"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Admission gates (reusable pre-state-mutation pipeline)
@@ -392,18 +315,11 @@ target_link_libraries(test_layer1_admission_gates
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_admission_gates)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_admission_gates
-    SUITE_NAME "Layer1_AdmissionGates"
-)
 layer1_require_staged_utils(test_layer1_admission_gates)
 
-gtest_discover_tests(test_layer1_admission_gates
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;admission;gates"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_admission_gates
+    LABELS "layer1;admission;gates"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ReplayGuard (header-only I-REPLAY-BOUND dedup primitive) — the ONE
@@ -425,18 +341,11 @@ target_link_libraries(test_layer1_replay_guard
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_replay_guard)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_replay_guard
-    SUITE_NAME "Layer1_ReplayGuard"
-)
 layer1_require_staged_utils(test_layer1_replay_guard)
 
-gtest_discover_tests(test_layer1_replay_guard
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;replay;security"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_replay_guard
+    LABELS "layer1;replay;security"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ConsoleOutputBuffer (header-only pull output buffer for the operator
@@ -459,18 +368,11 @@ target_link_libraries(test_layer1_console_output_buffer
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_console_output_buffer)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_console_output_buffer
-    SUITE_NAME "Layer1_ConsoleOutputBuffer"
-)
 layer1_require_staged_utils(test_layer1_console_output_buffer)
 
-gtest_discover_tests(test_layer1_console_output_buffer
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;admin;console"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_console_output_buffer
+    LABELS "layer1;admin;console"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: parse_hub_admin_config — the admin.output_buffer console-buffer caps
@@ -491,18 +393,11 @@ target_link_libraries(test_layer1_hub_admin_config
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_hub_admin_config)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_hub_admin_config
-    SUITE_NAME "Layer1_HubAdminConfig"
-)
 layer1_require_staged_utils(test_layer1_hub_admin_config)
 
-gtest_discover_tests(test_layer1_hub_admin_config
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;admin;config"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_hub_admin_config
+    LABELS "layer1;admin;config"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: wire_dispatch::kDispatchTable regression pin (Group 5 gap 3)
@@ -523,18 +418,11 @@ target_link_libraries(test_layer1_wire_dispatch_table
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_wire_dispatch_table)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_wire_dispatch_table
-    SUITE_NAME "Layer1_WireDispatchTable"
-)
 layer1_require_staged_utils(test_layer1_wire_dispatch_table)
 
-gtest_discover_tests(test_layer1_wire_dispatch_table
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;wire;dispatch"
-        TIMEOUT 15
-)
+pylabhub_add_gtest(TARGET test_layer1_wire_dispatch_table
+    LABELS "layer1;wire;dispatch"
+    TIMEOUT 15)
 
 # ============================================================================
 # Test: VersionedAdmissionLedger (header-only template) — the primitive
@@ -556,18 +444,11 @@ target_link_libraries(test_layer1_versioned_admission_ledger
 
 pylabhub_ensure_sanitizer_for_executable(test_layer1_versioned_admission_ledger)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer1_versioned_admission_ledger
-    SUITE_NAME "Layer1_VersionedAdmissionLedger"
-)
 layer1_require_staged_utils(test_layer1_versioned_admission_ledger)
 
-gtest_discover_tests(test_layer1_versioned_admission_ledger
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer1;admission;ledger;hep0042"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer1_versioned_admission_ledger
+    LABELS "layer1;admission;ledger;hep0042"
+    TIMEOUT 30)
 
 message(STATUS "Layer 1 (Base) tests configured successfully")
 message(STATUS "  - test_layer1_spinlock")

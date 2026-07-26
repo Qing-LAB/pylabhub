@@ -40,19 +40,12 @@ target_link_libraries(test_layer0_platform_core
 pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_core)
 
 # Register for staging
-pylabhub_register_test_for_staging(
-    TARGET test_layer0_platform_core
-    SUITE_NAME "Layer0_Platform_Core"
-)
 layer0_require_staged_utils(test_layer0_platform_core)
 
 # Register with CTest
-gtest_discover_tests(test_layer0_platform_core
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer0;platform;core"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer0_platform_core
+    LABELS "layer0;platform;core"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Platform Debug Utilities
@@ -76,19 +69,12 @@ target_link_libraries(test_layer0_platform_debug
 pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_debug)
 
 # Register for staging
-pylabhub_register_test_for_staging(
-    TARGET test_layer0_platform_debug
-    SUITE_NAME "Layer0_Platform_Debug"
-)
 layer0_require_staged_utils(test_layer0_platform_debug)
 
 # Register with CTest
-gtest_discover_tests(test_layer0_platform_debug
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer0;platform;debug"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer0_platform_debug
+    LABELS "layer0;platform;debug"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Platform Shared Memory (shm_create, shm_attach, shm_close, shm_unlink)
@@ -111,18 +97,11 @@ target_link_libraries(test_layer0_platform_shm
 
 pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_shm)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer0_platform_shm
-    SUITE_NAME "Layer0_Platform_Shm"
-)
 layer0_require_staged_utils(test_layer0_platform_shm)
 
-gtest_discover_tests(test_layer0_platform_shm
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer0;platform;shm"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer0_platform_shm
+    LABELS "layer0;platform;shm"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: Platform Sanitizers
@@ -141,19 +120,12 @@ target_link_libraries(test_layer0_platform_sanitizers
 pylabhub_ensure_sanitizer_for_executable(test_layer0_platform_sanitizers)
 
 # Register for staging
-pylabhub_register_test_for_staging(
-    TARGET test_layer0_platform_sanitizers
-    SUITE_NAME "Layer0_Platform_Sanitizers"
-)
 layer0_require_staged_utils(test_layer0_platform_sanitizers)
 
 # Register with CTest (tests assert on stderr content only, not exit code)
-gtest_discover_tests(test_layer0_platform_sanitizers
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer0;platform;sanitizer"
-        TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer0_platform_sanitizers
+    LABELS "layer0;platform;sanitizer"
+    TIMEOUT 60)
 
 # ============================================================================
 # Test: UUID Utils and Format Tools (bytes_to_hex, bytes_from_hex)
@@ -171,18 +143,11 @@ target_link_libraries(test_layer0_uuid_and_format
 
 pylabhub_ensure_sanitizer_for_executable(test_layer0_uuid_and_format)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer0_uuid_and_format
-    SUITE_NAME "Layer0_UuidAndFormat"
-)
 layer0_require_staged_utils(test_layer0_uuid_and_format)
 
-gtest_discover_tests(test_layer0_uuid_and_format
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer0;platform;uuid;format"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer0_uuid_and_format
+    LABELS "layer0;platform;uuid;format"
+    TIMEOUT 30)
 
 # ============================================================================
 # Test: ABI check facility (HEP-CORE-0032)
@@ -200,18 +165,11 @@ target_link_libraries(test_layer0_abi_check
 
 pylabhub_ensure_sanitizer_for_executable(test_layer0_abi_check)
 
-pylabhub_register_test_for_staging(
-    TARGET test_layer0_abi_check
-    SUITE_NAME "Layer0_AbiCheck"
-)
 layer0_require_staged_utils(test_layer0_abi_check)
 
-gtest_discover_tests(test_layer0_abi_check
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer0;platform;abi"
-        TIMEOUT 30
-)
+pylabhub_add_gtest(TARGET test_layer0_abi_check
+    LABELS "layer0;platform;abi"
+    TIMEOUT 30)
 
 message(STATUS "Layer 0 (Platform) tests configured successfully")
 message(STATUS "  - test_layer0_platform_core")

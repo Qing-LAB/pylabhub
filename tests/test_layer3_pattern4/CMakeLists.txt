@@ -69,13 +69,8 @@ if(TARGET stage_pylabhub_utils)
     add_dependencies(test_layer3_pattern4 stage_pylabhub_utils)
 endif()
 
-pylabhub_register_test_for_staging(TARGET test_layer3_pattern4)
-
-gtest_discover_tests(test_layer3_pattern4
-    PROPERTIES
-        FIXTURES_REQUIRED Guardrails
-        LABELS "layer3;pattern4"
-    DISCOVERY_TIMEOUT 60
-)
+pylabhub_add_gtest(TARGET test_layer3_pattern4
+    LABELS "layer3;pattern4"
+    DISCOVERY_TIMEOUT 60)
 
 message(STATUS "** Layer 3 Pattern-4 reference tests configured.")
