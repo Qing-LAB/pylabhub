@@ -230,8 +230,11 @@ std::unique_ptr<ShmQueue> ShmQueue::create_reader_standby(
 std::unique_ptr<ShmQueue> ShmQueue::create_reader(pylabhub::hub::ChannelTopology topology,
                                                   RxCreateOptions opts)
 {
-    using pylabhub::hub::ChannelTopology;
-    if (topology == ChannelTopology::FanIn)
+    // Canonical topology × transport legality predicate (single
+    // encoding; HEP-CORE-0017 §4.7.0.3 rule 1 discipline applied to
+    // the transport axis).  Defence-in-depth below the hub::Queue
+    // factory gate — this concrete class refuses on direct use too.
+    if (!pylabhub::hub::topology::transport_compatible(topology, "shm"))
     {
         LOGGER_ERROR("[hub::ShmQueue::create_reader] fan-in requires ZMQ "
                      "transport (SHM is host-local + single-producer by "
@@ -253,8 +256,9 @@ std::unique_ptr<ShmQueue> ShmQueue::create_reader(pylabhub::hub::ChannelTopology
 std::unique_ptr<ShmQueue> ShmQueue::create_writer(pylabhub::hub::ChannelTopology topology,
                                                   TxCreateOptions opts)
 {
-    using pylabhub::hub::ChannelTopology;
-    if (topology == ChannelTopology::FanIn)
+    // Canonical topology × transport legality predicate — see
+    // create_reader above.
+    if (!pylabhub::hub::topology::transport_compatible(topology, "shm"))
     {
         LOGGER_ERROR("[hub::ShmQueue::create_writer] fan-in requires ZMQ "
                      "transport (SHM is host-local + single-producer by "

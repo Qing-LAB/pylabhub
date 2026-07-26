@@ -54,14 +54,17 @@ std::optional<Transport> transport_from_string(std::string_view s) noexcept
 std::unique_ptr<QueueReader> Queue::create_reader(ChannelTopology topology, Transport transport,
                                                   RxOptions opts)
 {
-    // Gate 1: fan-in requires ZMQ (SHM is host-local single-producer).
-    // §3.3.0 decision matrix: SHM never binds a fan-in socket.
-    if (topology == ChannelTopology::FanIn && transport == Transport::Shm)
+    // Gate 1: topology × transport legality via the canonical
+    // predicate (single encoding — HEP-CORE-0017 §4.7.0.3 rule 1
+    // discipline applied to the transport axis).  Today the only
+    // incompatible cell is fan-in × SHM: SHM is host-local
+    // single-producer, and fan-in requires N producers to the same
+    // consumer, which only ZMQ PULL-bind supports.
+    if (transport == Transport::Shm && !topology::transport_compatible(topology, "shm"))
     {
-        LOGGER_ERROR("hub::Queue::create_reader — fan-in topology is not compatible "
-                     "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).  SHM is "
-                     "physically single-producer; fan-in requires N producers to "
-                     "the same consumer, which only ZMQ PULL-bind supports.");
+        LOGGER_ERROR("hub::Queue::create_reader — topology '{}' is not compatible "
+                     "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).",
+                     topology::to_string(topology));
         return nullptr;
     }
 
@@ -102,11 +105,13 @@ std::unique_ptr<QueueReader> Queue::create_reader(ChannelTopology topology, Tran
 std::unique_ptr<QueueWriter> Queue::create_writer(ChannelTopology topology, Transport transport,
                                                   TxOptions opts)
 {
-    // Gate 1: same as reader — fan-in producer via SHM is disallowed.
-    if (topology == ChannelTopology::FanIn && transport == Transport::Shm)
+    // Gate 1: same as reader — canonical topology × transport
+    // legality predicate.
+    if (transport == Transport::Shm && !topology::transport_compatible(topology, "shm"))
     {
-        LOGGER_ERROR("hub::Queue::create_writer — fan-in topology is not compatible "
-                     "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).");
+        LOGGER_ERROR("hub::Queue::create_writer — topology '{}' is not compatible "
+                     "with SHM transport (HEP-CORE-0017 §3.3.0 gate 1).",
+                     topology::to_string(topology));
         return nullptr;
     }
 

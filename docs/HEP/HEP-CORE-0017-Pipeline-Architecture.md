@@ -160,10 +160,10 @@ producer.
 > APIs) is superseded by single-bind-single-connect per topology.
 > The `ProducerEntry::zmq_node_endpoint` per-producer field retires;
 > it becomes `ChannelEntry::data_endpoint` (scalar, owned by binding
-> side).  Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-> (status: DESIGN LOCKED).  Downstream consumers of this section
-> (HEP-CORE-0007, HEP-CORE-0033, HEP-CORE-0036 amendments) reflect
-> the new terminology.
+> side).  Design authority: §3.3.0 (the binding matrix) + §4.7.0.1/§4.7.0.3
+> (the owner-first contract and its lifecycle machine) in THIS HEP.
+> Downstream consumers of this section (HEP-CORE-0007, HEP-CORE-0033,
+> HEP-CORE-0036 amendments) reflect the new terminology.
 
 ### 3.3.0 Topology-parameterized model (2026-07-08 amendment)
 

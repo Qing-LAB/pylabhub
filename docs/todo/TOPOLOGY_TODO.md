@@ -317,42 +317,33 @@ adding more callers of the accessors).
 **Success:** Both factory paths compile + pass tests.  Existing L4
 tests still use legacy factories and still pass.
 
-### Phase D — R6 gate symmetrization
+### ~~Phase D — R6 gate symmetrization~~ — ❌ RETIRED 2026-07-25 (checklist dispositioned 2026-07-26)
 
-Adds "pending REG_REQ" mechanism per tech draft §5.4 — dialing side
-pends until binding side is Live + endpoint resolved + allowlist
-confirmed.  Wire additions: `role_registration_version` capture,
-wake events, timeout handling.
+The pend-REG mechanism was superseded wholesale by the owner-first
+contract (HEP-0017 §4.7.0.1 + the §4.7.0.3 channel-lifecycle machine:
+the broker never pends; the dialer's role host retries the immediate
+`AWAITING_OWNER` reply).  Per-item disposition of the old checklist —
+nothing here remains open:
 
-**Files:**
-- [ ] `src/utils/ipc/broker_service.cpp` — Add pending queue for
-  dialing-side REG_REQs.  Add wake events: ENDPOINT_UPDATE_REQ
-  ACK, CHANNEL_AUTH_APPLIED_REQ ACK, HEARTBEAT arrival.
-  Re-evaluate pending REGs on each event.  Redirect
-  `CHANNEL_AUTH_CHANGED_NOTIFY` target based on topology (fan-in
-  → consumer, fan-out → producer).  Emit `phase` field on NOTIFY.
-- [ ] `src/utils/ipc/broker_service.cpp` — Emit `CHANNEL_CLOSED`
-  when binding side disconnects with pending REG_REQs.  (Only
-  becomes reachable in Phase D.)
-- [ ] `src/utils/ipc/broker_service.cpp` — Fan-in consumer-first
-  create: `handle_consumer_reg_req` allows channel creation when
-  no channel exists AND `channel_topology="fan-in"` explicit.
-- [ ] Wire `ChannelEntry::data_endpoint` + `resolved` via
-  ENDPOINT_UPDATE_REQ handler (broker-side accessor calls that
-  were dead through Phase B).
-- [ ] Wire `set_confirmed_version` on CHANNEL_AUTH_APPLIED_REQ.
-- [ ] `CONSUMER_REG_ACK` payload update — replace `producers[]`
-  array with scalar `data_endpoint` + `data_pubkey` per
-  HEP-0007 §12.3.
-- [ ] L3 broker-role integration tests — Add
-  `FanIn_ProducerRegReqBlocksUntilConsumerReady`,
-  `FanIn_ProducerRegReqDrainOnAllowlistApplied`,
-  `FanOut_ConsumerRegReqBlocksUntilProducerReady`.
-
-**Blocking:** Phase C queue factory live.
-
-**Success:** R6 gate provably blocks/unblocks correctly under both
-topology directions.
+- Pending queue + wake events + `role_registration_version` capture —
+  **RETIRED, never build** (replaced by the `AWAITING_OWNER` retry).
+- Emit `CHANNEL_CLOSED` on binding-side death with pending REGs —
+  **RETIRED with the pend design** (no pending REGs exist; HEP-0007
+  §12.4a row struck 2026-07-26).
+- Topology-aware `CHANNEL_AUTH_CHANGED_NOTIFY` target + `phase` field —
+  **SHIPPED** via the D-phase-field slice (see table row above).
+- Fan-in consumer-first create — **SHIPPED 2026-07-11** (HEP-0036
+  §6.6.1 consumer-opens path).
+- `ChannelEntry::data_endpoint` wiring via ENDPOINT_UPDATE_REQ —
+  **SHIPPED** (HEP-0021 §16 adoption).
+- `set_confirmed_version` on CHANNEL_AUTH_APPLIED_REQ — **SHIPPED**
+  (HEP-0042 §5.5.2 unified ledger).
+- `CONSUMER_REG_ACK` scalar `data_endpoint` + `data_pubkey` —
+  **SHIPPED** (HEP-0036 §I7 / §5.2 amendment).
+- The three block-until-ready L3 tests — **superseded**: blocking
+  never happens; the equivalent coverage is the `AWAITING_OWNER`
+  re-pin (L3) + the L4 producer-first-spawn keystone parked on
+  Phase F.
 
 ### Phase E — Retirements
 
@@ -436,7 +427,7 @@ scope.  Each requires infrastructure from the phase noted.
 
 | Finding | Phase | Why not Phase B rev 1 |
 |---|---|---|
-| **#11 `CHANNEL_CLOSED` unreachable** — HEP-0007 §12.4a catalogs but no emission site. | D | Depends on #12 pending REG_REQ mechanism. |
+| ~~**#11 `CHANNEL_CLOSED` unreachable**~~ | ❌ RETIRED with D-R6 (2026-07-26) | The code was only ever reachable from the retired pend mechanism; HEP-0007 §12.4a row struck (never emitted). |
 | ~~**#12 No REG_REQ pending / `role_registration_version` capture**~~ | ❌ RETIRED with D-R6 (2026-07-25) | The broker never pends (HEP-0017 §4.7.0.1 C4); ordering robustness is the S1 `AWAITING_OWNER` role-host retry, shipped 2026-07-26. |
 | ~~**#13 Consumer-first-create for fan-in**~~ | ✅ RESOLVED | Consumer-opens path shipped 2026-07-11 (HEP-0036 §6.6.1); the remaining dialing-side hard-`CHANNEL_NOT_FOUND` became the retryable `AWAITING_OWNER` with S1 (2026-07-26). |
 | ✅ **#14 `CONSUMER_REG_ACK` still emits legacy `producers[]` array** | C step 2 rev 2.3 | Shipped `b71dd9ec` — unified peer-list wire shape (array of `{role_uid, endpoint, pubkey_z85}` objects); dialing-side ACK carries scalar `data_endpoint`/`data_pubkey` per HEP-CORE-0007 §12.3. |

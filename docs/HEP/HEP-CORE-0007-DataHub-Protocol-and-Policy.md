@@ -726,12 +726,12 @@ and `DatahubSlotDrainingTest.SyncReaderRingFullBlocksNotDraining`.
 > (§12.4a).  `GET_CHANNEL_PRODUCERS_REQ` +
 > `CHANNEL_PRODUCERS_CHANGED_NOTIFY` retire — the REG_REQ path
 > subsumes their function under the new binding/dialing model.
-> See HEP-CORE-0017 §3.3 + §4.6 for the architectural rewrite,
-> HEP-CORE-0036 §6.5 for the extended NOTIFY semantics, and
-> `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` for the
-> full design.  Amendment scope is coordinated across nine HEPs
-> (0007, 0017, 0021, 0023, 0028, 0033, 0036, 0042, 0044) — see the
-> tech draft §11.4 for the coordination table.
+> See HEP-CORE-0017 §3.3 + §4.6 + §4.7 for the architectural
+> rewrite (the full design is permanent there — §3.3.0 binding
+> matrix, §4.7.0.1 establishment contract, §4.7.0.3 lifecycle
+> machine) and HEP-CORE-0036 §6.5 for the extended NOTIFY
+> semantics.  Amendment scope was coordinated across nine HEPs
+> (0007, 0017, 0021, 0023, 0028, 0033, 0036, 0042, 0044).
 
 This section is the authoritative reference for the **ZMQ control plane** — all broker
 protocol messages, unsolicited notifications, and how they flow through the system
@@ -1704,7 +1704,7 @@ same change.
 | `FAN_IN_IS_SINGLE_CONSUMER` | Second `CONSUMER_REG_REQ` on a `channel_topology == "fan-in"` channel.  Fan-in permits N producers → exactly 1 consumer per HEP-CORE-0017 §3.3.  Cardinality check fires synchronously at REG_REQ entry before any state mutation — the second consumer's REG_REQ does NOT bump `channel_version` or leave allowlist residue.  **New 2026-07-08.** | Programming error: fan-in channels are single-consumer by definition.  Use a different channel name if you need a second sink; use fan-out or a bespoke pipeline topology otherwise. |
 | `FAN_OUT_IS_SINGLE_PRODUCER` | Second `REG_REQ` on a `channel_topology == "fan-out"` channel.  Fan-out permits exactly 1 producer → N consumers per HEP-CORE-0017 §3.3.  Same synchronous-check semantics as `FAN_IN_IS_SINGLE_CONSUMER`.  **New 2026-07-08.** | Programming error.  Fan-out is single-source by definition.  Use fan-in if multiple upstream producers converge; use a distinct channel for a second producer's stream. |
 | `ONE_TO_ONE_CARDINALITY_VIOLATED` | Second `REG_REQ` OR second `CONSUMER_REG_REQ` on a `channel_topology == "one-to-one"` channel.  Both sides are cardinality-1 in this topology.  Same synchronous-check semantics.  **New 2026-07-08.** | Programming error.  Use fan-in / fan-out for higher-cardinality needs; 1-to-1 exists for the strict single-producer-single-consumer pattern. |
-| `CHANNEL_CLOSED` | REG_REQ / CONSUMER_REG_REQ that was pending in the R6 gate when the binding side died (heartbeat timeout, DEREG, or crash).  Broker resolves ALL pending REG_REQs for the torn-down channel with this code (tech draft §5.4a).  **New 2026-07-08 (topology migration).** | Transient error.  MAY retry after a backoff (analogous to pre-first-heartbeat REG_REQs today).  If retries continue to see CHANNEL_CLOSED, the binding side may be flapping or misconfigured. |
+| ~~`CHANNEL_CLOSED`~~ | **RETIRED 2026-07-26 — never emitted.**  Was specified as the resolution code for registrations held pending in the R6 broker-pend gate when the binding side died.  The R6 pend design itself was retired (the broker never pends a registration — HEP-CORE-0017 §4.7.0.3); a registration that races a teardown gets `AWAITING_OWNER` (the reply is a pure function of the machine's state), and no code path emits `CHANNEL_CLOSED`. | n/a (code retired with the R6 pend design; superseded by `AWAITING_OWNER`). |
 | `UID_CONFLICT` | REG_REQ / CONSUMER_REG_REQ carrying a `role_uid` that already exists in HubState — regardless of whether the existing entry is active (HEP-CORE-0023 §2.1 Connected/Pending) or stale-residue.  Proper uid construction (`tag.name.unique` per HEP-CORE-0033 §G2.2.0b) makes a same-uid collision effectively impossible, so any collision indicates either bookkeeping residue (hub-side bug) or a remote-side breach/violation.  Broker logs at `LOGGER_ERROR`. | Retry with a clean state — if your role process restarted, regenerate a fresh `unique` component for the uid.  Persistent failures after restart mean hub-side residue (file a bug). |
 | `SCHEMA_HASH_MISMATCH_SELF` | Same `(role_uid, schema_id)` re-registered with a different schema_hash (HEP-CORE-0034 §8 namespace-by-owner self-conflict). | Reconcile your own producer's schema; do not re-register conflicting versions under the same id. |
 | `SCHEMA_ID_MISMATCH` | CONSUMER_REG_REQ with `expected_schema_id` that disagrees with the producer's stored schema_id. | Programming error or version drift; reconcile expected schema_id. |

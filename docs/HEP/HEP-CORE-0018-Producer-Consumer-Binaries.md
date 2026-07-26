@@ -81,12 +81,11 @@
 > A (commits `007b749d..c920938d`); this rev 3 (2026-07-08 evening)
 > closes an oversight — HEP-0018 §5 was not in the original
 > amendment table despite being the config authority for the wire
-> fields those amendments define.  Design authority:
-> `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` (status:
-> DESIGN LOCKED, rev 9) — Q3a "REQUIRED, no lenient default"
-> supersedes to "OPTIONAL, default `one-to-one`" per user
-> direction 2026-07-08 evening (rev 10 update pending).  Wire
-> schema authoritative in HEP-CORE-0007 §12.3.
+> fields those amendments define.  Design authority: HEP-CORE-0017
+> §3.3.0 + §4.7.  The `channel_topology` declaration is OPTIONAL
+> with default `one-to-one` (ratified 2026-07-08; supersedes the
+> earlier "REQUIRED, no lenient default" position).  Wire schema
+> authoritative in HEP-CORE-0007 §12.3.
 >
 > Pre-existing doc drift also fixed: §5.1 example JSON showed
 > `"channel"` at top level, but the actual parser reads

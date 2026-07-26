@@ -23,10 +23,10 @@
 > disconnects" (per topology).  Four wire retirements at §18.2:
 > `GET_CHANNEL_PRODUCERS_REQ`, `CHANNEL_PRODUCERS_CHANGED_NOTIFY`,
 > `CONSUMER_ATTACH_REQ_ZMQ/_ACK_ZMQ`, `CONSUMER_ATTACH_REQ_SHM`.
-> Six new error codes at HEP-CORE-0007 §12.4a.  See tech draft
-> `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md` (status:
-> DESIGN LOCKED) for the full design; §11.4 lists all nine
-> coordinated HEP amendments.
+> Six new error codes at HEP-CORE-0007 §12.4a.  The full design is
+> permanent in HEP-CORE-0017 (§3.3.0 binding matrix + §4.7
+> owner-first contract and lifecycle machine); the amendment
+> package spanned nine coordinated HEPs.
 
 ---
 

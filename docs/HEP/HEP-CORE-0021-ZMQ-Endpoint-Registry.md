@@ -811,9 +811,9 @@ notice of 2026-06-12).  Amendment closes task #94.
 > "binding side of the channel's topology."  Mechanism unchanged
 > — same state machine, same mid-life rules, same R6 extension
 > semantics.  Only the SIDE varies by topology.  Design
-> authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-> (status: DESIGN LOCKED); §11.4 lists the coordinated amendment
-> package.
+> authority: HEP-CORE-0017 §3.3.0 (binding matrix) + §4.7.0.3
+> (channel-lifecycle machine — the binding side is the channel's
+> OWNER).
 
 ### 16.1 What this section does
 

@@ -27,10 +27,10 @@
 > were tied to the pre-attach coordination protocol which retires
 > per HEP-CORE-0042 scope narrowing.
 >
-> Design authority: `docs/tech_draft/DRAFT_topology_singular_side_2026-07.md`
-> (status: DESIGN LOCKED).  See tech draft §7.6 for the
+> Design authority: HEP-CORE-0017 §3.3.0 + §4.7.  The
 > mechanism-vs-policy rationale (framework provides accurate
-> mechanisms, script decides policy).
+> mechanisms, script decides policy) is normative in HEP-CORE-0017
+> §4.7.0.2 T5 + §4.7.6.
 
 ---
 
