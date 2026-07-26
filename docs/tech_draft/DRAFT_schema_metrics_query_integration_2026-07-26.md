@@ -124,12 +124,19 @@ different and the flow must be stated:**
   start reading.  This is semantically sound by construction: no
   producer ⇒ no data ⇒ no format needed yet.  (Fan-out/1:1 dialing
   consumers keep the simpler pull-right-after-own-REG flow of S-A.)
-- *One adopt-path verification required (G7):* the producer's schema
-  filing must land on the CHANNEL record (not only the schema
-  registry) when the channel's stored invariants are empty, so the
-  channel-form pull serves fan-in channels opened schema-less.  The
-  legacy-adopt path suggests it does; pin it with an L2 test in
-  slice 1.
+- *CORRECTED after code verification (2026-07-26): this flow does NOT
+  work today — the first draft overstated it.*  The schema validator
+  enforces EXACT equality on every axis and **empty matches only
+  empty** (`_validate_schema_citation`: fingerprint always; id
+  "anonymous matches only anonymous").  A fan-in channel opened blank
+  therefore REJECTS every schema-carrying producer with
+  SCHEMA_MISMATCH — there is no adopt-onto-blank path anywhere.  This
+  is deliberate strictness, not a bug: today's production fan-in
+  consumers always cite from config, so blank-open never occurs in
+  practice.  Consequence: **S-A2 is NOT viable without new, designed
+  adopt semantics (G7, hardened) — or it is cut from scope and
+  generic roles under fan-in require the owner to cite.**  ⚖ user
+  decision.
 
 ### S-B  Pre-flight citation (config-light but verifying consumer)
 
@@ -310,6 +317,20 @@ producer, so the schema arrives later — pull at first-producer-join);
 registry tooling reads by `(owner, schema_id)`; re-verification on
 demand.  Same division of labor as allowlist-seed vs. auth-pull.
 
+**Who knows what, when (trust sequence — ratified in review
+2026-07-26).**  The BLDS is delivered ONLY inside a success ACK, which
+means only after the role has passed every gate: CURVE transport
+authentication, the known-role identity binding, and admission
+validation (topology, cardinality, citation checks where cited).  A
+party that is unauthenticated, unknown, or rejected never receives
+structure.  The consumer's prior knowledge can be as small as the
+FINGERPRINT (its config pin) or nothing at all; the verification chain
+on receipt is: config pin (if present) → delivered BLDS must hash to
+it → (SHM) the same fingerprint must equal the segment header's
+stamped hashes before mapping.  Broker's claim, consumer's
+expectation, and physical memory must all agree; any disagreement is a
+startup abort that names the mismatched pair.
+
 ---
 
 ## 3. Gap register
@@ -322,7 +343,7 @@ demand.  Same division of labor as allowlist-seed vs. auth-pull.
 | **G3** | **Neither handler checks the caller.**  `SCHEMA_REQ`/`METRICS_REQ` answer any CURVE-authenticated known role about any channel.  Compare: `GET_CHANNEL_AUTH` is binding-side-gated, `GET_CHANNEL_PRODUCERS` was consumer-gated — the project's blast-radius discipline gates reads. | Design decision | (a) Member-gate both channel-form queries (caller must hold a presence on the channel — `is_role_registered_on_channel` exists); all-channels METRICS form becomes hub-script/admin-only (wire form requires `channel_name`).  (b) Leave open to all known roles (metrics/schemas are observability/structure, not secrets — hostnames/pids/SHM names are the only mild recon surface). | **(a)** — matches least-privilege precedent, and every v1 scenario (S-A…S-E) pulls only channels the caller is registered on.  The (owner,id) SCHEMA form stays known-role-open (the registry is shared infrastructure, and hub-globals have no channel to be member of).  Loosening later for an observer role is a deliberate #292-era grant, not a default. ⚖ |
 | **G5** | Freshness/lifetime semantics are implicit. | Doc | Write into the integration: metrics freshness = heartbeat cadence; schema validity = channel lifetime (S-D); pull-at-establishment pattern; fan-in dual-lifetime rule (channel form for consumers, owner/id form for tooling); SHM cross-verification rule (pulled BLDS fingerprint MUST match the DataBlock header hashes before mapping — S-A refinement). | Fold into HEP-0034 §10.3 + HEP-0019 when the slice lands. |
 | **G6** | No typed bodies for either message (JSON handlers). | Tracked | Already on the HEP-0046 EnvelopeOnly follow-on list; add `SchemaReqBody`/`MetricsReqBody` when giving them clients (the natural moment). | Do with slice 1. |
-| **G7** | Fan-in schema-less open: confirm the first producer's schema ADOPTS onto the empty channel record (not only into the registry), so the channel-form pull serves S-A2.  Same question for PARTIAL owner citations (named-without-structure: the owner pins hash+id but no BLDS — does the first matching producer's BLDS fill the record so the channel-form pull can serve structure?). | Verify + pin | L2 tests: (a) open fan-in uncited → producer joins with schema → `SCHEMA_REQ(channel)` returns the producer's BLDS; (b) open fan-in hash-only → matching producer joins → same pull returns structure. | Pin in slice 1. |
+| **G7** | **HARDENED after code verification: adopt-onto-blank does NOT exist.**  The validator's exact-equality contract (empty↔empty only) means a blank-opened fan-in channel rejects all schema-carrying producers; mixed blank/cited combinations reject in BOTH directions (also verified: an empty-schema producer cannot join a cited channel; a citing consumer cannot join a blank legacy channel).  S-A2 (generic fan-in OWNER) is not achievable today. | Design decision, not a pin | (a) Design adopt semantics: a blank channel record accepts the FIRST self-consistent schema-carrying producer, whose schema becomes the contract (one-way fill, still immutable afterwards) — extends the §4.7.0.3 machine's join row with a "fill-if-blank" clause.  (b) CUT S-A2 from scope: generic roles under fan-in require a citing owner (from-channel stays consumer-side + fan-out/1:1 only). | ⚖ user ruling.  (b) is the smaller, stricter system; (a) is more permissive and needs its own review (who may fill, race between two first producers, interaction with G8). |
 | **G8** | **Fan-in owner's citation is admitted UNVALIDATED (found 2026-07-26 answering "what if the fan-in consumer comes WITH a schema?").**  The self-consistency pre-check (`verify_request_fingerprint`: declared hash must equal the hash recomputed from the declared structure) runs only on the JOIN branch — the whole validation block is guarded by `!consumer_will_open_channel`.  An owner whose config carries a stale/typo'd hash next to an edited BLDS opens the channel with an INTERNALLY INCONSISTENT contract; every honest producer is then rejected `SCHEMA_MISMATCH` against the broken hash, and no diagnostic points at the owner's config.  Violates the machine's spirit: the reject lands on the wrong party. | Real defect (pre-existing; surfaced by this design review) | Run the SAME `verify_request_fingerprint` self-consistency check on the open path when the owner cites structure (`FINGERPRINT_INCONSISTENT` before the book opens — symmetric with the producer-side REG check).  Named-without-structure citations have nothing to recompute and stay as-is. | Fix + L2 pin in slice 1 (small, uses the existing helper one branch away). |
 
 **Conflicts detected: none against the lifecycle machine.**  Two
