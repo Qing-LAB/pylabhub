@@ -158,6 +158,139 @@ TEST_F(Pattern4BrokerConsumerTest, ConsumerReg_NoOwnerYet_AwaitingOwner)
     broker.signal_quit();
 }
 
+// ─── SI-1/SI-2 owner-open validation (schema/metrics integration design,
+//     ratified 2026-07-26): the fan-in OWNER must declare the channel
+//     schema at open, and the open row validates what it installs. ─────
+
+TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_NoSchema_Rejected)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "cons.blankowner" + suffix;
+    const std::string channel = "consumer.blank_open" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("bc_blank_open");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto cons = make_wire_client(ctx, setup, uid);
+    // fan-in topology + NO citation: would open a blank contract that the
+    // exact-equality matcher then holds against every producer.
+    auto resp = cons.request("CONSUMER_REG_REQ", consumer_reg_body(setup, channel, uid, "fan-in"),
+                             "CONSUMER_REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value()) << "CONSUMER_REG_REQ timed out";
+    EXPECT_EQ(resp->value("status", std::string{}), "error");
+    EXPECT_EQ(resp->value("error_code", std::string{}), "SCHEMA_REQUIRED")
+        << "body=" << resp->dump();
+    // Side-effect check: the reject must leave NO book (a later owner
+    // open must still be a fresh open).
+    auto retry = cons.request("CONSUMER_REG_REQ", consumer_reg_body(setup, channel, uid, "fan-in"),
+                              "CONSUMER_REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(retry.has_value());
+    EXPECT_EQ(retry->value("error_code", std::string{}), "SCHEMA_REQUIRED");
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_InconsistentFingerprint_Rejected)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "cons.badfp" + suffix;
+    const std::string channel = "consumer.bad_fp_open" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("bc_bad_fp_open");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto cons = make_wire_client(ctx, setup, uid);
+    auto body = consumer_reg_body(setup, channel, uid, "fan-in");
+    // Structure + a syntactically valid but WRONG fingerprint (the G8
+    // config-typo case): must be refused BEFORE the book opens, at the
+    // owner — not later at every innocent producer.
+    body["expected_schema_blds"] = "ts:f64:1:0";
+    body["expected_schema_packing"] = "aligned";
+    body["expected_schema_hash"] = std::string(128, 'a');
+    auto resp = cons.request("CONSUMER_REG_REQ", body, "CONSUMER_REG_ACK",
+                             milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value()) << "CONSUMER_REG_REQ timed out";
+    EXPECT_EQ(resp->value("status", std::string{}), "error");
+    EXPECT_EQ(resp->value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT")
+        << "body=" << resp->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_ValidCitation_ProducerJoinsByContract)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "consumer.owner_contract" + suffix;
+    const std::string cons_uid = "cons.owner" + suffix;
+    const std::string prod_ok = "prod.match" + suffix;
+    const std::string prod_bad = "prod.drift" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("bc_owner_contract");
+    const auto setup = make_pattern4_setup({cons_uid, prod_ok, prod_bad});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    // Owner opens with the standard self-consistent test citation.
+    auto owner = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_fanin_owner(owner, setup, channel, cons_uid));
+
+    // Matching producer (same anonymous structure ⇒ same fingerprint,
+    // computed with the SAME canonical helper) is admitted — SI-3 join
+    // row against the owner's installed contract.
+    const std::string blds = "ts:f64:1:0";
+    const std::string packing = "aligned";
+    const auto fp =
+        pylabhub::hub::verify_request_fingerprint(blds, packing, "", "", /*claimed=*/"");
+    const std::string good_hash = pylabhub::format_tools::bytes_to_hex(
+        {reinterpret_cast<const char *>(fp.hash.data()), fp.hash.size()});
+    auto ok = make_wire_client(ctx, setup, prod_ok);
+    auto ok_body = producer_reg_body(setup, channel, prod_ok, /*shm=*/false, "fan-in");
+    ok_body["schema_blds"] = blds;
+    ok_body["schema_packing"] = packing;
+    ok_body["schema_hash"] = good_hash;
+    auto ok_resp = ok.request("REG_REQ", ok_body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ok_resp.has_value());
+    EXPECT_EQ(ok_resp->value("status", std::string{}), "success") << "body=" << ok_resp->dump();
+
+    // Drifted producer (different structure, self-consistent material)
+    // is rejected against the owner's contract with SCHEMA_MISMATCH —
+    // the reject lands on the drifted party, channel untouched.
+    const std::string blds2 = "ts:f64:1:0|extra:u32:1:0";
+    const auto fp2 =
+        pylabhub::hub::verify_request_fingerprint(blds2, packing, "", "", /*claimed=*/"");
+    const std::string bad_hash = pylabhub::format_tools::bytes_to_hex(
+        {reinterpret_cast<const char *>(fp2.hash.data()), fp2.hash.size()});
+    auto bad = make_wire_client(ctx, setup, prod_bad);
+    auto bad_body = producer_reg_body(setup, channel, prod_bad, /*shm=*/false, "fan-in");
+    bad_body["schema_blds"] = blds2;
+    bad_body["schema_packing"] = packing;
+    bad_body["schema_hash"] = bad_hash;
+    auto bad_resp =
+        bad.request("REG_REQ", bad_body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(bad_resp.has_value());
+    EXPECT_EQ(bad_resp->value("status", std::string{}), "error");
+    EXPECT_EQ(bad_resp->value("error_code", std::string{}), "SCHEMA_MISMATCH")
+        << "body=" << bad_resp->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4BrokerConsumerTest, ConsumerReg_HappyPath)
 {
     using namespace std::chrono;

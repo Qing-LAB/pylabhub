@@ -126,6 +126,11 @@ class Pattern4AttachCoordinationTest : public IsolatedProcessTest
         in.zmq_pubkey = pubkey;
         in.channel_topology = channel_topology;
         auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        // Fan-in producers join an owner-opened channel and must match
+        // its installed contract (SI-3/SI-4) — same material as
+        // `apply_owner_citation` used at the open.
+        if (channel_topology == "fan-in")
+            pylabhub::tests::pattern4::apply_matching_producer_schema(payload);
         auto reply = client.request("REG_REQ", payload, "REG_ACK",
                                     std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "producer REG_REQ: no reply";
@@ -190,6 +195,11 @@ class Pattern4AttachCoordinationTest : public IsolatedProcessTest
         // channel; producers dial in afterwards).
         in.channel_topology = topology;
         auto payload = pylabhub::hub::build_consumer_reg_payload(in);
+        // Fan-in OWNER open requires the schema declaration (SI-1
+        // Option B; SCHEMA_REQUIRED otherwise) — self-consistent by
+        // construction per SI-2.
+        if (topology == "fan-in")
+            pylabhub::tests::pattern4::apply_owner_citation(payload);
         auto reply = client.request("CONSUMER_REG_REQ", payload, "CONSUMER_REG_ACK",
                                     std::chrono::milliseconds{kLongTimeoutMs});
         ASSERT_TRUE(reply.has_value()) << "consumer REG_REQ: no reply";

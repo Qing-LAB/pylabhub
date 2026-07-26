@@ -217,6 +217,44 @@ class Pattern4WireTest : public pylabhub::tests::IsolatedProcessTest
             *out_ack = *reply;
     }
 
+    /// Fan-in PRODUCER join: REG_REQ with topology="fan-in" AND the
+    /// schema material matching `register_fanin_owner`'s contract
+    /// (SI-3/SI-4: a producer joining a format-carrying channel must
+    /// present the matching format).
+    void register_fanin_producer(BrokerWireClient &client, const Pattern4Setup &setup,
+                                 const std::string &channel, const std::string &uid,
+                                 nlohmann::json *out_ack = nullptr)
+    {
+        auto body = producer_reg_body(setup, channel, uid, /*shm=*/false, "fan-in");
+        apply_matching_producer_schema(body);
+        auto reply = client.request("REG_REQ", body, "REG_ACK",
+                                    std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "REG_REQ (fan-in producer) timed out for " << uid;
+        ASSERT_EQ(reply->value("status", std::string{}), "success")
+            << "fan-in producer join failed for " << uid << "; body=" << reply->dump();
+        if (out_ack != nullptr)
+            *out_ack = *reply;
+    }
+
+    /// Fan-in OWNER open: CONSUMER_REG_REQ with topology="fan-in" AND
+    /// the mandatory owner citation (SI-1 Option B — a material-free
+    /// fan-in open is rejected SCHEMA_REQUIRED; SI-2 — the citation is
+    /// self-consistent by construction via `apply_owner_citation`).
+    void register_fanin_owner(BrokerWireClient &client, const Pattern4Setup &setup,
+                              const std::string &channel, const std::string &uid,
+                              nlohmann::json *out_ack = nullptr)
+    {
+        auto body = consumer_reg_body(setup, channel, uid, /*topology=*/"fan-in");
+        apply_owner_citation(body);
+        auto reply = client.request("CONSUMER_REG_REQ", body, "CONSUMER_REG_ACK",
+                                    std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "CONSUMER_REG_REQ (fan-in owner) timed out for " << uid;
+        ASSERT_EQ(reply->value("status", std::string{}), "success")
+            << "fan-in owner open failed for " << uid << "; body=" << reply->dump();
+        if (out_ack != nullptr)
+            *out_ack = *reply;
+    }
+
     std::vector<std::filesystem::path> paths_to_clean_;
 };
 

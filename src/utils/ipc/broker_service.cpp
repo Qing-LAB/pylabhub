@@ -2434,6 +2434,43 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
             final_schema_owner = role_uid;
         }
     }
+    else if (!schema_blds_in.empty() || !body.flexzone_blds().empty())
+    {
+        // SI-2 (schema/metrics integration design, G8b) — ANONYMOUS
+        // producer (no schema_id) carrying schema STRUCTURE.  The
+        // named path above validates completeness + self-consistency;
+        // this path used to skip straight to the invariant fill, so a
+        // fresh channel could open with an inconsistent hash/structure
+        // pair, or with structure and no hash at all (an unciteable
+        // channel — every honest citer recomputes a real fingerprint
+        // and is rejected against the empty one).  The open row
+        // validates the contract it installs: structure present ⇒
+        // packing + hash present and self-consistent.  (Hash WITHOUT
+        // structure stays legal — the legacy fingerprint-only
+        // registration; the join gate still compares it exactly.)
+        if (!schema_blds_in.empty() && req_schema_packing.empty())
+            return make_error(corr_id, "MISSING_PACKING",
+                              "REG_REQ with schema_blds requires schema_packing "
+                              "(HEP-CORE-0034 §6.3)");
+        if (attempted_schema.empty())
+            return make_error(corr_id, "MISSING_HASH",
+                              "REG_REQ with schema structure requires schema_hash — "
+                              "the installed contract must carry its fingerprint "
+                              "(SI-2)");
+        const auto fp_check = pylabhub::hub::verify_request_fingerprint(
+            schema_blds_in, req_schema_packing, body.flexzone_blds(), body.flexzone_packing(),
+            attempted_schema);
+        if (!fp_check.consistent)
+        {
+            LOGGER_WARN("Broker: REG_REQ for '{}' rejected — anonymous schema structure "
+                        "does not hash to schema_hash (SI-2 / HEP-CORE-0034 §6.3)",
+                        channel_name);
+            return make_error(corr_id, "FINGERPRINT_INCONSISTENT",
+                              "schema_hash does not match BLAKE2b-256 of "
+                              "canonical(schema_blds + packing) — anonymous "
+                              "registration structure must be self-consistent");
+        }
+    }
 
     // ── HEP-CORE-0027 inbox advertisement ──────────────────────────────
     //
@@ -3331,12 +3368,36 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     const bool has_any_expected = !expected_schema_id.empty() || !expected_hash_hex.empty() ||
                                   !expected_blds.empty() || !expected_packing.empty() ||
                                   !expected_fz_blds.empty() || !expected_fz_packing.empty();
-    if (!consumer_will_open_channel && has_any_expected)
+    // SI-1 Option B (schema/metrics integration design, ratified
+    // 2026-07-26): the fan-in consumer-OWNER always declares its
+    // schema — the book it opens (HEP-CORE-0017 §4.7.0.1 C1/C2)
+    // includes the channel's format, and dialers receive their view
+    // of it from the hub.  A material-free open would create a blank
+    // contract that the exact-equality matcher (empty matches only
+    // empty) then holds against every schema-carrying producer.
+    if (consumer_will_open_channel && !has_any_expected)
     {
-        // Step 1 (Job A) — resolve the joiner's fingerprint.  Required-field
-        // presence is mode-specific and stays here; the recompute +
-        // self-consistency is the shared pre-check (the ONE place a handler
-        // recomputes the wire hash — HEP-CORE-0034 §2.4 I4).
+        LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='SCHEMA_REQUIRED' "
+                    "role='{}' channel='{}' detail='fan-in owner must declare the "
+                    "channel schema at open'",
+                    role_uid, channel_name);
+        return make_error(corr_id, "SCHEMA_REQUIRED",
+                          "fan-in channel open requires a schema declaration — the "
+                          "owner establishes the channel's format (HEP-CORE-0017 "
+                          "§4.7.0.1 C1/C2)");
+    }
+
+    if (has_any_expected)
+    {
+        // Step 1 (Job A) — resolve the citer's fingerprint.  Runs for
+        // JOINERS and OPENERS alike (SI-2: the open row validates the
+        // contract it installs at least as strictly as the join row
+        // checks those who match it — closes the G8 hole where an
+        // owner's stale/typo'd config seeded an internally
+        // inconsistent contract).  Required-field presence is
+        // mode-specific and stays here; the recompute +
+        // self-consistency is the shared pre-check (the ONE place a
+        // handler recomputes the wire hash — HEP-CORE-0034 §2.4 I4).
         const bool named = !expected_schema_id.empty();
         const bool has_structure = !expected_blds.empty() || !expected_packing.empty();
         if (named && expected_hash_hex.empty())
@@ -3375,6 +3436,27 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
             joiner_hash = hex_to_fingerprint_array(expected_hash_hex);
         }
 
+        // SI-2 open-row rule: the installed contract must carry its
+        // fingerprint.  A joiner's anonymous citation may omit the hash
+        // (the broker recomputes it); an OPENER's citation becomes the
+        // channel record verbatim, and a hash-less record would reject
+        // every honest citer against an empty fingerprint.
+        if (consumer_will_open_channel && expected_hash_hex.empty())
+        {
+            return make_error(corr_id, "MISSING_HASH",
+                              "channel-open citation requires expected_schema_hash — "
+                              "the opened channel's contract must carry its "
+                              "fingerprint (HEP-CORE-0034 §10.3)");
+        }
+
+        if (consumer_will_open_channel)
+        {
+            // Opener: no stored invariants exist to match against — the
+            // now-validated citation BECOMES the invariants inside
+            // `_on_consumer_joined`.  Steps 2/3 are joiner-only.
+        }
+        else
+        {
         // Step 2/3 — channel match + named-registry via the single validator.
         pylabhub::hub::SchemaCitationInput sin;
         sin.channel_owner = channel_entry.schema_owner;
@@ -3400,8 +3482,13 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
                         channel_name, role_uid, code, vc.detail);
             return make_error(corr_id, code, vc.detail);
         }
+        }
     }
-    // else: opening the channel, or all expected_* empty (opt-out).
+    // else: all expected_* empty on a JOIN — the opt-out mode (SI-4:
+    // readers may opt out; the channel's integrity machinery holds
+    // regardless).  The material-free OPEN was rejected above (SI-1
+    // Option B), and a material-carrying OPEN was self-validated
+    // (SI-2) without a channel match (nothing stored to match yet).
 
     // Role identity is enforced by the CTRL ROUTER's ZAP handler at the
     // CURVE handshake (HEP-CORE-0035 §4.1); grammar already ran at handler

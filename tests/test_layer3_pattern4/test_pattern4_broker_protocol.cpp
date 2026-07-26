@@ -943,6 +943,69 @@ TEST_F(Pattern4BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
     broker.signal_quit();
 }
 
+// ─── SI-2 open-row validation, producer side (G8b — schema/metrics
+//     integration design, 2026-07-26): an ANONYMOUS producer carrying
+//     schema STRUCTURE must carry a matching fingerprint.  Hash-only
+//     registration (above) stays legal. ───────────────────────────────
+
+TEST_F(Pattern4BrokerProtocolTest, AnonymousReg_StructureWithoutHash_Rejected)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.si2.nohash" + suffix;
+    const std::string uid = "prod.si2.nohash" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_si2_nohash");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto p = make_wire_client(ctx, setup, uid);
+    auto body = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body["schema_blds"] = "ts:f64:1:0"; // structure, deliberately no hash
+    body["schema_packing"] = "aligned";
+    auto r = p.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->value("status", std::string{}), "error");
+    EXPECT_EQ(r->value("error_code", std::string{}), "MISSING_HASH") << "body=" << r->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, AnonymousReg_InconsistentFingerprint_Rejected)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.si2.badfp" + suffix;
+    const std::string uid = "prod.si2.badfp" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_si2_badfp");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto p = make_wire_client(ctx, setup, uid);
+    auto body = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body["schema_blds"] = "ts:f64:1:0";
+    body["schema_packing"] = "aligned";
+    body["schema_hash"] = std::string(128, 'a'); // valid hex, wrong value
+    auto r = p.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->value("status", std::string{}), "error");
+    EXPECT_EQ(r->value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT")
+        << "body=" << r->dump();
+
+    broker.signal_quit();
+}
+
 // ─── Transport arbitration (producer transport vs consumer data_transport) ─
 //
 // HEP-CORE-0036 §5b.6: `data_transport` is REQUIRED on CONSUMER_REG_REQ and

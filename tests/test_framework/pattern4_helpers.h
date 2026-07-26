@@ -36,6 +36,11 @@
 #include "curve_test_setup.h"
 #include "test_process_utils.h"
 
+#include "utils/format_tools.hpp"
+#include "utils/schema_utils.hpp" // verify_request_fingerprint (SI-2 test citations)
+
+#include <nlohmann/json.hpp>
+
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -44,6 +49,47 @@
 
 namespace pylabhub::tests::pattern4
 {
+
+/// Minimal self-consistent owner citation for fan-in channel-open wire
+/// tests.  SI-1 (Option B, 2026-07-26): the fan-in consumer-OWNER must
+/// declare the channel schema at open; SI-2: the material must be
+/// self-consistent.  The hash is computed with the SAME canonical
+/// fingerprint the broker recomputes (`verify_request_fingerprint`),
+/// so the pair is consistent by construction.  Anonymous mode (no
+/// schema_id) — matches the base helpers' anonymous producer style.
+/// Canonical 128-hex fingerprint for a test schema — computed with the
+/// SAME helper the broker uses (`verify_request_fingerprint`), so any
+/// material built from it is self-consistent by construction (SI-2).
+inline std::string test_schema_fingerprint_hex(const std::string &blds,
+                                               const std::string &packing)
+{
+    const auto fp = pylabhub::hub::verify_request_fingerprint(blds, packing, /*fz_blds=*/"",
+                                                              /*fz_packing=*/"",
+                                                              /*claimed_hash_hex=*/"");
+    return pylabhub::format_tools::bytes_to_hex(
+        {reinterpret_cast<const char *>(fp.hash.data()), fp.hash.size()});
+}
+
+inline void apply_owner_citation(nlohmann::json &body,
+                                 const std::string &blds = "ts:f64:1:0",
+                                 const std::string &packing = "aligned")
+{
+    body["expected_schema_blds"] = blds;
+    body["expected_schema_packing"] = packing;
+    body["expected_schema_hash"] = test_schema_fingerprint_hex(blds, packing);
+}
+
+/// Producer-side twin of `apply_owner_citation`: the SAME default
+/// structure, so a producer joining an owner-opened channel matches
+/// the installed contract exactly (SI-3/SI-4 — writers must match).
+inline void apply_matching_producer_schema(nlohmann::json &body,
+                                           const std::string &blds = "ts:f64:1:0",
+                                           const std::string &packing = "aligned")
+{
+    body["schema_blds"] = blds;
+    body["schema_packing"] = packing;
+    body["schema_hash"] = test_schema_fingerprint_hex(blds, packing);
+}
 
 // ─── Port allocation ────────────────────────────────────────────────────────
 

@@ -201,11 +201,11 @@ TEST_F(Pattern4MetricsTest, FanInTwoProducersMetricsDoNotOverwrite)
     // opens the channel; producers dial in afterwards (a producer
     // arriving first would get the retryable AWAITING_OWNER).
     auto owner = make_wire_client(ctx, setup, cons_uid);
-    ASSERT_NO_FATAL_FAILURE(register_consumer(owner, setup, channel, cons_uid, nullptr, "fan-in"));
+    ASSERT_NO_FATAL_FAILURE(register_fanin_owner(owner, setup, channel, cons_uid));
     auto a = make_wire_client(ctx, setup, uid_a);
-    ASSERT_NO_FATAL_FAILURE(register_producer(a, setup, channel, uid_a, nullptr, "fan-in"));
+    ASSERT_NO_FATAL_FAILURE(register_fanin_producer(a, setup, channel, uid_a));
     auto b = make_wire_client(ctx, setup, uid_b);
-    ASSERT_NO_FATAL_FAILURE(register_producer(b, setup, channel, uid_b, nullptr, "fan-in"));
+    ASSERT_NO_FATAL_FAILURE(register_fanin_producer(b, setup, channel, uid_b));
 
     heartbeat_with_metrics(a, channel, uid_a, "producer", {{"iteration_count", 100}});
     heartbeat_with_metrics(b, channel, uid_b, "producer", {{"iteration_count", 200}});

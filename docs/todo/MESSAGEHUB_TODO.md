@@ -38,11 +38,22 @@ Design draft (scenario-driven, gap register G1–G6, 4 slices, 3 ⚖
 decisions pending user ruling):
 `docs/tech_draft/DRAFT_schema_metrics_query_integration_2026-07-26.md`
 
-- [ ] ⚖ Decisions 1–3 (G1 late-bind vs reorder; G3 member-gating;
-      slice order) — awaiting user.
-- [ ] Slice 1: BRC `get_schema`/`get_channel_schema`/
-      `get_channel_metrics` + RoleAPI pass-throughs + G3 gating +
-      typed bodies + dispatch-tier rows + L2/L3 pins.
+- [x] ⚖ Decisions resolved 2026-07-26: G1 = schema rides the REG/ACK
+      (user); G7 = Option B, owners always declare (user); G3
+      member-gating + slice order 1→2→3→4 proceeding on
+      recommendation; segment stays fingerprints-only.
+- [x] Slice 1a — open-row validation SHIPPED 2026-07-26 (full ctest
+      2676/2676): SCHEMA_REQUIRED on material-free fan-in open (SI-1
+      broker half), owner-citation self-consistency (G8), anonymous
+      producer structure⇒hash rule (G8b); 5 L3 pins; HEP-0007
+      taxonomy rows (SCHEMA_REQUIRED new; FINGERPRINT_INCONSISTENT /
+      MISSING_HASH widened); test helpers
+      `apply_owner_citation`/`apply_matching_producer_schema` +
+      `register_fanin_owner`/`register_fanin_producer`.
+- [ ] Slice 1b: BRC `get_schema`/`get_channel_schema`/
+      `get_channel_metrics` + RoleAPI pass-throughs + G3 member
+      gating (needs identity-aware handler signatures) + typed
+      bodies + L2/L3 pins.
 - [ ] Slice 2: 3-engine `api.` bindings + HEP-0028/README docs.
 - [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
       native roles.
