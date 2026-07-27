@@ -1109,6 +1109,16 @@ TEST_F(LuaEngineIsolatedTest, Api_BandMembers_WithoutBroker_ReturnsNil)
     ExpectWorkerOk(w);
 }
 
+TEST_F(LuaEngineIsolatedTest, Api_SchemaMetricsQueries_WithoutBroker_ReturnNil)
+{
+    // Slice 2 binding pin: get_schema / get_channel_schema /
+    // get_channel_metrics return nil without a broker + raise on empty
+    // args; broker-side reply shapes and gating are L3-pinned.
+    auto w = SpawnWorker("lua_engine.api_schema_metrics_queries_without_broker_return_nil",
+                         {unique_dir("schema_queries_no_broker")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(LuaEngineIsolatedTest, Api_SpinlockCount_WithoutSHM_ReturnsZero)
 {
     auto w = SpawnWorker("lua_engine.api_spinlock_count_without_shm_returns_zero",

@@ -818,6 +818,9 @@ ctx->request_stop(ctx);
 | `ctx->spinlock_lock` / `unlock` / `count` / `is_locked` | see §4.1 | Spinlocks (HEP-CORE-0002 §2.2). |
 | `ctx->slot_logical_size` / `flexzone_logical_size` | see §4.1 | Schema sizes (HEP-CORE-0007). |
 | `ctx->wait_for_role` | see §4.1 | Block until role appears in broker (HEP-CORE-0023). |
+| `ctx->get_schema_json` | `const char *(*)(ctx, const char *owner, const char *schema_id)` | Registry schema read by (owner, id) — HEP-CORE-0034 §10.3, known-role-open (API v13). Returns the FULL broker reply as JSON — `status`/`error_code` are data; NULL only on transport failure / bad args. Thread-local scratch lifetime (same rule as the `hub_*_json` family). |
+| `ctx->get_channel_schema_json` | `const char *(*)(ctx, const char *channel)` | Channel's stored schema invariants (member-gated — `NOT_A_ROLE_OF_CHANNEL` arrives as data). Same return contract and lifetime as `get_schema_json` (API v13). |
+| `ctx->get_channel_metrics_json` | `const char *(*)(ctx, const char *channel)` | Channel's live per-presence metrics + SHM block info (member-gated; freshness = the members' heartbeat cadence, HEP-CORE-0019). Same return contract and lifetime (API v13). |
 
 All function pointers are null-safe on the host side. The C++ wrapper in §5
 checks the pointer before calling and returns the documented sentinel

@@ -75,6 +75,45 @@ py::object ProducerAPI::band_members(const std::string &channel)
     return scripting::detail::json_to_py(*result);
 }
 
+// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2).
+// Return contract: the FULL broker reply as a dict — status/error_code
+// are data the script branches on; None ONLY on transport failure.
+py::object ProducerAPI::get_schema(const std::string &owner, const std::string &schema_id)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->get_schema(owner, schema_id);
+    }
+    if (!result.has_value())
+        return py::none();
+    return scripting::detail::json_to_py(*result);
+}
+
+py::object ProducerAPI::get_channel_schema(const std::string &channel)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->get_channel_schema(channel);
+    }
+    if (!result.has_value())
+        return py::none();
+    return scripting::detail::json_to_py(*result);
+}
+
+py::object ProducerAPI::get_channel_metrics(const std::string &channel)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->get_channel_metrics(channel);
+    }
+    if (!result.has_value())
+        return py::none();
+    return scripting::detail::json_to_py(*result);
+}
+
 bool ProducerAPI::is_in_band(const std::string &channel) const
 {
     return base_->is_in_band(channel);
@@ -338,6 +377,11 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("band_broadcast", &producer::ProducerAPI::band_broadcast, py::arg("channel"),
              py::arg("body"))
         .def("band_members", &producer::ProducerAPI::band_members, py::arg("channel"))
+        .def("get_schema", &producer::ProducerAPI::get_schema, py::arg("owner"),
+             py::arg("schema_id"))
+        .def("get_channel_schema", &producer::ProducerAPI::get_channel_schema, py::arg("channel"))
+        .def("get_channel_metrics", &producer::ProducerAPI::get_channel_metrics,
+             py::arg("channel"))
         .def("band_member_contains", &producer::ProducerAPI::band_member_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the band's "

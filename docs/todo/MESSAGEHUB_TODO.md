@@ -86,36 +86,28 @@ decisions pending user ruling):
       note.  (Packing thread RESOLVED same day — no storage/delivery,
       the fingerprint binds it; HEP-0034 §6.4 + I10 document the full
       chain.)
-- [ ] Slice 2: 3-engine `api.get_schema(owner,id)` /
-      `api.get_channel_schema(ch)` / `api.get_channel_metrics(ch)`.
-      **Implementation map (patterns verified in code 2026-07-26 —
-      ready to execute):**
-      - Return contract (all engines): the FULL broker reply as data
-        (Lua table / Python dict / native JSON string); nil/None/NULL
-        only on transport failure — scripts branch on
-        `status`/`error_code` as data (SI-5 reply-is-data, matches
-        the BRC surface 1:1).
-      - Lua: 3 static closures using `json_to_lua`
-        (lua_engine.cpp:97) + `push_closure` rows (:386 cluster) +
-        lua_engine.hpp decls.  Template: `lua_api_consumer_count`.
-      - Python: 3 methods in EACH of producer_api / consumer_api /
-        processor_api (.cpp + .hpp + pybind `.def` rows).  Template:
-        `ProducerAPI::band_join` (gil_scoped_release → `base_->…` →
-        `json_to_py` or `py::none()`).  Triplication accepted until
-        #292 unification.
-      - Native: 3 fn ptrs APPENDED to `PlhNativeContext`
-        (native_engine_api.h) returning `const char*` JSON via the
-        thread-local scratch pattern (`hub_json_scratch`,
-        native_engine.cpp:149-182 — same lifetime contract as
-        `hub_*_json`); `PLH_NATIVE_API_VERSION` 12→13 (exact-match
-        gate ⇒ CLEAN REBUILD of utils+scripting, see the S4 vtable
-        incident); header version-log entry.
-      - Docs: HEP-0028 §6a rows + native version log;
-        README_topology_channels §5 sentence.
-      - Pins: L2 per-engine arg-validation + not-connected-nil; the
-        broker-side behavior is already L3-pinned (slice 1b), so
-        engine pins cover only the binding layer.  L4
-        metrics-adaptive script as the slice-2 keystone.
+- [x] ✅ Slice 2 SHIPPED 2026-07-26: 3-engine `api.get_schema(owner,id)`
+      / `api.get_channel_schema(ch)` / `api.get_channel_metrics(ch)`,
+      executed per the committed map.  Return contract everywhere: the
+      FULL broker reply as data (Lua table / Python dict / native JSON
+      string via thread-local scratch); nil/None/NULL only on transport
+      failure.  Lua: 3 closures + `push_common_api_closures_` rows.
+      Python: 3 methods × producer/consumer/processor APIs + pybind
+      `.def` rows (triplication accepted until #292).  Native:
+      `get_schema_json` / `get_channel_schema_json` /
+      `get_channel_metrics_json` appended before the opaque tail,
+      `PLH_NATIVE_API_VERSION` 12→13 + version-log entry, CLEAN rebuild
+      of utils+scripting done; hub-side ctx routes them to NULL stubs.
+      Docs: HEP-0028 §4.7 table rows; README_topology_channels §5.
+      Pins: `Api_SchemaMetricsQueries_WithoutBroker_ReturnNil` (Lua —
+      nil + empty-arg raise), `Api_SchemaMetricsQueries_Graceful_NoBroker`
+      (Python — None, no raise); broker-side reply shapes + gating
+      already L3-pinned (slice 1b/1c).  DEFERRED from the map: the L4
+      metrics-adaptive-script keystone — tracked below.
+- [ ] Slice-2 follow-up: L4 keystone — a metrics-adaptive script role
+      (script pulls `get_channel_metrics` mid-run and adapts) as a
+      Pattern-4/L4 scenario; native-engine binding smoke via a test
+      plugin exercising `get_*_json` against a live broker.
 - [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
       native roles.
 - [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully

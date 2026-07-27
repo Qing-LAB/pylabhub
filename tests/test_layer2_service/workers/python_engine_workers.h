@@ -252,6 +252,7 @@ int full_startup_producer_multifield(const std::string &dir);
 int full_startup_consumer_multifield(const std::string &dir);
 int full_startup_processor_multifield(const std::string &dir);
 int api_band_all_methods_graceful_no_broker(const std::string &dir);
+int api_schema_metrics_queries_graceful_no_broker(const std::string &dir);
 
 // ── State + slot + inbox (chunk 9) ─────────────────────────────────────────
 //

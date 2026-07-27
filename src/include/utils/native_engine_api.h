@@ -537,6 +537,32 @@ extern "C"
          *  this is a courtesy call; the handle must not be used after. */
         void (*inbox_close)(const struct PlhNativeContext *ctx, void *handle);
 
+        /* ── Broker schema/metrics queries (HEP-CORE-0034 §10.3 / SI-5;
+         *    API v13, 2026-07-26) ────────────────────────────────────────
+         * Return contract (all three): the FULL broker reply as a JSON
+         * string — status/error_code are DATA, branch on them exactly as
+         * a native C++ caller of the BrokerRequestComm surface would.
+         * NULL ONLY on transport failure / broker not connected / bad
+         * args.  Same thread-local scratch lifetime as the hub_*_json
+         * family: valid until the next *_json call on the same thread. */
+
+        /** get_schema_json: registry read by (owner, schema_id) — open to
+         *  all known roles (the registry is shared infrastructure). */
+        const char *(*get_schema_json)(const struct PlhNativeContext *ctx, const char *owner,
+                                       const char *schema_id);
+
+        /** get_channel_schema_json: the channel's stored schema invariants
+         *  (member-gated — the broker answers NOT_A_ROLE_OF_CHANNEL as
+         *  data if this role holds no presence on `channel`). */
+        const char *(*get_channel_schema_json)(const struct PlhNativeContext *ctx,
+                                               const char *channel);
+
+        /** get_channel_metrics_json: the channel's live per-presence
+         *  metrics + SHM block info (member-gated; freshness = the
+         *  members' heartbeat cadence). */
+        const char *(*get_channel_metrics_json)(const struct PlhNativeContext *ctx,
+                                                const char *channel);
+
         /* ── Opaque host data (do not dereference) ────────────────────── */
         void *_core;            /**< Internal — RoleHostCore pointer for API implementations. */
         void *_api;             /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -708,7 +734,18 @@ extern "C"
  * a plugin that does not export them is unaffected; offsets for prior
  * callbacks unchanged.  Exact-match api_version gate still requires a
  * rebuild.  Native-plugin-ABI bump only; ComponentVersions unchanged. */
-#define PLH_NATIVE_API_VERSION 12
+/* v13 (2026-07-26): ADDITIVE — broker schema/metrics query callbacks
+ * `get_schema_json` / `get_channel_schema_json` /
+ * `get_channel_metrics_json` appended before the opaque `_core`/`_api`
+ * tail (HEP-CORE-0034 §10.3; schema/metrics integration SI-5), giving
+ * native role plugins parity with Lua/Python `api.get_schema(...)` /
+ * `api.get_channel_schema(...)` / `api.get_channel_metrics(...)`.
+ * Return contract: the FULL broker reply as JSON data (branch on
+ * status/error_code); NULL only on transport failure.  Offsets for
+ * prior callbacks unchanged; exact-match api_version gate still
+ * requires a rebuild.  Native-plugin-ABI bump only; ComponentVersions
+ * unchanged. */
+#define PLH_NATIVE_API_VERSION 13
 
     /* =========================================================================
      * C-visible pylabhub ComponentVersions constants

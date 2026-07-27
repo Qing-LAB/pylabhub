@@ -58,6 +58,12 @@ class ProcessorAPI
     }
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
+
+    /// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2) —
+    /// full broker reply as a dict; None only on transport failure.
+    py::object get_schema(const std::string &owner, const std::string &schema_id);
+    py::object get_channel_schema(const std::string &channel);
+    py::object get_channel_metrics(const std::string &channel);
     bool is_in_band(const std::string &channel) const;
 
     /// Inquiry helpers — engine-parity with Native + Lua.

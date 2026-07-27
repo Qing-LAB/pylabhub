@@ -5811,6 +5811,44 @@ def on_produce(tx, msgs, api):
         });
 }
 
+int api_schema_metrics_queries_graceful_no_broker(const std::string &dir)
+{
+    // Slice 2 (schema/metrics integration SI-5): the three broker
+    // query bindings return the FULL broker reply as a dict; None
+    // ONLY on transport failure — which is exactly the L2 no-broker
+    // condition.  Binding-layer pin only: the broker-side gating +
+    // reply shapes are L3-pinned (Pattern4BrokerSchemaTest /
+    // Pattern4MetricsTest).
+    return produce_worker_with_script(
+        dir, "python_engine::api_schema_metrics_queries_graceful_no_broker",
+        R"PY(
+def on_produce(tx, msgs, api):
+    # (1) get_schema — None without broker, no raise.
+    r = api.get_schema("hub", "$lab.l2.frame.v1")
+    assert r is None, f"get_schema expected None, got {r!r}"
+
+    # (2) get_channel_schema — None without broker.
+    r = api.get_channel_schema("!l2_test")
+    assert r is None, f"get_channel_schema expected None, got {r!r}"
+
+    # (3) get_channel_metrics — None without broker.
+    r = api.get_channel_metrics("!l2_test")
+    assert r is None, f"get_channel_metrics expected None, got {r!r}"
+    return True
+)PY",
+        [](PythonEngine &engine, RoleHostCore & /*core*/)
+        {
+            std::vector<IncomingMessage> msgs;
+            float buf = 0.0f;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, InvokeResult::Commit)
+                << "all 3 schema/metrics query methods must return None "
+                   "gracefully without a broker — a raise would make "
+                   "on_produce return Error instead of Commit";
+            EXPECT_EQ(engine.script_error_count(), 0u);
+        });
+}
+
 // ============================================================================
 // GIL-release-during-wait — verify the EngineGlobalLockRelease RAII
 // actually releases the GIL so a Python sub-thread can run.
@@ -6105,6 +6143,8 @@ struct PythonEngineWorkerRegistrar
                     return full_startup_processor_multifield(dir);
                 if (sc == "api_band_all_methods_graceful_no_broker")
                     return api_band_all_methods_graceful_no_broker(dir);
+                if (sc == "api_schema_metrics_queries_graceful_no_broker")
+                    return api_schema_metrics_queries_graceful_no_broker(dir);
 
                 if (sc == "invoke_consume_receives_slot")
                     return invoke_consume_receives_slot(dir);

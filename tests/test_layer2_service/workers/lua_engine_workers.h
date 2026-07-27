@@ -255,6 +255,7 @@ int api_band_join_without_broker_returns_nil(const std::string &dir);
 int api_band_leave_without_broker_returns_false(const std::string &dir);
 int api_band_broadcast_without_broker_no_error(const std::string &dir);
 int api_band_members_without_broker_returns_nil(const std::string &dir);
+int api_schema_metrics_queries_without_broker_return_nil(const std::string &dir);
 int api_spinlock_count_without_shm_returns_zero(const std::string &dir);
 int api_spinlock_acquire_without_shm_is_pcall_error(const std::string &dir);
 int api_flexzone_accessor_without_shm_returns_nil(const std::string &dir);

@@ -1842,6 +1842,13 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("band_members", lua_api_band_members);
     push_closure("is_in_band", lua_api_is_in_band);
 
+    // Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2).
+    // Each returns the FULL broker reply as a table — status/error_code
+    // are data the script branches on; nil ONLY on transport failure.
+    push_closure("get_schema", lua_api_get_schema);
+    push_closure("get_channel_schema", lua_api_get_channel_schema);
+    push_closure("get_channel_metrics", lua_api_get_channel_metrics);
+
     // String fields as direct table entries.
     lua_pushstring(L, api_->log_level().c_str());
     lua_setfield(L, -2, "log_level");
@@ -2635,6 +2642,65 @@ int LuaEngine::lua_api_band_members(lua_State *L)
     auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
     const char *channel = luaL_checkstring(L, 1);
     auto result = self->api_->band_members(channel);
+    if (!result.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    json_to_lua(L, *result);
+    return 1;
+}
+
+// ============================================================================
+// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5) — slice 2
+// ============================================================================
+//
+// api.get_schema(owner, schema_id) / api.get_channel_schema(channel) /
+// api.get_channel_metrics(channel).  Return contract: the FULL broker
+// reply as a Lua table — `status` / `error_code` are DATA the script
+// branches on, exactly like a native caller of the BrokerRequestComm
+// surface; nil ONLY on transport failure / broker not connected.
+
+int LuaEngine::lua_api_get_schema(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *owner = luaL_checkstring(L, 1);
+    const char *schema_id = luaL_checkstring(L, 2);
+    if (!owner || !*owner || !schema_id || !*schema_id)
+        return luaL_error(L, "api.get_schema: owner and schema_id must be non-empty strings");
+    auto result = self->api_->get_schema(owner, schema_id);
+    if (!result.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    json_to_lua(L, *result);
+    return 1;
+}
+
+int LuaEngine::lua_api_get_channel_schema(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    if (!channel || !*channel)
+        return luaL_error(L, "api.get_channel_schema: channel must be a non-empty string");
+    auto result = self->api_->get_channel_schema(channel);
+    if (!result.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    json_to_lua(L, *result);
+    return 1;
+}
+
+int LuaEngine::lua_api_get_channel_metrics(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    if (!channel || !*channel)
+        return luaL_error(L, "api.get_channel_metrics: channel must be a non-empty string");
+    auto result = self->api_->get_channel_metrics(channel);
     if (!result.has_value())
     {
         lua_pushnil(L);

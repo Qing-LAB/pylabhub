@@ -419,6 +419,14 @@ int hub_stub_inbox_send(const PlhNativeContext *, void *, int) noexcept
 }
 void hub_stub_inbox_discard(const PlhNativeContext *, void *) noexcept {}
 void hub_stub_inbox_close(const PlhNativeContext *, void *) noexcept {}
+const char *hub_stub_json_arg2(const PlhNativeContext *, const char *) noexcept
+{
+    return nullptr;
+}
+const char *hub_stub_json_arg3(const PlhNativeContext *, const char *, const char *) noexcept
+{
+    return nullptr;
+}
 int hub_stub_band_int_arg2(const PlhNativeContext *, const char *) noexcept
 {
     return -1;
@@ -829,6 +837,73 @@ std::optional<nlohmann::json> fetch_band_members(const PlhNativeContext *ctx,
     catch (...)
     {
         return std::nullopt;
+    }
+}
+
+// ── Broker schema/metrics queries (HEP-0034 §10.3 / SI-5) — API v13 ─────────
+//
+// Return contract (MESSAGEHUB slice 2): the FULL broker reply as JSON
+// data — the plugin branches on status/error_code exactly like a native
+// C++ caller of the BrokerRequestComm surface; NULL ONLY on transport
+// failure / not connected / bad args.  Reuses the shared thread-local
+// scratch (same lifetime rule as the hub_*_json family).
+
+const char *role_reply_json(const std::optional<nlohmann::json> &reply) noexcept
+{
+    if (!reply.has_value())
+        return nullptr;
+    auto &buf = hub_json_scratch();
+    try
+    {
+        buf = reply->dump();
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+    return buf.c_str();
+}
+
+const char *ctx_get_schema_json(const PlhNativeContext *ctx, const char *owner,
+                                const char *schema_id)
+{
+    if (!ctx || !ctx->_api || !owner || !*owner || !schema_id || !*schema_id)
+        return nullptr;
+    try
+    {
+        return role_reply_json(static_cast<RoleAPIBase *>(ctx->_api)->get_schema(owner, schema_id));
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+}
+
+const char *ctx_get_channel_schema_json(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel || !*channel)
+        return nullptr;
+    try
+    {
+        return role_reply_json(static_cast<RoleAPIBase *>(ctx->_api)->get_channel_schema(channel));
+    }
+    catch (...)
+    {
+        return nullptr;
+    }
+}
+
+const char *ctx_get_channel_metrics_json(const PlhNativeContext *ctx, const char *channel)
+{
+    if (!ctx || !ctx->_api || !channel || !*channel)
+        return nullptr;
+    try
+    {
+        return role_reply_json(static_cast<RoleAPIBase *>(ctx->_api)->get_channel_metrics(channel));
+    }
+    catch (...)
+    {
+        return nullptr;
     }
 }
 
@@ -1446,6 +1521,12 @@ struct NativeEngine::NativeContextStorage
         ctx.inbox_discard = hub_stub_inbox_discard;
         ctx.inbox_close = hub_stub_inbox_close;
 
+        // ── Broker schema/metrics queries — stubbed (role BRC surface;
+        //    the hub context reads state via hub_*_json instead) ───────
+        ctx.get_schema_json = hub_stub_json_arg3;
+        ctx.get_channel_schema_json = hub_stub_json_arg2;
+        ctx.get_channel_metrics_json = hub_stub_json_arg2;
+
         // ── Channel-auth observability — all stubbed (role concept) ───
         ctx.allowed_peers = hub_stub_allowed_peers;
         ctx.allowed_peer_contains = hub_stub_allowed_peer_contains;
@@ -1561,6 +1642,11 @@ struct NativeEngine::NativeContextStorage
         ctx.inbox_send = ctx_inbox_send;
         ctx.inbox_discard = ctx_inbox_discard;
         ctx.inbox_close = ctx_inbox_close;
+
+        // Broker schema/metrics queries (HEP-0034 §10.3 / SI-5) — API v13.
+        ctx.get_schema_json = ctx_get_schema_json;
+        ctx.get_channel_schema_json = ctx_get_channel_schema_json;
+        ctx.get_channel_metrics_json = ctx_get_channel_metrics_json;
 
         // Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) — API v6.
         ctx.allowed_peers = ctx_allowed_peers;

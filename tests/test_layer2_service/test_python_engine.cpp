@@ -1271,3 +1271,14 @@ TEST_F(PythonEngineIsolatedTest, Api_Band_AllMethodsGraceful_NoBroker)
                          {unique_dir("api_band_no_broker")});
     ExpectWorkerOk(w);
 }
+
+TEST_F(PythonEngineIsolatedTest, Api_SchemaMetricsQueries_Graceful_NoBroker)
+{
+    // Slice 2 binding pin: get_schema / get_channel_schema /
+    // get_channel_metrics return None without a broker (transport
+    // failure is the ONLY None case); broker-side reply shapes and
+    // gating are L3-pinned.
+    auto w = SpawnWorker("python_engine.api_schema_metrics_queries_graceful_no_broker",
+                         {unique_dir("api_schema_queries_no_broker")});
+    ExpectWorkerOk(w);
+}

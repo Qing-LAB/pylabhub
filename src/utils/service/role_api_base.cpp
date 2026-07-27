@@ -2967,8 +2967,7 @@ namespace
 /// `awaiting_endpoint`).  A message-substring check remains as a
 /// fallback for a pre-structured-reason broker.
 constexpr std::string_view kTransientNotReadyReasons[] = {"awaiting_first_heartbeat",
-                                                          "heartbeat_stalled",
-                                                          "awaiting_endpoint"};
+                                                          "heartbeat_stalled", "awaiting_endpoint"};
 
 bool is_transient_not_ready(const nlohmann::json &r)
 {
@@ -3044,8 +3043,9 @@ retry_registration(pylabhub::hub::BrokerRequestComm &bc, const std::string &shor
 
 } // namespace
 
-std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(
-    const nlohmann::json &opts, int timeout_ms, const std::function<bool()> &is_cancelled)
+std::optional<nlohmann::json>
+RoleAPIBase::register_producer_channel(const nlohmann::json &opts, int timeout_ms,
+                                       const std::function<bool()> &is_cancelled)
 {
     // Class A (channel-bound) — route via handler's channel_index_.
     const std::string ch = opts.value("channel_name", std::string{});
@@ -3154,7 +3154,9 @@ std::optional<nlohmann::json> RoleAPIBase::get_schema(const std::string &owner,
     auto *bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] get_schema: broker comm not connected", pImpl->short_tag);
+        LOGGER_WARN("[{}] get_schema: broker comm not connected (returning nullopt — transport "
+                    "failure is the documented None/nil case)",
+                    pImpl->short_tag);
         return std::nullopt;
     }
     return bc->get_schema(owner, schema_id, timeout_ms);
@@ -3172,7 +3174,9 @@ std::optional<nlohmann::json> RoleAPIBase::get_channel_schema(const std::string 
         bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] get_channel_schema: broker comm not connected", pImpl->short_tag);
+        LOGGER_WARN("[{}] get_channel_schema: broker comm not connected (returning nullopt — "
+                    "transport failure is the documented None/nil case)",
+                    pImpl->short_tag);
         return std::nullopt;
     }
     return bc->get_channel_schema(channel, timeout_ms);
@@ -3188,7 +3192,9 @@ std::optional<nlohmann::json> RoleAPIBase::get_channel_metrics(const std::string
         bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] get_channel_metrics: broker comm not connected", pImpl->short_tag);
+        LOGGER_WARN("[{}] get_channel_metrics: broker comm not connected (returning nullopt — "
+                    "transport failure is the documented None/nil case)",
+                    pImpl->short_tag);
         return std::nullopt;
     }
     return bc->get_channel_metrics(channel, timeout_ms);
@@ -3226,8 +3232,9 @@ std::optional<nlohmann::json> RoleAPIBase::discover_channel(const std::string &c
     return result;
 }
 
-std::optional<nlohmann::json> RoleAPIBase::register_consumer(
-    const nlohmann::json &opts, int timeout_ms, const std::function<bool()> &is_cancelled)
+std::optional<nlohmann::json>
+RoleAPIBase::register_consumer(const nlohmann::json &opts, int timeout_ms,
+                               const std::function<bool()> &is_cancelled)
 {
     // Class A — route via handler when active.
     const std::string ch = opts.value("channel_name", std::string{});
@@ -3271,9 +3278,9 @@ std::optional<nlohmann::json> RoleAPIBase::register_consumer(
             return true;
         return code == "CHANNEL_NOT_READY" && is_transient_not_ready(r);
     };
-    auto result = retry_registration(*bc, pImpl->short_tag, "CONSUMER_REG_REQ", ch, timeout_ms,
-                                     is_cancelled, is_retryable,
-                                     [&](int t) { return bc->register_consumer(opts, t); });
+    auto result =
+        retry_registration(*bc, pImpl->short_tag, "CONSUMER_REG_REQ", ch, timeout_ms, is_cancelled,
+                           is_retryable, [&](int t) { return bc->register_consumer(opts, t); });
 
     bool registered = result.has_value() && result->value("status", std::string{}) == "success";
 

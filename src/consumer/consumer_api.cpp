@@ -67,6 +67,45 @@ py::object ConsumerAPI::band_members(const std::string &channel)
     return scripting::detail::json_to_py(*result);
 }
 
+// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2).
+// Return contract: the FULL broker reply as a dict — status/error_code
+// are data the script branches on; None ONLY on transport failure.
+py::object ConsumerAPI::get_schema(const std::string &owner, const std::string &schema_id)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->get_schema(owner, schema_id);
+    }
+    if (!result.has_value())
+        return py::none();
+    return scripting::detail::json_to_py(*result);
+}
+
+py::object ConsumerAPI::get_channel_schema(const std::string &channel)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->get_channel_schema(channel);
+    }
+    if (!result.has_value())
+        return py::none();
+    return scripting::detail::json_to_py(*result);
+}
+
+py::object ConsumerAPI::get_channel_metrics(const std::string &channel)
+{
+    std::optional<nlohmann::json> result;
+    {
+        py::gil_scoped_release release;
+        result = base_->get_channel_metrics(channel);
+    }
+    if (!result.has_value())
+        return py::none();
+    return scripting::detail::json_to_py(*result);
+}
+
 bool ConsumerAPI::is_in_band(const std::string &channel) const
 {
     return base_->is_in_band(channel);
@@ -306,6 +345,9 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("band_leave", &ConsumerAPI::band_leave, py::arg("channel"))
         .def("band_broadcast", &ConsumerAPI::band_broadcast, py::arg("channel"), py::arg("body"))
         .def("band_members", &ConsumerAPI::band_members, py::arg("channel"))
+        .def("get_schema", &ConsumerAPI::get_schema, py::arg("owner"), py::arg("schema_id"))
+        .def("get_channel_schema", &ConsumerAPI::get_channel_schema, py::arg("channel"))
+        .def("get_channel_metrics", &ConsumerAPI::get_channel_metrics, py::arg("channel"))
         .def("band_member_contains", &ConsumerAPI::band_member_contains, py::arg("channel"),
              py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the band's "

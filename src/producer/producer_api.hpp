@@ -79,6 +79,12 @@ class ProducerAPI
     void band_broadcast(const std::string &channel, py::dict body);
     py::object band_members(const std::string &channel);
 
+    /// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2) —
+    /// full broker reply as a dict; None only on transport failure.
+    py::object get_schema(const std::string &owner, const std::string &schema_id);
+    py::object get_channel_schema(const std::string &channel);
+    py::object get_channel_metrics(const std::string &channel);
+
     /// HEP-CORE-0030 amendment 2026-05-19 (S4): role's cached view of
     /// own band membership.  See RoleAPIBase::is_in_band.
     bool is_in_band(const std::string &channel) const;

@@ -4132,6 +4132,38 @@ int api_band_members_without_broker_returns_nil(const std::string &dir)
         )LUA");
 }
 
+int api_schema_metrics_queries_without_broker_return_nil(const std::string &dir)
+{
+    // Slice 2 (schema/metrics integration SI-5) binding pin: the three
+    // broker query closures return the FULL reply as a table; nil ONLY
+    // on transport failure — the L2 no-broker condition.  Also pins the
+    // arg-validation contract: empty/missing args are a Lua error
+    // (caught via pcall), NOT a broker round-trip.
+    return run_graceful_degrade_case(
+        dir, "lua_engine::api_schema_metrics_queries_without_broker_return_nil",
+        R"LUA(
+            local r = api.get_schema("hub", "$lab.l2.frame.v1")
+            assert(r == nil,
+                   "get_schema without broker must return nil, got "
+                   .. tostring(r))
+            r = api.get_channel_schema("!test_ch")
+            assert(r == nil,
+                   "get_channel_schema without broker must return nil, got "
+                   .. tostring(r))
+            r = api.get_channel_metrics("!test_ch")
+            assert(r == nil,
+                   "get_channel_metrics without broker must return nil, got "
+                   .. tostring(r))
+            -- Arg validation: empty strings raise (pcall-visible), never dial.
+            local ok = pcall(function() return api.get_schema("", "") end)
+            assert(not ok, "get_schema('','') must raise")
+            ok = pcall(function() return api.get_channel_schema("") end)
+            assert(not ok, "get_channel_schema('') must raise")
+            ok = pcall(function() return api.get_channel_metrics("") end)
+            assert(not ok, "get_channel_metrics('') must raise")
+        )LUA");
+}
+
 int api_spinlock_count_without_shm_returns_zero(const std::string &dir)
 {
     return run_graceful_degrade_case(dir, "lua_engine::api_spinlock_count_without_shm_returns_zero",
@@ -6069,6 +6101,8 @@ struct LuaEngineWorkerRegistrar
                     return api_band_broadcast_without_broker_no_error(dir);
                 if (sc == "api_band_members_without_broker_returns_nil")
                     return api_band_members_without_broker_returns_nil(dir);
+                if (sc == "api_schema_metrics_queries_without_broker_return_nil")
+                    return api_schema_metrics_queries_without_broker_return_nil(dir);
                 if (sc == "api_spinlock_count_without_shm_returns_zero")
                     return api_spinlock_count_without_shm_returns_zero(dir);
                 if (sc == "api_spinlock_acquire_without_shm_is_pcall_error")

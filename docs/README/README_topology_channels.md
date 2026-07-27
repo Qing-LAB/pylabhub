@@ -308,6 +308,22 @@ api.producers(channel_name)       ->  list[str]   # role_uids of live producers
 
 All four work in Lua, Python, and the native C++ engine.
 
+Three more let a script ask the broker about a channel's FORMAT and
+its live METRICS (added 2026-07-26; HEP-CORE-0034 §10.3):
+
+```
+api.get_schema(owner, schema_id)      # registry schema record by key
+api.get_channel_schema(channel_name)  # the channel's stored schema
+api.get_channel_metrics(channel_name) # live per-member metrics + SHM info
+```
+
+Each returns the FULL broker reply as a table/dict (native: a JSON
+string via `ctx->get_*_json`) — check `status` and `error_code`
+yourself, exactly like native code does; you get `nil`/`None`/`NULL`
+only when the broker could not be reached.  The channel forms answer
+channel MEMBERS only (`NOT_A_ROLE_OF_CHANNEL` otherwise); metrics
+freshness is the members' heartbeat cadence.
+
 **What "live" means.**  A peer is "live" once the broker has
 received its first heartbeat.  The framework only sends that
 heartbeat AFTER the peer has finished setting up its data-plane
