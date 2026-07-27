@@ -594,6 +594,16 @@ public:
 // shape (B-4, #289, 2026-06-25).  Success ACK only — broker emits
 // msg_type "ERROR" for the failure case, so ConsumerRegAckBody's
 // required-field set covers the success path.
+//
+// Schema-at-establishment (HEP-CORE-0034 §10.3a): the channel's
+// established schema rides the success ACK — the ACK is "your view of
+// the book" (HEP-0046 C1), and the format is part of that view.  All
+// five fields OPTIONAL: empty/absent means that axis is not
+// established on the channel record (e.g. anonymous hash-only
+// channels serve no structure by design — a runtime-resolved consumer
+// aborts cleanly on the empty format).  NO packing fields: the
+// fingerprint binds each zone's packing; the receiver recovers it by
+// candidate recompute during pin verification (HEP-0034 §6.4).
 PLH_WIRE_BODY_CLASS(ConsumerRegAckBody)
 public:
 [[nodiscard]] std::string status() const
@@ -623,6 +633,26 @@ public:
 [[nodiscard]] std::string broker_build_id() const
 {
     return detail::read_string_or_empty(body_, "broker_build_id");
+}
+[[nodiscard]] std::string schema_id() const
+{
+    return detail::read_string_or_empty(body_, "schema_id");
+}
+[[nodiscard]] std::string schema_owner() const
+{
+    return detail::read_string_or_empty(body_, "schema_owner");
+}
+[[nodiscard]] std::string blds() const
+{
+    return detail::read_string_or_empty(body_, "blds");
+}
+[[nodiscard]] std::string flexzone_blds() const
+{
+    return detail::read_string_or_empty(body_, "flexzone_blds");
+}
+[[nodiscard]] std::string schema_hash() const
+{
+    return detail::read_string_or_empty(body_, "schema_hash");
 }
 }
 ;

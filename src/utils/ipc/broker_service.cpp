@@ -413,8 +413,7 @@ class BrokerServiceImpl
     // #74 — last CHANNEL_COUNT_NOTIFY value broadcast per channel, so the
     // periodic reconciler in check_heartbeat_timeouts re-fans only when the
     // objective live count actually changed.  Router-thread-only (no lock).
-    std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>>
-        last_channel_counts_;
+    std::unordered_map<std::string, std::pair<std::uint32_t, std::uint32_t>> last_channel_counts_;
 
     /// HEP-CORE-0046 §14 unified receive+validate binder.  Owns the
     /// admission callbacks (known_roles lookup, key-rotation check,
@@ -698,9 +697,8 @@ class BrokerServiceImpl
     /// non-producer caller.
     // HEP-CORE-0046 §12 step 5: uniform typed handler signature.
     // `corr_id` from the envelope; `channel_name` / `role_uid` from the body.
-    nlohmann::json handle_get_channel_auth_req(
-        const ::pylabhub::wire::WireEnvelope &env,
-        const ::pylabhub::wire::GetChannelAuthReqBody &body);
+    nlohmann::json handle_get_channel_auth_req(const ::pylabhub::wire::WireEnvelope &env,
+                                               const ::pylabhub::wire::GetChannelAuthReqBody &body);
 
     /// `CONSUMER_ATTACH_REQ_SHM` handler (SHM binding, HEP-CORE-0041
     /// §9 D4 step 4-5 = HEP-CORE-0042 §6.1 Bindings.SHM).  Pre-attach
@@ -797,10 +795,10 @@ class BrokerServiceImpl
     nlohmann::json handle_check_peer_ready_req(const nlohmann::json &req,
                                                const zmq::message_t &identity);
 
-    nlohmann::json handle_channel_auth_applied_req(const ::pylabhub::wire::WireEnvelope &env,
-                                                   const ::pylabhub::wire::ChannelAuthAppliedReqBody
-                                                       &body,
-                                                   zmq::socket_t &socket);
+    nlohmann::json
+    handle_channel_auth_applied_req(const ::pylabhub::wire::WireEnvelope &env,
+                                    const ::pylabhub::wire::ChannelAuthAppliedReqBody &body,
+                                    zmq::socket_t &socket);
 
     /// Fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` to the BINDING
     /// side of the named channel (HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_
@@ -1269,11 +1267,11 @@ void BrokerServiceImpl::run()
                 // HEP-CORE-0033 §11.0.4: report the completion to the operator
                 // console when this broadcast came from an admin command.
                 if (!br.request_id.empty())
-                    hub_state_->append_console_line(br.request_id,
-                                                    nlohmann::json{{"event", "channel_broadcast_sent"},
-                                                                   {"channel", br.channel},
-                                                                   {"message", br.message},
-                                                                   {"origin_uid", br.origin_uid}});
+                    hub_state_->append_console_line(
+                        br.request_id, nlohmann::json{{"event", "channel_broadcast_sent"},
+                                                      {"channel", br.channel},
+                                                      {"message", br.message},
+                                                      {"origin_uid", br.origin_uid}});
             }
 
             // Drain hub_targeted_msg queue (thread-safe send from external callers).
@@ -1524,7 +1522,8 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                 // envelope + body — gates already ran; no to_legacy round-trip.
                 const std::string identity = v.identity();
                 zmq::message_t id_frame(identity.data(), identity.size());
-                const nlohmann::json resp = handle_consumer_reg_req(v.env, v.body, id_frame, socket);
+                const nlohmann::json resp =
+                    handle_consumer_reg_req(v.env, v.body, id_frame, socket);
                 const std::string ack =
                     (resp.value("status", "") == "success") ? "CONSUMER_REG_ACK" : "ERROR";
                 if (ack == "CONSUMER_REG_ACK")
@@ -2416,9 +2415,9 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         {
             // Path B: self-registration.  THE single builder computes the
             // 64-byte `db‖fz` fingerprint from both zones (== h_recomputed).
-            auto rec = pylabhub::hub::make_schema_record(role_uid, req_schema_id_raw, schema_blds_in,
-                                                         req_schema_packing, req_flexzone_blds,
-                                                         req_flexzone_packing);
+            auto rec = pylabhub::hub::make_schema_record(role_uid, req_schema_id_raw,
+                                                         schema_blds_in, req_schema_packing,
+                                                         req_flexzone_blds, req_flexzone_packing);
 
             using O = pylabhub::schema::SchemaRegOutcome;
             const auto outcome = hub_state_->_on_schema_registered(rec);
@@ -2932,7 +2931,7 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::WireEn
     LOGGER_INFO("Broker: discovered channel '{}'", channel_name);
     nlohmann::json resp;
     resp["status"] = "success";
-    resp["schema_hash"] = entry_ref.schema_hash; // 128-hex `db‖fz` fingerprint
+    resp["schema_hash"] = entry_ref.schema_hash;     // 128-hex `db‖fz` fingerprint
     resp["flexzone_blds"] = entry_ref.flexzone_blds; // two-zone (HEP-CORE-0034 §6.3)
     // schema_version retired per C2 — consumers can parse the version
     // from `schema_id` via `pylabhub::hub::parse_schema_id()` if needed.
@@ -3084,9 +3083,10 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireE
 // HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates (grammar / role_tag {cons,proc} / identity / known-role / replay)
 // already ran in receive_and_validate; reads via typed accessors.
-nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
-    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::ConsumerRegReqBody &body,
-    const zmq::message_t &identity, zmq::socket_t &socket)
+nlohmann::json
+BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                           const ::pylabhub::wire::ConsumerRegReqBody &body,
+                                           const zmq::message_t &identity, zmq::socket_t &socket)
 {
     const std::string corr_id = std::string(env.correlation_id());
     const std::string channel_name = body.channel_name();
@@ -3545,8 +3545,8 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
                                 "role='{}' channel='{}' detail='{}'",
                                 code, role_uid, channel_name, vc.detail);
                     return make_error(corr_id, code,
-                                      "Cannot open on hub-global (hub, " +
-                                          expected_schema_id + "): " + vc.detail);
+                                      "Cannot open on hub-global (hub, " + expected_schema_id +
+                                          "): " + vc.detail);
                 }
                 // G10 — a named-open citation may omit the structure; the
                 // registry record always carries it (`make_schema_record`
@@ -3567,32 +3567,32 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
         }
         else
         {
-        // Step 2/3 — channel match + named-registry via the single validator.
-        pylabhub::hub::SchemaCitationInput sin;
-        sin.channel_owner = channel_entry.schema_owner;
-        sin.channel_id = channel_entry.schema_id;
-        sin.channel_hash = hex_to_fingerprint_array(channel_entry.schema_hash);
-        sin.channel_producer_uids.reserve(channel_entry.producers.size());
-        for (const auto &p : channel_entry.producers)
-            sin.channel_producer_uids.push_back(p.role_uid);
-        sin.cited_id = expected_schema_id;
-        sin.cited_owner = expected_owner; // exact-match when claimed (SI-9)
-        sin.expected_hash = joiner_hash;
+            // Step 2/3 — channel match + named-registry via the single validator.
+            pylabhub::hub::SchemaCitationInput sin;
+            sin.channel_owner = channel_entry.schema_owner;
+            sin.channel_id = channel_entry.schema_id;
+            sin.channel_hash = hex_to_fingerprint_array(channel_entry.schema_hash);
+            sin.channel_producer_uids.reserve(channel_entry.producers.size());
+            for (const auto &p : channel_entry.producers)
+                sin.channel_producer_uids.push_back(p.role_uid);
+            sin.cited_id = expected_schema_id;
+            sin.cited_owner = expected_owner; // exact-match when claimed (SI-9)
+            sin.expected_hash = joiner_hash;
 
-        const auto vc = hub_state_->_validate_schema_citation(sin);
-        if (!vc.ok())
-        {
-            // Consumer-side (data-out) direction: id mismatch → SCHEMA_ID_MISMATCH,
-            // else SCHEMA_CITATION_REJECTED (HEP-CORE-0034 §10.4).
-            const char *code =
-                vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kSchemaIdMismatch
-                    ? "SCHEMA_ID_MISMATCH"
-                    : "SCHEMA_CITATION_REJECTED";
-            LOGGER_WARN("Broker: schema match rejected — channel='{}' consumer_uid='{}' "
-                        "code={}: {}",
-                        channel_name, role_uid, code, vc.detail);
-            return make_error(corr_id, code, vc.detail);
-        }
+            const auto vc = hub_state_->_validate_schema_citation(sin);
+            if (!vc.ok())
+            {
+                // Consumer-side (data-out) direction: id mismatch → SCHEMA_ID_MISMATCH,
+                // else SCHEMA_CITATION_REJECTED (HEP-CORE-0034 §10.4).
+                const char *code =
+                    vc.reason == ::pylabhub::schema::CitationOutcome::Reason::kSchemaIdMismatch
+                        ? "SCHEMA_ID_MISMATCH"
+                        : "SCHEMA_CITATION_REJECTED";
+                LOGGER_WARN("Broker: schema match rejected — channel='{}' consumer_uid='{}' "
+                            "code={}: {}",
+                            channel_name, role_uid, code, vc.detail);
+                return make_error(corr_id, code, vc.detail);
+            }
         }
     }
     // else: all expected_* empty on a JOIN — the opt-out mode (SI-4:
@@ -3662,7 +3662,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
         // record on a named open (G10) — otherwise they equal the
         // consumer's expected_* verbatim.
         s.schema_blds = open_blds;
-        s.flexzone_blds = open_fz_blds; // two-zone content (fingerprint folds packing)
+        s.flexzone_blds = open_fz_blds;  // two-zone content (fingerprint folds packing)
         s.schema_owner = expected_owner; // validated ∈ {"", "hub"} (SI-9/G9)
         open_schema = std::move(s);
 
@@ -3861,6 +3861,26 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
             producers_array.push_back(std::move(entry));
         }
         resp["producers"] = std::move(producers_array);
+
+        // Schema-at-establishment (HEP-CORE-0034 §10.3a): the channel's
+        // established schema rides the success ACK — the consumer's view
+        // of the book includes its format.  Empty fields are ELIDED (an
+        // absent axis is not established on the record); a hash-only
+        // anonymous channel delivers schema_hash and no blds by design
+        // (SI-2).  NO packing fields — the fingerprint binds packing;
+        // the receiver recovers it via the §6.4 candidate recompute.
+        // Success-only by construction: this block runs after every
+        // admission gate has passed (SI-5 trust sequence).
+        if (!ch_opt->schema_id.empty())
+            resp["schema_id"] = ch_opt->schema_id;
+        if (!ch_opt->schema_owner.empty())
+            resp["schema_owner"] = ch_opt->schema_owner;
+        if (!ch_opt->schema_blds.empty())
+            resp["blds"] = ch_opt->schema_blds;
+        if (!ch_opt->flexzone_blds.empty())
+            resp["flexzone_blds"] = ch_opt->flexzone_blds;
+        if (!ch_opt->schema_hash.empty())
+            resp["schema_hash"] = ch_opt->schema_hash;
     }
 
     // HEP-CORE-0027 §3.5 — hub-wide known_roles roster for the consumer's
@@ -3879,9 +3899,10 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
 
 // HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body (ValidatedConsumerDeregReq carries a DeregReqBody).  Gates already ran.
-nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
-    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::DeregReqBody &body,
-    zmq::socket_t &socket)
+nlohmann::json
+BrokerServiceImpl::handle_consumer_dereg_req(const ::pylabhub::wire::WireEnvelope &env,
+                                             const ::pylabhub::wire::DeregReqBody &body,
+                                             zmq::socket_t &socket)
 {
     const std::string corr_id = std::string(env.correlation_id());
     const std::string channel_name = body.channel_name();
@@ -3998,8 +4019,9 @@ nlohmann::json BrokerServiceImpl::handle_consumer_dereg_req(
 
 // ─── Channel-auth pull + notify helpers (HEP-CORE-0036 §6.5) ───────────────
 
-nlohmann::json BrokerServiceImpl::handle_get_channel_auth_req(
-    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::GetChannelAuthReqBody &body)
+nlohmann::json
+BrokerServiceImpl::handle_get_channel_auth_req(const ::pylabhub::wire::WireEnvelope &env,
+                                               const ::pylabhub::wire::GetChannelAuthReqBody &body)
 {
     // HEP-CORE-0036 §6.5 — producer pulls the channel-scope
     // authorized-consumer allowlist.
@@ -5189,8 +5211,7 @@ BrokerServiceImpl::compute_channel_live_counts(const std::string &channel) const
 // #74 — fan the objective count to EVERY member of the channel (both sides).
 // Channel-level status (a number, no per-peer identity): the dialing side
 // receives only this, never the CHANNEL_AUTH_CHANGED_NOTIFY identity stream.
-void BrokerServiceImpl::fire_channel_count_notify(zmq::socket_t &socket,
-                                                  const std::string &channel)
+void BrokerServiceImpl::fire_channel_count_notify(zmq::socket_t &socket, const std::string &channel)
 {
     auto ch = hub_state_->channel(channel);
     if (!ch.has_value())
@@ -5246,10 +5267,9 @@ void BrokerServiceImpl::fire_channel_count_notify(zmq::socket_t &socket,
 // the drop is visible.  A blank channel_name needs no separate check — it can
 // never match a channel key, so it falls through to the CHANNEL_NOT_FOUND path
 // below.
-void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::wire::WireEnvelope
-                                                 &env,
-                                             const ::pylabhub::wire::HeartbeatNotifyBody &body,
-                                             zmq::socket_t &socket)
+void BrokerServiceImpl::handle_heartbeat_req(
+    [[maybe_unused]] const ::pylabhub::wire::WireEnvelope &env,
+    const ::pylabhub::wire::HeartbeatNotifyBody &body, zmq::socket_t &socket)
 {
     const std::string channel_name = body.channel_name();
     // Peek existence + producer-presence state before applying the
@@ -5400,8 +5420,9 @@ void BrokerServiceImpl::handle_heartbeat_req([[maybe_unused]] const ::pylabhub::
 
 // HEP-CORE-0046 §12 step 5: typed handler on the validated envelope +
 // body.  Gates already ran in receive_and_validate.
-nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
-    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::EndpointUpdateReqBody &body)
+nlohmann::json
+BrokerServiceImpl::handle_endpoint_update_req(const ::pylabhub::wire::WireEnvelope &env,
+                                              const ::pylabhub::wire::EndpointUpdateReqBody &body)
 {
     const std::string corr_id = std::string(env.correlation_id());
     const std::string channel_name = body.channel_name();
@@ -5561,11 +5582,10 @@ nlohmann::json BrokerServiceImpl::handle_endpoint_update_req(
                             "endpoint change forbidden: {} dialing peer(s) already "
                             "admitted to '{}' (HEP-0021 §16.8; restart with a fresh "
                             "instance to change)",
-                            channel_name, sender_role_uid, endpoint_type, admitted,
-                            current_value);
+                            channel_name, sender_role_uid, endpoint_type, admitted, current_value);
                 return make_error(corr_id, "ENDPOINT_CHANGE_FORBIDDEN",
-                                  endpoint_type + " endpoint change forbidden: " +
-                                      std::to_string(admitted) +
+                                  endpoint_type +
+                                      " endpoint change forbidden: " + std::to_string(admitted) +
                                       " dialing peer(s) already admitted to '" + current_value +
                                       "'; restart with a fresh instance to change");
             }
@@ -5776,8 +5796,10 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json &req)
                     "channel '{}' (SI-5)",
                     caller_uid, channel_name);
         return make_error(corr_id, "NOT_A_ROLE_OF_CHANNEL",
-                          "Caller role_uid='" + caller_uid + "' is not a registered role of "
-                          "channel '" + channel_name + "'");
+                          "Caller role_uid='" + caller_uid +
+                              "' is not a registered role of "
+                              "channel '" +
+                              channel_name + "'");
     }
     nlohmann::json resp;
     resp["status"] = "success";
@@ -6199,9 +6221,8 @@ void BrokerServiceImpl::send_closing_notify(zmq::socket_t &socket, const std::st
             fire_channel_count_notify(socket, chan);
         }
         for (auto cit2 = last_channel_counts_.begin(); cit2 != last_channel_counts_.end();)
-            cit2 = (count_snap.channels.count(cit2->first) == 0)
-                       ? last_channel_counts_.erase(cit2)
-                       : std::next(cit2);
+            cit2 = (count_snap.channels.count(cit2->first) == 0) ? last_channel_counts_.erase(cit2)
+                                                                 : std::next(cit2);
     }
 }
 
@@ -7349,8 +7370,10 @@ nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
                     "channel '{}' (SI-5/MI-1)",
                     caller_uid, channel);
         return make_error(corr_id, "NOT_A_ROLE_OF_CHANNEL",
-                          "Caller role_uid='" + caller_uid + "' is not a registered role of "
-                          "channel '" + channel + "'");
+                          "Caller role_uid='" + caller_uid +
+                              "' is not a registered role of "
+                              "channel '" +
+                              channel + "'");
     }
 
     nlohmann::json resp;

@@ -1119,6 +1119,52 @@ schema_hash, blds, flexzone_blds }` — the legacy form carries no separate
 `packing` (it folds into `schema_hash`).  New clients should prefer the
 owner+id form.
 
+### 10.3a Schema delivery at establishment (`CONSUMER_REG_ACK`)
+
+The channel's established schema **rides the success `CONSUMER_REG_ACK`**.
+The ACK is the consumer's view of the book (HEP-CORE-0046 C1) — the
+owner's endpoint, its key, the transport discriminator — and the
+channel's format is part of that view.  Delivering it in the same reply
+is the contract-aligned shape, not an optimization; it mirrors the
+allowlist's two-part precedent exactly (seeded via `initial_allowlist`
+in the ACK, refreshed via `GET_CHANNEL_AUTH_REQ` — schema is seeded
+here, re-fetched via §10.3's `SCHEMA_REQ`).
+
+Additive optional fields on the success ACK, filled from the channel
+record:
+
+```
+CONSUMER_REG_ACK  { ...,                      // §5b unified shape (HEP-0036)
+                    schema_id: string,        // "" / absent = anonymous channel
+                    schema_owner: string,     // "" / absent = producer-owned anonymous
+                    blds: string,             // datablock canonical BLDS ("" = no structure)
+                    flexzone_blds: string,    // flexzone canonical BLDS ("" = absent)
+                    schema_hash: hex(128) }   // two-zone fingerprint
+```
+
+Rules:
+
+- **Success-only, admitted-only.**  The fields exist only on a success
+  ACK, which the broker builds only after every gate has passed (CURVE
+  transport auth, known-role identity, admission validation).  An
+  unauthenticated, unknown, or rejected party never receives structure
+  (SI-5 trust sequence).
+- **Empty fields are elided**, not sent as `""` — an absent axis means
+  the channel record does not establish it.  A hash-only anonymous
+  channel (legal per SI-2) delivers `schema_hash` and **no** `blds`:
+  such channels serve no structure by design, and a runtime-resolved
+  consumer aborts cleanly on the empty format (SI-6).
+- **NO packing fields.**  The fingerprint binds each zone's packing;
+  the receiver recovers it during pin verification by the §6.4
+  two-candidate recompute.  Packing is never stored on the channel
+  record and never delivered (design ruling 2026-07-26).
+- **Producer `REG_ACK` is unchanged** — producers supply schemas; they
+  don't need them back.
+- Verification on receipt (consumer side): config pin (when present)
+  → delivered BLDS must recompute to it → (SHM) the same fingerprint
+  must equal the segment header's stamped hashes before mapping.  Any
+  disagreement is a startup abort naming the mismatched pair.
+
 ### 10.4 Error codes
 
 All schema-related errors are emitted via the standard error envelope

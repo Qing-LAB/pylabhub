@@ -237,6 +237,68 @@ TEST_F(Pattern4BrokerSchemaTest, ConsumerSchemaIdMatch_Succeeds)
     broker.signal_quit();
 }
 
+// ─── §10.3a: the established schema rides the success CONSUMER_REG_ACK ─────
+
+TEST_F(Pattern4BrokerSchemaTest, ConsumerRegAck_CarriesEstablishedSchema)
+{
+    // HEP-CORE-0034 §10.3a (schema-at-establishment): the success
+    // CONSUMER_REG_ACK delivers the channel record's schema axes —
+    // id, owner, blds, two-zone fingerprint — and ELIDES absent axes
+    // (this channel declares no flexzone → no `flexzone_blds` key at
+    // all, not an empty string).  NO packing fields ride the wire:
+    // the fingerprint binds each zone's packing and the receiver
+    // recovers it by the §6.4 candidate recompute.  Trust sequence
+    // (SI-5): the fields exist only on the post-admission success
+    // reply — rejection paths are pinned by the sibling tests and
+    // carry no structure.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "schema.consumer.ackdlv" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string schema_id = "$lab.consumer.ackdlv.v1";
+    const std::string hash = canonical_hash_hex(kSchemaBlds, kSchemaPacking);
+
+    const fs::path temp_dir = make_test_temp_dir("broker_schema_ackdlv");
+    const auto setup = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, prod_uid);
+    // Path-B named registration: channel owner = the producer's uid,
+    // structure = kSchemaBlds (datablock only, no flexzone).
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer_with_schema(prod, setup, channel, prod_uid, schema_id, hash));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    auto cbody = consumer_reg_body(setup, channel, cons_uid);
+    cbody["expected_schema_id"] = schema_id;
+    cbody["expected_schema_hash"] = hash;
+    auto cr = cons.request("CONSUMER_REG_REQ", cbody, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(cr.has_value()) << "CONSUMER_REG_REQ timed out";
+    ASSERT_EQ(cr->value("status", std::string{}), "success") << cr->dump();
+
+    // The delivered view must equal the channel record the producer
+    // established — content pins, not presence pins.
+    EXPECT_EQ(cr->value("blds", std::string{}), kSchemaBlds) << cr->dump();
+    EXPECT_EQ(cr->value("schema_hash", std::string{}), hash) << cr->dump();
+    EXPECT_EQ(cr->value("schema_id", std::string{}), schema_id) << cr->dump();
+    EXPECT_EQ(cr->value("schema_owner", std::string{}), prod_uid) << cr->dump();
+    // Elision rule: absent axis ⇒ absent key (no flexzone declared).
+    EXPECT_FALSE(cr->contains("flexzone_blds")) << cr->dump();
+    // No packing on the wire — ruled 2026-07-26 (HEP-0034 §10.3a).
+    EXPECT_FALSE(cr->contains("schema_packing")) << cr->dump();
+    EXPECT_FALSE(cr->contains("packing")) << cr->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4BrokerSchemaTest, ConsumerJoin_OwnerClaim_ExactMatch)
 {
     // SI-9 (ruled 2026-07-26): a JOINING consumer's non-empty owner
@@ -280,8 +342,7 @@ TEST_F(Pattern4BrokerSchemaTest, ConsumerJoin_OwnerClaim_ExactMatch)
                              milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(rbad.has_value());
     EXPECT_EQ(rbad->value("status", std::string{}), "error");
-    EXPECT_EQ(rbad->value("error_code", std::string{}), "SCHEMA_CITATION_REJECTED")
-        << rbad->dump();
+    EXPECT_EQ(rbad->value("error_code", std::string{}), "SCHEMA_CITATION_REJECTED") << rbad->dump();
 
     // Correct owner claim (the producer's uid) → admitted.
     auto good = consumer_reg_body(setup, channel, cons_uid);

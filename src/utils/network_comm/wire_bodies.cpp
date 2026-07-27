@@ -380,6 +380,13 @@ ConsumerRegAckBody::ConsumerRegAckBody(nlohmann::json body)
     d::require(body_, "producers", d::JsonKind::Array);
     d::require(body_, "broker_abi_fingerprint", d::JsonKind::Object);
     d::validate_if_present(body_, "broker_build_id", d::JsonKind::String);
+    // Schema-at-establishment (HEP-CORE-0034 §10.3a): all five optional —
+    // absent axes are simply not established on the channel record.
+    d::validate_if_present(body_, "schema_id", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_owner", d::JsonKind::String);
+    d::validate_if_present(body_, "blds", d::JsonKind::String);
+    d::validate_if_present(body_, "flexzone_blds", d::JsonKind::String);
+    d::validate_if_present(body_, "schema_hash", d::JsonKind::String);
     d::require_envelope_hash(body_);
 }
 
