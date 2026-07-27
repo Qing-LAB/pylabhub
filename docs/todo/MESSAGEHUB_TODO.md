@@ -64,6 +64,20 @@ decisions pending user ruling):
       flipped, NOT_A_ROLE row widened (0036 §6.6).  Typed
       SchemaReqBody/MetricsReqBody stay on the HEP-0046
       EnvelopeOnly→typed follow-on list with the notify bodies.
+- [ ] Slice 1c (G9+G10, ruled 2026-07-26 — BEFORE slice 2): open row
+      validates the owner axis it installs.  `expected_schema_owner`
+      ∈ {"", "hub"} (else SCHEMA_FORBIDDEN_OWNER); named fan-in open ⇒
+      owner="hub" REQUIRED (new code SCHEMA_OWNER_REQUIRED) + registry
+      resolution via `_validate_schema_citation`
+      (`check_registry_record`; SCHEMA_UNKNOWN /
+      FINGERPRINT_INCONSISTENT) + materialize record structure into
+      the channel invariants when the citation carried none; joiner
+      consumer owner claims exact-matched (`sin.cited_owner`);
+      owner-without-schema_id → INVALID_REQUEST both sides.  L3 pins
+      per reject + resolved-open; HEP-0007 rows; HEP-0034 §10.2 note.
+      Design: draft G9/G10/SI-9.  (Packing thread RESOLVED same day —
+      no storage/delivery, fingerprint binds it; HEP-0034 §6.4 + I10
+      document the full chain.)
 - [ ] Slice 2: 3-engine `api.get_schema(owner,id)` /
       `api.get_channel_schema(ch)` / `api.get_channel_metrics(ch)`.
       **Implementation map (patterns verified in code 2026-07-26 —

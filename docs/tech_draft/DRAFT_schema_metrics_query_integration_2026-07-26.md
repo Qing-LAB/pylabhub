@@ -23,10 +23,11 @@ Status: ✅ = enforced today, verified in code 2026-07-26; 🔨 = to build
 | **SI-3** | Every JOIN against an existing channel is checked against the stored contract by EXACT equality on every declared axis: fingerprint always; name exactly (empty matches only empty); owner where claimed.  No adopt, no partial match, no direction exempt. | `_validate_schema_citation` steps (a)/(b)/(c); producer front-door early gate; consumer citation block. | ✅ verified (both directions, incl. blank/cited mixed cases rejecting). |
 | **SI-4** | **Writers must match; readers may opt out.**  A producer joining a format-carrying channel MUST present the matching format (an empty-schema producer is rejected by SI-3's fingerprint axis).  A consumer may join with NO schema material at all (absent mode: "all expected_* empty → no validation") — it reads under the channel's existing integrity machinery regardless. | Producer: SI-3 sites.  Consumer: explicit third mode in the citation block. | ✅ verified both halves. |
 | **SI-5** | Schema/metrics content leaves the broker ONLY to authenticated, validated, admitted parties: the BLDS rides the success ACK (§2b) or an identity-checked pull; the metrics snapshot answers only channel members.  No structure or telemetry to unauthenticated, unknown, or rejected callers. | ACK: `CONSUMER_REG_ACK` built only on admission success.  Pull gating ✅ 2026-07-26: both messages moved to the `Control_EnvelopeWithRoleUid` admission tier (body `role_uid` = caller, identity-matched + tag-policed — no handler-signature change needed; the L1 tier-table drift-guard pins the rows); channel-form SCHEMA_REQ + METRICS_REQ member-gate via `is_role_registered_on_channel` (NOT_A_ROLE_OF_CHANNEL); `(owner,id)` registry form stays known-role-open.  Pins: `SchemaReq_ChannelForm_MemberGated`, `MetricsReq_MemberGatedPull`. | ✅ enforced. |
-| **SI-6** | **The fingerprint chain must close before data flows on a runtime-resolved format**: config pin (when present) == delivered BLDS's recomputed fingerprint == (SHM) the segment header's stamped hashes.  Any link mismatch — and equally a channel that turns out to carry NO established format — is a clean startup abort naming the cause; a `from-channel` role never proceeds on an empty format. | Role-side activation (slice 3): pin check + SHM header cross-check before mapping; empty-format abort. | 🔨 slice 3 (config-schema deployments already close an equivalent chain today via citation ✅). |
-| **SI-7** | `from-channel` (runtime-resolved format) is legal ONLY on DIALING sides.  An owning side declaring `from-channel` is a CONFIG ERROR caught at role startup — the owner cannot ask the channel for what only the owner can establish. | Role-host config validation at startup; broker backstop = SI-1/SI-2 rejections. | 🔨 slice 1 (falls out of Option B). |
+| **SI-6** | **The fingerprint chain must close before data flows on a runtime-resolved format**: config pin (when present) == delivered BLDS's recomputed fingerprint == (SHM) the segment header's stamped hashes.  Any link mismatch — and equally a channel that turns out to carry NO established format — is a clean startup abort naming the cause; a `from-channel` role never proceeds on an empty format. | Role-side activation (slice 3): pin check + SHM header cross-check before mapping; empty-format abort.  The pin check is ONE recompute through the `schema_utils` family (HEP-CORE-0034 §6.4 / §2.4 I10): it verifies the delivered BLDS against the pin AND recovers packing in the same act (two-candidate recompute — packing is never stored or delivered, ruled 2026-07-26). | 🔨 slice 3 (config-schema deployments already close an equivalent chain today via citation ✅). |
+| **SI-7** | `from-channel` (runtime-resolved format) is legal ONLY on DIALING sides.  An owning side declaring `from-channel` is a CONFIG ERROR caught at role startup — the owner cannot ask the channel for what only the owner can establish. | Role-host config validation at startup; broker backstop = SI-1/SI-2 rejections. | 🔨 slice 3 (the `from-channel` sentinel + config-time validation land there; the broker backstop is already enforced ✅). |
 | **SI-8** | Queries answer from machine state and never wait: `SCHEMA_REQ`/`METRICS_REQ` against Absent → terminal `CHANNEL_NOT_FOUND` (never `AWAITING_OWNER`, never a pend).  All establishment waiting lives in the registration retry (HEP-0017 §4.7.0.3 rule 4). | Both handlers return CHANNEL_NOT_FOUND on missing channel. | ✅ (by the lifecycle machine; keep pinned when handlers gain gating). |
-| **MI-1** | Metrics are push-in (heartbeat), pull-out (member-gated `METRICS_REQ`); freshness = heartbeat cadence; the wire form REQUIRES `channel_name` (hub-wide aggregation stays hub-script/admin-plane, until an observer role kind exists — #292). | `handle_metrics_req`: all-channels wire branch REMOVED; `channel_name` + caller `role_uid` required; member-gated.  Pin: `MetricsReq_MemberGatedPull` (incl. the missing-channel INVALID_REQUEST). | ✅ enforced 2026-07-26. |
+| **MI-1** | Metrics are push-in (heartbeat), pull-out (member-gated `METRICS_REQ`); freshness = heartbeat cadence; the wire form REQUIRES `channel_name` (hub-wide aggregation stays hub-script/admin-plane, until an observer role kind exists — #292). | `handle_metrics_req`: all-channels wire branch REMOVED; `channel_name` + caller `role_uid` required; member-gated.  Pin: `MetricsReq_MemberGatedPull` (incl. the missing-channel_name INVALID_REQUEST). | ✅ enforced 2026-07-26. |
+| **SI-9** | **A named channel's `(owner, id)` always resolves to a registry record bearing the channel's fingerprint, and owner claims are validated on every declared axis — never installed or ignored silently.**  Producer opens satisfy this by construction (path B creates the record, path C validates it); fan-in consumer opens satisfy it by the G9 open-row rule (named ⇒ owner="hub" + registry resolution + materialized structure); joins match a non-empty owner claim exactly. | Broker: open-row owner/registry validation in `handle_consumer_reg_req`; joiner `cited_owner` exact-match via the single validator; owner-without-id `INVALID_REQUEST` both sides. | 🔨 slice 1c (G9/G10). |
 
 Cross-check protocol for this table: every ✅ row cites the exact
 mechanism a reviewer can grep; every 🔨 row must flip to ✅ with a code
@@ -342,8 +343,11 @@ reasons the contract itself states:
   reordering.
 
 Wire shape: additive optional fields on the typed `ConsumerRegAckBody`
-(schema_id, schema_owner, blds, flexzone_blds, packing, schema_hash —
-the same field set the channel record stores).  BLDS is a compact
+(schema_id, schema_owner, blds, flexzone_blds, schema_hash — exactly
+the field set the channel record stores).  NO packing fields: the
+fingerprint binds each zone's packing, and the receiver recovers it
+during pin verification by candidate recompute (HEP-CORE-0034 §6.4,
+ruled 2026-07-26).  BLDS is a compact
 canonical string; the ACK remains a control-plane reply, not a bulk
 payload.  Producer REG_ACK is unchanged (producers supply schemas;
 they don't need them back).
@@ -379,9 +383,12 @@ startup abort that names the mismatched pair.
 | **G2** | No control-plane-only (observer) role kind for S-F. | Deferred | Fold into #292 role-binary unification as a named requirement ("a role kind with BRC + heartbeat + no data channel"). | Defer to #292; record there. |
 | **G3** | **Neither handler checks the caller.**  `SCHEMA_REQ`/`METRICS_REQ` answer any CURVE-authenticated known role about any channel.  Compare: `GET_CHANNEL_AUTH` is binding-side-gated, `GET_CHANNEL_PRODUCERS` was consumer-gated — the project's blast-radius discipline gates reads. | Design decision | (a) Member-gate both channel-form queries (caller must hold a presence on the channel — `is_role_registered_on_channel` exists); all-channels METRICS form becomes hub-script/admin-only (wire form requires `channel_name`).  (b) Leave open to all known roles (metrics/schemas are observability/structure, not secrets — hostnames/pids/SHM names are the only mild recon surface). | **(a)** — matches least-privilege precedent, and every v1 scenario (S-A…S-E) pulls only channels the caller is registered on.  The (owner,id) SCHEMA form stays known-role-open (the registry is shared infrastructure, and hub-globals have no channel to be member of).  Loosening later for an observer role is a deliberate #292-era grant, not a default. Adopted — decision 2, proceeding. |
 | **G5** | Freshness/lifetime semantics are implicit. | Doc | Write into the integration: metrics freshness = heartbeat cadence; schema validity = channel lifetime (S-D); pull-at-establishment pattern; fan-in dual-lifetime rule (channel form for consumers, owner/id form for tooling); SHM cross-verification rule (pulled BLDS fingerprint MUST match the DataBlock header hashes before mapping — S-A refinement). | Fold into HEP-0034 §10.3 + HEP-0019 when the slice lands. |
-| **G6** | No typed bodies for either message (JSON handlers). | Tracked | Already on the HEP-0046 EnvelopeOnly follow-on list; add `SchemaReqBody`/`MetricsReqBody` when giving them clients (the natural moment). | Do with slice 1. |
+| **G6** | No typed bodies for either message (JSON handlers). | Tracked | Already on the HEP-0046 EnvelopeOnly follow-on list; add `SchemaReqBody`/`MetricsReqBody` when giving them clients (the natural moment). | Superseded 2026-07-26: slice 1b shipped the gating via the `Control_EnvelopeWithRoleUid` tier row (identity policing at dispatch, no handler-signature change), so the typed bodies are decoupled from gating and stay on the HEP-0046 EnvelopeOnly→typed follow-on list. |
 | **G7** | **✅ RESOLVED — user ruling 2026-07-26: Option B.**  The fan-in owner MUST declare its schema; adopt-onto-blank is not built.  S-A2 is cut from scope.  This yields the unifying config rule of the whole design: **`from-channel` is legal only on DIALING sides — every OWNER declares the format when it opens the book** (fan-out / 1:1 producer; fan-in consumer).  Matches the machine exactly: the book the owner establishes (C1/C2) includes the format; dialers receive their view of it (REG/ACK, §2b).  Enforcement is two-layer: config-time (the role host rejects `from-channel` on an owning side as a config error) and broker-side (the fan-in open row requires schema material — see G8 unified rule). | Resolved | — | Scope note stands: this only ever concerned ZMQ fan-in; SHM and all producer-owned channels were never affected. |
 | **G8 (+G8b)** | **The OPEN row installs contracts it never validates — two holes, same shape (both verified in code 2026-07-26).**  Answering "is the fingerprint always required and checked at REQ?": on every JOIN against an existing channel — yes, unconditionally (the front-door compares fingerprints exactly, all modes, both sides).  On NAMED registrations — yes (hash required, `verify_request_fingerprint` self-check).  But on the two ESTABLISH paths the self-check is skipped: **(G8)** the fan-in owner's citation block is guarded by `!consumer_will_open_channel` — a stale/typo'd config hash seeds an internally inconsistent contract and every honest producer is then rejected `SCHEMA_MISMATCH`, the failure landing on the wrong party; **(G8b)** an ANONYMOUS producer (no schema_id) skips the whole §10.1 validation block, yet `schema_inv.{hash,blds}` are filled from the wire unconditionally — a fresh channel can open with an inconsistent hash/structure pair, or with structure and NO hash at all (an unciteable channel: every honest citer computes a real fingerprint and is rejected against the empty one). | Real defects (pre-existing) | **One unified rule closes both, stated in §4.7.0.3 terms: the OPEN row validates the contract it installs, at least as strictly as the JOIN row checks those who match it.**  At any channel-open carrying schema material: structure present → hash REQUIRED and must equal the recomputed fingerprint (`MISSING_HASH` / `FINGERPRINT_INCONSISTENT` before the book opens).  Under Option B (G7) a fan-in consumer-open with NO schema material is itself rejected. | Fix + L2 pins in slice 1 (the helper exists; both sites are one branch away from it). |
+
+| **G9** | **The fan-in OPEN row installs an owner claim it never validates** (slice-1 fresh-eyes review, 2026-07-26): `handle_consumer_reg_req` copies `expected_schema_owner` VERBATIM into the new channel's invariants, but the citation block never reads it — not in `has_any_expected`, no grammar check, no registry check — while the single validator's own contract note says consumers never claim an owner.  Composition analysis proves the stakes: the producer front-door defaults an ownerless named citation to `cited_owner = role_uid` (self), so on a fan-in channel — where EVERY producer is a joiner — a named channel whose stored owner is empty or a third-party string is unjoinable by ANY producer (named citations fail the owner axis, anonymous ones fail the name axis).  A named fan-in channel is joinable ONLY under owner="hub" (all producers adopt the same hub-global). | Real defect (pre-existing shape, exposed by Option B) | **Ruled 2026-07-26: the open row validates the owner axis it installs.**  `expected_schema_owner` ∈ {"", "hub"} — anything else `SCHEMA_FORBIDDEN_OWNER` (symmetric with the producer's rule).  Named open ⇒ owner="hub" REQUIRED (`SCHEMA_OWNER_REQUIRED`) + registry resolution through the single validator (`check_registry_record`: `SCHEMA_UNKNOWN` / `FINGERPRINT_INCONSISTENT`).  Anonymous open ⇒ owner empty.  Owner-without-id ⇒ `INVALID_REQUEST` on BOTH sides (both silently ignored today).  Joining consumers' owner claims matched exactly (validator owner axis, `sin.cited_owner`). | Slice 1c. |
+| **G10** | **A named-no-structure open creates a channel whose structure nobody can fetch**: `SCHEMA_REQUIRED` accepts any citation material, so an (id + hash)-only fan-in open installs a named contract with empty `blds` — the channel-form `SCHEMA_REQ` returns no structure and the §2b ACK would deliver none. | Real gap | Closed by G9's ruling: the named open resolves against the hub registry, whose records ALWAYS carry structure (`make_schema_record` asserts ≥ 1 zone), and the open MATERIALIZES the record's `blds`/`flexzone_blds` into the channel invariants — the channel form and the §2b ACK then serve structure directly.  Anonymous opens already require full structure.  Hash-only ANONYMOUS producer opens (legacy fingerprint-only) remain legal per ratified SI-2 — such channels serve no structure by design, and a `from-channel` role aborts cleanly on the empty format (SI-6). | Slice 1c (with G9). |
 
 **Conflicts detected: none against the lifecycle machine.**  Two
 near-conflicts resolve cleanly and should be documented as patterns:
@@ -397,21 +404,39 @@ state this in HEP-0007 §12.3 so they don't drift toward duplication.
 ## 4. Proposed integration, sliced
 
 **Slice 1 — client plumbing + gating + pins (small, self-contained).**
-BRC: `get_schema(owner, id)` / `get_channel_schema(channel)` /
-`get_channel_metrics(channel)` beside `list_channels`.  RoleAPIBase
-pass-throughs (Class-C routing).  G3(a) member-gating — which has a
-prerequisite the first draft of this document missed (fresh-eyes
-2026-07-26): **both handlers today take only `(const nlohmann::json &)`
-and cannot see the caller**, so gating requires migrating them to the
-identity-aware handler shape first (as `handle_check_peer_ready_req`
-already is).  Correction to the first draft: both messages ALREADY have
-admission-tier rows (`Tier::EnvelopeOnly` in the wire_dispatch table) —
-there is no tier bypass to close; the upgrade is
-`SchemaReqBody`/`MetricsReqBody` typed bodies (moving them up from
-EnvelopeOnly) + the identity-aware signatures.  HEP-0007 §12.2.1 note
-flips from "no production caller" to the contract; L2 handler pins
-(both forms, gating, error paths) + one L3 wire round-trip.  Unlocks
-S-B and S-E immediately.
+✅ SHIPPED 2026-07-26 (slices 1a + 1b).  BRC: `get_schema(owner, id)` /
+`get_channel_schema(channel)` / `get_channel_metrics(channel)` beside
+`list_channels`; RoleAPIBase pass-throughs (Class-C routing).  Gating
+shipped via the ADMISSION TIER, not new handler signatures (superseding
+this document's first-draft plan of "identity-aware signatures + typed
+bodies"): both messages moved `EnvelopeOnly` →
+`Control_EnvelopeWithRoleUid` — the caller's `role_uid` is
+identity-bound at dispatch and the handlers read the vetted body
+unchanged.  Channel-form member gate via
+`is_role_registered_on_channel` (`NOT_A_ROLE_OF_CHANNEL`); `(owner,id)`
+registry form known-role-open; METRICS all-channels wire branch
+retired.  `SchemaReqBody`/`MetricsReqBody` were NOT built — the tier
+row provides the identity policing, so the typed bodies are decoupled
+from gating and stay on the HEP-0046 EnvelopeOnly→typed follow-on list
+(G6).  Open-row validation (SI-1/SI-2, G8+G8b) shipped as slice 1a.
+HEP-0007 §12.2.1 + §12.3 + error rows updated.  S-B and S-E unlocked.
+
+**Slice 1c — the open row installs a complete, validated contract
+(G9 + G10; ruled 2026-07-26).**  Broker, `handle_consumer_reg_req`:
+`expected_schema_owner` ∈ {"", "hub"} (anything else →
+`SCHEMA_FORBIDDEN_OWNER`, symmetric with the producer rule); a NAMED
+fan-in open (id non-empty) REQUIRES owner="hub"
+(`SCHEMA_OWNER_REQUIRED` otherwise — G9 proves a named book without a
+registry owner is dead-on-arrival) and resolves against the registry
+through the single validator (`check_registry_record`;
+`SCHEMA_UNKNOWN` / `FINGERPRINT_INCONSISTENT` on failure), then
+MATERIALIZES the record's structure into the channel invariants when
+the citation carried none (G10); an owner claim without a schema_id is
+`INVALID_REQUEST` on BOTH the consumer and producer sides (today both
+are silently ignored — stale-silent-fallback hygiene); JOINING
+consumers' non-empty owner claims are matched exactly via the
+validator's owner axis (today silently ignored).  L3 pins per reject +
+the resolved-open path; HEP-0007 vocabulary rows; HEP-0034 §10.2 note.
 
 **Slice 2 — engine bindings (3-engine parity).**  `api.get_schema` /
 `api.get_channel_schema` / `api.get_channel_metrics` in Lua + Python +
