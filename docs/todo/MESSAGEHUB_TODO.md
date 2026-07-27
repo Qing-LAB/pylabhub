@@ -64,7 +64,36 @@ decisions pending user ruling):
       flipped, NOT_A_ROLE row widened (0036 §6.6).  Typed
       SchemaReqBody/MetricsReqBody stay on the HEP-0046
       EnvelopeOnly→typed follow-on list with the notify bodies.
-- [ ] Slice 2: 3-engine `api.` bindings + HEP-0028/README docs.
+- [ ] Slice 2: 3-engine `api.get_schema(owner,id)` /
+      `api.get_channel_schema(ch)` / `api.get_channel_metrics(ch)`.
+      **Implementation map (patterns verified in code 2026-07-26 —
+      ready to execute):**
+      - Return contract (all engines): the FULL broker reply as data
+        (Lua table / Python dict / native JSON string); nil/None/NULL
+        only on transport failure — scripts branch on
+        `status`/`error_code` as data (SI-5 reply-is-data, matches
+        the BRC surface 1:1).
+      - Lua: 3 static closures using `json_to_lua`
+        (lua_engine.cpp:97) + `push_closure` rows (:386 cluster) +
+        lua_engine.hpp decls.  Template: `lua_api_consumer_count`.
+      - Python: 3 methods in EACH of producer_api / consumer_api /
+        processor_api (.cpp + .hpp + pybind `.def` rows).  Template:
+        `ProducerAPI::band_join` (gil_scoped_release → `base_->…` →
+        `json_to_py` or `py::none()`).  Triplication accepted until
+        #292 unification.
+      - Native: 3 fn ptrs APPENDED to `PlhNativeContext`
+        (native_engine_api.h) returning `const char*` JSON via the
+        thread-local scratch pattern (`hub_json_scratch`,
+        native_engine.cpp:149-182 — same lifetime contract as
+        `hub_*_json`); `PLH_NATIVE_API_VERSION` 12→13 (exact-match
+        gate ⇒ CLEAN REBUILD of utils+scripting, see the S4 vtable
+        incident); header version-log entry.
+      - Docs: HEP-0028 §6a rows + native version log;
+        README_topology_channels §5 sentence.
+      - Pins: L2 per-engine arg-validation + not-connected-nil; the
+        broker-side behavior is already L3-pinned (slice 1b), so
+        engine pins cover only the binding layer.  L4
+        metrics-adaptive script as the slice-2 keystone.
 - [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
       native roles.
 - [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully
