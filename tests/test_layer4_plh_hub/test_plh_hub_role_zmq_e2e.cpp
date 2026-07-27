@@ -458,6 +458,159 @@ void write_zmq_processor_script(const fs::path &script_dir, float proc_mark)
          "    api.log('info', 'proc_test: stop iter=' + str(_iter[0]))\n";
 }
 
+// ─── Metrics-adaptive scripts (schema/metrics query integration keystone) ──
+//
+// Producer variant of `write_zmq_producer_script` that additionally
+// reports a custom metric each tick (`api.report_metric`), so the
+// consumer can observe it through the METRICS_REQ pull — pinning the
+// full metrics loop end-to-end: script report → heartbeat piggyback →
+// HubState presence row → member-gated METRICS pull → script dict.
+
+void write_zmq_metrics_producer_script(const fs::path &script_dir, int n_slots)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_N_SLOTS = " << n_slots << "\n"
+      << "_iter = [0]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'prod_test: init')\n"
+         "\n"
+         "def on_produce(tx, msgs, api):\n"
+         "    if tx.slot is None:\n"
+         "        return False\n"
+         "    n = _iter[0] % _N_SLOTS\n"
+         "    tx.slot.value = float(n)\n"
+         "    _iter[0] += 1\n"
+         "    api.report_metric('produced_total', float(_iter[0]))\n"
+         "    if _iter[0] <= 2 * _N_SLOTS:\n"
+         "        api.log('info', 'prod_test: wrote slot N=' + str(n) +\n"
+         "                ' iter=' + str(_iter[0]))\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'prod_test: stop iter=' + str(_iter[0]))\n";
+}
+
+/// Metrics-ADAPTIVE consumer: pulls `api.get_channel_metrics` MID-RUN
+/// (every on_consume tick until adapted) and switches behavior on the
+/// pulled values — the production shape the query surface exists for.
+///
+/// Adaptation fires only when the snapshot shows ALL of:
+///   (a) a producer group whose built-in `role.out_slots_written` has
+///       crossed `threshold` (heartbeat-piggybacked builtin metric),
+///   (b) that group's `custom.produced_total` present (script-reported
+///       metric via report_metric round-tripped), and
+///   (c) the consumer's own uid in the `consumers` group (self side of
+///       the member snapshot; also removes the first-heartbeat race —
+///       the loop simply polls until its own row lands).
+/// The adapt marker carries the pulled values so the parent pins them
+/// against thresholds — content, not just "a call succeeded".
+/// Completion is GATED on adaptation, making the marker order
+/// adapt → complete structural.
+void write_zmq_metrics_adaptive_consumer_script(const fs::path &script_dir, int expected_slots,
+                                                int threshold)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_EXPECTED  = " << expected_slots << "\n"
+      << "_THRESHOLD = " << threshold << "\n"
+      << "_received  = [0]\n"
+         "_adapted   = [False]\n"
+         "_done      = [False]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'cons_test: init')\n"
+         "\n"
+         "def on_consume(rx, msgs, api):\n"
+         "    if rx.slot is None:\n"
+         "        return True\n"
+         "    _received[0] += 1\n"
+         "    if not _adapted[0]:\n"
+         "        m = api.get_channel_metrics(api.channel())\n"
+         "        if m is not None and m.get('status') == 'success':\n"
+         "            prods = m.get('metrics', {}).get('producers', {})\n"
+         "            cons  = m.get('metrics', {}).get('consumers', {})\n"
+         "            for uid, grp in prods.items():\n"
+         "                out_w = grp.get('role', {}).get('out_slots_written', 0)\n"
+         "                total = grp.get('custom', {}).get('produced_total', -1.0)\n"
+         "                if (out_w >= _THRESHOLD and total >= 0 and\n"
+         "                        api.uid() in cons):\n"
+         "                    _adapted[0] = True\n"
+         "                    api.log('info', 'cons_test: adapt uid=' + uid +\n"
+         "                            ' out_slots_written=' + str(out_w) +\n"
+         "                            ' produced_total=' + str(total) +\n"
+         "                            ' self_in_consumers=' + str(api.uid() in cons))\n"
+         "                    break\n"
+         "    if _adapted[0] and _received[0] >= _EXPECTED and not _done[0]:\n"
+         "        _done[0] = True\n"
+         "        api.log('info', 'cons_test: complete N=' + str(_received[0]))\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'cons_test: stop received=' + str(_received[0]))\n";
+}
+
+// ─── Native producer config (live-broker query smoke) ──────────────────────
+//
+// Same shape as `write_zmq_producer_config` with `script.type` set to
+// "native".  Deployment layout convention (same resolution rule as the
+// python scripts' `script/python/__init__.py`): the role host resolves
+// the plugin at `<script.path>/script/native/plugin.so`, so the test
+// copies the staged dylib to `<role_dir>/script/native/plugin.so`.
+
+void write_zmq_native_producer_config(const fs::path &cfg_path, const fs::path &hub_dir,
+                                      const std::string &uid, const std::string &channel,
+                                      int prod_port)
+{
+    nlohmann::json j;
+    j["producer"]["uid"] = uid;
+    j["producer"]["name"] = "L4NativeProducer";
+    j["producer"]["log_level"] = "info";
+    j["producer"]["auth"]["keyfile"] = "vault/" + uid + ".vault";
+
+    j["out_hub_dir"] = hub_dir.string();
+    j["out_channel"] = channel;
+    j["loop_timing"] = "fixed_rate";
+    j["target_period_ms"] = 50;
+
+    j["out_transport"] = "zmq";
+    j["out_zmq_endpoint"] = "tcp://127.0.0.1:" + std::to_string(prod_port);
+    j["out_zmq_buffer_depth"] = 256;
+    j["out_zmq_overflow_policy"] = "drop";
+
+    j["out_slot_schema"]["packing"] = "aligned";
+    j["out_slot_schema"]["fields"] =
+        nlohmann::json::array({nlohmann::json{{"name", "value"}, {"type", "float32"}}});
+    j["out_flexzone_schema"] = nullptr;
+
+    j["checksum"] = "enforced";
+    j["flexzone_checksum"] = true;
+    j["stop_on_script_error"] = false;
+    j["script"]["type"] = "native";
+    j["script"]["path"] = ".";
+
+    std::error_code ec;
+    fs::create_directories(cfg_path.parent_path(), ec);
+    std::ofstream f(cfg_path);
+    f << j.dump(2);
+}
+
+/// Staged path of the L4 native smoke plugin — built by
+/// test_layer2_service (`test_l4_native_producer_plugin`), staged into
+/// the same `tests/` dir as this test binary.
+fs::path l4_native_plugin_path()
+{
+    const fs::path dir = fs::path(::g_self_exe_path).parent_path();
+#if defined(_WIN32) || defined(_WIN64)
+    return dir / "test_l4_native_producer_plugin.dll";
+#elif defined(__APPLE__)
+    return dir / "libtest_l4_native_producer_plugin.dylib";
+#else
+    return dir / "libtest_l4_native_producer_plugin.so";
+#endif
+}
+
 } // namespace
 
 // ─── Scenario A: authorized producer + consumer over ZMQ ────────────────────
@@ -1248,12 +1401,12 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     // markers are already present.  A regression that reverts the re-tag
     // (strips phase=live) or mis-wires PythonEngine::invoke_on_producer_joined
     // fails here even though data flow (above) still passes.
-    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
-                                     "cons_test: producer_joined uid=" + prod_a_uid, seconds(5)))
+    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: producer_joined uid=" + prod_a_uid,
+                                     seconds(5)))
         << dump_full("on_producer_joined for producer A — phase=live re-tag + dispatch to "
                      "on_producer_joined did not reach the script");
-    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
-                                     "cons_test: producer_joined uid=" + prod_b_uid, seconds(5)))
+    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: producer_joined uid=" + prod_b_uid,
+                                     seconds(5)))
         << dump_full("on_producer_joined for producer B");
 
     // ── #74 objective peer counts (DRAFT_objective_peer_counts_2026-07-26) ─
@@ -1262,15 +1415,17 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     // (channel-level status, a number — NOT the per-peer identity stream, which
     // stays binding-side only).  Each DIALING producer seeing producer_count=2
     // (its sibling included) is the #74 win — pre-#74 a dialing role read 0.
-    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons,
-                                     "cons_test: counts producers=2 consumers=1", seconds(10)))
+    EXPECT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: counts producers=2 consumers=1",
+                                     seconds(10)))
         << dump_full("#74 consumer objective count (producers=2 consumers=1, self-inclusive)");
     EXPECT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
                                      "prod_test: counts producers=2 consumers=1", seconds(10)))
-        << dump_full("#74 producer A objective count — DIALING side sees its sibling (producers=2)");
+        << dump_full(
+               "#74 producer A objective count — DIALING side sees its sibling (producers=2)");
     EXPECT_TRUE(wait_for_role_marker(prod_b_dir, prod_b,
                                      "prod_test: counts producers=2 consumers=1", seconds(10)))
-        << dump_full("#74 producer B objective count — DIALING side sees its sibling (producers=2)");
+        << dump_full(
+               "#74 producer B objective count — DIALING side sees its sibling (producers=2)");
 
     // ── Shutdown ──────────────────────────────────────────────────────
     cons.send_signal(SIGTERM);
@@ -1739,6 +1894,345 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
     recv.wait_for_exit(10);
     hub.send_signal(SIGTERM);
     EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Scenario E: metrics-adaptive consumer (query-integration keystone) ─────
+//
+// The L4 keystone for the HEP-CORE-0034 §10.3 / SI-5 query surface: a
+// consumer script pulls `get_channel_metrics` MID-RUN and adapts its
+// behavior on the pulled values.  Pins the full metrics loop in one
+// production-shaped scenario:
+//
+//   producer script `report_metric('produced_total', …)` (custom) +
+//   built-in `role.out_slots_written`
+//     → HEARTBEAT_NOTIFY piggyback (HEP-CORE-0019 §2.3)
+//     → HubState presence rows
+//     → consumer's member-gated METRICS_REQ pull (MI-1/SI-5)
+//     → PythonEngine dict → script decision.
+//
+// The adapt marker carries the pulled values; the parent asserts them
+// against the script's threshold (content pin, not call-success pin)
+// and pins the adapt → complete marker ORDER (completion is gated on
+// adaptation in the script, so the sequence is structural).
+
+TEST_F(PlhHubCliTest, ZmqE2E_MetricsAdaptiveConsumer)
+{
+    using std::chrono::seconds;
+
+    const std::string channel = "lab.l4.zmq.metrics.e";
+    const std::string prod_uid = "prod.l4metr.uid12345678";
+    const std::string cons_uid = "cons.l4metr.uid12345678";
+    constexpr int kSlots = 5;
+    constexpr int kThreshold = 5;
+    const int prod_port = 26000 + (::getpid() % 1000);
+
+    // ── Hub init + keygen ─────────────────────────────────────────────────
+    const fs::path hub_dir = tmp("metrics_e2e_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+                           {hub_dir.string(), "--name", "L4MetricsHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "metrics-e2e-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+                         {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    // ── Role keygen + known_roles ─────────────────────────────────────────
+    const fs::path prod_dir = tmp("metrics_e2e_prod");
+    const fs::path cons_dir = tmp("metrics_e2e_cons");
+    std::error_code ec;
+    fs::create_directories(prod_dir / "vault", ec);
+    fs::create_directories(cons_dir / "vault", ec);
+
+    write_zmq_producer_config(prod_dir / "producer.json", hub_dir, prod_uid, channel, prod_port);
+    write_zmq_metrics_producer_script(prod_dir / "script" / "python", kSlots);
+    write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir, cons_uid, channel);
+    write_zmq_metrics_adaptive_consumer_script(cons_dir / "script" / "python", kSlots, kThreshold);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "metrics-e2e-role-pw", /*overwrite=*/1);
+    const std::string prod_pubkey =
+        keygen_role_and_read_pubkey(prod_dir, "producer", prod_uid, "metrics-e2e-role-pw");
+    const std::string cons_pubkey =
+        keygen_role_and_read_pubkey(cons_dir, "consumer", cons_uid, "metrics-e2e-role-pw");
+    add_known_role(hub_dir, "metrics_prod", prod_uid, "producer", prod_pubkey);
+    add_known_role(hub_dir, "metrics_cons", cons_uid, "consumer", cons_pubkey);
+
+    // ── Hub run-mode + endpoint rewrite ───────────────────────────────────
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
+                                                                      << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // ── Producer, then consumer ───────────────────────────────────────────
+    WorkerProcess prod(plh_role_binary(), "--role", {"producer", prod_dir.string()});
+
+    auto dump_full = [&](const std::string &where) -> std::string
+    {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer log file ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        s += "── consumer log file ──\n" + read_role_log(cons_dir) + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
+    ASSERT_TRUE(wait_for_hub_marker(
+        hub_dir, "event=RegReqAccepted role='" + prod_uid + "' channel='" + channel + "'",
+        seconds(7)))
+        << dump_full("RegReqAccepted (hub side)");
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod, "event=RegAckReceived", seconds(5)))
+        << dump_full("RegAckReceived (producer side)");
+
+    WorkerProcess cons(plh_role_binary(), "--role", {"consumer", cons_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "event=ConsumerRegAckReceived", seconds(7)))
+        << dump_full("ConsumerRegAckReceived (consumer side)");
+
+    // ── Keystone: the consumer adapts on pulled metrics, then completes ──
+    // The completion COUNT is timing-dependent by design: adaptation
+    // converges on the heartbeat cadence (~500 ms ticks) while slots keep
+    // flowing at 20/s, so N at completion is ≥ kSlots, not == kSlots.
+    // The exact-count pin (N >= kSlots) is applied via regex below.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: adapt uid=", seconds(15)))
+        << dump_full("cons_test: adapt — METRICS pull chain");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: complete N=", seconds(10)))
+        << dump_full("cons_test: complete — post-adapt data flow");
+
+    // Content pin: the adapt decision used the PULLED values.  Producer
+    // uid resolved from the snapshot; built-in out_slots_written crossed
+    // the script threshold; the custom report_metric round-tripped; the
+    // consumer saw its own presence row (self side of the snapshot).
+    {
+        const std::string cons_log = read_role_log(cons_dir);
+        static const std::regex adapt_re(
+            R"(cons_test: adapt uid=(\S+) out_slots_written=(\d+))"
+            R"( produced_total=([0-9.]+) self_in_consumers=(True|False))");
+        std::smatch m;
+        ASSERT_TRUE(std::regex_search(cons_log, m, adapt_re)) << "adapt marker malformed:\n"
+                                                              << cons_log;
+        EXPECT_EQ(m[1].str(), prod_uid) << "adapted on the wrong producer group";
+        EXPECT_GE(std::stoi(m[2].str()), kThreshold) << "built-in metric below script threshold";
+        EXPECT_GE(std::stod(m[3].str()), 1.0) << "custom produced_total did not round-trip";
+        EXPECT_EQ(m[4].str(), "True") << "consumer's own presence row missing from snapshot";
+
+        static const std::regex complete_re(R"(cons_test: complete N=(\d+))");
+        std::smatch cm;
+        ASSERT_TRUE(std::regex_search(cons_log, cm, complete_re)) << cons_log;
+        EXPECT_GE(std::stoi(cm[1].str()), kSlots) << "completed below the expected slot count";
+
+        // Order pin: adaptation strictly precedes completion (the script
+        // gates completion on the adapt flag — a regression that decouples
+        // them shows up as complete-before-adapt here).
+        const size_t adapt_pos = cons_log.find("cons_test: adapt uid=");
+        const size_t complete_pos = cons_log.find("cons_test: complete N=");
+        ASSERT_NE(adapt_pos, std::string::npos);
+        ASSERT_NE(complete_pos, std::string::npos);
+        EXPECT_LT(adapt_pos, complete_pos);
+    }
+
+    // ── Shutdown + Class-D gate ───────────────────────────────────────────
+    cons.send_signal(SIGTERM);
+    EXPECT_EQ(cons.wait_for_exit(10), 0) << "consumer did not exit cleanly on SIGTERM.\n"
+                                         << cons.get_stderr();
+    prod.send_signal(SIGTERM);
+    EXPECT_EQ(prod.wait_for_exit(10), 0) << "producer did not exit cleanly on SIGTERM.\n"
+                                         << prod.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << "hub did not exit cleanly on SIGTERM.\n"
+                                        << hub.get_stderr();
+
+    auto contains_error = [](const std::string &s)
+    { return s.find("[ERROR ]") != std::string::npos; };
+    const std::string hub_log = read_hub_log(hub_dir);
+    EXPECT_FALSE(contains_error(hub_log)) << "hub log [ERROR ]:\n" << hub_log;
+    EXPECT_FALSE(contains_error(prod.get_stderr())) << "producer stderr [ERROR ]:\n"
+                                                    << prod.get_stderr();
+    EXPECT_FALSE(contains_error(cons.get_stderr())) << "consumer stderr [ERROR ]:\n"
+                                                    << cons.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Scenario F: native producer — live-broker schema/metrics queries ──────
+//
+// The native-engine live-broker smoke for the v13 `get_*_json` trio.
+// The no-broker (NULL-sentinel) half is L2-pinned
+// (NativeEngineTest.Api_SchemaQueries_NoBroker_GracefulReturn); this
+// scenario pins the SUCCESS half through the full production stack:
+// real `plh_role` loads the plugin dylib, registers over CURVE against
+// a real `plh_hub`, and on its first produce tick queries
+//
+//   get_schema_json("hub", "$l4.native.frame.v1")  — hub-global record,
+//       loaded at broker startup from `<hub_dir>/schemas/` (HEP-0034 §12);
+//   get_channel_schema_json(<own channel>)         — member-gated channel form;
+//   get_channel_metrics_json(<own channel>)        — member-gated metrics pull;
+//
+// then logs one marker with per-query verdicts (non-NULL AND
+// status=success AND payload key present, evaluated per the v13
+// shared-scratch lifetime rule).  The parent asserts the all-1s form.
+
+TEST_F(PlhHubCliTest, ZmqE2E_NativeProducer_LiveSchemaQueries)
+{
+    using std::chrono::seconds;
+
+    const std::string channel = "lab.l4.zmq.native.f";
+    const std::string prod_uid = "prod.l4natv.uid12345678";
+    const int prod_port = 27000 + (::getpid() % 1000);
+
+    const fs::path plugin = l4_native_plugin_path();
+    ASSERT_TRUE(fs::exists(plugin))
+        << "smoke plugin not staged: " << plugin << " (target test_l4_native_producer_plugin)";
+
+    // ── Hub init + hub-global schema fixture + keygen ─────────────────────
+    const fs::path hub_dir = tmp("native_e2e_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init", {hub_dir.string(), "--name", "L4NativeHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    // Fixture contract with the plugin: `$l4.native.frame.v1` must be
+    // resolvable as a hub-global.  Production loader path — plh_hub's
+    // HubHost walks `<hub_dir>/schemas/` at broker startup.
+    std::error_code ec;
+    fs::create_directories(hub_dir / "schemas", ec);
+    {
+        std::ofstream f(hub_dir / "schemas" / "l4_native_frame_v1.json");
+        f << R"({"id":"l4.native.frame","version":1,)"
+             R"("slot":{"packing":"aligned","fields":[{"name":"v","type":"float32"}]}})";
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "native-e2e-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+                         {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    // ── Native producer keygen + known_roles ──────────────────────────────
+    const fs::path prod_dir = tmp("native_e2e_prod");
+    fs::create_directories(prod_dir / "vault", ec);
+    write_zmq_native_producer_config(prod_dir / "producer.json", hub_dir, prod_uid, channel,
+                                     prod_port);
+    // Production deployment layout: the plugin lives inside the role dir
+    // at `script/native/plugin.so` (same resolution convention as the
+    // python scripts' `script/python/__init__.py`).
+    fs::create_directories(prod_dir / "script" / "native", ec);
+    fs::copy_file(plugin, prod_dir / "script" / "native" / "plugin.so",
+                  fs::copy_options::overwrite_existing, ec);
+    ASSERT_FALSE(ec) << "failed to place plugin into role dir: " << ec.message();
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "native-e2e-role-pw", /*overwrite=*/1);
+    const std::string prod_pubkey =
+        keygen_role_and_read_pubkey(prod_dir, "producer", prod_uid, "native-e2e-role-pw");
+    add_known_role(hub_dir, "native_prod", prod_uid, "producer", prod_pubkey);
+
+    // ── Hub run-mode + endpoint rewrite ───────────────────────────────────
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
+                                                                      << read_hub_log(hub_dir);
+    // Hub-globals loader ran with the fixture visible (1 record, or
+    // idempotent on a retried startup — never 0).
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "registered 1 hub-global schema record"))
+        << "hub-global fixture not loaded.  Log:\n"
+        << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // ── Native producer spawn ─────────────────────────────────────────────
+    WorkerProcess prod(plh_role_binary(), "--role", {"producer", prod_dir.string()});
+
+    auto dump_prod = [&](const std::string &where) -> std::string
+    {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer log file ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
+    // Plugin loaded through the real dylib path (plh_role → NativeEngine).
+    ASSERT_TRUE(
+        wait_for_role_marker(prod_dir, prod, "native_test: init channel=" + channel, seconds(10)))
+        << dump_prod("native_test: init — plugin load via plh_role");
+
+    ASSERT_TRUE(wait_for_hub_marker(
+        hub_dir, "event=RegReqAccepted role='" + prod_uid + "' channel='" + channel + "'",
+        seconds(7)))
+        << dump_prod("RegReqAccepted (hub side)");
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod, "event=RegAckReceived", seconds(5)))
+        << dump_prod("RegAckReceived (producer side)");
+
+    // ── The smoke pin: all three live queries succeeded ───────────────────
+    ASSERT_TRUE(wait_for_role_marker(
+        prod_dir, prod, "native_test: live_queries hub_schema=1 channel_schema=1 channel_metrics=1",
+        seconds(10)))
+        << dump_prod("native_test: live_queries — v13 get_*_json against live broker");
+
+    // ── Shutdown + Class-D gate ───────────────────────────────────────────
+    prod.send_signal(SIGTERM);
+    EXPECT_EQ(prod.wait_for_exit(10), 0) << "producer did not exit cleanly on SIGTERM.\n"
+                                         << prod.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << "hub did not exit cleanly on SIGTERM.\n"
+                                        << hub.get_stderr();
+
+    auto contains_error = [](const std::string &s)
+    { return s.find("[ERROR ]") != std::string::npos; };
+    const std::string hub_log = read_hub_log(hub_dir);
+    EXPECT_FALSE(contains_error(hub_log)) << "hub log [ERROR ]:\n" << hub_log;
+    EXPECT_FALSE(contains_error(prod.get_stderr())) << "producer stderr [ERROR ]:\n"
+                                                    << prod.get_stderr();
 
     ::unsetenv("PYLABHUB_HUB_PASSWORD");
     ::unsetenv("PYLABHUB_ROLE_PASSWORD");

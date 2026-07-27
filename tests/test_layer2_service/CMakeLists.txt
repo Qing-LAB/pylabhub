@@ -1628,6 +1628,23 @@ set_target_properties(test_native_multifield_module PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
 )
 
+# L4 live-broker smoke plugin: loaded by the real plh_role binary in
+# test_layer4_plh_hub (ZmqE2E_NativeProducer_LiveSchemaQueries).  Built
+# here because all native test plugins live under test_plugins/; staged
+# to the same tests/ dir so the L4 test resolves it next to its own
+# binary.
+add_library(test_l4_native_producer_plugin SHARED
+    test_plugins/l4_native_producer_plugin.cpp
+)
+target_include_directories(test_l4_native_producer_plugin PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/include
+)
+target_link_libraries(test_l4_native_producer_plugin PRIVATE pylabhub::utils)
+target_compile_features(test_l4_native_producer_plugin PRIVATE cxx_std_20)
+set_target_properties(test_l4_native_producer_plugin PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${PYLABHUB_STAGING_DIR}/tests"
+)
+
 # Compile-only TU pinning the v6 C++20 concept contracts (#194 Phase C).
 # Built as an OBJECT library so we never link it — the build IS the test:
 # all `static_assert`s inside fire at parse time.  If any future change

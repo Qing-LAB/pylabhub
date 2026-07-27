@@ -117,11 +117,22 @@ decisions pending user ruling):
       IMPLEMENTATION_GUIDANCE § "Role-side query surface" (WARN-only
       on transport failure, typed rejections as data, registration
       keeps ERROR; enforced by the three per-engine L2 pins).
-- [ ] Slice-2 follow-up: L4 keystone — a metrics-adaptive script role
-      (script pulls `get_channel_metrics` mid-run and adapts) as a
-      Pattern-4/L4 scenario; native-engine live-broker smoke
-      (`get_*_json` against a real broker; the no-broker half is now
-      L2-pinned).
+- [x] ✅ Slice-2 follow-up SHIPPED 2026-07-26 — both halves as L4
+      scenarios in `test_plh_hub_role_zmq_e2e.cpp`:
+      `ZmqE2E_MetricsAdaptiveConsumer` (keystone — consumer script
+      pulls `get_channel_metrics` MID-RUN and adapts; pins the full
+      metrics loop: producer `report_metric` custom + built-in
+      `out_slots_written` → heartbeat piggyback → HubState → member-
+      gated pull → script dict → decision; adapt marker carries the
+      pulled values, parent regex-pins uid/threshold/custom-roundtrip/
+      self-row + adapt→complete order) and
+      `ZmqE2E_NativeProducer_LiveSchemaQueries` (native smoke — real
+      `plh_role` loads `test_l4_native_producer_plugin` from the
+      production `script/native/plugin.so` layout; first produce tick
+      queries all three v13 `get_*_json` against the live broker:
+      hub-global `$l4.native.frame.v1` from `<hub_dir>/schemas/`,
+      channel form, metrics pull — single all-1s marker pinned).
+      3× repeat green; full ZmqE2E suite 11/11.
 - [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
       native roles.
 - [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully

@@ -57,6 +57,13 @@ if(TARGET stage_pylabhub_utils)
     add_dependencies(test_layer4_plh_hub stage_pylabhub_utils)
 endif()
 
+# Native live-broker smoke plugin (built by test_layer2_service, staged
+# next to this test binary; loaded by plh_role in
+# ZmqE2E_NativeProducer_LiveSchemaQueries).
+if(TARGET test_l4_native_producer_plugin)
+    add_dependencies(test_layer4_plh_hub test_l4_native_producer_plugin)
+endif()
+
 pylabhub_add_gtest(TARGET test_layer4_plh_hub
     LABELS "layer4;plh_hub"
     TIMEOUT 60
