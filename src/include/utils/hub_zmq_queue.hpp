@@ -487,7 +487,23 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     /// artifacts" — queue state unchanged, returns true.  Malformed
     /// JSON (array entry missing a required field) returns false
     /// with a logged reason; queue state is unchanged.
+    ///
+    /// Schema-pending refusal (HEP-CORE-0034 §10.3a): on a reader
+    /// built with an empty schema, refuses the Standby → Configured
+    /// transition until `configure_slot_schema()` has installed the
+    /// runtime-resolved format (SI-6 — no data flow on an empty
+    /// format).
     bool apply_master_approval(const nlohmann::json &artifacts) noexcept override;
+
+    /// HEP-CORE-0034 §10.3a — install the runtime-resolved slot schema
+    /// on a schema-pending reader (see QueueReader::configure_slot_schema
+    /// for the full contract).  Standby + Read-side only; validates the
+    /// field list exactly like the factory; computes the wire layout,
+    /// item size, and recv buffers that the build deferred.  Refuses
+    /// (state unchanged) on: Write side, running queue, already-
+    /// installed schema, or invalid field list / packing.
+    bool configure_slot_schema(std::vector<ZmqSchemaField> schema, std::string packing,
+                               std::optional<std::array<uint8_t, 8>> schema_tag) noexcept override;
 
     /// HEP-CORE-0036 §6.6.3 — deferred dial for the fan-in DIALING
     /// producer.  Called by the role host AFTER `wait_for_peer_ready`

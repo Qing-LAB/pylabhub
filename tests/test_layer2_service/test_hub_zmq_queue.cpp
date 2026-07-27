@@ -46,6 +46,8 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp> // apply_master_approval artifacts (schema-pending pins)
+
 #include "test_sync_utils.h"
 #include "log_capture_fixture.h"
 
@@ -347,6 +349,120 @@ TEST_F(ZmqQueueTest, PullFrom_EmptyServerPubkey_ProducesStandbyQueue_StartRefuse
     EXPECT_FALSE(q->is_running());
     EXPECT_FALSE(q->start());
     EXPECT_FALSE(q->is_running());
+}
+
+// ─── HEP-CORE-0034 §10.3a — schema-pending Standby build (slice 3b) ─────────
+//
+// A reader built with an EMPTY schema is a deliberate runtime-resolved
+// build: the channel's format arrives on CONSUMER_REG_ACK and the role
+// host installs it via configure_slot_schema() before apply.  Three
+// pins: (1) the pending build exists but can neither configure via
+// apply nor start (SI-6 — no data flow on an empty format); (2) the
+// format installs exactly once, with factory-grade validation
+// (SI-1 single establishment); (3) once installed, the queue runs the
+// normal lifecycle and DELIVERS — content-verified against a writer
+// with the same schema.
+
+TEST_F(ZmqQueueTest, PullFrom_EmptySchema_SchemaPending_ApplyAndStartRefused)
+{
+    auto q = make_pull_test("tcp://127.0.0.1:0", {}, /*packing=*/"", /*bind=*/false, 100);
+    ASSERT_NE(q, nullptr);
+    // Endpoint + serverkey are both populated, so WITHOUT the pending
+    // gate this connect-side queue would report Configured — the
+    // FALSE here is specifically the schema_pending gate.
+    EXPECT_FALSE(q->is_configured());
+    EXPECT_FALSE(q->is_running());
+    EXPECT_FALSE(q->start());
+
+    // Valid transport artifacts, format still pending → SI-6 refusal,
+    // state unchanged.
+    nlohmann::json ack;
+    ack["producers"] = nlohmann::json::array(
+        {nlohmann::json{{"role_uid", "prod.pending.uid1"},
+                        {"endpoint", "tcp://127.0.0.1:5999"},
+                        {"pubkey_z85", std::string{test_server_key().str()}}}});
+    ExpectLogError("slot schema still pending");
+    EXPECT_FALSE(q->apply_master_approval(ack));
+    EXPECT_FALSE(q->is_configured());
+    EXPECT_FALSE(q->is_running());
+}
+
+TEST_F(ZmqQueueTest, ConfigureSlotSchema_SingleEstablishment_FactoryGradeValidation)
+{
+    auto q = make_pull_test("tcp://127.0.0.1:0", {}, /*packing=*/"", /*bind=*/false, 100);
+    ASSERT_NE(q, nullptr);
+
+    // Factory-grade validation: an invalid field list is refused and
+    // the queue STAYS pending (state unchanged on refusal).
+    ExpectLogError("invalid type_str 'nope'");
+    EXPECT_FALSE(q->configure_slot_schema({{"nope", 1, 0}}, "aligned", std::nullopt));
+    EXPECT_FALSE(q->is_configured());
+
+    // Valid install succeeds…
+    EXPECT_TRUE(q->configure_slot_schema(blob_schema(kItemSize), "aligned", std::nullopt));
+    EXPECT_EQ(q->item_size(), kItemSize);
+
+    // …exactly once (SI-1 single establishment).
+    ExpectLogError("already installed");
+    EXPECT_FALSE(q->configure_slot_schema(blob_schema(kItemSize), "aligned", std::nullopt));
+
+    // A queue with a BUILD-TIME schema refuses installation outright.
+    auto fixed =
+        make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/false, 100);
+    ASSERT_NE(fixed, nullptr);
+    ExpectLogError("already installed");
+    EXPECT_FALSE(fixed->configure_slot_schema(blob_schema(kItemSize), "aligned", std::nullopt));
+
+    // The write side never builds schema-pending, and refuses the call.
+    auto push =
+        make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(push, nullptr);
+    ExpectLogError("write side never builds schema-pending");
+    EXPECT_FALSE(push->configure_slot_schema(blob_schema(kItemSize), "aligned", std::nullopt));
+}
+
+TEST_F(ZmqQueueTest, ConfigureSlotSchema_ThenApply_RoundtripDelivers)
+{
+    // Production-mirror orientation (see Roundtrip_SingleItem): PUSH
+    // binds, schema-pending PULL connects.  The pending reader goes
+    // through the full runtime-resolved sequence — configure (format
+    // from "the ACK") → apply_master_approval (peers) → Active — and
+    // the delivered bytes are content-verified.
+    auto push =
+        make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(seed_self_allowlist(*push));
+    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+
+    auto pull = make_pull_test(ep, {}, /*packing=*/"", /*bind=*/false, 100);
+    ASSERT_NE(pull, nullptr);
+    ASSERT_TRUE(pull->configure_slot_schema(blob_schema(kItemSize), "aligned", std::nullopt));
+
+    nlohmann::json ack;
+    ack["producers"] = nlohmann::json::array(
+        {nlohmann::json{{"role_uid", "prod.pending.uid2"},
+                        {"endpoint", ep},
+                        {"pubkey_z85", std::string{test_server_key().str()}}}});
+    ASSERT_TRUE(pull->apply_master_approval(ack));
+    ASSERT_TRUE(pull->is_running());
+    std::this_thread::sleep_for(50ms); // connection setup (as Roundtrip_SingleItem)
+
+    void *wbuf = push->write_acquire(1000ms);
+    ASSERT_NE(wbuf, nullptr);
+    std::memset(wbuf, 0xC7, kItemSize);
+    push->write_commit();
+
+    const void *rbuf = pull->read_acquire(2000ms);
+    ASSERT_NE(rbuf, nullptr) << "read_acquire timed out";
+    auto bytes = static_cast<const uint8_t *>(rbuf);
+    for (size_t i = 0; i < kItemSize; ++i)
+    {
+        ASSERT_EQ(bytes[i], 0xC7) << "Mismatch at byte " << i;
+    }
+    pull->read_release();
+
+    push->stop();
+    pull->stop();
 }
 
 TEST_F(ZmqQueueTest, PushTo_MissingKeyStoreEntry_FailsValidation)
@@ -1143,13 +1259,21 @@ TEST_F(ZmqQueueTest, Schema_ZeroLengthBytesField_ReturnsNullptr)
 
 // ── type-safety rejection tests ──────────────────────────────────────────────
 
-TEST_F(ZmqQueueTest, Schema_EmptySchema_ReturnsNullptr)
+TEST_F(ZmqQueueTest, Schema_EmptySchema_WriterRejects_ReaderPends)
 {
-    ExpectLogError("schema must not be empty");
-    // Empty schema is an error — both factories must return nullptr.
-    auto pull = make_pull_test(schema_ep(4), {}, "aligned", /*bind=*/true);
-    EXPECT_EQ(pull, nullptr) << "pull_from with empty schema must return nullptr";
+    // Contract split under HEP-CORE-0034 §10.3a (slice 3b, 2026-07-26):
+    // an empty schema on the READ side is the deliberate runtime-
+    // resolved (schema-pending) Standby build — the format arrives on
+    // CONSUMER_REG_ACK and installs via configure_slot_schema().  The
+    // WRITE side keeps the hard reject: every owning side declares its
+    // format at config time (SI-7).  The pending lifecycle itself is
+    // pinned by the PullFrom_EmptySchema_* / ConfigureSlotSchema_*
+    // tests above.
+    auto pull = make_pull_test(schema_ep(4), {}, /*packing=*/"", /*bind=*/true);
+    ASSERT_NE(pull, nullptr) << "pull_from with empty schema must build schema-pending";
+    EXPECT_FALSE(pull->is_configured());
 
+    ExpectLogError("schema must not be empty");
     auto push = make_push_test(schema_ep(4), {}, "aligned", /*bind=*/true);
     EXPECT_EQ(push, nullptr) << "push_to with empty schema must return nullptr";
 }

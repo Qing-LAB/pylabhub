@@ -114,6 +114,15 @@ struct ZmqQueueImpl
     std::vector<wire_detail::WireFieldDesc> schema_defs_;
     size_t max_frame_sz_{0}; ///< recv frame buffer size
 
+    /// HEP-CORE-0034 §10.3a — Read-side runtime-resolved format.  Set by
+    /// the reader factory when built with an EMPTY schema (deliberate
+    /// schema-pending Standby build); cleared by `configure_slot_schema`
+    /// once the role host installs the CONSUMER_REG_ACK-delivered
+    /// format.  While true: no wire layout exists (item_sz==0, empty
+    /// schema_defs_, no recv buffers) and `apply_master_approval`
+    /// refuses the Standby → Configured transition (SI-6).
+    bool schema_pending_{false};
+
     // Context is the shared process-wide zmq::context_t owned by the
     // ZMQContext lifecycle module (see utils/zmq_context.hpp). The
     // top-level LifecycleGuard must include GetZMQContextModule(); the
@@ -523,6 +532,28 @@ static std::string find_invalid_type(const std::vector<ZmqSchemaField> &schema)
     return {};
 }
 
+/// Shared field-list validation for the reader/writer factories and
+/// `configure_slot_schema` — one rule set, three call sites.  Returns
+/// "" on success, else a human-readable diagnostic ([ZQ1] + [C2]).
+static std::string validate_schema_fields(const std::vector<ZmqSchemaField> &schema,
+                                          const std::string &packing)
+{
+    if (schema.empty())
+        return "schema must not be empty";
+    if (packing != "aligned" && packing != "packed")
+        return "invalid packing '" + packing + "' (must be \"aligned\" or \"packed\")";
+    if (const std::string bad = find_invalid_type(schema); !bad.empty())
+        return "invalid type_str '" + bad + "'";
+    for (const auto &f : schema)
+    {
+        if ((f.type_str == "string" || f.type_str == "bytes") && f.length == 0)
+            return "string/bytes field has length=0";
+        if (f.type_str != "string" && f.type_str != "bytes" && f.count == 0)
+            return "numeric/array field count must be >= 1";
+    }
+    return {};
+}
+
 // ============================================================================
 // Factories — schema mode
 // ============================================================================
@@ -533,46 +564,30 @@ ZmqQueue::build_plaintext_reader_(const std::string &endpoint, std::vector<ZmqSc
                                   std::optional<std::array<uint8_t, 8>> schema_tag,
                                   std::string instance_id, bool is_pubsub)
 {
-    if (schema.empty())
-    {
-        LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': schema must not be empty", endpoint);
-        return nullptr;
-    }
+    // Schema-pending Standby build (HEP-CORE-0034 §10.3a): an EMPTY
+    // schema is a deliberate runtime-resolved build — the channel's
+    // format arrives on CONSUMER_REG_ACK and the role host installs it
+    // via `configure_slot_schema()` before `apply_master_approval`
+    // drives Standby → Configured.  Packing and schema_tag are ignored
+    // in this mode (they arrive with the resolved format); every
+    // layout-derived field (item_sz, schema_defs_, recv buffers) is
+    // deferred to `configure_slot_schema()`.  Read side only — the
+    // writer factory keeps its hard reject (owners always declare
+    // their format; HEP-0034 SI-7).
+    const bool schema_pending = schema.empty();
     if (max_buffer_depth == 0)
     {
         LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': max_buffer_depth must be > 0", endpoint);
         return nullptr;
     }
-    if (packing != "aligned" && packing != "packed")
+    if (!schema_pending)
     {
-        LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': invalid packing '{}' (must be \"aligned\" or "
-                     "\"packed\")",
-                     endpoint, packing);
-        return nullptr;
-    }
-    // [ZQ1] Validate all type strings before computing layout.
-    if (const std::string bad = find_invalid_type(schema); !bad.empty())
-    {
-        LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': invalid type_str '{}'", endpoint, bad);
-        return nullptr;
-    }
-    // Validate string/bytes fields have length > 0; numeric fields have count >= 1. [C2]
-    for (const auto &f : schema)
-    {
-        if ((f.type_str == "string" || f.type_str == "bytes") && f.length == 0)
+        if (const std::string err = validate_schema_fields(schema, packing); !err.empty())
         {
-            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': string/bytes field has length=0",
-                         endpoint);
-            return nullptr;
-        }
-        if (f.type_str != "string" && f.type_str != "bytes" && f.count == 0)
-        {
-            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': numeric/array field count must be >= 1",
-                         endpoint);
+            LOGGER_ERROR("[hub::ZmqQueue] pull_from '{}': {}", endpoint, err);
             return nullptr;
         }
     }
-    auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
     auto impl = std::make_unique<ZmqQueueImpl>();
     impl->mode = ZmqQueueImpl::Mode::Read;
@@ -580,22 +595,35 @@ ZmqQueue::build_plaintext_reader_(const std::string &endpoint, std::vector<ZmqSc
         is_pubsub ? ZmqQueueImpl::SocketPattern::PubSub : ZmqQueueImpl::SocketPattern::PushPull;
     impl->endpoint = endpoint;
     impl->bind_socket = bind;
-    impl->item_sz = item_sz;
     impl->max_depth = max_buffer_depth;
     impl->queue_name = endpoint;
     impl->instance_id = std::move(instance_id);
-    impl->max_frame_sz_ = wire_detail::max_frame_size(layouts);
-    impl->schema_defs_ = std::move(layouts);
-    if (schema_tag)
-    {
-        impl->schema_tag_ = *schema_tag;
-        impl->has_schema_tag_ = true;
-    }
+    impl->schema_pending_ = schema_pending;
 
-    // Pre-allocate ring buffer (max_depth slots) and decode staging buffer. [ZQ9]
-    impl->recv_ring_.assign(max_buffer_depth, std::vector<std::byte>(item_sz, std::byte{0}));
-    impl->decode_tmp_.resize(item_sz, std::byte{0});
-    impl->current_read_buf_.resize(item_sz, std::byte{0});
+    if (!schema_pending)
+    {
+        auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
+        impl->item_sz = item_sz;
+        impl->max_frame_sz_ = wire_detail::max_frame_size(layouts);
+        impl->schema_defs_ = std::move(layouts);
+        if (schema_tag)
+        {
+            impl->schema_tag_ = *schema_tag;
+            impl->has_schema_tag_ = true;
+        }
+
+        // Pre-allocate ring buffer (max_depth slots) and decode staging buffer. [ZQ9]
+        impl->recv_ring_.assign(max_buffer_depth, std::vector<std::byte>(item_sz, std::byte{0}));
+        impl->decode_tmp_.resize(item_sz, std::byte{0});
+        impl->current_read_buf_.resize(item_sz, std::byte{0});
+    }
+    else
+    {
+        LOGGER_INFO("[hub::ZmqQueue] event=QueueSchemaPending queue='{}' "
+                    "(runtime-resolved format — awaiting configure_slot_schema "
+                    "from the CONSUMER_REG_ACK delivery, HEP-0034 §10.3a)",
+                    endpoint);
+    }
 
     return std::unique_ptr<QueueReader>(new ZmqQueue(std::move(impl)));
 }
@@ -606,43 +634,18 @@ std::unique_ptr<QueueWriter> ZmqQueue::build_plaintext_writer_(
     OverflowPolicy overflow_policy, int send_retry_interval_ms, std::string instance_id,
     bool is_pubsub)
 {
-    if (schema.empty())
+    // Writers NEVER build schema-pending: every owning side declares its
+    // format at config time (HEP-0034 SI-7 — `from-channel` is legal only
+    // on dialing readers; generic dialing producers are deferred).
+    if (const std::string err = validate_schema_fields(schema, packing); !err.empty())
     {
-        LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': schema must not be empty", endpoint);
+        LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': {}", endpoint, err);
         return nullptr;
     }
     if (send_buffer_depth == 0)
     {
         LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': send_buffer_depth must be > 0", endpoint);
         return nullptr;
-    }
-    if (packing != "aligned" && packing != "packed")
-    {
-        LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': invalid packing '{}' (must be \"aligned\" or "
-                     "\"packed\")",
-                     endpoint, packing);
-        return nullptr;
-    }
-    // [ZQ1] Validate all type strings before computing layout.
-    if (const std::string bad = find_invalid_type(schema); !bad.empty())
-    {
-        LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': invalid type_str '{}'", endpoint, bad);
-        return nullptr;
-    }
-    // Validate string/bytes fields have length > 0; numeric fields have count >= 1. [C2]
-    for (const auto &f : schema)
-    {
-        if ((f.type_str == "string" || f.type_str == "bytes") && f.length == 0)
-        {
-            LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': string/bytes field has length=0", endpoint);
-            return nullptr;
-        }
-        if (f.type_str != "string" && f.type_str != "bytes" && f.count == 0)
-        {
-            LOGGER_ERROR("[hub::ZmqQueue] push_to '{}': numeric/array field count must be >= 1",
-                         endpoint);
-            return nullptr;
-        }
     }
     auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
 
@@ -1240,6 +1243,74 @@ std::size_t ZmqQueue::producer_peer_count() const noexcept
     return pImpl->producer_peers_.size();
 }
 
+bool ZmqQueue::configure_slot_schema(std::vector<ZmqSchemaField> schema, std::string packing,
+                                     std::optional<std::array<uint8_t, 8>> schema_tag) noexcept
+{
+    if (!pImpl)
+        return false;
+    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': write "
+                     "side never builds schema-pending (owners declare their "
+                     "format — HEP-0034 SI-7); refusing",
+                     pImpl->queue_name);
+        return false;
+    }
+    if (pImpl->running_.load(std::memory_order_acquire))
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': queue "
+                     "is Active — the format is immutable for the queue's "
+                     "lifetime (HEP-0034 SI-1); refusing",
+                     pImpl->queue_name);
+        return false;
+    }
+    if (!pImpl->schema_pending_)
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': a slot "
+                     "schema is already installed (build-time or prior call) — "
+                     "single-establishment (HEP-0034 SI-1); refusing",
+                     pImpl->queue_name);
+        return false;
+    }
+    if (const std::string err = validate_schema_fields(schema, packing); !err.empty())
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': {} — "
+                     "refusing (queue stays schema-pending)",
+                     pImpl->queue_name, err);
+        return false;
+    }
+
+    try
+    {
+        auto [layouts, item_sz] = wire_detail::compute_field_layout(schema, packing);
+        pImpl->item_sz = item_sz;
+        pImpl->max_frame_sz_ = wire_detail::max_frame_size(layouts);
+        pImpl->schema_defs_ = std::move(layouts);
+        if (schema_tag)
+        {
+            pImpl->schema_tag_ = *schema_tag;
+            pImpl->has_schema_tag_ = true;
+        }
+        // The buffers the schema-pending build deferred. [ZQ9]
+        pImpl->recv_ring_.assign(pImpl->max_depth, std::vector<std::byte>(item_sz, std::byte{0}));
+        pImpl->decode_tmp_.resize(item_sz, std::byte{0});
+        pImpl->current_read_buf_.resize(item_sz, std::byte{0});
+        pImpl->schema_pending_ = false;
+        LOGGER_INFO("[hub::ZmqQueue] event=QueueSchemaConfigured queue='{}' "
+                    "fields={} item_sz={} packing={} tagged={} (runtime-resolved "
+                    "format installed — HEP-0034 §10.3a)",
+                    pImpl->queue_name, schema.size(), item_sz, packing, pImpl->has_schema_tag_);
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': layout "
+                     "computation threw: {} (queue stays schema-pending)",
+                     pImpl->queue_name, e.what());
+        return false;
+    }
+}
+
 bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
 {
     if (!pImpl)
@@ -1251,6 +1322,23 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
         // happened in the prior apply_master_approval call that drove
         // Standby → Active.
         const bool already_running = pImpl->running_.load(std::memory_order_acquire);
+
+        // Schema-pending refusal (HEP-0034 §10.3a / SI-6): never drive
+        // Standby → Configured on an empty format.  The role host must
+        // install the CONSUMER_REG_ACK-delivered schema via
+        // configure_slot_schema() BEFORE applying — reaching this branch
+        // means either the channel serves no structure (hash-only
+        // anonymous record: the role aborts with its own diagnostic) or
+        // a role-host sequencing bug.
+        if (!already_running && pImpl->schema_pending_)
+        {
+            LOGGER_ERROR("[hub::ZmqQueue::apply_master_approval] queue='{}': "
+                         "refusing Standby → Configured — slot schema still "
+                         "pending (runtime-resolved format not installed; "
+                         "SI-6: no data flow on an empty format)",
+                         pImpl->queue_name);
+            return false;
+        }
 
         // ── Unified peer-list wire field (HEP-CORE-0036 §6.2 + §6.4) ──
         //
@@ -1618,6 +1706,14 @@ bool ZmqQueue::is_configured() const noexcept
     // observe a torn read.  Contention is negligible: the lock is
     // held for a couple of `std::string::empty()` calls.
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+
+    // Schema-pending build (HEP-0034 §10.3a): a reader without an
+    // installed format is never Configured, whatever its peer/endpoint
+    // state — apply_master_approval refuses the transition until
+    // configure_slot_schema() runs (SI-6).
+    if (pImpl->schema_pending_)
+        return false;
+
     if (pImpl->bind_socket)
         return !pImpl->endpoint.empty();
 

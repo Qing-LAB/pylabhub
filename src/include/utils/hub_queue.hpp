@@ -19,14 +19,18 @@
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_policy.hpp"
 #include "utils/json_fwd.hpp"               // nlohmann::json fwd-decl
+#include "utils/schema_types.hpp"           // SchemaFieldDesc (configure_slot_schema)
 #include "utils/shared_memory_spinlock.hpp" // SharedSpinLock (spinlock accessors on base)
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace pylabhub::hub
 {
@@ -441,6 +445,36 @@ class PYLABHUB_UTILS_EXPORT QueueReader
     virtual bool apply_master_approval(const nlohmann::json & /*artifacts*/) noexcept
     {
         return true;
+    }
+
+    /**
+     * @brief HEP-CORE-0034 §10.3a (schema-pending Standby) — install the
+     *        runtime-resolved slot schema on a reader built without one.
+     *
+     * A dialing reader whose config declares a runtime-resolved format
+     * is BUILT with an empty schema and stays in Standby with no wire
+     * layout.  The role host resolves the format from the
+     * CONSUMER_REG_ACK delivery (§10.3a), verifies the SI-6 chain
+     * (config pin → delivered BLDS → fingerprint; packing recovered by
+     * the §6.4 candidate recompute), and installs the result here
+     * BEFORE `apply_master_approval` — which refuses the Standby →
+     * Configured transition while the schema is pending (SI-6: no data
+     * flow on an empty format).
+     *
+     * Single-establishment: implementations refuse when a schema is
+     * already installed (build-time or a prior call), when the queue is
+     * running, or when the field list fails the same validation the
+     * factory applies — refusal leaves queue state unchanged.
+     *
+     * Default `false` — only readers that support the schema-pending
+     * build override this (ZmqQueue read side; the SHM runtime-resolved
+     * path is tracked separately in MESSAGEHUB_TODO).
+     */
+    virtual bool
+    configure_slot_schema(std::vector<SchemaFieldDesc> /*schema*/, std::string /*packing*/,
+                          std::optional<std::array<uint8_t, 8>> /*schema_tag*/) noexcept
+    {
+        return false;
     }
 
     /**
