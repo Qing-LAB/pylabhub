@@ -112,7 +112,7 @@ post-reconcile shipped-sprint detail).
   unified host must admit an OBSERVER role kind — control-plane-only (BRC +
   heartbeat, no data channel) — so monitoring/exporter roles can pull metrics
   on the role plane; today every host fatals without channel establishment.
-  See `DRAFT_schema_metrics_query_integration_2026-07-26.md` G2/S-F.
+  See the observer-role rationale in `docs/archive/transient-2026-07-27/tech_drafts/DRAFT_schema_metrics_query_integration_2026-07-26.md` (archived 2026-07-27 — arc complete; the requirement itself lives in this entry).
 - **#55** — re-home the 4 `role_api_base_*` L3 tests during that unification
   (deferred, `TESTING_TODO` Group B; all 4 confirmed still-valid 2026-07-16).
 - **Phase 2b** — Template RAII Phases 2/4/5 (`TypedInboxClient<MsgT>`,

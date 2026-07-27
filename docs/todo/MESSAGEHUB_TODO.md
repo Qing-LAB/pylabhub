@@ -34,9 +34,12 @@ built.  User ruling: these are built mechanisms for schema communication
 and metrics reporting — integrate them for a schema-driven role
 ecosystem rather than delete.
 
-Design draft (scenario-driven, gap register G1–G6, 4 slices, 3 ⚖
-decisions pending user ruling):
-`docs/tech_draft/DRAFT_schema_metrics_query_integration_2026-07-26.md`
+Design draft (scenario-driven; all decisions ruled, all 4 slices
+shipped) — ARCHIVED 2026-07-27 to
+`docs/archive/transient-2026-07-27/tech_drafts/DRAFT_schema_metrics_query_integration_2026-07-26.md`;
+permanent home of the design is HEP-0034 (§2.4, §6.4, §10.2, §10.3a,
+§11.1) + HEP-0007 §12.3/§12.4a + HEP-0036 §5b.7 (see
+DOC_ARCHIVE_LOG.md 2026-07-27).
 
 - [x] ⚖ Decisions resolved 2026-07-26: G1 = schema rides the REG/ACK
       (user); G7 = Option B, owners always declare (user); G3

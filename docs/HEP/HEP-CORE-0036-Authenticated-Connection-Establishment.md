@@ -3162,7 +3162,17 @@ by which of the two admission paths the CONSUMER_REG_REQ takes:
 | `broker_abi_fingerprint` | object | YES | `version::to_json_object(current())` | role-side `verify_peer_versions` (HEP-0032 §8) | Broker's 7-axis version/ABI carrier |
 | `broker_build_id` | string | OPTIONAL (present iff `PYLABHUB_HAVE_BUILD_ID`) | `version::build_id()` | §8.6 verdict logging | Broker's git build id (sibling of the fingerprint) |
 | `known_roles` | array | OPTIONAL | hub-wide allowlist projection | inbox-plane ZAP roster seed (§9.3 + HEP-0027 §3.5) | Hub-wide known-role pubkeys for inbox authorization |
+| `schema_id` | string | OPTIONAL (elided when the channel is anonymous) | `ChannelEntry.schema_id` | schema view / re-verification | Channel's named schema id (`$name.vN`), when named |
+| `schema_owner` | string | OPTIONAL (elided when unset) | `ChannelEntry.schema_owner` | schema view | `"hub"` or the owning producer's role_uid |
+| `blds` | string | OPTIONAL (elided when the channel serves no structure) | `ChannelEntry.schema_blds` | runtime-resolved consumers: verified + installed per HEP-0034 §10.3a | Datablock canonical BLDS of the channel's established format |
+| `flexzone_blds` | string | OPTIONAL (elided when no flexzone) | `ChannelEntry.flexzone_blds` | verified for chain integrity (HEP-0034 §10.3a) | Flexzone canonical BLDS |
+| `schema_hash` | hex(128) | OPTIONAL (elided when no format established) | `ChannelEntry.schema_hash` | fingerprint verification + per-zone packing recovery (HEP-0034 §6.4) | Two-zone fingerprint `datablock_half ‖ flexzone_half` |
 | `correlation_id` | string | echo if REQ had it | broker | BRC RPC layer | Echo of REQ.correlation_id |
+
+Schema-field semantics (success-only delivery, elision rules, the
+no-packing-on-the-wire rule, and the receiver's verification chain)
+are owned by HEP-CORE-0034 §10.3a — this table records only their
+place in the canonical ACK shape.
 
 **Forbidden / removed wire fields**:
 
@@ -4185,7 +4195,7 @@ Added to HEP-CORE-0007 §12.4a Error Code Taxonomy:
 | `CHANNEL_NOT_FOUND` | `GET_CHANNEL_AUTH_REQ` for a channel that does not exist in `ChannelAccessIndex`. |
 | `PRODUCER_NOT_AUTHORIZED` | `GET_CHANNEL_AUTH_REQ` from a caller that is not the **binding-side role** of the named channel.  The wire code preserves the historical name `PRODUCER_NOT_AUTHORIZED` for back-compat with pre-topology-migration parsers, but the check applies to whichever role binds the channel per HEP-CORE-0017 §3.3.0 — the producer on `FanOut` / `OneToOne`, the consumer on `FanIn`.  Defence-in-depth (unchanged from the pre-migration rule): the broker never reveals a channel's admission list to a role that has no operational reason to enforce it via ZAP.  A dialing-side role has no ZAP-server to seed and therefore has no operational reason to pull; a role on a different channel entirely is doubly out of scope.  See §6.6 authorization-model amendment below for the topology-aware definition. |
 | `CONSUMER_NOT_AUTHORIZED` | `GET_CHANNEL_PRODUCERS_REQ` from a caller that is not a registered consumer of the named channel.  Defence-in-depth: the broker should never return a channel's producer set to a non-consumer.  Symmetric with `PRODUCER_NOT_AUTHORIZED`. |
-| `NOT_A_ROLE_OF_CHANNEL` | `CHECK_PEER_READY_REQ` from a caller that is not a registered role of the named channel (neither dialing side nor binding side).  Defence-in-depth: the broker should never expose readiness state — even boolean — to callers with no operational relationship to the channel.  Under §6.6.3, a binding-side caller also returns this code because the question makes no operational sense for the guard on the door.  **Also (2026-07-26, schema/metrics integration SI-5): `SCHEMA_REQ` channel form and `METRICS_REQ` from a caller holding no presence on the queried channel** — channel-scoped reads answer members only (either side qualifies). |
+| `NOT_A_ROLE_OF_CHANNEL` | `CHECK_PEER_READY_REQ` from a caller that is not a registered role of the named channel (neither dialing side nor binding side).  Defence-in-depth: the broker should never expose readiness state — even boolean — to callers with no operational relationship to the channel.  Under §6.6.3, a binding-side caller also returns this code because the question makes no operational sense for the guard on the door.  **Also (2026-07-26, schema/metrics integration): `SCHEMA_REQ` channel form and `METRICS_REQ` from a caller holding no presence on the queried channel** — channel-scoped reads answer members only (either side qualifies). |
 
 #### 6.6.1 `GET_CHANNEL_AUTH_REQ` authorization — topology-aware binding-side rule
 

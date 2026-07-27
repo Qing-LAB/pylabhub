@@ -799,6 +799,9 @@ audience.
 | `consumers(channel)` | `list[str]` role_uids | `table[str]` role_uids | `plh_role_uid_visitor` + `consumer_count` inquiry | pending Tier-1 wrapper |
 | `band_members(channel)` | `list[dict]` | `table[table]` | visitor + `*_contains` + `*_count` | `BandHandle` (zero-cost) + same API as above |
 | `metrics()` | `dict` (full tree alloc) | `table` (full tree alloc) | opaque `metrics_snapshot()` + `metrics_get(key)` | `plh::MetricsSnapshot` value class + `operator[]` |
+| `get_schema(owner, id)` | `dict` (full broker reply) or `None` on transport failure | `table` or `nil`; raises on empty args | `get_schema_json` → `const char *` JSON in a thread-local scratch (valid until the next `get_*_json` call on the thread); `NULL` = transport failure OR bad args (single C sentinel) | pending Tier-1 wrapper |
+| `get_channel_schema(channel)` | `dict` / `None` (same contract) | `table` / `nil` (same contract) | `get_channel_schema_json` (same scratch + sentinel rules) | pending Tier-1 wrapper |
+| `get_channel_metrics(channel)` | `dict` / `None` (same contract) | `table` / `nil` (same contract) | `get_channel_metrics_json` (same scratch + sentinel rules) | pending Tier-1 wrapper |
 
 **Why the idiom split?**  The dynamic languages already pay for an
 allocation per call (PyDict / Lua-table), so handing them a string

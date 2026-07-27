@@ -16,11 +16,14 @@ namespace pylabhub::consumer
 {
 
 /// Consumer-specific config fields.
-/// Input schemas are optional — when present they are used for ctypes struct
-/// building at startup (before broker discovery).
+/// `in_slot_schema` accepts an inline layout object, a named-schema
+/// string, or the `"from-channel"` sentinel (HEP-CORE-0034 §10.3a —
+/// the channel's established format is delivered on CONSUMER_REG_ACK,
+/// verified, and installed at runtime).  A declared schema builds the
+/// typed slot view at startup; the sentinel defers it to activation.
 struct ConsumerFields
 {
-    nlohmann::json in_slot_schema_json;     ///< Optional. Input slot schema for ctypes.
+    nlohmann::json in_slot_schema_json;     ///< Layout object | "$name.vN" | "from-channel".
     nlohmann::json in_flexzone_schema_json; ///< Optional. Flexzone schema (null = no flexzone).
 };
 

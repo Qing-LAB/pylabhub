@@ -1078,7 +1078,7 @@ rejected with `MISSING_HASH_FOR_NAMED_CITATION`.  A request with no
 `expected_schema_blds` / `expected_schema_packing` fields
 respectively; the codes themselves are kept short for stability).
 
-**Owner axis (SI-9, 2026-07-26).**  `expected_schema_owner` is a
+**Owner axis (ruled 2026-07-26).**  `expected_schema_owner` is a
 first-class citation axis, never installed or ignored silently:
 
 - An owner claim without `expected_schema_id` is `INVALID_REQUEST`
@@ -1147,13 +1147,14 @@ Rules:
 - **Success-only, admitted-only.**  The fields exist only on a success
   ACK, which the broker builds only after every gate has passed (CURVE
   transport auth, known-role identity, admission validation).  An
-  unauthenticated, unknown, or rejected party never receives structure
-  (SI-5 trust sequence).
+  unauthenticated, unknown, or rejected party never receives
+  structure.
 - **Empty fields are elided**, not sent as `""` — an absent axis means
   the channel record does not establish it.  A hash-only anonymous
-  channel (legal per SI-2) delivers `schema_hash` and **no** `blds`:
-  such channels serve no structure by design, and a runtime-resolved
-  consumer aborts cleanly on the empty format (SI-6).
+  channel (legal — a fingerprint-only open row carries no structure)
+  delivers `schema_hash` and **no** `blds`: such channels serve no
+  structure by design, and a runtime-resolved consumer aborts cleanly
+  on the empty format.
 - **NO packing fields.**  The fingerprint binds each zone's packing;
   the receiver recovers it during pin verification by the §6.4
   two-candidate recompute.  Packing is never stored on the channel
@@ -1164,6 +1165,34 @@ Rules:
   → delivered BLDS must recompute to it → (SHM) the same fingerprint
   must equal the segment header's stamped hashes before mapping.  Any
   disagreement is a startup abort naming the mismatched pair.
+
+The full runtime-resolution sequence, from config sentinel to first
+typed consume:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CFG as consumer config
+    participant RH as role host<br/>(worker thread)
+    participant Q as rx ZmqQueue
+    participant E as script engine
+    participant B as broker
+
+    CFG->>RH: in_slot_schema = "from-channel"
+    RH->>Q: build with EMPTY schema
+    Note over Q: Standby, schema-pending<br/>(no wire layout yet)
+    RH->>B: CONSUMER_REG_REQ (citation-free)
+    B-->>RH: CONSUMER_REG_ACK<br/>{blds, flexzone_blds, schema_hash, ...}
+    RH->>RH: parse delivered BLDS (§6.3 inverse)<br/>recover packing per zone (§6.4)<br/>= fingerprint verification in the same act
+    Note over RH: any mismatch, or an empty format:<br/>startup ABORT naming the pair —<br/>queue stays Standby, nothing dials
+    RH->>Q: configure_slot_schema(fields, packing, tag)
+    Note over Q: deferred layout + buffers built;<br/>still Standby
+    RH->>E: register InSlotFrame(resolved spec)
+    Note over E: native plugins: compiled exports<br/>must match, else activation refused
+    RH->>Q: apply_master_approval(ACK)
+    Note over Q: Standby → Configured → Active
+    Q->>E: first on_consume — rx.slot is a<br/>live typed view of the resolved format
+```
 
 **The `from-channel` config sentinel.**  A consumer that wants the
 runtime-resolved format declares it EXPLICITLY:
@@ -1187,8 +1216,8 @@ builders:
   (delivery + segment-header cross-check before mapping) is tracked in
   `docs/todo/MESSAGEHUB_TODO.md`.
 
-**Script-tier slot proxies on the resolved format.**  After the SI-6
-chain closes and before the queue goes Active, the role host registers
+**Script-tier slot proxies on the resolved format.**  After the
+verification chain above closes and before the queue goes Active, the role host registers
 the resolved slot schema with the script engine (`InSlotFrame`), so
 the first `on_consume` already sees a live typed view of a schema the
 script never declared — the fully generic consumer.  This runs on the
@@ -1239,18 +1268,43 @@ client can tell from the code which side of the channel it was rejected on.
 
 ### 11.1 New fields in `HubState`
 
+The registry itself is one map, keyed by who published a schema and
+what they called it:
+
 ```cpp
 struct HubState {
     // ... existing ...
     std::map<std::pair<std::string, std::string>, SchemaRecord>  schemas;
-};
-
-struct ChannelEntry {
-    // ... existing ...
-    std::string schema_owner;   // "hub" or producer uid
-    std::string schema_id;      // empty only if anonymous (legacy)
+    //                 ^owner_uid   ^schema_id
 };
 ```
+
+Every channel record carries the channel's **established format** as
+five plain strings (`src/include/utils/hub_state.hpp`,
+`ChannelEntry`).  Together they answer "what does this channel carry,
+who established it, and how do I verify a copy of it":
+
+```cpp
+struct ChannelEntry {
+    // ... existing ...
+    std::string schema_id;      // named channels: "$name.vN"; "" = anonymous
+    std::string schema_owner;   // "hub", or the owning producer's uid; "" = unset
+    std::string schema_blds;    // datablock structure, canonical text form
+                                // ("" = the channel serves no structure —
+                                //  legal for fingerprint-only channels)
+    std::string flexzone_blds;  // flexzone structure ("" = no flexzone)
+    std::string schema_hash;    // 128 hex chars — the two-zone fingerprint;
+                                // packing is folded into this hash, never
+                                // stored as its own field
+};
+```
+
+The same five fields travel as one unit at admission time:
+`ChannelSchemaInvariants` (same header) is the aggregate a
+registration supplies.  The first admission on a fresh channel SETS
+the channel's copy; every later admission is compared against it
+field-for-field and rejected on any difference — that comparison is
+what makes the format immutable for the channel's lifetime.
 
 ### 11.2 Capability ops (broker calls)
 

@@ -914,7 +914,7 @@ Example `consumer.json` (matches current `--init` output):
 | `target_period_ms` | cond. | — | Loop period in ms; required for fixed-rate policies; forbidden for `max_rate` |
 | `target_rate_hz` | cond. | — | Loop rate in Hz; alternative to `target_period_ms` |
 | `queue_type` | no | `"shm"` | `"shm"` (reads SHM ring) or `"zmq"` (ZMQ PULL from broker) |
-| `slot_schema` | yes‡ | — | Expected input slot layout (must match producer schema) |
+| `slot_schema` | yes‡ | — | Expected input slot layout (must match producer schema).  Also accepts the string `"from-channel"`: the consumer declares NO layout and instead receives the channel's established format from the hub at registration, verifies it against the delivered fingerprint, and builds its typed slot view from it at runtime (HEP-CORE-0034 §10.3a).  Dialing consumers only — a fan-in consumer owns the channel and must declare its layout. |
 | `schema_id` | no‡ | — | Named schema from HEP-CORE-0016 |
 | `checksum` | no | `"enforced"` | `"enforced"` (auto verify), `"manual"` (caller controls), `"none"` (skip) |
 | `flexzone_checksum` | no | `true` | Verify flexzone checksum on read (SHM only) |
@@ -933,7 +933,7 @@ Example `consumer.json` (matches current `--init` output):
 > **Packing note (consumer):** same rule as producer — set via schema `.packing` fields (`slot_schema.packing` / `flexzone_schema.packing` / `inbox_schema.packing`).  No transport-level packing key.
 
 † Exactly one of `hub_dir` or `broker` is required.
-‡ Exactly one of `slot_schema` or `schema_id` is required.
+‡ Exactly one of `slot_schema` (inline layout, a named-schema string, or the `"from-channel"` runtime-resolved sentinel) or `schema_id` is required.
 
 ### 6.2 Consumer Python script
 
