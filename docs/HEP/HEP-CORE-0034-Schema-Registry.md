@@ -1078,6 +1078,25 @@ rejected with `MISSING_HASH_FOR_NAMED_CITATION`.  A request with no
 `expected_schema_blds` / `expected_schema_packing` fields
 respectively; the codes themselves are kept short for stability).
 
+**Owner axis (SI-9, 2026-07-26).**  `expected_schema_owner` is a
+first-class citation axis, never installed or ignored silently:
+
+- An owner claim without `expected_schema_id` is `INVALID_REQUEST`
+  (both sides — the producer twin rejects `schema_owner` without
+  `schema_id`).
+- **Joining** consumers with a non-empty claim have it matched EXACTLY
+  against the channel's stored owner (empty = no claim, axis skipped).
+- **Opening** consumers (fan-in) may claim `"hub"` only
+  (`SCHEMA_FORBIDDEN_OWNER` otherwise); a NAMED open REQUIRES
+  `owner="hub"` (`SCHEMA_OWNER_REQUIRED`) because an unowned named
+  book is unjoinable by every producer — the front door defaults a
+  named producer citation's owner to self, and anonymous joiners fail
+  the name axis.  The named open then resolves against the registry
+  exactly like path C (`SCHEMA_UNKNOWN` / `FINGERPRINT_INCONSISTENT`)
+  and the record's structure is materialized into the channel
+  invariants, so a structure-free named open still yields a channel
+  that serves its BLDS (§10.3 channel form).
+
 ### 10.3 `SCHEMA_REQ` / `SCHEMA_ACK`
 
 Owner+id keying:

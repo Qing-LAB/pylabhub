@@ -237,6 +237,105 @@ TEST_F(Pattern4BrokerSchemaTest, ConsumerSchemaIdMatch_Succeeds)
     broker.signal_quit();
 }
 
+TEST_F(Pattern4BrokerSchemaTest, ConsumerJoin_OwnerClaim_ExactMatch)
+{
+    // SI-9 (ruled 2026-07-26): a JOINING consumer's non-empty owner
+    // claim is matched exactly against the channel's stored owner —
+    // previously it was silently ignored.  Empty claim = axis skipped
+    // (pinned by ConsumerSchemaIdMatch_Succeeds).
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "schema.consumer.ownerclaim" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string schema_id = "$lab.consumer.ownax.v1";
+    const std::string hash = canonical_hash_hex(kSchemaBlds, kSchemaPacking);
+
+    const fs::path temp_dir = make_test_temp_dir("broker_schema_ownerclaim");
+    const auto setup = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, prod_uid);
+    // Path-B named registration: the channel's stored owner is the
+    // producer's own uid.
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer_with_schema(prod, setup, channel, prod_uid, schema_id, hash));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+
+    // Wrong owner claim ("hub" vs the path-B producer) → rejected on
+    // the owner axis (maps to SCHEMA_CITATION_REJECTED on the
+    // consumer/data-out direction), channel untouched.
+    auto bad = consumer_reg_body(setup, channel, cons_uid);
+    bad["expected_schema_id"] = schema_id;
+    bad["expected_schema_hash"] = hash;
+    bad["expected_schema_owner"] = "hub";
+    auto rbad = cons.request("CONSUMER_REG_REQ", bad, "CONSUMER_REG_ACK",
+                             milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rbad.has_value());
+    EXPECT_EQ(rbad->value("status", std::string{}), "error");
+    EXPECT_EQ(rbad->value("error_code", std::string{}), "SCHEMA_CITATION_REJECTED")
+        << rbad->dump();
+
+    // Correct owner claim (the producer's uid) → admitted.
+    auto good = consumer_reg_body(setup, channel, cons_uid);
+    good["expected_schema_id"] = schema_id;
+    good["expected_schema_hash"] = hash;
+    good["expected_schema_owner"] = prod_uid;
+    auto rgood = cons.request("CONSUMER_REG_REQ", good, "CONSUMER_REG_ACK",
+                              milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rgood.has_value());
+    EXPECT_EQ(rgood->value("status", std::string{}), "success") << rgood->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerSchemaTest, ConsumerAnonymousCitation_HashOnly_Rejected)
+{
+    // HEP-0034 §10.2: an ANONYMOUS citation (no expected_schema_id)
+    // must carry the full structure — a hash-only citation is rejected
+    // MISSING_BLDS_FOR_ANONYMOUS_CITATION even when the hash matches
+    // the channel exactly (hash-only is a NAMED-mode right).
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "schema.consumer.hashonly" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string hash = canonical_hash_hex(kSchemaBlds, kSchemaPacking);
+
+    const fs::path temp_dir = make_test_temp_dir("broker_schema_hashonly");
+    const auto setup = make_pattern4_setup({prod_uid, cons_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(
+        register_producer_with_schema(prod, setup, channel, prod_uid, "$lab.hashonly.v1", hash));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    auto cbody = consumer_reg_body(setup, channel, cons_uid);
+    cbody["expected_schema_hash"] = hash; // matching — still rejected
+    auto cr = cons.request("CONSUMER_REG_REQ", cbody, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(cr.has_value());
+    EXPECT_EQ(cr->value("status", std::string{}), "error");
+    EXPECT_EQ(cr->value("error_code", std::string{}), "MISSING_BLDS_FOR_ANONYMOUS_CITATION")
+        << cr->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4BrokerSchemaTest, ConsumerSchemaIdMismatch_Fails)
 {
     using namespace std::chrono;

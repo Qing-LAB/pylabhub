@@ -134,6 +134,15 @@ int pattern4_broker_protocol_broker(const char *temp_dir_arg, const char *profil
                 cfg.ready_timeout_override = std::chrono::milliseconds{500};
                 cfg.pending_timeout_override = std::chrono::milliseconds{500};
             }
+            else if (profile == "hub_globals")
+            {
+                // SI-9/G9 resolved-open pins — load hub-global schema
+                // records from <temp_dir>/schemas at startup through the
+                // production `load_hub_globals_` walker (HEP-CORE-0034
+                // §2.4 I2).  The test stages `<temp_dir>/schemas/...`
+                // fixture files before spawning.
+                cfg.schema_search_dirs = {(temp_dir / "schemas").string()};
+            }
             else
             {
                 std::fprintf(stderr,

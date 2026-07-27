@@ -23,6 +23,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 
@@ -287,6 +288,267 @@ TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_ValidCitation_ProducerJoinsByC
     EXPECT_EQ(bad_resp->value("status", std::string{}), "error");
     EXPECT_EQ(bad_resp->value("error_code", std::string{}), "SCHEMA_MISMATCH")
         << "body=" << bad_resp->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_OwnerAxis_Rejections)
+{
+    // SI-9/G9 (ruled 2026-07-26): the open row validates the OWNER AXIS
+    // it installs.  Three rejects, each BEFORE the book opens.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "cons.owneraxis" + suffix;
+    const std::string channel = "consumer.owner_axis" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("bc_owner_axis");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto cons = make_wire_client(ctx, setup, uid);
+
+    // (a) Owner claim without a schema_id → INVALID_REQUEST (an owner
+    //     claim without a named schema is meaningless — previously
+    //     silently ignored).
+    auto body_a = consumer_reg_body(setup, channel, uid, "fan-in");
+    pylabhub::tests::pattern4::apply_owner_citation(body_a); // structure, no id
+    body_a["expected_schema_owner"] = "hub";
+    auto ra = cons.request("CONSUMER_REG_REQ", body_a, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ra.has_value());
+    EXPECT_EQ(ra->value("error_code", std::string{}), "INVALID_REQUEST") << ra->dump();
+
+    // (b) Named citation under a third party's namespace →
+    //     SCHEMA_FORBIDDEN_OWNER (consumers may claim "hub" only —
+    //     symmetric with the producer rule).
+    auto body_b = consumer_reg_body(setup, channel, uid, "fan-in");
+    body_b["expected_schema_id"] = "$lab.p4.axis.v1";
+    body_b["expected_schema_hash"] = std::string(128, 'a');
+    body_b["expected_schema_owner"] = "prod.other.uid00000042";
+    auto rb = cons.request("CONSUMER_REG_REQ", body_b, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rb.has_value());
+    EXPECT_EQ(rb->value("error_code", std::string{}), "SCHEMA_FORBIDDEN_OWNER") << rb->dump();
+
+    // (c) Named citation with NO owner → SCHEMA_OWNER_REQUIRED (G9: an
+    //     unowned named book is unjoinable by every producer — the
+    //     front door defaults a named producer citation's owner to
+    //     self, and anonymous joiners fail the name axis).
+    auto body_c = consumer_reg_body(setup, channel, uid, "fan-in");
+    body_c["expected_schema_id"] = "$lab.p4.axis.v1";
+    body_c["expected_schema_hash"] = std::string(128, 'a');
+    auto rc = cons.request("CONSUMER_REG_REQ", body_c, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rc.has_value());
+    EXPECT_EQ(rc->value("error_code", std::string{}), "SCHEMA_OWNER_REQUIRED") << rc->dump();
+
+    // Side-effect pin: none of the rejects opened a book — a valid
+    // anonymous owner open on the SAME channel is still a fresh open.
+    auto body_ok = consumer_reg_body(setup, channel, uid, "fan-in");
+    pylabhub::tests::pattern4::apply_owner_citation(body_ok);
+    auto rok = cons.request("CONSUMER_REG_REQ", body_ok, "CONSUMER_REG_ACK",
+                            milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rok.has_value());
+    EXPECT_EQ(rok->value("status", std::string{}), "success") << rok->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_HubGlobal_ResolvedAndServed)
+{
+    // SI-9/G9+G10 (ruled 2026-07-26): a NAMED fan-in open is a registry
+    // citation — owner="hub" resolves through the single validator, and
+    // the record's structure is MATERIALIZED into the channel record so
+    // the channel form serves it.  The broker loads the hub-global from
+    // <temp_dir>/schemas via the production `load_hub_globals_` walker
+    // (worker profile "hub_globals").
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "cons.hubglobal" + suffix;
+    const std::string channel = "consumer.hub_global_open" + suffix;
+    const std::string sid = "$lab.p4.frame.v1";
+    const std::string good_hash =
+        pylabhub::tests::pattern4::test_schema_fingerprint_hex("v:float32:1:0", "aligned");
+
+    const fs::path temp_dir = make_test_temp_dir("bc_hub_global_open");
+    // Stage the hub-global fixture: <temp_dir>/schemas/lab/p4/frame.v1.json
+    // (HEP-CORE-0034 §12 layout; id "$lab.p4.frame.v1" once loaded).
+    const fs::path schema_dir = temp_dir / "schemas" / "lab" / "p4";
+    fs::create_directories(schema_dir);
+    {
+        std::ofstream f(schema_dir / "frame.v1.json");
+        f << R"({"id":"lab.p4.frame","version":1,)"
+          << R"("slot":{"packing":"aligned","fields":[{"name":"v","type":"float32"}]}})";
+    }
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "hub_globals"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto cons = make_wire_client(ctx, setup, uid);
+
+    // (a) Unknown hub-global → SCHEMA_UNKNOWN (registry resolution).
+    auto body_u = consumer_reg_body(setup, channel, uid, "fan-in");
+    body_u["expected_schema_id"] = "$lab.p4.nosuch.v1";
+    body_u["expected_schema_hash"] = std::string(128, 'a');
+    body_u["expected_schema_owner"] = "hub";
+    auto ru = cons.request("CONSUMER_REG_REQ", body_u, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ru.has_value());
+    EXPECT_EQ(ru->value("error_code", std::string{}), "SCHEMA_UNKNOWN") << ru->dump();
+
+    // (b) Known hub-global, drifted fingerprint → FINGERPRINT_INCONSISTENT.
+    auto body_d = consumer_reg_body(setup, channel, uid, "fan-in");
+    body_d["expected_schema_id"] = sid;
+    body_d["expected_schema_hash"] = std::string(128, 'a');
+    body_d["expected_schema_owner"] = "hub";
+    auto rd = cons.request("CONSUMER_REG_REQ", body_d, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rd.has_value());
+    EXPECT_EQ(rd->value("error_code", std::string{}), "FINGERPRINT_INCONSISTENT") << rd->dump();
+
+    // (c) Correct named-no-structure open → success (the citation is
+    //     resolved against the registry; the record's structure is
+    //     materialized into the channel invariants).
+    auto body_ok = consumer_reg_body(setup, channel, uid, "fan-in");
+    body_ok["expected_schema_id"] = sid;
+    body_ok["expected_schema_hash"] = good_hash;
+    body_ok["expected_schema_owner"] = "hub";
+    auto rok = cons.request("CONSUMER_REG_REQ", body_ok, "CONSUMER_REG_ACK",
+                            milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rok.has_value());
+    EXPECT_EQ(rok->value("status", std::string{}), "success") << rok->dump();
+
+    // (d) G10 pin: the channel form serves the MATERIALIZED structure
+    //     to a member — blds came from the registry record, not the
+    //     (structure-free) citation.
+    nlohmann::json q;
+    q["channel_name"] = channel;
+    q["role_uid"] = uid;
+    auto sq = cons.request("SCHEMA_REQ", q, "SCHEMA_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(sq.has_value());
+    EXPECT_EQ(sq->value("status", std::string{}), "success") << sq->dump();
+    EXPECT_EQ(sq->value("schema_id", std::string{}), sid);
+    EXPECT_EQ(sq->value("schema_owner", std::string{}), "hub");
+    EXPECT_EQ(sq->value("blds", std::string{}), "v:float32:1:0") << sq->dump();
+    EXPECT_EQ(sq->value("schema_hash", std::string{}), good_hash);
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerConsumerTest, FanInHubGlobalChannel_ProducerAdoptJoins)
+{
+    // THE keystone composition of the SI-9/G9 ruling: a named fan-in
+    // channel is joinable — and ONLY joinable — through hub-global
+    // adoption.  Consumer opens on (hub, id); a path-C producer
+    // (schema_owner="hub") with the matching material joins; a path-B
+    // producer (no owner claim → front door defaults owner to SELF)
+    // is rejected on the owner axis.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "cons.hubjoin" + suffix;
+    const std::string prod_c = "prod.adopt" + suffix;
+    const std::string prod_b = "prod.selfown" + suffix;
+    const std::string channel = "consumer.hub_global_join" + suffix;
+    const std::string sid = "$lab.p4.frame.v1";
+    const std::string blds = "v:float32:1:0";
+    const std::string packing = "aligned";
+    const std::string good_hash =
+        pylabhub::tests::pattern4::test_schema_fingerprint_hex(blds, packing);
+
+    const fs::path temp_dir = make_test_temp_dir("bc_hub_global_join");
+    const fs::path schema_dir = temp_dir / "schemas" / "lab" / "p4";
+    fs::create_directories(schema_dir);
+    {
+        std::ofstream f(schema_dir / "frame.v1.json");
+        f << R"({"id":"lab.p4.frame","version":1,)"
+          << R"("slot":{"packing":"aligned","fields":[{"name":"v","type":"float32"}]}})";
+    }
+    const auto setup = make_pattern4_setup({uid, prod_c, prod_b});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "hub_globals"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    // Owner opens named-no-structure on the hub-global.
+    auto cons = make_wire_client(ctx, setup, uid);
+    auto open = consumer_reg_body(setup, channel, uid, "fan-in");
+    open["expected_schema_id"] = sid;
+    open["expected_schema_hash"] = good_hash;
+    open["expected_schema_owner"] = "hub";
+    auto ro = cons.request("CONSUMER_REG_REQ", open, "CONSUMER_REG_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ro.has_value());
+    ASSERT_EQ(ro->value("status", std::string{}), "success") << ro->dump();
+
+    // Path-C producer adopts (hub, id) and joins the owner's contract.
+    auto adopter = make_wire_client(ctx, setup, prod_c);
+    auto jc = producer_reg_body(setup, channel, prod_c, /*shm=*/false, "fan-in");
+    jc["schema_id"] = sid;
+    jc["schema_owner"] = "hub";
+    jc["schema_blds"] = blds;
+    jc["schema_packing"] = packing;
+    jc["schema_hash"] = good_hash;
+    auto rc = adopter.request("REG_REQ", jc, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rc.has_value());
+    EXPECT_EQ(rc->value("status", std::string{}), "success")
+        << "path-C adoption must join the hub-owned fan-in channel; body=" << rc->dump();
+
+    // Path-B producer: identical material but NO owner claim — the
+    // front door cites owner=self, which cannot equal "hub" →
+    // SCHEMA_MISMATCH on the owner axis (the G9 analysis pin).
+    auto selfown = make_wire_client(ctx, setup, prod_b);
+    auto jb = producer_reg_body(setup, channel, prod_b, /*shm=*/false, "fan-in");
+    jb["schema_id"] = sid;
+    jb["schema_blds"] = blds;
+    jb["schema_packing"] = packing;
+    jb["schema_hash"] = good_hash;
+    auto rb = selfown.request("REG_REQ", jb, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(rb.has_value());
+    EXPECT_EQ(rb->value("status", std::string{}), "error");
+    EXPECT_EQ(rb->value("error_code", std::string{}), "SCHEMA_MISMATCH") << rb->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerConsumerTest, FanInOwnerOpen_StructureWithoutHash_Rejected)
+{
+    // SI-2 (G8): the fan-in OPENER's citation carrying structure but no
+    // fingerprint is rejected MISSING_HASH before the book opens — the
+    // installed contract must carry its fingerprint.  (Producer-side
+    // twin: AnonymousReg_StructureWithoutHash_Rejected.)
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "cons.nohash" + suffix;
+    const std::string channel = "consumer.open_no_hash" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("bc_open_no_hash");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto cons = make_wire_client(ctx, setup, uid);
+    auto body = consumer_reg_body(setup, channel, uid, "fan-in");
+    body["expected_schema_blds"] = "ts:f64:1:0";
+    body["expected_schema_packing"] = "aligned";
+    // no expected_schema_hash
+    auto resp = cons.request("CONSUMER_REG_REQ", body, "CONSUMER_REG_ACK",
+                             milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value());
+    EXPECT_EQ(resp->value("status", std::string{}), "error");
+    EXPECT_EQ(resp->value("error_code", std::string{}), "MISSING_HASH") << resp->dump();
 
     broker.signal_quit();
 }

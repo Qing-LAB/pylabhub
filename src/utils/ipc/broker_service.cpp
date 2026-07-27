@@ -2297,6 +2297,17 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     std::string final_schema_id;
     std::string final_schema_owner;
 
+    // SI-9 hygiene (schema/metrics integration, 2026-07-26): an owner
+    // claim without a named schema is meaningless — previously it was
+    // silently ignored (stale-silent-fallback).  Reject loudly; the
+    // consumer twin lives in handle_consumer_reg_req.
+    if (req_schema_id_raw.empty() && !req_schema_owner.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "REG_REQ schema_owner requires schema_id — an owner "
+                          "claim without a named schema is meaningless (SI-9)");
+    }
+
     if (!req_schema_id_raw.empty())
     {
         if (req_schema_packing.empty())
@@ -3358,6 +3369,23 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
     // Phase 4a fixed on the REG_REQ side; mirrored here for symmetry.
     const std::string expected_fz_blds = body.expected_flexzone_blds();
     const std::string expected_fz_packing = body.expected_flexzone_packing();
+    // SI-9 (2026-07-26): the owner axis is a first-class citation axis.
+    // Openers have it validated below (∈ {"", "hub"} + registry
+    // resolution); joiners have a non-empty claim matched exactly.
+    // Previously it was installed verbatim on the open path and silently
+    // ignored on the join path — both stale-silent-fallbacks.
+    const std::string expected_owner = body.expected_schema_owner();
+    if (expected_schema_id.empty() && !expected_owner.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "CONSUMER_REG_REQ expected_schema_owner requires "
+                          "expected_schema_id — an owner claim without a named "
+                          "schema is meaningless (SI-9)");
+    }
+    // Structure the OPEN path installs — may be materialized from the
+    // registry record on a named open (G10); joiners never read these.
+    std::string open_blds = expected_blds;
+    std::string open_fz_blds = expected_fz_blds;
 
     // Validate the consumer's cited schema against the channel through the
     // single validator (HEP-CORE-0034 §9 / §2.4 I4).  When the consumer is
@@ -3454,6 +3482,88 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
             // Opener: no stored invariants exist to match against — the
             // now-validated citation BECOMES the invariants inside
             // `_on_consumer_joined`.  Steps 2/3 are joiner-only.
+            //
+            // SI-9 / G9 (ruled 2026-07-26): the open row validates the
+            // OWNER AXIS it installs.  The producer front-door defaults
+            // an ownerless named citation to cited_owner=self, so on
+            // fan-in — where EVERY producer is a joiner — a named book
+            // is joinable only under owner="hub" (all producers adopt
+            // the same hub-global).  An empty or third-party owner
+            // would open a channel no producer can ever join: the name
+            // axis blocks anonymous joiners, the owner axis named ones.
+            if (!expected_owner.empty() && expected_owner != "hub")
+            {
+                LOGGER_WARN("[broker] event=ConsumerRegReqRejected "
+                            "reason='SCHEMA_FORBIDDEN_OWNER' role='{}' channel='{}' "
+                            "claimed_owner='{}'",
+                            role_uid, channel_name, expected_owner);
+                return make_error(corr_id, "SCHEMA_FORBIDDEN_OWNER",
+                                  "channel-open citation may claim owner \"hub\" only — "
+                                  "a consumer cannot open under a producer's namespace "
+                                  "(SI-9)");
+            }
+            if (named && expected_owner.empty())
+            {
+                LOGGER_WARN("[broker] event=ConsumerRegReqRejected "
+                            "reason='SCHEMA_OWNER_REQUIRED' role='{}' channel='{}' "
+                            "schema_id='{}'",
+                            role_uid, channel_name, expected_schema_id);
+                return make_error(corr_id, "SCHEMA_OWNER_REQUIRED",
+                                  "named fan-in open requires expected_schema_owner="
+                                  "\"hub\" — an unowned named book is unjoinable by "
+                                  "every producer (SI-9/G9)");
+            }
+            if (named)
+            {
+                // owner == "hub": the named open IS a registry citation —
+                // resolve it through the single validator exactly like
+                // the producer's Path C (HEP-CORE-0034 §9 step 3).
+                pylabhub::hub::SchemaCitationInput sin;
+                sin.channel_owner = "hub";
+                sin.channel_id = expected_schema_id;
+                sin.channel_hash = joiner_hash;
+                sin.cited_id = expected_schema_id;
+                sin.expected_hash = joiner_hash;
+                sin.check_registry_record = true;
+                const auto vc = hub_state_->_validate_schema_citation(sin);
+                if (!vc.ok())
+                {
+                    const char *code = "SCHEMA_MISMATCH"; // defensive default
+                    switch (vc.reason)
+                    {
+                        using R = ::pylabhub::schema::CitationOutcome::Reason;
+                    case R::kUnknownSchema:
+                        code = "SCHEMA_UNKNOWN"; // no such hub-global
+                        break;
+                    case R::kFingerprintMismatch:
+                        code = "FINGERPRINT_INCONSISTENT"; // exists, differs
+                        break;
+                    default:
+                        break;
+                    }
+                    LOGGER_WARN("[broker] event=ConsumerRegReqRejected reason='{}' "
+                                "role='{}' channel='{}' detail='{}'",
+                                code, role_uid, channel_name, vc.detail);
+                    return make_error(corr_id, code,
+                                      "Cannot open on hub-global (hub, " +
+                                          expected_schema_id + "): " + vc.detail);
+                }
+                // G10 — a named-open citation may omit the structure; the
+                // registry record always carries it (`make_schema_record`
+                // asserts >= 1 zone).  Materialize it into the channel
+                // invariants so the channel record serves structure
+                // directly (channel-form SCHEMA_REQ; the establishment
+                // ACK when schema-at-establishment lands).
+                if (expected_blds.empty())
+                {
+                    if (const auto rec = hub_state_->schema("hub", expected_schema_id);
+                        rec.has_value())
+                    {
+                        open_blds = rec->blds;
+                        open_fz_blds = rec->flexzone_blds;
+                    }
+                }
+            }
         }
         else
         {
@@ -3466,6 +3576,7 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
         for (const auto &p : channel_entry.producers)
             sin.channel_producer_uids.push_back(p.role_uid);
         sin.cited_id = expected_schema_id;
+        sin.cited_owner = expected_owner; // exact-match when claimed (SI-9)
         sin.expected_hash = joiner_hash;
 
         const auto vc = hub_state_->_validate_schema_citation(sin);
@@ -3547,9 +3658,12 @@ nlohmann::json BrokerServiceImpl::handle_consumer_reg_req(
         // expected_schema_version retired per C2 — version rides inside
         // expected_schema_id (`$name.v<N>`) per HEP-CORE-0034 §5.1.
         s.schema_id = expected_schema_id;
-        s.schema_blds = expected_blds;
-        s.flexzone_blds = expected_fz_blds; // two-zone content (fingerprint folds packing)
-        s.schema_owner = body.expected_schema_owner();
+        // open_* may carry structure materialized from the hub-global
+        // record on a named open (G10) — otherwise they equal the
+        // consumer's expected_* verbatim.
+        s.schema_blds = open_blds;
+        s.flexzone_blds = open_fz_blds; // two-zone content (fingerprint folds packing)
+        s.schema_owner = expected_owner; // validated ∈ {"", "hub"} (SI-9/G9)
         open_schema = std::move(s);
 
         pylabhub::hub::ChannelTransportInvariants t;

@@ -948,6 +948,69 @@ TEST_F(Pattern4BrokerProtocolTest, DuplicateReg_DifferentSchemaHash_Rejected)
 //     schema STRUCTURE must carry a matching fingerprint.  Hash-only
 //     registration (above) stays legal. ───────────────────────────────
 
+TEST_F(Pattern4BrokerProtocolTest, Reg_OwnerWithoutId_Rejected)
+{
+    // SI-9 hygiene (ruled 2026-07-26): a producer schema_owner claim
+    // without a schema_id was silently ignored — now INVALID_REQUEST
+    // (consumer twin pinned in FanInOwnerOpen_OwnerAxis_Rejections).
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "prod.ownernoid" + suffix;
+    const std::string channel = "proto.owner_no_id" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("p4_owner_no_id");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, uid);
+    auto body = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body["schema_owner"] = "hub"; // owner claim, NO schema_id
+    auto resp = prod.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+    EXPECT_EQ(resp->value("status", std::string{}), "error");
+    EXPECT_EQ(resp->value("error_code", std::string{}), "INVALID_REQUEST") << resp->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, NamedReg_MissingBlds_Rejected)
+{
+    // HEP-0034 §10.1: a NAMED registration must carry the full
+    // structure — schema_id + packing + hash without schema_blds is
+    // MISSING_BLDS (nothing to hash, nothing to install).
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string uid = "prod.noblds" + suffix;
+    const std::string channel = "proto.named_no_blds" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("p4_named_no_blds");
+    const auto setup = make_pattern4_setup({uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, uid);
+    auto body = producer_reg_body(setup, channel, uid, /*shm=*/false);
+    body["schema_id"] = "$lab.noblds.v1";
+    body["schema_packing"] = "aligned";
+    body["schema_hash"] = std::string(128, 'a');
+    // no schema_blds
+    auto resp = prod.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value()) << "REG_REQ timed out";
+    EXPECT_EQ(resp->value("status", std::string{}), "error");
+    EXPECT_EQ(resp->value("error_code", std::string{}), "MISSING_BLDS") << resp->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4BrokerProtocolTest, AnonymousReg_StructureWithoutHash_Rejected)
 {
     using namespace std::chrono;

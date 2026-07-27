@@ -2519,9 +2519,11 @@ schema::CitationOutcome HubState::_validate_schema_citation(const SchemaCitation
                      " (anonymous matches only anonymous; a named channel "
                      "requires its name — HEP-CORE-0034 §9)";
     }
-    // (c) Owner axis — asserted only by a producer named citation (consumers
-    //     cite by id only and never claim an owner, so this is skipped for
-    //     them; an anonymous producer likewise makes no owner claim).
+    // (c) Owner axis — asserted by any NAMED citation that claims an owner.
+    //     Producer named citations always carry an effective owner (an empty
+    //     claim defaults to self at the front door); a consumer MAY claim
+    //     one, matched exactly when given (SI-9, 2026-07-26; empty = no
+    //     claim, axis skipped).  An anonymous citation claims no owner.
     else if (!in.cited_id.empty() && !in.cited_owner.empty() && in.cited_owner != in.channel_owner)
     {
         out.reason = R::kSchemaOwnerMismatch;
