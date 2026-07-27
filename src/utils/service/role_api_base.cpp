@@ -3216,7 +3216,10 @@ std::optional<nlohmann::json> RoleAPIBase::discover_channel(const std::string &c
         bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
-        LOGGER_ERROR("[{}] discover_channel: broker comm not connected", pImpl->short_tag);
+        LOGGER_WARN("[{}] discover_channel: broker comm not connected (returning nullopt — "
+                    "query-surface degrade contract, IMPLEMENTATION_GUIDANCE §\"Role-side "
+                    "query surface\")",
+                    pImpl->short_tag);
         return std::nullopt;
     }
     auto result = bc->discover_channel(channel, {}, timeout_ms);

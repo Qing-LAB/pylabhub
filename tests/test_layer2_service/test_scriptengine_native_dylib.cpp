@@ -202,3 +202,14 @@ TEST_F(NativeEngineTest, Api_InboxSend_NoBroker_GracefulReturn)
     auto w = SpawnWorker("native_engine.api_inbox_send_no_broker_graceful_return", {plugin_dir()});
     ExpectWorkerOk(w);
 }
+
+// Native broker schema/metrics query parity (HEP-0034 §10.3 / SI-5; ABI
+// v13): the three get_*_json fn ptrs are wired and all return NULL
+// gracefully with no broker (incl. bad args — one C-side sentinel).
+// Completes the 3-engine L2 pin set (Lua/Python twins in their suites).
+TEST_F(NativeEngineTest, Api_SchemaQueries_NoBroker_GracefulReturn)
+{
+    auto w =
+        SpawnWorker("native_engine.api_schema_queries_no_broker_graceful_return", {plugin_dir()});
+    ExpectWorkerOk(w);
+}

@@ -910,6 +910,51 @@ int api_inbox_send_no_broker_graceful_return(const std::string &plugin_dir)
         "native_engine::api_inbox_send_no_broker_graceful_return");
 }
 
+// Native broker schema/metrics query parity (HEP-0034 §10.3 / SI-5;
+// ABI v13).  The plugin's on_produce probes the three get_*_json fn
+// ptrs: all wired (parity with Lua/Python), and all return NULL
+// gracefully without a broker — NULL is the single C-side sentinel
+// (transport failure and bad args alike).  Broker-side reply shapes +
+// member gating are L3-pinned (Pattern4BrokerSchemaTest /
+// Pattern4MetricsTest); this pins the ABI wiring + delegation only.
+int api_schema_queries_no_broker_graceful_return(const std::string &plugin_dir)
+{
+    return run_ne_worker(
+        [&]()
+        {
+            RoleHostCore core;
+            NativeEngine engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+
+            auto lib = good_plugin_path(plugin_dir);
+            ASSERT_TRUE(
+                engine.load_script(lib.parent_path(), lib.filename().string(), "on_produce"));
+            auto spec = pylabhub::tests::simple_schema();
+            ASSERT_TRUE(engine.register_slot_type(spec, "OutSlotFrame", "aligned"));
+            core.set_out_slot_spec(SchemaSpec{spec},
+                                   pylabhub::hub::compute_schema_size(spec, "aligned"));
+
+            auto test_api = make_native_api(core);
+            ASSERT_TRUE(engine.build_api(*test_api));
+
+            float buf = 0.0f;
+            std::vector<IncomingMessage> msgs;
+            auto result = engine.invoke_produce(InvokeTx{&buf, sizeof(buf)}, msgs);
+            EXPECT_EQ(result, InvokeResult::Commit);
+
+            auto metrics = core.custom_metrics_snapshot();
+            EXPECT_EQ(static_cast<int>(metrics["test_schema_query_ptrs_wired"]), 1)
+                << "get_schema_json / get_channel_schema_json / "
+                   "get_channel_metrics_json must all be wired (3-engine parity)";
+            EXPECT_EQ(static_cast<int>(metrics["test_schema_queries_null"]), 1)
+                << "all three queries must return NULL gracefully without a "
+                   "broker (incl. the bad-args NULL case)";
+
+            engine.finalize();
+        },
+        "native_engine::api_schema_queries_no_broker_graceful_return");
+}
+
 } // namespace native_engine
 } // namespace pylabhub::tests::worker
 
@@ -992,6 +1037,8 @@ struct NativeEngineWorkerRegistrar
                     return api_band_pub_sub_no_broker_graceful_return(pdir);
                 if (sc == "api_inbox_send_no_broker_graceful_return")
                     return api_inbox_send_no_broker_graceful_return(pdir);
+                if (sc == "api_schema_queries_no_broker_graceful_return")
+                    return api_schema_queries_no_broker_graceful_return(pdir);
 
                 fmt::print(stderr, "[native_engine] ERROR: unknown scenario '{}'\n", sc);
                 return 1;

@@ -104,10 +104,24 @@ decisions pending user ruling):
       (Python — None, no raise); broker-side reply shapes + gating
       already L3-pinned (slice 1b/1c).  DEFERRED from the map: the L4
       metrics-adaptive-script keystone — tracked below.
+- [x] ✅ Slice-2 review pass 2026-07-26 (3-engine parity + language
+      conventions): all three engines verified faithful to their local
+      conventions (Lua dot-closures + raise-on-empty; Python
+      kwargs + GIL-release + pass-through; native `*_json` scratch +
+      appended-ABI discipline).  Fixes shipped: native L2 no-broker pin
+      (`Api_SchemaQueries_NoBroker_GracefulReturn` — closed the
+      test-parity break), README_Deployment api-catalog entries,
+      native NULL-sentinel precision in README_topology_channels §5,
+      `discover_channel` ERROR→WARN harmonization, and the
+      query-surface graceful-degrade contract made EXPLICIT in
+      IMPLEMENTATION_GUIDANCE § "Role-side query surface" (WARN-only
+      on transport failure, typed rejections as data, registration
+      keeps ERROR; enforced by the three per-engine L2 pins).
 - [ ] Slice-2 follow-up: L4 keystone — a metrics-adaptive script role
       (script pulls `get_channel_metrics` mid-run and adapts) as a
-      Pattern-4/L4 scenario; native-engine binding smoke via a test
-      plugin exercising `get_*_json` against a live broker.
+      Pattern-4/L4 scenario; native-engine live-broker smoke
+      (`get_*_json` against a real broker; the no-broker half is now
+      L2-pinned).
 - [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
       native roles.
 - [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully

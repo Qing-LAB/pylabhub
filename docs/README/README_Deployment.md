@@ -1187,6 +1187,17 @@ api.band_broadcast(band, payload, data=b"")
 api.band_members(band)       # → list of role_uids currently in the band
 api.is_in_band(band)         # → bool
 
+# Broker schema/metrics queries (HEP-CORE-0034 §10.3)
+api.get_schema(owner, schema_id)    # → dict: registry schema record by key
+api.get_channel_schema(channel)     # → dict: the channel's stored schema
+api.get_channel_metrics(channel)    # → dict: live per-member metrics + SHM info
+    # All three return the FULL broker reply as data — check `status` /
+    # `error_code` yourself (e.g. NOT_A_ROLE_OF_CHANNEL on the
+    # member-gated channel forms).  None ONLY when the broker is
+    # unreachable.  Same surface in Lua (tables / nil) and the native
+    # engine (ctx->get_*_json → JSON string / NULL; NULL also covers
+    # bad args — the C surface has a single sentinel).
+
 # Custom metrics + diagnostics (HEP-CORE-0019)
 api.report_metric(key, value)     # accumulate one scalar
 api.report_metrics(dict)          # accumulate many at once

@@ -49,6 +49,9 @@ static int g_test_band_send_ok = 0;       // 1 if band_broadcast returned (no cr
 static int g_test_band_members_empty = 0; // 1 if band_members visited 0 entries or errored
 static int g_test_inbox_ptrs_wired = 0;   // 1 if all 5 inbox send fn ptrs are non-null
 static int g_test_inbox_open_null = 0;    // 1 if open_inbox on an unreachable target returned NULL
+static int g_test_schema_query_ptrs_wired = 0; // 1 if all 3 get_*_json fn ptrs are non-null (v13)
+static int g_test_schema_queries_null = 0;     // 1 if all 3 returned NULL without a broker
+                                               //   (incl. the bad-args NULL case)
 
 // ── Required symbols ────────────────────────────────────────────────────
 
@@ -213,6 +216,29 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         }
     }
 
+    // ── Broker schema/metrics queries (HEP-0034 §10.3 / SI-5; API v13):
+    //    the surface must be wired for parity with Python/Lua, and all
+    //    three must return NULL gracefully without a broker.  NULL is
+    //    the single C-side sentinel — it covers transport failure AND
+    //    bad args (README_topology_channels §5). ──
+    if (g_ctx)
+    {
+        g_test_schema_query_ptrs_wired =
+            (g_ctx->get_schema_json && g_ctx->get_channel_schema_json &&
+             g_ctx->get_channel_metrics_json)
+                ? 1
+                : 0;
+        if (g_test_schema_query_ptrs_wired)
+        {
+            const char *a = g_ctx->get_schema_json(g_ctx, "hub", "$lab.l2.frame.v1");
+            const char *b = g_ctx->get_channel_schema_json(g_ctx, "!l2_test");
+            const char *c = g_ctx->get_channel_metrics_json(g_ctx, "!l2_test");
+            const char *d = g_ctx->get_channel_schema_json(g_ctx, ""); // bad args → NULL
+            g_test_schema_queries_null =
+                (a == nullptr && b == nullptr && c == nullptr && d == nullptr) ? 1 : 0;
+        }
+    }
+
     // ── C++ wrapper: verify plh::Context works ───────────────────
 #ifdef __cplusplus
     if (g_ctx)
@@ -360,6 +386,10 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
                              static_cast<double>(g_test_inbox_ptrs_wired));
         g_ctx->report_metric(g_ctx, "test_inbox_open_null",
                              static_cast<double>(g_test_inbox_open_null));
+        g_ctx->report_metric(g_ctx, "test_schema_query_ptrs_wired",
+                             static_cast<double>(g_test_schema_query_ptrs_wired));
+        g_ctx->report_metric(g_ctx, "test_schema_queries_null",
+                             static_cast<double>(g_test_schema_queries_null));
     }
 
     return true; // commit
@@ -463,4 +493,12 @@ extern "C" PLH_EXPORT int test_get_band_send_ok(void)
 extern "C" PLH_EXPORT int test_get_band_members_empty(void)
 {
     return g_test_band_members_empty;
+}
+extern "C" PLH_EXPORT int test_get_schema_query_ptrs_wired(void)
+{
+    return g_test_schema_query_ptrs_wired;
+}
+extern "C" PLH_EXPORT int test_get_schema_queries_null(void)
+{
+    return g_test_schema_queries_null;
 }

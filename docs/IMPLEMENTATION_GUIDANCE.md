@@ -1895,6 +1895,41 @@ slot checksums are known to be wrong (user writes raw data without checksum upda
 | SHM header magic/checksum corrupt | Cat 1 | Log + notify all → shutdown |
 | Broker can't reach producer | Cat 1 (timeout) | Already covered by heartbeat path |
 
+### Role-side query surface — graceful-degrade contract (added 2026-07-26)
+
+The `RoleAPIBase` **query class** — read-only broker round-trips whose
+`std::optional<nlohmann::json>` return IS the script-visible outcome —
+follows one explicit degrade contract.  Members today: `get_schema`,
+`get_channel_schema`, `get_channel_metrics`, `band_members`,
+`discover_channel`; any future Class-C read joins automatically.
+
+1. **Transport failure** (no broker comm resolved, not connected, or
+   REQ timeout) → return `nullopt` — which the engine bindings surface
+   as `None` / `nil` / `NULL` — and log at **WARN or quieter, never
+   ERROR**.  Probing before or without a broker is a legitimate,
+   documented script behavior (README_topology_channels §5); an ERROR
+   log would turn the documented outcome into a false fault.
+2. **Broker's typed rejection** (`NOT_A_ROLE_OF_CHANNEL`,
+   `SCHEMA_UNKNOWN`, `CHANNEL_NOT_FOUND`, …) → returned **as data**,
+   the full reply untouched.  The pass-through never converts a typed
+   reply into a log event or a different return shape — the script
+   branches on `status` / `error_code` exactly like native C++ callers.
+3. **Registration and mutating calls are NOT in this class.**
+   `register_producer_channel` / `register_consumer` (and their
+   deregister twins) keep **ERROR** on not-connected: a role that
+   cannot reach its broker at registration time is a startup fault
+   (HEP-CORE-0036 §3.5.1 — registration failure is FATAL, there is no
+   operate-locally mode).
+
+**Enforcement:** the per-engine L2 no-broker pins assert the graceful
+return AND the absence of unexpected ERROR logs, so rule 1 is
+test-enforced, not advisory:
+`LuaEngineIsolatedTest.Api_SchemaMetricsQueries_WithoutBroker_ReturnNil`,
+`PythonEngineIsolatedTest.Api_SchemaMetricsQueries_Graceful_NoBroker`,
+`NativeEngineTest.Api_SchemaQueries_NoBroker_GracefulReturn`.  Review
+rule: a new query pass-through that ERROR-logs its not-connected branch
+is a defect.
+
 ### SHM Channel Auth attach errors (HEP-CORE-0041)
 
 The SHM capability-transport attach protocol (HEP-0041 §5) defines its
