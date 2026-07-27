@@ -75,7 +75,7 @@ py::object ProducerAPI::band_members(const std::string &channel)
     return scripting::detail::json_to_py(*result);
 }
 
-// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2).
+// Broker schema/metrics queries (HEP-CORE-0034 §10.3).
 // Return contract: the FULL broker reply as a dict — status/error_code
 // are data the script branches on; None ONLY on transport failure.
 py::object ProducerAPI::get_schema(const std::string &owner, const std::string &schema_id)
@@ -380,8 +380,7 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("get_schema", &producer::ProducerAPI::get_schema, py::arg("owner"),
              py::arg("schema_id"))
         .def("get_channel_schema", &producer::ProducerAPI::get_channel_schema, py::arg("channel"))
-        .def("get_channel_metrics", &producer::ProducerAPI::get_channel_metrics,
-             py::arg("channel"))
+        .def("get_channel_metrics", &producer::ProducerAPI::get_channel_metrics, py::arg("channel"))
         .def("band_member_contains", &producer::ProducerAPI::band_member_contains,
              py::arg("channel"), py::arg("role_uid"),
              "Engine-parity inquiry — true iff role_uid is in the band's "

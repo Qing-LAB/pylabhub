@@ -33,12 +33,15 @@
 #include "role_host_core.hpp"
 #include "utils/role_api_base.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -330,6 +333,35 @@ class ScriptEngine
 
     // ── Schema / type building ───────────────────────────────────────────
 
+    /// The five canonical frame names — the library's fixed role-frame
+    /// contract with the role host.  Declared once here so the engines
+    /// validate against ONE list instead of three hand-copied ones; a
+    /// sixth frame (if the contract ever grows) is a single edit.
+    static constexpr std::array<std::string_view, 5> kCanonicalFrameNames = {
+        "InSlotFrame", "OutSlotFrame", "InFlexFrame", "OutFlexFrame", "InboxFrame"};
+
+    /// True iff @p name is one of `kCanonicalFrameNames`.  Every
+    /// `register_slot_type` implementation gates on this before doing
+    /// any work — see the contract on that method.
+    [[nodiscard]] static bool is_canonical_frame_name(std::string_view name) noexcept
+    {
+        return std::find(kCanonicalFrameNames.begin(), kCanonicalFrameNames.end(), name) !=
+               kCanonicalFrameNames.end();
+    }
+
+    /// Comma-separated list of the canonical names, for error messages.
+    [[nodiscard]] static std::string canonical_frame_names_csv()
+    {
+        std::string out;
+        for (const auto &n : kCanonicalFrameNames)
+        {
+            if (!out.empty())
+                out += ", ";
+            out.append(n);
+        }
+        return out;
+    }
+
     /**
      * @brief Register a slot type from SchemaSpec.
      *
@@ -357,7 +389,7 @@ class ScriptEngine
      * ONE sanctioned later call: a runtime-resolved consumer
      * (HEP-0034 §10.3a "from-channel") registers "InSlotFrame" at
      * CONSUMER_REG_ACK apply time, after the delivered format passes
-     * the SI-6 verification and before the queue goes Active.  Both
+     * verification and before the queue goes Active.  Both
      * calls run on the same worker thread, so implementations need no
      * extra synchronization for the late case.  For NativeEngine the
      * late call doubles as the adoption gate: the plugin's compiled

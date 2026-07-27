@@ -1455,7 +1455,7 @@ std::optional<nlohmann::json> BrokerRequestComm::get_schema(const std::string &o
 {
     // SCHEMA_REQ registry form (HEP-CORE-0034 §10.3): fetch a
     // SchemaRecord by (owner, schema_id).  Open to all known roles —
-    // the registry is shared infrastructure (SI-5).  `role_uid` is the
+    // the registry is shared infrastructure.  `role_uid` is the
     // caller's own uid, bound to the DEALER identity by the admission
     // tier.
     nlohmann::json payload;
@@ -1471,7 +1471,7 @@ std::optional<nlohmann::json> BrokerRequestComm::get_channel_schema(const std::s
     // SCHEMA_REQ channel form: the channel's stored schema invariants
     // (incl. full BLDS — the only wire path that returns structure by
     // channel; DISC_ACK carries the summary only).  Member-gated
-    // (SI-5): the broker answers only roles registered on `channel`.
+    // The broker answers only roles registered on `channel`.
     nlohmann::json payload;
     payload["channel_name"] = channel;
     payload["role_uid"] = pImpl->role_uid;
@@ -1481,10 +1481,10 @@ std::optional<nlohmann::json> BrokerRequestComm::get_channel_schema(const std::s
 std::optional<nlohmann::json> BrokerRequestComm::get_channel_metrics(const std::string &channel,
                                                                      int timeout_ms)
 {
-    // METRICS_REQ (MI-1): the channel's live per-presence metrics
+    // METRICS_REQ: the channel's live per-presence metrics
     // snapshot + SHM block info.  `channel_name` REQUIRED (hub-wide
     // aggregation is hub-script/admin-plane only); member-gated
-    // (SI-5); freshness = the members' heartbeat cadence.
+    // freshness = the members' heartbeat cadence.
     nlohmann::json payload;
     payload["channel_name"] = channel;
     payload["role_uid"] = pImpl->role_uid;

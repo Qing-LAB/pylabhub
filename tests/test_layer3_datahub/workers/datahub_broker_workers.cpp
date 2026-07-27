@@ -15,7 +15,7 @@
 // new co-host workers here; add wire tests under tests/test_layer3_pattern4/.
 #include "datahub_broker_workers.h"
 #include "curve_test_setup.h"
-#include "test_sync_utils.h" // poll_until — coordinate on events, not sleeps
+#include "test_sync_utils.h"     // poll_until — coordinate on events, not sleeps
 #include "hub_vault_test_seed.h" // provision_hub_vault + load_hub_keypair_fresh (HEP-0035 §4.8)
 #include "broker_test_harness.h"
 #include "test_entrypoint.h"
@@ -1252,10 +1252,10 @@ nlohmann::json baseline_reg_req(const std::string &channel, const std::string &u
 std::string canonical_hash_hex(const std::string &slot_blds, const std::string &slot_packing,
                                const std::string &fz_blds = {}, const std::string &fz_packing = {})
 {
-    const auto h = pylabhub::hub::compute_fingerprint_from_wire(slot_blds, slot_packing, fz_blds,
-                                                                fz_packing);
-    return pylabhub::format_tools::bytes_to_hex(
-        {reinterpret_cast<const char *>(h.data()), h.size()});
+    // Delegates to the production conversion API (HEP-CORE-0034 §2.4
+    // I10) — the same call the broker and roles make, so a test can
+    // never compute a fingerprint the wire would disagree with.
+    return pylabhub::hub::fingerprint_hex_from_wire(slot_blds, slot_packing, fz_blds, fz_packing);
 }
 
 } // anonymous namespace
@@ -1828,10 +1828,9 @@ int broker_sch_inbox_discovery_roundtrip()
             // derives the ROLE_INFO `inbox_packing` echo from the parsed spec
             // (HEP-0046 B.2) — asserted below.
             reg["inbox_schema_json"] = inbox_schema_json;
-            ASSERT_EQ(
-                raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, recv_uid)
-                    .value("status", std::string{}),
-                "success");
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, recv_uid)
+                          .value("status", std::string{}),
+                      "success");
 
             // 2. Sender discovers the inbox via ROLE_INFO_REQ — schema comes back
             //    as a JSON object whose fields match what the receiver advertised.
@@ -1873,7 +1872,8 @@ int broker_sch_inbox_discovery_roundtrip()
             //    typed message — proves a sender can act purely on ROLE_INFO.
             auto discovered_spec = hub::parse_schema_json(info["inbox_schema"]);
             auto discovered_fields = hub::schema_spec_to_zmq_fields(discovered_spec);
-            auto c = hub::InboxClient::connect_to(inbox_ep, send_uid, discovered_fields, discovered_spec.packing);
+            auto c = hub::InboxClient::connect_to(inbox_ep, send_uid, discovered_fields,
+                                                  discovered_spec.packing);
             ASSERT_NE(c, nullptr);
             ASSERT_TRUE(c->start());
 

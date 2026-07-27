@@ -1104,8 +1104,14 @@ Producer/Consumer also get auto-generated aliases at `build_api()`:
   "type built but not cached" fallthrough.
 - Re-registration under the SAME canonical name is allowed — it
   overwrites the previously cached type.  Primarily a test-side
-  convenience (verifying different packings on the same slot);
-  production role hosts register each canonical name at most once.
+  convenience (verifying different packings on the same slot).
+- Production call timing: role hosts register each canonical name
+  once during engine startup, with ONE sanctioned later call — a
+  consumer whose config asks for the channel's format at runtime
+  (`"from-channel"`, HEP-CORE-0034 §10.3a) registers `InSlotFrame`
+  when that format arrives and has been verified, before its queue
+  starts carrying data.  Both calls happen on the same worker
+  thread, so engines need no extra locking for the later one.
 
 This closed-set design is intentional: frames are role-contract
 identities, not a user-extension point.  Adding a new frame

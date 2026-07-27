@@ -595,11 +595,11 @@ std::optional<std::array<uint8_t, 8>> make_schema_tag(const std::string &hash)
     return tag;
 }
 
-/// HEP-CORE-0034 §10.3a + SI-6 — resolve the runtime-delivered format for a
+/// HEP-CORE-0034 §10.3a — resolve the runtime-delivered format for a
 /// schema-pending rx queue from the CONSUMER_REG_ACK schema fields, and
 /// install it via `configure_slot_schema` BEFORE any attach work.
 ///
-/// The SI-6 chain this closes: delivered BLDS → must hash to the delivered
+/// The verification chain this closes: delivered BLDS → must hash to the delivered
 /// two-zone fingerprint (the §6.4 candidate recompute verifies the pair AND
 /// recovers each zone's packing in the same act) → the queue's per-message
 /// schema tag is derived from the resolved specs so the data plane keeps
@@ -617,50 +617,54 @@ bool resolve_runtime_slot_schema(hub::QueueReader &rx, RoleHostCore &core,
 
     if (blds.empty())
     {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' serves NO structure "
-                     "(ACK carries no `blds` — anonymous hash-only channels "
-                     "serve none by design).  SI-6 empty-format abort: a "
-                     "runtime-resolved consumer cannot proceed.",
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' carries no structure — "
+                     "the hub's record has a fingerprint but no field list, so "
+                     "there is nothing to build a slot view from.  A role that "
+                     "asked for the channel's format cannot continue; give it "
+                     "an explicit schema, or point it at a channel whose owner "
+                     "declared one (HEP-CORE-0034 §10.3a).",
                      short_tag, channel_name);
         return false;
     }
-    if (hash_hex.size() != 128)
+    // One guarded decode for the whole function: `fingerprint_from_hex`
+    // is the only sanctioned reader of the wire form (HEP-CORE-0034
+    // §2.4 I10).  Wrong length and non-hex characters are the same
+    // answer here — the value cannot be a fingerprint, so nothing
+    // downstream can be verified against it.
+    const auto delivered_fp = hub::fingerprint_from_hex(hash_hex);
+    if (!delivered_fp.has_value())
     {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' ACK `schema_hash` "
-                     "missing or malformed (len={}, want 128 hex) — cannot "
-                     "verify the delivered structure (SI-6).",
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' — the hub's fingerprint "
+                     "for this channel is missing or unreadable (got {} "
+                     "characters; a fingerprint is 128 hex characters).  "
+                     "Without it the delivered structure cannot be verified, so "
+                     "the role stops instead of trusting it.",
                      short_tag, channel_name, hash_hex.size());
-        return false;
-    }
-    const std::string fp_bytes = pylabhub::format_tools::bytes_from_hex(hash_hex);
-    if (fp_bytes.size() != 64)
-    {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' ACK `schema_hash` is "
-                     "not valid hex — cannot verify the delivered structure "
-                     "(SI-6).",
-                     short_tag, channel_name);
         return false;
     }
     std::array<uint8_t, 32> db_half{};
     std::array<uint8_t, 32> fz_half{};
-    std::memcpy(db_half.data(), fp_bytes.data(), 32);
-    std::memcpy(fz_half.data(), fp_bytes.data() + 32, 32);
+    std::copy_n(delivered_fp->begin(), 32, db_half.begin());
+    std::copy_n(delivered_fp->begin() + 32, 32, fz_half.begin());
 
     auto slot_spec = hub::parse_canonical_fields_str(blds);
     if (!slot_spec.has_value())
     {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered `blds` "
-                     "failed canonical parse (HEP-0034 §6.3 grammar): '{}'",
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' — the hub's field list "
+                     "for this channel is not readable as a field list: '{}'.  "
+                     "Expected entries of the form name:type:count:length "
+                     "separated by '|' (HEP-CORE-0034 §6.3).",
                      short_tag, channel_name, blds);
         return false;
     }
     const auto slot_packing = hub::recover_zone_packing(blds, db_half);
     if (!slot_packing.has_value())
     {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered `blds` does "
-                     "not hash to the delivered fingerprint's datablock half "
-                     "under any packing — broker claim vs delivery disagree "
-                     "(SI-6 chain broken).",
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' — the field list the "
+                     "hub delivered does not match the fingerprint delivered "
+                     "alongside it.  The two disagree, so the role cannot trust "
+                     "either; it stops rather than reading the channel with the "
+                     "wrong layout.",
                      short_tag, channel_name);
         return false;
     }
@@ -672,17 +676,19 @@ bool resolve_runtime_slot_schema(hub::QueueReader &rx, RoleHostCore &core,
         auto parsed = hub::parse_canonical_fields_str(fz_blds);
         if (!parsed.has_value())
         {
-            LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered "
-                         "`flexzone_blds` failed canonical parse: '{}'",
+            LOGGER_ERROR("[{}] runtime schema: channel '{}' — the hub's "
+                         "flexzone field list is not readable as a field list: "
+                         "'{}' (HEP-CORE-0034 §6.3).",
                          short_tag, channel_name, fz_blds);
             return false;
         }
         const auto fz_packing = hub::recover_zone_packing(fz_blds, fz_half);
         if (!fz_packing.has_value())
         {
-            LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered "
-                         "`flexzone_blds` does not hash to the fingerprint's "
-                         "flexzone half under any packing (SI-6 chain broken).",
+            LOGGER_ERROR("[{}] runtime schema: channel '{}' — the flexzone "
+                         "field list does not match the flexzone half of the "
+                         "delivered fingerprint.  The role stops rather than "
+                         "reading the flexzone with the wrong layout.",
                          short_tag, channel_name);
             return false;
         }
@@ -691,9 +697,10 @@ bool resolve_runtime_slot_schema(hub::QueueReader &rx, RoleHostCore &core,
     }
     else if (std::any_of(fz_half.begin(), fz_half.end(), [](uint8_t b) { return b != 0; }))
     {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' fingerprint claims a "
-                     "flexzone but the ACK delivered none — broker claim vs "
-                     "delivery disagree (SI-6 chain broken).",
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' — the fingerprint says "
+                     "this channel has a flexzone, but no flexzone field list "
+                     "was delivered with it.  The hub's own record is "
+                     "inconsistent; the role stops instead of guessing.",
                      short_tag, channel_name);
         return false;
     }
@@ -704,19 +711,21 @@ bool resolve_runtime_slot_schema(hub::QueueReader &rx, RoleHostCore &core,
     if (!rx.configure_slot_schema(hub::schema_spec_to_zmq_fields(*slot_spec), slot_spec->packing,
                                   make_schema_tag(expected_hash)))
     {
-        LOGGER_ERROR("[{}] runtime schema: channel '{}' queue refused "
-                     "configure_slot_schema on the verified format — see the "
-                     "queue's own diagnostic.",
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' — the receive queue "
+                     "refused the verified format; see the queue's own error "
+                     "just above for the reason.",
                      short_tag, channel_name);
         return false;
     }
-    // Script tier's view (slot size accessors today; G4 slot proxies later).
+    // The script tier's view of the format: slot-size accessors, and the
+    // spec the engine builds its typed slot proxy from.
     core.set_in_slot_spec(hub::SchemaSpec{*slot_spec},
                           hub::compute_schema_size(*slot_spec, slot_spec->packing));
 
     LOGGER_INFO("[{}] event=RuntimeSchemaResolved channel='{}' fields={} "
-                "packing={} flexzone={} (HEP-0034 §10.3a — delivered BLDS "
-                "verified against the fingerprint via §6.4 recovery)",
+                "packing={} flexzone={} (the channel's format was delivered "
+                "by the hub and verified against its fingerprint — "
+                "HEP-CORE-0034 §10.3a)",
                 short_tag, channel_name, slot_spec->fields.size(), slot_spec->packing,
                 fz_spec.has_schema);
     return true;
@@ -727,14 +736,15 @@ bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
 {
     pImpl->tx_queue.reset();
 
-    // SI-7 (HEP-0034 §10.3a): `from-channel` is legal ONLY on dialing
+    // HEP-CORE-0034 §10.3a: `from-channel` is legal ONLY on dialing
     // reader sides.  A writer IS an owning side — it cannot ask the
     // channel for what only the owner establishes.  Config error,
     // caught at startup before any broker contact.
     if (opts.slot_spec.runtime_resolved || opts.fz_spec.runtime_resolved)
     {
         LOGGER_ERROR("[{}] config error: \"from-channel\" on a WRITER side — "
-                     "owning sides declare their format (HEP-0034 SI-7); "
+                     "owning sides declare their format "
+                     "(HEP-CORE-0034 §10.3a); "
                      "runtime resolution is dialing-reader-only.",
                      pImpl->short_tag);
         return false;
@@ -956,7 +966,7 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     }
     else if (opts.data_transport == "zmq")
     {
-        // ── Runtime-resolved format gates (HEP-0034 §10.3a / SI-7) ────
+        // ── Runtime-resolved format gates (HEP-CORE-0034 §10.3a) ─────
         // The schema-pending build is DELIBERATE-only: the config must
         // have declared the explicit "from-channel" sentinel.  A plain
         // missing schema stays the hard error it always was — no silent
@@ -973,14 +983,14 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         }
         if (runtime_resolved)
         {
-            // SI-7: the fan-in reader BINDS — it is the channel OWNER
+            // The fan-in reader BINDS — it is the channel OWNER
             // and must declare the format it establishes.
             if (hub::Queue::reader_is_binding_side(opts.topology))
             {
                 LOGGER_ERROR("[{}] config error: \"from-channel\" on a BINDING "
                              "(fan-in owner) consumer for channel='{}' — the "
                              "owner establishes the format and cannot ask the "
-                             "channel for it (HEP-0034 SI-7).",
+                             "channel for it (HEP-CORE-0034 §10.3a).",
                              pImpl->short_tag, rx_channel);
                 return false;
             }
@@ -1318,7 +1328,7 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
 
             // HEP-CORE-0034 §10.3a — runtime-resolved format: a
             // schema-pending rx queue must have the delivered format
-            // verified + installed (SI-6) BEFORE any attach work.
+            // verified + installed BEFORE any attach work.
             // Failure is a startup abort — return false, queue stays
             // Standby, no dial ever happens on an unverified format.
             if (pImpl->rx_queue->slot_schema_pending())
@@ -3419,7 +3429,7 @@ std::optional<nlohmann::json> RoleAPIBase::get_schema(const std::string &owner,
                                                       const std::string &schema_id, int timeout_ms)
 {
     // Class C — registry read by (owner, schema_id); open to all known
-    // roles (SI-5), so any connected BRC serves it.
+    // roles, so any connected BRC serves it.
     auto *bc = pImpl->resolve_bc_for_role();
     if (!bc || !bc->is_connected())
     {
@@ -3434,7 +3444,7 @@ std::optional<nlohmann::json> RoleAPIBase::get_schema(const std::string &owner,
 std::optional<nlohmann::json> RoleAPIBase::get_channel_schema(const std::string &channel,
                                                               int timeout_ms)
 {
-    // Class C — member-gated channel read (SI-5): route via the
+    // Class C — member-gated channel read: route via the
     // channel's BRC (we should hold a presence there, or the broker
     // will answer NOT_A_ROLE_OF_CHANNEL); fall back to any connection
     // so the caller still receives the broker's typed error.
@@ -3454,7 +3464,7 @@ std::optional<nlohmann::json> RoleAPIBase::get_channel_schema(const std::string 
 std::optional<nlohmann::json> RoleAPIBase::get_channel_metrics(const std::string &channel,
                                                                int timeout_ms)
 {
-    // Class C — member-gated metrics pull (MI-1); same routing as
+    // Class C — member-gated metrics pull; same routing as
     // get_channel_schema.
     auto *bc = pImpl->resolve_bc_for_channel(channel);
     if (!bc)

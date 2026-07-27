@@ -1011,13 +1011,11 @@ bool LuaEngine::register_slot_type(const hub::SchemaSpec &spec, const std::strin
     // canonical frame names are valid.  A typo in a role host /
     // schema config must fail loudly at this point, not corrupt
     // LuaJIT's global FFI type registry with a stray cdef.
-    if (type_name != "InSlotFrame" && type_name != "OutSlotFrame" && type_name != "InFlexFrame" &&
-        type_name != "OutFlexFrame" && type_name != "InboxFrame")
+    if (!is_canonical_frame_name(type_name))
     {
         LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
-                     "'{}' — must be one of InSlotFrame, OutSlotFrame, "
-                     "InFlexFrame, OutFlexFrame, InboxFrame",
-                     log_tag_, type_name);
+                     "'{}' — must be one of {}",
+                     log_tag_, type_name, canonical_frame_names_csv());
         return false;
     }
 
@@ -1842,7 +1840,7 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("band_members", lua_api_band_members);
     push_closure("is_in_band", lua_api_is_in_band);
 
-    // Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2).
+    // Broker schema/metrics queries (HEP-CORE-0034 §10.3).
     // Each returns the FULL broker reply as a table — status/error_code
     // are data the script branches on; nil ONLY on transport failure.
     push_closure("get_schema", lua_api_get_schema);
@@ -2652,7 +2650,7 @@ int LuaEngine::lua_api_band_members(lua_State *L)
 }
 
 // ============================================================================
-// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5) — slice 2
+// Broker schema/metrics queries (HEP-CORE-0034 §10.3)
 // ============================================================================
 //
 // api.get_schema(owner, schema_id) / api.get_channel_schema(channel) /

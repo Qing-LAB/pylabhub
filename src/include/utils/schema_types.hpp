@@ -81,7 +81,7 @@ struct SchemaSpec
     std::vector<FieldDef> fields;
     std::string packing{"aligned"}; ///< "aligned" or "packed"
 
-    /// HEP-CORE-0034 §10.3a / SI-7 — true iff the config DELIBERATELY
+    /// HEP-CORE-0034 §10.3a — true iff the config DELIBERATELY
     /// declared this schema axis runtime-resolved (the `"from-channel"`
     /// sentinel): the structure arrives on CONSUMER_REG_ACK and the
     /// queue builds schema-pending.  Legal on DIALING reader sides
@@ -92,7 +92,7 @@ struct SchemaSpec
     bool runtime_resolved{false};
 };
 
-/// The `"from-channel"` config sentinel (HEP-0034 §10.3a / SI-7): a
+/// The `"from-channel"` config sentinel (HEP-CORE-0034 §10.3a): a
 /// slot-schema axis whose structure is resolved at runtime from the
 /// channel's established format.
 inline constexpr std::string_view kSchemaFromChannel = "from-channel";

@@ -840,7 +840,7 @@ std::optional<nlohmann::json> fetch_band_members(const PlhNativeContext *ctx,
     }
 }
 
-// ── Broker schema/metrics queries (HEP-0034 §10.3 / SI-5) — API v13 ─────────
+// ── Broker schema/metrics queries (HEP-CORE-0034 §10.3) — API v13 ──────────
 //
 // Return contract (MESSAGEHUB slice 2): the FULL broker reply as JSON
 // data — the plugin branches on status/error_code exactly like a native
@@ -1643,7 +1643,7 @@ struct NativeEngine::NativeContextStorage
         ctx.inbox_discard = ctx_inbox_discard;
         ctx.inbox_close = ctx_inbox_close;
 
-        // Broker schema/metrics queries (HEP-0034 §10.3 / SI-5) — API v13.
+        // Broker schema/metrics queries (HEP-CORE-0034 §10.3) — API v13.
         ctx.get_schema_json = ctx_get_schema_json;
         ctx.get_channel_schema_json = ctx_get_channel_schema_json;
         ctx.get_channel_metrics_json = ctx_get_channel_metrics_json;
@@ -2087,13 +2087,11 @@ bool NativeEngine::register_slot_type(const hub::SchemaSpec &spec, const std::st
     // leaves room for future protocol extensions that might introduce
     // new canonical names; adding one is a one-line edit to the
     // validator below.
-    if (type_name != "InSlotFrame" && type_name != "OutSlotFrame" && type_name != "InFlexFrame" &&
-        type_name != "OutFlexFrame" && type_name != "InboxFrame")
+    if (!is_canonical_frame_name(type_name))
     {
         LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
-                     "'{}' — must be one of InSlotFrame, OutSlotFrame, "
-                     "InFlexFrame, OutFlexFrame, InboxFrame",
-                     log_tag_, type_name);
+                     "'{}' — must be one of {}",
+                     log_tag_, type_name, canonical_frame_names_csv());
         return false;
     }
 

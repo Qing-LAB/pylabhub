@@ -5,7 +5,10 @@
  */
 #include "pylabhub_utils_export.h"
 
+#include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -129,6 +132,60 @@ inline std::string bytes_from_hex(std::string_view hex)
         result += static_cast<char>((hi << 4) | lo);
     }
     return result;
+}
+
+/**
+ * @brief Decodes a hex string into a FIXED-SIZE byte array, or refuses.
+ *
+ * The strict sibling of `bytes_from_hex`.  That function reports failure
+ * by returning its own input — convenient for best-effort display paths,
+ * but it forces every caller that needs a guarantee to hand-write the
+ * same "did it actually decode, and is it the right length?" check
+ * afterwards.  Duplicating that check is how decoders drift apart.
+ *
+ * This overload makes the guarantee part of the type: the result is
+ * either exactly @p N verified bytes, or nothing.  Use it for every
+ * fixed-width hex field on the wire (fingerprints, digests, tags).
+ *
+ * @tparam N Expected byte count; the input must be exactly 2*N hex chars.
+ * @return The decoded bytes, or `std::nullopt` on wrong length / invalid
+ *         characters.  Never partially filled.
+ */
+template <std::size_t N>
+[[nodiscard]] inline std::optional<std::array<std::uint8_t, N>>
+bytes_from_hex_array(std::string_view hex) noexcept
+{
+    if (hex.size() != N * 2)
+        return std::nullopt;
+    std::array<std::uint8_t, N> out{};
+    for (std::size_t i = 0; i < N; ++i)
+    {
+        const auto nibble = [](char c) -> int
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            return -1;
+        };
+        const int hi = nibble(hex[i * 2]);
+        const int lo = nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0)
+            return std::nullopt;
+        out[i] = static_cast<std::uint8_t>((hi << 4) | lo);
+    }
+    return out;
+}
+
+/// Encodes a fixed-size byte array as a lowercase hex string — the
+/// inverse of `bytes_from_hex_array`.  Saves callers the
+/// `reinterpret_cast` + size dance at every wire-encode site.
+template <std::size_t N>
+[[nodiscard]] inline std::string bytes_to_hex(const std::array<std::uint8_t, N> &raw)
+{
+    return bytes_to_hex(std::string_view{reinterpret_cast<const char *>(raw.data()), raw.size()});
 }
 
 /**

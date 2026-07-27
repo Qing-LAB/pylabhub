@@ -454,11 +454,11 @@ class PYLABHUB_UTILS_EXPORT QueueReader
      * A dialing reader whose config declares a runtime-resolved format
      * is BUILT with an empty schema and stays in Standby with no wire
      * layout.  The role host resolves the format from the
-     * CONSUMER_REG_ACK delivery (§10.3a), verifies the SI-6 chain
+     * CONSUMER_REG_ACK delivery (§10.3a), verifies the chain
      * (config pin → delivered BLDS → fingerprint; packing recovered by
      * the §6.4 candidate recompute), and installs the result here
      * BEFORE `apply_master_approval` — which refuses the Standby →
-     * Configured transition while the schema is pending (SI-6: no data
+     * Configured transition while the schema is pending (no data
      * flow on an empty format).
      *
      * Single-establishment: implementations refuse when a schema is
@@ -481,7 +481,7 @@ class PYLABHUB_UTILS_EXPORT QueueReader
      * @brief True iff this reader was built schema-pending (HEP-0034
      *        §10.3a) and `configure_slot_schema()` has not yet installed
      *        the runtime-resolved format.  The role host branches on
-     *        this at CONSUMER_REG_ACK time to run the SI-6 resolution
+     *        this at CONSUMER_REG_ACK time to run the resolution
      *        chain.  Default false — build-time-schema readers are
      *        never pending.
      */

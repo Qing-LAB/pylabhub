@@ -1854,7 +1854,7 @@ applicable to compiled native engines.
 | ABI check failure | Fatal | dlclose called; role startup aborts |
 | Missing native_init or native_finalize | Fatal | dlclose called; role startup aborts |
 | Missing required callback | Fatal | dlclose called; role startup aborts |
-| Schema string mismatch | Fatal | register_slot_type returns false; role startup aborts |
+| Schema string mismatch | Fatal | register_slot_type returns false; role startup aborts.  Same check, same verdict, when a runtime-resolved consumer registers the channel's delivered format (HEP-CORE-0034 §10.3a): the plugin's compiled struct must match what the channel actually carries, else the role refuses to activate rather than misreading slot bytes. |
 | native_init returns false | Fatal | build_api returns false; role startup aborts |
 
 ### 11.2 Runtime Errors

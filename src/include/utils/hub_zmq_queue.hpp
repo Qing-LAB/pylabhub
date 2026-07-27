@@ -491,7 +491,7 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     /// Schema-pending refusal (HEP-CORE-0034 §10.3a): on a reader
     /// built with an empty schema, refuses the Standby → Configured
     /// transition until `configure_slot_schema()` has installed the
-    /// runtime-resolved format (SI-6 — no data flow on an empty
+    /// runtime-resolved format (no data flow on an empty
     /// format).
     bool apply_master_approval(const nlohmann::json &artifacts) noexcept override;
 

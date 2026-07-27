@@ -929,13 +929,11 @@ bool PythonEngine::register_slot_type(const hub::SchemaSpec &spec, const std::st
     // script_engine.hpp::register_slot_type: only the five canonical
     // frame names are valid.  A typo in a role host / schema config
     // must fail loudly at this point.
-    if (type_name != "InSlotFrame" && type_name != "OutSlotFrame" && type_name != "InFlexFrame" &&
-        type_name != "OutFlexFrame" && type_name != "InboxFrame")
+    if (!is_canonical_frame_name(type_name))
     {
         LOGGER_ERROR("[{}] register_slot_type: unknown canonical type_name "
-                     "'{}' — must be one of InSlotFrame, OutSlotFrame, "
-                     "InFlexFrame, OutFlexFrame, InboxFrame",
-                     log_tag_, type_name);
+                     "'{}' — must be one of {}",
+                     log_tag_, type_name, canonical_frame_names_csv());
         return false;
     }
 

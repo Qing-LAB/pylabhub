@@ -169,7 +169,7 @@ DOC_ARCHIVE_LOG.md 2026-07-27).
       QueueSchemaConfigured → consumption; `rx.slot is None` pinned
       as the slice-3 script contract — slice 4 flips exactly one
       assertion).
-- [ ] Slice-3 residuals: SHM runtime-resolved consumer (ACK delivery
+- [ ] **[PRIORITY BAND 3 — polish; owner-ranked 2026-07-27]** Slice-3 residuals: SHM runtime-resolved consumer (ACK delivery
       + segment-header cross-check before mapping — v1 refused with a
       named config error); optional config PIN field for from-channel
       consumers (SI-6 "config pin when present" hook — the delivered-

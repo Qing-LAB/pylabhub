@@ -479,7 +479,8 @@ extern "C"
          *  operator console output buffer (HEP-CORE-0033 §11.0.4).  `content_json`
          *  is a JSON document — an object is used as-is; a scalar / invalid JSON
          *  becomes {"message": <text>}.  1 on accept, -1 on error. */
-        int (*hub_admin_console_print)(const struct PlhNativeContext *ctx, const char *content_json);
+        int (*hub_admin_console_print)(const struct PlhNativeContext *ctx,
+                                       const char *content_json);
 
         /** hub_post_event: post a user-defined event onto the worker's
          *  main-loop queue (fires on_app_<name>(api, data) on the worker
@@ -537,7 +538,7 @@ extern "C"
          *  this is a courtesy call; the handle must not be used after. */
         void (*inbox_close)(const struct PlhNativeContext *ctx, void *handle);
 
-        /* ── Broker schema/metrics queries (HEP-CORE-0034 §10.3 / SI-5;
+        /* ── Broker schema/metrics queries (HEP-CORE-0034 §10.3;
          *    API v13, 2026-07-26) ────────────────────────────────────────
          * Return contract (all three): the FULL broker reply as a JSON
          * string — status/error_code are DATA, branch on them exactly as
@@ -737,7 +738,7 @@ extern "C"
 /* v13 (2026-07-26): ADDITIVE — broker schema/metrics query callbacks
  * `get_schema_json` / `get_channel_schema_json` /
  * `get_channel_metrics_json` appended before the opaque `_core`/`_api`
- * tail (HEP-CORE-0034 §10.3; schema/metrics integration SI-5), giving
+ * tail (HEP-CORE-0034 §10.3; schema/metrics integration), giving
  * native role plugins parity with Lua/Python `api.get_schema(...)` /
  * `api.get_channel_schema(...)` / `api.get_channel_metrics(...)`.
  * Return contract: the FULL broker reply as JSON data (branch on

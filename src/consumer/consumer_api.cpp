@@ -67,7 +67,7 @@ py::object ConsumerAPI::band_members(const std::string &channel)
     return scripting::detail::json_to_py(*result);
 }
 
-// Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2).
+// Broker schema/metrics queries (HEP-CORE-0034 §10.3).
 // Return contract: the FULL broker reply as a dict — status/error_code
 // are data the script branches on; None ONLY on transport failure.
 py::object ConsumerAPI::get_schema(const std::string &owner, const std::string &schema_id)

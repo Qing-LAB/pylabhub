@@ -347,7 +347,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_band_leave(lua_State *L);
     static int lua_api_band_broadcast(lua_State *L);
     static int lua_api_band_members(lua_State *L);
-    // Broker schema/metrics queries (HEP-0034 §10.3 / SI-5, slice 2) —
+    // Broker schema/metrics queries (HEP-CORE-0034 §10.3) —
     // full broker reply as a table; nil only on transport failure.
     static int lua_api_get_schema(lua_State *L);
     static int lua_api_get_channel_schema(lua_State *L);

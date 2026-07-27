@@ -120,7 +120,7 @@ struct ZmqQueueImpl
     /// once the role host installs the CONSUMER_REG_ACK-delivered
     /// format.  While true: no wire layout exists (item_sz==0, empty
     /// schema_defs_, no recv buffers) and `apply_master_approval`
-    /// refuses the Standby → Configured transition (SI-6).
+    /// refuses the Standby → Configured transition.
     bool schema_pending_{false};
 
     // Context is the shared process-wide zmq::context_t owned by the
@@ -573,7 +573,7 @@ ZmqQueue::build_plaintext_reader_(const std::string &endpoint, std::vector<ZmqSc
     // layout-derived field (item_sz, schema_defs_, recv buffers) is
     // deferred to `configure_slot_schema()`.  Read side only — the
     // writer factory keeps its hard reject (owners always declare
-    // their format; HEP-0034 SI-7).
+    // their format; HEP-CORE-0034 §10.3a).
     const bool schema_pending = schema.empty();
     if (max_buffer_depth == 0)
     {
@@ -635,7 +635,7 @@ std::unique_ptr<QueueWriter> ZmqQueue::build_plaintext_writer_(
     bool is_pubsub)
 {
     // Writers NEVER build schema-pending: every owning side declares its
-    // format at config time (HEP-0034 SI-7 — `from-channel` is legal only
+    // format at config time (HEP-CORE-0034 §10.3a — `from-channel` is legal only
     // on dialing readers; generic dialing producers are deferred).
     if (const std::string err = validate_schema_fields(schema, packing); !err.empty())
     {
@@ -1252,7 +1252,7 @@ bool ZmqQueue::configure_slot_schema(std::vector<ZmqSchemaField> schema, std::st
     {
         LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': write "
                      "side never builds schema-pending (owners declare their "
-                     "format — HEP-0034 SI-7); refusing",
+                     "format — HEP-CORE-0034 §10.3a); refusing",
                      pImpl->queue_name);
         return false;
     }
@@ -1260,7 +1260,7 @@ bool ZmqQueue::configure_slot_schema(std::vector<ZmqSchemaField> schema, std::st
     {
         LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': queue "
                      "is Active — the format is immutable for the queue's "
-                     "lifetime (HEP-0034 SI-1); refusing",
+                     "lifetime — the format is immutable once set); refusing",
                      pImpl->queue_name);
         return false;
     }
@@ -1268,7 +1268,7 @@ bool ZmqQueue::configure_slot_schema(std::vector<ZmqSchemaField> schema, std::st
     {
         LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': a slot "
                      "schema is already installed (build-time or prior call) — "
-                     "single-establishment (HEP-0034 SI-1); refusing",
+                     "single-establishment); refusing",
                      pImpl->queue_name);
         return false;
     }
@@ -1328,7 +1328,7 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
         // Standby → Active.
         const bool already_running = pImpl->running_.load(std::memory_order_acquire);
 
-        // Schema-pending refusal (HEP-0034 §10.3a / SI-6): never drive
+        // Schema-pending refusal (HEP-CORE-0034 §10.3a): never drive
         // Standby → Configured on an empty format.  The role host must
         // install the CONSUMER_REG_ACK-delivered schema via
         // configure_slot_schema() BEFORE applying — reaching this branch
@@ -1340,7 +1340,7 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
             LOGGER_ERROR("[hub::ZmqQueue::apply_master_approval] queue='{}': "
                          "refusing Standby → Configured — slot schema still "
                          "pending (runtime-resolved format not installed; "
-                         "SI-6: no data flow on an empty format)",
+                         "no data flow on an empty format)",
                          pImpl->queue_name);
             return false;
         }
@@ -1715,7 +1715,7 @@ bool ZmqQueue::is_configured() const noexcept
     // Schema-pending build (HEP-0034 §10.3a): a reader without an
     // installed format is never Configured, whatever its peer/endpoint
     // state — apply_master_approval refuses the transition until
-    // configure_slot_schema() runs (SI-6).
+    // configure_slot_schema() runs.
     if (pImpl->schema_pending_)
         return false;
 

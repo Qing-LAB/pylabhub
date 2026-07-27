@@ -65,7 +65,21 @@ post-reconcile shipped-sprint detail).
 
 ---
 
-## Active / next work (open, roughly by leverage)
+## Active / next work
+
+> **RANKED PRIORITY — set by the project owner 2026-07-27.**  Work the
+> bands in order; inside a band, use leverage.  This ordering overrides
+> the "roughly by leverage" heuristic that governed this section before.
+>
+> | # | Band | What it covers |
+> |---|---|---|
+> | **1** | **Security items** | The dead/no-op identity + authority validators (#68) first — checks that exist but do not actually gate.  Then federation ingress (#69, design-first), then remaining AUTH residuals. |
+> | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh. |
+> | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
+> | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
+> | **5** | **The rest** | Topology T4/T5 residuals, the Pattern-4 test migration (#52), Windows/CI coverage, and everything else in "Open work by area". |
+
+### Detail (open, within the bands above)
 
 **Security (top open surface):**
 - **Federation — design-first, CONSOLIDATED under task #69 (ratified

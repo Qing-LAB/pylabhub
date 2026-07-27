@@ -264,7 +264,7 @@ is what makes a channel observable as live.
 
 | Step | Message | Direction | Content |
 |---|---|---|---|
-| 1 | `METRICS_REQ` | Admin → Broker | `{channel_name?}` (omit for all channels) |
+| 1 | `METRICS_REQ` | Role or admin → Broker | `{channel_name, role_uid}` — both REQUIRED on the role plane (see the scope note below) |
 | 2 | broker walks `MetricsStore` keyed `(channel, uid, role_type)`; merges live SHM `DataBlockMetrics` (§3.2); composes `_collected_at` per row | | |
 | 3 | `METRICS_ACK` | Broker → Admin | Aggregated view: per-channel rows for `producer_metrics` + `consumers[uid]` map |
 
@@ -428,9 +428,24 @@ round-trip involved.
 ```json
 {
   "msg_type":     "METRICS_REQ",
-  "channel_name": "sensor.data"        // optional; omit for all channels
+  "channel_name": "sensor.data",       // REQUIRED
+  "role_uid":     "cons.lab.uid0001"   // REQUIRED — the caller's own uid
 }
 ```
+
+**Scope + gating (2026-07-26).**  On the role plane the query is
+per-channel and member-gated: `channel_name` is required
+(`INVALID_REQUEST` when absent), `role_uid` is required and is the
+caller's own identity — matched against the authenticated sender by
+the admission tier — and the broker answers only a role holding a
+presence on that channel (`NOT_A_ROLE_OF_CHANNEL` otherwise; either
+side qualifies).  The former "omit `channel_name` for all channels"
+form is RETIRED on the wire: a hub-wide sweep is not something a
+single member role is entitled to.  Hub-wide aggregation remains
+available in-process to the hub script and the admin plane via
+`BrokerService::query_metrics(MetricsFilter)`, and gets a wire form
+again when an observer role kind exists (tracked in
+`docs/TODO_MASTER.md`).
 
 **Response (`METRICS_ACK`)** — per-channel rows aggregating each
 presence registered on the channel.  Metrics are grouped by the

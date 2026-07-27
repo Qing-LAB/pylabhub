@@ -49,9 +49,10 @@ constexpr const char *kSchemaPacking = "aligned";
 
 std::string canonical_hash_hex(const std::string &blds, const std::string &packing)
 {
-    const auto h = pylabhub::hub::compute_fingerprint_from_wire(blds, packing);
-    return pylabhub::format_tools::bytes_to_hex(
-        {reinterpret_cast<const char *>(h.data()), h.size()});
+    // Delegates to the shared test-framework helper (which uses the
+    // production conversion API) — kept as a local name because this
+    // file reads better with it, but no longer a second implementation.
+    return pylabhub::tests::pattern4::test_schema_fingerprint_hex(blds, packing);
 }
 
 class Pattern4BrokerSchemaTest : public pylabhub::tests::pattern4::Pattern4WireTest

@@ -27,6 +27,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -178,7 +179,7 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
         return {};
     if (schema_json.is_string())
     {
-        // HEP-0034 §10.3a / SI-7 — the explicit runtime-resolved
+        // HEP-CORE-0034 §10.3a — the explicit runtime-resolved
         // sentinel.  Only the DELIBERATE sentinel produces a
         // runtime_resolved spec; a null/absent axis stays plain
         // has_schema=false (queue builders refuse it — no silent
@@ -325,6 +326,49 @@ inline bool fingerprint_is_all_zero(const std::array<uint8_t, 64> &fp) noexcept
     return std::all_of(fp.begin(), fp.end(), [](uint8_t b) { return b == 0; });
 }
 
+// ── Fingerprint ↔ wire hex — THE shared conversion pair ─────────────────────
+//
+// A fingerprint travels the wire and lives in config as 128 lowercase hex
+// characters; it is computed and compared as 64 raw bytes.  These
+// functions are the ONLY sanctioned conversion between those two forms
+// (HEP-CORE-0034 §2.4 I10).  Hand-rolling either direction at a call
+// site is a review-flaggable violation: the decode direction needs a
+// length + character guard that is easy to get subtly wrong, and two
+// independent guards drift apart.
+//
+// Both sides of the wire share this pair — the broker when it reads a
+// claimed hash or answers a query, the role when it verifies a format
+// the hub delivered.  One implementation means a malformed value is
+// rejected identically everywhere.
+
+/// Decode a 128-hex fingerprint into its 64 bytes, or refuse.
+/// `std::nullopt` means "not a valid fingerprint" — wrong length or a
+/// non-hex character.  Callers MUST handle the empty case; there is no
+/// silent zero-filled fallback, because an all-zero fingerprint has its
+/// own meaning ("no zone present" — see `fingerprint_is_all_zero`).
+[[nodiscard]] inline std::optional<std::array<uint8_t, 64>>
+fingerprint_from_hex(std::string_view hex) noexcept
+{
+    return ::pylabhub::format_tools::bytes_from_hex_array<64>(hex);
+}
+
+/// Encode a 64-byte fingerprint as its 128-hex wire form.
+[[nodiscard]] inline std::string fingerprint_hex(const std::array<uint8_t, 64> &fp)
+{
+    return ::pylabhub::format_tools::bytes_to_hex(fp);
+}
+
+/// Compute a fingerprint straight to its wire hex form — the
+/// composition every wire-emitting site needs (compute, then encode).
+[[nodiscard]] inline std::string fingerprint_hex_from_wire(const std::string &slot_blds,
+                                                           const std::string &slot_packing,
+                                                           const std::string &fz_blds = {},
+                                                           const std::string &fz_packing = {})
+{
+    return fingerprint_hex(
+        compute_fingerprint_from_wire(slot_blds, slot_packing, fz_blds, fz_packing));
+}
+
 /// Inverse of `canonical_fields_str` (HEP-CORE-0034 §6.3): parse a wire
 /// canonical BLDS string (`name:type:count:length|…`) back into a
 /// `SchemaSpec`.  Used by receivers of a runtime-resolved format
@@ -412,7 +456,7 @@ inline std::optional<SchemaSpec> parse_canonical_fields_str(const std::string &b
 /// 32-byte fingerprint half recovers the packing by recomputing over
 /// the closed candidate domain {"aligned","packed"} and matching.
 ///
-/// This doubles as the SI-6 pin verification: a successful recovery
+/// This doubles as the verification step: a successful recovery
 /// PROVES the delivered BLDS hashes to the delivered/pinned half in the
 /// same act.  nullopt means NO candidate matches — the (blds, half)
 /// pair is inconsistent and the caller must abort naming the pair.
@@ -601,7 +645,7 @@ inline WireSchemaFields make_wire_schema_fields(const nlohmann::json &slot_schem
                                                 const SchemaSpec &fz_spec)
 {
     WireSchemaFields w;
-    // The "from-channel" sentinel (HEP-0034 §10.3a / SI-7) is NOT a
+    // The "from-channel" sentinel (HEP-CORE-0034 §10.3a) is NOT a
     // citation: a runtime-resolved consumer joins citation-free and
     // receives the channel's format on the success ACK.  Every other
     // string form is a named schema id.
