@@ -91,6 +91,68 @@ class Pattern4BrokerSchemaTest : public pylabhub::tests::pattern4::Pattern4WireT
 // pins the stored value directly (stronger than the original, which only
 // checked the channel's presence in the list).
 
+// ─── SI-5 member gating (schema/metrics integration, 2026-07-26): the
+//     channel form answers channel MEMBERS only; role_uid (the caller's
+//     identity-bound uid) is required on every SCHEMA_REQ. ─────────────
+
+TEST_F(Pattern4BrokerSchemaTest, SchemaReq_ChannelForm_MemberGated)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "schema.gate" + suffix;
+    const std::string member_uid = "prod.gate.member" + suffix;
+    const std::string outsider_uid = "cons.gate.outsider" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("schema_gate");
+    const auto setup = make_pattern4_setup({member_uid, outsider_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    // Member producer opens the channel with self-consistent material.
+    auto member = make_wire_client(ctx, setup, member_uid);
+    auto reg = producer_reg_body(setup, channel, member_uid, /*shm=*/false);
+    pylabhub::tests::pattern4::apply_matching_producer_schema(reg);
+    auto reg_resp =
+        member.request("REG_REQ", reg, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reg_resp.has_value());
+    ASSERT_EQ(reg_resp->value("status", std::string{}), "success") << reg_resp->dump();
+
+    // Member pull: full BLDS comes back.
+    nlohmann::json q;
+    q["channel_name"] = channel;
+    q["role_uid"] = member_uid;
+    auto ok = member.request("SCHEMA_REQ", q, "SCHEMA_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ok.has_value());
+    EXPECT_EQ(ok->value("status", std::string{}), "success") << ok->dump();
+    EXPECT_EQ(ok->value("blds", std::string{}), "ts:f64:1:0");
+
+    // Outsider pull (known role, NOT on this channel) → member gate.
+    auto outsider = make_wire_client(ctx, setup, outsider_uid);
+    nlohmann::json oq;
+    oq["channel_name"] = channel;
+    oq["role_uid"] = outsider_uid;
+    auto denied =
+        outsider.request("SCHEMA_REQ", oq, "SCHEMA_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(denied.has_value());
+    EXPECT_EQ(denied->value("status", std::string{}), "error");
+    EXPECT_EQ(denied->value("error_code", std::string{}), "NOT_A_ROLE_OF_CHANNEL")
+        << denied->dump();
+
+    // Missing role_uid → INVALID_REQUEST (SI-5 identity-checked pull).
+    nlohmann::json nq;
+    nq["channel_name"] = channel;
+    auto no_uid =
+        member.request("SCHEMA_REQ", nq, "SCHEMA_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(no_uid.has_value());
+    EXPECT_EQ(no_uid->value("error_code", std::string{}), "INVALID_REQUEST") << no_uid->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4BrokerSchemaTest, SchemaIdStoredOnReg)
 {
     using namespace std::chrono;

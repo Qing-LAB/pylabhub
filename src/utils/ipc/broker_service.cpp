@@ -5582,6 +5582,22 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json &req)
 
     const std::string corr_id = req.value("correlation_id", "");
 
+    // SI-5 (schema/metrics integration, 2026-07-26): `role_uid` is the
+    // CALLER's uid, authenticated by the admission tier
+    // (Control_EnvelopeWithRoleUid: envelope identity == body.role_uid,
+    // grammar + tag).  Required on every SCHEMA_REQ; the channel form
+    // is additionally member-gated below.  The (owner, schema_id)
+    // registry form stays open to all known roles — the registry is
+    // shared infrastructure and hub-globals have no channel to be a
+    // member of.
+    const std::string caller_uid = req.value("role_uid", "");
+    if (caller_uid.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "SCHEMA_REQ requires role_uid (the caller's own uid — "
+                          "SI-5 identity-checked pull)");
+    }
+
     // HEP-CORE-0034 §10.3 — owner+id keying.  When both `owner` and
     // `schema_id` are present, look up the SchemaRecord directly in
     // HubState.schemas and return it.  This is the preferred form going
@@ -5629,9 +5645,25 @@ nlohmann::json BrokerServiceImpl::handle_schema_req(const nlohmann::json &req)
     const auto entry = hub_state_->channel(channel_name);
     if (!entry.has_value())
     {
+        // SI-8: queries answer from machine state and never wait —
+        // Absent → terminal CHANNEL_NOT_FOUND (never AWAITING_OWNER).
         LOGGER_WARN("Broker: SCHEMA_REQ channel '{}' not found", channel_name);
         return make_error(corr_id, "CHANNEL_NOT_FOUND",
                           "Channel '" + channel_name + "' is not registered");
+    }
+    // SI-5 member gate — the channel form answers only roles holding a
+    // presence on the queried channel (least-privilege precedent:
+    // GET_CHANNEL_AUTH is binding-side-gated, CHECK_PEER_READY is
+    // dialing-side-gated).  Either side qualifies for a read.
+    if (!hub_state_->is_role_registered_on_channel(channel_name, caller_uid, "producer") &&
+        !hub_state_->is_role_registered_on_channel(channel_name, caller_uid, "consumer"))
+    {
+        LOGGER_WARN("Broker: SCHEMA_REQ rejected — role_uid='{}' is not a member of "
+                    "channel '{}' (SI-5)",
+                    caller_uid, channel_name);
+        return make_error(corr_id, "NOT_A_ROLE_OF_CHANNEL",
+                          "Caller role_uid='" + caller_uid + "' is not a registered role of "
+                          "channel '" + channel_name + "'");
     }
     nlohmann::json resp;
     resp["status"] = "success";
@@ -7165,29 +7197,52 @@ nlohmann::json BrokerServiceImpl::handle_metrics_req(const nlohmann::json &req)
 {
     // M1.4 (2026-05-11): metrics sourced from `HubState`'s per-presence
     // rows (HEP-CORE-0019 §2.3 Phase 6) via `channel_metrics_snapshot`.
-    // Legacy `metrics_store_` retired; the shape is preserved
-    // (`status`, `channel`/`channels`, `metrics`).
+    // Legacy `metrics_store_` retired.
+    //
+    // MI-1 (schema/metrics integration, 2026-07-26): the wire form
+    // REQUIRES `channel_name` and answers only channel MEMBERS —
+    // metrics are push-in (heartbeat), pull-out per channel.  The
+    // former all-channels wire branch is retired: hub-wide aggregation
+    // stays on the hub-script / admin plane (`BrokerService::
+    // query_metrics`) until an observer role kind exists (#292).
+    // `role_uid` is the caller's uid, authenticated by the admission
+    // tier (Control_EnvelopeWithRoleUid).
     const std::string corr_id = req.value("correlation_id", "");
     const std::string channel = req.value("channel_name", "");
+    const std::string caller_uid = req.value("role_uid", "");
+    if (channel.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "METRICS_REQ requires channel_name (hub-wide aggregation "
+                          "is hub-script / admin-plane only — MI-1)");
+    }
+    if (caller_uid.empty())
+    {
+        return make_error(corr_id, "INVALID_REQUEST",
+                          "METRICS_REQ requires role_uid (the caller's own uid — "
+                          "SI-5 identity-checked pull)");
+    }
+    if (!hub_state_->channel(channel).has_value())
+    {
+        // SI-8: queries answer from state — Absent is terminal.
+        return make_error(corr_id, "CHANNEL_NOT_FOUND",
+                          "Channel '" + channel + "' is not registered");
+    }
+    if (!hub_state_->is_role_registered_on_channel(channel, caller_uid, "producer") &&
+        !hub_state_->is_role_registered_on_channel(channel, caller_uid, "consumer"))
+    {
+        LOGGER_WARN("Broker: METRICS_REQ rejected — role_uid='{}' is not a member of "
+                    "channel '{}' (SI-5/MI-1)",
+                    caller_uid, channel);
+        return make_error(corr_id, "NOT_A_ROLE_OF_CHANNEL",
+                          "Caller role_uid='" + caller_uid + "' is not a registered role of "
+                          "channel '" + channel + "'");
+    }
 
     nlohmann::json resp;
     resp["status"] = "success";
-    if (!channel.empty())
-    {
-        resp["channel"] = channel;
-        resp["metrics"] = hub_state_->channel_metrics_snapshot(channel);
-    }
-    else
-    {
-        // All-channels query: iterate snapshot to aggregate.  Pre-fix
-        // this iterated `metrics_store_`; post-M1.4 iterate
-        // `pImpl->hub_state_->snapshot().channels` and call the helper
-        // per channel.
-        nlohmann::json channels = nlohmann::json::object();
-        for (const auto &[name, ch] : hub_state_->snapshot().channels)
-            channels[name] = hub_state_->channel_metrics_snapshot(name);
-        resp["channels"] = std::move(channels);
-    }
+    resp["channel"] = channel;
+    resp["metrics"] = hub_state_->channel_metrics_snapshot(channel);
     // HEP-CORE-0019 §3.2: merge live SHM-derived block metrics into the response.
     resp["shm_blocks"] = collect_shm_info(channel);
     if (!corr_id.empty())

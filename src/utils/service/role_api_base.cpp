@@ -3146,6 +3146,54 @@ std::optional<nlohmann::json> RoleAPIBase::register_producer_channel(
     return result;
 }
 
+std::optional<nlohmann::json> RoleAPIBase::get_schema(const std::string &owner,
+                                                      const std::string &schema_id, int timeout_ms)
+{
+    // Class C — registry read by (owner, schema_id); open to all known
+    // roles (SI-5), so any connected BRC serves it.
+    auto *bc = pImpl->resolve_bc_for_role();
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_ERROR("[{}] get_schema: broker comm not connected", pImpl->short_tag);
+        return std::nullopt;
+    }
+    return bc->get_schema(owner, schema_id, timeout_ms);
+}
+
+std::optional<nlohmann::json> RoleAPIBase::get_channel_schema(const std::string &channel,
+                                                              int timeout_ms)
+{
+    // Class C — member-gated channel read (SI-5): route via the
+    // channel's BRC (we should hold a presence there, or the broker
+    // will answer NOT_A_ROLE_OF_CHANNEL); fall back to any connection
+    // so the caller still receives the broker's typed error.
+    auto *bc = pImpl->resolve_bc_for_channel(channel);
+    if (!bc)
+        bc = pImpl->resolve_bc_for_role();
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_ERROR("[{}] get_channel_schema: broker comm not connected", pImpl->short_tag);
+        return std::nullopt;
+    }
+    return bc->get_channel_schema(channel, timeout_ms);
+}
+
+std::optional<nlohmann::json> RoleAPIBase::get_channel_metrics(const std::string &channel,
+                                                               int timeout_ms)
+{
+    // Class C — member-gated metrics pull (MI-1); same routing as
+    // get_channel_schema.
+    auto *bc = pImpl->resolve_bc_for_channel(channel);
+    if (!bc)
+        bc = pImpl->resolve_bc_for_role();
+    if (!bc || !bc->is_connected())
+    {
+        LOGGER_ERROR("[{}] get_channel_metrics: broker comm not connected", pImpl->short_tag);
+        return std::nullopt;
+    }
+    return bc->get_channel_metrics(channel, timeout_ms);
+}
+
 std::optional<nlohmann::json> RoleAPIBase::discover_channel(const std::string &channel,
                                                             int timeout_ms)
 {

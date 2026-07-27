@@ -402,6 +402,26 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
 
     [[nodiscard]] std::optional<nlohmann::json> list_channels(int timeout_ms = 5000);
 
+    /// SCHEMA_REQ registry form — fetch a SchemaRecord by
+    /// (owner, schema_id).  Open to all known roles (SI-5); reply
+    /// carries both zones' BLDS + packing + 128-hex fingerprint.
+    [[nodiscard]] std::optional<nlohmann::json>
+    get_schema(const std::string &owner, const std::string &schema_id, int timeout_ms = 5000);
+
+    /// SCHEMA_REQ channel form — the channel's stored schema
+    /// invariants incl. full BLDS.  Member-gated: the broker answers
+    /// only roles registered on the channel (NOT_A_ROLE_OF_CHANNEL
+    /// otherwise); missing channel is terminal CHANNEL_NOT_FOUND
+    /// (queries never wait — HEP-CORE-0017 §4.7.0.3 rule 4).
+    [[nodiscard]] std::optional<nlohmann::json> get_channel_schema(const std::string &channel,
+                                                                   int timeout_ms = 5000);
+
+    /// METRICS_REQ — the channel's live metrics snapshot (per-presence
+    /// rows + SHM block info).  channel REQUIRED; member-gated;
+    /// freshness = heartbeat cadence (MI-1).
+    [[nodiscard]] std::optional<nlohmann::json> get_channel_metrics(const std::string &channel,
+                                                                    int timeout_ms = 5000);
+
     [[nodiscard]] std::optional<nlohmann::json> query_shm_info(const std::string &channel,
                                                                int timeout_ms = 5000);
 

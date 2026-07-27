@@ -225,6 +225,65 @@ TEST_F(Pattern4MetricsTest, FanInTwoProducersMetricsDoNotOverwrite)
     broker.signal_quit();
 }
 
+// ─── MI-1 member-gated pull (schema/metrics integration, 2026-07-26):
+//     METRICS_REQ requires channel_name + the caller's identity-bound
+//     role_uid, and answers channel MEMBERS only. ──────────────────────
+
+TEST_F(Pattern4MetricsTest, MetricsReq_MemberGatedPull)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "metrics.pull" + suffix;
+    const std::string uid = "prod." + channel;
+    const std::string outsider_uid = "cons.outsider" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("metrics_pull");
+    const auto setup = make_pattern4_setup({uid, outsider_uid});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+    auto broker = SPAWN_BROKER(temp_dir);
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, uid));
+    heartbeat_with_metrics(prod, channel, uid, "producer", {{"qps", 7}});
+    expect_log(broker, "event=HeartbeatMetricsStored channel='" + channel + "'",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    // Member pull: the pushed metrics come back under the member's uid.
+    nlohmann::json q;
+    q["channel_name"] = channel;
+    q["role_uid"] = uid;
+    auto ok = prod.request("METRICS_REQ", q, "METRICS_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(ok.has_value());
+    EXPECT_EQ(ok->value("status", std::string{}), "success") << ok->dump();
+    ASSERT_TRUE(ok->contains("metrics")) << ok->dump();
+    EXPECT_EQ((*ok)["metrics"]["producers"][uid]["qps"], 7) << ok->dump();
+
+    // Outsider (known role, not a member) → member gate.
+    auto outsider = make_wire_client(ctx, setup, outsider_uid);
+    nlohmann::json oq;
+    oq["channel_name"] = channel;
+    oq["role_uid"] = outsider_uid;
+    auto denied =
+        outsider.request("METRICS_REQ", oq, "METRICS_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(denied.has_value());
+    EXPECT_EQ(denied->value("error_code", std::string{}), "NOT_A_ROLE_OF_CHANNEL")
+        << denied->dump();
+
+    // Missing channel_name → INVALID_REQUEST (the all-channels wire
+    // form is retired; hub-wide aggregation is hub-script/admin only).
+    nlohmann::json aq;
+    aq["role_uid"] = uid;
+    auto all =
+        prod.request("METRICS_REQ", aq, "METRICS_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(all.has_value());
+    EXPECT_EQ(all->value("error_code", std::string{}), "INVALID_REQUEST") << all->dump();
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4MetricsTest, HeartbeatNoMetricsBackwardCompat)
 {
     using namespace std::chrono;

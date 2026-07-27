@@ -1575,9 +1575,12 @@ int broker_sch_schema_req_owner_id()
                       "success");
 
             // New form: (owner, schema_id) — direct registry lookup.
+            // SI-5 (2026-07-26): SCHEMA_REQ carries the caller's own
+            // role_uid (identity-bound at the admission tier).
             nlohmann::json sreq;
             sreq["owner"] = uid;
             sreq["schema_id"] = sid;
+            sreq["role_uid"] = "prod.broker.schreq.uid00000001";
             auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
                                  "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(sresp.is_null());
@@ -1592,6 +1595,7 @@ int broker_sch_schema_req_owner_id()
             nlohmann::json bad_sreq;
             bad_sreq["owner"] = uid;
             bad_sreq["schema_id"] = "$lab.does_not_exist.v1";
+            bad_sreq["role_uid"] = "prod.broker.schreq.uid00000001";
             auto bad = raw_req(broker.endpoint, "SCHEMA_REQ", bad_sreq, 2000, broker.pubkey,
                                "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(bad.is_null()) << "raw_req timed out for bad on this call";
@@ -1602,6 +1606,9 @@ int broker_sch_schema_req_owner_id()
             // schema fields, and now also surfaces `schema_owner`.
             nlohmann::json legacy;
             legacy["channel_name"] = channel;
+            // Channel form is member-gated (SI-5) — the sender IS the
+            // registered producer of `channel`.
+            legacy["role_uid"] = "prod.broker.schreq.uid00000001";
             auto lresp = raw_req(broker.endpoint, "SCHEMA_REQ", legacy, 2000, broker.pubkey,
                                  "prod.broker.schreq.uid00000001");
             ASSERT_FALSE(lresp.is_null()) << "raw_req timed out for lresp on this call";
@@ -1680,10 +1687,11 @@ int broker_sch_schema_req_invalid()
 
                                               "broker.broker_sch_schema_req_invalid");
 
-            // No owner, no schema_id, no channel_name — wire payload is
-            // an object with no keys (NOT a null json — wire messages
-            // are always objects).
+            // No owner, no schema_id, no channel_name — the FORM error.
+            // role_uid IS supplied (SI-5) so this pins the form check,
+            // not the caller-uid requirement (which has its own pin).
             nlohmann::json sreq = nlohmann::json::object();
+            sreq["role_uid"] = "prod.test.uid00000001";
             auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
                                 "prod.test.uid00000001");
             ASSERT_FALSE(resp.is_null());
@@ -1694,6 +1702,7 @@ int broker_sch_schema_req_invalid()
             // requires channel_name; new form requires both owner + id).
             nlohmann::json half = nlohmann::json::object();
             half["owner"] = "prod.test.uid00000001";
+            half["role_uid"] = "prod.test.uid00000001";
             auto resp2 = raw_req(broker.endpoint, "SCHEMA_REQ", half, 2000, broker.pubkey,
                                  "prod.test.uid00000001");
             ASSERT_FALSE(resp2.is_null()) << "raw_req timed out for resp2 on this call";
@@ -1851,6 +1860,7 @@ int broker_sch_inbox_discovery_roundtrip()
             nlohmann::json sreq;
             sreq["owner"] = recv_uid;
             sreq["schema_id"] = "inbox";
+            sreq["role_uid"] = send_uid;
             auto sresp =
                 raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey, send_uid);
             ASSERT_FALSE(sresp.is_null());
@@ -2345,7 +2355,11 @@ int broker_sch_hub_globals_loaded_at_startup()
             const auto schema_root =
                 make_global_schema_dir("lab.demo.frame", 1, R"([{"name":"v","type":"float32"}])");
 
-            auto [broker] = setup_broker_test({"wire.gate.uid00000099"},
+            // Sender tag: SCHEMA_REQ now rides the EnvelopeWithRoleUid
+            // tier (SI-5), whose role-tag policy requires a canonical
+            // tag — the wire-gate pseudo-tag would be rejected at
+            // admission before the handler.
+            auto [broker] = setup_broker_test({"prod.gate.uid00000099"},
 
                                               "broker.broker_sch_hub_globals_loaded_at_startup",
 
@@ -2356,8 +2370,9 @@ int broker_sch_hub_globals_loaded_at_startup()
             nlohmann::json sreq;
             sreq["owner"] = "hub";
             sreq["schema_id"] = "$lab.demo.frame.v1";
+            sreq["role_uid"] = "prod.gate.uid00000099";
             auto resp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
-                                "wire.gate.uid00000099");
+                                "prod.gate.uid00000099");
             ASSERT_FALSE(resp.is_null());
             EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
             EXPECT_EQ(resp.value("owner", std::string{}), "hub");
@@ -2408,8 +2423,11 @@ int broker_sch_path_c_adoption_succeeds()
             EXPECT_EQ(resp.value("status", std::string{}), "success") << resp.dump();
 
             // Verify channel.schema_owner == "hub" via legacy SCHEMA_REQ.
+            // Channel form is member-gated (SI-5) — sender is the
+            // registered producer of `channel`.
             nlohmann::json sreq;
             sreq["channel_name"] = channel;
+            sreq["role_uid"] = "prod.broker.adopt.uid00000001";
             auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
                                  "prod.broker.adopt.uid00000001");
             ASSERT_FALSE(sresp.is_null()) << "raw_req timed out for sresp on this call";
@@ -2636,6 +2654,7 @@ int broker_sch_wire_helpers_register_and_cite()
             nlohmann::json sreq;
             sreq["owner"] = prod_uid;
             sreq["schema_id"] = sid;
+            sreq["role_uid"] = "prod.broker.helpers_n.uid00000001";
             auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
                                  "prod.broker.helpers_n.uid00000001");
             ASSERT_FALSE(sresp.is_null()) << "SCHEMA_REQ raw_req timed out";
@@ -2897,6 +2916,7 @@ int broker_sch_wire_helpers_flexzone_round_trip()
             nlohmann::json sreq;
             sreq["owner"] = prod_uid;
             sreq["schema_id"] = sid;
+            sreq["role_uid"] = "prod.broker.helpers_fz.uid00000001";
             auto sresp = raw_req(broker.endpoint, "SCHEMA_REQ", sreq, 2000, broker.pubkey,
                                  "prod.broker.helpers_fz.uid00000001");
             ASSERT_FALSE(sresp.is_null());

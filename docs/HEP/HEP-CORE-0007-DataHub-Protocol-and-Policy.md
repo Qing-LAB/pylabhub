@@ -813,9 +813,16 @@ a result, then sends `_ACK` (success) or `ERROR` (rejection).
   bind variant retired 2026-06-12 stays retired — see
   HEP-CORE-0021 §16.2), CHANNEL_LIST_REQ, SHM_BLOCK_QUERY_REQ,
   ROLE_PRESENCE_REQ, ROLE_INFO_REQ, BAND_JOIN_REQ,
-  BAND_LEAVE_REQ, BAND_MEMBERS_REQ.  Also: SCHEMA_REQ and
-  METRICS_REQ exist as broker handlers but have no production
-  caller — see task #95 for KEEP-RESERVED / DELETE decision.
+  BAND_LEAVE_REQ, BAND_MEMBERS_REQ, SCHEMA_REQ, METRICS_REQ.
+  SCHEMA_REQ / METRICS_REQ gained their client half 2026-07-26
+  (schema/metrics integration — resolves the former "no
+  production caller" note): `BrokerRequestComm::get_schema` /
+  `get_channel_schema` / `get_channel_metrics` +
+  `RoleAPIBase` pass-throughs.  Both carry the CALLER's
+  `role_uid` (identity-bound at the admission tier); the
+  channel-scoped forms answer channel MEMBERS only, and
+  METRICS_REQ requires `channel_name` (hub-wide aggregation is
+  hub-script/admin-plane only).
 
 **Fire-and-Forget (§12.4)** — broker processes silently; no reply
 on the wire.

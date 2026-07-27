@@ -50,10 +50,20 @@ decisions pending user ruling):
       MISSING_HASH widened); test helpers
       `apply_owner_citation`/`apply_matching_producer_schema` +
       `register_fanin_owner`/`register_fanin_producer`.
-- [ ] Slice 1b: BRC `get_schema`/`get_channel_schema`/
-      `get_channel_metrics` + RoleAPI pass-throughs + G3 member
-      gating (needs identity-aware handler signatures) + typed
-      bodies + L2/L3 pins.
+- [x] Slice 1b — query plumbing + gating SHIPPED 2026-07-26: BRC
+      `get_schema`/`get_channel_schema`/`get_channel_metrics` +
+      RoleAPI pass-throughs (Class-C routing); both messages moved to
+      the `Control_EnvelopeWithRoleUid` tier (caller `role_uid`
+      identity-bound — superseded the "identity-aware signatures"
+      approach, no handler-signature change needed); channel-form
+      member gating (NOT_A_ROLE_OF_CHANNEL) + `(owner,id)` form
+      known-role-open; METRICS all-channels wire branch retired
+      (channel_name required); 10 worker call-sites + L1 tier pins
+      migrated; new pins SchemaReq_ChannelForm_MemberGated +
+      MetricsReq_MemberGatedPull; HEP-0007 §12.2.1 caller note
+      flipped, NOT_A_ROLE row widened (0036 §6.6).  Typed
+      SchemaReqBody/MetricsReqBody stay on the HEP-0046
+      EnvelopeOnly→typed follow-on list with the notify bodies.
 - [ ] Slice 2: 3-engine `api.` bindings + HEP-0028/README docs.
 - [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
       native roles.

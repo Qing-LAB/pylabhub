@@ -528,9 +528,13 @@ constexpr std::array<DispatchRow, 21> kDispatchTable = {{
     // (or, for CHANNEL_BROADCAST_SEND_NOTIFY, the sender field is
     // still named `sender_uid` under legacy naming — tracked as a
     // follow-up rename to unify on `role_uid`).
-    {"SCHEMA_REQ", Tier::EnvelopeOnly},
+    // SCHEMA_REQ / METRICS_REQ moved EnvelopeOnly → EnvelopeWithRoleUid
+    // (schema/metrics integration SI-5, 2026-07-26): `role_uid` is the
+    // CALLER's authenticated uid (identity_match), so the handlers can
+    // member-gate channel-scoped reads.
+    {"SCHEMA_REQ", Tier::Control_EnvelopeWithRoleUid},
     {"CHANNEL_LIST_REQ", Tier::EnvelopeOnly},
-    {"METRICS_REQ", Tier::EnvelopeOnly},
+    {"METRICS_REQ", Tier::Control_EnvelopeWithRoleUid},
     {"SHM_BLOCK_QUERY_REQ", Tier::EnvelopeOnly},
     {"BAND_MEMBERS_REQ", Tier::EnvelopeOnly},
     {"CHANNEL_BROADCAST_SEND_NOTIFY", Tier::EnvelopeOnly},

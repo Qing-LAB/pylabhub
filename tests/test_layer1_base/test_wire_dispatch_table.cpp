@@ -62,9 +62,9 @@ const std::unordered_map<std::string_view, std::string_view> kExpectedTiers = {
 
     // EnvelopeOnly tier — body has no identity fields (or
     // CHANNEL_BROADCAST_SEND_NOTIFY's legacy `sender_uid` naming).
-    {"SCHEMA_REQ", "EnvelopeOnly"},
+    {"SCHEMA_REQ", "Control_EnvelopeWithRoleUid"},
     {"CHANNEL_LIST_REQ", "EnvelopeOnly"},
-    {"METRICS_REQ", "EnvelopeOnly"},
+    {"METRICS_REQ", "Control_EnvelopeWithRoleUid"},
     {"SHM_BLOCK_QUERY_REQ", "EnvelopeOnly"},
     {"BAND_MEMBERS_REQ", "EnvelopeOnly"},
     {"CHANNEL_BROADCAST_SEND_NOTIFY", "EnvelopeOnly"},

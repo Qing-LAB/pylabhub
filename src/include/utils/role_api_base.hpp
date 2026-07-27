@@ -1039,6 +1039,28 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     [[nodiscard]] std::optional<nlohmann::json> discover_channel(const std::string &channel,
                                                                  int timeout_ms = 10000);
 
+    /// Fetch a schema record from the hub registry by (owner,
+    /// schema_id) — SCHEMA_REQ registry form.  Open to all known roles;
+    /// reply carries both zones' BLDS + packing + 128-hex fingerprint.
+    [[nodiscard]] std::optional<nlohmann::json>
+    get_schema(const std::string &owner, const std::string &schema_id, int timeout_ms = 5000);
+
+    /// Fetch a channel's stored schema (SCHEMA_REQ channel form) —
+    /// the only wire path returning full BLDS by channel.  The broker
+    /// answers channel MEMBERS only (NOT_A_ROLE_OF_CHANNEL otherwise);
+    /// a missing channel is terminal CHANNEL_NOT_FOUND (queries never
+    /// wait).  Schema validity = channel lifetime: re-pull after any
+    /// re-establishment.
+    [[nodiscard]] std::optional<nlohmann::json>
+    get_channel_schema(const std::string &channel, int timeout_ms = 5000);
+
+    /// Pull a channel's live metrics snapshot (METRICS_REQ) — the
+    /// per-presence metrics its members push via heartbeats, plus SHM
+    /// block info.  Member-gated; freshness = heartbeat cadence.  The
+    /// pull complement to the pushed CHANNEL_COUNT_NOTIFY counts.
+    [[nodiscard]] std::optional<nlohmann::json>
+    get_channel_metrics(const std::string &channel, int timeout_ms = 5000);
+
     /// Register as consumer (CONSUMER_REG_REQ → CONSUMER_REG_ACK).
     ///
     /// `timeout_ms` is the TOTAL registration budget: transient
