@@ -1667,6 +1667,21 @@ Three reasons the hub keeps these as distinct planes rather than one:
    session establishment) and thereafter the sealed session id (§11.0.5). A
    single socket cannot cleanly enforce both a key allowlist and a
    session-secret gate.
+
+   > **What the console binds its session to.**  Because the admin
+   > plane is deliberately *not* key-gated, an operator's key resolves
+   > to no entry in the pubkey origin index (HEP-CORE-0035 §4.2) —
+   > operators are not known roles, and that is the design, not a gap.
+   > The console therefore consumes only the *capture* half of the
+   > identity layer, not the *resolution* half: the session is bound at
+   > establishment to the CURVE key the handshake verified for that
+   > connection, and every later command on that session must arrive
+   > over a connection presenting the same key.  This is what makes a
+   > leaked session id useless to anyone else — it is the property the
+   > peer-address "anti-hijack fact" was standing in for, obtained
+   > properly.  The distinction is the reason capture and resolution
+   > are separate layers: a plane may need to know *which key* without
+   > needing to know *which registered subject*.
 2. **Different session and purpose.** The role plane admits many
    independent data-plane peers with no per-peer session state. The console
    is one long-lived operator session with server-minted identity carrying

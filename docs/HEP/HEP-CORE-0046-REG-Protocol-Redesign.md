@@ -2566,11 +2566,25 @@ void handle_reg_req(const WireEnvelope& env, const ProducerRegReqBody& body,
 Every REG-family handler runs these gates BEFORE any state
 mutation, in this order:
 
+0. **Identity resolution.**  The key the CURVE handshake verified is
+   captured at ingress and resolved through the pubkey origin index
+   into the caller's principal (HEP-CORE-0035 §4.2).  A key that
+   resolves to nothing is rejected `UNKNOWN_ROLE` before any other
+   gate runs.  This step is ordinal zero because every gate below
+   keys on identity: running them against a self-declared identity
+   would index the replay window, the sequence state, and the audit
+   trail on a value the caller chooses.
 1. `WireEnvelope::parse` — envelope↔body hash validated
    (I-ENVELOPE-BODY-BINDING); empty correlation_id rejected
    (I-CORRELATION-STABLE); unknown msg_type dropped.
-2. `env.identity() == body.role_uid()` else `IDENTITY_MISMATCH`
-   (I-DEALER-IDENTITY).
+2. `body.role_uid()` names the principal's own subject, else
+   `IDENTITY_MISMATCH` — a caller may register only as itself
+   (HEP-CORE-0035 §2).  The frame-0 routing id is NOT an input to
+   this check: it is a reply address chosen by the client, and
+   comparing it against another client-chosen field proves nothing.
+   The former `env.identity() == body.role_uid()` gate
+   (I-DEALER-IDENTITY) is retired as a trust gate; the routing id
+   retains only its addressing role.
 3. Grammar validation on role_uid / channel_name (charset + length
    sanity, HEP-CORE-0033) plus the `zmq_pubkey` Z85-length check
    (== 40) — all reject `INVALID_REQUEST`.  The full §G2.2.0b
@@ -2581,25 +2595,31 @@ mutation, in this order:
 4. Role-tag policy — the role_uid short-tag must match the message:
    {prod, proc} for REG_REQ, {cons, proc} for CONSUMER_REG_REQ
    (HEP-CORE-0033 §G2.2.0b).
-5. `gate_known_role_binding(body.role_uid(), body.zmq_pubkey())`
-   else `UNKNOWN_ROLE` (uid not in known_roles) or `PUBKEY_MISMATCH`
-   (uid known, key differs) (I-PUBKEY-BINDING).  This same check
-   enforces I-KEY-ROTATION-VIA-DEREG: a role's pubkey is immutable
-   for the broker's lifetime, so an on-the-fly re-REG with a
-   different pubkey fails here.  There is no separate key-rotation
-   gate — it would be a redundant no-op.
-6. Anti-replay: `HubState::nonce_seen(body.role_uid(),
-   body.client_nonce(), body.client_wall_ts())` OR wall-clock skew
-   > 30 s → `REPLAY_OR_SKEW` (I-REPLAY-BOUND).
+5. Known-role binding (I-PUBKEY-BINDING) — **subsumed by step 0.**
+   The principal IS the binding: a resolvable key is by construction
+   a key the operator listed, and step 2 has already established
+   that the caller is registering as itself.  I-KEY-ROTATION-VIA-
+   DEREG still holds and is still enforced without a dedicated gate:
+   a role's key is immutable for the broker's lifetime, so a role
+   that rotates its key cannot complete the handshake against the
+   old vault entry at all — it fails at Layer 1, one layer earlier
+   than before.
+6. Anti-replay: nonce dedup + wall-clock skew > 30 s →
+   `REPLAY_OR_SKEW` (I-REPLAY-BOUND).  The dedup is keyed on the
+   **principal**, never on a self-declared uid — otherwise a caller
+   could present a different claimed identity to obtain a fresh
+   replay window.  The window itself is pruned by the guard's own
+   monotonic clock (HEP-CORE-0027 §3.6).
 7. Version/ABI compatibility — `abi_fingerprint` major-version check
    → `abi_major_mismatch` (HEP-CORE-0032 §8).
 8. Topology / cardinality / schema / transport gates per §2.1
    admission sequence.
 
-Steps 1-6 are the shared wire-level integrity + identity gates:
-step 1 runs at `WireEnvelope::parse`; steps 2-6 are
-`run_reg_family_gates`.  Steps 7-8 are protocol admission run by the
-handler itself.  Failure at any step stops processing and replies
+Step 0 runs at ingress, before the envelope is even parsed — it is a
+property of the connection, not of the message.  Steps 1-6 are the
+shared wire-level integrity + identity gates: step 1 runs at
+`WireEnvelope::parse`; steps 2-6 are `run_reg_family_gates`.  Steps
+7-8 are protocol admission run by the handler itself.  Failure at any step stops processing and replies
 with the named error code before touching HubState.
 
 > The scalar `broker_proto` wire gate that once sat at step 2 was

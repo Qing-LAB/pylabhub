@@ -13,10 +13,11 @@
  *   - load_from_file tolerates missing file → std::nullopt (P-Bootstrap b)
  *   - load_from_file rejects unknown version, missing version, dup uid
  *   - load_from_file enforces ACL (mode 0600) per HEP-CORE-0035 §4.6.2
- *   - as_peer_allowlist projects every stored entry's pubkey (empty pubkeys
- *     cannot exist — validate_entry rejects them at insertion)
- *   - as_peer_allowlist never returns unrestricted (no operator bypass
- *     ever flows through this method)
+ *
+ * Allowlist projection is NOT covered here: it moved to
+ * `PubkeyOriginIndex` (HEP-CORE-0035 §4.2) and is pinned in
+ * `test_pubkey_origin.cpp`.  This store is the operator-managed roster;
+ * the index is the runtime identity lookup.
  */
 
 #include "utils/security/known_roles.hpp"
@@ -186,31 +187,15 @@ TEST(KnownRolesStoreTest, List_PreservesInsertionOrder)
     EXPECT_EQ(l[2].uid, "uid.carol");
 }
 
-// ── as_peer_allowlist bridge ────────────────────────────────────────────────
-
-TEST(KnownRolesStoreTest, AsPeerAllowlist_ProjectsPubkeysOnly)
-{
-    KnownRolesStore s;
-    s.add(make_role("uid.alice", fake_pubkey('A')));
-    s.add(make_role("uid.bob", fake_pubkey('B')));
-
-    auto al = s.as_peer_allowlist();
-    EXPECT_EQ(al.peers.size(), 2u);
-    EXPECT_TRUE(al.contains(PeerIdentity{"curve", fake_pubkey('A')}));
-    EXPECT_TRUE(al.contains(PeerIdentity{"curve", fake_pubkey('B')}));
-    EXPECT_FALSE(al.contains(PeerIdentity{"curve", fake_pubkey('Z')}));
-    EXPECT_FALSE(al.unrestricted) << "as_peer_allowlist() must NEVER produce unrestricted=true; "
-                                     "only the explicit --allow-anonymous-data operator flag "
-                                     "sets that, and it does NOT flow through this method";
-}
-
-TEST(KnownRolesStoreTest, AsPeerAllowlist_Empty_DeniesAll)
-{
-    KnownRolesStore s;
-    auto al = s.as_peer_allowlist();
-    EXPECT_TRUE(al.is_deny_all());
-    EXPECT_FALSE(al.contains(PeerIdentity{"curve", fake_pubkey('A')}));
-}
+// The allowlist-projection pins that lived here moved with the code:
+// `KnownRolesStore::as_peer_allowlist()` was retired in favour of
+// `PubkeyOriginIndex` (HEP-CORE-0035 §4.2), which owns the projection
+// and additionally covers federation peers.  Both contracts this file
+// used to assert — every stored key is projected, and the result is
+// never `unrestricted` — are pinned in `test_pubkey_origin.cpp`
+// (`AllowlistProjectsEveryKeyOfBothKinds`, `EmptyIndexResolvesNothing
+// AndDeniesAll`).  This store keeps only its operator-facing roster
+// duties, which is what the rest of this file covers.
 
 // ── File round-trip ─────────────────────────────────────────────────────────
 

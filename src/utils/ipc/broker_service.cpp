@@ -10,6 +10,7 @@
 #include "utils/recovery_api.hpp"
 #include "utils/schema_loader.hpp"
 #include "utils/schema_utils.hpp" // canonical_fields_str, compute_fingerprint_from_wire, make_schema_record
+#include "utils/security/pubkey_origin.hpp" // PubkeyOriginIndex (HEP-CORE-0035 §4.2)
 
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
@@ -401,6 +402,15 @@ class BrokerServiceImpl
     }
 
     BrokerService::Config cfg;
+
+    /// HEP-CORE-0035 §4.2 — the single structure that answers "what does
+    /// this CURVE key mean to this hub."  Built once from `cfg` when the
+    /// broker is configured, then read wherever the operator's roster
+    /// has to be projected or a key has to be resolved to a subject.
+    /// Before this existed the same roster was re-derived independently
+    /// at three call sites; three copies of one identity mapping is a
+    /// security defect waiting for the copies to disagree.
+    pylabhub::utils::security::PubkeyOriginIndex pubkey_index;
 
     /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
     /// band / peer / shm / counter state; updated only via the broker's
@@ -977,29 +987,15 @@ void BrokerServiceImpl::run()
     // console and inbox use; keyed with the hub broker identity.
     pylabhub::utils::arm_curve_server(router, sec::kHubIdentityName);
 
-    // Build the initial CTRL allowlist.  Per HEP-CORE-0035 §4.2 the
-    // allowlist is the UNION of two operator-managed inputs:
-    //   - `known_roles[]` (roles allowed to register; loaded from
-    //     `<hub_dir>/vault/known_roles.json` by HubHost,
-    //     HEP-CORE-0035 §4.8)
-    //   - `peers[].pubkey_z85` (federation peer hubs allowed to
-    //     connect their DEALER → this broker's ROUTER,
-    //     HEP-CORE-0022 + HEP-CORE-0035 §4.2)
-    // Entries with empty `pubkey_z85` are skipped.  Empty allowlist
-    // is the legal deny-all state per HEP-CORE-0035 §4.8.4.
-    pylabhub::utils::security::PeerAllowlist initial;
-    for (const auto &kr : cfg.known_roles)
-    {
-        if (kr.pubkey_z85.empty())
-            continue;
-        initial.peers.insert(pylabhub::utils::security::PeerIdentity{"curve", kr.pubkey_z85});
-    }
-    for (const auto &peer : cfg.peers)
-    {
-        if (peer.pubkey_z85.empty())
-            continue;
-        initial.peers.insert(pylabhub::utils::security::PeerIdentity{"curve", peer.pubkey_z85});
-    }
+    // The initial CTRL allowlist is a PROJECTION of the pubkey origin
+    // index, not a second derivation of the same roster (HEP-CORE-0035
+    // §4.2 — one structure answers "what does this key mean to this
+    // hub", and the ZAP layer's view of it comes from that structure).
+    // The index already holds the union the allowlist needs: roles that
+    // may register, and federation peer hubs that may dial this
+    // broker's ROUTER (HEP-CORE-0022).  An empty allowlist is the legal
+    // deny-all bootstrap state per HEP-CORE-0035 §4.8.4.
+    pylabhub::utils::security::PeerAllowlist initial = pubkey_index.as_peer_allowlist();
     const auto allowlist_size = initial.peers.size();
 
     // The ZAP domain MUST be unique per BrokerService instance.  Two
@@ -2753,10 +2749,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // channel allowlist, so the broker distributes the roster here.  The role
     // seeds its inbox PeerAdmission from this on REG_ACK.
     {
+        // Local roles ONLY — the index distinguishes them from federation
+        // peer hubs, whose keys authorize a different plane and must not
+        // leak into role-to-role messaging.  Reading the roster from the
+        // index keeps that distinction in one place instead of relying on
+        // each ACK site to filter correctly.
         nlohmann::json roster = nlohmann::json::array();
-        for (const auto &kr : cfg.known_roles)
-            if (!kr.pubkey_z85.empty())
-                roster.push_back(kr.pubkey_z85);
+        for (auto &pubkey : pubkey_index.local_role_pubkeys())
+            roster.push_back(std::move(pubkey));
         resp["known_roles"] = std::move(roster);
     }
 
@@ -3903,10 +3903,14 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     // inbox ZAP (consumers have inboxes too; same roster as the producer
     // REG_ACK path).
     {
+        // Local roles ONLY — the index distinguishes them from federation
+        // peer hubs, whose keys authorize a different plane and must not
+        // leak into role-to-role messaging.  Reading the roster from the
+        // index keeps that distinction in one place instead of relying on
+        // each ACK site to filter correctly.
         nlohmann::json roster = nlohmann::json::array();
-        for (const auto &kr : cfg.known_roles)
-            if (!kr.pubkey_z85.empty())
-                roster.push_back(kr.pubkey_z85);
+        for (auto &pubkey : pubkey_index.local_role_pubkeys())
+            roster.push_back(std::move(pubkey));
         resp["known_roles"] = std::move(roster);
     }
 
@@ -6800,6 +6804,53 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
                                "building the broker.");
     pImpl->cfg = std::move(cfg);
     pImpl->hub_state_ = &state; // non-owning; HubHost (or test fixture) owns it
+
+    // HEP-CORE-0035 §4.2 — build the pubkey origin index from the
+    // operator's configured roster.  This is the config-ingestion
+    // boundary: entries that cannot carry an identity are dropped here,
+    // with a WARN naming each one, so the index above this line holds
+    // only well-formed mappings and callers never re-filter.  A silent
+    // skip is what this replaces — the previous inline projections
+    // dropped empty-pubkey entries with no trace, so an operator whose
+    // roster entry was ignored had no way to find out.
+    {
+        auto &index = pImpl->pubkey_index;
+        for (const auto &kr : pImpl->cfg.known_roles)
+        {
+            try
+            {
+                index.add_local_role(kr);
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_WARN("[broker] known_roles entry '{}' is not usable as an identity "
+                            "and was skipped: {}",
+                            kr.uid, e.what());
+            }
+        }
+        for (const auto &peer : pImpl->cfg.peers)
+        {
+            // An EMPTY peer pubkey is legitimate configuration, not an
+            // error: `FederationPeer::pubkey_z85` documents empty as
+            // "no CURVE" for that peer.  Such a peer has no key, so it
+            // has no entry in a key→subject index and no warning is
+            // owed.  A non-empty but malformed key is a different
+            // matter — that is an operator typo that would silently
+            // cost the peer its identity, so it is named.
+            if (peer.pubkey_z85.empty())
+                continue;
+            try
+            {
+                index.add_federation_peer(peer.hub_uid, peer.pubkey_z85);
+            }
+            catch (const std::exception &e)
+            {
+                LOGGER_WARN("[broker] federation peer '{}' is not usable as an identity "
+                            "and was skipped: {}",
+                            peer.hub_uid, e.what());
+            }
+        }
+    }
 
     // HEP-CORE-0046 §14.5 admission binder — bind the callbacks the
     // wire::dispatch::receive_and_validate call needs.  Constructed

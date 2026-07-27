@@ -3455,14 +3455,20 @@ at process startup.
 (HEP-CORE-0023 §2.1.1) and `zmq_pubkey` (HEP-CORE-0021 §5.2) in
 the wire body — both are pre-existing consumer-declared claims.
 
-**Identity verification.**  Symmetric with §6.1 producer-side: the
-broker MUST verify the body claims against `cfg.known_roles[]`
-before admission:
+**Identity verification.**  Symmetric with §6.1 producer-side.  The
+caller's identity is the **principal** resolved from the key its
+CURVE handshake proved, through the pubkey origin index
+(HEP-CORE-0035 §4.2) — not a value read out of the body.  Before
+admission:
 
-1. `body.role_uid` is non-empty and present in `cfg.known_roles[]`
-   (otherwise reject with `UNKNOWN_ROLE`).
-2. `cfg.known_roles[body.role_uid].pubkey_z85 == body.zmq_pubkey`
-   (otherwise reject with `PUBKEY_MISMATCH`).
+1. The connection's verified key resolves to a principal
+   (otherwise reject with `UNKNOWN_ROLE`; unreachable while Layer-1
+   ZAP is enforcing, so it is also an alarm).
+2. `body.role_uid` names the principal's own subject — a caller may
+   register only as itself (otherwise reject; see HEP-CORE-0035 §2,
+   "Identity comes from the handshake").  The sole exception is a
+   principal of kind `FederationPeer` relaying on behalf of its own
+   roles, governed by the trust modes in HEP-CORE-0035 §4.3.
 
 The verified pubkey is then added to the channel-scope
 `authorized_consumer_pubkeys` allowlist via
@@ -3470,21 +3476,38 @@ The verified pubkey is then added to the channel-scope
 `producers[]` array of CONSUMER_REG_ACK (§6.4) for the consumer's
 own retrieval of its peer producers' pubkeys.
 
-**Why body fields and not a User-Id recovery.**  Earlier drafts
-specified `zmq_msg_gets("User-Id")` as the canonical identity
-source.  That works for the pubkey but not for `role_uid` — the
-broker would need a reverse-index over `known_roles` keyed on
-pubkey to derive the uid, and the wire would still need
-`role_uid` for the operational fields (channel record, logs,
-metrics).  The verification model (body carries the claim; broker
-checks `known_roles`) accepts the same security property without
-adding a second identity-recovery path.  Stale Layer-2 wording
-from the prior draft was swept across §4, §5, §9, §10, §12, and
-§14 under AUTH-5 (task #104, shipped 2026-06-27).  The
-authoritative Layer-2 model is body-claim verification per §6.1 /
-§6.3, implemented at `broker_service.cpp:3709-3738`
-(`verify_known_role_binding`).  Layer-1 ZAP retains
-`User-Id ∈ known_roles[]` as cond 2 — that path is unchanged.
+**Why the identity is recovered and not trusted.**  An earlier
+revision of this section argued the opposite — that a body claim
+checked against `known_roles[]` "accepts the same security
+property" as recovering the identity from the handshake, and that
+recovery was not worth a reverse index over `known_roles`.  That
+argument was wrong on both counts and is withdrawn.
+
+It is wrong on the security property because the two checks answer
+different questions.  Checking a claim against the vault proves the
+named pair is *a* registered pair; it says nothing about whether
+the caller is the one registered under it.  Since every
+participant learns the others' public keys by design (they ride
+`CONSUMER_REG_ACK.producers[]` so peers can authenticate each
+other), any holder of any vault key could name another role's uid
+and key and pass.  Only comparison against the key the handshake
+actually verified answers "is this caller who it claims to be."
+
+It is wrong on the cost because the reverse index is not an extra
+mechanism invented for this purpose — it is `PubkeyOrigin` /
+`pubkey_to_origin`, already specified as the single source of truth
+in HEP-CORE-0035 §4.2 and read by Layer 1 and Layer 2 alike.  It is
+also required independently: the inbox plane must *derive* a sender
+with no claim to compare against, and federation must classify a
+link as peer-or-role, which is a property of the key.
+
+`role_uid` remains on the wire for the operational fields it always
+served — channel records, logs, metrics, and naming the intent of
+the request.  What changed is its standing: it is a claim to be
+checked, not an identity to be trusted.  Authority resolves to
+HEP-CORE-0035 §4.2 (index + capture) and §2 (invariants); this
+section describes only how the consumer registration path consumes
+them.  Layer-1 ZAP is unchanged.
 
 The SHM consumer-attach sequence diagram in §5.6 is intentionally
 NOT swept here: §5.6 carries a SUPERSEDED banner pointing at

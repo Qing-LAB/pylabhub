@@ -36,6 +36,49 @@ checklist is superseded → archived `transient-2026-07-22`). Per-operator
 sweep tests (`close_channel` ×2, `broadcast_hub_queue`) off their L3 RATIONALE
 stubs now that the admin CURVE socket + console client have landed.
 
+**🔴 OPEN — Verified peer identity (task #83, design ratified in doc
+2026-07-27; no code yet).**
+The CURVE handshake proves which key is on a connection, but nothing above
+the socket reads it: registration checks the claimed `(role_uid, zmq_pubkey)`
+pair against the vault without comparing it to the connection's verified key,
+and the inbox keys replay defence, per-sender sequence state, and
+application-visible sender attribution on the client-chosen routing id.  Net
+effect: any holder of any vault key can register, deregister, or re-endpoint
+any other role.  Data confidentiality is unaffected — the data plane is
+separately keyed — so the exposure is control-plane integrity/availability.
+
+This is **not new design**: HEP-CORE-0035 §4.2 already specifies
+`PubkeyOrigin` / `pubkey_to_origin` as "the single structure that answers what
+this pubkey means to this hub," and §4.3 already defines the three federation
+trust modes.  Neither exists in `src/`; §4.2 is still listed as pending in
+this HEP's own status banner.  The body-claim model in HEP-0036 §6.3 was
+substituted for it.
+
+Amendments landed 2026-07-27 (docs only): HEP-0035 §2 (four new invariants),
+§4.1 (Layer-2 box restored to origin-based), §4.2 (completed with ingress
+capture + per-plane consumption + the claim-and-compare rejection);
+HEP-0036 §6.3 (contradicting rationale withdrawn, authority resolved to
+HEP-0035); HEP-0046 §14.5 (identity resolution added as step 0, routing-id
+trust gate retired, replay dedup re-keyed onto the principal); HEP-0027 §3
+and HEP-0033 §11 pointers.
+
+**Known coverage gap — deferred with the federation design (#69), owner-noted
+2026-07-27.**  The federation-peer half of the CTRL allowlist has no active
+end-to-end pin: the three `BrokerFederationTest` cases are `GTEST_SKIP`-ed as
+deferred, so removing peer keys from the broker's allowlist entirely would
+still leave the suite green.  The projection itself IS pinned at the index
+level (`AllowlistProjectsEveryKeyOfBothKinds`), and the peer-EXCLUSION half —
+that a peer key never leaks into the role-to-role inbox roster — is pinnable
+today from config alone.  What must wait for #69 is the admission half: a real
+peer hub completing a handshake against the CTRL ROUTER.  Do not treat a green
+sweep as evidence the peer path works.
+
+Implementation slices (none started): index → capture (observe-only) →
+registration enforcement → inbox → admin → federation (with #69).  Merges
+with **#66**: `BrokerWireClient`'s documented "role_uid this wire client
+masquerades as" becomes structurally impossible.  Open decisions recorded on
+task #83.  Draft: `docs/tech_draft/DRAFT_verified_peer_identity_2026-07-27.md`.
+
 **Completed-work archives (verbatim prose retained for context):**
 
 - `docs/archive/transient-2026-06-05/todo-completions/AUTH_TODO_completions.md`

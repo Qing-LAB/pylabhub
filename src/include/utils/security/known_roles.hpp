@@ -46,21 +46,20 @@
  * O_CREAT|O_EXCL|O_NOFOLLOW tmp + rename(2)).  Either the new state
  * is wholly on disk, or the prior state survives unmodified.
  *
- * **Bridge to PeerAdmission (Phase A).** `as_peer_allowlist()`
- * projects the store onto a `PeerAllowlist` of each entry's
- * `pubkey_z85` — the shape the broker ROUTER's
- * `PeerAdmission::set_peer_allowlist` consumes.  Since the legacy
- * `RoleIdentityPolicy` string gate was deleted (HEP-0035 §4.5 / §8
- * Phase 6), the ZAP pubkey allowlist is the *sole* role-identity
- * enforcement.  (Note: the broker currently builds its live CTRL-ROUTER
- * allowlist by iterating `cfg.known_roles` inline — see
- * `broker_service.cpp` `set_peer_allowlist` seeding — as the union of
- * `known_roles[].pubkey_z85` and `peers[].pubkey_z85`; `as_peer_allowlist()`
- * is the equivalent projection helper, used by tests.  The two are
- * parallel and a candidate for consolidation.)  `pubkey_z85` cannot be
- * empty: `validate_entry` rejects empty/short pubkeys at both insertion
- * points (`from_json`, `add`), so no empty-pubkey entry can reach the
- * store.
+ * **This store is operator-managed storage, not the runtime identity
+ * lookup.**  It owns the roster the operator edits — add, remove,
+ * persist, list.  Turning that roster into the runtime answer to "what
+ * does this CURVE key mean to this hub" is a separate job with a
+ * separate owner: `PubkeyOriginIndex` (`security/pubkey_origin.hpp`,
+ * HEP-CORE-0035 §4.2), which also folds in the federation peers this
+ * store never sees and is what the ZAP allowlist is projected from.
+ * Keeping the two apart is deliberate — the store answers "what did the
+ * operator configure," the index answers "who is on this connection,"
+ * and only the latter may be consulted for an identity decision.
+ *
+ * `pubkey_z85` cannot be empty: `validate_entry` rejects empty/short
+ * pubkeys at both insertion points (`from_json`, `add`), so no
+ * empty-pubkey entry can reach the store.
  *
  * **Thread-safety.** The class itself is NOT thread-safe.  Callers
  * serialize access (broker single-threaded; CLI ops run pre-startup).
@@ -177,10 +176,10 @@ class PYLABHUB_UTILS_EXPORT KnownRolesStore
     /// Look up by uid.
     [[nodiscard]] std::optional<::pylabhub::broker::KnownRole> find(const std::string &uid) const;
 
-    /// Lookup by pubkey.  O(N) — pubkey is the secondary index that
-    /// the ZAP handler queries; for the broker the bridge through
-    /// `as_peer_allowlist()` is the preferred path (set membership
-    /// O(log N) after one `as_peer_allowlist()` snapshot is taken).
+    /// Lookup by pubkey.  O(N) — this is the operator-facing convenience
+    /// (CLI, diagnostics), NOT the runtime identity path: a connection's
+    /// key is resolved through `PubkeyOriginIndex` (HEP-CORE-0035 §4.2),
+    /// which is keyed on pubkey and also covers federation peers.
     [[nodiscard]] std::optional<::pylabhub::broker::KnownRole>
     find_by_pubkey(const std::string &pubkey_z85) const;
 
@@ -193,22 +192,6 @@ class PYLABHUB_UTILS_EXPORT KnownRolesStore
 
     /// True iff no entries are stored.
     [[nodiscard]] bool empty() const noexcept;
-
-    /// Project the store onto a `PeerAllowlist` of {"curve", pubkey}
-    /// identities.  `validate_entry` guarantees every stored entry has a
-    /// valid 40-char `pubkey_z85`, so there are no empty-pubkey entries
-    /// to exclude.  A ZAP pubkey allowlist of this shape is the sole
-    /// role-identity gate now that the legacy `RoleIdentityPolicy` string
-    /// check is deleted (HEP-0035 §4.5 / §8 Phase 6).  The broker's live
-    /// CTRL-ROUTER allowlist is currently built by an equivalent inline
-    /// projection in `broker_service.cpp`; this method is the reusable
-    /// projection helper (used by tests).
-    ///
-    /// The returned allowlist's `unrestricted` is always false; only
-    /// the explicit `--allow-anonymous-data` operator flag (Phase H)
-    /// produces an unrestricted allowlist, and that path doesn't
-    /// flow through this method.
-    [[nodiscard]] PeerAllowlist as_peer_allowlist() const;
 
   private:
     /// In-memory state.  Vector preserves insertion order (matters

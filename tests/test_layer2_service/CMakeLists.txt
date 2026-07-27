@@ -232,7 +232,6 @@ pylabhub_add_gtest(TARGET test_layer2_zmq_queue_auth
 #   - missing file → nullopt (P-Bootstrap option b)
 #   - rejects unknown version / missing version / duplicate uid / bad JSON
 #   - enforces ACL (mode 0600) per HEP-CORE-0035 §4.6.2
-#   - as_peer_allowlist projects every stored pubkey + never unrestricted
 #   - atomic_write_owner_only_file: overwrite, symlink-refusal on tmp
 # ============================================================================
 
@@ -253,6 +252,38 @@ pylabhub_ensure_sanitizer_for_executable(test_layer2_known_roles)
 layer2_require_staged_utils(test_layer2_known_roles)
 
 pylabhub_add_gtest(TARGET test_layer2_known_roles
+    LABELS "layer2;service;security;known_roles"
+    TIMEOUT 30)
+
+# ============================================================================
+# Test: pubkey origin index (HEP-CORE-0035 §4.2)
+#   - a key resolves to its subject AND its kind (role vs federation peer;
+#     the kind decides who may carry identities other than its own)
+#   - unknown / near-miss / empty key resolves to nothing, never a default
+#   - one key configured for two subjects is REFUSED (role↔role and the
+#     cross-category role↔peer clash the known-roles store cannot see)
+#   - a refused insert leaves the index unchanged
+#   - allowlist projection covers both kinds and is never unrestricted
+#   - inbox roster is local roles ONLY, sorted for stable wire captures
+# ============================================================================
+
+add_executable(test_layer2_pubkey_origin
+    test_pubkey_origin.cpp
+)
+
+target_link_libraries(test_layer2_pubkey_origin
+    PRIVATE
+        pylabhub::utils
+        GTest::gtest
+        GTest::gtest_main
+        GTest::gmock
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer2_pubkey_origin)
+
+layer2_require_staged_utils(test_layer2_pubkey_origin)
+
+pylabhub_add_gtest(TARGET test_layer2_pubkey_origin
     LABELS "layer2;service;security;known_roles"
     TIMEOUT 30)
 

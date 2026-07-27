@@ -23,7 +23,33 @@ These use cases require:
 - **Schema-validated** payloads (same typed slot model as the data queue)
 - **Independence** from the data plane (inbox messages don't interfere with data flow)
 
-The Inbox provides this as an optional side channel, available to all roles.
+The Inbox provides this as an optional side channel, available to all
+**active** roles.
+
+> **"Independent" means traffic, not lifecycle.**  Inbox messages never
+> touch the data path and cannot disturb data flow — that is the
+> independence above.  It does NOT mean the inbox is usable before the
+> data plane exists.  The inbox is a **feedback pathway between ACTIVE
+> roles**, not a general mailbox: a role earns its inbox by becoming
+> active, so the roster that authorizes its inbox arrives with, and is
+> ingested at, data-plane establishment (`apply_master_approval` for a
+> producer, the consumer REG_ACK path for a consumer).  A role that has
+> not established a data plane is not active, and its inbox correctly
+> admits no one.
+>
+> This is deliberate and load-bearing: the gating is what keeps the
+> inbox a peer-to-peer feedback channel among running roles instead of
+> an always-on message box that would have its own independent
+> authorization lifecycle to reason about.  Do not "fix" the coupling by
+> merging the roster earlier — the deny-all window before activation is
+> the intended state, not a gap.  §3.5's S1→S3 sequence is the normative
+> statement of it: the ROUTER binds deny-all at S1 and is lifted off that
+> default only at S3, when the roster arrives.
+>
+> Note this is orthogonal to the authorization SCOPE (§3.5): *when* the
+> inbox becomes usable is gated on activation, while *who* may then reach
+> it is hub-wide (any known role, not just channel peers).  The two are
+> independent axes and both are intended.
 
 > **Inbox is TYPED; for JSON messages use a Band.** The two role↔role messaging
 > facilities carry different payload forms and must not be confused:
@@ -158,6 +184,19 @@ replay-metadata frame (§3.6):
 - DEALER sends `[empty_delimiter, replay_meta, payload]`
 - ROUTER receives `[identity, empty_delimiter, replay_meta, payload]`
 - ROUTER sends ACK as `[identity, empty_delimiter, ack_byte]`
+
+> **The routing identity is an address, not the sender's identity.**
+> A DEALER chooses its own `ZMQ_IDENTITY`, so the frame-0 value is
+> usable for addressing the ACK back and for nothing else.  The
+> sender's real identity is the **principal** resolved from the key
+> its CURVE handshake proved (HEP-CORE-0035 §4.2), and that is what
+> the inbox MUST use for all three security-relevant purposes: the
+> sender reported to the receiving application, the replay-guard key
+> (§3.6), and the per-sender sequence state (§8).  Keying any of
+> those on the routing id lets one sender be attributed as another,
+> and lets a sender obtain a fresh replay window by changing the id
+> it presents.  See HEP-CORE-0035 §2, "The routing id is a reply
+> address, not a trust claim."
 
 ### 3.6 Replay defense (I-REPLAY-BOUND)
 

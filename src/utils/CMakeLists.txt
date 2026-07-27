@@ -53,6 +53,7 @@ set(UTILS_SOURCES
   security/curve_keypair.cpp       # pylabhub::utils::security (HEP-CORE-0035 §2 — consolidates 4 inline keygen sites)
   security/key_file_acl.cpp        # pylabhub::utils::security (HEP-CORE-0035 §4.6)
   security/known_roles.cpp         # pylabhub::utils::security (PeerAdmission Phase B)
+  security/pubkey_origin.cpp       # pylabhub::utils::security (HEP-CORE-0035 §4.2 — key → subject, the one identity index)
   security/zap_router.cpp          # pylabhub::utils::security (PeerAdmission Phase C — caller-pumped)
   security/domain_routing_table.cpp # pylabhub::utils::security (HEP-CORE-0036 §7.4 — admission dispatch table)
   security/secure_subsystem.cpp # pylabhub::utils::security (HEP-CORE-0043 §1 + §2 — libsodium boundary + lifecycle facade)

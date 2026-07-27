@@ -73,7 +73,7 @@ post-reconcile shipped-sprint detail).
 >
 > | # | Band | What it covers |
 > |---|---|---|
-> | **1** | **Security items** | The dead/no-op identity + authority validators (#68) first — checks that exist but do not actually gate.  Then federation ingress (#69, design-first), then remaining AUTH residuals. |
+> | **1** | **Security items** | The dead/no-op identity + authority validators (#68) are ✅ CLOSED (verified against code 2026-07-27 — see below).  Open: the three security-adjacent coverage gaps (inbox frame-magic / gap-count / seq-reset-after-reconnect; hub_vault `known_roles` round-trip), #66 Cat-A vault harness, then federation (#69, design-first), then remaining AUTH residuals. |
 > | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh. |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
@@ -82,6 +82,25 @@ post-reconcile shipped-sprint detail).
 ### Detail (open, within the bands above)
 
 **Security (top open surface):**
+- **Dead/no-op identity + authority validators (#68) — ✅ CLOSED 2026-07-21,
+  re-verified against code 2026-07-27.**  All four are gone or armed: the
+  schema-citation validator runs on every joiner path including the consumer
+  one (four production call sites in `broker_service.cpp`, reject-counter
+  increments pinned in `test_hub_state.cpp`); the key-rotation gate and the
+  `RoleIdentityPolicy` string gate were deleted as redundant with the ZAP
+  pubkey allowlist; the stale-SHM `producer_uid` cross-check was retired as
+  dead wire, superseded by capability-fd attach (HEP-CORE-0013 banner).
+  The task sat `pending` after the fix landed — closed on verification, not
+  on the tracker's word.
+- **Three security-adjacent coverage gaps (from REVIEW_FullSystem, all still
+  reproduce):** (a) the inbox "bad magic" worker sends a 2-frame message that
+  is rejected by the frame-count guard before the magic check ever runs, so
+  frame-magic validation is untested; `recv_gap_count` has no test at all; and
+  the HEP-0027 §3.6 rule that a reconnected sender's reset sequence number must
+  NOT be mistaken for a replay is unpinned.  (b) `HubVault`'s `known_roles`
+  save/reload round-trip has no L2 pin — only the L4 CLI test covers it, which
+  cannot separate a vault regression from a CLI one.  (c) a broken diagnostic
+  line in the logger stress test (one-line fix).
 - **Federation — design-first, CONSOLIDATED under task #69 (ratified
   2026-07-24):** a full top-down design (HEP: hub↔hub trust model, peer
   lifecycle, wire, security) comes BEFORE any protocol work — no piecemeal

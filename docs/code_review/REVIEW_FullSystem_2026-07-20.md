@@ -1,6 +1,10 @@
 # REVIEW — Full-System HEP-vs-Code Audit (2026-07-20)
 
-**Status:** ❌ OPEN — findings filed, no fixes applied. Awaiting maintainer triage.
+**Status:** 🚧 IN PROGRESS — **52 of 56 resolved, 4 open** (last verified against
+code 2026-07-27). Open: the federation-ingress bypass (⏳ deferred into task #69,
+design-first) and three test-coverage items (inbox frame-magic / `recv_gap_count` /
+seq-reset pins; `HubVault` `known_roles` L2 round-trip; logger StressLog
+diagnostic). Everything else carries a per-finding ✅ resolution note below.
 **Scope:** all of `src/` (114k LOC, 282 files) + `tests/` (~319 files) against the
 42-HEP corpus and `docs/README/README_testing.md`. `third_party/` excluded.
 **Method:** multi-agent workflow — 14 subsystem reviewers (each: governing HEP →

@@ -233,6 +233,36 @@ during Phase 1 review of `HubBrokerConfig`):
   the shared ZAP inproc REP and MUST enforce against the relevant
   allowlist. Empty allowlist = deny-all (§4.8.4 bootstrap); there is
   no permissive-mode runtime flag.
+- **Identity comes from the handshake, never from the message.**
+  The CURVE handshake proves which key is on the other end of a
+  connection.  That answer is captured at ingress and carried to
+  every handler.  No control-plane handler may derive a caller's
+  identity from a wire field, from the frame-0 routing id, or from
+  the peer's network address — those are all values the caller
+  chooses for itself.  A message field naming an identity is a
+  *claim*, and a claim is only ever checked against the connection's
+  proven identity, never trusted in its place.
+- **Exactly one structure answers "what does this key mean to this
+  hub."**  The pubkey origin index (§4.2) is that structure.  Both
+  the Layer-1 ZAP handler and every Layer-2 consumer read it.  A
+  second lookup table over the same vault data — an allowlist built
+  by iterating the config, a per-handler scan of `known_roles` — is
+  a duplicate that will drift, and is forbidden.
+- **The routing id is a reply address, not a trust claim.**  The
+  frame-0 identity a DEALER sets at connect exists so a ROUTER can
+  address the reply.  It is chosen by the client and carries no
+  authority.  No gate may accept, reject, or attribute a message
+  based on it, and nothing keyed for security purposes — replay
+  windows, per-sender sequence state, audit attribution — may be
+  indexed by it.
+- **Speaking for another identity is a declared property of a link.**
+  A caller normally acts for itself: the identity it claims must be
+  the identity it authenticated as.  The one exception is a
+  federation peer relaying messages authored by roles on its own
+  side, where the carried identity cannot equal the connection's by
+  construction.  That exception is legitimate only across a link the
+  index classifies as `FederationPeer`, and only under a declared
+  trust mode (§4.3).  It is never implicit.
 - **HubHost startup requires a loaded keypair.** `HubHost::startup()`
   MUST reject startup if the hub identity key is not loaded.
   Today's check tests `auth().client_pubkey` is non-empty (no
@@ -382,13 +412,21 @@ mandatory in production:
 ┌─────────────────────────────────────────────────────────────────┐
 │  Layer 2 — Federation-trust gate (broker registration layer)    │
 │                                                                 │
-│  REG_REQ / CONSUMER_REG_REQ handlers verify Layer-2 via         │
-│  body-claim: `body.role_uid` is looked up in `known_roles[]`    │
-│  (UNKNOWN_ROLE on miss), and `body.zmq_pubkey` is compared to   │
-│  the stored `known_roles[role_uid].pubkey_z85` (PUBKEY_MISMATCH │
-│  on inequality).  Layer-1 ZAP/CURVE remains the cryptographic   │
-│  prerequisite (handshake must have succeeded before the body is │
-│  parsed).  Per HEP-CORE-0036 §6.1 + §6.3.                       │
+│  The key Layer 1 verified is captured at ingress and resolved   │
+│  through the pubkey origin index (§4.2) into the caller's       │
+│  PRINCIPAL — the subject this hub knows that key to be.  Every  │
+│  identity the handler acts on is that principal.                │
+│                                                                 │
+│  A registration body still NAMES a role_uid; that name is a     │
+│  claim, and the gate's job is to check the claim against the    │
+│  principal (UNKNOWN_ROLE if the key resolves to nothing;        │
+│  identity rejection if the claim is not the principal's own     │
+│  subject).  The claim is never accepted in the principal's      │
+│  place — see §2, "Identity comes from the handshake."           │
+│                                                                 │
+│  Layer-1 ZAP/CURVE remains the cryptographic prerequisite: the  │
+│  handshake must have succeeded before any body is parsed, which │
+│  is what makes a principal available at all.                    │
 │                                                                 │
 │  • If the pubkey matches a local known_roles entry → local      │
 │    role; accept.                                                │
@@ -495,6 +533,66 @@ pubkey looked up at REG time is mirrored into the broker's per-channel
 different scopes and are not interchangeable: `PubkeyOrigin` answers
 "is this a known role at all?"; `ChannelAccessIndex` answers "is this
 consumer authorized for THIS channel?"
+
+#### 4.2.1 Getting the verified key to the handler
+
+The index is only useful if the handler knows which key to look up.
+That is a transport fact, and it is available for free.
+
+When the ZAP handler admits a handshake it returns the peer's public
+key as the ZAP user id (§4.1).  ZeroMQ records that value and attaches
+it to **every message subsequently received from that peer**, readable
+as the `User-Id` property on a received frame.  The identity is
+therefore established **once per connection**, at handshake time, and
+inherited by every message on that connection for its lifetime — no
+per-message cryptography, and no way for a caller's identity to change
+mid-conversation.
+
+Ingress captures that value and puts it on the envelope:
+
+- Every ROUTER ingress reads `User-Id` from the received message and
+  stores it on the `WireEnvelope` at parse time, alongside the
+  routing id and correlation id.  Handlers read it through an
+  accessor; they never touch frames or transport metadata.
+- Resolution through the index yields the **principal**: the subject
+  this hub knows that key to be, together with its `Kind`
+  (`LocalRole` or `FederationPeer`).
+- A message whose key resolves to nothing is rejected before any
+  handler runs.  Under Layer-1 enforcement this is unreachable — an
+  unlisted key never completes a handshake — so it is a defence-in-
+  depth check and an alarm, not an expected path.
+
+Because the principal rides the envelope, **no handler ever needs to
+re-derive identity**, and the typed-envelope rule that handlers trust
+shared gates rather than re-implementing them (HEP-CORE-0046 §14.7)
+extends naturally to identity.
+
+#### 4.2.2 What each plane does with the principal
+
+One mechanism, four consumers.  The point of the index is that these
+stop being four different notions of "who sent this."
+
+| Plane | Uses the principal for |
+|---|---|
+| Role registration | The claimed `role_uid` must be the principal's own subject; the principal's key is what gets recorded on the role's entry and mirrored into the per-channel allowlist |
+| Inbox messaging | The sender identity delivered to the application, the replay-guard key, and the per-sender sequence state (HEP-CORE-0027 §3.6, §8) |
+| Admin console | The *captured key only* — the admin plane is deliberately not key-gated, so an operator resolves to no index entry.  The session binds to the connection's verified key at establishment, and later commands must present the same one (HEP-CORE-0033 §11) |
+| Federation ingress | Classification of the link as `FederationPeer`, which is the precondition for any delegated identity (§4.3) |
+
+**Threading.** The index is read from the ZAP pump and from the
+handler paths.  It is built once at vault load and mutated only by
+capability ops, so it follows the same reader-writer discipline as the
+rest of `HubState` — many concurrent readers, exclusive writers, no
+lock held across a callback.
+
+**Why not compare the claim against the vault instead.**  A
+claim-and-compare check ("look up the claimed uid, require its stored
+key to equal the connection's key") is sufficient for registration and
+nothing else: an inbox frame carries no claimed uid to compare
+against, and "is this connection a peer hub or a role?" is a property
+of the key, not of any claim.  Choosing it would leave two of the four
+consumers above needing a second, different mechanism — which is the
+per-plane divergence this index exists to prevent.
 
 ### 4.3 Federation-trust policy modes
 

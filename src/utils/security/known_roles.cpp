@@ -323,21 +323,4 @@ bool known_roles_enforces_unique_pubkey() noexcept
     return kEnforceUniquePubkey;
 }
 
-PeerAllowlist KnownRolesStore::as_peer_allowlist() const
-{
-    PeerAllowlist al;
-    for (const auto &e : roles_)
-    {
-        // `validate_entry` (the mandatory gate on both insertion paths,
-        // `from_json` + `add`) rejects empty/short pubkeys, so every
-        // stored entry carries a valid 40-char pubkey.  The former
-        // empty-pubkey skip here was dead once known_roles moved into
-        // the vault (HEP-0035 §4.8); the legacy string gate it deferred
-        // to is deleted (§4.5 / §8 Phase 6).
-        assert(!e.pubkey_z85.empty() && "KnownRole with empty pubkey reached the store");
-        al.peers.insert(PeerIdentity{"curve", e.pubkey_z85});
-    }
-    return al;
-}
-
 } // namespace pylabhub::utils::security
