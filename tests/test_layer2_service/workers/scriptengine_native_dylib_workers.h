@@ -55,6 +55,7 @@ int invoke_on_inbox_typed_data(const std::string &plugin_dir);
 int api_band_pub_sub_no_broker_graceful_return(const std::string &plugin_dir);
 int api_inbox_send_no_broker_graceful_return(const std::string &plugin_dir);
 int api_schema_queries_no_broker_graceful_return(const std::string &plugin_dir);
+int late_slot_registration_g4_gate(const std::string &plugin_dir);
 
 } // namespace native_engine
 } // namespace pylabhub::tests::worker

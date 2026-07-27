@@ -1187,6 +1187,20 @@ builders:
   (delivery + segment-header cross-check before mapping) is tracked in
   `docs/todo/MESSAGEHUB_TODO.md`.
 
+**Script-tier slot proxies on the resolved format.**  After the SI-6
+chain closes and before the queue goes Active, the role host registers
+the resolved slot schema with the script engine (`InSlotFrame`), so
+the first `on_consume` already sees a live typed view of a schema the
+script never declared — the fully generic consumer.  This runs on the
+same worker thread as the engine's startup registrations; no engine
+synchronization is involved.  For NATIVE plugins the registration is
+the adoption gate: the plugin's compiled `native_schema_` /
+`native_sizeof_InSlotFrame` exports must match the resolved format,
+else activation is refused rather than letting native code misread
+slot bytes.  A resolved flexzone is verified for chain integrity but
+not registered — ZMQ rx has no flexzone data plane (the SHM
+runtime-resolved path owns that half when it lands).
+
 ### 10.4 Error codes
 
 All schema-related errors are emitted via the standard error envelope

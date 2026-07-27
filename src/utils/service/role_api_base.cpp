@@ -1328,6 +1328,62 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                 {
                     return false;
                 }
+
+                // G4 (slice 4) — script-tier slot proxies on the
+                // resolved format.  This runs on the WORKER thread —
+                // the same thread that drove engine_lifecycle_startup's
+                // step-3 registrations — so the late registration is
+                // exactly the startup call at a later time (Python GIL
+                // state identical by construction).  For a from-channel
+                // role the engine skipped InSlotFrame at startup
+                // (has_schema was false); register the resolved spec
+                // now, BEFORE the queue goes Active, so the first
+                // invoke_consume already sees the typed view.
+                //
+                // NativeEngine's register_slot_type doubles as the
+                // safety gate: the plugin's compiled
+                // native_schema_/sizeof_InSlotFrame exports must match
+                // the resolved format — a mismatch (or a plugin that
+                // exports no expectation) refuses activation rather
+                // than letting native code misread the slot bytes.
+                //
+                // A resolved FLEXZONE is deliberately NOT registered
+                // here: ZMQ rx has no flexzone data plane
+                // (api.flexzone() is SHM-backed); the fz half of the
+                // delivery is verified for chain integrity only.  The
+                // SHM runtime-resolved path (tracked in
+                // MESSAGEHUB_TODO) owns InFlexFrame registration.
+                if (pImpl->engine != nullptr)
+                {
+                    const auto &resolved = pImpl->core->in_slot_spec();
+                    if (!pImpl->engine->register_slot_type(resolved, "InSlotFrame",
+                                                           resolved.packing))
+                    {
+                        LOGGER_ERROR("[{}] runtime schema: channel '{}' engine refused "
+                                     "InSlotFrame registration on the resolved format — "
+                                     "aborting activation (see the engine's diagnostic; "
+                                     "for native plugins this means the compiled struct "
+                                     "does not match the channel's format).",
+                                     pImpl->short_tag, channel_name);
+                        return false;
+                    }
+                    // Same cross-check engine_lifecycle_startup runs at
+                    // step 5: the engine's materialized type must match
+                    // the schema-computed logical size exactly.
+                    const size_t engine_sz = pImpl->engine->type_sizeof("InSlotFrame");
+                    const size_t schema_sz = pImpl->core->in_slot_logical_size();
+                    if (engine_sz > 0 && engine_sz != schema_sz)
+                    {
+                        LOGGER_ERROR("[{}] runtime schema: channel '{}' InSlotFrame size "
+                                     "mismatch: engine={} schema={} — aborting activation.",
+                                     pImpl->short_tag, channel_name, engine_sz, schema_sz);
+                        return false;
+                    }
+                    LOGGER_INFO("[{}] event=RuntimeSlotTypeRegistered channel='{}' "
+                                "type=InSlotFrame size={} (G4 — script slot proxy live "
+                                "on the resolved format)",
+                                pImpl->short_tag, channel_name, schema_sz);
+                }
             }
 
             // Consumer's pubkey — from KeyStore.  Symmetric with the

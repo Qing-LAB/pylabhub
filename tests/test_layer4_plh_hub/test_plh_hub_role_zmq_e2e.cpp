@@ -638,11 +638,13 @@ void write_zmq_from_channel_consumer_config(const fs::path &cfg_path, const fs::
     f << j.dump(2);
 }
 
-/// Counting consumer for the runtime-resolved scenario.  Slice-3
-/// contract: transport-level consumption works (queue decodes +
-/// verifies tag/checksum on the resolved format); the SCRIPT slot
-/// proxy is slice 4 (G4), so `rx.slot is None` here — pinned via the
-/// first-invocation marker.
+/// Generic consumer for the runtime-resolved scenario.  Slice-4 (G4)
+/// contract: the engine registers InSlotFrame from the RESOLVED format
+/// before the queue goes Active, so `rx.slot` is a live typed proxy on
+/// a schema the script never declared — the fully generic consumer.
+/// Every received slot's `value` is content-checked against the
+/// producer's 0..N-1 cycle; the completion marker carries the valid
+/// count so the parent pins field-level decode, not just delivery.
 void write_zmq_from_channel_consumer_script(const fs::path &script_dir, int expected_slots)
 {
     std::error_code ec;
@@ -650,6 +652,7 @@ void write_zmq_from_channel_consumer_script(const fs::path &script_dir, int expe
     std::ofstream f(script_dir / "__init__.py");
     f << "_EXPECTED = " << expected_slots << "\n"
       << "_n = [0]\n"
+         "_valid = [0]\n"
          "_done = [False]\n\n"
          "def on_init(api):\n"
          "    api.log('info', 'cons_test: init')\n"
@@ -659,9 +662,16 @@ void write_zmq_from_channel_consumer_script(const fs::path &script_dir, int expe
          "    if _n[0] == 1:\n"
          "        api.log('info', 'cons_test: first slot_is_none=' +\n"
          "                str(rx.slot is None))\n"
+         "    if rx.slot is not None:\n"
+         "        v = float(rx.slot.value)\n"
+         "        if 0.0 <= v <= float("
+      << expected_slots - 1
+      << "):\n"
+         "            _valid[0] += 1\n"
          "    if _n[0] >= _EXPECTED and not _done[0]:\n"
          "        _done[0] = True\n"
-         "        api.log('info', 'cons_test: complete N=' + str(_n[0]))\n"
+         "        api.log('info', 'cons_test: complete N=' + str(_n[0]) +\n"
+         "                ' valid=' + str(_valid[0]))\n"
          "    return True\n"
          "\n"
          "def on_stop(api):\n"
@@ -2320,11 +2330,11 @@ TEST_F(PlhHubCliTest, ZmqE2E_NativeProducer_LiveSchemaQueries)
 // consumes real data on it.  Full production stack: plh_hub + two
 // plh_role binaries over CURVE.
 //
-// Slice-3 contract pinned here: transport-level consumption works on
-// the resolved format (queue decode + schema tag on the wire);
-// `rx.slot` is None in the script until G4 (slice 4) builds slot
-// proxies from the delivered BLDS — pinned via the first-invocation
-// marker so slice 4 flips exactly one assertion.
+// Slice-4 (G4) contract pinned here: after the SI-6 chain closes, the
+// engine registers InSlotFrame from the RESOLVED format before the
+// queue goes Active, so the script consumes through a live typed
+// proxy on a schema it never declared — the fully generic consumer.
+// Every slot's field value is content-verified through that proxy.
 
 TEST_F(PlhHubCliTest, ZmqE2E_FromChannelConsumer_ResolvesAndReceives)
 {
@@ -2431,28 +2441,47 @@ TEST_F(PlhHubCliTest, ZmqE2E_FromChannelConsumer_ResolvesAndReceives)
                                          "' fields=1 packing=aligned",
                                      seconds(10)))
         << dump_full("event=RuntimeSchemaResolved — §6.4 verification");
+    // …the engine registered the script proxy on the resolved format
+    // (G4 — slice 4)…
+    ASSERT_TRUE(wait_for_role_marker(
+        cons_dir, cons, "event=RuntimeSlotTypeRegistered channel='" + channel + "'", seconds(5)))
+        << dump_full("event=RuntimeSlotTypeRegistered — G4 engine registration");
     // …and the queue installed it before activation.
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "event=QueueSchemaConfigured", seconds(5)))
         << dump_full("event=QueueSchemaConfigured — deferred layout installed");
 
-    // Slice-3 script contract: consumption fires, slot proxy is None
-    // until G4 (slice 4).
+    // Slice-4 (G4) script contract: the fully generic consumer —
+    // rx.slot is a LIVE typed proxy on a schema the script never
+    // declared.
     ASSERT_TRUE(
-        wait_for_role_marker(cons_dir, cons, "cons_test: first slot_is_none=True", seconds(10)))
-        << dump_full("first on_consume — slice-3 rx.slot contract");
-    ASSERT_TRUE(wait_for_role_marker(
-        cons_dir, cons, "cons_test: complete N=" + std::to_string(kSlots), seconds(10)))
+        wait_for_role_marker(cons_dir, cons, "cons_test: first slot_is_none=False", seconds(10)))
+        << dump_full("first on_consume — G4 rx.slot proxy live");
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: complete N=", seconds(10)))
         << dump_full("cons_test: complete — data flow on the resolved format");
 
-    // Order pin: resolution strictly precedes consumption (structural —
-    // the queue cannot go Active while the format is pending).
     {
         const std::string cons_log = read_role_log(cons_dir);
+
+        // Content pin: EVERY received slot field-decoded to an in-range
+        // value through the runtime-built proxy (valid == N).
+        static const std::regex complete_re(R"(cons_test: complete N=(\d+) valid=(\d+))");
+        std::smatch m;
+        ASSERT_TRUE(std::regex_search(cons_log, m, complete_re)) << cons_log;
+        EXPECT_GE(std::stoi(m[1].str()), kSlots);
+        EXPECT_EQ(m[1].str(), m[2].str())
+            << "every slot must decode through the runtime-built proxy";
+
+        // Order pin: resolve → register proxy → first consume
+        // (structural — the queue cannot go Active while the format is
+        // pending, and the proxy registers before activation).
         const size_t resolved_pos = cons_log.find("event=RuntimeSchemaResolved");
+        const size_t registered_pos = cons_log.find("event=RuntimeSlotTypeRegistered");
         const size_t first_pos = cons_log.find("cons_test: first ");
         ASSERT_NE(resolved_pos, std::string::npos);
+        ASSERT_NE(registered_pos, std::string::npos);
         ASSERT_NE(first_pos, std::string::npos);
-        EXPECT_LT(resolved_pos, first_pos);
+        EXPECT_LT(resolved_pos, registered_pos);
+        EXPECT_LT(registered_pos, first_pos);
     }
 
     // ── Shutdown + Class-D gate ───────────────────────────────────────────

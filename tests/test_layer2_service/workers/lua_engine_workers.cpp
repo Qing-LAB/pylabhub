@@ -914,6 +914,75 @@ int invoke_consume_receives_slot(const std::string &dir)
         });
 }
 
+int late_slot_registration_g4(const std::string &dir)
+{
+    // HEP-0034 §10.3a / G4 (slice 4): a runtime-resolved (from-channel)
+    // consumer registers InSlotFrame AFTER engine startup — on the same
+    // worker thread, when apply_consumer_reg_ack resolves the delivered
+    // format.  This pins the LUA half of the engine contract directly
+    // (multi-engine parity; the Python half is pinned end-to-end by the
+    // L4 keystone): registration is not startup-only — before it,
+    // rx.slot is nil; after it, the SAME engine instance serves a live
+    // typed proxy with correct field decode.
+    return run_gtest_worker(
+        [&]()
+        {
+            const fs::path script_dir(dir);
+            write_script(script_dir, R"(
+                function on_consume(rx, msgs, api)
+                    if rx.slot == nil then
+                        api.report_metric("nil_consumes", 1.0)
+                    else
+                        api.report_metric("typed_value", rx.slot.value)
+                    end
+                    return true
+                end
+            )");
+
+            RoleHostCore core;
+            LuaEngine engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+            ASSERT_TRUE(engine.load_script(script_dir, "init.lua", "on_consume"));
+            // Deliberately NO register_slot_type here — the runtime-
+            // resolved build has no schema at startup.
+            auto api = make_api(core, "cons");
+            ASSERT_TRUE(engine.build_api(*api));
+
+            float data = 41.5f;
+            std::vector<pylabhub::scripting::IncomingMessage> msgs;
+
+            // Before registration: slot view is nil (slice-3 state).
+            auto r1 =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(r1, pylabhub::scripting::InvokeResult::Commit);
+            {
+                auto m = core.custom_metrics_snapshot();
+                EXPECT_EQ(m.count("nil_consumes"), 1u);
+                EXPECT_EQ(m.count("typed_value"), 0u);
+            }
+
+            // Late registration — the G4 call apply_consumer_reg_ack
+            // makes on the resolved format.
+            ASSERT_TRUE(engine.register_slot_type(simple_schema(), "InSlotFrame", "aligned"));
+
+            // After: same engine, live typed proxy, correct decode.
+            data = 77.25f;
+            auto r2 =
+                engine.invoke_consume(pylabhub::scripting::InvokeRx{&data, sizeof(data)}, msgs);
+            EXPECT_EQ(r2, pylabhub::scripting::InvokeResult::Commit);
+            EXPECT_EQ(engine.script_error_count(), 0u);
+            {
+                auto m = core.custom_metrics_snapshot();
+                ASSERT_EQ(m.count("typed_value"), 1u);
+                EXPECT_NEAR(m.at("typed_value"), 77.25, 0.01)
+                    << "field decode through the late-registered proxy";
+            }
+
+            engine.finalize();
+        },
+        "lua_engine::late_slot_registration_g4", Logger::GetLifecycleModule());
+}
+
 int invoke_consume_nil_slot(const std::string &dir)
 {
     // Strengthened: also asserts result == Commit (Lua returns true).
@@ -5933,6 +6002,8 @@ struct LuaEngineWorkerRegistrar
                     return invoke_consume_receives_slot(dir);
                 if (sc == "invoke_consume_nil_slot")
                     return invoke_consume_nil_slot(dir);
+                if (sc == "late_slot_registration_g4")
+                    return late_slot_registration_g4(dir);
                 if (sc == "invoke_consume_discard_on_false_no_error_bump")
                     return invoke_consume_discard_on_false_no_error_bump(dir);
                 if (sc == "invoke_consume_script_error_detected")

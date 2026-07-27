@@ -213,3 +213,14 @@ TEST_F(NativeEngineTest, Api_SchemaQueries_NoBroker_GracefulReturn)
         SpawnWorker("native_engine.api_schema_queries_no_broker_graceful_return", {plugin_dir()});
     ExpectWorkerOk(w);
 }
+
+// G4 (HEP-0034 §10.3a, slice 4) — native half of the multi-engine
+// parity: late InSlotFrame registration on a live engine is the
+// runtime-resolved consumer's safety gate.  A resolved format that
+// disagrees with the plugin's compiled struct refuses (the declared
+// ERROR below); a matching one registers.
+TEST_F(NativeEngineTest, LateSlotRegistration_G4_Gate)
+{
+    auto w = SpawnWorker("native_engine.late_slot_registration_g4_gate", {plugin_dir()});
+    ExpectWorkerOk(w, {}, {"schema mismatch for InSlotFrame"});
+}

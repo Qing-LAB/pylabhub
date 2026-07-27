@@ -350,8 +350,19 @@ class ScriptEngine
      * overwrites the previous cached type with a new schema/packing.
      * This is primarily a test-side convenience (e.g. verifying that
      * the packing argument affects layout by re-registering with
-     * different packings); production role hosts call
-     * register_slot_type once per canonical name at startup.
+     * different packings).
+     *
+     * Production call timing: role hosts register once per canonical
+     * name at engine startup (engine_lifecycle_startup step 3) — with
+     * ONE sanctioned later call: a runtime-resolved consumer
+     * (HEP-0034 §10.3a "from-channel") registers "InSlotFrame" at
+     * CONSUMER_REG_ACK apply time, after the delivered format passes
+     * the SI-6 verification and before the queue goes Active.  Both
+     * calls run on the same worker thread, so implementations need no
+     * extra synchronization for the late case.  For NativeEngine the
+     * late call doubles as the adoption gate: the plugin's compiled
+     * schema/sizeof exports must match the resolved format or
+     * registration (and therefore activation) is refused.
      *
      * Engines create "SlotFrame"/"FlexFrame" aliases for single-
      * direction roles (producer/consumer) at build_api() time.

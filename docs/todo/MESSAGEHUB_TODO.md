@@ -172,9 +172,22 @@ decisions pending user ruling):
       consumers (SI-6 "config pin when present" hook — the delivered-
       fingerprint verification already runs; a config pin would bind
       it to operator expectation).
-- [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully
-      generic script roles.  Consumer-side entry point: the
-      `rx.slot is None` assertion in the L4 from-channel keystone.
+- [x] ✅ Slice 4 SHIPPED 2026-07-27 (G4 — runtime slot proxies): after
+      the SI-6 chain closes, `apply_consumer_reg_ack` registers the
+      RESOLVED spec with the engine (`InSlotFrame`) + the step-5 size
+      cross-check, BEFORE queue activation — same worker thread as the
+      startup registrations, so no engine synchronization (contract
+      documented in script_engine.hpp::register_slot_type + HEP-0034
+      §10.3a).  Native registration doubles as the adoption gate
+      (compiled exports must match the resolved format, else
+      activation refused).  Resolved flexzone: verified, deliberately
+      NOT registered (ZMQ rx has no fz data plane; SHM path owns it).
+      3-engine direct verification (parity rule): Python — L4 keystone
+      flipped to the generic-consumer contract (`slot_is_none=False`,
+      valid==N content pin, resolve→register→consume order pin); Lua —
+      `LateSlotRegistration_G4` (nil before / typed decode after on
+      the same engine); Native — `LateSlotRegistration_G4_Gate`
+      (mismatch refused with pinned ERROR, match registers).
 - [ ] G5 doc folds (HEP-0034 §10.3 lifetime rules incl. fan-in
       dual-lifetime "consumers pull by channel"; HEP-0019 freshness;
       HEP-0007 §12.3 SCHEMA-vs-DISC complementarity note).

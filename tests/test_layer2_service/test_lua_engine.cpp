@@ -295,6 +295,15 @@ TEST_F(LuaEngineIsolatedTest, InvokeConsume_NilSlot)
     ExpectWorkerOk(w);
 }
 
+TEST_F(LuaEngineIsolatedTest, LateSlotRegistration_G4)
+{
+    // HEP-0034 §10.3a / G4: InSlotFrame registered AFTER startup (the
+    // runtime-resolved consumer path) — nil proxy before, live typed
+    // proxy with correct field decode after, same engine instance.
+    auto w = SpawnWorker("lua_engine.late_slot_registration_g4", {unique_dir("late_slot_reg")});
+    ExpectWorkerOk(w);
+}
+
 // Bug-revealing: pins `return false` on the consume path → Discard,
 // without accumulating script_error_count or emitting the wrong-type /
 // missing-return-value ERRORs.  Guards against three regression classes

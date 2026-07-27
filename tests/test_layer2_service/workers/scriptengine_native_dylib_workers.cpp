@@ -955,6 +955,51 @@ int api_schema_queries_no_broker_graceful_return(const std::string &plugin_dir)
         "native_engine::api_schema_queries_no_broker_graceful_return");
 }
 
+int late_slot_registration_g4_gate(const std::string &plugin_dir)
+{
+    // HEP-0034 §10.3a / G4 (slice 4), NATIVE half of the multi-engine
+    // parity: a runtime-resolved consumer registers InSlotFrame AFTER
+    // engine startup, and for native plugins that registration IS the
+    // safety gate — the plugin's compiled native_schema_/sizeof_
+    // exports must match the channel's resolved format, else
+    // activation is refused rather than letting native code misread
+    // slot bytes.  good_producer_plugin declares
+    // InSlotFrame = "value:float32:1:0" (4 bytes).
+    return run_ne_worker(
+        [&]()
+        {
+            RoleHostCore core;
+            NativeEngine engine;
+            ASSERT_TRUE(engine.initialize("test", &core));
+
+            auto lib = good_plugin_path(plugin_dir);
+            ASSERT_TRUE(
+                engine.load_script(lib.parent_path(), lib.filename().string(), "on_produce"));
+            auto test_api = make_native_api(core);
+            ASSERT_TRUE(engine.build_api(*test_api));
+
+            // Mismatched resolved format (float64 vs the plugin's
+            // compiled float32) → the gate refuses.
+            {
+                hub::SchemaSpec wrong;
+                wrong.has_schema = true;
+                wrong.fields.push_back({"value", "float64", 1, 0});
+                EXPECT_FALSE(engine.register_slot_type(wrong, "InSlotFrame", "aligned"))
+                    << "a resolved format that disagrees with the plugin's "
+                       "compiled struct must refuse registration (G4 gate)";
+            }
+
+            // Matching resolved format → late registration succeeds on
+            // the live engine.
+            auto spec = pylabhub::tests::simple_schema();
+            EXPECT_TRUE(engine.register_slot_type(spec, "InSlotFrame", "aligned"));
+            EXPECT_EQ(engine.type_sizeof("InSlotFrame"), 4u);
+
+            engine.finalize();
+        },
+        "native_engine::late_slot_registration_g4_gate");
+}
+
 } // namespace native_engine
 } // namespace pylabhub::tests::worker
 
@@ -1039,6 +1084,8 @@ struct NativeEngineWorkerRegistrar
                     return api_inbox_send_no_broker_graceful_return(pdir);
                 if (sc == "api_schema_queries_no_broker_graceful_return")
                     return api_schema_queries_no_broker_graceful_return(pdir);
+                if (sc == "late_slot_registration_g4_gate")
+                    return late_slot_registration_g4_gate(pdir);
 
                 fmt::print(stderr, "[native_engine] ERROR: unknown scenario '{}'\n", sc);
                 return 1;
