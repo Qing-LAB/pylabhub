@@ -261,6 +261,18 @@ flowchart TB
    behavioural change because `schema_loader` is stateless and `to_hub_schema_record`
    is pure.
 
+10. **Single wire-field builder — sender side** *(I10)* — the wire schema
+    fields (`schema_id`, `schema_hash`, `schema_blds`, `schema_packing`,
+    `flexzone_blds`, `flexzone_packing`, and their `expected_*` twins) are
+    produced in role code exclusively by `make_wire_schema_fields` plus the
+    `apply_producer_schema_fields` / `apply_consumer_schema_fields` pasters
+    (§6.4 stages 2–3). The 128-hex `schema_hash` is always recomputed from
+    the resolved `SchemaSpec` inside the builder — never copied from a
+    configuration value or a cache. This is the sender-side mirror of I2/I4:
+    one compute family on both ends of the wire, so the two ends cannot
+    drift under maintenance. Role hosts, script engines, and language
+    bindings are all bound by this rule.
+
 **Forbidden patterns** (review must reject):
 
 - Construction of `SchemaRecord` outside `to_hub_schema_record` or test
@@ -269,6 +281,10 @@ flowchart TB
   field of `SchemaRecord` used to populate a SHM header. The two forms do not
   interoperate.
 - Lazy initialisation of a parser-side map keyed on schema_id or hash.
+- Hand-assembled schema wire fields, or a `schema_hash` copied from
+  configuration instead of recomputed from the resolved `SchemaSpec`,
+  anywhere outside `make_wire_schema_fields` — role hosts, engines, and
+  bindings included (I10).
 - **Citation/channel** validation logic (comparing a joiner's schema against
   the channel invariants or the registry) in any class other than `HubState`
   (I4). The request self-consistency pre-check (`verify_request_fingerprint`) is
@@ -588,6 +604,72 @@ Because it is one contiguous value, a single `fingerprint_a == fingerprint_b`
 compare covers BOTH zones at once — a flexzone mismatch can never slip past a
 datablock-only check (§9). The validator names the failing half (`datablock`,
 `flexzone`, or `datablock+flexzone`) in its rejection detail.
+
+### 6.4 The fingerprint chain end-to-end — one API set on both ends
+
+In plain terms: a schema fingerprint is computed by exactly one family of
+functions, fed from exactly one resolved source, on both the sending and the
+receiving side.  A role cannot ship a hash it did not compute through that
+family; the hub does not accept one it did not recompute through the same
+family.  And nothing anywhere in the system holds an opinion about the
+packing value — packing is hash *input*, never a branching value: the broker
+accepts any `(blds, packing)` pair that hashes to its claimed fingerprint.
+
+The full production chain, stage by stage:
+
+| # | Stage | The one API | Callers |
+|---|---|---|---|
+| 1 | Role resolves its config into a `SchemaSpec` — fields and packing together, the single source of truth for both the queue build and the wire declaration | `resolve_schema()` | role hosts |
+| 2 | Role builds the wire schema fields.  `schema_blds` = the layout-free canonical string; `schema_packing` = the sibling field; the 128-hex hash is **computed here, inside the builder, never copied from configuration** | `make_wire_schema_fields` (→ `compute_fingerprint_from_wire`) | the four role-host sites: producer-out, processor-out, consumer-in, processor-in |
+| 3 | Fields pasted into the REG_REQ / CONSUMER_REG_REQ payload — a pure field copy with the `expected_*` name mapping on the consumer side, no computation | `apply_producer_schema_fields` / `apply_consumer_schema_fields` | same four sites |
+| 4 | Broker self-consistency gate: recompute from the received wire fields and compare against the claimed hash (`FINGERPRINT_INCONSISTENT` on disagreement) — the ONLY place a handler recomputes (§2.4 I4) | `verify_request_fingerprint` | the three registration gates in `broker_service.cpp` (named producer, anonymous producer, consumer citation) |
+| 5 | Record construction for named registrations — THE single builder (§2.4 I2) | `make_schema_record` | the two sanctioned I2 callers |
+| 6 | Join/citation matching: one equality over the full 64 bytes against the channel's stored invariants; compares only, never recomputes (§2.4 I4) | `HubState::_validate_schema_citation` | registration handlers only |
+
+```mermaid
+sequenceDiagram
+    participant R as Role host
+    participant W as Wire (REG_REQ)
+    participant B as Broker gate
+    participant H as HubState
+    R->>R: resolve_schema() → SchemaSpec (fields + packing)
+    R->>R: make_wire_schema_fields(spec)<br/>blds = canon_fields (layout-free)<br/>hash = compute_fingerprint_from_wire(blds, packing, …)
+    R->>W: apply_*_schema_fields (pure copy)
+    W->>B: schema_blds + schema_packing + schema_hash (+ fz twins)
+    B->>B: verify_request_fingerprint —<br/>recompute via the SAME functions, compare to claim
+    B->>H: make_schema_record (named) / channel invariants (open)
+    H->>H: _validate_schema_citation —<br/>64-byte equality on join, no recompute
+```
+
+**Why packing is a separate hash input — and only that.**  The wire BLDS is
+layout-free by design (I6): `name:type:count:length` is identical across
+platforms and identical under either packing mode, which is what makes it the
+abstract cross-process contract rather than one binary's ABI.  Packing is the
+single remaining bit that maps that abstract field list onto a concrete
+memory layout, so it folds into each zone's hash half.  That fold is what
+makes "fingerprints equal" also mean "memory layouts equal":
+
+- **SHM channels** — two roles sharing raw memory.  The fold converts a
+  would-be map-time ABI failure (the HEP-0002 header check, which remains the
+  final authority on this binary's layout) into a registration-time
+  `SCHEMA_MISMATCH` at the offending party.
+- **ZMQ channels** — the data plane is per-field msgpack (type- and
+  size-validated per element), so no wire byte is ever interpreted through a
+  packing mode; deployments use the default packing and the folded term never
+  distinguishes anything.  It is a no-op that costs nothing — and the
+  per-frame Job-1 `schema_tag` folds packing identically, so even a
+  hypothetical mismatch could only produce rejected frames, never misread
+  bytes.
+
+**Packing is not stored or delivered beyond the registration wire fields**
+(ruled 2026-07-26).  Channel records and query replies carry `blds` + the
+fingerprint only.  This loses nothing: the packing domain is exactly
+`{"aligned", "packed"}` and each zone half binds its packing, so any holder
+of `(blds, fingerprint)` can simultaneously verify delivered material against
+a pin and recover its packing by recomputing the half with each candidate —
+exactly one matches.  Any future receiver-side verification step MUST be
+added to the `schema_utils` family (§2.4 I10), never hand-rolled at a call
+site.
 
 ---
 

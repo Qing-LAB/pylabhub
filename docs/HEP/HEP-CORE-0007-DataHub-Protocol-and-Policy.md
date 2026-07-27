@@ -1376,71 +1376,115 @@ Payload (DEREG_ACK):
 #### SCHEMA_REQ / SCHEMA_ACK — Fetch Schema Record (HEP-CORE-0034 §10.3)
 
 ```
-Direction:  Any → Broker → Any
-Trigger:    Any participant fetching a schema record by owner+id
-            (e.g. consumer pre-flight before CONSUMER_REG_REQ).
+Direction:  Registered role → Broker → that role
+Trigger:    A role fetching a schema record by owner+id (registry form,
+            e.g. pre-flight before CONSUMER_REG_REQ), or a channel MEMBER
+            reading its channel's stored schema invariants (channel form).
+Gating:     `role_uid` REQUIRED on every SCHEMA_REQ — it is the CALLER's
+            own uid, bound to the socket identity by the admission tier
+            (Control_EnvelopeWithRoleUid; SI-5 identity-checked pull).
+            Registry form: open to all known roles (the registry is
+            shared infrastructure).  Channel form: member-gated — the
+            caller must hold a presence on the queried channel, either
+            side, else NOT_A_ROLE_OF_CHANNEL.
 
-Payload (SCHEMA_REQ):
+Payload (SCHEMA_REQ) — registry form:
+  role_uid              string   REQUIRED — caller's own uid (see Gating)
   owner                 string   "hub" or producer/inbox-receiver uid
   schema_id             string   "frame", "lab.sensors.x@1", "inbox", ...
 
-Payload (SCHEMA_ACK):
+Payload (SCHEMA_REQ) — channel form:
+  role_uid              string   REQUIRED — caller's own uid (see Gating)
+  channel_name          string   Channel whose stored invariants to read
+
+Payload (SCHEMA_ACK) — registry form:
   status                string   "success" | error reason
   owner                 string   echo
   schema_id             string   echo
-  schema_hash           string   64-char hex hash; BLAKE2b-256 over the
-                                 HEP-CORE-0034 §6.3 canonical wire form
-                                 ("slot:" + canon_fields + "|pack:" + packing
-                                 [+ flexzone section]).
-  packing               string   "aligned" | "packed"
+  schema_hash           string   128-char hex — the 64-byte two-zone
+                                 `db‖fz` fingerprint (HEP-CORE-0034 §6.3:
+                                 each half BLAKE2b-256 over that zone's
+                                 canonical `blds || "|pack:" || packing`;
+                                 an absent zone's half is all-zero).
+  packing               string   "aligned" | "packed" (datablock zone)
   blds                  string   canonical wire-form BLDS for ctypes
                                  reconstruction (HEP-CORE-0034 §6.3 form,
                                  NOT the HEP-CORE-0002 BLDS short-token form
                                  used in SHM-header SchemaInfo)
+  flexzone_packing      string   "aligned" | "packed"; empty ⇒ zone absent
+  flexzone_blds         string   flexzone canonical BLDS; empty ⇒ absent
   correlation_id        string   (opt) Echo of request correlation_id if provided.
 
-Legacy `channel_name` form additionally carries:
-  channel_name          string   Echo of the requested channel_name
+Payload (SCHEMA_ACK) — channel form:
+  status                string   "success" | error reason
+  channel_name          string   echo
+  schema_id             string   Channel's schema id; empty = anonymous
   schema_owner          string   Owner key under which the schema record
                                  lives ("hub" for hub-globals, or the
                                  producer's role uid for path-B records).
-                                 Empty when the channel adopts an anonymous
-                                 schema.
+                                 Empty for anonymous channels.
+  blds                  string   Channel's stored datablock BLDS ("" = none)
+  flexzone_blds         string   Channel's stored flexzone BLDS ("" = none)
+  schema_hash           string   128-char hex two-zone fingerprint
+  correlation_id        string   (opt)
 ```
 
-The HEP-0016-era channel-keyed lookup (`SCHEMA_REQ { channel_name }`) is
-replaced by owner+id keying. To find which schema a channel uses, callers
-read `ChannelEntry.{schema_owner, schema_id}` from the channel-listing RPC,
-then issue `SCHEMA_REQ` on the result.
+Division of labor (schema/metrics integration, 2026-07-26): the registry
+form serves tooling and pre-flight reads by `(owner, schema_id)`; the
+channel form is the one wire path that returns stored structure BY
+CHANNEL (DISC_ACK carries only the summary — the two are complementary
+by design, not duplicates).  The channel form carries no packing fields:
+the channel record stores `blds` + the two-zone fingerprint, and packing
+is recovered from that pair by candidate recompute — the packing domain
+is exactly {"aligned","packed"}, and each zone's hash half binds its
+packing, so recomputing the half with each candidate identifies it while
+simultaneously verifying the delivered BLDS against the fingerprint.
 
 #### METRICS_REQ / METRICS_ACK — Query Metrics (HEP-CORE-0019)
 
 ```
-Direction:  Any → Broker → Any
-Trigger:    pylabhub.metrics(channel) (AdminShell) or direct BrokerRequestComm call
+Direction:  Channel member → Broker → that member
+Trigger:    A registered role pulling its channel's live metrics
+            (`BrokerRequestComm::get_channel_metrics` / RoleAPIBase
+            pass-through).
 Pattern:    Synchronous request/response
+Gating:     `channel_name` REQUIRED — the all-channels wire form is
+            RETIRED (MI-1, 2026-07-26): hub-wide aggregation stays on
+            the hub-script / admin plane (`BrokerService::query_metrics`)
+            until an observer role kind exists (#292).  `role_uid`
+            REQUIRED — the CALLER's own uid, bound to the socket
+            identity by the admission tier (Control_EnvelopeWithRoleUid);
+            answered only for roles holding a presence on the queried
+            channel (either side), else NOT_A_ROLE_OF_CHANNEL.
 
 Payload (METRICS_REQ):
-  channel_name          string   (opt) Channel to query; empty/omitted = all channels
+  channel_name          string   REQUIRED — channel to query
+  role_uid              string   REQUIRED — caller's own uid (see Gating)
 
 Payload (METRICS_ACK):
-  status                string   "success"
-  channels              object   Map of channel_name → metrics:
-    <channel_name>:
-      producer:
-        uid              string   Producer UID
-        pid              uint64   Producer PID
-        last_report      string   ISO 8601 timestamp
-        base             object   {out_written, drops, script_errors, iteration_count, …}
-        custom           object   User-defined {key: number} pairs
-      consumers:         array    Array of consumer metrics objects:
-        uid              string
-        pid              uint64
-        last_report      string
-        base             object   {in_received, script_errors, iteration_count, …}
-        custom           object
+  status                string   "success" | error reason
+  channel               string   echo
+  metrics               object   The channel's per-presence rows
+                                 (HubState::channel_metrics_snapshot,
+                                 HEP-CORE-0019 §2.3 Phase 6 — pushed in
+                                 on HEARTBEAT_NOTIFY, freshness = the
+                                 members' heartbeat cadence):
+    producers:          object   Map role_uid → that presence's latest
+                                 metrics object, plus:
+                                   pid            uint64  producer PID
+                                   _collected_at  string  per-group arrival
+                                                          timestamp (HEP-0019
+                                                          §4.2; omitted if
+                                                          never collected)
+    consumers:          object   Map role_uid → latest metrics object,
+                                 plus _collected_at (as above; no pid —
+                                 pid is a channel-producer property)
+  shm_blocks            object   Live SHM-derived block info for the
+                                 channel (HEP-CORE-0019 §3.2)
+  correlation_id        string   (opt) Echo of request correlation_id.
 
-Returns empty channels if no metrics have been reported yet.
+A member whose peers have not yet reported returns empty maps — the
+query answers from state and never waits (SI-8).
 ```
 
 ### 12.4 Fire-and-Forget Messages
